@@ -2,297 +2,281 @@
 
 **State:** Proposal
 
-What would it take to let user-defined macros declare how their argument positions are parsed — controlling parse mode, key identity, and structural transformations — before arguments reach the main evaluator?
+What would it take to let user-defined macros control how their argument positions are delivered — so the macro body itself, written in tinct, does all structural transformation work rather than toggling Rust-implemented flags?
 
 ## Current State
 
 Tinct's macro system (`doc/whatif/macros.md`) operates post-parse: macros receive fully-formed `Expr` AST dicts and return AST dicts. The parser always produces a complete AST before any macro runs, using fixed rules for every bracket it encounters:
 
-- **All brackets are parsed as expressions** — implied call, dict, or type assertion based on content
-- **Duplicate key detection uses bare-name identity** — `n@Int` and `n@String` are both field `"n"` → parse-time duplicate error
-- **No argument transformations** — what the user writes is exactly what the macro receives; the macro cannot declare that a bracket should be wrapped in `[let ...]` or treated as a binding list
+- **All brackets are parsed as expressions** — implied call, keyed dict, or type assertion based on content. `[x y]` in a macro arg position becomes `Call(VarRef("x"), [VarRef("y")])`, not the element list `[VarRef("x"), VarRef("y")]`.
+- **Duplicate key detection uses bare-name identity** — `n@Int` and `n@String` are both field `"n"` → parse-time duplicate error, before any macro runs.
+- **No receive-mode control** — macros cannot declare how their argument positions should be delivered; they receive whatever the parser produces.
 
-These rules are correct for general-purpose dicts. But they make it impossible for user-defined macros to use syntactic forms that require context-sensitive parsing — because the rejection or misinterpretation happens at parse time, before any macro runs.
+These rules are correct for general-purpose dicts but make it impossible for user-defined macros to work with bracket forms that require different parse representations.
 
-### The Core Problem: Fixed Parse Rules Cannot Be Extended
+### The Core Problem
 
-Consider three distinct needs a user macro might have:
+Consider the fn let-softening use case from `doc/whatif/unified-bindings.md`: a user writes `[fn [x@Int y@Float] body]` and wants it equivalent to `[fn [let x@Int y@Float] body]`. A post-parse macro cannot do this because `[x@Int y@Float]` has already been parsed as the implied call `Call(x@Int, [y@Float])` — the flat element sequence `[x@Int, y@Float]` is gone.
 
-**1. Annotated-key dicts** (current proposal, narrow):
+Or consider a dispatch macro with annotated keys:
+
 ```tinct
-[dispatch x
+[dispatch result
   n@Int:    i"int: $n"
-  n@String: i"str: $n"   # PARSE ERROR — duplicate key "n"
+  n@String: i"str: $n"   # PARSE ERROR — duplicate key "n" before any macro runs
   _:        "other"]
 ```
-`n@Int` and `n@String` should be distinct keys. The parser rejects them as duplicates before any macro can run.
 
-**2. Binding list positions** (let-softening use case):
-```tinct
-[my-fn [x y] body]   # user wants [x y] treated as a binding list
-                     # equivalent to [my-fn [let x y] body]
-```
-The bracket `[x y]` should be wrapped in `[let ...]`, but only because of its argument position — not because the user wrote `[let ...]`.
-
-**3. Pattern positions** (user-defined match-like forms):
-```tinct
-[my-match scrutinee
-  [v: Ok]  → body1    # structural constructor pattern
-  [n@Int]  → body2    # typed binding pattern
-  _        → body3]   # wildcard
-```
-The arm keys need to be parsed as binding patterns (where `v: Ok` means structural test), not as dict entries (where `v: Ok` means key "v" with value `Ok`).
-
-All three are impossible with post-parse macros because the parse-time semantics are fixed.
+Both problems have the same root: the parser's fixed rules transform bracket content before the macro gets a chance to see it differently.
 
 ### What's Missing
 
-1. **Argument position modes** — no way for a macro to declare that a specific argument position should be parsed differently (binding list, pattern, literal, etc.)
-2. **Argument transformations** — no way for a macro to declare that a bracket should be wrapped or rewritten before it reaches the macro body
-3. **Context-sensitive key identity** — no mechanism for a macro to declare that its body uses full-annotated-expression equality instead of bare-name equality for duplicate detection
-4. **Variadic position declarations** — no way to declare how many arguments a form takes and what kind each is
+1. **Receive modes** — a way for a macro to declare that a specific argument position should be delivered in a different form (flat element list, raw token sequence, or full expression)
+2. **Macro-body transformation** — the macro body itself, written in tinct, should do ALL structural transformation; no Rust-implemented flags or hardcoded transformation logic
+3. **Context-sensitive key identity** — duplicate detection that uses full annotated expression equality instead of bare-name equality, for macros that use annotated keys
 
 ## Why Parse-Stage Macros Matter for tinct
 
-**User-defined language forms.** With parse-stage macros, a user can define `[my-for [let x] in collection body]`, `[my-match scrutinee arms...]`, or `[dispatch scrutinee arms-dict]` with the same syntactic clarity as built-in forms. Without them, user macros are second-class citizens whose argument positions are always parsed as generic expressions.
+**Macros that do real work.** The macro body is tinct code. It inspects the argument, decides what transformation to apply, and returns the new AST. The infrastructure provides receive modes and primitives; the logic lives in the macro.
 
-**The let-softening path.** The unified-bindings whatif (`doc/whatif/unified-bindings.md`) requires `[let ...]` uniformly at all binding positions. Parse-stage macros are the mechanism for a future softening: `[fn [x y] body]` → `[fn [let x y] body]` via a `binding-list` argument position declaration, making `[let ...]` optional where the context is unambiguous.
+**The let-softening path.** `doc/whatif/unified-bindings.md` requires `[let ...]` uniformly. Parse-stage macros let a future declaration make `[fn [x y] body]` equivalent to `[fn [let x y] body]` — with the transformation logic written entirely in tinct.
 
-**Unforeseen uses.** A general argument position system covers cases not yet anticipated: custom DSLs embedded in tinct, syntax for testing frameworks, specialized configuration forms, domain-specific notations.
+**User-defined language forms.** A user can implement their own `[my-match ...]`, `[my-for ...]`, or `[dispatch ...]` with the same syntactic flexibility as built-in forms.
 
-**Regular expressions and dicts unchanged.** Declarations only affect the specific macro forms they annotate. All existing parsing behavior is unchanged everywhere else.
+**Unforeseen uses.** Any form where the parser's default interpretation loses structure that the macro needs to work with.
 
 ## Design
 
-Parse-stage macros are declared via `[declare-syntax name [arg-decl ...]]`. Each `arg-decl` describes one argument position: its mode, any transformation to apply, and optional validation.
-
-### `[declare-syntax ...]`
+### `defparse-macro` — Declare a Parse-Stage Macro
 
 ```tinct
-[declare-syntax form-name
-  [pos1: mode1  transform1: t1  ...
-   pos2: mode2  ...
-   ...rest: modeN  ...]]
+[defparse-macro name [arg: receive-mode  ...] body]
 ```
 
-- **Positional** (`pos1:`, `pos2:`) — declare specific argument slots by index
-- **Variadic** (`...rest:`) — declare the mode for all remaining arguments
-- **Named** (`name:`) — declare how a keyword argument is parsed (for dict-body macros)
+- `name` — the form name this macro handles (can be a keyword like `fn` or a user form)
+- `[arg: receive-mode ...]` — declares how each argument position is delivered to the macro
+- `body` — tinct code that receives the arguments and returns the new AST
 
-Declarations are registered during a **pre-parse pass** that processes `[declare-syntax ...]` forms at the top of a file (or at the top of a scope), before the main parse begins.
+The macro body runs in a **post-parse transformation pass**, after the file is parsed but before type-checking. It can use any tinct stdlib primitive available at that stage.
 
-### Argument Position Modes
+### Receive Modes
 
-Each argument position has a **mode** that controls how its bracket is parsed:
+Each argument position has a **receive mode** that controls how the parsed bracket is delivered to the macro:
 
-| Mode | Description | Example input | What macro receives |
-|------|-------------|---------------|---------------------|
-| `expr` | Normal expression (default) | `[x y]` | `Call(x, [y])` or `Dict([x, y])` |
-| `binding-list` | Binding list context | `[x@Int y]` | `LetDecl([Annotated(x, Int), VarRef(y)])` |
-| `pattern` | Pattern context (structural tests enabled) | `[v: Ok]` | `LetDecl([StructuralBind(v, Ok)])` |
-| `key-dict` | Dict with full-expression key identity | `[n@Int: body1  n@String: body2]` | Dict with distinct keys |
-| `literal` | Must be a literal value | `"hello"` | `Str("hello")` |
-| `name` | Must be a bare identifier | `foo` | `VarRef("foo")` |
-| `raw` | Unevaluated bracket — sequence of tokens as a list | `[x y z]` | `List([Token(x), Token(y), Token(z)])` — for metaprogramming |
+| Mode | What the macro receives | Example input | Example value |
+|------|------------------------|---------------|---------------|
+| `expr` | Fully parsed expression (default) | `[x y]` | `Call(VarRef("x"), [VarRef("y")])` |
+| `flat-list` | Bracket elements as a sequence, no implied-call applied | `[x y]` | `[VarRef("x"), VarRef("y")]` |
+| `tokens` | Raw token sequence within the bracket | `SELECT * FROM t` | `[Token("SELECT"), Token("*"), ...]` |
 
-### Argument Position Transformations
+`flat-list` is the key mode: it preserves the bracket as a sequence of its elements without applying implied-call semantics. This lets the macro inspect and reshape the contents — for example, check if the first element is a `let` keyword and wrap if not.
 
-In addition to mode, each position can have a **transformation** applied after parsing:
+`tokens` is the escape hatch for embedded DSLs that have their own syntax. The macro receives a raw token list and produces an `Expr`.
 
-| Transformation | Description |
-|----------------|-------------|
-| `auto-let` | If the bracket doesn't start with `let`, wrap contents in `[let ...]`. Used with `binding-list` mode. |
-| `auto-case` | If the first arg to `[case ...]` is not a `LetDecl`, wrap in `[let ...]`. Used with `pattern` mode. |
-| _user-defined_ | A macro name that receives the parsed arg and returns a transformed `Expr`. Applies at parse stage before the main macro runs. |
+### Macro Body — All Logic in Tinct
 
-### Worked Examples
+The macro body uses tinct code and AST construction primitives to inspect arguments and produce the output. No Rust transformation logic. No flags.
 
-**Key-identity for annotated-key dicts:**
+**fn let-softening:**
 ```tinct
-[declare-syntax dispatch
-  [scrutinee: expr
-   ...arms: key-dict]]
-
-[dispatch result
-  v: Ok    → [use v]
-  e: Err   → [log e]
-  n@Int:   i"int: $n"
-  n@String: i"str: $n"   # valid — n@Int ≠ n@String under key-dict mode
-  _:       "other"]
+[defparse-macro fn [params: flat-list  body: expr]
+  [if [let-decl? params]
+    [list 'fn params body]                    # already has [let ...], pass through
+    [list 'fn [cons 'let params] body]]]      # prepend let: [let x y]
 ```
 
-**Binding list position (let-softening):**
+- `params` arrives as `[VarRef("x"), VarRef("y")]` (flat element list)
+- `[let-decl? params]` — checks if `params` already starts with the `let` keyword
+- `[list 'fn params body]` — constructs the AST `[fn params body]`
+- `[cons 'let params]` — prepends `let` to params, producing `[let x y]`
+
+**class and type — identical pattern:**
 ```tinct
-[declare-syntax my-fn
-  [params: binding-list  auto-let: true
-   body: expr]]
+[defparse-macro class [tvars: flat-list  ...body: expr]
+  [if [let-decl? tvars]
+    [list 'class tvars ...body]
+    [list 'class [cons 'let tvars] ...body]]]
 
-[my-fn [x@Int y@Float] [+ x y]]
-# → [my-fn [let x@Int y@Float] [+ x y]]  — [let ...] inserted automatically
+[defparse-macro type [params: flat-list  body: expr]
+  [if [let-decl? params]
+    [list 'type params body]
+    [list 'type [cons 'let params] body]]]
 ```
 
-**Pattern position (user-defined match-like form):**
+**case arm let-wrapping — macro handles the conditional logic:**
 ```tinct
-[declare-syntax my-match
-  [scrutinee: expr
-   ...arms: pattern-dict]]   # arms dict uses pattern-mode keys
-
-[my-match result
-  [let v: Ok]:  [use v]      # structural pattern — v binds Ok's payload
-  [let n@Int]:  [+ n 1]      # typed binding
-  [let _]:      0]            # wildcard
+[defparse-macro case [scrutinee: expr  ...arms: flat-list]
+  [list 'case scrutinee
+    ...[map [fn [let arm]
+              [if [contains-structural-test? arm]
+                arm                           # [let v: Ok]: body — don't touch
+                [wrap-in-let arm]]]           # [n@Int]: body — safe to wrap
+           arms]]]
 ```
 
-**Mixed positions:**
+The case macro does real work: it maps over arms, inspects each one for structural tests (`:` separator), and applies wrapping only where safe. The helper `contains-structural-test?` and `wrap-in-let` are tinct stdlib functions — not Rust implementations.
+
+**Annotated-key dict — logic in the macro:**
 ```tinct
-[declare-syntax for-each
-  [binding: binding-list  auto-let: true
-   in: expr
-   body: expr]]
-
-[for-each [x@Int] in my-list [process x]]
-# → [for-each [let x@Int] in my-list [process x]]
+[defparse-macro dispatch [scrutinee: expr  arms: flat-list]
+  # Arms received as a flat list of [key value] pairs with full-expression keys
+  [list 'dispatch scrutinee
+    ...[map [fn [let arm]
+              [list [first arm] [second arm]]]  # reconstruct each arm
+           arms]]]
 ```
 
-**Literal-only position:**
+The duplicate check with full-expression key identity is declared separately (see below). The macro itself handles dispatch logic.
+
+### Key Identity — Separate from Transformation
+
+Key identity (what counts as a duplicate key) is NOT a transformation — it's a parse-time rule about which bracket entries can coexist. It's declared separately from `defparse-macro`:
+
 ```tinct
-[declare-syntax pragma
-  [name: name      # must be a bare identifier
-   value: literal]] # must be a literal
-
-[pragma max-depth 256]   # ok
-[pragma max-depth [+ 1 2]] # parse error: not a literal
+[declare-key-identity dispatch  full-expression]
+# Under full-expression identity: n@Int ≠ n@String ≠ n
 ```
 
-**User-defined transformer:**
+| Key identity | Behavior |
+|-------------|----------|
+| `bare-name` | Default: `n@Int` and `n@String` both have key `"n"` → duplicate error |
+| `full-expression` | `n@Int` and `n@String` are structurally distinct → both allowed |
+
+`full-expression` identity means: duplicate detection compares the full parsed key node structurally, not just its extracted name. The macro then receives an arms list where each entry has a full-expression key — `Annotated("n", Simple("Int"))` vs `Annotated("n", Simple("String"))` are distinct.
+
+Two `n@Int` entries are still a duplicate. Two `_` entries are still a duplicate. Only the annotation distinguishes them.
+
+### AST Construction Primitives
+
+The macro body uses tinct primitives to construct and inspect AST:
+
 ```tinct
-[declare-syntax sql
-  [query: raw   # raw token sequence
-   transform: sql-tokenizer]]  # user-defined tokenizer macro
+# Inspection
+[let-decl? expr]          # is this an Expr::LetDecl (a [let ...] form)?
+[var-ref? expr]            # is this a bare identifier?
+[annotated? expr]          # is this name@Type?
+[literal? expr]            # is this a literal value?
+[contains-structural-test? arm]  # does this arm contain a name: Constructor entry?
 
-[sql SELECT * FROM users WHERE id = 42]
-# sql-tokenizer receives the raw token list and produces an Expr
+# Construction
+[list 'sym a b c]          # construct AST list/form: [sym a b c]
+[cons x xs]               # prepend x to list xs
+[first xs]                # first element of list
+[rest xs]                 # remaining elements
+[quote sym]               # quote a symbol: 'fn, 'let, etc.
+
+# Wrapping helpers (stdlib, implemented in tinct)
+[wrap-in-let flat-list]   # produce [let ...flat-list]
+[make-let-decl elements]  # produce Expr::LetDecl from element list
 ```
 
-### Key Identity Modes for `key-dict`
+These are the same primitives available to post-parse macros, plus the parse-stage-specific ones (`let-decl?`, `make-let-decl`).
 
-When an argument position has `key-dict` mode, duplicate detection uses the **full expression node** as the key identity, not the extracted bare name:
+### Transformation Pass
 
-| Key form | Bare-name identity (default) | Full-expression identity (`key-dict`) |
-|----------|------------------------------|---------------------------------------|
-| `n` | `"n"` | `VarRef("n")` |
-| `n@Int` | `"n"` (collision!) | `Annotated("n", Simple("Int"))` |
-| `n@String` | `"n"` (collision!) | `Annotated("n", Simple("String"))` |
-| `_` | `"_"` | `VarRef("_")` |
-| `42` | `42` | `Int(42)` |
+Parse-stage macros run in a **transformation pass** between parsing and type-checking:
 
-Under `key-dict` mode, `n@Int` and `n@String` are structurally distinct — no collision. Two `n@Int` entries are still a duplicate. The macro receives a dict where the `key:` field of each entry contains the full expression node.
+```
+parse → [post-parse transformation pass] → type-check → eval
+```
 
-### What Macros Receive
+The transformation pass:
+1. Walks the parsed AST
+2. For each form `[name ...]` where `name` has a `defparse-macro` declaration:
+   a. Re-deliver arguments in their declared receive modes
+   b. Call the macro body with the re-delivered arguments
+   c. Replace the original form with the macro's return value
+3. The pass runs to fixpoint (handles macros that produce other macro calls)
 
-The macro body receives the same AST dict shape as always — `[type: "dict" entries: [...]]` with each entry as `[type: "entry" key: ... value: ...]`. The parse-stage machinery changes what's IN those fields based on the declared mode, but the shape is uniform. Macros can dispatch on the `key:` field's type and content.
+**Bootstrapping:** `defparse-macro` declarations for `fn`, `class`, `type` live in `stdlib/syntax.llt` (a new file loaded before user code). The transformation pass only runs for declarations it has seen. stdlib syntax declarations are always available.
 
-For `binding-list` mode, the macro receives an `Expr::LetDecl` where it would otherwise receive an `Expr::Dict`. For `key-dict` mode, the `key:` field contains the full annotated expression. For `raw` mode, the position contains a list of tokens rather than a parsed expression.
+**Recursion guard:** the transformation pass tracks which forms it has already visited. A macro's output is not re-visited in the same pass unless it produces a new, unvisited form name.
 
-### Scope and Registration
+### Scoping
 
-`[declare-syntax ...]` forms are processed in a **pre-parse pass** that runs at the scope level before main parsing begins. Within a dict or file:
-
-1. Scan for `[declare-syntax ...]` forms at the top level
-2. Register their declarations in the syntax registry for the current scope
-3. Parse all remaining forms with the registry active
-
-Declarations in an inner dict scope override outer scope declarations for that form name. They do not affect sibling or parent scopes — following normal scoping rules.
+`defparse-macro` and `declare-key-identity` follow normal tinct scoping rules: they are active for forms parsed within the same scope and nested scopes. An inner dict can declare a parse macro that overrides an outer one for that form name within that inner scope.
 
 ### Security Model
 
-Parse-stage macros do NOT get:
-- **Lexer access** — no character-level tokenization hooks; the lexer is always Rust-only
-- **Arbitrary code execution at parse time** — transformers receive already-parsed AST nodes and return AST nodes; no eval during parsing
-- **Cross-file effects** — syntax declarations are scoped; they cannot affect other files or modules
-
-The `raw` mode is the closest to lexer access, providing a list of tokens. But it only receives tokens within the specific argument position's bracket, and it returns an `Expr` — no ability to modify the surrounding parse.
+- **No lexer access** — `tokens` mode receives already-tokenized tokens; the lexer is always Rust-only
+- **No arbitrary evaluation during parsing** — the transformation pass runs after parsing completes; macro bodies run with the stdlib evaluator, not a special parse-time evaluator
+- **No cross-scope effects** — parse macro declarations are scoped; they do not affect other files
 
 ## What Would Change
 
-### `src/parser.rs` — Syntax Class Registry and Position Declarations
+### `src/expand.rs` — Parse-Stage Transformation Pass
 
-**Current:** Fixed duplicate-key detection using bare-name extraction. All brackets parsed as expressions.
+**Current:** `expand.rs` handles post-parse macro expansion.
 
-**Proposed:** Before parsing `[name ...]`, check the syntax class registry for `name`. If a declaration exists:
-- Apply the declared mode to each argument position
-- Apply transformations (e.g., `auto-let`) after the position is parsed
-- Use the declared key identity for `key-dict` positions
+**Proposed:** After parsing, before type-checking, run the parse-stage transformation pass:
+1. Scan for `defparse-macro` and `declare-key-identity` declarations (using the pre-existing pre-parse scan mechanism)
+2. Walk the AST; for registered form names, re-deliver arguments in declared modes and call the macro body
+3. Collect results and substitute in place
 
-The registry is a `HashMap<String, SyntaxDecl>` populated during the pre-parse scan. `SyntaxDecl` stores:
+The pass uses the existing evaluator (`eval_source`) to run macro bodies, with stdlib loaded. The macro body is just a tinct function.
+
+**Impact:** Moderate — new pass in the pipeline; interoperates with existing macro expansion.
+
+### `src/parser.rs` — Receive Mode Support
+
+**Current:** All brackets parsed as expressions (implied call, dict, etc.).
+
+**Proposed:** `flat-list` and `tokens` modes require the parser to deliver bracket content differently. This is handled by the transformation pass re-processing the already-parsed AST node — for `flat-list`, the pass extracts the `entries` of a parsed dict/call and delivers them as a sequence. For `tokens`, a new `Expr::RawTokens` variant stores the token sequence.
+
+For `declare-key-identity full-expression`: the pre-parse scan registers the form name, and the parser uses full-expression equality for duplicate detection in that form's body brackets.
+
+**Impact:** Minor for `flat-list` (re-processing in transform pass), Minor for `full-expression` (additional branch in duplicate-check logic), Minor for `tokens` (one new AST variant).
+
+### `src/ast.rs` — New Variants
+
 ```rust
-struct SyntaxDecl {
-    positional: Vec<ArgDecl>,       // indexed by position
-    variadic: Option<ArgDecl>,      // for ...rest positions
-    named: HashMap<String, ArgDecl>, // for keyword arguments
-}
-
-struct ArgDecl {
-    mode: ParseMode,               // expr, binding-list, pattern, key-dict, literal, name, raw
-    transform: Option<Transform>,  // auto-let, auto-case, or user-defined macro name
-    key_identity: KeyIdentity,     // bare-name (default) or full-expression
-}
+Expr::RawTokens(Vec<Spanned<Token>>)  // for tokens receive mode
+Expr::ParseStageMacroDecl { ... }     // for defparse-macro declarations
+Expr::KeyIdentityDecl { ... }         // for declare-key-identity declarations
 ```
 
-**Impact:** Moderate. Pre-parse scan is O(n) over top-level forms. Registry lookup is O(1) per `[name ...]` form during main parse.
-
-### `src/ast.rs` — `SyntaxDecl` in parsed output
-
-**Proposed:** `Expr::SyntaxDecl` for the `[declare-syntax ...]` form itself (analogous to `Expr::TypeAlias`). Processed and consumed during the pre-parse pass; not evaluated at runtime.
-
-**Impact:** Minor — one new AST variant.
-
-### `src/expand.rs` — Pre-parse scan
-
-**Proposed:** New `scan_syntax_decls(file: &Spanned<File>) -> SyntaxRegistry` function that processes `[declare-syntax ...]` forms before the main macro expansion pass. Returns a registry used by `parse2()` (or a post-parse transform) when resolving form names.
-
-**Impact:** Moderate — new pass in the pipeline; must interoperate with the existing macro expansion order.
-
-### `src/lexer.rs` — `raw` mode token lists
-
-**Proposed:** When `raw` mode is declared for a position, the parser stores the raw `Vec<Spanned<Token>>` for that bracket instead of parsing it as an expression. A new `Expr::RawTokens(Vec<Spanned<Token>>)` variant holds this. User-defined transformer macros receive this and produce an `Expr`.
-
-**Impact:** Minor — one new AST variant; conditional path in the parser bracket handler.
+**Impact:** Minor — mechanical exhaustive match arm additions.
 
 ### `stdlib/syntax.llt` (new file)
 
-Standard syntax declarations for common patterns:
-
 ```tinct
-# Annotated-key dict
-[syntax-class key-dict
-  key-identity: full-expression]
+# Let-softening for fn, class, type
+[defparse-macro fn [params: flat-list  body: expr]
+  [if [let-decl? params]
+    [list 'fn params body]
+    [list 'fn [cons 'let params] body]]]
 
-# Binding list with auto-let
-[syntax-class binding-list
-  mode: let-decl
-  auto-let: true]
+[defparse-macro class [tvars: flat-list  ...body: expr]
+  [if [let-decl? tvars]
+    [list 'class tvars ...body]
+    [list 'class [cons 'let tvars] ...body]]]
 
-# Pattern context
-[syntax-class pattern
-  mode: let-decl
-  structural-tests: enabled]
+[defparse-macro type [params: flat-list  body: expr]
+  [if [let-decl? params]
+    [list 'type params body]
+    [list 'type [cons 'let params] body]]]
+
+# Helpers
+[wrap-in-let: [fn [let elems] [cons 'let elems]]]
+[contains-structural-test?: [fn [let arm] ...]] # inspect arm for : entries
 ```
 
-### `doc/02-syntax.md` — `[declare-syntax ...]` documentation
+### `stdlib/prelude.llt` — New Parse-Stage Primitives
 
-Document the `[declare-syntax ...]` form, its argument position DSL, and the available modes and transformations.
+Add to the stdlib the inspection and construction primitives used by parse macros:
+`let-decl?`, `var-ref?`, `annotated?`, `literal?`, `contains-structural-test?`, `wrap-in-let`, `make-let-decl`.
 
 ## Prerequisites
 
-- **`[defmacro]`** (`doc/whatif/macros.md`) — parse-stage macros extend, not replace. Fully implemented (`macro-integration` sprint, 2026-05-05).
-- **`[let ...]` as a distinct parse form** (`doc/whatif/unified-bindings.md`) — `Expr::LetDecl` must be a first-class AST node for `binding-list` mode to produce it. Parse-stage macros provide the mechanism for later softening the `[let ...]` requirement where unambiguous.
+- **`[defmacro]`** (`doc/whatif/macros.md`) — parse-stage macros are a new class alongside post-parse macros; same infrastructure, different execution point
+- **`[let ...]` as `Expr::LetDecl`** (`doc/whatif/unified-bindings.md`) — `let-decl?` must have something to detect; `Expr::LetDecl` must be a first-class AST node
+- **Post-parse macro expansion** — the transformation pass builds on the existing expansion infrastructure
 
 ## References
 
-- Tobin-Hochstadt, S. et al. (2011). "Languages as Libraries." *PLDI '11*, pp. 132–141. ACM. — [Racket's `#lang` mechanism: language-level parse customization; tinct's syntax classes are a minimal, safe subset scoped to individual macro bodies rather than whole files]
-- Flatt, M. (2016). "Binding as sets of scopes." *POPL '16*, pp. 705–717. ACM. — [hygiene for macro-introduced bindings; syntax class dispatch must maintain hygiene across parse-mode boundaries]
-- Flatt, M. & PLT (2010). "Reference: Racket." §Syntax Classes (`syntax-parse`) — [formal description of syntax classes and attribute binding; the model for tinct's argument position declarations]
-- Pratt, V.R. (1973). "Top down operator precedence." *POPL '73*, pp. 41–51. ACM. — [Pratt parsing for operator precedence; the algorithm for infix operator extension]
-- Ford, B. (2002). "Packrat Parsing: Simple, Powerful, Lazy, Linear Time." *ICFP '02*, pp. 36–47. ACM. — [PEG parsing as an alternative for extensible grammars; context for why tinct's approach is a narrower, targeted extension]
-- Krishnamurthi, S. (2001). "Linguistic Reuse." Ph.D. thesis, Rice University. — [syntactic abstraction and the role of parse-time hooks in language extensibility]
+- Tobin-Hochstadt, S. et al. (2011). "Languages as Libraries." *PLDI '11*, pp. 132–141. ACM. — [Racket's `#lang` mechanism; syntax classes scoped to macro bodies; tinct's approach is a targeted subset]
+- Flatt, M. (2016). "Binding as sets of scopes." *POPL '16*, pp. 705–717. ACM. — [hygiene for macro-introduced bindings; the transformation pass must maintain hygiene]
+- Flatt, M. & PLT (2010). "Reference: Racket." §Syntax Classes (`syntax-parse`) — [formal description of syntax classes and attribute binding; model for argument position declarations]
+- Graham, P. (1993). "On Lisp." Prentice Hall. — [defmacro and quasiquote as the canonical macro body tools; the principle that macro bodies are ordinary code]
+- Steele, G.L. (1990). "Common Lisp: The Language," 2nd ed. §7.2 "Macro Definitions." — [macros as functions from code to code; the transformation pass model]
+- Pratt, V.R. (1973). "Top down operator precedence." *POPL '73*, pp. 41–51. ACM. — [Pratt parsing; relevant if infix operator extension is added later]
