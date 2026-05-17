@@ -39,6 +39,67 @@ Moves the hardcoded arithmetic instance table out of Rust and into tinct itself.
 - [ ] Tests: arithmetic FD inference for all 4 operations and all Int/Float combinations; user-defined `Decimal` class instance with `[+ dec1 dec2]` → `Decimal`; boundary guard inserted at Unknown→Int boundary; blame label carries correct origin span; `[from-json input].port` fires guard if `start` expects `Int` (`tests/corpus/eval/typecheck/`, `tests/corpus/eval/`)
 
 
+## Unified Binding Declarations
+
+`unified-bindings` accepted 2026-05-17. See `doc/whatif/unified-bindings.md` and `doc/02-syntax.md` §6, §9. Implementation order: unified-bindings-ast → unified-bindings-typecheck → unified-bindings-migrate.
+
+- [x] Design unified bindings — see doc/whatif/unified-bindings.md
+
+### unified-bindings-ast: Lexer, AST, and parser for [let ...], [case ...], and ... placeholder
+
+Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeholder` and parser support. Both old and new binding syntax accepted during this phase (old syntax deprecated but functional to avoid breaking everything at once). See doc/whatif/unified-bindings.md §Parsing Invariant. **Spec chapters:** `doc/02-syntax.md §6, §9`, `doc/whatif/unified-bindings.md §src/lexer.rs, §src/ast.rs, §src/parser.rs`.
+
+- [ ] Add `Token::Let` and `Token::Case` keywords to `src/lexer.rs`; add both to the reserved keyword denylist (`src/lexer.rs`)
+- [ ] Add `Expr::LetDecl { bindings: Vec<Spanned<Expr>> }`, `Expr::CaseArm { pattern: Box<Spanned<Expr>>, body: Box<Spanned<Expr>> }`, `Expr::Placeholder` to `src/ast.rs`; update all exhaustive match sites across the codebase (`src/ast.rs`, `src/desugar.rs`, `src/formatter.rs`, `src/expand.rs`, `src/resolve.rs`, `src/ast_dict.rs`)
+- [ ] Add `StackFrame::LetDecl` to `src/parser.rs`: pushed when `[let` is encountered; collects binding-pattern entries; inside this frame, `Token::OpenBracket` unconditionally pushes another `StackFrame::LetDecl` (sub-binding group); closes to `Expr::LetDecl` (`src/parser.rs`)
+- [ ] Add `StackFrame::CaseDecl` to `src/parser.rs`: pushed when `[case` is encountered; collects two expressions (pattern + body); closes to `Expr::CaseArm` (`src/parser.rs`)
+- [ ] Parse `Expr::Placeholder`: `Token::Spread` not followed by `Token::Identifier` in value position → `Expr::Placeholder` (`src/parser.rs`)
+- [ ] Add `let:` and `case:` colon-ahead disambiguation to the keyword dispatch table — if keyword identifier is immediately followed by `Token::Colon`, dispatch as dict key, not keyword (`src/parser.rs`)
+- [ ] Update `StackFrame::Fn` to accept `Expr::LetDecl` as the parameter list (keep old param-list path functional for this phase) (`src/parser.rs`)
+- [ ] Update `StackFrame::ClassDecl` to accept `Expr::LetDecl` as the TypeVar list (keep old path functional) (`src/parser.rs`)
+- [ ] Update `StackFrame::TypeAlias` to accept `Expr::LetDecl` as the param list (keep old path functional) (`src/parser.rs`)
+- [ ] Update `StackFrame::InstanceDecl` to accept `Expr::LetDecl` as arm key pattern (`src/parser.rs`)
+- [ ] Update `StackFrame::Match` to accept `Expr::CaseArm` as new-style arms (existing `pending_pattern_expr` path coexists) (`src/parser.rs`)
+- [ ] Tests: parser tests for `[fn [let x@Int y] body]`, `[case [let v: Ok] body]`, `[case 42 body]`, `...` placeholder, `[let: value]` colon-ahead, nested `[let [a b]: Pair]` (`tests/corpus/eval/`, `src/lib.rs`)
+
+### unified-bindings-typecheck: Type checker and evaluator for binding declarations, case arms, and placeholders
+
+Type checker handles `Expr::LetDecl` binding extraction, case arm typing with constructor payload lookup, type narrowing, `Expr::Placeholder` as `Unknown`, and validity checking. Evaluator handles case arm evaluation, `eval_let_pattern`, and placeholder thunks. See doc/whatif/unified-bindings.md §src/typecheck.rs, §src/eval.rs. **Spec chapters:** `doc/06-type-inference.md`, `doc/08-evaluation.md`, `doc/whatif/unified-bindings.md §Type checker, §Evaluator`.
+
+**Depends on:** `unified-bindings-ast`
+
+- [ ] Implement binding extraction from `Expr::LetDecl` in each context: fn (value params), class (TypeVars), type (alias params), instance (arm key), case (binding pattern) — shared extraction mechanics, context-specific interpretation (`src/typecheck.rs`)
+- [ ] Implement `typecheck_case_arm(pattern, scrutinee_ty)`: if `Expr::LetDecl` → process each binding element against scrutinee type per typing rules; if literal/expression → validate scalar/nullary type (`src/typecheck.rs`)
+- [ ] Implement constructor payload type lookup: when typing `[let v: Ok]`, look up `Ok` in local TypeEnv, read domain type of its function type scheme as payload type; scope-aware (`src/typecheck.rs`)
+- [ ] Implement type narrowing: `[let n@T]` → `n : scrutinee_ty ∩ T`; `[let v: C]` → `v : payload_type(C)`; `Unknown ∩ T → T` (AGT normalization) (`src/typecheck.rs`)
+- [ ] Implement `Expr::LetDecl` validity check: `LetDecl` outside binding positions (fn/class/type/instance/case/bind:) → type error "binding declaration not valid in expression position" (`src/typecheck.rs`)
+- [ ] Implement structural-test restriction: `name: Constructor` patterns in fn param position → type error "structural test patterns are only valid in case arms" (`src/typecheck.rs`)
+- [ ] Type `Expr::Placeholder` as `Unknown`; function body consistency check uses `~` not `<:` (`src/typecheck.rs`)
+- [ ] Implement `eval_case_arm(pattern, scrutinee, env)`: if `Expr::LetDecl` → call `eval_let_pattern`; if expression → `values_equal` → soft skip on mismatch (`src/eval.rs`)
+- [ ] Implement `eval_let_pattern(bindings, scrutinee, env)`: recursive processing — VarRef (bind), Annotated with Constructor (tag test + payload extraction), bracket group (positional dict destructuring), Wildcard (succeed, no binding) (`src/eval.rs`)
+- [ ] Extend `values_equal` for `Value::Variant { payload: None }` — nullary variants compare by tag equality (`src/eval.rs`)
+- [ ] Implement `Expr::Placeholder` evaluation: return `Err(EvalError::unimplemented(span))` when the containing thunk is forced; add `ErrorKind::Unimplemented`; ensure `$try` can catch it (`src/eval.rs`, `src/value.rs`)
+- [ ] Tests: case arm type narrowing, constructor payload lookup, nested pattern typing, LetDecl-in-expression-position error, structural-test-in-fn-params error, Placeholder typing as Unknown, Placeholder eval raises UnimplementedError, `$try` catches UnimplementedError, `values_equal` for nullary variants (`tests/corpus/eval/`, `src/lib.rs`)
+
+### unified-bindings-migrate: Migrate all existing code to [let ...] and [case ...] syntax
+
+Mechanical migration of prelude, corpus tests, and doc examples. Remove old binding syntax support (old `[fn [params] body]` without `let` becomes a parse error). See doc/whatif/unified-bindings.md §stdlib/prelude.llt, §Corpus tests. **Spec chapters:** `doc/02-syntax.md §6`, `doc/04-functions.md §Function Definition`.
+
+**Depends on:** `unified-bindings-typecheck`
+
+- [ ] Migrate all ~242 fn declarations in `stdlib/prelude.llt` from `[fn [params] body]` to `[fn [let params] body]` (`stdlib/prelude.llt`)
+- [ ] Migrate all `[class [tvars] ...]` declarations in `stdlib/prelude.llt` to `[class [let tvars] ...]` (`stdlib/prelude.llt`)
+- [ ] Migrate all `[type [params] body]` declarations in `stdlib/prelude.llt` to `[type [let params] body]` (`stdlib/prelude.llt`)
+- [ ] Migrate all instance declarations in `stdlib/prelude.llt` to use `[let ...]` arm key syntax (`stdlib/prelude.llt`)
+- [ ] Migrate all corpus test files: fn/class/type/instance binding brackets to `[let ...]` form; update match arms to `[case ...]` where applicable (`tests/corpus/`)
+- [ ] Migrate all doc examples in `doc/*.md` to use `[let ...]` binding syntax (`doc/`)
+- [ ] Remove old param-list parsing path from `StackFrame::Fn` — `[fn [params] body]` without `let` is now a parse error (`src/parser.rs`)
+- [ ] Remove old TypeVar-list path from `StackFrame::ClassDecl` — `[class [tvars] ...]` without `let` is now a parse error (`src/parser.rs`)
+- [ ] Remove old param path from `StackFrame::TypeAlias` — `[type [params] body]` without `let` is now a parse error for parameterized aliases (`src/parser.rs`)
+- [ ] Verify `just test` passes with all migrations applied and old syntax removed (`tests/`)
+
+---
+
 ## Codebase Health
 
 ### unknown-elimination: Replace remaining `Type::Unknown` builtin signatures with precise types

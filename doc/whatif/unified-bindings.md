@@ -1,6 +1,6 @@
 # What If: Unified Binding Declarations via `[let ...]` for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-17
 
 What would it take to give every binding declaration in tinct a single self-announcing form — so that binding brackets announce themselves rather than relying on context-specific parser special cases?
 

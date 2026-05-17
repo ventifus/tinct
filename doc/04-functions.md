@@ -55,16 +55,16 @@ Examples:
 
 ## Function Definition
 
-**No `defn` special form.** Named functions are ordinary dict entries using `fn`:
+**No `defn` special form.** Named functions are ordinary dict entries using `fn`. Parameters are always wrapped in a `[let ...]` binding declaration list:
 
 ```tinct
 [
-    double: [fn@Number [x@Number] [* x 2]]
-    add: [fn@Number [x@Number y@Number] [+ x y]]
+    double: [fn@Number [let x@Number] [* x 2]]
+    add: [fn@Number [let x@Number y@Number] [+ x y]]
     
     # Full metadata dict form with constraint and doc
     min: [fn@[return: a  constraint: [a: Comparable]  doc: "Return smallest element"]
-          [xs@Seq@a] ...]
+          [let xs@Seq@a] ...]
 ]
 ```
 
