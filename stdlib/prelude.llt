@@ -485,40 +485,22 @@ cond@[doc: "Multi-branch conditional"]: [fn@[a Null] [pairs@Dict] [cond-impl pai
 # Dict Utilities
 # ============================================================================
 
-# Get value by key from a dict.
-# Signature: Key → Dict → Any (curried for pipeline composition)
-# assert: [get "b" [a: 1  b: 2]] => 2
-get@[doc: "Get value by key with error if missing"]: [fn@[return: a] [key@Label dict@d] [builtin-get key dict]]
+get: [fn@[return: a  doc: "Get value by key with error if missing.\n\nExample: [get \"b\" [a: 1  b: 2]] => 2\n\nNote: Signature is Key → Dict → Any (curried for pipeline composition)."] [key@Label dict@d] [builtin-get key dict]]
 
-# Check if a key exists in a dict. Uses try around get access.
-# assert: [has? [x: 1] "x"] => true
-# assert: [has? [x: 1] "y"] => false
-has?@[doc: "Check if dict has key"]: [fn@Bool [xs@Dict k]
+has?: [fn@[return: Bool  doc: "Check if dict has key.\n\nExample: [has? [x: 1] \"x\"] => true\nExample: [has? [x: 1] \"y\"] => false\n\nNote: Uses try around get access to check existence."] [xs@Dict k]
     [has?-impl [try [fn [] [get k xs]]]]]
 
-# Get value by key with a default if key is missing.
-# assert: [get-or [x: 1] "x" 99] => 1
-# assert: [get-or [x: 1] "y" 99] => 99
-get-or@[doc: "Get value by key with default"]: [fn@[return: a] [dict@Dict key@Label default@a]
+get-or: [fn@[return: a  doc: "Get value by key with default if missing.\n\nExample: [get-or [x: 1] \"x\" 99] => 1\nExample: [get-or [x: 1] \"y\" 99] => 99\n\nNote: Returns default value when key is missing."] [dict@Dict key@Label default@a]
     [builtin-if [has? dict key] [get key dict] default]]
 
-# Traverse nested dicts by a list of keys.
-# Returns error when any intermediate key is missing.
-# Use get-in-or for a default fallback on missing keys.
-# Usage: [get-in data [key1 key2 key3]]
-# Inherently materializing: must traverse nested dict path, accessing each level.
-get-in@[doc: "Get nested value by path"]: [fn@Unknown [xs path@Dict]
+get-in: [fn@[return: Unknown  doc: "Traverse nested dicts by a list of keys.\n\nExample: [get-in [a: [b: [c: 42]]] [\"a\" \"b\" \"c\"]] => 42\n\nNote: Returns error when any intermediate key is missing. Use get-in-or for a default fallback on missing keys. Inherently materializing: must traverse nested dict path, accessing each level."] [xs path@Dict]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
             [get-in [get path.0 xs] [builtin-rest path]]
             [error [str "key not found: " path.0]]]]]
 
-# Traverse nested dicts by a list of keys with a default fallback.
-# Returns default when any intermediate key is missing.
-# Usage: [get-in-or data [key1 key2 key3] fallback]
-# Inherently materializing: must traverse nested dict path, accessing each level.
-get-in-or@[doc: "Get nested value by path with default"]: [fn@Unknown [xs path@Dict default]
+get-in-or: [fn@[return: Unknown  doc: "Traverse nested dicts by a list of keys with default fallback.\n\nExample: [get-in-or [a: [b: 1]] [\"a\" \"b\"] 99] => 1\nExample: [get-in-or [a: [b: 1]] [\"a\" \"c\"] 99] => 99\n\nNote: Returns default when any intermediate key is missing. Inherently materializing: must traverse nested dict path, accessing each level."] [xs path@Dict default]
     [builtin-if [builtin-eq [length path] 0]
         xs
         [builtin-if [has? xs path.0]
@@ -541,26 +523,18 @@ make-entry@[doc: "Construct single-entry dict from key and value"]: [fn@Dict [k 
 # assert: [set [a: 1] "b" 2] => [a: 1  b: 2]
 set@[doc: "Set key in dict"]: [fn@Dict [xs@Dict k v] [merge xs [make-entry k v]]]
 
-# Remove a key from a dict (preserves remaining keys).
-# assert: [remove [a: 1  b: 2  c: 3] "b"] => [a: 1  c: 3]
-remove@[doc: "Remove key from dict"]: [fn@Dict [xs@Dict k] [remove-impl xs [keys xs] k 0 []]]
+remove: [fn@[return: Dict  doc: "Remove a key from a dict.\n\nExample: [remove [a: 1  b: 2  c: 3] \"b\"] => [a: 1  c: 3]\n\nNote: Preserves remaining keys in insertion order. Returns dict unchanged if key is not present."] [xs@Dict k] [remove-impl xs [keys xs] k 0 []]]
 
 # Update a key by applying a function to its current value.
 # assert: [update [x: 5] "x" [fn [v] [+ v 1]]] => [x: 6]
 update@[doc: "Update dict value by applying function"]: [fn@Dict [xs@Dict k f@Fn]
     [set xs k [f [get k xs]]]]
 
-# Get all values from a dict as an integer-indexed list.
-# Preserves dict insertion order: values are returned in the same order as keys.
-# assert: [values [a: 10  b: 20]] => [10 20]
-values@[doc: "Get all dict values as list"]: [fn@Dict [xs@Dict] [values-impl xs [keys xs] 0 []]]
+values: [fn@[return: Dict  doc: "Get all values from a dict as an integer-indexed list.\n\nExample: [values [a: 10  b: 20]] => [10 20]\n\nNote: Preserves dict insertion order: values are returned in the same order as keys."] [xs@Dict] [values-impl xs [keys xs] 0 []]]
 
-# Get all entries as a list of [key: k  value: v] dicts.
-# Preserves dict insertion order: entries appear in the same order as the source dict.
-entries@[doc: "Get all entries as key-value pairs"]: [fn@Dict [xs@Dict] [entries-impl xs [keys xs] 0 []]]
+entries: [fn@[return: Dict  doc: "Get all entries as a list of [key: k  value: v] dicts.\n\nExample: [entries [a: 10  b: 20]] => [[key: \"a\"  value: 10]  [key: \"b\"  value: 20]]\n\nNote: Preserves dict insertion order: entries appear in the same order as the source dict."] [xs@Dict] [entries-impl xs [keys xs] 0 []]]
 
-# Reconstruct a dict from a list of [key: k value: v] pairs. Inverse of entries.
-from-entries@[doc: "Reconstruct dict from key-value pairs. O(n²) due to repeated merge on accumulator."]: [fn@Dict [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
+from-entries: [fn@[return: Dict  doc: "Reconstruct a dict from a list of [key: k value: v] pairs.\n\nExample: [from-entries [[key: \"a\"  value: 10]  [key: \"b\"  value: 20]]] => [a: 10  b: 20]\n\nNote: Inverse of entries. O(n²) due to repeated merge on accumulator."] [pairs] [builtin-reduce [fn [acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
 
 # ============================================================================
 # List Operations (integer keys, dense 0..n output)
@@ -595,12 +569,7 @@ conj@[doc: "Append element to end of list"]: [fn@Dict [xs@Dict x] [append xs x]]
 
 # concat, reverse, sort: delegate to their builtin-* aliases (see wrappers section).
 
-# Rebuild a collection with dense 0..n integer keys, preserving values and insertion order.
-# Useful after drop or sparse slicing to normalize key numbering.
-# Type: (Dict a -> Dict a)
-# Example: [reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]
-# Inherently materializing: must traverse all entries.
-reindex@[doc: "Rebuild with dense 0..n integer keys"]: [fn@Dict [xs@Dict] [reindex-impl xs [keys xs] 0 []]]
+reindex: [fn@[return: Dict  doc: "Rebuild a collection with dense 0..n integer keys.\n\nExample: [reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]\n\nNote: Preserves values and insertion order. Useful after drop or sparse slicing to normalize key numbering. Inherently materializing: must traverse all entries."] [xs@Dict] [reindex-impl xs [keys xs] 0 []]]
 
 # ============================================================================
 # Sorting (Mergesort)
@@ -641,33 +610,17 @@ sorted-by@[doc: "Sort with custom comparator (accepts Seq or Dict)"]: [fn@Dict [
 # reduce, drop, map, filter are Rust-native builtins (dual-dispatch on Dict/Seq).
 # See src/builtins.rs for implementations.
 
-# Take elements from the beginning while predicate holds; stop at first failure.
-# Type: ((a -> Bool) -> Dict a -> Dict a)
-# Returns the longest prefix of xs where all elements satisfy pred.
-# Example: [take-while [fn [x] [< x 3]] [1 2 3 4]] => [0: 1  1: 2]
-# Inherently materializing: must check elements until predicate fails.
-take-while@[doc: "Take elements while predicate holds"]: [fn@Dict [pred@Fn xs@Dict]
+take-while: [fn@[return: Dict  doc: "Take elements from the beginning while predicate holds.\n\nExample: [take-while [fn [x] [< x 3]] [1 2 3 4]] => [0: 1  1: 2]\n\nNote: Returns the longest prefix of xs where all elements satisfy pred. Inherently materializing: must check elements until predicate fails."] [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
         [take-while-impl pred xs [keys xs] 0 []]]]
 
-# Drop elements from the beginning while predicate holds.
-# Type: ((a -> Bool) -> Dict a -> Dict a)
-# Returns the remaining suffix starting from the first element that fails pred.
-# Example: [drop-while [fn [x] [< x 3]] [1 2 3 4]] => [2: 3  3: 4]
-# Inherently materializing: must check elements until predicate fails.
-drop-while@[doc: "Drop elements while predicate holds"]: [fn@Dict [pred@Fn xs@Dict]
+drop-while: [fn@[return: Dict  doc: "Drop elements from the beginning while predicate holds.\n\nExample: [drop-while [fn [x] [< x 3]] [1 2 3 4]] => [2: 3  3: 4]\n\nNote: Returns the remaining suffix starting from the first element that fails pred. Inherently materializing: must check elements until predicate fails."] [pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
         [drop-while-impl pred xs [keys xs] 0 [] true]]]
 
-# Apply a function to every [key: k value: v] entry dict, returning new values under same keys.
-# Type: (([key: k value: a] -> b) -> Dict a -> Dict b)
-# The function f receives the entry dict and must return the NEW VALUE (not a new entry dict).
-# Keys are preserved unchanged.
-# Example: [map-entries [fn [e] [* e.value 2]] [a: 1 b: 2]] => [a: 2 b: 4]
-# Example: [map-entries [fn [e] e.key] [x: 10 y: 20]] => [x: "x" y: "y"]
-map-entries@[doc: "Apply function to each key-value entry"]: [fn@Dict [f@Fn xs@Dict] [map-entries-impl f xs [keys xs] 0 []]]
+map-entries: [fn@[return: Dict  doc: "Apply a function to every [key: k value: v] entry, returning new values under same keys.\n\nExample: [map-entries [fn [e] [* e.value 2]] [a: 1 b: 2]] => [a: 2 b: 4]\nExample: [map-entries [fn [e] e.key] [x: 10 y: 20]] => [x: \"x\" y: \"y\"]\n\nNote: The function f receives the entry dict and must return the NEW VALUE (not a new entry dict). Keys are preserved unchanged."] [f@Fn xs@Dict] [map-entries-impl f xs [keys xs] 0 []]]
 
 # Left fold: alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
 # Type: ((b -> a -> b) -> b -> Dict a -> b)
@@ -694,13 +647,9 @@ slice-step@[doc: "Slice step (internal helper)"]: [fn@Dict [xs@Dict ks start@Int
     [slice-impl xs ks start end [builtin-add i 1]
         [merge acc [make-entry current-key [get current-key xs]]]]]
 
-slice@[doc: "Take slice by position (preserves keys)"]: [fn@Dict [xs@Dict start@Int end@Int] [slice-impl xs [keys xs] start end 0 []]]
+slice: [fn@[return: Dict  doc: "Take a slice by position (start inclusive, end exclusive).\n\nExample: [slice [a: 1 b: 2 c: 3 d: 4] 1 3] => [b: 2 c: 3]\n\nNote: Preserves original keys."] [xs@Dict start@Int end@Int] [slice-impl xs [keys xs] start end 0 []]]
 
-# Pair entries from two collections by position. Returns a list of pairs.
-# If both xs and ys are Seq: lazy Seq of pairs.
-# Otherwise: collect Seqs to Dicts, then use eager zip-dict-impl.
-# annotation deferred to hkt-mappable-appendable
-zip@[doc: "Pair entries from two collections by position"]: [fn@Unknown [xs ys]
+zip: [fn@[return: Unknown  doc: "Pair entries from two collections by position.\n\nExample: [zip [\"a\" \"b\" \"c\"] [1 2 3]] => [[\"a\" 1] [\"b\" 2] [\"c\" 3]]\n\nNote: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: collect Seqs to Dicts, then use eager zip. Stops at the shorter collection's length."] [xs ys]
     [builtin-if [and [seq? xs] [seq? ys]]
         [zip-seq-impl xs ys]
         [zip-dict-impl
@@ -722,7 +671,7 @@ flatten-step@[doc: "Flatten step (internal helper)"]: [fn@Dict [xs@Dict ks i@Int
         [flatten-impl xs ks [builtin-add i 1]
             [append acc [get current-key xs]]]]]
 
-flatten@[doc: "Flatten nested lists one level deep. O(n²) due to repeated concat on accumulator."]: [fn@Dict [xs@Dict]
+flatten: [fn@[return: Dict  doc: "Flatten nested lists one level deep.\n\nExample: [flatten [[1 2] [3 4] 5]] => [1 2 3 4 5]\n\nNote: O(n²) due to repeated concat on accumulator."] [xs@Dict]
     [builtin-if [seq? xs]
         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
         [flatten-impl xs [keys xs] 0 []]]]
@@ -752,36 +701,23 @@ find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [res
         [Ok v]: v
         [Err _]: [find-deep-impl parent target ks [builtin-add i 1]]]]
 
-find-deep@[doc: "Recursively search for key in nested dicts"]: [fn@Any [xs@Dict target]
+find-deep: [fn@[return: Any  doc: "Recursively search for a key in nested dicts.\n\nExample: [find-deep [a: [b: [c: 42]]] \"c\"] => 42\n\nNote: Depth-first search through nested dict structure. Errors if key not found. Inherently materializing: must traverse nested structure recursively."] [xs@Dict target]
     [find-deep-impl xs target [keys xs] 0]]
 
 # ============================================================================
 # Higher-Order Dict/List Utilities
 # ============================================================================
 
-# Transform a dict via entries: entries → map(f) → from-entries.
-# Each entry passed to f has the shape [key: k value: v].
-with-entries@[doc: "Transform dict via entries pipeline"]: [fn@Dict [xs@Dict f@Fn] [from-entries [builtin-map f [entries xs]]]]
+with-entries: [fn@[return: Dict  doc: "Transform a dict via entries pipeline: entries → map(f) → from-entries.\n\nExample: [with-entries [a: 1 b: 2] [fn [e] [key: e.key  value: [* e.value 10]]]] => [a: 10 b: 20]\n\nNote: Each entry passed to f has the shape [key: k value: v]. Function f must return a new entry dict."] [xs@Dict f@Fn] [from-entries [builtin-map f [entries xs]]]]
 
-# Split a collection into two groups: elements satisfying pred and those that do not.
-# Type: ((a -> Bool) -> Dict a -> [pass: Dict a  fail: Dict a])
-# Returns a dict with keys `pass` (matching) and `fail` (non-matching).
-# Both groups are integer-keyed dicts (eager, not Seqs) for predictable downstream use.
-# Example: [partition [fn [x] [> x 0]] [1 -2 3 -4]] => [pass: [1 3]  fail: [-2 -4]]
-partition@[doc: "Split collection into pass/fail groups"]: [fn@Dict [pred@Fn xs]
+partition: [fn@[return: Dict  doc: "Split a collection into two groups: elements satisfying pred and those that do not.\n\nExample: [partition [fn [x] [> x 0]] [1 -2 3 -4]] => [pass: [1 3]  fail: [-2 -4]]\n\nNote: Returns a dict with keys `pass` (matching) and `fail` (non-matching). Both groups are integer-keyed dicts (eager, not Seqs) for predictable downstream use."] [pred@Fn xs]
     [builtin-reduce
         [fn [acc e]
             [partition-step acc e [pred e]]]
         [pass: []  fail: []]
         xs]]
 
-# Map a function over a collection and flatten (concatenate) the results.
-# Type: ((a -> Dict b) -> Dict a -> Dict b)
-# f must return a collection for each element; results are concatenated.
-# Example: [flat-map [fn [x] [$x [* x 2]]] [1 2 3]] => [1 2 2 4 3 6]
-# Uses concat to accumulate the results of f, avoiding Seq/Dict flush issues.
-# Inherently materializing: f must return collections that can be concatenated.
-flat-map@[doc: "Map and flatten results"]: [fn@Dict [f@Fn xs]
+flat-map: [fn@[return: Dict  doc: "Map a function over a collection and flatten (concatenate) the results.\n\nExample: [flat-map [fn [x] [x [* x 2]]] [1 2 3]] => [1 2 2 4 3 6]\n\nNote: f must return a collection for each element; results are concatenated. Uses concat to accumulate the results of f. Inherently materializing: f must return collections that can be concatenated."] [f@Fn xs]
     [builtin-reduce [fn [acc x] [builtin-concat acc [f x]]] [] xs]]
 
 # Return the first element satisfying pred, or error if none found.
@@ -801,7 +737,7 @@ group-by-step@[doc: "Group-by step (internal helper)"]: [fn@Dict [acc@Dict x k]
         [make-entry k
             [append [get-or acc k []] x]]]]
 
-group-by@[doc: "Group elements by function result. O(n²) due to repeated merge and append on accumulator."]: [fn@Dict [f@Fn xs]
+group-by: [fn@[return: Dict  doc: "Group elements of xs into a dict of lists, keyed by the result of applying f.\n\nExample: [group-by [fn [x] [mod x 2]] [1 2 3 4 5]] => [0: [2 4]  1: [1 3 5]]\n\nNote: Elements with the same key are collected together (insertion order preserved). O(n²) due to repeated merge and append on accumulator."] [f@Fn xs]
     [builtin-reduce
         [fn [acc x]
             [group-by-step acc x [f x]]]
@@ -824,7 +760,7 @@ deep-merge-step@[doc: "Deep-merge step (internal helper)"]: [fn@Dict [acc@Dict a
                 [deep-merge [get k a] [get k b]]
                 [get k b]]]]]
 
-deep-merge@[doc: "Merge dicts recursively. O(n²) due to repeated merge on accumulator at each level."]: [fn@Dict [a@Dict b@Dict]
+deep-merge: [fn@[return: Dict  doc: "Merge two dicts recursively.\n\nExample: [deep-merge [a: [x: 1] b: 2] [a: [y: 3] c: 4]] => [a: [x: 1 y: 3] b: 2 c: 4]\n\nNote: Sub-dicts are merged depth-first; all other values from b override a (right-biased at each level). O(n²) due to repeated merge on accumulator at each level."] [a@Dict b@Dict]
     [builtin-reduce
         [fn [acc k]
             [deep-merge-step acc a b k]]
@@ -843,23 +779,16 @@ walk-dict@[doc: "Walk nested dict structure (internal helper)"]: [fn@Dict [f@Fn 
         []
         [keys xs]]]
 
-walk@[doc: "Apply function bottom-up to nested structure. O(n²) due to repeated merge in walk-dict."]: [fn@Any [f@Fn xs]
+walk: [fn@[return: Any  doc: "Apply a function bottom-up to every node in a nested dict structure.\n\nExample: [walk [fn [x] [if [dict? x] [length x] x]] [a: 1 b: [c: 2 d: 3]]] => [a: 1 b: 2]\n\nNote: For dicts: recursively transform all values first, then apply f to the resulting dict. For non-dicts: apply f directly to the value. O(n²) due to repeated merge in walk-dict."] [f@Fn xs]
     [builtin-if [dict? xs]
         [f [walk-dict f xs]]
         [f xs]]]
 
-# Unzip a list of pairs into a pair of lists.
-# Takes a list of 2-element dicts [0: a 1: b] and returns [a: [0: a0 1: a1 ...] b: [0: b0 1: b1 ...]].
-# Inherently materializing: must map over the entire collection.
-unzip@[doc: "Unzip list of pairs into pair of lists"]: [fn@Dict [pairs]
+unzip: [fn@[return: Dict  doc: "Unzip a list of pairs into a pair of lists.\n\nExample: [unzip [[\"a\" 1] [\"b\" 2] [\"c\" 3]]] => [a: [\"a\" \"b\" \"c\"]  b: [1 2 3]]\n\nNote: Takes a list of 2-element dicts [0: a 1: b] and returns [a: [0: a0 1: a1 ...] b: [0: b0 1: b1 ...]]. Inherently materializing: must map over the entire collection."] [pairs]
     [a: [builtin-map [fn [p] p.0] pairs]
      b: [builtin-map [fn [p] p.1] pairs]]]
 
-# Transpose a 2D dict structure (flip rows and columns).
-# Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]].
-# All inner dicts must have the same keys.
-# Inherently materializing: must iterate over all rows and columns.
-transpose@[doc: "Transpose 2D dict (flip rows and columns). O(n²) due to repeated merge in transpose-impl."]: [fn@Dict [rows@Dict]
+transpose: [fn@[return: Dict  doc: "Transpose a 2D dict structure (flip rows and columns).\n\nExample: [transpose [[0: [a: 1 b: 2]] [1: [a: 3 b: 4]]]] => [a: [0: 1  1: 3]  b: [0: 2  1: 4]]\n\nNote: Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]]. All inner dicts must have the same keys. O(n²) due to repeated merge in transpose-impl."] [rows@Dict]
     [builtin-if [empty? rows]
         []
         [transpose-impl rows [keys [builtin-first [values rows]]]]]]
