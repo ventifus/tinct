@@ -87,24 +87,153 @@ error: [partial log Error]
 [error "connection refused"  peer: addr   retries: 3]
 ```
 
-**`with-log-handler` — redirect and filter:**
+**Logger — a bound (formatter, policy) pair:**
+
+A logger is a value that combines a formatter (structures → string) with a policy (string → output sink). The `make-logger` constructor returns a function with the same signature as `log`, so any logger is directly callable or partially applicable:
 
 ```tinct
-# JSON Lines format, Info and above only
-[with-log-handler [fn [let level@Level message@Str kv@Dict]
-  [if [>= level Info]
-    [emit [to-json [merge [level: [level-name level]  message: message] kv]]]
-    null]]
-  [my-program]]
+# Formatter: Level Str Dict → Str
+text-formatter: [fn [let level@Level message@Str kv@Dict]
+  [str [level-name level] "  " message " " [format-kv kv]]]
+
+json-formatter: [fn [let level@Level message@Str kv@Dict]
+  [to-json [merge [level: [level-name level]  message: message] kv]]]
+
+# Policy: Level Str Dict Str → Null
+# Receives structured data AND pre-formatted string; routes to output sinks.
+# Errors → %stderr, everything else → %stdout (via emit).
+default-policy: [fn [let level@Level message@Str kv@Dict formatted@Str]
+  [if [>= level Error]
+    [write-handle %stderr formatted]
+    [emit formatted]]]
+
+# Logger constructor: (formatter, policy) → log fn
+make-logger: [fn [let formatter@[Fn@Str [Level Str Dict]]
+                      policy@[Fn@Null [Level Str Dict Str]]]
+  [fn [let level@Level message@Str ...kv]
+    [policy level message kv [formatter level message kv]]]]
+
+# Default logger: text format, errors → %stderr, rest → %stdout
+default-logger: [make-logger text-formatter default-policy]
+
+# Convenience partial applications on the default logger
+debug: [partial default-logger Debug]
+info:  [partial default-logger Info]
+warn:  [partial default-logger Warn]
+error: [partial default-logger Error]
 ```
 
-The handler receives the raw `Level`, `Str` message, and `Dict` of KV pairs. It can:
-- Filter by level (discard Debug in production)
-- Enrich with metadata (timestamp, request-id, caller) before formatting
-- Choose the output format (JSON Lines, logfmt, human-readable text)
-- Route to different sinks (stdout, file, network)
+Usage — the default `warn`, `error` etc. route appropriately:
 
-**Default handler** (no `with-log-handler`): formats as `LEVEL  key=value ...` text and calls `emit`. Goes to `=== out`.
+```tinct
+[warn  "disk almost full"    used: 0.95  path: "/var"]   # → stdout
+[error "connection refused"  peer: addr  retries: 3]      # → %stderr
+```
+
+**Custom loggers** are created with `make-logger` and used directly or via partial application:
+
+```tinct
+# JSON Lines, filtering out Debug, to a log file
+file-logger: [make-logger
+  json-formatter
+  [fn [let level message kv formatted]
+    [if [> level Debug]
+      [write-handle log-file formatted]
+      null]]]
+
+debug-file:  [partial file-logger Debug]
+info-file:   [partial file-logger Info]
+warn-file:   [partial file-logger Warn]
+error-file:  [partial file-logger Error]
+```
+
+**`with-log-handler` — scope-local logger rebinding (future):**
+
+A `with-log-handler` combinator that rebinds `debug`/`info`/`warn`/`error` for a scope requires a dynamic binding mechanism. This is deferred — for now, custom loggers are used explicitly. The design is compatible with a future `with-log-handler` that swaps the ambient logger.
+
+### Worked Example: Dual-sink logging (console + syslog)
+
+`stdlib/syslog.llt` provides pure building blocks — formatters and sink factories. It makes no configuration decisions. `myapp.llt` assembles the entire logging stack: syslog host, port, facility, appname, console routing, everything.
+
+```tinct
+# stdlib/syslog.llt — building blocks only, no configuration
+
+syslog-severity: [fn [let level@Level]
+  [match level
+    [case [let _: Debug] 7]
+    [case [let _: Info]  6]
+    [case [let _: Warn]  4]
+    [case [let _: Error] 3]]]
+
+# Formatter factory — caller chooses facility, appname, clock
+make-syslog-formatter: [fn [let facility@Int appname@Str clock@ClockCap]
+  [fn [let level@Level message@Str kv@Dict]
+    [str "<" [+ [* facility 8] [syslog-severity level]] ">"
+         [format-timestamp [now clock]] " "
+         appname ": " message
+         [if [empty? kv] "" [str " " [format-kv kv]]]]]]
+
+# Sink factory — caller provides the bound socket and destination
+make-syslog-sink: [fn [let sock host@Str port@Port]
+  [fn [let level@Level message@Str kv@Dict formatted-syslog@Str]
+    [udp-send sock host port formatted-syslog]]]
+```
+
+```tinct
+# myapp.llt — the app assembles the full logging stack
+
+[
+  net-cap:  %net-cap
+  syslog-sock: [udp-bind net-cap]
+
+  # Every configuration decision lives here
+  syslog-fmt:  [make-syslog-formatter facility: 1  appname: "myapp"  clock: %clock]
+  syslog-sink: [make-syslog-sink syslog-sock "syslog.internal" [@Port 514]]
+
+  # Fan-out policy: assemble it here, not in the library
+  log-policy: [fn [let level@Level message@Str kv@Dict formatted@Str]
+    [if [>= level Error]                  # console: text-formatted, split by level
+      [write-handle %stderr formatted]
+      [emit formatted]]
+    [syslog-sink level message kv         # syslog: separately formatted
+      [syslog-fmt level message kv]]]
+
+  logger: [make-logger text-formatter log-policy]
+
+  debug: [partial logger Debug]
+  info:  [partial logger Info]
+  warn:  [partial logger Warn]
+  error: [partial logger Error]
+]
+
+[info  "server starting"              port: 8080  workers: 4]
+[warn  "config missing, using default"  key: "timeout"  default: 30]
+[error "database connection failed"   host: "db.internal"  err: "timeout"]
+```
+
+Console stdout (`=== out`):
+```
+INFO  server starting port=8080 workers=4
+WARN  config missing, using default key=timeout default=30
+```
+
+Console stderr:
+```
+ERROR database connection failed host=db.internal err=timeout
+```
+
+Syslog UDP packets to `syslog.internal:514`:
+```
+<14>May 17 14:23:01 myapp: server starting port=8080 workers=4
+<12>May 17 14:23:01 myapp: config missing, using default key=timeout default=30
+<11>May 17 14:23:01 myapp: database connection failed host=db.internal err=timeout
+```
+
+Design points:
+- **Library provides building blocks, app assembles the stack.** `syslog.llt` never decides a host, port, facility, or appname.
+- **Capabilities are explicit and app-owned.** `syslog-sock`, `%net-cap`, `%stderr` are all in `myapp.llt`'s dict. The factories receive what they need as parameters.
+- **Policy is app logic.** The fan-out routing, the level split between stdout/stderr, whether syslog gets Debug entries — all app decisions, all in one place.
+- **`logger` is a value**: passable to library functions, storable in dicts, partially applicable, replaceable per-scope.
 
 In literate weave — log entries and the final result both in `=== out`, runtime info in `=== info`:
 

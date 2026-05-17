@@ -1,0 +1,11 @@
+# Test [class [let ClassName a b] ...] syntax works correctly
+
+[class [let Equatable a] eq: [fn [x@a y@a] Bool]]
+
+=== out
+
+[class [Equatable a] "eq": [fn [x@a y@a] Bool]]
+
+=== warn
+
+invalid type expression in annotation: [fn [x@a y@a] Bool] at 2:30-2:49

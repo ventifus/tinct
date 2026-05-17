@@ -798,6 +798,15 @@ fn parse_param_list(
     }
     *i += 1;
 
+    // Skip whitespace after OpenBracket
+    *i += skip_whitespace_tokens(tokens, *i, leading_comments, blank_before);
+
+    // Check if this is a [let ...] param list
+    if *i < tokens.len() && matches!(&tokens[*i].node, Token::Let) {
+        // Consume the 'let' keyword
+        *i += 1;
+    }
+
     let mut params = Vec::new();
     let mut saw_variadic = false;
 
@@ -4966,7 +4975,64 @@ fn push_expr_to_parent(
                 args.push(CallArg::Positional(Rc::new(expr)));
                 Ok(())
             }
-            Some(StackFrame::Fn { ref mut body, .. }) => {
+            Some(StackFrame::Fn {
+                ref mut params,
+                ref mut body,
+                ..
+            }) => {
+                // First expression: check if it's a LetDecl parameter list
+                if params.is_empty() && body.is_empty() {
+                    if let Expr::LetDecl { bindings } = &expr.node {
+                        // Validate all bindings are valid parameter patterns before extracting
+                        let all_valid_params = bindings.iter().all(|binding| {
+                            matches!(
+                                &binding.node,
+                                Expr::VarRef { .. }
+                                    | Expr::Placeholder { .. }
+                                    | Expr::Annotated { .. }
+                            )
+                        });
+
+                        if all_valid_params {
+                            // Extract parameters from LetDecl bindings
+                            for binding in bindings {
+                                match &binding.node {
+                                    Expr::VarRef { name, .. } => {
+                                        // Untyped parameter
+                                        params.push(Spanned::new(
+                                            Param {
+                                                name: name.clone(),
+                                                annotation: None,
+                                                variadic: false,
+                                            },
+                                            binding.span,
+                                        ));
+                                    }
+                                    Expr::Annotated { name, annotation } => {
+                                        // Typed parameter (x@Int)
+                                        params.push(Spanned::new(
+                                            Param {
+                                                name: name.clone(),
+                                                annotation: Some(annotation.clone()),
+                                                variadic: false,
+                                            },
+                                            binding.span,
+                                        ));
+                                    }
+                                    Expr::Placeholder { .. } => {
+                                        // Wildcard parameter — skip (valid but unusual)
+                                        // Don't add to params, as Param requires a name
+                                    }
+                                    _ => {
+                                        // Should not reach here due to all_valid_params check
+                                    }
+                                }
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+                // Not a parameter list (or already have params) — push to body
                 body.push(expr);
                 Ok(())
             }
@@ -5023,6 +5089,24 @@ fn push_expr_to_parent(
                                     return Ok(());
                                 }
                             }
+                        }
+                    }
+                    // Case 3: LetDecl with lowercase identifiers: [let a b c]
+                    if let Expr::LetDecl { bindings } = &expr.node {
+                        let all_lowercase_params =
+                            bindings.iter().all(|binding| match &binding.node {
+                                Expr::VarRef { name, .. } => {
+                                    name.chars().all(|c| c.is_lowercase() || c == '_')
+                                }
+                                _ => false,
+                            });
+                        if all_lowercase_params {
+                            for binding in bindings {
+                                if let Expr::VarRef { name, .. } = &binding.node {
+                                    params.push(name.clone());
+                                }
+                            }
+                            return Ok(());
                         }
                     }
                 }
@@ -5217,6 +5301,36 @@ fn push_expr_to_parent(
                                             message: "class parameters must be identifiers"
                                                 .to_string(),
                                             span: Some(arg.span),
+                                        });
+                                    }
+                                }
+                                Ok(())
+                            } else {
+                                Err(ParseError {
+                                    message: "class header must start with class name".to_string(),
+                                    span: Some(expr.span),
+                                })
+                            }
+                        }
+                        Expr::LetDecl { bindings } if !bindings.is_empty() => {
+                            // LetDecl form: [class [let ClassName a b] ...]
+                            // First binding is the class name, rest are type params
+                            if let Expr::VarRef {
+                                name: class_name, ..
+                            } = &bindings[0].node
+                            {
+                                *name = Some(class_name.clone());
+                                for binding in bindings.iter().skip(1) {
+                                    if let Expr::VarRef {
+                                        name: param_name, ..
+                                    } = &binding.node
+                                    {
+                                        params.push(param_name.clone());
+                                    } else {
+                                        return Err(ParseError {
+                                            message: "class parameters must be identifiers"
+                                                .to_string(),
+                                            span: Some(binding.span),
                                         });
                                     }
                                 }
@@ -7829,5 +7943,135 @@ mod tests {
         // Should fall back to simple formatting
         assert_eq!(formatted, "error: test error");
         assert!(!formatted.contains("-->"));
+    }
+
+    #[test]
+    fn test_fn_params_letdecl_simple() {
+        // Test [fn [let x y] body] — LetDecl as parameter list
+        let output = parse2("[fn [let x y] [+ $x $y]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn {
+                params,
+                body,
+                return_ann,
+                desugared,
+            } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_none());
+                assert!(!params[0].node.variadic);
+                assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.annotation.is_none());
+                assert!(!params[1].node.variadic);
+                assert!(matches!(&body.node, Expr::Call { .. })); // [+ $x $y]
+                assert!(return_ann.is_none());
+                assert!(!desugared);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_params_letdecl_annotated() {
+        // Test [fn [let x@Int y] body] — LetDecl with annotations
+        let output = parse2("[fn [let x@Int y] [+ $x $y]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_some());
+                match &params[0].node.annotation.as_ref().unwrap().node {
+                    Annotation::Simple(name) => assert_eq!(name, "Int"),
+                    other => panic!("expected Simple annotation, got {other:?}"),
+                }
+                assert!(!params[0].node.variadic);
+                assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.annotation.is_none());
+                assert!(!params[1].node.variadic);
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_params_letdecl_mixed() {
+        // Test [fn [let x@Int y@String z] body]
+        let output = parse2("[fn [let x@Int y@String z] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                assert_eq!(params.len(), 3);
+                assert_eq!(params[0].node.name, "x");
+                assert!(params[0].node.annotation.is_some());
+                assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.annotation.is_some());
+                assert_eq!(params[2].node.name, "z");
+                assert!(params[2].node.annotation.is_none());
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_params_letdecl_with_placeholder() {
+        // Test [fn [let x ... y] body] — placeholder in parameter list
+        let output = parse2("[fn [let x ... y] $x]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::Fn { params, .. } => {
+                // Placeholder should be skipped — only x and y are params
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].node.name, "x");
+                assert_eq!(params[1].node.name, "y");
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_class_params_letdecl() {
+        // Test [class [let Equatable a] ...] — LetDecl as class header
+        let output = parse2("[class [let Equatable a] eq: [fn [x y] Bool]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::ClassDecl { name, params, .. } => {
+                assert_eq!(name, "Equatable");
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0], "a");
+            }
+            other => panic!("expected ClassDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_class_params_letdecl_multiple() {
+        // Test [class [let Ord a b] ...] — LetDecl with multiple params
+        let output = parse2("[class [let Ord a b] compare: [fn [x y] Int]]").expect("parse failed");
+        let doc = &output.file.node.documents[0].node;
+        match &doc.expressions[0].node {
+            Expr::ClassDecl { name, params, .. } => {
+                assert_eq!(name, "Ord");
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0], "a");
+                assert_eq!(params[1], "b");
+            }
+            other => panic!("expected ClassDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fn_letdecl_params_eval_typed() {
+        // [fn [let x@Int y] body] — typed params via [let ...] form evaluate correctly.
+        // Verifies the full pipeline: parse_param_list recognises [let ...], extracts
+        // x (annotated @Int) and y (unannotated) as Param entries, Fn closes with those
+        // params, and the evaluator applies them to positional args 5 and 3.
+        let result = crate::eval_source("[f: [fn [let x@Int y] [+ x y]] result: [f 5 3]]")
+            .expect("eval failed");
+        assert!(
+            result.contains("Int(8)"),
+            "expected Int(8) in output, got: {result}"
+        );
     }
 }
