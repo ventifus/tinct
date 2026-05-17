@@ -1085,10 +1085,10 @@ explicitly). `stdlib/in/toml-lite.llt` is available as `-i toml-lite`.
 
   # FsCap protocol type (structural — any dict with these fields)
   FsCap: [type [
-    caps:       @Seq@Any      # declared capability flags (nominal variants)
+    caps:       @[Seq Any]    # declared capability flags (nominal variants)
     open:       [fn@Handle       [path@String]]
     write-file: [fn@Null         [path@String  content@[String Bytes]]]
-    list-dir:   [fn@Seq@DirEntry [path@String]]
+    list-dir:   [fn@[Seq DirEntry] [path@String]]
     stat:       [fn@StatResult   [path@String]]
     make-dir:   [fn@Null         [path@String]]
     remove:     [fn@Null         [path@String]]
@@ -1113,7 +1113,7 @@ starts-with? : [fn@Bool         [prefix@[String Bytes Seq]  haystack@[String Byt
 ends-with?   : [fn@Bool         [suffix@[String Bytes Seq]  haystack@[String Bytes Seq]]]
 
 # String-domain
-str-chars : [fn@Seq@String  [s@String]]          # internal; Seq of single-char String slices
+str-chars : [fn@[Seq String]  [s@String]]          # internal; Seq of single-char String slices
 str-slice : [fn@String      [from@Int  to@Int  s@String]]  # O(1) zero-copy substring
 
 # Math
@@ -1141,7 +1141,7 @@ bytes-str : [fn@String  [b@Bytes]]    # UTF-8 decode; errors on invalid UTF-8
 # Bytes
 bytes       : [fn@Bytes  [...@Bytes]]              # variadic concat; mirrors str
 bytes-find  : [fn@Int    [pattern@Bytes  b@Bytes]] # byte index, or -1
-bytes-of    : [fn@Bytes  [seq@Seq@Int]]            # collect byte Ints (0-255)
+bytes-of    : [fn@Bytes  [seq@[Seq Int]]]           # collect byte Ints (0-255)
 bytes-equal?: [fn@Bool  [b1@Bytes  b2@Bytes]]   # fast structural equality (short-circuits)
 ct-equal?:    [fn@Bool  [b1@Bytes  b2@Bytes]]   # constant-time (subtle::ConstantTimeEq); use for secrets
 
@@ -1161,7 +1161,7 @@ rename    : [fn@Null         [cap@DirCap  src@String  dst@String]]  # cap must d
 copy      : [fn@Null         [cap@DirCap  src@String  dst@String]]
 link      : [fn@Null         [cap@DirCap  src@String  dst@String]]  # cap must declare Linkable
 read-link : [fn@String       [cap@DirCap  path@String]]             # cap must declare Symlinkable
-list-dir  : [fn@Seq@DirEntry [cap@DirCap  path@String]]
+list-dir  : [fn@[Seq DirEntry] [cap@DirCap  path@String]]
 stat      : [fn@StatResult   [cap@DirCap  path@String]]
 ```
 

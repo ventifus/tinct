@@ -247,19 +247,19 @@ nfa-accepts: [fn [nfa s]
   NfaState: [type [
     # transitions: Dict keyed by char-code (Int); each value is Seq@Int of successor state ids.
     # tinct's Dict type is not yet parameterized by key/value types — @Dict is the best
-    # available annotation. The runtime invariant is: every key is @Int, every value is @Seq@Int.
+    # available annotation. The runtime invariant is: every key is @Int, every value is @[Seq Int].
     transitions: @Dict
-    epsilon:     @Seq@Int    # ε-transition targets (state ids; free moves)
+    epsilon:     @[Seq Int]  # ε-transition targets (state ids; free moves)
     accept:      @Bool
-    group-start: @Seq@Int    # group ids that open at this state
-    group-end:   @Seq@Int    # group ids that close at this state
+    group-start: @[Seq Int]  # group ids that open at this state
+    group-end:   @[Seq Int]  # group ids that close at this state
   ]]
 
   # Pattern — nominal variant; Value::Variant { tag: "Pattern", payload: NfaDict }
   # Only re-compile produces a Pattern. Inner NfaDict accessible via [payload p].
   # NfaDict shape (for reference; access via payload, not directly):
   NfaDict: [type [
-    states: @Seq@NfaState
+    states: @[Seq NfaState]
     start:  @Int
     # groups: Dict keyed by group-id (Int); each value is @String name ("" for unnamed).
     # Not parameterizable in current type system — @Dict with runtime invariant documented here.
@@ -409,13 +409,13 @@ re-match   : [fn@Bool                 [pattern@[String Pattern]  s@String]]
 re-find    : [fn@[MatchResult Dict]   # Dict = [] (empty dict) on no match
                [pattern@[String Pattern]  s@String]]
 
-re-findall : [fn@Seq@MatchResult      [pattern@[String Pattern]  s@String]]
+re-findall : [fn@[Seq MatchResult]    [pattern@[String Pattern]  s@String]]
 
 re-replace : [fn@String               [pattern@[String Pattern]
                                        replacement@String   # \1 \2 \k<name> \0
                                        s@String]]
 
-re-split   : [fn@Seq@String           [pattern@[String Pattern]  s@String]]
+re-split   : [fn@[Seq String]         [pattern@[String Pattern]  s@String]]
              # n matches → n+1 parts; empty string at boundaries
 ```
 
