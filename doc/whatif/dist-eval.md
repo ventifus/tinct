@@ -166,6 +166,44 @@ All state changes commit as tinct dicts in the replication log. Log entries are 
 
 ---
 
+### Pool Process Model
+
+A pool node is a persistent tinct runtime that hosts programs, not a transient compute substrate that a locally-running process borrows. Nodes are started with:
+
+```
+tinct pool --role coordinator --seeds "peer1:7777,peer2:7777"
+tinct pool --role worker      --seeds "peer1:7777,peer2:7777"
+```
+
+Both roles run the same binary and can coexist on the same node (see Coordinator Group). The `--seeds` list is the initial contact for joining the quorum; any reachable seed suffices to introduce the new node to the current leader. For LAN clusters, `--discover mdns` enables automatic peer discovery without hardcoded addresses.
+
+**Programs as pool objects.** Programs are submitted to the pool for evaluation. Any node or external client can submit a program; the coordinator parses, typechecks, and evaluates it, distributing thunks to workers as they become evaluable:
+
+```tinct
+# From within tinct: submit a program to a pool
+prog: [pool-submit pool program-source]
+
+# Inspect and manage running programs
+running: [pool-list pool]
+[pool-drain pool prog]   # wait for in-flight thunks to complete, then stop
+[pool-stop  pool prog]   # cancel in-flight work and stop immediately
+```
+
+From the command line: `tinct pool submit --pool coordinator:7777 program.llt` submits a file to an existing pool.
+
+**Namespaces.** Each submitted program runs in an isolated `EvalContext`. Its namespace is identified by the content hash of the program source — submitting the same program twice is idempotent; the second call returns the existing handle. Programs in different namespaces cannot directly access each other's bindings. Inter-program communication uses the pool's distributed channel registry.
+
+**Rolling updates.** Because namespaces are isolated and tinct programs are pure, two versions of a program can run simultaneously at zero coordination cost:
+
+1. Version 1 (`myapp@abc123`) is running and handling work.
+2. Submit version 2 (`myapp@def456`) — it begins evaluating in a new namespace immediately.
+3. Call `[pool-drain pool v1]` — no new work is routed to version 1; it completes its in-flight thunks.
+4. Once drained, the namespace is removed from the coordinator's membership log.
+
+This benefit applies to single-node pools too: a new version of a long-running evaluation can start alongside the old one, which completes rather than being killed.
+
+---
+
 ### Capability Delegation
 
 Three models, selected per call:
@@ -209,28 +247,269 @@ request → hash(thunk) → cache hit? → return cached
 The coordinator-worker protocol is a sequence of tinct dicts over the cluster's transport:
 
 ```tinct
-# TaskRequest
-[task-id: <uuid-str>  payload: <Thunk>  term: <Int>  caps: <List>]
+# Task dispatch
+[task-id: <uuid>  payload: <Thunk>  term: <Int>  caps: <List>  requires: <List@Str>]
+[task-id: <uuid>  result: <TinctWire-value>]
+[task-id: <uuid>  error: <Error>]
 
-# TaskResult — success
-[task-id: <uuid-str>  result: <TinctWire-value>]
+# Health
+[ping: <uuid>]
+[pong: <uuid>  load: <Int>  active: <Int>  queued: <Int>  uptime-ms: <Int>]
 
-# TaskResult — failure
-[task-id: <uuid-str>  error: <Error>]
-
-# Ping / Pong
-[ping:  <uuid-str>]
-[pong:  <uuid-str>  load: <Int>  uptime-ms: <Int>]
-
-# Membership
-[worker-hello:  node-id: <Str>  cores: <Int>  caps: <List>]
+# Membership — caps is list of capability name strings
+[worker-hello:  node-id: <Str>  addr: <Str>  cores: <Int>  caps: <List@Str>]
 [worker-join:   node-id: <Str>  addr: <Str>]
 [worker-leave:  node-id: <Str>]
+
+# Channels
+[chan-reg:   chan-id: <hash>  name: <Str>  capacity: <Int>  durable: <Bool>]
+[chan-send:  chan-id: <hash>  value: <TinctWire>  term: <Int>]
+[chan-recv:  chan-id: <hash>  consumer-id: <uuid>  term: <Int>]
+[chan-ack:   chan-id: <hash>  consumer-id: <uuid>  term: <Int>]
+[chan-drop:  chan-id: <hash>]
 ```
 
 All messages are encoded in the tinct-native wire format. The protocol has no external schema: it is tinct dicts, and cluster management code can be written in tinct itself.
 
 Workers are stateless between tasks. A worker that crashes mid-task causes the leader to re-dispatch after the deadline in the in-flight table expires. Workers register on startup with `worker-hello`; the coordinator adds the registration to the Raft log before acknowledging.
+
+---
+
+### Pool Channels
+
+The existing `channel` primitive is intra-process. Pool channels extend the model to the full node cluster: any node in the pool can send to or receive from a pool channel, and the coordinator manages the buffer.
+
+```tinct
+# Anonymous pool channel (coordinator-buffered, ephemeral)
+ch: [pool-channel pool]
+
+# Named pool channel — stable across namespaces and programs
+ch: [pool-channel pool "pipeline-queue"]
+
+# Bounded — senders block when full (backpressure)
+ch: [pool-channel pool "pipeline-queue"  capacity: 100]
+
+# Durable — messages persisted in Raft log, survive coordinator restart
+ch: [pool-channel-durable pool "pipeline-queue"]
+```
+
+All existing channel operations work unchanged on pool channels: `channel-send`, `channel-recv`, `channel-close`. Non-blocking variants for backpressure-aware code:
+
+```tinct
+ok:    [channel-try-send ch value]  # → Bool — false if full, never blocks
+item:  [channel-try-recv ch]        # → Null | value — Null if empty, never blocks
+```
+
+**Named vs. anonymous.** A named channel is registered in the coordinator's membership log. Any program in the pool that knows the name can reference the same channel — including programs in different namespaces. This is the mechanism for inter-program communication (e.g., an HTTP server namespace writing to a channel that a processor namespace reads from). An anonymous channel is referenced only by handle and is GC'd when all handles are dropped.
+
+**Ephemeral vs. durable.** Ephemeral channels (default) hold messages in the coordinator's in-memory buffer. If the coordinator restarts, in-flight messages are lost. Durable channels write each message to the Raft log before acknowledging the sender. Consumers explicitly acknowledge receipt (`channel-ack`); unacknowledged messages are redelivered on reconnect, providing at-least-once delivery.
+
+```tinct
+# Durable consumer: acknowledge after processing
+item: [channel-recv durable-ch]
+[process item]
+[channel-ack durable-ch]   # message removed from log
+```
+
+**Wire protocol additions:**
+```tinct
+[chan-reg:    chan-id: <hash>  name: <Str>  capacity: <Int>  durable: <Bool>]
+[chan-send:   chan-id: <hash>  value: <TinctWire>  term: <Int>]
+[chan-recv:   chan-id: <hash>  consumer-id: <uuid>  term: <Int>]
+[chan-ack:    chan-id: <hash>  consumer-id: <uuid>  term: <Int>]
+[chan-drop:   chan-id: <hash>]
+```
+
+A channel's ID is the SHA-256 of its registration parameters (name, capacity, durable flag); anonymous channels use a UUID. All messages use the tinct-native wire format.
+
+---
+
+### Node Topology and Placement
+
+A program running in the pool can inspect the pool's membership and explicitly control where computations run.
+
+```tinct
+# NodeRef fields: {id: Str  addr: Str  cores: Int  load: Int  caps: List@Str}
+# caps is the list of capability names the node declared at join time (not the cap values)
+
+nodes:  [pool-nodes pool]       # → List@NodeRef — all live nodes
+this:   [pool-this-node pool]   # → NodeRef — the node executing this thunk
+leader: [pool-leader pool]      # → NodeRef — the current Raft leader
+```
+
+`pool-this-node` inside a `remote-task` body returns the node where that body is running. This enables self-aware tasks: a task can learn its own location and make decisions accordingly (e.g., discovering which local capabilities are available).
+
+**Explicit placement with `on-node`.** `remote-task` is load-balanced; the coordinator picks the worker. `on-node` pins a task to a specific node:
+
+```tinct
+# Pin a task to a specific node — same return type as remote-task
+result: [on-node pool node-ref [fn [] [do-work data]]]   # → Task@T
+```
+
+The coordinator validates that the target node is live and routes the thunk directly. If the node is unreachable, `on-node` fails immediately rather than re-dispatching elsewhere — the caller chose this node for a reason (data locality, capability, etc.). Use `remote-task` when placement doesn't matter; use `on-node` when it does.
+
+**Common pattern: route to the node with a specific capability.**
+
+```tinct
+# Find nodes that have declared access to db.internal
+db-nodes: [filter [fn [n] [elem "NetCap:db.internal" n.caps]] [pool-nodes pool]]
+db-node:  [first db-nodes]
+
+# Pin the task there
+result: [on-node pool db-node [fn [] [query-database ...]]]
+```
+
+---
+
+### Capability Routing
+
+Nodes declare their local capability names at join time in `worker-hello`. A capability name is a string encoding the type and key: `"NetCap:db.internal"`, `"DirCap:/var/data"`. The actual capability object stays local to the node — the declaration is an administrative claim, not a cryptographic proof (appropriate for a trusted cluster under unified administrative control).
+
+```tinct
+# Updated worker-hello protocol message
+[worker-hello  node-id: "b"  cores: 8
+  caps: ["NetCap:db.internal" "DirCap:/var/data"]]
+```
+
+`remote-task` gains an optional `requires:` field for automatic routing to a capable node:
+
+```tinct
+# Coordinator routes only to nodes that declared "NetCap:db.internal"
+result: [remote-task pool [fn [] [query-db ...]]  requires: ["NetCap:db.internal"]]
+```
+
+If no live node has declared all required capabilities, `remote-task` fails immediately with `no-capable-node` rather than queuing indefinitely. This is distinct from capability *delegation* (the coordinator passing a cap value in the task message). Capability routing selects *which node* runs the task; capability delegation grants *authority* to a node that otherwise wouldn't have it. Both can be used together:
+
+```tinct
+# Route to a node that has db access AND delegate a specific dir cap
+result: [remote-task pool fn
+  requires: ["NetCap:db.internal"]
+  caps:     [DirCap "/shared/output" rw]]
+```
+
+---
+
+### Capability Lifecycle
+
+Capabilities are not static declarations. Nodes acquire and lose capabilities at runtime — database connection pools change, mounts come and go, external services fail over. The coordinator tracks three states per (node, capability) pair:
+
+```
+absent → active → draining → absent
+           ↑                     |
+           └─────────────────────┘  (re-acquired)
+```
+
+**Active**: coordinator routes matching tasks to this node.
+**Draining**: coordinator stops routing new tasks here; in-flight tasks complete; node confirms with `cap-lost` when done.
+**Absent**: not routed. Tasks queued with `cap-timeout` (see Backpressure) wait here until a node re-enters active.
+
+Nodes do not announce a "pending" state while warming up (establishing connections, running preflight checks). They simply call `pool-cap-add` once they are ready. The coordinator never sees the warmup period.
+
+**Node-driven capability management.** `pool-cap-add` and `pool-cap-drain` are builtins that a program calls on behalf of its own node. Capability management is itself a tinct program, reacting to whatever external signals the node cares about:
+
+```tinct
+# Running on each db-adjacent node — monitors health, updates pool membership
+[let [pool: [connect-cluster net-cap "tinct://pool:7777"]]
+  [task [loop
+    [let [status: [fetch net-cap db-health-url].body]
+      [match status.state
+        ["healthy"   [pool-cap-add   pool "NetCap:db.primary"]]
+        ["degraded"  [pool-cap-drain pool "NetCap:db.primary"]]
+        ["gone"      [pool-cap-drain pool "NetCap:db.primary"  deadline: 5000]]]
+      [sleep 1000]]]]]
+```
+
+`pool-cap-drain` without a `deadline` waits indefinitely for in-flight tasks to complete. With a `deadline` (milliseconds), tasks still running at the deadline are re-dispatched to other capable nodes or failed if none exist.
+
+**Coordinator-side administrative override.** An administrative program can force a node into draining regardless of the node's own state — useful for maintenance or security incidents:
+
+```tinct
+[pool-cap-revoke pool node-ref "NetCap:db.primary"  deadline: 30000]
+```
+
+**Subscribing to capability events.** Any program in the pool can subscribe to a stream of capability changes for a glob pattern:
+
+```tinct
+events: [pool-cap-events pool "NetCap:db.*"]
+# → Channel@{type: Str  node: NodeRef  cap: Str}
+# type: "gained" | "draining" | "lost"
+
+# Reactive connection pool — tracks which nodes can reach the database
+[task [loop
+  [let [ev: [channel-recv events]]
+    [match ev.type
+      ["gained"   [on-node pool ev.node [fn [] [warm-connection ev.cap]]]]
+      ["draining" [stop-routing-to ev.node ev.cap]]
+      ["lost"     [close-connection ev.node ev.cap]]]]]]
+```
+
+Events arrive in Raft log order — totally ordered, no duplicates. A program that subscribes mid-run receives a synthetic `"gained"` event for every currently active capability matching the pattern before receiving live updates, so it never misses the current topology.
+
+**`requires:` semantics.** The list is AND: every listed cap must be present on the same node. Within each string, glob patterns are matched against the coordinator's live capability index:
+
+```tinct
+# AND: node must have both
+requires: ["NetCap:db.primary"  "DirCap:/tmp/scratch"]
+
+# Glob: any db replica qualifies
+requires: ["NetCap:db.replica-*"]
+```
+
+Prioritised fallback (try primary, fall back to replica) is application logic built on `remote-task-try`, not a protocol feature:
+
+```tinct
+result: [or
+  [remote-task-try pool fn  requires: ["NetCap:db.primary"]]
+  [remote-task     pool fn  requires: ["NetCap:db.replica-*"]]]
+```
+
+The coordinator resolves glob patterns against a `Map<CapName, Set<NodeId>>` derived from the Raft log, updated atomically on each `cap-gained` / `cap-lost` entry.
+
+**Wire protocol additions:**
+
+```tinct
+[cap-gained:   node-id: <Str>  cap: <Str>  term: <Int>]
+[cap-draining: node-id: <Str>  cap: <Str>  deadline: <Int>  term: <Int>]
+[cap-lost:     node-id: <Str>  cap: <Str>  term: <Int>]
+[cap-revoke:   node-id: <Str>  cap: <Str>  deadline: <Int>  term: <Int>]  # coordinator → node
+```
+
+All four are Raft log entries — capability state is replicated and survives leader rotation.
+
+---
+
+### Backpressure
+
+`remote-task` blocks until a worker is available. For programs that need to stay responsive under load, non-blocking and timeout variants are available:
+
+```tinct
+# Default — blocks until a worker accepts the task
+task: [remote-task pool fn]
+
+# Non-blocking — returns Err immediately if the pool queue is full
+result: [remote-task-try pool fn]    # → Ok@Task@T | Err@String
+
+# Timeout — returns Err if no worker accepts within the deadline (milliseconds)
+task: [remote-task pool fn  timeout: 5000]
+
+# Cap-timeout — waits for a capable node to become available (see Capability Lifecycle)
+# Covers the window during failover when no node currently has the required cap
+task: [remote-task pool fn  requires: ["NetCap:db.primary"]  cap-timeout: 10000]
+```
+
+The coordinator's task queue has a configurable maximum depth set at pool startup (`--queue-depth N`). When the queue is full, `remote-task` (default) causes the submitting task to yield in Tokio until space opens. This is cooperative backpressure: the pool slows down submitters rather than silently dropping work.
+
+Programs that need to make their own load-shedding decisions can query the pool directly:
+
+```tinct
+load: [pool-load pool]
+# → {queued: Int  active: Int  workers: Int  utilization: Float}
+
+# Example: shed load by returning a cached result if pool is saturated
+result: [if [> load.utilization 0.9]
+  [cached-response]
+  [await [remote-task pool fn]]]
+```
 
 ---
 
@@ -248,6 +527,10 @@ dist-map: [fn [cluster f seq]
 ```
 
 `dist-filter` and `dist-reduce` follow the same pattern. `dist-reduce` with an associative combinator uses tree reduction: workers reduce local shards; the leader combines partial results. These live in `stdlib/dist.llt`.
+
+The current implementation uses static sharding (`partition` by `cluster.worker-count`). A phase-2 improvement replaces this with dynamic load balancing: the coordinator maintains a work queue; workers pull shards as capacity becomes available (pmap-style). Static equal-partition fails badly when shard costs are heterogeneous — one slow shard serializes the entire `dist-map`.
+
+**Phase-2: promise pipelining.** When the result of `remote-task A` is the sole input to `remote-task B`, the coordinator can schedule both on the same worker with direct value passing, eliminating one coordinator round-trip. This is E language's promise pipelining applied to tinct's task graph. Worthwhile for pipeline-shaped computations where intermediate results are large.
 
 ### Automatic Distribution
 
@@ -288,21 +571,42 @@ Semantics are identical at every level: a thunk evaluates exactly once; independ
 
 | Builtin | Signature | Description |
 |---------|-----------|-------------|
-| `connect-cluster` | `NetCap → Str → Cluster` | Connect to any node in an existing cluster. |
+| `connect-cluster` | `NetCap → Str → Cluster` | Connect to any node in an existing pool. |
 | `cluster-local` | `Dict → Cluster` | In-process worker pool (no network). |
-| `cluster-bootstrap` | `NetCap → Dict → Cluster` | Form a new single-node cluster; others join via `cluster-join`. |
-| `cluster-join` | `NetCap → Str → Null` | Join this node to an existing cluster quorum. |
-| `cluster-store` | `Cluster → any → Ref@T` | Store a value in the cluster; returns a content-addressed `Ref`. |
-| `remote-task` | `Cluster → Fn@[]@T → Task@T` | Submit a thunk to the cluster. Returns `Task@T`. |
+| `cluster-store` | `Cluster → any → Ref@T` | Store a value in the pool; returns a content-addressed `Ref`. |
+| `remote-task` | `Cluster → Fn@[]@T → Task@T` | Submit a thunk; coordinator routes to an available (and capable) worker. |
+| `remote-task-try` | `Cluster → Fn@[]@T → Ok@Task@T\|Err@Str` | Non-blocking submit; returns `Err` immediately if pool queue is full. |
+| `on-node` | `Cluster → NodeRef → Fn@[]@T → Task@T` | Pin a thunk to a specific node; fails if node is unreachable. |
+| `pool-nodes` | `Cluster → List@NodeRef` | All live nodes in the pool with their metadata. |
+| `pool-this-node` | `Cluster → NodeRef` | The node currently executing this thunk. |
+| `pool-leader` | `Cluster → NodeRef` | The current Raft leader. |
+| `pool-load` | `Cluster → Dict` | Pool load: `{queued, active, workers, utilization}`. |
+| `pool-channel` | `Cluster → Channel@T` | Anonymous ephemeral cross-node channel. |
+| `pool-channel` | `Cluster → Str → Channel@T` | Named ephemeral channel; stable across namespaces. |
+| `pool-channel` | `Cluster → Str → Dict → Channel@T` | Named channel with options (`capacity`, `durable`). |
+| `pool-channel-durable` | `Cluster → Str → Channel@T` | Named durable channel; messages persisted in Raft log. |
+| `channel-try-send` | `Channel@T → T → Bool` | Non-blocking send; returns false if channel is full. |
+| `channel-try-recv` | `Channel@T → Null\|T` | Non-blocking recv; returns Null if channel is empty. |
+| `channel-ack` | `Channel@T → Null` | Acknowledge receipt on a durable channel. |
+| `pool-cap-add` | `Cluster → Str → Null` | Announce that this node has gained a named capability. |
+| `pool-cap-drain` | `Cluster → Str → Null` | Begin graceful relinquishment; stops new routing, waits for in-flight tasks. |
+| `pool-cap-drain` | `Cluster → Str → Dict → Null` | Drain with options: `deadline: Int` (ms) for forced completion. |
+| `pool-cap-revoke` | `Cluster → NodeRef → Str → Dict → Null` | Admin override: force a node into draining for a given cap. |
+| `pool-cap-events` | `Cluster → Str → Channel@Dict` | Subscribe to capability lifecycle events matching a glob pattern. |
+| `pool-submit` | `Cluster → Str → ProgramHandle` | Submit a tinct program (source string) to the pool for evaluation. |
+| `pool-list` | `Cluster → List@ProgramHandle` | List all active program namespaces in the pool. |
+| `pool-drain` | `Cluster → ProgramHandle → Task@Null` | Signal no new work; wait for in-flight thunks to complete. |
+| `pool-stop` | `Cluster → ProgramHandle → Null` | Cancel in-flight work and remove the namespace immediately. |
 | `distributable?` | `any → Bool` | True if value contains no capabilities and no live thunks. |
-| `worker-serve` | `NetCap → Int → Null` | Run this process as a cluster worker on the given port. |
 
 `dist-map`, `dist-filter`, `dist-reduce`, `partition` live in `stdlib/dist.llt`.
 
 ### New Types
 
-- `Type::Cluster` — opaque cluster handle.
+- `Type::Cluster` — opaque pool handle.
 - `Type::Ref(Box<Type>)` — content-addressed reference; `Ref@T` in source syntax.
+- `Type::NodeRef` — opaque reference to a pool node; has known fields `id`, `addr`, `cores`, `load`, `caps` (row type, so the type checker allows dot access).
+- `Type::ProgramHandle` — opaque handle to a submitted program namespace.
 
 `remote-task cluster fn@Fn@[]@T` infers `Task@T` from the closure return type. `cluster-store cluster v@T` infers `Ref@T`. `distributable?` is `any → Bool` (runtime check; static purity analysis is future work).
 
@@ -332,9 +636,9 @@ Raft-based coordinator group: leader election, log replication for membership/ta
 
 ### CLI (`src/main.rs`)
 
-New flags: `--worker`, `--coordinator`, `--join`, `--bootstrap`, `--cluster-cache-dir`.
+New subcommand: `tinct pool`. Flags: `--role [coordinator|worker]`, `--seeds <addr,...>`, `--discover [mdns]`, `--bootstrap` (form a new single-node pool), `--cluster-cache-dir`. Additional subcommand: `tinct pool submit --pool <addr> <file.llt>` to submit a program from the command line.
 
-**Impact:** Minor.
+**Impact:** Moderate — new subcommand tree under `pool`.
 
 ### Dependencies (`Cargo.toml`)
 
@@ -364,4 +668,7 @@ New flags: `--worker`, `--coordinator`, `--join`, `--bootstrap`, `--cluster-cach
 - Isard, M., Budiu, M., Yu, Y., Birrell, A. & Fetterly, D. (2007). "Dryad: Distributed Data-Parallel Programs from Sequential Building Blocks." *EuroSys '07*. — DAG-based distributed execution from sequential code; tinct's thunk graph maps directly to Dryad's computation DAG.
 - Armstrong, J. (2003). "Making Reliable Distributed Systems in the Presence of Software Errors." PhD thesis, KTH. — Erlang's share-nothing process model; tinct's pure-only distributed tasks apply the same isolation.
 - Ongaro, D. & Ousterhout, J. (2014). "In Search of an Understandable Consensus Algorithm." *USENIX ATC '14*. — Raft; the implementation basis for the coordinator group's leader election and log replication.
-- Weil, S.A. et al. (2006). "Ceph: A Scalable, High-Performance Distributed File System." *OSDI '06*. — Homogeneous node model where every storage node participates in cluster decisions; tinct's coordinator group (every node runs both worker and coordinator) follows the same architecture.
+- Weil, S.A. et al. (2006). "Ceph: A Scalable, High-Performance Distributed File System." *OSDI '06*. — Homogeneous node model where every storage node participates in cluster decisions; tinct's pool (every node runs both worker and coordinator) follows the same architecture.
+- Miller, M.S., Tribble, E.D. & Shapiro, J. (2005). "Concurrency Among Strangers." *TGC '05*. — E language's promise pipelining and vat/event-loop model; basis for phase-2 pipelining optimization and tinct's capability delegation design.
+- Epstein, J., Black, A.P. & Peyton Jones, S. (2011). "Towards Haskell in the Cloud." *Haskell Symposium '11*. — Cloud Haskell's `Closure` type and `Static` pointer mechanism; confirms force-before-send requirement and the instability of arbitrary closure APIs in practice.
+- See `dist-eval-survey.md` in this directory. — Eight-language survey (Unison, Erlang/OTP, Cloud Haskell, Oz/Mozart, E, Chapel, Futhark, Julia) confirming: distributable-thunk condition, thunk-as-task-message, content-addressed caching as novel contribution, dynamic load balancing as phase-2, promise pipelining as phase-2.
