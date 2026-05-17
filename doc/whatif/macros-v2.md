@@ -8,7 +8,7 @@ What would it take to make tinct's macro system powerful enough that user-progra
 
 Tinct's macro system (`defmacro` + `quote`/`unquote`/`unquote-splice`) operates post-parse: macros receive fully-formed `Expr` AST dicts and return AST dicts. The expansion pass runs before type-checking. What is fully implemented:
 
-- `defmacro` — procedural AST macros via `ast_to_dict` / `dict_to_ast`
+- `defmacro` (to be renamed `macro`) — procedural AST macros via `ast_to_dict` / `dict_to_ast`
 - `quote` / `unquote` / `unquote-splice` — quasiquoting
 - `gensym` — manual hygiene for macro-introduced names
 - Provenance tracking — dual-span error reporting (macro call site + expansion site)
@@ -20,7 +20,7 @@ Two structural gaps remain.
 
 ```tinct
 # Today: manual indexing, no structural validation
-[defmacro my-if [args]
+[macro my-if [args]
   [cond: [nth args 0]
    then: [nth args 1]
    else: [nth args 2]]
@@ -57,7 +57,7 @@ source → [parse: syntactic only] → [transformation pass: user macros] → [t
 
 **The parser** handles syntax: bracket nesting, token classification, form recognition. It does not enforce semantic rules — that a `fn` parameter list must be `Expr::LetDecl`, that `[let ...]` must appear in binding positions. The parser accepts `[fn anything body]` and produces `FnExpr { params: <whatever>, body: ... }`. It never hard-errors on semantic mismatches.
 
-**The transformation pass** runs next. User macros see the parser's output and reshape it. A `defparse-macro fn` macro intercepts `FnExpr` nodes whose params are not `Expr::LetDecl` and wraps them. The type checker then sees conforming code.
+**The transformation pass** runs next. User macros see the parser's output and reshape it. A `macro fn [let params:flat-list body]` macro intercepts `FnExpr` nodes whose params are not `Expr::LetDecl` and wraps them. The type checker then sees conforming code.
 
 **The type checker** enforces semantic rules. `FnExpr` with non-`LetDecl` params → type error. `[let ...]` absent from a binding position → type error. Semantic enforcement belongs here, not in the parser.
 
@@ -67,41 +67,41 @@ This is correct layering independently of macros. Macros benefit because they oc
 
 ---
 
-### `defmacro` with `[let ...]` Argument Patterns
+### `macro` — The Unified Macro Form
 
-The existing `defmacro` form accepts `[let ...]` patterns in the argument position — the same syntax as function parameters. Pattern variables bind to the corresponding argument positions. No new syntax; `[let ...]` is already the universal binding form.
+`macro` is the single keyword for all AST macros. It accepts `[let ...]` patterns in the argument position — the same syntax as function parameters. Pattern variables bind to the corresponding argument positions.
 
 ```tinct
 # Before: manual indexing
-[defmacro my-if [args]
+[macro my-if [args]
   [cond: [nth args 0]
    then: [nth args 1]
    else: [nth args 2]]
   [quote [if [unquote cond] [unquote then] [unquote else]]]]
 
-# After: [let ...] pattern
-[defmacro my-if [let cond then else]
+# With [let ...] pattern
+[macro my-if [let cond then else]
   [quote [if [unquote cond] [unquote then] [unquote else]]]]
 ```
 
 Typed patterns constrain expected shapes:
 
 ```tinct
-[defmacro my-assert [let condition@Expr  message@Str]
+[macro my-assert [let condition@Expr  message@Str]
   [quote [if [unquote condition] true [error [unquote message]]]]]
 ```
 
 Variadic via `...rest` — already defined in `[let ...]` for function params:
 
 ```tinct
-[defmacro my-list [let ...items]
+[macro my-list [let ...items]
   [quote [list [unquote-splice items]]]]
 ```
 
 **Multi-arm dispatch.** When a macro needs to handle different argument shapes, `[case ...]` arms dispatch on argument count and structure — the same match syntax:
 
 ```tinct
-[defmacro my-and
+[macro my-and
   [[case [let a]]          a]
   [[case [let a b]]        [quote [if [unquote a] [unquote b] false]]]
   [[case [let a ...rest]]  [quote [if [unquote a] [my-and [unquote-splice rest]] false]]]]
@@ -112,7 +112,7 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 - Names introduced by `gensym` in the body are *macro-introduced* — they must not capture caller-scope variables.
 
 ```tinct
-[defmacro with-retry [let max-attempts body]
+[macro with-retry [let max-attempts body]
   [counter: [gensym "counter"]]
   # unquote-name splices a string as an identifier node in the output AST
   [quote [let [[[unquote-name counter]: 0]]
@@ -125,38 +125,40 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 
 ---
 
-### `defparse-macro` — Pre-Call-Semantics Argument Delivery
+### Receive Modes — `param:flat-list`
 
-For cases where the parser's call-semantics interpretation loses structure the macro needs, `defparse-macro` declares a receive mode per argument position:
+All macro arguments default to `expr` mode: the argument is delivered as the fully-parsed AST node. For cases where the parser's call-semantics interpretation loses structure the macro needs, a parameter can declare a receive mode using `:mode` after the binding name — the same `:` position used for receive mode in the `[let ...]` binding (not a structural test, which is only valid in case arms):
 
 ```tinct
-[defparse-macro name [arg: receive-mode  ...] body]
+[macro name [let arg:receive-mode  ...] body]
 ```
+
+Both `macro` and `macro` with receive modes are the **same form at the same pipeline stage** — both run in the transformation pass, post-parse and pre-typecheck. Receive modes only affect how specific arguments are re-processed before being handed to the macro body.
 
 **Receive modes:**
 
 | Mode | What the macro receives | When to use |
 |------|------------------------|-------------|
-| `expr` | Fully parsed expression (default) | Standard — same as `defmacro` |
+| `expr` | Fully parsed expression (default — omit the annotation) | All ordinary cases |
 | `flat-list` | Bracket elements as a sequence, before call-semantics | When element structure matters more than call interpretation |
 
-`flat-list` is the key mode. `[x@Int y@Float]` parses as `Call(Annotated("x", Int), [Annotated("y", Float)])` in `expr` mode — the flat sequence is gone. In `flat-list` mode, the transformation pass extracts the bracket's entries and delivers `[Annotated("x", Int), Annotated("y", Float)]` as a tinct `Seq`, regardless of how the parser interpreted the bracket form.
+`flat-list` is the key mode. `[x@Int y@Float]` parses as `Call(Annotated("x", Int), [Annotated("y", Float)])` in `expr` mode — the flat element sequence is gone. In `flat-list` mode, the transformation pass extracts the bracket's entries and delivers `[Annotated("x", Int), Annotated("y", Float)]` as a tinct `Seq`, regardless of how the parser interpreted the bracket form.
 
 **The fn let-softening macro:**
 
 ```tinct
 # stdlib/syntax.llt — available to any program that opts in
-[defparse-macro fn [params: flat-list  body: expr]
+[macro fn [let params:flat-list  body]
   [match [get-or [first-or params {}] "type" null]
     [[case "let-decl"]  [quote [fn [unquote params] [unquote body]]]]
     [[case [let _]]     [quote [fn [let [unquote-splice params]] [unquote body]]]]]]
 
-[defparse-macro class [tvars: flat-list  ...body: expr]
+[macro class [let tvars:flat-list  ...body]
   [match [get-or [first-or tvars {}] "type" null]
     [[case "let-decl"]  [quote [class [unquote tvars] [unquote-splice body]]]]
     [[case [let _]]     [quote [class [let [unquote-splice tvars]] [unquote-splice body]]]]]]
 
-[defparse-macro type [params: flat-list  body: expr]
+[macro type [let params:flat-list  body]
   [match [get-or [first-or params {}] "type" null]
     [[case "let-decl"]  [quote [type [unquote params] [unquote body]]]]
     [[case [let _]]     [quote [type [let [unquote-splice params]] [unquote body]]]]]]
@@ -173,7 +175,7 @@ A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A us
 
 The resulting `Seq` is delivered to the macro body. The macro inspects and reshapes it, returning a new AST dict. The pass substitutes the original form with the result and continues.
 
-**Pre-scan for registration.** `defparse-macro` and `declare-key-identity` declarations are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Stdlib declarations in `stdlib/syntax.llt` are always pre-loaded.
+**Pre-scan for registration.** `macro` declarations with `:flat-list` parameters and `declare-key-identity` declarations are scanned from the parsed AST before the transformation pass begins its first walk. This gives the pass a complete registry of registered form names before it processes any of them. Stdlib declarations in `stdlib/syntax.llt` are always pre-loaded.
 
 **Transformation to fixpoint.** The pass runs until no registered form names appear unvisited in the AST. A macro's output is re-visited. Depth limit 100 per site; total node-count cap 100k.
 
@@ -200,7 +202,7 @@ Two `n@Int` entries are still a duplicate. Two `_` entries are still a duplicate
 ```tinct
 [declare-key-identity dispatch  full-expression]
 
-[defmacro dispatch [let scrutinee  ...arms]
+[macro dispatch [let scrutinee  ...arms]
   [quote [match [unquote scrutinee]
     [unquote-splice [map [fn [let arm]
                            [quote [case [unquote [first arm]] [unquote [second arm]]]]]
@@ -221,7 +223,7 @@ Two `n@Int` entries are still a duplicate. Two `_` entries are still a duplicate
 A macro returns `[splice form1 form2 ...]` to inject multiple forms into the surrounding context:
 
 ```tinct
-[defmacro derive [targets: flat-list  ...body: expr]
+[macro derive [let targets:flat-list  ...body]
   [splice
     ...[map [fn [let target]
               [quote [instance [unquote target] [unquote-splice body]]]]
@@ -247,7 +249,7 @@ Macro bodies signal structured compile-time errors that point at source location
 ```
 
 ```tinct
-[defparse-macro pragma [name: flat-list  value: expr]
+[macro pragma [let name:flat-list  value]
   [if [not [= 1 [length name]]]
     [macro-error [span-of name] "pragma name must be a single bare identifier"]
     [if [not [literal? value]]
@@ -313,7 +315,7 @@ Macro bodies are ordinary tinct code. They use `[match ...]`/`[case ...]` for st
 ### Simple 1: `unless` — Single `[let ...]` Pattern
 
 ```tinct
-[defmacro unless [let cond body]
+[macro unless [let cond body]
   [quote [if [unquote cond] [] [unquote body]]]]
 ```
 
@@ -337,7 +339,7 @@ Macro bodies are ordinary tinct code. They use `[match ...]`/`[case ...]` for st
 ### Simple 2: `my-or` — Multi-Arm Dispatch
 
 ```tinct
-[defmacro my-or
+[macro my-or
   [[case [let]]            [quote false]]
   [[case [let a]]          a]
   [[case [let a b]]        [quote [if [unquote a] [unquote a] [unquote b]]]]
@@ -368,7 +370,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 ### Simple 3: `with-tmp` — Gensym Hygiene
 
 ```tinct
-[defmacro with-tmp [let expr body]
+[macro with-tmp [let expr body]
   [tmp: [gensym "tmp"]]
   # unquote-name splices the gensym'd string as an identifier in the output
   [quote [let [[[unquote-name tmp]: [unquote expr]]] [unquote body]]]]
@@ -400,7 +402,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 `stdlib/syntax.llt` (opt-in):
 
 ```tinct
-[defparse-macro fn [params: flat-list  body: expr]
+[macro fn [let params:flat-list  body]
   [match [get-or [first-or params {}] "type" null]
     [[case "let-decl"]  [list 'fn params body]]           # already [let ...] — pass through
     [[case [let _]]     [list 'fn [cons 'let params] body]]]]  # anything else — wrap
@@ -469,7 +471,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 ### Complex 2: `derive` — `splice` for Multi-Form Output
 
 ```tinct
-[defmacro derive [targets: flat-list  ...body: expr]
+[macro derive [let targets:flat-list  ...body]
   [splice
     ...[map [fn [let target]
               [quote [instance [unquote target] [unquote-splice body]]]]
@@ -507,7 +509,7 @@ Point: [type [x@Float  y@Float]]
 ```tinct
 [declare-key-identity dispatch  full-expression]
 
-[defmacro dispatch [let scrutinee  ...arms]
+[macro dispatch [let scrutinee  ...arms]
   [quote [match [unquote scrutinee]
     [unquote-splice [map [fn [let arm]
                            [quote [case [unquote [first arm]] [unquote [second arm]]]]]
@@ -555,7 +557,7 @@ Two `n@Int` entries are still a parse-time duplicate even under `full-expression
 ### Complex 4: `pragma` — `macro-error` for Structural Validation
 
 ```tinct
-[defparse-macro pragma [name: flat-list  value: expr]
+[macro pragma [let name:flat-list  value]
   [match [length name]
     [[case 0]
       [macro-error [span-of name] "pragma: name required"]]
@@ -596,21 +598,21 @@ Each error points at the exact source location of the violation: the macro uses 
 ### `src/parser.rs` — Pre-Scan and Key Identity
 
 **Current:** Duplicate detection uses bare-name identity unconditionally. `fn`/`class`/`type` StackFrames enforce `Expr::LetDecl`.
-**Proposed:** (1) A pre-scan pass over the token stream collects `declare-key-identity` and `defparse-macro` declarations before the main parse begins. `declare-key-identity` registrations switch the named form's body to full-expression duplicate detection. (2) `fn`/`class`/`type` StackFrames accept any first sub-expression without error.
+**Proposed:** (1) A pre-scan pass over the token stream collects `declare-key-identity` declarations and `macro` declarations with `:flat-list` parameters before the main parse begins. `declare-key-identity` registrations switch the named form's body to full-expression duplicate detection. (2) `fn`/`class`/`type` StackFrames accept any first sub-expression without error.
 **Impact:** Moderate — pre-scan and key-identity dispatch; StackFrame semantic checks removed.
 
 ### `src/expand.rs` — Parse-Stage Transformation Pass
 
 **Current:** Expansion pass handles `defmacro` post-parse.
-**Proposed:** Extend the pass with `defparse-macro` support: re-deliver arguments per declared receive modes, call macro body, substitute result. Add `flat-list` delivery: extract bracket entries from the parsed AST node (Call args, Dict entries, LetDecl bindings). Add `splice` handling: when a macro returns `Expr::Splice(forms)`, inject into parent context. Update `defmacro` argument binding to use `[let ...]` pattern matching.
+**Proposed:** Rename `defmacro` → `macro`. Extend the pass with receive mode support: when a `macro` declaration has parameters with `:flat-list` mode, re-deliver those arguments as flat element sequences before calling the macro body. Add `flat-list` delivery: extract bracket entries from the parsed AST node (Call args, Dict entries, LetDecl bindings). Add `splice` handling: when a macro returns `Expr::Splice(forms)`, inject into parent context. Update argument binding to use `[let ...]` pattern matching.
 **Impact:** Moderate — new delivery logic and splice handling; integrates with existing expansion infrastructure.
 
 ### `src/ast.rs` — New Variants
 
 ```rust
-Expr::ParseStageMacroDecl {
+Expr::MacroDecl {
     name: String,
-    params: Vec<(String, ReceiveMode)>,
+    params: Vec<(String, ReceiveMode)>,   // ReceiveMode::Expr (default) or Flat-list
     body: Box<Spanned<Expr>>,
 }
 
@@ -636,14 +638,14 @@ Add: `unquote-name` — a quasiquote special form (handled in `src/expand.rs`, n
 
 ### `stdlib/syntax.llt` (new file)
 
-`defparse-macro` declarations for fn/class/type let-softening, available to any program that opts in via `[include %libdir "syntax.llt"]`. Not loaded by default — the core language remains strict without it.
+`macro` declarations for fn/class/type let-softening (using `:flat-list` receive mode), available to any program that opts in via `[include %libdir "syntax.llt"]`. Not loaded by default — the core language remains strict without it.
 **Impact:** New file, ~50 lines.
 
 ---
 
 ## Prerequisites
 
-- **`defmacro`** — fully implemented; this proposal extends it
+- **`defmacro`** — fully implemented; this proposal renames it to `macro` and extends it
 - **`unified-bindings`** (`Expr::LetDecl`) — `let-decl?` requires it; the corrected parser enforcement requires the unified-bindings parser update to not hard-error on missing `[let ...]`
 - **`ast_to_dict` / `dict_to_ast`** — already implemented (`ast-dict-core`); macro bodies use them
 
@@ -651,7 +653,7 @@ Add: `unquote-name` — a quasiquote special form (handled in `src/expand.rs`, n
 
 - Tobin-Hochstadt, S. et al. (2011). "Languages as Libraries." *PLDI '11*, pp. 132–141. ACM. — [`#lang` as user-defined language extension via macros; the principle that language positions should be extensible from user code, not only from language designers]
 - Flatt, M. (2016). "Binding as sets of scopes." *POPL '16*, pp. 705–717. ACM. — [scope sets for hygienic macro expansion; the formal model for distinguishing macro-introduced bindings from user-code bindings]
-- Flatt, M. & PLT (2010). "Reference: Racket." §Syntax Classes (`syntax-parse`). — [declarative pattern declarations for macro arguments as the ergonomic foundation of the macro system; model for `[let ...]` patterns in `defmacro`]
+- Flatt, M. & PLT (2010). "Reference: Racket." §Syntax Classes (`syntax-parse`). — [declarative pattern declarations for macro arguments as the ergonomic foundation of the macro system; model for `[let ...]` patterns in `macro`]
 - Graham, P. (1993). *On Lisp.* Prentice Hall. — [macros as functions from code to code; macro body as ordinary program; the principle that all macro logic should live in the macro, not the infrastructure]
 - Kohlbecker, E., Friedman, D.P., Felleisen, M. & Duba, B. (1986). "Hygienic Macro Expansion." *LFP '86*, pp. 151–161. ACM. — [first formal definition of hygiene; gensym as minimal hygiene guarantee; structural impossibility of collision]
 - Dybvig, R.K., Hieb, R. & Bruggeman, C. (1993). "Syntactic Abstraction in Scheme." *Lisp and Symbolic Computation*, 5(4), 295–326. — [`syntax-case`: procedural macros with automatic hygiene via syntax objects; the model for scope-annotated binding]
