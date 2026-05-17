@@ -44,7 +44,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Macro-Rewrite](completed/macro-rewrite.md) | Superseded — let-binding done as `Expr::Sequential`, match as `Expr::Match`. `i"..."` migrated to `[defmacro tmpl]` (`tmpl-macro` sprint complete, see DONE.md) |
-| [Parse-Stage Macros](parse-stage-macros.md) | Syntax classes with context-sensitive key identity — user-defined macros can use full-annotated-expression equality for dict keys |
+| [Macro System v2](macros-v2.md) | `defparse-macro` + `flat-list` receive mode; `[let ...]` patterns for `defmacro` args; `declare-key-identity`; `splice`; `macro-error`/`span-of`; parser enforcement moved to type checker. Supersedes `parse-stage-macros.md`. |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 
 ## Concurrency and Distribution
@@ -182,7 +182,7 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
-| [Parse-Stage Macros](parse-stage-macros.md) | When a second macro needs context-sensitive key identity or argument-position parse modes |
+| [Macro System v2](macros-v2.md) | When `unified-bindings` lands and a macro is needed that requires `flat-list` receive mode or `declare-key-identity` (supersedes `parse-stage-macros.md`) |
 | [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 proptest suite implemented with zero failures (doc proof sketch done; proptest pending) |
 
 ### Additive Capability (No TODO Replacement)
