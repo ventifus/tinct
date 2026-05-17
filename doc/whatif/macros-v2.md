@@ -297,6 +297,276 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 ---
 
+## Worked Examples
+
+Each example shows the macro definition, representative inputs, their expansions, and the edge cases that exercise boundary conditions.
+
+---
+
+### Simple 1: `unless` — Single `[let ...]` Pattern
+
+```tinct
+[defmacro unless [let cond body]
+  [list 'if cond [list] body]]
+```
+
+```tinct
+[unless [> x 10] [emit "x is small"]]
+# → [if [> x 10] [] [emit "x is small"]]
+
+[unless false [do-work]]
+# → [if false [] [do-work]]
+```
+
+**Edge case — body is a sequence:** `[let ...]` patterns bind positionally; the macro sees `cond` and `body` as the first and second arguments. A caller passing three arguments gets an arity error from the pattern binding — the pattern `[let cond body]` requires exactly two arguments.
+
+```tinct
+[unless [= x 0] [emit "a"] [emit "b"]]
+# arity error: unless expects 2 arguments, got 3
+```
+
+---
+
+### Simple 2: `my-or` — Multi-Arm Dispatch
+
+```tinct
+[defmacro my-or
+  [[case [let]]            false]
+  [[case [let a]]          a]
+  [[case [let a b]]        [list 'if a a b]]
+  [[case [let a ...rest]]  [list 'if a a [cons 'my-or rest]]]]
+```
+
+```tinct
+[my-or]              # → false
+[my-or x]            # → x
+[my-or x y]          # → [if x x y]
+[my-or x y z]        # → [if x x [my-or y z]]
+```
+
+**Edge case — fixpoint:** `[my-or x y z]` expands to `[if x x [my-or y z]]`, which contains another `my-or` call. The transformation pass re-visits and expands again:
+
+```
+Pass 1: [my-or x y z]  →  [if x x [my-or y z]]
+Pass 2: [my-or y z]    →  [if y y z]
+Result: [if x x [if y y z]]
+```
+
+The pass runs to fixpoint. The depth limit (100) guards against infinite recursion.
+
+---
+
+### Simple 3: `with-tmp` — Gensym Hygiene
+
+```tinct
+[defmacro with-tmp [let expr body]
+  [tmp: [gensym "tmp"]]
+  [list 'let [list [list tmp expr]] body]]
+```
+
+```tinct
+[with-tmp [expensive-computation] [+ tmp 1]]
+# → [let [[tmp__42: [expensive-computation]]] [+ tmp__42 1]]
+```
+
+**Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces `tmp__42` (a name containing `:` or `__` that cannot appear in user-written tinct), so the user's `tmp` is unaffected.
+
+```tinct
+[let [tmp: 99]
+  [with-tmp [compute] [+ tmp result]]]
+# → [let [tmp: 99]
+#     [let [[tmp__42: [compute]]]
+#       [+ tmp result]]]   # tmp refers to 99; tmp__42 is the computed value
+```
+
+`tmp` in `[+ tmp result]` resolves to the user's `99`, not the macro's internal binding. Hygiene preserved.
+
+---
+
+### Complex 1: `fn` Let-Softening — Full Edge Case Coverage
+
+`stdlib/syntax.llt` (opt-in):
+
+```tinct
+[defparse-macro fn [params: flat-list  body: expr]
+  [if [or [empty? params] [let-decl? [first params]]]
+    [list 'fn params body]
+    [list 'fn [cons 'let params] body]]]
+```
+
+**Case 1 — already has `[let ...]`:** Idempotent; pass through unchanged.
+
+```tinct
+[fn [let x@Int y@Float] [+ x y]]
+# params flat-list: [LetDecl([x@Int y@Float])]
+# [let-decl? [first params]] → true
+# → [fn [let x@Int y@Float] [+ x y]]  (unchanged)
+```
+
+**Case 2 — bare params, no annotations:**
+
+```tinct
+[fn [x y] [+ x y]]
+# params flat-list: [VarRef("x") VarRef("y")]
+# [let-decl? [first params]] → false
+# → [fn [let x y] [+ x y]]
+```
+
+**Case 3 — annotated params:**
+
+```tinct
+[fn [x@Int y@Float] [+ x y]]
+# params flat-list: [Annotated("x", Int) Annotated("y", Float)]
+# first is Annotated, not LetDecl → wrap
+# → [fn [let x@Int y@Float] [+ x y]]
+```
+
+**Case 4 — empty params (`[fn [] body]`):**
+
+```tinct
+[fn [] body]
+# params flat-list: [] (empty)
+# [empty? params] → true → pass through
+# → [fn [] body]   (or [fn [let] body] — either is valid for zero-param fn)
+```
+
+**Case 5 — variadic params:**
+
+```tinct
+[fn [f ...args] [map f args]]
+# params flat-list: [VarRef("f") Spread(VarRef("args"))]
+# first is VarRef, not LetDecl → wrap
+# → [fn [let f ...args] [map f args]]
+```
+
+**Case 6 — nested fn (inner should not be affected by outer macro):** The transformation pass applies the macro to each `fn` form independently. The inner `fn` is also intercepted.
+
+```tinct
+[fn [f xs] [map [fn [x] [f x]] xs]]
+# Outer fn: [fn [let f xs] [map [fn [x] [f x]] xs]]
+# Inner fn: [fn [let x] [f x]]
+# Both expanded independently; no interaction.
+```
+
+**Without `stdlib/syntax.llt`:** The type checker receives `FnExpr { params: Call(x, [y]) }` and emits: "fn parameter list must be a `[let ...]` binding declaration." The user sees a type error. Loading `stdlib/syntax.llt` makes the form valid.
+
+---
+
+### Complex 2: `derive` — `splice` for Multi-Form Output
+
+```tinct
+[defmacro derive [targets: flat-list  ...body: expr]
+  [splice
+    ...[map [fn [let target]
+              [list 'instance target ...body]]
+           targets]]]
+```
+
+```tinct
+@[derive Equal Comparable]
+Point: [type [x@Float  y@Float]]
+```
+
+Expands to three separate dict entries:
+
+```tinct
+[instance Equal    [Point]: [=: [fn [let a b] [and [= a.x b.x] [= a.y b.y]]]]]
+[instance Comparable [Point]: [<: [fn [let a b] [< a.x b.x]]]]
+Point: [type [x@Float  y@Float]]
+```
+
+**Edge case — single target:** `@[derive Equal]` produces one `instance` form plus the annotated definition. The `map` produces a one-element splice; the pass injects it correctly.
+
+**Edge case — splice in expression position:**
+
+```tinct
+[str [derive Equal Comparable] "suffix"]
+# type error: splice not valid in expression position
+```
+
+`splice` is only valid at dict top level. The type checker rejects it in any value position.
+
+---
+
+### Complex 3: `dispatch` — Annotated Keys
+
+```tinct
+[declare-key-identity dispatch  full-expression]
+
+[defmacro dispatch [let scrutinee  ...arms]
+  [list 'match scrutinee
+    ...[map [fn [let arm]
+              [list 'case [first arm] [second arm]]]
+           arms]]]
+```
+
+```tinct
+[dispatch result
+  [Ok v]:    [process v]
+  [Err msg]: [log-error msg]
+  n@Int:     [str "int: " n]
+  n@String:  [str "str: " n]]
+```
+
+Under `full-expression` identity, `n@Int` and `n@String` are structurally distinct keys — no duplicate error. Expands to:
+
+```tinct
+[match result
+  [case [Ok v]    [process v]]
+  [case [Err msg] [log-error msg]]
+  [case n@Int     [str "int: " n]]
+  [case n@String  [str "str: " n]]]
+```
+
+**Edge case — two identical annotated keys:**
+
+```tinct
+[dispatch result
+  n@Int: "first"
+  n@Int: "second"]   # parse error: duplicate key n@Int
+```
+
+Two `n@Int` entries are still a parse-time duplicate even under `full-expression` identity. Only the annotation distinguishes them; identical annotations still collide.
+
+**Edge case — bare name alongside annotated name:**
+
+```tinct
+[dispatch result
+  n@Int: [str "int: " n]
+  n:     "fallback"]   # valid — n@Int ≠ n under full-expression identity
+```
+
+---
+
+### Complex 4: `pragma` — `macro-error` for Structural Validation
+
+```tinct
+[defparse-macro pragma [name: flat-list  value: expr]
+  [match [length name]
+    [[case 0]
+      [macro-error [span-of name]  "pragma: name required"]]
+    [[case 1]
+      [if [not [var-ref? [first name]]]
+        [macro-error [span-of [first name]] "pragma name must be a bare identifier"]
+        [if [not [literal? value]]
+          [macro-error [span-of value]       "pragma value must be a literal"]
+          [list 'pragma [first name] value]]]]
+    [[case [let _]]
+      [macro-error [span-of name]  "pragma: exactly one name allowed"]]]]
+```
+
+```tinct
+[pragma optimize true]       # → [pragma optimize true]  ✓
+[pragma]                     # compile error at pragma span: "pragma: name required"
+[pragma "opt" true]          # compile error at "opt": "pragma name must be a bare identifier"
+[pragma optimize x]          # compile error at x: "pragma value must be a literal"
+[pragma optimize debug true] # compile error at span: "pragma: exactly one name allowed"
+```
+
+Each error points at the exact source location of the violation: the macro uses `span-of` to attach the error to the specific offending token, not the entire `[pragma ...]` call. A caller sees a precise message, not a generic macro failure.
+
+---
+
 ## What Would Change
 
 ### Unified-Bindings (`doc/whatif/unified-bindings.md`)
