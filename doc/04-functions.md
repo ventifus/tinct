@@ -64,7 +64,7 @@ Examples:
     
     # Full metadata dict form with constraint and doc
     min: [fn@[return: a  constraint: [a: Comparable]  doc: "Return smallest element"]
-          [let xs@Seq@a] ...]
+          [let xs@[Seq a]] ...]
 ]
 ```
 
