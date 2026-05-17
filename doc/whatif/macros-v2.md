@@ -55,15 +55,62 @@ The key invariant is the three-layer pipeline:
 source → [parse: syntactic only] → [transformation pass: user macros] → [type-check: semantic enforcement] → eval
 ```
 
-**The parser** handles syntax: bracket nesting, token classification, form recognition. It does not enforce semantic rules — that a `fn` parameter list must be `Expr::LetDecl`, that `[let ...]` must appear in binding positions. The parser accepts `[fn anything body]` and produces `FnExpr { params: <whatever>, body: ... }`. It never hard-errors on semantic mismatches.
+**The parser** handles syntax: bracket nesting, token classification, form recognition. It does not enforce semantic rules — that a `fn` parameter list must be `Expr::Let`, that `[let ...]` must appear in binding positions. The parser accepts `[fn anything body]` and produces `FnExpr { params: <whatever>, body: ... }`. It never hard-errors on semantic mismatches.
 
-**The transformation pass** runs next. User macros see the parser's output and reshape it. A `macro fn [let params:flat-list body]` macro intercepts `FnExpr` nodes whose params are not `Expr::LetDecl` and wraps them. The type checker then sees conforming code.
+**The transformation pass** runs next. User macros see the parser's output and reshape it. A `macro fn [let params:flat-list body]` macro intercepts `FnExpr` nodes whose params are not `Expr::Let` and wraps them. The type checker then sees conforming code.
 
-**The type checker** enforces semantic rules. `FnExpr` with non-`LetDecl` params → type error. `[let ...]` absent from a binding position → type error. Semantic enforcement belongs here, not in the parser.
+**The type checker** enforces semantic rules. `FnExpr` with non-`Let` params → type error. `[let ...]` absent from a binding position → type error. Semantic enforcement belongs here, not in the parser.
 
 This is correct layering independently of macros. Macros benefit because they occupy the right slot in an already-correct pipeline: the transformation pass runs before semantic enforcement fires.
 
-**Consequence for unified-bindings:** anywhere `doc/whatif/unified-bindings.md` currently states "parse error" for a missing `[let ...]`, this is a type error. The parser StackFrames for `fn`, `class`, `type` accept any first sub-expression; the type checker rejects non-`LetDecl` params. Nothing about the parser architecture changes for macros specifically — it was always wrong to put semantic enforcement in the parser.
+**Consequence for unified-bindings:** anywhere `doc/whatif/unified-bindings.md` currently states "parse error" for a missing `[let ...]`, this is a type error. The parser StackFrames for `fn`, `class`, `type` accept any first sub-expression; the type checker rejects non-`Let` params. Nothing about the parser architecture changes for macros specifically — it was always wrong to put semantic enforcement in the parser.
+
+---
+
+### AST Types
+
+Macros receive and return values of type `Expr` — a nominal variant type defined in `stdlib/ast.llt` and produced by `ast_to_dict`. This is the same `Expr` tinct's own evaluator works with, exposed as a first-class tinct type. Dispatch on AST node kind is structural pattern matching on the `Expr` variant — the same `[match ...]`/`[case ...]` syntax used everywhere else in tinct.
+
+```tinct
+# stdlib/ast.llt
+
+[type Annotation
+  [Simple   name: Str]           # @Int, @Bool
+  [PropDict entries: Seq@Entry]  # @[return: T  constraint: ...]
+  Null]                          # no annotation
+
+[type ReceiveMode  Expr  FlatList]
+
+[type Expr
+  [Let        bindings: Seq@Expr]
+  [Case       pattern: Expr  body: Expr]
+  [VarRef     name: Str]
+  [Call       func: Expr  args: Seq@Expr]
+  [Annotated  expr: Expr  ann: Annotation]
+  [Literal    value: Any]                     # Int, Float, Str, Bool, Null scalars
+  [Dict       entries: Seq@Entry]             # keyed dict
+  [Seq        elements: Seq@Expr]             # positional sequence
+  [Fn         ann: Annotation  params: Expr  body: Expr]
+  [Quote      expr: Expr]
+  [Unquote    expr: Expr]
+  [UnquoteSplice expr: Seq@Expr]
+  [Splice     forms: Seq@Expr]
+  [Macro      name: Str  params: Seq@MacroParam  body: Expr]
+  [Placeholder]]
+```
+
+Variant names match their keywords: `Fn` for `fn`, `Let` for `let`, `Case` for `case`, `Macro` for `macro`. No `Decl` suffix needed — there is only one `Let` and one `Macro` in the type.
+
+`gensym` returns `VarRef(name: "prefix__N")` — a genuine `Expr` variant, not a string. `[unquote (gensym "x")]` in a quasiquote splices a `VarRef` node directly, in both binding and reference positions.
+
+Macro bodies that annotate their parameters benefit from full type checking:
+
+```tinct
+[macro my-if [let cond@Expr  then@Expr  else@Expr]
+  [quote [if [unquote cond] [unquote then] [unquote else]]]]
+```
+
+Unannotated macro parameters are `Unknown` — gradual typing means they still compile; you just opt out of structural checking.
 
 ---
 
@@ -148,20 +195,20 @@ Both `macro` and `macro` with receive modes are the **same form at the same pipe
 
 ```tinct
 # stdlib/syntax.llt — available to any program that opts in
-[macro fn [let params:flat-list  body]
-  [match [get-or [first-or params {}] "type" null]
-    [[case "let-decl"]  [quote [fn [unquote params] [unquote body]]]]
-    [[case [let _]]     [quote [fn [let [unquote-splice params]] [unquote body]]]]]]
+[macro fn [let params:flat-list@Seq@Expr  body@Expr]
+  [match [first-or params Null]
+    [[case [let _ : Let]]  [quote [fn [unquote params] [unquote body]]]]
+    [[case [let _]]            [quote [fn [let [unquote-splice params]] [unquote body]]]]]]
 
-[macro class [let tvars:flat-list  ...body]
-  [match [get-or [first-or tvars {}] "type" null]
-    [[case "let-decl"]  [quote [class [unquote tvars] [unquote-splice body]]]]
-    [[case [let _]]     [quote [class [let [unquote-splice tvars]] [unquote-splice body]]]]]]
+[macro class [let tvars:flat-list@Seq@Expr  ...body@Expr]
+  [match [first-or tvars Null]
+    [[case [let _ : Let]]  [quote [class [unquote tvars] [unquote-splice body]]]]
+    [[case [let _]]            [quote [class [let [unquote-splice tvars]] [unquote-splice body]]]]]]
 
-[macro type [let params:flat-list  body]
-  [match [get-or [first-or params {}] "type" null]
-    [[case "let-decl"]  [quote [type [unquote params] [unquote body]]]]
-    [[case [let _]]     [quote [type [let [unquote-splice params]] [unquote body]]]]]]
+[macro type [let params:flat-list@Seq@Expr  body@Expr]
+  [match [first-or params Null]
+    [[case [let _ : Let]]  [quote [type [unquote params] [unquote body]]]]
+    [[case [let _]]            [quote [type [let [unquote-splice params]] [unquote body]]]]]]
 ```
 
 Each macro body is pure tinct. No Rust flags. No hardcoded transformation logic. The infrastructure provides delivery; all logic lives in the macro.
@@ -171,7 +218,7 @@ A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A us
 **How the pass delivers `flat-list`.** For a registered form name, the transformation pass extracts the bracket's entries from whatever AST node the parser produced:
 - From a `Call` node: `[func, arg0, arg1, ...]` (func + all args as elements)
 - From a `Dict` node: the dict entries
-- From an `Expr::LetDecl` node: the bindings (already flat — pass through unchanged)
+- From an `Expr::Let` node: the bindings (already flat — pass through unchanged)
 
 The resulting `Seq` is delivered to the macro body. The macro inspects and reshapes it, returning a new AST dict. The pass substitutes the original form with the result and continues.
 
@@ -231,28 +278,28 @@ Macro bodies signal structured compile-time errors that point at source location
 Macro bodies inspect AST nodes using tinct predicates — the equivalent of Racket's syntax classes, expressed as ordinary tinct functions:
 
 ```tinct
-# Inspection — match on node.type for structural dispatch
-[span-of expr]      # extract source span from an AST node
-[literal? expr]     # is this a literal scalar value? (for macro-error guards)
+# Inspection — use tinct's own [match ...]/[case ...] to dispatch on Expr variants:
+#   [match node [[case [let _ : VarRef]] ...] [[case [let _ : Let]] ...]]
+#   [match node [[case [let [name: n] : VarRef]] ...]]   # extract VarRef's name field
+# No predicate functions needed — variant matching IS the predicate.
+[span-of expr]           # extract source span from an Expr node (spans are metadata)
 
-# Quasiquote — the primary construction mechanism
-[quote expr]             # produce the AST dict for expr
-[unquote val]            # splice val as an AST node (val is already an AST dict)
-[unquote-splice seq]     # splice a sequence of AST nodes into the enclosing form
+# Quasiquote — primary construction mechanism
+[quote expr]             # produce the Expr AST node for expr
+[unquote val]            # splice val (an Expr) into the enclosing quote
+[unquote-splice seq]     # splice a Seq@Expr into the enclosing quote
 
-# Sequence operations on flat-list deliveries
-[first xs] [rest xs]     # element access on Seq
+# Sequence operations on flat-list deliveries (Seq@Expr)
+[first xs] [rest xs]     # element access
 [first-or xs default]    # first element, or default if empty
-[get-or dict key default] # field access with fallback — used for node.type
 
 # Gensym and error
-[gensym prefix]          # fresh unique identifier — returns {type: "var-ref" name: "prefix__N"}
-                         # [unquote (gensym "x")] splices an identifier node directly
+[gensym prefix]          # returns VarRef(name: "prefix__N") — a fresh Expr identifier
 [macro-error span msg]   # terminate transformation with compile error at span
 
 # Stdlib helpers
-[wrap-in-let elems]      # produce [let ...elems] AST node
-[let-decl-elems decl]    # extract bindings Seq from Expr::LetDecl node
+[wrap-in-let elems]      # produce Let(bindings: elems) AST node
+[let-decl-elems decl]    # extract bindings Seq@Expr from a Let node
 ```
 
 ---
@@ -273,7 +320,7 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 Each example shows the macro definition, representative inputs, their expansions, and the edge cases that exercise boundary conditions.
 
-Macro bodies are ordinary tinct code. They use `[match ...]`/`[case ...]` for structural dispatch — the same construct as any other tinct expression. AST nodes delivered to macros are tinct dicts with a `type:` field (`"let-decl"`, `"var-ref"`, `"annotated"`, `"call"`, etc.), so dispatch on node kind is `[match node.type ...]`. `[if ...]` is reserved for simple boolean predicates with no else-if chain; everything with two or more distinct outcomes uses `[match ...]`.
+Macro bodies are ordinary tinct code. AST nodes are `Expr` variants — dispatch on node kind is structural pattern matching with `[case [let _ : VarRef]]`, `[case [let _ : Let]]`, etc. — the same `[match ...]`/`[case ...]` syntax used everywhere in tinct, applied to tinct's own AST type. `[if ...]` is reserved for simple boolean conditions with no else-if chain; everything with two or more structural outcomes uses `[match ...]`.
 
 ---
 
@@ -346,7 +393,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 # → [let [[tmp__42: [expensive-computation]]] [+ tmp__42 1]]
 ```
 
-`gensym` returns `{type: "var-ref" name: "tmp__42"}` — a `var-ref` AST node, not a string. `[unquote tmp]` splices it directly as an identifier wherever it appears: in binding position (`[let [[...`: ...]]]`), in reference position (`[+ tmp ...]`), anywhere. No special splicing primitive needed.
+`gensym` returns `VarRef(name: "tmp__42")` — a genuine `Expr` variant. `[unquote tmp]` splices it directly as an identifier wherever it appears: in binding position, in reference position, anywhere. No special splicing primitive needed.
 
 **Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces a node whose name contains `__N` (a suffix that cannot appear in user-written tinct identifiers), so the user's `tmp` is unaffected.
 
@@ -367,20 +414,20 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 `stdlib/syntax.llt` (opt-in):
 
 ```tinct
-[macro fn [let params:flat-list  body]
-  [match [get-or [first-or params {}] "type" null]
-    [[case "let-decl"]  [list 'fn params body]]           # already [let ...] — pass through
-    [[case [let _]]     [list 'fn [cons 'let params] body]]]]  # anything else — wrap
+[macro fn [let params:flat-list@Seq@Expr  body@Expr]
+  [match [first-or params Null]
+    [[case [let _ : Let]]  [quote [fn [unquote params] [unquote body]]]]
+    [[case [let _]]        [quote [fn [let [unquote-splice params]] [unquote body]]]]]]
 ```
 
-`first-or` returns the first element of `params`, or `{}` (empty dict) if `params` is empty. `get-or node "type" null` extracts the AST node's type tag; an empty dict produces `null`. Matching on `"let-decl"` is the only positive case; the wildcard arm handles `null` (empty), `"var-ref"`, `"annotated"`, `"call"`, and any other node type.
+`first-or params Null` returns the first element, or `Null` if empty. The `[case [let _ : Let]]` arm matches if the first element is a `Let` variant (already has `[let ...]`). The wildcard catches `VarRef`, `Annotated`, `Null` (empty params), and anything else — all get wrapped.
 
 **Case 1 — already has `[let ...]`:** Idempotent; pass through unchanged.
 
 ```tinct
 [fn [let x@Int y@Float] [+ x y]]
-# params flat-list: [{type: "let-decl" ...}]
-# [get-or [first params] "type" null] → "let-decl"  → pass through
+# params flat-list: [Let(bindings: [Annotated(x, Int) Annotated(y, Float)])]
+# first → Let(...) → [case [let _ : Let]] matches → pass through
 # → [fn [let x@Int y@Float] [+ x y]]  (unchanged)
 ```
 
@@ -388,8 +435,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [x y] [+ x y]]
-# params flat-list: [{type: "var-ref" name: "x"} {type: "var-ref" name: "y"}]
-# first.type → "var-ref" → wildcard arm → wrap
+# params flat-list: [VarRef("x")  VarRef("y")]
+# first → VarRef("x") → wildcard arm → wrap
 # → [fn [let x y] [+ x y]]
 ```
 
@@ -397,8 +444,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [x@Int y@Float] [+ x y]]
-# params flat-list: [{type: "annotated" ...} {type: "annotated" ...}]
-# first.type → "annotated" → wildcard arm → wrap
+# params flat-list: [Annotated(VarRef("x"), Int)  Annotated(VarRef("y"), Float)]
+# first → Annotated(...) → wildcard arm → wrap
 # → [fn [let x@Int y@Float] [+ x y]]
 ```
 
@@ -406,9 +453,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [fn [] body]
-# params flat-list: []
-# first-or [] {} → {}  →  get-or {} "type" null → null → wildcard arm
-# → [fn [let] body]   (zero-param fn with explicit [let])
+# params flat-list: []  →  first-or [] Null  →  Null → wildcard arm
+# → [fn [let] body]
 ```
 
 **Case 5 — variadic params:**
@@ -416,7 +462,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 ```tinct
 [fn [f ...args] [map f args]]
 # params flat-list: [VarRef("f") Spread(VarRef("args"))]
-# first is VarRef, not LetDecl → wrap
+# first is VarRef, not Let → wrap
 # → [fn [let f ...args] [map f args]]
 ```
 
@@ -480,8 +526,8 @@ Point: [type [x@Float  y@Float]]
   [[case [let clause]]
     # single clause — must be [else body] or [test body]
     [match [get-or [first-or clause {}] "type" null]
-      [[case "var-ref"]  [quote [unquote [second clause]]]]   # [else body]
-      [[case [let _]]    [quote [if [unquote [first clause]]  # [test body]
+      [[case [let _ : VarRef]]  [quote [unquote [second clause]]]]   # [else body] — VarRef("else")
+      [[case [let _]]           [quote [if [unquote [first clause]]  # [test body]
                            [unquote [second clause]]
                            [error "cond: no matching clause"]]]]]]
   [[case [let clause ...rest]]
@@ -523,10 +569,10 @@ Expansion trace:
       [macro-error [span-of name] "pragma: name required"]]
     [[case 1]
       [match [get-or [first name] "type" null]
-        [[case "var-ref"]
-          [match [literal? value]
-            [[case true]      [quote [pragma [unquote [first name]] [unquote value]]]]
-            [[case [let _]]   [macro-error [span-of value] "pragma value must be a literal"]]]]
+        [[case [let _ : VarRef]]
+          [match value
+            [[case [let _ : Literal]]  [quote [pragma [unquote [first name]] [unquote value]]]]
+            [[case [let _]]            [macro-error [span-of value] "pragma value must be a literal"]]]]
         [[case [let _]]
           [macro-error [span-of [first name]] "pragma name must be a bare identifier"]]]]
     [[case [let _]]
@@ -552,19 +598,19 @@ Each error points at the exact source location of the violation: the macro uses 
 ### Unified-Bindings (`doc/whatif/unified-bindings.md`)
 
 **Current:** The proposal states "parse error" for `[fn [x y] body]` (missing `[let ...]`).
-**Proposed:** Corrected to "type error." The parser accepts `[fn any-expr body]`; the type checker enforces `Expr::LetDecl` in param position. This removes hard enforcement from StackFrames for `fn`, `class`, `type` and places it in `check_fn_expr` in `src/typecheck.rs`.
+**Proposed:** Corrected to "type error." The parser accepts `[fn any-expr body]`; the type checker enforces `Expr::Let` in param position. This removes hard enforcement from StackFrames for `fn`, `class`, `type` and places it in `check_fn_expr` in `src/typecheck.rs`.
 **Impact:** Minor in scope; architectural correctness improvement independent of macros.
 
 ### `src/parser.rs` — Pre-Scan and Neutral Key Handling
 
-**Current:** Duplicate detection uses bare-name identity unconditionally. `fn`/`class`/`type` StackFrames enforce `Expr::LetDecl`.
+**Current:** Duplicate detection uses bare-name identity unconditionally. `fn`/`class`/`type` StackFrames enforce `Expr::Let`.
 **Proposed:** (1) A pre-scan pass collects `macro` declarations with `:flat-list` parameters before the main parse begins. (2) Any form with a `macro` declaration in scope gets neutral key handling — the parser does not apply bare-name duplicate detection for that form's argument positions. (3) `fn`/`class`/`type` StackFrames accept any first sub-expression without error (semantic enforcement moved to type checker).
 **Impact:** Moderate — pre-scan; neutral-key flag per form; StackFrame semantic checks removed.
 
 ### `src/expand.rs` — Parse-Stage Transformation Pass
 
 **Current:** Expansion pass handles `defmacro` post-parse.
-**Proposed:** Rename `defmacro` → `macro`. Extend the pass with receive mode support: when a `macro` declaration has parameters with `:flat-list` mode, re-deliver those arguments as flat element sequences before calling the macro body. Add `flat-list` delivery: extract bracket entries from the parsed AST node (Call args, Dict entries, LetDecl bindings). Add `splice` handling: when a macro returns `Expr::Splice(forms)`, inject into parent context. Update argument binding to use `[let ...]` pattern matching.
+**Proposed:** Rename `defmacro` → `macro`. Extend the pass with receive mode support: when a `macro` declaration has parameters with `:flat-list` mode, re-deliver those arguments as flat element sequences before calling the macro body. Add `flat-list` delivery: extract bracket entries from the parsed AST node (Call args, Dict entries, Let bindings). Add `splice` handling: when a macro returns `Expr::Splice(forms)`, inject into parent context. Update argument binding to use `[let ...]` pattern matching.
 **Impact:** Moderate — new delivery logic and splice handling; integrates with existing expansion infrastructure.
 
 ### `src/ast.rs` — New Variants
@@ -584,14 +630,16 @@ Expr::Splice(Vec<Spanned<Expr>>)
 ### `src/typecheck.rs` — Semantic Enforcement for Binding Positions
 
 **Current:** `fn`/`class`/`type` param checking happens in the parser.
-**Proposed:** Move to `check_fn_expr`, `check_class_decl`, `check_type_alias`: if the first sub-expression is not `Expr::LetDecl`, emit type error "parameter list must be a `[let ...]` binding declaration."
+**Proposed:** Move to `check_fn_expr`, `check_class_decl`, `check_type_alias`: if the first sub-expression is not `Expr::Let`, emit type error "parameter list must be a `[let ...]` binding declaration."
 **Impact:** Minor — enforcement moved, semantics unchanged.
 
 ### `stdlib/prelude.llt` — New AST Primitives
 
-Add: `let-decl?`, `var-ref?`, `annotated?`, `literal?`, `call?`, `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or`.
+Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or` (sequence helpers).
 Add: `macro-error` as a Rust builtin (`ErrorKind::MacroError` with span).
-Update: `gensym` returns `{type: "var-ref" name: "prefix__N"}` — a `var-ref` AST node, not a string. `[unquote (gensym "x")]` splices a fresh identifier directly; no special splicing primitive needed.
+Add: `stdlib/ast.llt` — defines `Expr`, `Annotation`, `ReceiveMode`, `MacroParam`, `Entry` nominal types. Imported automatically in macro-writing contexts. No predicate functions (`literal?`, `var-ref?`, etc.) — variant pattern matching replaces them all.
+Update: `gensym` returns `VarRef(name: "prefix__N")` — a genuine `Expr` variant. `[unquote (gensym "x")]` splices a fresh identifier node directly; no special splicing primitive needed.
+Update: `ast_to_dict` produces typed `Expr` variant values rather than plain dicts with string `type:` fields. All existing code consuming AST dicts (`formatter/compact.llt`, `formatter/pretty.llt`, `ast-of`, macro bodies) migrates to variant pattern matching.
 **Impact:** Minor — additive.
 
 ### `stdlib/syntax.llt` (new file)
@@ -604,7 +652,7 @@ Update: `gensym` returns `{type: "var-ref" name: "prefix__N"}` — a `var-ref` A
 ## Prerequisites
 
 - **`defmacro`** — fully implemented; this proposal renames it to `macro` and extends it
-- **`unified-bindings`** (`Expr::LetDecl`) — `let-decl?` requires it; the corrected parser enforcement requires the unified-bindings parser update to not hard-error on missing `[let ...]`
+- **`unified-bindings`** — `Expr::Let` (the `[let ...]` binding form) must exist; the corrected parser enforcement requires the unified-bindings parser update to not hard-error on missing `[let ...]`
 - **`ast_to_dict` / `dict_to_ast`** — already implemented (`ast-dict-core`); macro bodies use them
 
 ## References
