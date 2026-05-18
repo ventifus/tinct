@@ -2019,8 +2019,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (None, Type::Top), // NetCap or DirCap (UnixStream/UnixDatagram)
-                    // Genuinely unknown: Transport variant constant (Tcp, Udp, UnixStream, etc.)
-                    // — no Type::Variant yet.
+                    // Transport variant: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp
+                    // Constructors are typed via prelude [type [Tcp] [Udp] ...] declaration.
+                    // Still Unknown here because Type::Variant union not yet implemented.
                     (None, Type::Unknown), // Transport variant
                     (None, Type::Str),     // host
                     (None, Type::Int),     // port
@@ -3096,37 +3097,10 @@ impl TypeEnv {
             },
         );
 
-        // Transport: type alias for network transport variants (Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp).
-        // Represented as a union of string literals until Type::Variant exists.
-        env.insert_type_alias(
-            "Transport".to_string(),
-            TypeAlias {
-                params: vec![],
-                body: Type::normalize_union(vec![
-                    Type::StringLiteral("Tcp".to_string()),
-                    Type::StringLiteral("Udp".to_string()),
-                    Type::StringLiteral("UnixStream".to_string()),
-                    Type::StringLiteral("UnixDatagram".to_string()),
-                    Type::StringLiteral("NamedPipe".to_string()),
-                    Type::StringLiteral("Icmp".to_string()),
-                ]),
-            },
-        );
-
-        // Transport variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
-        // Runtime builtins.rs inserts these as Value::Variant { tag, payload: None }.
-        // The type system has no Type::Variant yet, so we use Unknown to allow passing
-        // these values to tls-connect / connect without a type error in --strict mode.
-        for tag in [
-            "Tcp",
-            "Udp",
-            "UnixStream",
-            "UnixDatagram",
-            "NamedPipe",
-            "Icmp",
-        ] {
-            env.insert(tag.to_string(), Type::Unknown);
-        }
+        // Transport type and variant constants (Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp)
+        // are now registered by the prelude's [type [Tcp] [Udp] ...] declaration.
+        // No manual type alias needed — the [type ...] declaration creates the Transport
+        // type and registers each constructor as a Value::Variant during prelude evaluation.
 
         // Url: type alias for the record type returned by the `url` builtin.
         // Allows @Url annotations in user code without "undefined type" errors.

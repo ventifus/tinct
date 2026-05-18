@@ -1918,24 +1918,7 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
     }
 
     // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
-    // These are unit variants (no payload) used as flags for `connect` and `tls-connect`.
-    for tag in [
-        "Tcp",
-        "Udp",
-        "UnixStream",
-        "UnixDatagram",
-        "NamedPipe",
-        "Icmp",
-    ] {
-        let thunk = Rc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: tag.to_string(),
-                payload: None,
-            },
-            Span::origin(),
-        ));
-        env.borrow_mut().insert(tag.to_string(), thunk);
-    }
+    // Now registered automatically by the prelude's [type [Tcp] [Udp] ...] declaration.
 
     env
 }
@@ -2207,25 +2190,8 @@ fn create_stdlib_env_inner() -> Result<
             }
         }
         // Transport nominal variant constants (Tcp, Udp, etc.)
-        for tag in [
-            "Tcp",
-            "Udp",
-            "UnixStream",
-            "UnixDatagram",
-            "NamedPipe",
-            "Icmp",
-        ] {
-            if env_borrow.get(tag).is_none() {
-                let thunk = Rc::new(Thunk::new_materialized(
-                    Value::Variant {
-                        tag: tag.to_string(),
-                        payload: None,
-                    },
-                    Span::origin(),
-                ));
-                env_borrow.insert(tag.to_string(), thunk);
-            }
-        }
+        // Now registered automatically by the prelude's [type [Tcp] [Udp] ...] declaration.
+
         // builtin-* aliases (inject after standard builtins)
         inject_prelude_aliases(&mut env_borrow);
     }

@@ -448,9 +448,9 @@ markdown file being processed from accidentally reading or writing local files.
 
 `tinct literate weave --strict -i` currently spews output to stdout instead of writing back to the source file. The `-i`/`--in-place` flag was wired in the `literate-flags` sprint but the actual in-place write logic has a bug. Additionally, errors and warnings should be embedded in the source doc (written into `=== error`/`=== warn` sections in the code blocks) rather than only appearing on stderr.
 
-- [ ] Fix `-i`/`--in-place` mode in `run_literate_weave` to actually write back to the source file — currently writes to stdout; check `write_file_atomic` call path and ensure the weaved output replaces the source file (`src/main.rs`)
-- [ ] Ensure type warnings (`=== warn`) and eval errors (`=== error`) are embedded in the source doc code blocks when weaving with `-i` — not just the `=== out` section; the weaver should update all `===` sections with actual results (`src/main.rs`)
-- [ ] Verify `just doc` produces clean in-place updates with no stdout output; run `just doc` and confirm `git diff` shows the updated doc files, not that output was printed to terminal (`justfile`, `doc/*.md`)
+- [x] Fix `-i`/`--in-place` mode in `run_literate_weave` to actually write back to the source file — currently writes to stdout; check `write_file_atomic` call path and ensure the weaved output replaces the source file (`src/main.rs`)
+- [x] Ensure type warnings (`=== warn`) and eval errors (`=== error`) are embedded in the source doc code blocks when weaving with `-i` — not just the `=== out` section; the weaver should update all `===` sections with actual results (`src/main.rs`)
+- [x] Verify `just doc` produces clean in-place updates with no stdout output; run `just doc` and confirm `git diff` shows the updated doc files, not that output was printed to terminal (`justfile`, `doc/*.md`)
 
 ### docgen-update: Update docgen.llt, generate docs, review and iterate for accuracy
 

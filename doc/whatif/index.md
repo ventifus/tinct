@@ -12,7 +12,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Type::Variant for Transport Constants](type-variant.md) | **Superseded.** Use nominal variants: `[union Transport [Tcp] [Udp] [Quic] [Unix]]`. See `transport-typing` sprint in TODO.md. |
-| [Precise HKT Types for map/filter/reduce/each](hkt-map-filter-types.md) | Replace `Unknown` signatures on `map`/`filter`/`reduce`/`each`/`each-key`/`each-kv` with precise polymorphic types using accepted HKT machinery; `map: ∀f a b. Mappable f ⇒ (a→b) → f a → f b` |
+| [Precise HKT Types for map/filter/reduce/each](hkt-map-filter-types.md) | **Superseded.** Implementation detail only; see `hkt-map-filter-types` sprint in TODO.md. |
 | [Schema-Directed from-json](schema-directed-from-json.md) | `[from-json @[host: Str port: Int] input]` — typed JSON parse returning specific Record type; boundary guard at parse site; schema doubles as documentation |
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
 | [Constraint Annotations and fn@[...] Metadata](completed/constraint-annotations.md) | **Accepted 2026-05-11.** Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
