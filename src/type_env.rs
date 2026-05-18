@@ -2028,9 +2028,8 @@ impl TypeEnv {
                     (None, Type::Str), // host
                     (None, Type::Int), // port
                 ],
-                // Genuinely unknown: return is Handle or DatagramHandle depending on transport.
-                // TODO(unknown-elimination): union Handle|DatagramHandle once variant type exists.
-                ret: Box::new(Type::Unknown),
+                // Returns Handle (stream) or DatagramHandle (datagram) depending on transport.
+                ret: Box::new(Type::normalize_union(vec![Type::Handle, Type::DatagramHandle])),
                 variadic: false,
             },
         );
