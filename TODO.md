@@ -299,8 +299,8 @@ block extraction and position mapping live in `src/literate.rs` — the shared k
 
 `"""..."""` is fully implemented (lexer `Token::TripleQuotedString`, parser desugars to `[unindent "..."]`). The `doc:` strings in `stdlib/prelude.llt` currently use `\n` escape sequences in regular double-quoted strings. Replace with `"""` for readability.
 
-- [ ] Replace all `doc: "...\n\n..."` multi-line strings in `stdlib/prelude.llt` with `doc: """..."""` triple-quoted form; use natural indentation for Example: and Note: sections (`stdlib/prelude.llt`)
-- [ ] Verify `just test-lib` passes; doc string content unchanged (`stdlib/prelude.llt`)
+- [x] Replace all `doc: "...\n\n..."` multi-line strings in `stdlib/prelude.llt` with `doc: """..."""` triple-quoted form; use natural indentation for Example: and Note: sections (`stdlib/prelude.llt`)
+- [x] Verify `just test-lib` passes; doc string content unchanged (`stdlib/prelude.llt`)
 
 ---
 
