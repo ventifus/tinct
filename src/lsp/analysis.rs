@@ -435,6 +435,69 @@ fn hover_at_expr(
             .or_else(|| Some(format!("Macro definition: {}", name)))
         }
 
+        Expr::MacroDecl { name, params, body } => {
+            // Check params first, then body
+            hover_at_expr(
+                &params.node,
+                params.span,
+                offset,
+                type_map,
+                scheme_map,
+                doc_map,
+                source,
+                include_graph,
+                doc_url,
+            )
+            .or(hover_at_expr(
+                &body.node,
+                body.span,
+                offset,
+                type_map,
+                scheme_map,
+                doc_map,
+                source,
+                include_graph,
+                doc_url,
+            ))
+            .or_else(|| Some(format!("Macro declaration (v2): {}", name)))
+        }
+
+        Expr::Splice(forms) => {
+            // Check each form
+            for form in forms {
+                if let Some(result) = hover_at_expr(
+                    &form.node,
+                    form.span,
+                    offset,
+                    type_map,
+                    scheme_map,
+                    doc_map,
+                    source,
+                    include_graph,
+                    doc_url,
+                ) {
+                    return Some(result);
+                }
+            }
+            None
+        }
+
+        Expr::SyntaxClass { name, pattern, .. } => {
+            // Check pattern expression
+            hover_at_expr(
+                &pattern.node,
+                pattern.span,
+                offset,
+                type_map,
+                scheme_map,
+                doc_map,
+                source,
+                include_graph,
+                doc_url,
+            )
+            .or_else(|| Some(format!("Syntax class: {}", name)))
+        }
+
         Expr::TypeAssert {
             expr: inner,
             annotation,
@@ -1207,6 +1270,21 @@ fn collect_var_refs_spanned(
 
         Expr::DefMacro { body, .. } => {
             collect_var_refs_spanned(&body.node, body.span, name, source, uri, out);
+        }
+
+        Expr::MacroDecl { params, body, .. } => {
+            collect_var_refs_spanned(&params.node, params.span, name, source, uri, out);
+            collect_var_refs_spanned(&body.node, body.span, name, source, uri, out);
+        }
+
+        Expr::Splice(forms) => {
+            for form in forms {
+                collect_var_refs_spanned(&form.node, form.span, name, source, uri, out);
+            }
+        }
+
+        Expr::SyntaxClass { pattern, .. } => {
+            collect_var_refs_spanned(&pattern.node, pattern.span, name, source, uri, out);
         }
 
         // Literals, TypeApp, Error, Rest, Annotated, Placeholder: no VarRef children.
@@ -2905,6 +2983,21 @@ fn collect_rename_edits_spanned(
             collect_rename_edits_spanned(&body.node, body.span, name, source, out);
         }
 
+        Expr::MacroDecl { params, body, .. } => {
+            collect_rename_edits_spanned(&params.node, params.span, name, source, out);
+            collect_rename_edits_spanned(&body.node, body.span, name, source, out);
+        }
+
+        Expr::Splice(forms) => {
+            for form in forms {
+                collect_rename_edits_spanned(&form.node, form.span, name, source, out);
+            }
+        }
+
+        Expr::SyntaxClass { pattern, .. } => {
+            collect_rename_edits_spanned(&pattern.node, pattern.span, name, source, out);
+        }
+
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
@@ -3058,6 +3151,21 @@ fn collect_definition_key_edits(expr: &Expr, name: &str, source: &str, out: &mut
 
         Expr::DefMacro { body, .. } => {
             collect_definition_key_edits(&body.node, name, source, out);
+        }
+
+        Expr::MacroDecl { params, body, .. } => {
+            collect_definition_key_edits(&params.node, name, source, out);
+            collect_definition_key_edits(&body.node, name, source, out);
+        }
+
+        Expr::Splice(forms) => {
+            for form in forms {
+                collect_definition_key_edits(&form.node, name, source, out);
+            }
+        }
+
+        Expr::SyntaxClass { pattern, .. } => {
+            collect_definition_key_edits(&pattern.node, name, source, out);
         }
 
         _ => {}
@@ -3358,6 +3466,18 @@ fn collect_dict_keys_in_scope(
         Expr::DefMacro { body, .. } => {
             collect_dict_keys_in_scope(&body.node, body.span, offset, items, seen);
         }
+        Expr::MacroDecl { params, body, .. } => {
+            collect_dict_keys_in_scope(&params.node, params.span, offset, items, seen);
+            collect_dict_keys_in_scope(&body.node, body.span, offset, items, seen);
+        }
+        Expr::Splice(forms) => {
+            for form in forms {
+                collect_dict_keys_in_scope(&form.node, form.span, offset, items, seen);
+            }
+        }
+        Expr::SyntaxClass { pattern, .. } => {
+            collect_dict_keys_in_scope(&pattern.node, pattern.span, offset, items, seen);
+        }
         _ => {}
     }
 }
@@ -3581,6 +3701,19 @@ fn find_enclosing_call(expr: &Expr, span: Span, offset: usize) -> Option<((usize
             .or_else(|| find_enclosing_call(&body.node, body.span, offset)),
 
         Expr::DefMacro { body, .. } => find_enclosing_call(&body.node, body.span, offset),
+
+        Expr::MacroDecl { params, body, .. } => {
+            find_enclosing_call(&params.node, params.span, offset)
+                .or_else(|| find_enclosing_call(&body.node, body.span, offset))
+        }
+
+        Expr::Splice(forms) => forms
+            .iter()
+            .find_map(|form| find_enclosing_call(&form.node, form.span, offset)),
+
+        Expr::SyntaxClass { pattern, .. } => {
+            find_enclosing_call(&pattern.node, pattern.span, offset)
+        }
 
         // Leaves: no call here.
         _ => None,

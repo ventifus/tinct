@@ -679,6 +679,80 @@ fn expr_to_thunk_id(
             );
         }
 
+        Expr::MacroDecl { name, params, body } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    string_val("macro-decl"),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            dict.insert(
+                Key::String("params".into()),
+                expr_to_thunk_id(&params.node, params.span, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("body".into()),
+                expr_to_thunk_id(&body.node, body.span, opts, ctx)?,
+            );
+        }
+
+        Expr::Splice(forms) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("splice"), span))),
+            );
+            let mut form_list = Vec::new();
+            for form in forms {
+                form_list.push(expr_to_thunk_id(&form.node, form.span, opts, ctx)?);
+            }
+            dict.insert(
+                Key::String("forms".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Value::Dict(
+                        form_list
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| (Key::Int(i as i64), v))
+                            .collect(),
+                    ),
+                    span,
+                ))),
+            );
+        }
+
+        Expr::SyntaxClass {
+            name,
+            pattern,
+            message,
+        } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    string_val("syntax-class"),
+                    span,
+                ))),
+            );
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            dict.insert(
+                Key::String("pattern".into()),
+                expr_to_thunk_id(&pattern.node, pattern.span, opts, ctx)?,
+            );
+            if let Some(msg) = message {
+                dict.insert(
+                    Key::String("message".into()),
+                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(msg), span))),
+                );
+            }
+        }
+
         Expr::Match { scrutinee, arms } => {
             dict.insert(
                 Key::String("type".into()),
@@ -1815,6 +1889,52 @@ pub fn dict_to_ast(
                 name,
                 params,
                 body: Rc::new(dict_to_ast(&body_val, ctx)?),
+            }
+        }
+
+        "macro-decl" => {
+            let name = get_string_field(dict, "name", &["type"], ctx)?;
+            let params_val = get_dict_field(dict, "params", &["type"], ctx)?;
+            let body_val = get_dict_field(dict, "body", &["type"], ctx)?;
+            Expr::MacroDecl {
+                name,
+                params: Box::new(dict_to_ast(&params_val, ctx)?),
+                body: Box::new(dict_to_ast(&body_val, ctx)?),
+            }
+        }
+
+        "splice" => {
+            let forms_val = get_dict_field(dict, "forms", &["type"], ctx)?;
+            let forms_list = extract_list(&forms_val, &["forms"], ctx)?;
+            let mut forms = Vec::new();
+            for (_i, form_val) in forms_list.into_iter().enumerate() {
+                forms.push(dict_to_ast(&form_val, ctx)?);
+            }
+            Expr::Splice(forms)
+        }
+
+        "syntax-class" => {
+            let name = get_string_field(dict, "name", &["type"], ctx)?;
+            let pattern_val = get_dict_field(dict, "pattern", &["type"], ctx)?;
+            let message_val = get_field(dict, "message", &["type"], ctx)?;
+            let message = match message_val {
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => Some(source[start..end].to_string()),
+                Value::Dict(d) if d.is_empty() => None,
+                _ => {
+                    return Err(AstError {
+                        message: "message must be String or empty Dict".into(),
+                        field_path: vec!["message".into()],
+                    })
+                }
+            };
+            Expr::SyntaxClass {
+                name,
+                pattern: Box::new(dict_to_ast(&pattern_val, ctx)?),
+                message,
             }
         }
 

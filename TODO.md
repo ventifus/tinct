@@ -12,13 +12,11 @@ See DONE.md for the full history of completed sprints.
 
 See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whatif/macros-v2.md §AST Types`, `doc/02-syntax.md §Macros`.
 
-- [ ] Add `Expr::MacroDecl { name, params, body }` and `Expr::Splice(Vec<Spanned<Expr>>)` to `src/ast.rs`; update all exhaustive match sites; add `panic!`/error arms in eval/typecheck for these (expansion guarantees removal) (`src/ast.rs`, `src/eval.rs`, `src/typecheck.rs`)
-- [ ] Add `Expr::SyntaxClass { name, pattern, message }` to `src/ast.rs`; same treatment as `MacroDecl` (`src/ast.rs`)
-- [ ] Rename `defmacro` → `macro` in lexer keyword denylist; add `syntax-class` with `peek_next_horizontal` colon-ahead guard (so `[syntax-class: foo]` is a dict entry, not a declaration) (`src/lexer.rs`, `src/parser.rs`)
-- [ ] Add `StackFrame::MacroDecl` and `StackFrame::SyntaxClass` to parser (`src/parser.rs`)
-- [ ] Pre-scan pass: walk parsed AST before expansion, collect `MacroDecl`/`SyntaxClass` nodes — including `inject:` default names (extracted as `KeyedEntry` with key `"inject"`); follow only bare string-literal `include` paths; computed-path includes that declare macros are an expansion error (`src/expand.rs`)
-- [ ] Move fn/class/type param-list semantic enforcement from parser StackFrames to type checker: `check_fn_expr`, `check_class_decl`, `check_type_alias` reject non-`Let` params with type error (`src/parser.rs`, `src/typecheck.rs`)
-- [ ] Tests: `macro` keyword parses; `syntax-class` keyword parses; `[syntax-class: foo]` is dict entry not declaration; old `defmacro` produces parse error (`tests/corpus/eval/`)
+- [x] Add `Expr::MacroDecl`, `Expr::Splice`, `Expr::SyntaxClass` to `src/ast.rs`; updated all exhaustive match sites across 15 files (`src/ast.rs`, `src/eval.rs`, `src/typecheck.rs`, etc.)
+- [x] Add `macro` and `syntax-class` keyword dispatch with colon-ahead guard; `StackFrame::MacroDecl` and `StackFrame::SyntaxClass` parser frames (`src/parser.rs`)
+- [x] Pre-scan pass: `pre_scan_file()` walks AST, collects `MacroDecl`/`SyntaxClass`/`DefMacro` before expansion; extract `inject:` defaults (`src/expand.rs`)
+- [x] Moved ClassDecl param-list validation from parser to type checker (`src/parser.rs`, `src/typecheck.rs`)
+- [x] Tests: macro keyword parse, syntax-class colon-ahead dict, fn/type newline-colon error updates (`tests/corpus/`)
 
 ### macros-v2-expand: Expansion pass, splice, syntax-class validation, inject threading
 
@@ -56,6 +54,43 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 ## Tooling
 
+### unified-bindings-remove-old-syntax: Remove pre-unified-bindings fn param syntax
+
+`unified-bindings-migrate` (DONE.md) checked off "Remove old param-list parsing paths" prematurely. The old `[fn@Type [param@Ann ...] body]` syntax (without `let`) is still accepted because `parse_param_list` (src/parser.rs:798) treats `let` as optional — it skips the keyword if present but does not require it (lines 820–824). Known files still using old syntax: `scripts/docgen.llt` (all functions). There may be others in `scripts/` and `samples/`.
+
+The goal is complete removal of the old paths, not a fallback parse error. `[let ...]` already works via `Expr::LetDecl` routed through the `StackFrame::Fn` push_value handler — no new code is needed, just deletions.
+
+- [ ] Run `just fmt` on all non-stdlib `.llt` files — the formatter already emits `[let ...]` form, so formatting migrates `scripts/`, `samples/`, and doc examples automatically before the parser paths are deleted
+- [ ] Delete `parse_param_list` entirely (`src/parser.rs:798`); remove all call sites — `[let ...]` params are handled by the existing `StackFrame::Fn` push_value `Expr::LetDecl` branch, so nothing needs to replace it
+- [ ] Delete the implied-call param-list detection heuristic from `StackFrame::Fn` first-expression handling (`src/parser.rs:5250–5276`) — all-lowercase implied-call bracket detection was only needed for old unannotated `[a b c]` form
+- [ ] Verify `just test` passes after deletions
+- [ ] Update DONE.md to note the `unified-bindings-migrate` checkbox was completed here (the original was premature)
+
+### equatable-comparable-instances: Uncomment Equatable/Comparable/Showable primitive instances
+
+`stdlib/prelude.llt` has `Equatable`, `Comparable`, and `Showable` instance declarations for
+primitive types (`Int`, `Float`, `Str`) commented out with the note "primitives use Rust
+fallback dispatch." This is an architectural gap: the CHR sprint migrated arithmetic instances
+to tinct but left these three classes using a Rust hardcoded path. The consequence: user-defined
+types go through CHR instance resolution while primitives bypass it — inconsistent semantics, and
+the fallback blocks user-extensibility of `=`, `<`, and `str`.
+
+- [ ] Investigate why instances were commented out: loading order issue during prelude bootstrap? Performance concern with instance lookup on every `=` call? Identify root cause (`stdlib/prelude.llt:1696-1753`, `src/typecheck.rs`)
+- [ ] If loading order: use the same `in_prelude_load` flag pattern used for arithmetic instances to defer method body inference during prelude load; uncomment instances
+- [ ] If performance: benchmark instance lookup vs Rust fallback for `=`/`<`/`str` on primitives; if acceptable, uncomment; if not, document the performance constraint explicitly and track as future work
+- [ ] Remove Rust fallback dispatch for `Equatable`/`Comparable`/`Showable` once instances are active (`src/typecheck.rs`, `src/type_unify.rs`)
+- [ ] Verify `just test` passes with instances active (`tests/`)
+
+### arithmetic-class-rename: Rename Add/Sub/Mul/Div → Addable/Subtractable/Multipliable/Divisible
+
+The spec (`doc/whatif/chr-unification.md`, `doc/06-type-inference.md`) consistently uses `-able` suffixes. The implementation in `stdlib/prelude.llt` uses the shorter names. This is a naming bug — the spec is authoritative. All references must be updated.
+
+- [ ] Rename class declarations in `stdlib/prelude.llt`: `Add` → `Addable`, `Sub` → `Subtractable`, `Mul` → `Multipliable`, `Div` → `Divisible` (`stdlib/prelude.llt:1650-1660`)
+- [ ] Update all `[instance Add ...]`, `[instance Sub ...]` etc. in `stdlib/prelude.llt` to use new names (`stdlib/prelude.llt`)
+- [ ] Update `lookup_arithmetic_instance` and any hardcoded class-name strings in Rust source (`src/type_unify.rs`, `src/type_normalize.rs`, `src/typecheck.rs`)
+- [ ] Update constraint references in corpus tests: `[$Addable a b c]` etc. (`tests/corpus/`)
+- [ ] Verify `just test` passes after rename (`tests/`)
+
 ### tinct-lint: `tinct lint` subcommand and `just lint-stdlib` CI step
 
 `tinct lint file.llt` parses, expands macros, and type-checks a tinct file without evaluating it. Behaves like `tinct run --strict` up to and including type-checking; stops before the eval pass. Exit 0 = clean, exit 1 = errors/warnings. All type warnings are treated as fatal (lint mode is inherently strict). Enables fast feedback on stdlib and project files without execution overhead.
@@ -69,6 +104,16 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 - [ ] Add `just lint-file FILE` justfile target: lint a single file; mirrors `just run-file FILE` pattern (`justfile`)
 - [ ] Document in `doc/12-tooling.md §Lint Mode`: flags, exit codes, what is and is not checked (`doc/12-tooling.md`)
 - [ ] Tests: lint on a clean stdlib file exits 0; lint on a file with a type error exits 1; lint does not execute side-effects (no `emit` output) (`tests/corpus/eval/`)
+
+### dircap-drop-bare-compat: Remove backward-compat treatment of bare `@DirCap` in caps declarations
+
+Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap` (without a flag list) is temporarily treated as full access during a transition period. All first-party scripts now use explicit flag annotations (e.g. `@[DirCap [Writable]]`). The compat shim should be removed once all call sites are updated.
+
+- [ ] Fix Landlock path extraction to strip `:MODE` suffix before constructing PathBuf — currently uses `split_once('=').map(|(_, path_str)| PathBuf::from(path_str))` which includes `:w` in the path string, causing `path.exists()` to return false and silently skipping the Landlock rule, so writes are blocked by default-deny even though the DirCap grants write authority; fix: apply same `rsplit_once(':')` mode-stripping used by `--cap-fs` DirCap parsing (`src/main.rs:1041-1048`); also apply to `run_literate_eval` and `run_file` Landlock path setup (`src/main.rs:2272`, `src/main.rs:2568`)
+- [ ] Restore `--cap-fs docdir=doc/lib:w` in `just docgen` once Landlock path extraction is fixed (`justfile`)
+- [ ] Audit all `--- caps:` declarations in `scripts/`, `stdlib/`, and `samples/` for bare `@DirCap` and update to explicit flag lists (`scripts/`, `stdlib/`, `samples/`)
+- [ ] Remove the backward-compat fallback in the type checker / cap injection that treats bare `@DirCap` as full-access; make it a type error or at minimum a lint warning (`src/typecheck.rs`, `src/main.rs`)
+- [ ] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
 
 ---
 
@@ -96,6 +141,49 @@ Moves the hardcoded arithmetic instance table out of Rust and into tinct itself,
 - [x] `boundary_guards: Vec<(Span, Type)>` added to InferState; collected at CALL-MONO and CALL-POLY boundaries (`src/type_infer.rs`, `src/typecheck.rs`)
 - [x] Wire boundary guards to eval: create guarded thunks from `state.boundary_guards`; eval-side `ThunkState::Guarded` with BlameLabel (`src/eval.rs`)
 - [x] Tests: full arithmetic FD + boundary guard tests (blocked on resolver activation) — boundary guard tests added (4 unit tests; FD tests remain blocked)
+
+### chr-gaps: Three critical CHR implementation gaps found in full audit
+
+Full audit (2026-05-17) found gaps preventing user-defined FD classes from working end-to-end.
+**Implementation order: Gap 2 → Gap 1 → Gap 3 → Gap 4** (Gap 2 is a one-liner that unblocks 1 and 3).
+
+**Gap 2 (CRITICAL — implement first) — FD fundep indices lost at constraint creation**
+
+`typecheck_annot.rs:703` hardcodes `fundeps = vec![]` for all user-defined classes. `ClassDecl.determines`
+is correctly populated during class registration and is accessible via `state.class_env`. This is a one-line fix.
+
+- [ ] Replace line 703 in `src/typecheck_annot.rs` — change `let fundeps = vec![];` to `let fundeps = state.class_env.get(class_name).map(|decl| decl.determines.clone()).unwrap_or_default();` — `ClassDecl.determines: Vec<(Vec<usize>, Vec<usize>)>` matches the `Constraint::Class.fundeps` field type exactly; no struct changes needed (`src/typecheck_annot.rs:703`)
+- [ ] Tests: `tests/corpus/eval/typecheck/fd_user_defined_propagates.llt-eval` — define a function annotated `[fn@c [$Merge a b c] [a@Dict b@Dict]]` where `Merge` has `determines: [[[a b] c]]`; verify type checker infers `c = Dict` without explicit annotation (`=== out` section shows `Fn@Dict [Dict Dict]`) (`tests/corpus/eval/typecheck/`)
+
+**Gap 1 (CRITICAL — implement second) — Type-stage resolver evaluation stubbed**
+
+`NormCtxt` has no access to the tinct evaluator at normalization time. The correct fix is to add
+`type_stage_env: Option<Rc<RefCell<Environment>>>` to `NormCtxt` (populated from `imports::build_type_stage_env()`)
+and a free function `evaluate_resolver` that calls the resolver thunk via a minimal EvalContext.
+
+- [ ] Add `pub type_stage_env: Option<Rc<RefCell<Environment>>>` field to `NormCtxt` struct; populate it in `NormCtxt::new()` by calling `imports::build_type_stage_env()` (already exists but `#[allow(dead_code)]`; remove that attr) (`src/type_normalize.rs`, `src/imports.rs`)
+- [ ] Add free function `evaluate_resolver(fn_name: &str, args: &[Type], env: &Rc<RefCell<Environment>>) -> Option<Type>` in `src/type_normalize.rs`: look up `fn_name` thunk in env; construct a minimal `EvalContext::new_empty(PathBuf::default(), Rc::clone(env), false)`; convert each `Type` arg to a type-dict thunk via `type_to_dict_thunk(ty)` (inverse of the existing `resolve_type_dict`); call `eval::invoke_function`; materialize; call `resolve_type_dict` on result → `Type` (`src/type_normalize.rs`)
+- [ ] Replace the cache-miss stub at `src/type_normalize.rs:145-150` with: if `ctx.type_stage_env` is `Some(env)`, call `evaluate_resolver(fn_name, &normalized_args, env)`; on `Some(resolved)` insert into `ctx.resolver_cache` and return; on `None` return stuck `TypeStageApp` as before (`src/type_normalize.rs:145-150`)
+- [ ] Replace the `continue` stub at `src/type_unify.rs:520-525`: when `class_decl.resolver.is_some()` and all determining positions are ground, call `normalize(Type::TypeStageApp { fn_name: resolver.clone(), args: det_ground_types }, &state.subst, &mut norm_ctx)` and use the result as the determined type; construct `norm_ctx` from `NormCtxt::new()` (which now carries `type_stage_env`) (`src/type_unify.rs:520-525`)
+- [ ] Tests: `tests/corpus/eval/typecheck/fd_arithmetic_resolves.llt-eval` — `[fn@[$Add a b c] [a@Int b@Float]] 1 2.0` should infer return type `Float`; currently blocked (comment in TODO confirms FD tests blocked); `tests/corpus/eval/typecheck/fd_user_merge.llt-eval` — user-defined `Merge` class with `--- stage: type` resolver function, `[instance Merge [Dict Dict Dict] ...]`, call site; expect `c = Dict` resolved via resolver (`tests/corpus/eval/typecheck/`)
+
+**Gap 3 (PARTIAL — implement third) — MPTC instance lookup API missing for user-defined classes**
+
+`InstanceEnv.instances` uses `(class_name, single_type_string)` keys. For user-defined MPTCs, the key
+must be `(class_name, Vec<String>)` covering all determining type positions.
+
+- [ ] Change `InstanceEnv.instances` key from `(String, String)` to `(String, Vec<String>)` in `src/type_class.rs`; update `insert()` to build key as `(class_name, determining_type_strings)` where `determining_type_strings` is the vec of string-formatted types at `ClassDecl.determines` positions; update `get()` for compatibility (`src/type_class.rs`)
+- [ ] Add `InstanceEnv::lookup_mptc(&self, class: &str, determining_types: &[Type]) -> Option<&InstanceDecl>`: build key as `(class.to_string(), determining_types.iter().map(type_to_string_key).collect())`; delegate to `self.instances.get(&key)` (`src/type_class.rs`)
+- [ ] Replace the `_ => Err(...)` general path at `src/type_unify.rs:641-653` with a call to `state.instance_env.lookup_mptc(class, &det_ground_types)`; on `Some(inst)` extract the determined type from the instance arm and return it; on `None` return the existing error (`src/type_unify.rs:641-653`)
+- [ ] Tests: `tests/corpus/eval/typecheck/mptc_user_lookup.llt-eval` — define `Concat` class with `[determines: [[[a b] c]] ...]` and `[instance Concat [[Str Str] Str] concat: [fn@Str [x@Str y@Str] [builtin-join "" [x y]]]]`; call `[concat "hello" " world"]`; expect `=== out` `"hello world"` with inferred type `Str` (`tests/corpus/eval/typecheck/`)
+
+**Gap 4 (MINOR — implement independently) — resolver_injective has no parser support**
+
+`ClassDecl.resolver_injective` exists (`type_class.rs:98`), hardcoded `false` everywhere, never read.
+
+- [ ] In the class structural-metadata bracket parser (`src/parser.rs` — second positional bracket of `[class [...] [...] ...]`), add handling for key `injective:` alongside existing `determines:` and `resolver:`; when present with value `true`, set flag in parsed metadata (`src/parser.rs`)
+- [ ] At `src/typecheck.rs:2424` (ClassDecl construction): read `resolver_injective` from parsed metadata and pass to `ClassDecl` (`src/typecheck.rs:2424`)
+- [ ] Tests: `tests/corpus/eval/typecheck/resolver_injective_flag.llt-eval` — define a class with `injective: true`; verify it parses without error and `just test` passes; semantic effect is a no-op stub for now (`tests/corpus/eval/typecheck/`)
 
 ---
 
@@ -247,6 +335,8 @@ Fixes type system soundness gaps identified during the 17th specialist panel rev
 - [x] T003 at line 43: `find-close` recursive return — fixed with `fn@Int` return annotation and `builtin-if` (`scripts/docgen.llt`)
 - [x] T003 at line 65: `slice parts` — replaced with `str-index-of`+`str-slice` approach (`scripts/docgen.llt`)
 - [x] T003 at line 156: `trunc [+ close 1]` — fixed with type-annotated helper lambda (`scripts/docgen.llt`)
+- [ ] T003: `write` builtin expects `DirCap` but `@[DirCap [Writable]]` cap annotation produces `[__cap_flag_writable: []] | DirCap` — type checker doesn't yet desugar parameterized DirCap flag annotations into the intersection form the builtins expect; fix requires capability flag desugaring in annotation resolution and updating builtin signatures to accept `DirCap & Writable` intersection (`src/typecheck.rs`, `src/builtins_io.rs`, `scripts/docgen.llt:197`)
+- [ ] T003 cascade: `write-module` return typed as `"" | _` because `write-module-file` return is `_` when the DirCap unification fails above — will resolve once the DirCap flag annotation issue is fixed (`scripts/docgen.llt:200-212`)
 
 ### panel-17-perf-tests: Performance fixes and missing stdlib tests from 17th panel review
 

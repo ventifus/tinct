@@ -254,6 +254,21 @@ impl Resolver {
             Expr::DefMacro { body, .. } => {
                 self.walk_expr(body);
             }
+            // MacroDecl: resolve variables in params and body expressions.
+            Expr::MacroDecl { params, body, .. } => {
+                self.walk_expr(params);
+                self.walk_expr(body);
+            }
+            // Splice: resolve variables in each form.
+            Expr::Splice(forms) => {
+                for form in forms {
+                    self.walk_expr(form);
+                }
+            }
+            // SyntaxClass: resolve variables in pattern expression.
+            Expr::SyntaxClass { pattern, .. } => {
+                self.walk_expr(pattern);
+            }
             // Match: resolve variables in scrutinee, guards, and arm bodies.
             // Patterns don't contain runtime variable references (except Pin patterns,
             // which we don't support yet).

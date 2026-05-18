@@ -1,0 +1,5 @@
+# Test that [macro name [let params] body] parses correctly.
+# This is a parse-only test since macro expansion semantics are in the next sprint.
+[macro double [let x] [quote [+ [unquote x] [unquote x]]]]
+=== out
+[macro double [let x] [quote [+ [unquote x] [unquote x]]]]

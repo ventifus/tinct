@@ -331,6 +331,24 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
             desugar(&mut *Rc::make_mut(body), depth);
         }
 
+        // MacroDecl: desugar params and body expressions.
+        Expr::MacroDecl { params, body, .. } => {
+            desugar(&mut **params, depth);
+            desugar(&mut **body, depth);
+        }
+
+        // Splice: desugar each form.
+        Expr::Splice(forms) => {
+            for form in forms {
+                desugar(form, depth);
+            }
+        }
+
+        // SyntaxClass: desugar pattern expression.
+        Expr::SyntaxClass { pattern, .. } => {
+            desugar(&mut **pattern, depth);
+        }
+
         // ClassDecl: recurse into method signatures (type expressions may contain $_ in complex annotations)
         Expr::ClassDecl { methods, .. } => {
             for method_spanned in methods {

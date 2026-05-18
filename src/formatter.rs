@@ -228,6 +228,9 @@ impl<'a> Formatter<'a> {
             | Expr::Unquote(_)
             | Expr::UnquoteSplice(_)
             | Expr::DefMacro { .. }
+            | Expr::MacroDecl { .. }
+            | Expr::Splice(..)
+            | Expr::SyntaxClass { .. }
             | Expr::Match { .. }
             | Expr::ClassDecl { .. }
             | Expr::InstanceDecl { .. }
@@ -475,6 +478,10 @@ impl<'a> Formatter<'a> {
                     self.format_expr(body, true);
                 }
                 self.output.push(']');
+            }
+            Expr::MacroDecl { .. } | Expr::Splice(..) | Expr::SyntaxClass { .. } => {
+                // MacroDecl, Splice, and SyntaxClass should be removed by expansion pass before formatting
+                // Skip them silently rather than error
             }
             Expr::Match { scrutinee, arms } => {
                 self.output.push('[');
@@ -861,6 +868,10 @@ impl<'a> Formatter<'a> {
                     w += 1 + self.measure_expr_width(body);
                 }
                 w + 1 // ]
+            }
+            Expr::MacroDecl { .. } | Expr::Splice(..) | Expr::SyntaxClass { .. } => {
+                // Should be removed by expansion pass
+                0
             }
             Expr::Match { scrutinee, arms } => {
                 let mut width = 1 + 5 + 1 + self.measure_expr_width(scrutinee); // [match <scrutinee>
@@ -1433,6 +1444,9 @@ impl<'a> Formatter<'a> {
             | Expr::Unquote(_)
             | Expr::UnquoteSplice(_)
             | Expr::DefMacro { .. }
+            | Expr::MacroDecl { .. }
+            | Expr::Splice(..)
+            | Expr::SyntaxClass { .. }
             | Expr::Match { .. }
             | Expr::ClassDecl { .. }
             | Expr::InstanceDecl { .. }
