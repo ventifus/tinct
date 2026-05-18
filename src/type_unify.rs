@@ -278,15 +278,35 @@ fn check_constraints_on_var(
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
-    // Reset depth counter at the start of each fresh call to check_constraints_on_var.
-    // The counter is meant to prevent recursive descent through the cycle:
+    // Save and reset the depth counter at the start of each fresh call.
+    // The counter guards against recursive descent through the cycle:
     //   check_constraints_on_var → resolve_instance → unify → check_constraints_on_var
-    // Without this reset, depth accumulated across sibling constraints in the for loop
-    // below would cause the second constraint (in a program with many constraints) to
-    // falsely hit the limit even though there is no recursion — it just follows the
-    // first constraint's counter increment/decrement.
+    //
+    // Save/restore (rather than a bare reset) is required for correct recursion detection:
+    //
+    //   1. Each fresh invocation starts at depth 0 so sibling constraints in the for loop
+    //      below do not accumulate depth from one another.
+    //   2. When a recursive call enters check_constraints_on_var it saves the outer frame's
+    //      counter, starts fresh at 0, and restores the outer counter on exit.
+    //   3. Within a single call chain the increment/decrement around resolve_instance
+    //      correctly tracks the live recursion depth.
+    //
+    // Without the save (bare reset), a recursive call would clobber the outer frame's
+    // counter back to 0, making recursion undetectable beyond depth 1.
+    let saved_depth = state.instance_resolution_depth;
     state.instance_resolution_depth = 0;
+    let result = check_constraints_on_var_inner(var_name, concrete_ty, subst, state, span);
+    state.instance_resolution_depth = saved_depth;
+    result
+}
 
+fn check_constraints_on_var_inner(
+    var_name: &str,
+    concrete_ty: &Type,
+    subst: &Substitution,
+    state: &mut InferState,
+    span: Span,
+) -> Result<(), TypeError> {
     // Collect only the constraints that apply to var_name (immutable scan first).
     // This avoids cloning the entire Vec<Constraint> — we clone only the constraints
     // that match, which is typically 0–2 per variable binding even in constraint-heavy
