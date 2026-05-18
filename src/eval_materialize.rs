@@ -405,7 +405,7 @@ pub(crate) fn force_step(
     // INVARIANTS verified post-iterative-eval-b4 (2026-04-30):
     //
     // 1. SHARING PRESERVATION: Rc<Thunk> identity is preserved through Cont dispatch.
-    //    The Cont::Memoize handler (apply_cont, line 1380) caches the materialization
+    //    The Cont::Memoize handler (apply_cont, line 724) caches the materialization
     //    result back into the ORIGINAL thunk via thunk.set_state(), not a copy.
     //    This ensures `Rc::ptr_eq` holds across all references to the same thunk.
     //
@@ -413,14 +413,14 @@ pub(crate) fn force_step(
     //    PendingCall/Guarded → InProgress → Materialized/Failed). Exception: DepthExceeded
     //    errors are non-cacheable and trigger state restoration (e.g., InProgress →
     //    PendingBuiltin) so the computation can be retried.
-    //    Failed → Failed self-transition (lines 1006-1024) refines diagnostic metadata
+    //    Failed → Failed self-transition (lines 353-371) refines diagnostic metadata
     //    (materialization spans, stack frames) without changing the error's identity.
     //
     // 3. CYCLE DETECTION: InProgress blackholing works across all 8 states. Each take_*
     //    method (take_unevaluated, take_pending_builtin, take_pending_call, take_guarded
     //    in value.rs) atomically transitions to InProgress via mem::replace BEFORE
-    //    extracting data. Re-encountering InProgress during materialization (line 1026)
-    //    immediately produces CircularDependency error, cached in Failed state (line 1034).
+    //    extracting data. Re-encountering InProgress during materialization (line 373)
+    //    immediately produces CircularDependency error, cached in Failed state (line 387).
     //
     // Process deferred states (hot path has already returned above)
     // Defer origin clone to here — it's only needed for error reporting and Memoize continuations.

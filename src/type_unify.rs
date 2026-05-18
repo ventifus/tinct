@@ -892,7 +892,8 @@ impl Substitution {
             | Type::QuicSession
             | Type::Http2Session
             | Type::Http3Session
-            | Type::DatagramHandle => {
+            | Type::DatagramHandle
+            | Type::QuicDatagramHandle => {
                 return ty.clone();
             }
             _ => {}
@@ -2092,6 +2093,7 @@ pub fn unify(
         (Type::NetCap, Type::NetCap) => Ok(()),
         (Type::Handle, Type::Handle) => Ok(()),
         (Type::DatagramHandle, Type::DatagramHandle) => Ok(()),
+        (Type::QuicDatagramHandle, Type::QuicDatagramHandle) => Ok(()),
 
         // UNIFY-OPERATOR: bind type constructor variable m to a type T.
         // Occurs check prevents infinite kinds (m ∉ ftv(T)).
