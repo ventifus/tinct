@@ -201,7 +201,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     resolve::resolve_file(&file.node);
     // Type errors are advisory; evaluation proceeds regardless.
     // Use the version that returns InferState so we can extract boundary_guards.
-    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state) =
+    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
         typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
             &file.node,
             crate::imports::build_prelude_env(),
@@ -304,7 +304,7 @@ pub fn eval_source_with_cap_net(
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
     // Use the version that returns InferState so we can extract boundary_guards.
-    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state) =
+    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
         typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
             &file.node,
             crate::imports::build_prelude_env(),
