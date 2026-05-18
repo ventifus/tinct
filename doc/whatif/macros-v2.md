@@ -80,30 +80,30 @@ Macros receive and return values of type `Expr` — a nominal variant type defin
 
 [type Annotation
   [Simple   name: Str]           # @Int, @Bool
-  [PropDict entries: Seq@Entry]  # @[return: T  constraint: ...]
+  [PropDict entries: [Seq Entry]]  # @[return: T  constraint: ...]
   Null]                          # no annotation
 
 [type Expr
-  [Let        bindings: Seq@Expr]
+  [Let        bindings: [Seq Expr]]
   [Case       pattern: Expr  body: Expr]
   [VarRef     name: Str]
-  [Call       func: Expr  args: Seq@Expr]
+  [Call       func: Expr  args: [Seq Expr]]
   [Annotated  expr: Expr  ann: Annotation]
   [Literal    value: Top]                     # Top: any scalar (Int, Float, Str, Bool, Null)
-  [Dict       entries: Seq@Entry]             # keyed dict
-  [Seq        elements: Seq@Expr]             # positional sequence
+  [Dict       entries: [Seq Entry]]             # keyed dict
+  [Seq        elements: [Seq Expr]]             # positional sequence
   [Fn         ann: Annotation  params: Expr  body: Expr]  # params is semantically a Let
   [Macro      name: Str  params: Expr  body: Expr]        # params is semantically a Let
   [Quote      expr: Expr]
   [Unquote    expr: Expr]
-  [UnquoteSplice expr: Seq@Expr]
-  [Splice     forms: Seq@Expr]
+  [UnquoteSplice expr: [Seq Expr]]
+  [Splice     forms: [Seq Expr]]
   [Placeholder]]
 
 # flatten-args: re-extract the flat element sequence from a bracket that the
 # parser has already interpreted (as a Call, Seq, Dict, or Let).
 # Used by let-softening macros and any macro that needs bracket elements.
-flatten-args: [fn [let node@Expr] -> Seq@Expr
+flatten-args: [fn [let node@Expr] -> [Seq Expr]
   [match node
     [case [let p: Call]   [cons p.func p.args]]   # [x y z] → Call(x,[y,z]) → [x,y,z]
     [case [let p: Let]    p.bindings]              # [let x y] → already flat
@@ -180,7 +180,7 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 **Multi-arity dispatch.** When a macro needs to handle different argument counts, use `...args` variadic and `[match [length args] ...]` in the body. `[case ...]` appears inside `[match ...]` exactly as unified-bindings defines it — never at the outer macro declaration level:
 
 ```tinct
-[macro my-and [let ...args@Seq@Expr]
+[macro my-and [let ...args@[Seq Expr]]
   [match [length args]
     [case 0       [quote true]]
     [case 1       [first args]]
@@ -269,7 +269,7 @@ A user who loads `stdlib/syntax.llt` can write `[fn [x@Int y@Float] body]`. A us
 A macro returns `[splice form1 form2 ...]` to inject multiple forms into the surrounding context:
 
 ```tinct
-[macro derive [let ...targets@Seq@Expr  body@Expr]
+[macro derive [let ...targets@[Seq Expr]  body@Expr]
   [splice
     ...[map [fn [let target]
               [quote [instance [unquote target] [unquote body]]]]
@@ -327,9 +327,9 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 # Quasiquote — primary construction mechanism
 [quote expr]             # produce the Expr AST node for expr
 [unquote val]            # splice val (an Expr) into the enclosing quote
-[unquote-splice seq]     # splice a Seq@Expr into the enclosing quote
+[unquote-splice seq]     # splice a [Seq Expr] into the enclosing quote
 
-# Sequence operations on flat-list deliveries (Seq@Expr)
+# Sequence operations on flat-list deliveries ([Seq Expr])
 [first xs] [rest xs]     # element access
 [first-or xs default]    # first element, or default if empty
 
@@ -339,7 +339,7 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 
 # Stdlib helpers
 [wrap-in-let elems]      # produce Let(bindings: elems) AST node
-[let-decl-elems decl]    # extract bindings Seq@Expr from a Let node
+[let-decl-elems decl]    # extract bindings [Seq Expr] from a Let node
 [ident str@Str]          # construct VarRef(name: str) from a string — the counterpart to
                          # gensym for EXISTING names (str must already be a valid identifier)
 ```
@@ -399,10 +399,10 @@ Named syntax classes can be reused across multiple macros. The `pattern:` field 
 
 `[ident str]` constructs a `VarRef` for an existing name — here `e.name` is the VarRef payload's name string, and `[ident e.name]` recreates the identifier. Distinct from `gensym` (fresh unforgeable name): `ident` reconstructs names the user wrote.
 
-**Variadic params with syntax class validation.** `...args@Seq@VarRef` collects all remaining arguments into `args` and validates each element is a `VarRef`. The expander checks every element; if any fails, the error identifies which position failed:
+**Variadic params with syntax class validation.** `...args@[Seq VarRef]` collects all remaining arguments into `args` and validates each element is a `VarRef`. The expander checks every element; if any fails, the error identifies which position failed:
 
 ```tinct
-[macro define-accessors [let type-name@VarRef  ...fields@Seq@VarRef]
+[macro define-accessors [let type-name@VarRef  ...fields@[Seq VarRef]]
   ...]
 
 [define-accessors Point  x  y  z]    # ✓ — x, y, z are all VarRef
@@ -418,7 +418,7 @@ A macro can produce `[macro ...]` declarations in its output (via `splice`). Whe
 
 ```tinct
 # A meta-macro that generates one accessor macro per field
-[macro define-accessors [let type-name@VarRef  ...fields@Seq@Expr]
+[macro define-accessors [let type-name@VarRef  ...fields@[Seq Expr]]
   [splice
     ...[map [fn [let field@VarRef]
               [quote [macro [unquote field] [let obj@Expr]
@@ -492,7 +492,7 @@ Macro bodies are ordinary tinct code. AST nodes are `Expr` variants — dispatch
 Multi-arity is handled with `...args` variadic and `[match [length args] ...]` in the body. `[case ...]` appears inside `[match ...]` — the standard unified-bindings match arm form.
 
 ```tinct
-[macro my-or [let ...args@Seq@Expr]
+[macro my-or [let ...args@[Seq Expr]]
   [match [length args]
     [case 0       [quote false]]
     [case 1       [first args]]
@@ -576,7 +576,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 # Hmm — actually: params IS the Let node; flatten-args returns its .bindings
 # first of bindings → Annotated(x,Int) → wildcard... no. Let's re-read.
 #
-# Actually: params = Let(...) → flatten-args → returns p.bindings (a Seq@Expr)
+# Actually: params = Let(...) → flatten-args → returns p.bindings (a [Seq Expr])
 # flat = [Annotated(x,Int)  Annotated(y,Float)]
 # first-or flat Null → Annotated(x,Int) → wildcard arm fires → wrap?
 #
@@ -657,7 +657,7 @@ This is the correct form. Match on `params` first; call `flatten-args` only in t
 ### Complex 2: `derive` — `splice` for Multi-Form Output
 
 ```tinct
-[macro derive [let ...targets@Seq@Expr  body@Expr]
+[macro derive [let ...targets@[Seq Expr]  body@Expr]
   [splice
     ...[map [fn [let target]
               [quote [instance [unquote target] [unquote body]]]]
@@ -695,7 +695,7 @@ Point: [type [x@Float  y@Float]]
 `cond` accepts a sequence of `[test body]` clause pairs plus an optional `[else body]` fallback. It chains them into nested `[if ...]` expressions.
 
 ```tinct
-[macro cond [let ...clauses@Seq@Expr]
+[macro cond [let ...clauses@[Seq Expr]]
   [match [length clauses]
     [case 0
       [quote [error "cond: no matching clause"]]]
