@@ -1,4 +1,0 @@
-# mod: evenly divisible
-[mod 12 4]
-=== out
-Int(0)

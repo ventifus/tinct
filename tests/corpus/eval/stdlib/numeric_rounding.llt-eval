@@ -1,0 +1,11 @@
+[
+  ceil_positive: [ceil 2.3]
+  ceil_integer: [ceil 5]
+  ceil_negative: [ceil -2.7]
+
+  trunc_positive: [trunc 2.9]
+  trunc_negative: [trunc -2.9]
+  trunc_small: [trunc 0.9]
+]
+=== out
+Dict({"ceil_positive": Int(3), "ceil_integer": Int(5), "ceil_negative": Int(-2), "trunc_positive": Int(2), "trunc_negative": Int(-2), "trunc_small": Int(0)})

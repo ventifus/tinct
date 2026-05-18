@@ -1,4 +1,0 @@
-# when: returns body when predicate is true
-[when true 42]
-=== out
-Int(42)

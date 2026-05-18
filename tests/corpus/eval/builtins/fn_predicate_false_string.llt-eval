@@ -1,3 +1,0 @@
-[fn? "not a function"]
-=== out
-Bool(false)

@@ -1,4 +1,0 @@
-# * : integer multiplication
-[* 6 7]
-=== out
-Int(42)

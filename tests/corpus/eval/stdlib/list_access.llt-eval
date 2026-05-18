@@ -1,0 +1,7 @@
+[
+  list_first: [first [10 20 30]]
+  list_last: [last [10 20 30]]
+  list_last_single: [last [42]]
+]
+=== out
+Dict({"list_first": Int(10), "list_last": Int(30), "list_last_single": Int(42)})

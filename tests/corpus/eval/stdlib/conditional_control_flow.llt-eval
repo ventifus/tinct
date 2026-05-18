@@ -1,0 +1,9 @@
+[
+  when_true: [when true 42]
+  when_false: [when false 42]
+
+  unless_true: [unless true 42]
+  unless_false: [unless false 42]
+]
+=== out
+Dict({"when_true": Int(42), "when_false": Dict({}), "unless_true": Dict({}), "unless_false": Int(42)})

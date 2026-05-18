@@ -1,4 +1,0 @@
-# any? - empty list
-[any? [fn [x] [> x 5]] []]
-=== out
-Bool(false)

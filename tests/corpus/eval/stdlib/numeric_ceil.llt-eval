@@ -1,4 +1,0 @@
-# ceil: round up to nearest integer
-[ceil 2.3]
-=== out
-Int(3)

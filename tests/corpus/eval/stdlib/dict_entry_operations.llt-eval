@@ -1,0 +1,10 @@
+[
+  from_entries_basic: [from-entries [entries [a: 1 b: 2]]]
+  from_entries_empty: [from-entries []]
+  from_entries_seq: [from-entries [map [fn [x] [key: x value: [builtin-mul x x]]] [range 0 3]]]
+
+  with_entries_basic: [with-entries [a: 1  b: 2  c: 3] [fn [e] [key: e.key  value: [* e.value 10]]]]
+  with_entries_empty: [with-entries [] [fn [e] [key: e.key  value: e.value]]]
+]
+=== out
+Dict({"from_entries_basic": Dict({"a": Int(1), "b": Int(2)}), "from_entries_empty": Dict({}), "from_entries_seq": Dict({0: Int(0), 1: Int(1), 2: Int(4)}), "with_entries_basic": Dict({"a": Int(10), "b": Int(20), "c": Int(30)}), "with_entries_empty": Dict({})})

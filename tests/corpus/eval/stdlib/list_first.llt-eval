@@ -1,4 +1,0 @@
-# first: get first element
-[first [10 20 30]]
-=== out
-Int(10)

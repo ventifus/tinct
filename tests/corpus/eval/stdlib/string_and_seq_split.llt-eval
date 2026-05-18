@@ -1,0 +1,14 @@
+[
+  words_basic: [words "hello world"]
+  words_empty: [words ""]
+  words_only_spaces: [words "   "]
+  words_leading_trailing: [words "  hello world  "]
+  words_multiple_spaces: [words "hello    world"]
+
+  flatten_nested: [flatten [[1 2] [3 4]]]
+  flatten_empty: [flatten []]
+  flatten_mixed: [flatten [1 [2 3] 4]]
+  flatten_deep: [flatten [[[1 2] [3 4]] [5 6]]]
+]
+=== out
+Dict({"words_basic": Seq(String("hello"), ...), "words_empty": Dict({}), "words_only_spaces": Dict({}), "words_leading_trailing": Seq(String("hello"), ...), "words_multiple_spaces": Seq(String("hello"), ...), "flatten_nested": Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)}), "flatten_empty": Dict({}), "flatten_mixed": Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)}), "flatten_deep": Dict({0: Dict({0: Int(1), 1: Int(2)}), 1: Dict({0: Int(3), 1: Int(4)}), 2: Int(5), 3: Int(6)})})

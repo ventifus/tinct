@@ -1,4 +1,0 @@
-# ceil: integer passes through (floor returns int, negation preserves)
-[ceil 5]
-=== out
-Int(5)

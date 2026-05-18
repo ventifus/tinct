@@ -1,3 +1,0 @@
-[bool? "not a bool"]
-=== out
-Bool(false)

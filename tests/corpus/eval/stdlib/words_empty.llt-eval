@@ -1,4 +1,0 @@
-# words: empty string returns empty Dict (filter on empty returns Dict)
-[words ""]
-=== out
-Dict({})

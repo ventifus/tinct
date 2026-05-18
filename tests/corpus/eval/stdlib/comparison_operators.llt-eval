@@ -1,0 +1,14 @@
+[
+  gt_true: [> 5 3]
+  gt_false: [> 3 5]
+
+  gte_greater: [>= 5 3]
+  gte_equal: [>= 5 5]
+  gte_less: [>= 3 5]
+
+  lte_less: [<= 3 5]
+  lte_equal: [<= 5 5]
+  lte_greater: [<= 5 3]
+]
+=== out
+Dict({"gt_true": Bool(true), "gt_false": Bool(false), "gte_greater": Bool(true), "gte_equal": Bool(true), "gte_less": Bool(false), "lte_less": Bool(true), "lte_equal": Bool(true), "lte_greater": Bool(false)})

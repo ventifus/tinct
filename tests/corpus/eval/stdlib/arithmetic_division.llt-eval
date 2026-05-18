@@ -1,0 +1,11 @@
+[
+  mod_remainder: [mod 10 3]
+  mod_even: [mod 12 4]
+  mod_negative: [mod -7 3]
+
+  quot_basic: [quot 10 3]
+  quot_exact: [quot 10 2]
+  quot_negative: [quot -10 3]
+]
+=== out
+Dict({"mod_remainder": Int(1), "mod_even": Int(0), "mod_negative": Int(-1), "quot_basic": Int(3), "quot_exact": Int(5), "quot_negative": Int(-3)})

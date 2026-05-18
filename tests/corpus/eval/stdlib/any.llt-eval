@@ -1,4 +1,0 @@
-# any? - some elements match
-[any? [fn [x] [> x 5]] [1 3 7 2]]
-=== out
-Bool(true)

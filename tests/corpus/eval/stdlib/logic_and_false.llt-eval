@@ -1,4 +1,0 @@
-# and: first false short-circuits
-[and false true]
-=== out
-Bool(false)

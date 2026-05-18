@@ -1,0 +1,7 @@
+[
+  add: [+ 3 4]
+  sub: [- 10 3]
+  mul: [* 6 7]
+]
+=== out
+Dict({"add": Int(7), "sub": Int(7), "mul": Int(42)})

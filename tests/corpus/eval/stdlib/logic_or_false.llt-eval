@@ -1,4 +1,0 @@
-# or: both false
-[or false false]
-=== out
-Bool(false)

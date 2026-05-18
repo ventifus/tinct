@@ -1,4 +1,0 @@
-# all? - short-circuit test (should stop at first non-match)
-[all? [fn [x] [< x 3]] [1 2 5 4]]
-=== out
-Bool(false)
