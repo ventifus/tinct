@@ -1,7 +1,7 @@
 # Strict let* semantics: document-level sequential bindings force all values
 # eagerly. A dead binding with an error fires immediately at binding time,
 # even though the binding is never referenced by later expressions.
-[bad: [error "unused and not evaluated"]  good: 1]
+[bad: [raise "unused and not evaluated"]  good: 1]
 
 42
 === error

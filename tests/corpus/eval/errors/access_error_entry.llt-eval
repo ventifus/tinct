@@ -1,5 +1,5 @@
 # Accessing an entry that errors does trigger the error
-[x: [error "boom"]  y: 42]
+[x: [raise "boom"]  y: 42]
 ---
 %.x
 === error

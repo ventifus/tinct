@@ -1,5 +1,5 @@
 # Lazy evaluation: nested dict entry with error in unused subfield not triggered
-[data: [inner: [boom: [error "nested error"]  safe: 99]]  result: 42]
+[data: [inner: [boom: [raise "nested error"]  safe: 99]]  result: 42]
 ---
 %.result
 === out

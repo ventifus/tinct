@@ -1,7 +1,7 @@
-# Test: FunctorResult.fmap on Err value (passes through)
-[FunctorResult.fmap [fn [x] [+ x 1]] [Err "fail"]]
+# Test: FunctorResult.fmap on Error value (passes through)
+[FunctorResult.fmap [fn [x] [+ x 1]] [Error "fail"]]
 
 === out
-Variant(Err, String("fail"))
+Variant(Error, String("fail"))
 === warn
 undefined variable: FunctorResult

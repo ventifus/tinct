@@ -1,5 +1,5 @@
 # Laziness proof: $merge does not materialize unused dict entry with $error
-[merge [a: 1  error: [error "should not fire"]] [b: 2]]
+[merge [a: 1  error: [raise "should not fire"]] [b: 2]]
 ---
 %.a
 === out

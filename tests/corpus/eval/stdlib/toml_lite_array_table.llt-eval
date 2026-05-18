@@ -5,6 +5,6 @@
 
 [match [call %.parse-toml-lite "[[items]]\nname = \"first\"\n[[items]]\nname = \"second\""]
   [Ok parsed]: [get "name" [get 1 [get "items" parsed]]]
-  [Err msg]: [error msg]]
+  [Error msg]: [raise msg]]
 === out
 String("second")

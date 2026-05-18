@@ -14,7 +14,7 @@
 # - test_json_proxy_error (line 552): validates E035 message and code
 
 # This placeholder test demonstrates proxy behavior but does NOT test E035.
-# It tests E080 (UserError from $error builtin) instead.
-[p: [proxy [fn [key] [error "handler called"]]]  result: p.test]
+# It tests E080 (UserError from $raise builtin) instead.
+[p: [proxy [fn [key] [raise "handler called"]]]  result: p.test]
 === error
 [E080] handler called

@@ -256,7 +256,7 @@ cond-check: [fn@Any [let pairs@Dict i@Int condition result]
 has?-impl: [fn@Bool [let try-result]
     [match try-result
         [Ok _]: true
-        [Err _]: false]]
+        [Error _]: false]]
 
 remove-impl: [fn@Dict [let xs@Dict ks exclude i@Int acc@Dict]
     [builtin-if [gte-impl i [length ks]]
@@ -402,7 +402,7 @@ transpose-impl: [fn@Dict [let rows@Dict col-keys]
 try-or-impl: [fn [let try-result default]
     [match try-result
         [Ok v]: v
-        [Err _]: default]]
+        [Error _]: default]]
 
 ]
 
@@ -996,7 +996,7 @@ find-deep-try@[doc: "Find-deep try (internal helper)"]: [fn@Any [let subtree@Dic
 find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [let result parent@Dict target ks i@Int]
     [match result
         [Ok v]: v
-        [Err _]: [find-deep-impl parent target ks [builtin-add i 1]]]]
+        [Error _]: [find-deep-impl parent target ks [builtin-add i 1]]]]
 
 find-deep: [fn@[return: Any  doc: """
 Recursively search for a key in nested dicts.
@@ -1336,74 +1336,74 @@ Icmp: Icmp
 # Result Type and Combinators
 # ============================================================================
 
-# Result type: Ok[a] | Err[String]
-Result: [type [Ok a] [Err String]]
+# Result type: Ok[a] | Error[String]
+Result: [type [Ok a] [Error String]]
 
 # Re-export Ok constructor: wraps a success value
 Ok: Ok
 
-# Re-export Err constructor: wraps an error message
-Err: Err
+# Re-export Error constructor: wraps an error message
+Error: Error
 
 ok?: [fn@[return: Bool  doc: """
 Check if Result is Ok.
 
 Example: [ok? [Ok 42]] => true
-Example: [ok? [Err "bad"]] => false
+Example: [ok? [Error "bad"]] => false
 
 Note: Predicate for Result success case.
 """] [let r]
     [match r
         [Ok _]: true
-        [Err _]: false]]
+        [Error _]: false]]
 
-err?: [fn@[return: Bool  doc: """
-Check if Result is Err.
+error?: [fn@[return: Bool  doc: """
+Check if Result is Error.
 
-Example: [err? [Err "bad"]] => true
-Example: [err? [Ok 42]] => false
+Example: [error? [Error "bad"]] => true
+Example: [error? [Ok 42]] => false
 
 Note: Predicate for Result error case.
 """] [let r]
     [match r
         [Ok _]: false
-        [Err _]: true]]
+        [Error _]: true]]
 
 and-then: [fn@[return: Unknown  doc: """
 Monad bind for Result (chain computations).
 
 Example: [and-then [Ok 21] [fn [x] [Ok [* x 2]]]] => [Ok 42]
-Example: [and-then [Err "bad"] [fn [x] [Ok [* x 2]]]] => [Err "bad"]
+Example: [and-then [Error "bad"] [fn [x] [Ok [* x 2]]]] => [Error "bad"]
 
-Note: If Ok, applies f to the value; if Err, passes through. Matches Rust's .and_then(f) and Haskell's result >>= f. Equivalent to MonadResult.bind.
+Note: If Ok, applies f to the value; if Error, passes through. Matches Rust's .and_then(f) and Haskell's result >>= f. Equivalent to MonadResult.bind.
 """] [let result f]
     [match result
         [Ok v]: [f v]
-        [Err msg]: [Err msg]]]
+        [Error msg]: [Error msg]]]
 
 result-or: [fn@[return: a  doc: """
 Unwrap Ok value or return default.
 
 Example: [result-or 99 [Ok 42]] => 42
-Example: [result-or 99 [Err "bad"]] => 99
+Example: [result-or 99 [Error "bad"]] => 99
 
 Note: Default-value behavior for Result. Returns the Ok value if present, otherwise the default.
 """] [let default@a result]
     [match result
         [Ok v]: v
-        [Err _]: default]]
+        [Error _]: default]]
 
 result-map: [fn@[return: Unknown  doc: """
 Functor map over Result.
 
 Example: [result-map [fn [x] [* x 2]] [Ok 21]] => [Ok 42]
-Example: [result-map [fn [x] [* x 2]] [Err "bad"]] => [Err "bad"]
+Example: [result-map [fn [x] [* x 2]] [Error "bad"]] => [Error "bad"]
 
-Note: Maps a function over the Ok value; passes Err through unchanged.
+Note: Maps a function over the Ok value; passes Error through unchanged.
 """] [let f result]
     [match result
         [Ok v]: [Ok [f v]]
-        [Err msg]: [Err msg]]]
+        [Error msg]: [Error msg]]]
 
 result-ok: [fn@[return: Unknown  doc: """
 Wrap value in Ok.
@@ -1500,11 +1500,11 @@ FoldableResult@[doc: "Foldable instance for Result"]:
       fold:   [fn [let f init r]
         [match r
           [Ok a]:  [f init a]
-          [Err _]: init]]
+          [Error _]: init]]
       to-seq: [fn [let r]
         [match r
           [Ok a]:  [0: a]
-          [Err _]: []]]]]
+          [Error _]: []]]]]
 
 # Traverses a structure applying effects (traverse)
 Traversable@[doc: "Type class for traversable structures"]:
@@ -1530,7 +1530,7 @@ TraversableResult@[doc: "Traversable instance for Result"]:
       traverse: [fn [let f r]
         [match r
           [Ok a]:  [f.fmap Ok [f a]]
-          [Err e]: [f.pure [Err e]]]]]]
+          [Error e]: [f.pure [Error e]]]]]]
 
 # ============================================================================
 # Maybe ADT and Instances

@@ -1,4 +1,4 @@
-# try: catching an error raised by $error returns [Err message]
-[try [fn [] [error "caught"]]]
+# try: catching an error raised by $raise returns [Error message]
+[try [fn [] [raise "caught"]]]
 === out
-Variant(Err, String("caught"))
+Variant(Error, String("caught"))

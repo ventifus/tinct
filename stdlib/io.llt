@@ -6,13 +6,13 @@
 [
 # Read an entire file as a string.
 # cap: DirCap, path: String
-# Returns: [Ok content] or [Err message]
+# Returns: [Ok content] or [Error message]
 read-file@[doc: "Read an entire file as a string"]: [fn@Dict [cap@DirCap path@String]
   [try [fn [] [slurp [open cap path "r"]]]]]
 
 # Read a file as a lazy sequence of lines.
 # cap: DirCap, path: String
-# Returns: [Ok seq] or [Err message]
+# Returns: [Ok seq] or [Error message]
 read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [cap@DirCap path@String]
   [try [fn [] [lines [open cap path "r"]]]]]
 

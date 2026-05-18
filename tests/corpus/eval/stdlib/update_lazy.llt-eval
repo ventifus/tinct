@@ -1,7 +1,7 @@
 # update is lazy — the function application is deferred until the updated key is accessed
 # Accessing an unmodified key doesn't force the update computation
 # If update were eager, this would error (calling $error); but it's lazy so we can access y
-[update [x: 1 y: 2] "x" [fn [v] [error "should not be called"]]]
+[update [x: 1 y: 2] "x" [fn [v] [raise "should not be called"]]]
 ---
 %.y
 === out

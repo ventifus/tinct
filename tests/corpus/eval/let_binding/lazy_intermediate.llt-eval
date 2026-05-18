@@ -1,6 +1,6 @@
 # Sequential lazy let* semantics: unused bindings in fn bodies remain lazy.
 # Dead bindings are never forced — errors only fire when accessed.
-[test: [fn [x] [unused: [error "dead binding"]] [+ x 1]]]
+[test: [fn [x] [unused: [raise "dead binding"]] [+ x 1]]]
 [test 41]
 === out
 Int(42)

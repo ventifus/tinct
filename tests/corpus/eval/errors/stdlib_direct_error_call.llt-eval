@@ -1,4 +1,4 @@
-[error "direct error call"]
+[raise "direct error call"]
 === error
 [E080] direct error call (defined at 1:1-1:28)
-  in [error ...] at 1:1-1:28
+  in [raise ...] at 1:1-1:28

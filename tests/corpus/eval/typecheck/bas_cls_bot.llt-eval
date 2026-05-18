@@ -2,10 +2,10 @@
 # [try [fn [] 42]] returns Variant(Ok, Int(42)). The I-Case3 rule in infer_match
 # accumulates negations: after the [Ok v] arm, remaining_scrutinee gains ~"Ok"
 # via Type::Negation. S-ClsBot: Intersection([scrutinee, "Ok"]) ∩ ~"Ok" = Never.
-# The [Err _] arm correctly matches an uninhabited scrutinee type.
+# The [Error _] arm correctly matches an uninhabited scrutinee type.
 [result: [try [fn [] 42]]
  value: [match result
    [Ok v]:  v
-   [Err _]: 0]]
+   [Error _]: 0]]
 === out
 Dict({"result": Variant(Ok, Int(42)), "value": Int(42)})

@@ -1,7 +1,7 @@
 # $map creates PendingCall thunks that are forced when a key is accessed.
 # Complement of laziness/map_dict_lazy_values.llt-eval: proves that while thunks
 # are NOT forced at map construction time, they ARE forced when the key is accessed.
-[map [fn [x] [error "lazy-error"]] [a: 1 b: 2]]
+[map [fn [x] [raise "lazy-error"]] [a: 1 b: 2]]
 ---
 %.a
 === error

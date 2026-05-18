@@ -11464,9 +11464,9 @@ mod tests {
     #[test]
     fn test_try_result_type() {
         // `try` builtin returns Top — not a structural union — because the runtime
-        // now returns nominal Value::Variant { tag: "Ok"/"Err" }. A structural union
+        // now returns nominal Value::Variant { tag: "Ok"/"Error" }. A structural union
         // {ok:T}|{err:Str} would cause T004 false positives when user code matches on
-        // constructor patterns [Ok v] / [Err msg]. Top avoids triggering coverage
+        // constructor patterns [Ok v] / [Error msg]. Top avoids triggering coverage
         // checking (infer_match only runs exhaustiveness when scrutinee is Type::Union).
         // See builtin-type-audit sprint: try return type (TODO.md)
         let env = TypeEnv::with_builtins();

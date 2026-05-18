@@ -1,6 +1,6 @@
 # Strict let* semantics: document-level sequential bindings force all values
 # eagerly. An error in a dead binding fires immediately at binding time.
-[unused: [error "dead binding remains lazy"]  used: 42]
+[unused: [raise "dead binding remains lazy"]  used: 42]
 [result: used]
 === error
 [E080] dead binding remains lazy

@@ -2,6 +2,6 @@
 # try returns [Ok value] on success; pattern match extracts value
 [match [try [fn [] [+ 10 5]]]
   [Ok v]: v
-  [Err _]: 0]
+  [Error _]: 0]
 === out
 Int(15)

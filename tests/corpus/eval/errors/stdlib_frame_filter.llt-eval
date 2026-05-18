@@ -1,4 +1,4 @@
-[result: [map [fn [x] [error "inner error"]] [a: 1]]]
+[result: [map [fn [x] [raise "inner error"]] [a: 1]]]
 result.a
 === error
 [E080] inner error

@@ -1,9 +1,9 @@
 # Test do macro error propagation
 [do result
   [x: [Ok 1]]
-  [y: [Err "fail"]]
+  [y: [Error "fail"]]
   [Ok [+ x y]]]
 ---
-[Err "fail"]
+[Error "fail"]
 === warn
 undefined variable: result at 1:5-1:11

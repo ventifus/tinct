@@ -1,7 +1,7 @@
-# Test: MonadResult.bind on Err value (short-circuits)
-[MonadResult.bind [Err "fail"] [fn [x] [Ok [+ x 1]]]]
+# Test: MonadResult.bind on Error value (short-circuits)
+[MonadResult.bind [Error "fail"] [fn [x] [Ok [+ x 1]]]]
 
 === out
-Variant(Err, String("fail"))
+Variant(Error, String("fail"))
 === warn
 undefined variable: MonadResult

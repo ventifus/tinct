@@ -1,4 +1,4 @@
 # try-or: returns default when function errors
-[try-or [fn [] [error "oops"]] "fallback"]
+[try-or [fn [] [raise "oops"]] "fallback"]
 === out
 String("fallback")

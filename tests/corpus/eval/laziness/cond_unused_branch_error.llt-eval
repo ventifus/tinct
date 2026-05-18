@@ -1,4 +1,4 @@
 # Laziness proof: $cond does not evaluate the value of unmatched branches
-[cond [[true "result"] [true [error "should not fire"]]]]
+[cond [[true "result"] [true [raise "should not fire"]]]]
 === out
 String("result")

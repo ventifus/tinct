@@ -1,5 +1,5 @@
-# Test: FoldableResult.to-seq on Err value (returns empty list)
-[FoldableResult.to-seq [Err "x"]]
+# Test: FoldableResult.to-seq on Error value (returns empty list)
+[FoldableResult.to-seq [Error "x"]]
 
 === out
 Dict({})

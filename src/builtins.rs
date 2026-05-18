@@ -363,7 +363,7 @@ pub(crate) use crate::builtins_meta::blake3_hex;
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_bool_check, builtin_bytes_check,
-    builtin_decimal, builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast,
+    builtin_decimal, builtin_dict_check, builtin_raise, builtin_eval, builtin_eval_ast,
     builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
     builtin_include, builtin_int_check, builtin_llt_repr, builtin_macro_injects,
     builtin_null_check, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of,
@@ -1207,7 +1207,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // Evaluation control
         builtin!("deep-materialize", builtin_eval, [Strictness::Seq]),
         builtin!("materialize", builtin_force, [Strictness::Seq]),
-        builtin!("error", builtin_error, [Strictness::Seq]),
+        builtin!("raise", builtin_raise, [Strictness::Seq]),
         builtin!("try", builtin_try, [Strictness::Id]),
         builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
         builtin!("until", builtin_until),
@@ -3672,8 +3672,8 @@ mod tests {
         }));
         match result {
             Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Err");
-                let err_val = mat_id(payload.expect("Err should have payload"), &ctx);
+                assert_eq!(tag, "Error");
+                let err_val = mat_id(payload.expect("Error should have payload"), &ctx);
                 match err_val {
                     Value::String {
                         ref source,
@@ -3789,11 +3789,11 @@ mod tests {
         }));
         match result {
             Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Err");
-                let payload_val = mat_id(payload.expect("Err should have payload"), &ctx);
+                assert_eq!(tag, "Error");
+                let payload_val = mat_id(payload.expect("Error should have payload"), &ctx);
                 assert_eq!(payload_val, string_val("builtin error".into()));
             }
-            _ => panic!("expected Variant(Err, ...), got: {:?}", result),
+            _ => panic!("expected Variant(Error, ...), got: {:?}", result),
         }
     }
 

@@ -1,5 +1,5 @@
 [
-  d: [x: [proxy [fn [k] [error "handler should not be called"]]]  y: 42]
+  d: [x: [proxy [fn [k] [raise "handler should not be called"]]]  y: 42]
   result: d.y
 ]
 === out

@@ -1,4 +1,4 @@
 # Lazy evaluation: $if does not materialize the unchosen true branch
-[if false [error "should not trigger"] 99]
+[if false [raise "should not trigger"] 99]
 === out
 Int(99)

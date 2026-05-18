@@ -1,5 +1,5 @@
 # Lazy evaluation: $and short-circuits when first argument is false
-# If $and were eager, the $error would fire. Since it's lazy, false is returned.
-[and false [error "should not evaluate"]]
+# If $and were eager, the $raise would fire. Since it's lazy, false is returned.
+[and false [raise "should not evaluate"]]
 === out
 Bool(false)

@@ -1,5 +1,5 @@
 # Lazy evaluation: unused dict entry with error is not materialized
-[x: [error "boom"]  y: 42]
+[x: [raise "boom"]  y: 42]
 ---
 %.y
 === out

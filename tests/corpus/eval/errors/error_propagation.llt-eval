@@ -1,5 +1,5 @@
-# $error: accessing a dict entry that calls $error propagates the error (E080)
-[x: [error "custom message"]]
+# $raise: accessing a dict entry that calls $raise propagates the error (E080)
+[x: [raise "custom message"]]
 ---
 %.x
 === error
