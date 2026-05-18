@@ -121,8 +121,10 @@ impl EnvArena {
         Self { envs: Vec::new() }
     }
 
-    /// Allocate an environment in the arena, returning its handle.
-    pub fn alloc(&mut self, env: FlatEnv) -> EnvId {
+    /// Allocate a root environment (no parent) with the given slot capacity.
+    ///
+    /// The display vector is initialized to contain only the new environment's own EnvId.
+    pub fn alloc_root(&mut self, slot_count: usize) -> EnvId {
         let len = self.envs.len();
         assert!(
             len < u32::MAX as usize,
@@ -130,6 +132,39 @@ impl EnvArena {
             u32::MAX
         );
         let id = EnvId(len as u32);
+        let env = FlatEnv {
+            slots: Vec::with_capacity(slot_count),
+            overflow: HashMap::new(),
+            parent: None,
+            display: vec![id],
+        };
+        self.envs.push(env);
+        id
+    }
+
+    /// Allocate a child environment with the given parent.
+    ///
+    /// The display vector is cloned from the parent and extended with the new environment's EnvId.
+    pub fn alloc_child(&mut self, slot_count: usize, parent_id: EnvId) -> EnvId {
+        let len = self.envs.len();
+        assert!(
+            len < u32::MAX as usize,
+            "EnvArena overflow: more than {} environments allocated",
+            u32::MAX
+        );
+        let id = EnvId(len as u32);
+
+        // Clone parent's display vector and extend with self
+        let parent_display = self.get(parent_id).display.clone();
+        let mut display = parent_display;
+        display.push(id);
+
+        let env = FlatEnv {
+            slots: Vec::with_capacity(slot_count),
+            overflow: HashMap::new(),
+            parent: Some(parent_id),
+            display,
+        };
         self.envs.push(env);
         id
     }
@@ -138,9 +173,35 @@ impl EnvArena {
     ///
     /// # Panics
     ///
-    /// Panics if the handle is out of bounds (should never happen if all IDs come from `alloc`).
+    /// Panics if the handle is out of bounds (should never happen if all IDs come from `alloc_*`).
     pub fn get(&self, id: EnvId) -> &FlatEnv {
         &self.envs[id.0 as usize]
+    }
+
+    /// Get a mutable reference to the environment at the given handle.
+    ///
+    /// Used to fill slots after allocation (letrec pattern).
+    pub fn get_mut(&mut self, id: EnvId) -> &mut FlatEnv {
+        &mut self.envs[id.0 as usize]
+    }
+
+    /// Allocate a letrec group environment (for dict construction).
+    ///
+    /// Creates a new environment pre-sized for `static_key_count` slots, with all slots
+    /// initially unfilled (None). The caller must fill each slot via `fill_letrec_slot`
+    /// after creating the corresponding thunk.
+    ///
+    /// The display vector is cloned from the parent and extended with the new environment's EnvId.
+    pub fn alloc_letrec_group(&mut self, static_key_count: usize, parent_id: EnvId) -> EnvId {
+        self.alloc_child(static_key_count, parent_id)
+    }
+
+    /// Fill a slot in a letrec environment with a ThunkId.
+    ///
+    /// Used during dict construction: after allocating the shared dict_env via
+    /// `alloc_letrec_group`, fill each slot as its corresponding entry thunk is created.
+    pub fn fill_letrec_slot(&mut self, env_id: EnvId, slot: u32, thunk_id: ThunkId) {
+        self.get_mut(env_id).set_slot(slot, thunk_id);
     }
 }
 
@@ -158,6 +219,10 @@ impl Default for EnvArena {
 ///
 /// **Hybrid model:** Static keys (known at parse time) use `slots` for O(1) lookup.
 /// Computed keys (e.g., `[$expr: value]`) fall back to the `overflow` HashMap.
+///
+/// **Display vector:** Prepopulated at creation with the `EnvId` of every ancestor
+/// scope from level 0 to current level. This enables true O(1) access via
+/// `display[level].slots[slot]` without walking the parent chain.
 #[allow(dead_code)] // Phase 3 (arena-eval): fields and methods not yet used by production evaluator
 #[derive(Debug)]
 pub(crate) struct FlatEnv {
@@ -168,24 +233,14 @@ pub(crate) struct FlatEnv {
     /// Parent environment for stdlib/builtins root chain. Most environments don't need this;
     /// user-scope lookups use `(level, slot)` pairs that resolve to the correct FlatEnv directly.
     pub(crate) parent: Option<EnvId>,
+    /// Display vector: prepopulated at creation with ancestor EnvIds indexed by level.
+    /// For a scope at level `k`, `display[0..k]` contains the EnvIds of all outer scopes,
+    /// and `display[k]` is self. Enables O(1) variable lookup: `arena.get(display[level]).slots[slot]`.
+    pub(crate) display: Vec<EnvId>,
 }
 
 #[allow(dead_code)] // Phase 3 (arena-eval): methods not yet called by production evaluator
 impl FlatEnv {
-    /// Create a new flat environment with the given slot capacity and optional parent.
-    pub fn new(slot_count: usize, parent: Option<EnvId>) -> Self {
-        Self {
-            slots: Vec::with_capacity(slot_count),
-            overflow: HashMap::new(),
-            parent,
-        }
-    }
-
-    /// Create a new empty flat environment (no slots, no parent).
-    pub fn empty() -> Self {
-        Self::new(0, None)
-    }
-
     /// Get a thunk by slot index (static key, assigned by the resolver).
     ///
     /// Returns `None` if the slot is out of bounds or unfilled.
@@ -364,20 +419,20 @@ mod tests {
     #[test]
     fn test_env_arena_alloc_get() {
         let mut arena = EnvArena::new();
-        let env = FlatEnv::empty();
-        let id = arena.alloc(env);
+        let id = arena.alloc_root(0);
         let retrieved = arena.get(id);
         assert_eq!(retrieved.slots.len(), 0);
         assert_eq!(retrieved.overflow.len(), 0);
         assert!(retrieved.parent.is_none());
+        assert_eq!(retrieved.display, vec![id]);
     }
 
     #[test]
     fn test_env_arena_multiple_allocs() {
         let mut arena = EnvArena::new();
-        let id1 = arena.alloc(FlatEnv::new(1, None));
-        let id2 = arena.alloc(FlatEnv::new(2, None));
-        let id3 = arena.alloc(FlatEnv::new(3, None));
+        let id1 = arena.alloc_root(1);
+        let id2 = arena.alloc_root(2);
+        let id3 = arena.alloc_root(3);
 
         assert_eq!(arena.get(id1).slots.capacity(), 1);
         assert_eq!(arena.get(id2).slots.capacity(), 2);
@@ -391,7 +446,10 @@ mod tests {
 
     #[test]
     fn test_flat_env_slot_lookup() {
-        let mut env = FlatEnv::new(3, None);
+        let mut arena = EnvArena::new();
+        let id = arena.alloc_root(3);
+        let env = arena.get_mut(id);
+
         let id0 = ThunkId(0);
         let id1 = ThunkId(1);
         let id2 = ThunkId(2);
@@ -408,7 +466,10 @@ mod tests {
 
     #[test]
     fn test_flat_env_overflow_lookup() {
-        let mut env = FlatEnv::empty();
+        let mut arena = EnvArena::new();
+        let id = arena.alloc_root(0);
+        let env = arena.get_mut(id);
+
         let id_x = ThunkId(10);
         let id_y = ThunkId(20);
 
@@ -425,21 +486,27 @@ mod tests {
         let mut env_arena = EnvArena::new();
 
         // Create a root env (no parent)
-        let root_id = env_arena.alloc(FlatEnv::new(0, None));
+        let root_id = env_arena.alloc_root(0);
 
         // Create a child env with root as parent
-        let child_id = env_arena.alloc(FlatEnv::new(0, Some(root_id)));
+        let child_id = env_arena.alloc_child(0, root_id);
 
         let child = env_arena.get(child_id);
         assert_eq!(child.parent(), Some(root_id));
 
         let root = env_arena.get(root_id);
         assert_eq!(root.parent(), None);
+
+        // Verify display vectors
+        assert_eq!(root.display, vec![root_id]);
+        assert_eq!(child.display, vec![root_id, child_id]);
     }
 
     #[test]
     fn test_flat_env_hybrid_static_and_computed() {
-        let mut env = FlatEnv::new(2, None);
+        let mut arena = EnvArena::new();
+        let id = arena.alloc_root(2);
+        let env = arena.get_mut(id);
 
         // Static keys in slots
         let id_static_a = ThunkId(100);
@@ -497,7 +564,9 @@ mod tests {
 
     #[test]
     fn test_set_slot_extends_vec() {
-        let mut env = FlatEnv::empty();
+        let mut arena = EnvArena::new();
+        let id = arena.alloc_root(0);
+        let env = arena.get_mut(id);
 
         // Setting slot 5 should extend the vec to hold slots 0..=5
         env.set_slot(5, ThunkId(42));

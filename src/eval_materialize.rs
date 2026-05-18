@@ -108,7 +108,7 @@ impl RestoreState {
     pub(crate) fn restore(self, thunk: &Thunk) {
         match self {
             RestoreState::Unevaluated { expr, env, ctx } => {
-                thunk.set_state(ThunkState::Unevaluated { expr, env, ctx });
+                thunk.set_state(ThunkState::Unevaluated { expr, env, env_id: None, ctx });
             }
             RestoreState::PendingBuiltin {
                 def,
