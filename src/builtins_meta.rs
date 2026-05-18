@@ -1434,24 +1434,15 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         state.include_chain.push((file_path_str.clone(), call_span));
     }
 
-    // Build an env for the included file: child of stdlib_env with %libdir and %pwd injected.
-    // This allows included files to use [include %libdir "..."] and [include %pwd "..."]
-    // for their own includes, enabling a proper capability chain.
+    // Build an env for the included file: child of stdlib_env with %libdir injected.
+    // Included files inherit %pwd from the parent context unchanged — overriding it per
+    // included file would break relative-path semantics for the caller's own %pwd bindings.
+    // Use %libdir for stdlib-relative includes.
     let include_env = {
         use crate::value::Environment;
         let child = Rc::new(std::cell::RefCell::new(Environment::with_parent(
             Rc::clone(&stdlib_env),
         )));
-        // Inject %pwd: open "." relative to the included file's dir_cap so that
-        // [include %pwd "sibling.llt"] resolves relative to the included file's directory.
-        if let Ok(pwd_dir) = included_ctx.config.base_dir.open_dir(".") {
-            let pwd_val = Value::DirCap {
-                dir: Rc::new(pwd_dir),
-                perms: crate::value::DirPerms::full(),
-            };
-            let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            child.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        }
         // Inject %libdir: resolve from the binary's location, same as main.rs.
         if let Some(libdir_path) = crate::find_libdir_path() {
             if let Ok(libdir_dir) =

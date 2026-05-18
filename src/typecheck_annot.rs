@@ -1657,9 +1657,11 @@ pub(crate) fn resolve_type_name_with_guard(
     if let Some(alias) = env.get_type_alias(name) {
         // Check if we're in a recursive expansion
         if recursion_guard.contains(name) {
-            // Recursive reference detected - return Unknown as a placeholder
-            // This breaks the infinite recursion while allowing the structure to be defined
-            return Ok(Type::Unknown);
+            // Recursive reference detected — return a fresh type variable as the mu-variable
+            // for this recursive position. This gives recursive positions a proper type that
+            // can be unified with the alias body rather than silently widening to Unknown.
+            // Callers see a TypeVar(_tN) that unifies with the alias's expanded type.
+            return Ok(state.fresh_type_var());
         }
 
         // Check arity
