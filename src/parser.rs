@@ -1407,28 +1407,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 Err(ann_err) => {
                                     // The [fn ...] bracket was opened but the Fn frame was not yet
                                     // pushed; use recover_from_failed_open (no pop needed).
-                                    if !stack.is_empty() {
-                                        i = recover_from_failed_open(
-                                            ann_err,
-                                            span,
-                                            &token_vec,
-                                            i,
-                                            &mut stack,
-                                            &mut current_document_expressions,
-                                            &mut recovered_errors,
-                                        );
-                                    } else {
-                                        // At top level: push to doc, skip to close.
-                                        i = recover_from_failed_open(
-                                            ann_err,
-                                            span,
-                                            &token_vec,
-                                            i,
-                                            &mut stack,
-                                            &mut current_document_expressions,
-                                            &mut recovered_errors,
-                                        );
-                                    }
+                                    i = recover_from_failed_open(
+                                        ann_err,
+                                        span,
+                                        &token_vec,
+                                        i,
+                                        &mut stack,
+                                        &mut current_document_expressions,
+                                        &mut recovered_errors,
+                                    );
                                     continue;
                                 }
                             }
@@ -2659,17 +2646,21 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         span_start,
                     } => {
                         // CaseDecl requires both pattern and body
-                        let pattern_unwrapped = pattern.ok_or_else(|| ParseError {
-                            message: "case form requires a pattern expression".to_string(),
-                            span: Some(dict_span(span_start)),
-                        })?;
-                        let body_unwrapped = body.ok_or_else(|| ParseError {
-                            message: "case form requires a body expression".to_string(),
-                            span: Some(dict_span(span_start)),
-                        })?;
+                        if pattern.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "case form requires a pattern expression".to_string(),
+                                span: Some(dict_span(span_start)),
+                            });
+                        }
+                        if body.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "case form requires a body expression".to_string(),
+                                span: Some(dict_span(span_start)),
+                            });
+                        }
                         let case_expr = Expr::CaseArm {
-                            pattern: Box::new(pattern_unwrapped),
-                            body: Box::new(body_unwrapped),
+                            pattern: Box::new(pattern.unwrap()),
+                            body: Box::new(body.unwrap()),
                         };
                         let spanned_case = Spanned::new(case_expr, dict_span(span_start));
                         if let Err(push_err) =
@@ -3193,6 +3184,17 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Method name in instance: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(s.clone()), span);
+                            *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
+                        Some(StackFrame::SyntaxClass {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Field name in syntax-class: Expr::Str
                             let key_expr = Spanned::new(Expr::Str(s.clone()), span);
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -4152,6 +4154,17 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             i += 1;
                             continue;
                         }
+                        Some(StackFrame::SyntaxClass {
+                            ref mut pending_key,
+                            ..
+                        }) => {
+                            // Field name in syntax-class: Expr::Str
+                            let key_expr = Spanned::new(Expr::Str(keyword_str.to_string()), span);
+                            *pending_key = Some(key_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
                         _ => {
                             // Not in a key-accepting context; treat as VarRef
                             let expr = Spanned::new(Expr::var_ref(keyword_str.to_string()), span);
@@ -4940,12 +4953,22 @@ fn push_expr_to_parent(
                                 Expr::VarRef { name, .. } => {
                                     name.chars().all(|c| c.is_lowercase() || c == '_')
                                 }
+                                Expr::Annotated { name, .. } => {
+                                    // Accept annotated bindings like [type [let a@K b] T]
+                                    name.chars().all(|c| c.is_lowercase() || c == '_')
+                                }
                                 _ => false,
                             });
                         if all_lowercase_params {
                             for binding in bindings {
-                                if let Expr::VarRef { name, .. } = &binding.node {
-                                    params.push(name.clone());
+                                match &binding.node {
+                                    Expr::VarRef { name, .. } => {
+                                        params.push(name.clone());
+                                    }
+                                    Expr::Annotated { name, .. } => {
+                                        params.push(name.clone());
+                                    }
+                                    _ => {}
                                 }
                             }
                             return Ok(());
@@ -5066,8 +5089,16 @@ fn push_expr_to_parent(
                     }
                 } else if params.is_none() {
                     // Second expression: params ([let ...])
-                    *params = Some(expr);
-                    Ok(())
+                    if matches!(expr.node, Expr::LetDecl { .. }) {
+                        *params = Some(expr);
+                        Ok(())
+                    } else {
+                        Err(ParseError {
+                            message: "macro declaration params must be a LetDecl ([let ...])"
+                                .to_string(),
+                            span: Some(expr.span),
+                        })
+                    }
                 } else if body.is_none() {
                     // Third expression: body
                     *body = Some(expr);
@@ -5478,7 +5509,7 @@ fn push_value(
         Some(StackFrame::InstanceDecl {
             ref class_name,
             ref mut current_arm_methods,
-            ref mut arms,
+            arms: _,
             ref mut pending_key,
             ref pending_arm_pattern,
             ..
@@ -5492,25 +5523,6 @@ fn push_value(
                     key: Some(key),
                     value: Rc::new(expr),
                 });
-                Ok(())
-            } else if let Expr::Dict(entries) = &expr.node {
-                // New syntax: a Dict expression after pattern colon contains method entries.
-                // e.g., [instance ClassName [pattern [...]]: ["eq": [fn ...]]]
-                // Extract its entries as method entries for the current arm.
-                for entry_spanned in entries {
-                    let entry = &entry_spanned.node;
-                    if let Some(last_arm) = arms.last_mut() {
-                        last_arm.1.push(Entry {
-                            key: entry.key.clone(),
-                            value: Rc::clone(&entry.value),
-                        });
-                    } else {
-                        current_arm_methods.push(Entry {
-                            key: entry.key.clone(),
-                            value: Rc::clone(&entry.value),
-                        });
-                    }
-                }
                 Ok(())
             } else if pending_arm_pattern.is_none() {
                 // No pending arm pattern yet — this expression is a pattern (e.g., PatternDecl).
