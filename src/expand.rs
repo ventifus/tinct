@@ -35,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::ast::{Document, Entry, Expr, File, MatchArm, NamedArg, Span, Spanned};
+use crate::ast::{Document, Entry, Expr, File, MatchArm, NamedArg, Param, Span, Spanned};
 use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
@@ -307,10 +307,7 @@ fn register_stdlib_macros_from_env(
             // Old-style defmacro — uses single "args" parameter, no pattern matching
             let dummy_params = Spanned::new(
                 Expr::LetDecl {
-                    bindings: vec![Spanned::new(
-                        Expr::var_ref("args".to_string()),
-                        span,
-                    )],
+                    bindings: vec![Spanned::new(Expr::var_ref("args".to_string()), span)],
                 },
                 span,
             );
@@ -518,7 +515,10 @@ fn pre_scan_expr(
                                     binding.span,
                                 ));
                             }
-                            Expr::Annotated { name: n, annotation } => {
+                            Expr::Annotated {
+                                name: n,
+                                annotation,
+                            } => {
                                 fn_params.push(Spanned::new(
                                     crate::ast::Param {
                                         name: n.clone(),
@@ -640,9 +640,7 @@ fn pre_scan_expr(
         }
 
         // Recursively scan other expression types
-        Expr::DotAccess { expr: target, .. } => {
-            pre_scan_expr_boxed(target, env, ctx, stdlib_env)
-        }
+        Expr::DotAccess { expr: target, .. } => pre_scan_expr_boxed(target, env, ctx, stdlib_env),
 
         Expr::Pipe { lhs, rhs } => {
             pre_scan_expr_boxed(lhs, env, ctx, stdlib_env)?;
@@ -729,10 +727,66 @@ fn pre_scan_expr(
 
         // DefMacro: also register (for backwards compatibility with existing defmacro syntax)
         Expr::DefMacro { name, params, body } => {
+            // Convert [let ...] pattern to Vec<Spanned<Param>> for Fn evaluation
+            // Extract bindings from the LetDecl pattern
+            let param_vec = if let Expr::LetDecl { bindings } = &params.node {
+                bindings
+                    .iter()
+                    .map(|binding| {
+                        match &binding.node {
+                            Expr::VarRef { name, .. } => {
+                                Spanned::new(
+                                    Param {
+                                        name: name.clone(),
+                                        annotation: None,
+                                        variadic: false,
+                                    },
+                                    binding.span,
+                                )
+                            }
+                            Expr::Annotated { name, annotation } => {
+                                Spanned::new(
+                                    Param {
+                                        name: name.clone(),
+                                        annotation: Some(annotation.clone()),
+                                        variadic: false,
+                                    },
+                                    binding.span,
+                                )
+                            }
+                            Expr::Rest(Some(rest_name)) => {
+                                Spanned::new(
+                                    Param {
+                                        name: rest_name.clone(),
+                                        annotation: None,
+                                        variadic: true,
+                                    },
+                                    binding.span,
+                                )
+                            }
+                            _ => {
+                                // Error case — invalid param; will be caught by type checker
+                                Spanned::new(
+                                    Param {
+                                        name: "???".to_string(),
+                                        annotation: None,
+                                        variadic: false,
+                                    },
+                                    binding.span,
+                                )
+                            }
+                        }
+                    })
+                    .collect()
+            } else {
+                // Error case — params should be LetDecl; will be caught by type checker
+                vec![]
+            };
+
             // Wrap params+body in a function expression
             let fn_expr = Expr::Fn {
                 return_ann: None,
-                params: params.clone(),
+                params: param_vec,
                 body: Rc::clone(body),
                 desugared: false,
             };
@@ -741,27 +795,11 @@ fn pre_scan_expr(
             // Evaluate the function in the stdlib environment
             let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
 
-            // Old-style defmacro — convert Param list to LetDecl pattern
-            let let_bindings: Vec<Spanned<Expr>> = params
-                .iter()
-                .map(|param| {
-                    Spanned::new(
-                        if param.node.variadic {
-                            Expr::Rest(Some(param.node.name.clone()))
-                        } else {
-                            Expr::var_ref(param.node.name.clone())
-                        },
-                        param.span,
-                    )
-                })
-                .collect();
-            let params_pattern = Spanned::new(Expr::LetDecl { bindings: let_bindings }, expr.span);
-
-            // Register the macro (old-style: single args dict)
+            // Register the macro (params_pattern is the LetDecl directly)
             env.register_macro(
                 name.clone(),
                 Rc::clone(&transformer_value),
-                params_pattern,
+                (**params).clone(),
                 None,
                 false, // old-style: single args dict
                 expr.span,
@@ -890,7 +928,9 @@ fn expand_document(
                         let re_expanded = expand_expr(form.clone(), env, ctx, stdlib_env)?;
                         if !matches!(
                             re_expanded.node,
-                            Expr::DefMacro { .. } | Expr::MacroDecl { .. } | Expr::SyntaxClass { .. }
+                            Expr::DefMacro { .. }
+                                | Expr::MacroDecl { .. }
+                                | Expr::SyntaxClass { .. }
                         ) {
                             expanded_exprs.push(Rc::new(re_expanded));
                         }
@@ -1070,19 +1110,24 @@ fn expand_expr_inner(
             for entry in entries {
                 // Task 4: extract the dict key string for inject: threading.
                 // The key is available if this is a string/bareword key expression.
-                let dict_key_str: Option<String> = entry.node.key.as_ref().and_then(|k| {
-                    match &k.node {
+                let dict_key_str: Option<String> =
+                    entry.node.key.as_ref().and_then(|k| match &k.node {
                         Expr::Str(s) => Some(s.clone()),
                         Expr::VarRef { name, .. } => Some(name.clone()),
                         _ => None,
-                    }
-                });
+                    });
 
                 // Task 4: if the entry value is a macro call, expand with the dict key.
                 // This is necessary for inject: threading — the macro needs to know its key.
                 let expanded_value = {
                     let value_expr = entry.node.value.as_ref();
-                    if let Expr::Call { func, args, named_args, .. } = &value_expr.node {
+                    if let Expr::Call {
+                        func,
+                        args,
+                        named_args,
+                        ..
+                    } = &value_expr.node
+                    {
                         if let Expr::VarRef { name, .. } = &func.node {
                             if env.is_macro(name) {
                                 let macro_name_clone = name.clone();
@@ -1121,14 +1166,18 @@ fn expand_expr_inner(
                 if let Expr::Splice(forms) = expanded_value.node {
                     for form in forms {
                         match &form.node {
-                            Expr::MacroDecl { .. } | Expr::SyntaxClass { .. } | Expr::DefMacro { .. } => {
+                            Expr::MacroDecl { .. }
+                            | Expr::SyntaxClass { .. }
+                            | Expr::DefMacro { .. } => {
                                 pre_scan_expr_spanned(&form, env, ctx, stdlib_env)?;
                             }
                             _ => {
                                 let re_expanded = expand_expr(form.clone(), env, ctx, stdlib_env)?;
                                 if !matches!(
                                     re_expanded.node,
-                                    Expr::DefMacro { .. } | Expr::MacroDecl { .. } | Expr::SyntaxClass { .. }
+                                    Expr::DefMacro { .. }
+                                        | Expr::MacroDecl { .. }
+                                        | Expr::SyntaxClass { .. }
                                 ) {
                                     expanded_entries.push(Spanned::new(
                                         Entry {
@@ -1462,7 +1511,10 @@ fn expand_macro_call(
                     // Variadic — consumes all remaining args; no per-arg validation here
                     break;
                 }
-                Expr::Annotated { name: param_name, annotation } => {
+                Expr::Annotated {
+                    name: param_name,
+                    annotation,
+                } => {
                     if arg_idx < args.len() {
                         validate_syntax_class(
                             &args[arg_idx],
@@ -1521,25 +1573,28 @@ fn expand_macro_call(
             let binding_expr = Spanned::new(Expr::var_ref(binding_name.clone()), call_span);
             let binding_rc = Rc::new(binding_expr);
             let binding_thunk = ast_to_dict_expr(&binding_rc, &opts, ctx)?;
-            let binding_val = eval::materialize(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
-                EvalError::user_error(
-                    format!(
-                        "macro '{}': failed to quote binding name '{}': {}",
-                        macro_name, binding_name, e.kind
-                    ),
-                    call_span,
-                )
-            })?;
-            let deep_binding_val =
-                eval::deep_materialize(&binding_val, ctx, Some(&call_span)).map_err(|mut e| {
+            let binding_val =
+                eval::materialize(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
+                    EvalError::user_error(
+                        format!(
+                            "macro '{}': failed to quote binding name '{}': {}",
+                            macro_name, binding_name, e.kind
+                        ),
+                        call_span,
+                    )
+                })?;
+            let deep_binding_val = eval::deep_materialize(&binding_val, ctx, Some(&call_span))
+                .map_err(|mut e| {
                     e.push_frame(
                         format!("deep-materializing binding arg for macro '{}'", macro_name),
                         call_span,
                     );
                     e
                 })?;
-            positional_thunks
-                .push(Rc::new(Thunk::new_materialized(deep_binding_val, call_span)));
+            positional_thunks.push(Rc::new(Thunk::new_materialized(
+                deep_binding_val,
+                call_span,
+            )));
         }
 
         // Materialize the transformer to get the function value
@@ -1575,10 +1630,7 @@ fn expand_macro_call(
                 };
                 invoke_function(&call_ctx).map_err(|e| {
                     EvalError::user_error(
-                        format!(
-                            "macro '{}' transformer call failed: {}",
-                            macro_name, e.kind
-                        ),
+                        format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
                         call_span,
                     )
                 })?
@@ -1665,10 +1717,7 @@ fn expand_macro_call(
                 };
                 invoke_function(&call_ctx).map_err(|e| {
                     EvalError::user_error(
-                        format!(
-                            "macro '{}' transformer call failed: {}",
-                            macro_name, e.kind
-                        ),
+                        format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
                         call_span,
                     )
                 })?

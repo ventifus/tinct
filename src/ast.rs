@@ -221,13 +221,13 @@ pub enum Expr {
     /// Only valid in list positions inside `[quote ...]` (not at top level of quote).
     UnquoteSplice(Box<Spanned<Expr>>),
 
-    /// Macro definition, e.g. `[defmacro unless [pred] body...]` — registers a compile-time
+    /// Macro definition, e.g. `[defmacro unless [let pred] body...]` — registers a compile-time
     /// transformer function. Multi-body support: body expressions are wrapped in Sequential.
     /// The macro expander wraps this in a function, evaluates it, registers it under `name`,
     /// and removes the DefMacro node from the AST before type-checking.
     DefMacro {
         name: String,
-        params: Vec<Spanned<Param>>,
+        params: Rc<Spanned<Expr>>, // [let ...] pattern
         body: Rc<Spanned<Expr>>,
     },
 
@@ -236,7 +236,7 @@ pub enum Expr {
     /// and removes it from the AST before type-checking.
     MacroDecl {
         name: String,
-        params: Box<Spanned<Expr>>,  // [let ...] pattern (reuses existing LetDecl)
+        params: Box<Spanned<Expr>>, // [let ...] pattern (reuses existing LetDecl)
         body: Box<Spanned<Expr>>,
     },
 
@@ -594,14 +594,7 @@ impl fmt::Display for Expr {
             Expr::Unquote(inner) => write!(f, "[unquote {}]", inner.node),
             Expr::UnquoteSplice(inner) => write!(f, "[unquote-splice {}]", inner.node),
             Expr::DefMacro { name, params, body } => {
-                write!(f, "[defmacro {} [", name)?;
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", param.node)?;
-                }
-                write!(f, "] {}]", body.node)
+                write!(f, "[defmacro {} {} {}]", name, params.node, body.node)
             }
             Expr::MacroDecl { name, params, body } => {
                 write!(f, "[macro {} {} {}]", name, params.node, body.node)
@@ -613,7 +606,11 @@ impl fmt::Display for Expr {
                 }
                 write!(f, "]")
             }
-            Expr::SyntaxClass { name, pattern, message } => {
+            Expr::SyntaxClass {
+                name,
+                pattern,
+                message,
+            } => {
                 write!(f, "[syntax-class {} pattern: {}", name, pattern.node)?;
                 if let Some(msg) = message {
                     write!(f, " message: {:?}", msg)?;

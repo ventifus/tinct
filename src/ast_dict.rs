@@ -629,49 +629,10 @@ fn expr_to_thunk_id(
                 Key::String("name".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
             );
-            // Convert params to a list of dicts
-            let mut param_list = Vec::new();
-            for param in params {
-                let mut param_dict = IndexMap::new();
-                param_dict.insert(
-                    Key::String("name".into()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                        string_val(&param.node.name),
-                        param.span,
-                    ))),
-                );
-                if let Some(ref ann) = param.node.annotation {
-                    param_dict.insert(
-                        Key::String("annotation".into()),
-                        annotation_to_thunk_id(&ann.node, ann.span, ctx)?,
-                    );
-                }
-                if param.node.variadic {
-                    param_dict.insert(
-                        Key::String("variadic".into()),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                            Value::Bool(true),
-                            param.span,
-                        ))),
-                    );
-                }
-                param_list.push(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::Dict(param_dict),
-                    param.span,
-                ))));
-            }
+            // Convert params (now a LetDecl Expr) to dict representation
             dict.insert(
                 Key::String("params".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    Value::Dict(
-                        param_list
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, v)| (Key::Int(i as i64), v))
-                            .collect(),
-                    ),
-                    span,
-                ))),
+                expr_to_thunk_id(&params.node, params.span, opts, ctx)?,
             );
             dict.insert(
                 Key::String("body".into()),
@@ -1875,19 +1836,11 @@ pub fn dict_to_ast(
         "defmacro" => {
             let name = get_string_field(dict, "name", &["type"], ctx)?;
             let params_val = get_dict_field(dict, "params", &["type"], ctx)?;
-            let params_list = extract_list(&params_val, &["params"], ctx)?;
-            let mut params = Vec::new();
-            for (i, param_val) in params_list.into_iter().enumerate() {
-                let i_str = i.to_string();
-                let param = dict_to_param(&param_val, &["params", &i_str], ctx)?;
-                params.push(param);
-            }
-
             let body_val = get_dict_field(dict, "body", &["type"], ctx)?;
 
             Expr::DefMacro {
                 name,
-                params,
+                params: Rc::new(dict_to_ast(&params_val, ctx)?),
                 body: Rc::new(dict_to_ast(&body_val, ctx)?),
             }
         }

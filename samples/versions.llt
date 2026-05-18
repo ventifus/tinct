@@ -20,9 +20,9 @@ cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]
 latest-rust: [result-or "?"
   [and-then
     [net.http-get %nc [url "https://static.rust-lang.org/dist/channel-rust-stable.toml"]]
-    [fn@[Ok Err] [resp@Dict]
+    [fn@[Ok Err] [let resp@Dict]
       [ver: [reduce
-        [fn@Dict [state@Dict line@String]
+        [fn@Dict [let state@Dict line@String]
           [t: [trim line]]
           [if [= state.version ""]
             [if [str-contains? t "[pkg.rust]"]
@@ -38,15 +38,15 @@ latest-rust: [result-or "?"
 latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]
 
 # Collect direct dep names from all dependency sections in Cargo.toml.
-dep-name-from: [fn@String [t@String]
+dep-name-from: [fn@String [let t@String]
   [trim [first [split "=" t]]]]
 
-dep-name-append: [fn@Dict [state@Dict t@String]
+dep-name-append: [fn@Dict [let state@Dict t@String]
   [name: [dep-name-from t]]
   [if [= [length name] 0] state [set state "names" [append state.names name]]]]
 
 dep-names: [sorted [reduce
-  [fn@Dict [state@Dict line@String]
+  [fn@Dict [let state@Dict line@String]
     [t: [trim line]]
     [if [starts-with? t "["]
       [set state "in-deps" [str-contains? t "dependencies"]]
@@ -57,30 +57,30 @@ dep-names: [sorted [reduce
   [split "\n" cargo-toml-text]].names]
 
 # Find a package's locked version in Cargo.lock.
-ver-after: [fn@String [after@String]
+ver-after: [fn@String [let after@String]
   [ver-line: [trim [get 1 [split "\n" after]]]]
   [str-slice ver-line 11 [trunc [- [length ver-line] 1]]]]
 
-find-locked: [fn@String [name@String]
+find-locked: [fn@String [let name@String]
   [pattern: [str "\nname = \"" name "\""]]
   [if [str-contains? cargo-lock-text pattern]
     [ver-after [get 1 [split pattern cargo-lock-text]]]
     "—"]]
 
 # Fetch the latest stable version for a crate from crates.io — "?" on failure.
-crate-latest: [fn@String [name@String]
+crate-latest: [fn@String [let name@String]
   [result-or "?"
     [and-then
       [net.http-get %nc [url [str "https://crates.io/api/v1/crates/" name]]]
-      [fn@[Ok Err] [resp@Dict]
+      [fn@[Ok Err] [let resp@Dict]
         [if [= [length resp.body] 0]
           [Err "empty response"]
           [Ok [get "max_stable_version" [get "crate" [from-json resp.body]]]]]]]]]
 
 rust-version: [env "RUST_VERSION"]
-mark: [fn@String [a@String b@String] [if [= a b] "✓" "←"]]
+mark: [fn@String [let a@String b@String] [if [= a b] "✓" "←"]]
 
-dep-row: [fn@String [name@String]
+dep-row: [fn@String [let name@String]
   [locked: [find-locked name]]
   [latest: [crate-latest name]]
   [str

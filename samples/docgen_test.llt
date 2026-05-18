@@ -6,17 +6,17 @@
 
 [
 
-before-first: [fn@String [needle@String s@String]
+before-first: [fn@String [let needle@String s@String]
   [get 0 [split needle s]]]
 
-after-first: [fn@String [needle@String s@String]
+after-first: [fn@String [let needle@String s@String]
   [before: [before-first needle s]]
   [start:  [trunc [+ [length before] [length needle]]]]
   [if [= before s]
     ""
     [str-slice s start [length s]]]]
 
-find-close: [fn [s@String depth@Int i@Int]
+find-close: [fn [let s@String depth@Int i@Int]
   [c: [str-slice s i [trunc [+ i 1]]]]
   [if [>= i [length s]]
     -1
@@ -26,14 +26,14 @@ find-close: [fn [s@String depth@Int i@Int]
         [if [= depth 1] i [find-close s [trunc [- depth 1]] [trunc [+ i 1]]]]
         [find-close s depth [trunc [+ i 1]]]]]]]
 
-extract-return: [fn@String [s@String]
+extract-return: [fn@String [let s@String]
   [t:     [trim s]]
   [close: [find-close t 1 1]]
   [if [starts-with? t "["]
     [if [= close -1] t [str-slice t 0 [trunc [+ close 1]]]]
     [before-first " [" t]]]
 
-extract-params: [fn@String [s@String]
+extract-params: [fn@String [let s@String]
   [ret:       [extract-return s]]
   [after-ret: [trim [str-slice s [length ret] [length s]]]]
   [close:     [find-close after-ret 1 1]]
@@ -41,7 +41,7 @@ extract-params: [fn@String [s@String]
     [if [= close -1] "" [str-slice after-ret 1 close]]
     ""]]
 
-sig-from-line: [fn@String [line@String]
+sig-from-line: [fn@String [let line@String]
   [after-fn: [after-first "fn@" line]]
   [ret:      [extract-return after-fn]]
   [params:   [extract-params after-fn]]
@@ -51,7 +51,7 @@ sig-from-line: [fn@String [line@String]
       [str "fn@" ret]
       [str "fn@" ret " [" params "]"]]]]
 
-parse-doc-line: [fn@Dict [line@String]
+parse-doc-line: [fn@Dict [let line@String]
   [key-name:  [trim [before-first "@[doc:" line]]]
   [after-doc: [after-first "doc: \"" line]]
   [doc-text:  [before-first "\"" after-doc]]
