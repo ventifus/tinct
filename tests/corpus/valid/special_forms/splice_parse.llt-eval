@@ -1,0 +1,7 @@
+# Test that [splice ...] parses correctly.
+# This is a parse-only test — splice expansion is not yet implemented.
+[splice [quote [x: 1]] [quote [y: 2]]]
+=== out
+[splice [quote ["x": 1]] [quote ["y": 2]]]
+=== warn
+undefined variable: splice at 2:2-2:8

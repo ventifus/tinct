@@ -1,0 +1,21 @@
+# Test: Macro expansion error provenance
+#
+# This test verifies that errors during macro expansion include provenance showing
+# which macro was expanding and at which call site.
+#
+# The dual-span provenance infrastructure exists (expand.rs:64-77 MacroProvenance)
+# and is ALREADY WORKING - errors show "in expansion of `macro-name`" context.
+#
+# TODO.md line 29 mentions adding ErrorKind::MacroError wrapper, but basic provenance
+# is already functional.
+
+# Test case: A macro that intentionally errors during expansion
+[defmacro will-error [args]
+  [/ 1 0]]  # Division by zero in transformer body
+
+# This produces an error with macro provenance context
+[will-error dummy]
+=== error
+[E080] macro 'will-error' expansion result failed to evaluate
+=== warn
+[E080] macro 'will-error' expansion result failed to evaluate

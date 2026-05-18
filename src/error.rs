@@ -112,6 +112,11 @@ pub enum ErrorKind {
         expected: String,
         got: String,
     },
+    /// Macro expansion error — validation failures, splice position errors, etc.
+    /// Distinct from UserError because it occurs during the expansion pass, not evaluation.
+    MacroError {
+        message: String,
+    },
 
     // --- Call errors (E020-E029) ---
     ArityMismatch {
@@ -336,6 +341,7 @@ impl PartialEq for ErrorKind {
                     got: g2,
                 },
             ) => e1 == e2 && g1 == g2,
+            (Self::MacroError { message: m1 }, Self::MacroError { message: m2 }) => m1 == m2,
             (
                 Self::ArityMismatch {
                     expected: e1,
@@ -483,6 +489,7 @@ impl ErrorKind {
             Self::UndefinedVariable { .. } => "E002",
             Self::TypeMismatch { .. } => "E010",
             Self::TypeAssertFailed { .. } => "E011",
+            Self::MacroError { .. } => "E012",
             Self::ArityMismatch { .. } => "E020",
             Self::MissingRequiredParam { .. } => "E024",
             Self::NamedArgConflict { .. } => "E021",
@@ -731,6 +738,9 @@ impl fmt::Display for ErrorKind {
             } => write!(f, "type mismatch: expected {expected}, got {got}"),
             Self::TypeAssertFailed { expected, got } => {
                 write!(f, "type assertion failed: expected {expected}, got {got}")
+            }
+            Self::MacroError { message } => {
+                write!(f, "macro expansion error: {message}")
             }
             Self::ArityMismatch { expected, got } => {
                 write!(f, "arity mismatch: expected {expected}, got {got}")
@@ -1053,6 +1063,19 @@ impl EvalError {
     pub fn user_error(message: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::UserError { message },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
+    pub fn macro_error(message: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::MacroError { message },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -2020,6 +2043,7 @@ mod tests {
             ErrorKind::UndefinedVariable { .. } => {}
             ErrorKind::TypeMismatch { .. } => {}
             ErrorKind::TypeAssertFailed { .. } => {}
+            ErrorKind::MacroError { .. } => {}
             ErrorKind::ArityMismatch { .. } => {}
             ErrorKind::MissingRequiredParam { .. } => {}
             ErrorKind::NamedArgConflict { .. } => {}
@@ -4333,6 +4357,7 @@ mod tests {
                 ErrorKind::UndefinedVariable { .. } => "E002",
                 ErrorKind::TypeMismatch { .. } => "E010",
                 ErrorKind::TypeAssertFailed { .. } => "E011",
+                ErrorKind::MacroError { .. } => "E012",
                 ErrorKind::ArityMismatch { .. } => "E020",
                 ErrorKind::NamedArgConflict { .. } => "E021",
                 ErrorKind::UnknownNamedArg { .. } => "E022",

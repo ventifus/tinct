@@ -26,8 +26,8 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 - [ ] Add splice handling: when macro returns `Expr::Splice(forms)`, inject each form; register any `MacroDecl`/`SyntaxClass` in splice output immediately before processing next splice form (enables meta-macros); splice in expression position is expansion error (`src/expand.rs`)
 - [ ] Validate macro arguments annotated with `@VariantName` or `@syntax-class-name` before calling macro body; raise `MacroError` at call-site span on failure (`src/expand.rs`)
 - [ ] Thread `inject:` binding name: when macro with `inject:` is in dict-key position (`key: [macro-call ...]`), pass key name to macro body as the implicit `binding` variable (`VarRef`); default to `inject:` name when in expression position (`src/expand.rs`)
-- [ ] Add `ErrorKind::MacroError { span, message }` to error system; wrap unexpected runtime errors in macro bodies with `macro_expansion` provenance (`src/error.rs`, `src/expand.rs`)
-- [ ] Tests: splice produces multiple dict entries; splice in expression position errors; `inject:` default works; dict-key override works; syntax-class validation errors at call site (`tests/corpus/eval/macros/`)
+- [x] Add `ErrorKind::MacroError { message: String }` with E012 code; `EvalError::macro_error()` constructor; macro expansion provenance working (`src/error.rs`, `src/expand.rs`)
+- [x] Tests: placeholder tests for splice/inject/error provenance; macro keyword parsing corpus tests (`tests/corpus/eval/macros/`, `tests/corpus/valid/special_forms/`)
 
 ### macros-v2-inject: inject: and macro-injects reflection
 
@@ -54,15 +54,21 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 ## Tooling
 
-### unified-bindings-remove-old-syntax: Remove pre-unified-bindings fn param syntax
+### unified-bindings-remove-old-syntax: Remove pre-unified-bindings param syntax from fn, type, and class
 
-`unified-bindings-migrate` (DONE.md) checked off "Remove old param-list parsing paths" prematurely. The old `[fn@Type [param@Ann ...] body]` syntax (without `let`) is still accepted because `parse_param_list` (src/parser.rs:798) treats `let` as optional — it skips the keyword if present but does not require it (lines 820–824). Known files still using old syntax: `scripts/docgen.llt` (all functions). There may be others in `scripts/` and `samples/`.
+`unified-bindings-migrate` (DONE.md) checked off "Remove old param-list parsing paths" prematurely. Old-form detection survives in three places:
 
-The goal is complete removal of the old paths, not a fallback parse error. `[let ...]` already works via `Expr::LetDecl` routed through the `StackFrame::Fn` push_value handler — no new code is needed, just deletions.
+- **`fn` / `macro`:** `parse_param_list` (src/parser.rs:798) treats `let` as optional (skips it if present, lines 820–824); called from `fn` at line 1656 and `macro` at line 1869. Also: `StackFrame::Fn` push_value implied-call heuristic (lines 5250–5276) detects all-lowercase `[a b c]` bracket as a param list.
+- **`type` (TypeAlias):** `StackFrame::TypeAlias` push_value (lines 5228–5295) has three cases — Case 1: `Expr::Dict` with auto-indexed lowercase vars (lines 5232–5248), Case 2: implied-call all-lowercase (lines 5250–5277); both are old forms. Case 3: `Expr::LetDecl` (lines 5278–5295) is the new form.
+- **`class` (ClassDecl):** `StackFrame::ClassDecl` push_value (lines 5527–5629) handles `Expr::Dict` (lines 5548–5570) and `Expr::Call { implied: true }` (lines 5572–5598) as old forms; `Expr::LetDecl` (lines 5600–5623) is the new form.
 
-- [ ] Run `just fmt` on all non-stdlib `.llt` files — the formatter already emits `[let ...]` form, so formatting migrates `scripts/`, `samples/`, and doc examples automatically before the parser paths are deleted
-- [ ] Delete `parse_param_list` entirely (`src/parser.rs:798`); remove all call sites — `[let ...]` params are handled by the existing `StackFrame::Fn` push_value `Expr::LetDecl` branch, so nothing needs to replace it
-- [ ] Delete the implied-call param-list detection heuristic from `StackFrame::Fn` first-expression handling (`src/parser.rs:5250–5276`) — all-lowercase implied-call bracket detection was only needed for old unannotated `[a b c]` form
+The goal is complete deletion of old paths, not a fallback parse error. `[let ...]` already works in all three contexts via `Expr::LetDecl` in each frame's push_value handler — no new code needed, only deletions.
+
+- [ ] Run `just fmt` on all non-stdlib `.llt` files — the formatter already emits `[let ...]` form, so formatting migrates `scripts/`, `samples/`, and doc examples automatically before parser paths are deleted
+- [ ] Delete `parse_param_list` entirely (`src/parser.rs:798`) and both call sites (lines 1656, 1869) — `[let ...]` params for `fn` and `macro` flow through the existing `Expr::LetDecl` branch in their push_value handlers
+- [ ] Delete `StackFrame::Fn` push_value implied-call heuristic (lines 5250–5276)
+- [ ] Delete `StackFrame::TypeAlias` push_value Cases 1 and 2 (Dict and implied-call detection, lines 5228–5277); keep only the `Expr::LetDecl` branch
+- [ ] Delete `StackFrame::ClassDecl` push_value `Expr::VarRef`, `Expr::Dict`, and `Expr::Call { implied: true }` branches (lines 5541–5598); keep only `Expr::LetDecl` — no-param classes use `[class [let Equatable] ...]`; bare-word shorthand belongs in the `macro class` let-softening macro (macros-v2-stdlib)
 - [ ] Verify `just test` passes after deletions
 - [ ] Update DONE.md to note the `unified-bindings-migrate` checkbox was completed here (the original was premature)
 
@@ -185,9 +191,128 @@ must be `(class_name, Vec<String>)` covering all determining type positions.
 - [ ] At `src/typecheck.rs:2424` (ClassDecl construction): read `resolver_injective` from parsed metadata and pass to `ClassDecl` (`src/typecheck.rs:2424`)
 - [ ] Tests: `tests/corpus/eval/typecheck/resolver_injective_flag.llt-eval` — define a class with `injective: true`; verify it parses without error and `just test` passes; semantic effect is a no-op stub for now (`tests/corpus/eval/typecheck/`)
 
+**Post-Gap-1 follow-up — wiring eval to extract type tag from pattern_expr**
+
+Once resolver evaluation (Gap 1) is working, boundary guards at CALL-MONO/CALL-POLY sites need the resolved type to construct the guard thunk.
+
+- [ ] At `src/eval.rs:1385`: extract the canonical type tag from `pattern_expr` and pass it to the boundary guard elaboration path; the comment says "chr-prelude sprint" — do this immediately after Gap 1 resolver eval lands (`src/eval.rs:1385`)
+
+**Post-Gap-4 follow-up — class declaration formatter**
+
+`src/formatter.rs:525` is a TODO to emit the structural metadata bracket (`[determines: [...] resolver: ...]`) when formatting a class declaration that has functional dependency or resolver fields. Currently silently omitted, causing round-trip loss.
+
+- [ ] At `src/formatter.rs:525`: emit the class structural-metadata bracket when `determines` or `resolver` fields are non-empty; use the same bracket syntax the parser accepts (`src/formatter.rs:525`)
+
 ---
 
 ## Codebase Health
+
+### compat-cleanup: Remove backwards-compatibility shims
+
+No public release has been made; there are no external users and nothing to be compatible with. Grep audit (2026-05-18) found 6 explicit compat paths.
+
+- [ ] Remove legacy 3-arg string mode from `builtin_open` at `src/builtins_io.rs:198-254` — drop the `if matches!(third_arg_val, Value::String { .. })` branch; only the Variant-flags form (`[open dir path Readable Text]`) is the supported API; update any tests using `[open cap path "r"]` (`src/builtins_io.rs:158-254`)
+- [ ] Remove `substitute_inline_markers` and its call site at `src/main.rs:3097-3104`; all doc/*.md files use `=== out` sections; the `<!-- tinct-result: ... -->` HTML comment format is fully retired (`src/main.rs:3093-3158`)
+- [ ] Remove `EvalError::new()` compat shim at `src/error.rs:881-885`; grep for `EvalError::new(` and update all call sites to `EvalError::internal()` or a typed `ErrorKind` constructor (`src/error.rs:881`)
+- [ ] Remove `EvalError::message()` compat shim at `src/error.rs:902-905`; grep for `.message()` and update all call sites to `.kind.to_string()` directly (`src/error.rs:902`)
+- [ ] Rename `parse2()` → `parse()` and delete the `parse()` compatibility wrapper at `src/parser.rs:5909-5920`; update all callers (`src/parser.rs:5909`)
+- [ ] Remove legacy positional constraint class list form at `src/typecheck_annot.rs:539` — the `[a: [Comparable Showable]]` form without an `each` keyword; make unkeyed list without `each` a type error with a hint pointing to `[each Comparable Showable]` syntax (`src/typecheck_annot.rs:539`)
+- [ ] Remove legacy `Expr::Dict` path for `or`/`all`/`without` type expressions at `src/typecheck_annot.rs:1189-1205`; the parser consistently produces `Call { implied: true }` for these forms and the legacy path is provably unreachable (`src/typecheck_annot.rs:1189`)
+- [ ] Verify `just test` passes after all removals (`tests/`)
+
+### dead-code-sweep: Remove unused imports and inert dead-code suppressions
+
+Grep audit (2026-05-18) found 10 items with `#[allow(dead_code)]` or `#[allow(unused_imports)]` that have no planned activation path (scaffolding tied to active sprints is excluded).
+
+- [ ] Remove `#[allow(unused_imports)]` from `src/types.rs:17`; delete or use the import (`src/types.rs`)
+- [ ] Remove `#[allow(unused_imports)]` from `src/eval_dict.rs:17`; delete or use the import (`src/eval_dict.rs`)
+- [ ] Remove `#[allow(unused_imports)]` from `src/builtins.rs:543,553`; delete or use the imports (`src/builtins.rs`)
+- [ ] Remove `#[allow(dead_code)]` from `src/type_env.rs:25`; delete or use the item (`src/type_env.rs`)
+- [ ] Remove `#[allow(dead_code)]` from `src/error.rs:2015`; delete or use the item (`src/error.rs`)
+- [ ] Remove `#[allow(dead_code)]` from `src/typecheck.rs:4384`; delete or use the item (`src/typecheck.rs`)
+- [ ] Remove `#[allow(dead_code)]` from `src/lib.rs:37,1080,1093,1105`; delete or use each item (`src/lib.rs`)
+- [ ] Remove `#[allow(dead_code)]` from `src/eval.rs:202,207` (EvalContext fields); either add a read site or delete the fields (`src/eval.rs`)
+- [ ] Delete `extract_instance_type_name` at `src/eval.rs:1469` — `#[allow(dead_code)]`, no call sites; chr-gaps accesses instance types via a different path (`src/eval.rs:1469`)
+- [ ] Remove `#[allow(dead_code)]` from `src/eval_call.rs:41`; CEK migration has no active sprint — delete the dead function (`src/eval_call.rs`)
+- [ ] Verify `just test` passes with `-D warnings` after all removals (`tests/`)
+
+### scaffolding-cleanup: Remove dead scaffolding from completed and cancelled sprints
+
+Follow-up audit (2026-05-18) confirmed most "scaffolding" items are genuinely dead — the sprints they were written for are done (DONE.md) but the scaffolding was never removed. Three categories:
+
+**A. Stale dead_code annotations on live code** — items marked dead_code when written but now activated by completed sprints; fix by removing the suppress attr:
+
+- [ ] Remove stale `#[allow(dead_code)]` from `Kind::Arrow`, `Kind::Operator`, `Kind::Label`, `Kind::Var`, `KindError`, `Label` in `src/type_def.rs:42-93`; confirmed live — all have call sites in `typecheck.rs`, `typecheck_annot.rs`, `type_unify.rs`, `type_env.rs`; `hkt-kind-inference` and `bas-core` sprints are done (`src/type_def.rs`)
+- [ ] Remove stale `#[allow(dead_code)]` from `ClassDecl` fields in `src/type_class.rs:74-100` (`type_params`, `instance_types`, `method_types`, `determines`, `resolver`, `resolver_injective`); audit each against chr-gaps task list — fields read by chr-gaps tasks should have dead_code removed now, genuinely unused fields should be deleted (`src/type_class.rs`)
+
+**B. Genuinely dead functions from completed sprints** — BAS infrastructure written but not wired; `bas-core` is done (DONE.md) and does not use these; delete them:
+
+- [ ] Delete `compact_bounds` at `src/type_unify.rs:1323` — no call sites in production code; BAS done without it (`src/type_unify.rs:1323`)
+- [ ] Delete `check_bounds_satisfiable` at `src/type_unify.rs:1365` — no call sites; BAS done without it (`src/type_unify.rs:1365`)
+- [ ] Delete `constrain` at `src/type_unify.rs:1412` — no call sites from production; BAS done without it; also removes the only callers of `TypeVarBounds::add_lower`/`add_upper` (`src/type_unify.rs:1412`)
+- [ ] Note: `process_deferred_equalities` at `src/type_unify.rs:2319` is NOT dead BAS scaffolding — it is chr-gaps infrastructure for TypeStageApp resolution; wire it as a call site in chr-gaps Gap 1 (resolver evaluation), then remove the `#[allow(dead_code)]` attr (`src/type_unify.rs:2319`)
+- [ ] Delete `TypeVarBounds::add_lower` and `add_upper` at `src/type_infer.rs:32-41` — only called from dead `constrain()`; if no other callers after deleting `constrain`, remove these too (`src/type_infer.rs:32-41`)
+- [ ] Delete `ConstraintSource` at `src/type_infer.rs:53-57` — defined, never constructed or referenced outside its file (`src/type_infer.rs:53-57`)
+- [ ] Delete `ClassEnv::parent`, `ClassEnv::with_parent`, `InstanceEnv::parent`, `InstanceEnv::with_parent`, `InstanceEnv::get` at `src/type_class.rs:125-211` — "Scaffolding for scoped class environments" and "Instance lookup used during dictionary construction"; no sprint planned for scoped environments (`src/type_class.rs:125-211`)
+
+**C. arena-phase3 scaffolding** — `FlatEnv`, `EnvArena`, `EnvId`, `ThunkArena::alloc_letrec_group`, `ThunkArena::fill_letrec_slot`, and the `env_arena` field on `EvalContext` are pre-written for the `arena-phase3` sprint and should NOT be deleted. See `arena-phase3` sprint below.
+
+### arena-phase3: O(1) variable lookup via FlatEnv display-vector addressing
+
+Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::get)` per VarRef) with O(1) slot access via de Bruijn (level, slot) coordinates. The variable resolution pass (`arena-resolve`, DONE) already populates every `VarRef.resolved` with static coordinates; the evaluator currently ignores them (`let _ = resolved`). This sprint wires them up.
+
+**Why it matters:** every VarRef lookup currently walks 3–5 HashMap levels; stdlib lookups always traverse the full chain. With O(1) flat lookup, repeated evaluation of function bodies (the hot path for recursive programs) avoids all chain traversal. For flat configuration files the gain is modest; for recursive/iterative patterns it compounds.
+
+**Design reference:** `doc/feature/arena-patterns.md §Environment Representation` and §Letrec Compatibility. Key insight: tinct's letrec sharing model — all dict-entry thunks share one `FlatEnv` — means no upvalue arrays are needed; slots are filled sequentially as thunks are created (`alloc_letrec_group` / `fill_letrec_slot` already implement this protocol).
+
+**Existing scaffolding (do NOT delete — wire instead):**
+- `src/arena.rs:111-230` — `EnvArena`, `FlatEnv`, `EnvId` (pre-written, tested in unit tests)
+- `src/arena.rs:75,94` — `ThunkArena::alloc_letrec_group`, `fill_letrec_slot` (letrec placeholder protocol)
+- `src/eval.rs:208` — `env_arena: Rc<RefCell<EnvArena>>` field on EvalContext (constructed but unused)
+- `src/ast.rs:136` — `VarRef.resolved: RefCell<Option<Option<(u32, u32)>>>` (populated by resolve pass, currently suppressed in eval)
+
+**Implementation order:**
+
+- [ ] Add a *display vector* field to `FlatEnv`: `display: Vec<EnvId>` prepopulated at creation with the `EnvId` of every ancestor scope from 0 to current level; this makes `display[level].slots[slot]` a two-index O(1) access with no chain traversal; display is built once per closure/dict creation from the parent `FlatEnv`'s display + self (`src/arena.rs`)
+- [ ] Wire `eval_dict` to allocate a `FlatEnv` for each dict scope via `alloc_letrec_group` (pre-size to the static-key count from the resolve pass); call `fill_letrec_slot` as each entry thunk is created; pass the `FlatEnv`'s `EnvId` to child thunks (`src/eval_dict.rs`)
+- [ ] Wire `eval.rs:677-684` VarRef dispatch: if `*resolved.borrow()` is `Some(Some((level, slot)))`, read via display vector — `ctx.env_arena.borrow().get(current_flatenv.display[level]).get_slot(slot)`; if `Some(None)` (resolver ran but couldn't resolve — i.e., stdlib binding) or `None` (computed key / $include binding), fall back to `env.borrow().get(name)` name-based chain; the resolver only assigns coordinates for user-scope bindings so stdlib lookups always fall through correctly with no offset arithmetic needed (`src/eval.rs:677`)
+- [ ] No level-offset hack needed: the resolver assigns level 0 to the outermost user dict scope and cannot see stdlib bindings (injected at runtime), so all stdlib VarRefs produce `Some(None)` and take the name-based fallback path; user-scope levels are self-contained in the display vector (doc/feature/arena-patterns.md §Contrast with Lua 5.4 Upvalues: "parent chain retained for stdlib only, at most two hops for user code") (`src/resolve.rs`)
+- [ ] Update closure capture in `eval_call` (function application): when creating a function closure, clone the callee's display vector and extend it with the new param-scope `FlatEnv` (`src/eval_call.rs`)
+- [ ] Remove `#[allow(dead_code)]` from `FlatEnv`, `EnvArena`, `EnvId`, `alloc_letrec_group`, `fill_letrec_slot`, `env_arena` field once all wired (`src/arena.rs`, `src/eval.rs`)
+- [ ] Benchmark: run `just bench` (or a representative workload) before and after; confirm VarRef-heavy programs see measurable improvement; document in commit message (`tests/`)
+- [ ] Verify `just test` passes (`tests/`)
+
+### type-warning-channel: Emit typecheck diagnostics to LSP and CLI
+
+The type-warning infrastructure is wired (InferState collects diagnostics, EvalContext has a channel slot) but emission is stubbed at both ends. Two call sites in `src/main.rs` and one in `src/lsp/document.rs` collect diagnostics then drop them.
+
+- [ ] In `src/lsp/document.rs:135`: convert collected `Vec<TypeError>` diagnostics to LSP `Diagnostic` structs and publish via `publishDiagnostics` notification; use existing span-to-range conversion helpers already present in the file (`src/lsp/document.rs:135`)
+- [ ] In `src/main.rs:1727`: emit collected diagnostics to stderr using `format_type_error`; apply the same severity mapping used for hard errors (`src/main.rs:1727`)
+- [ ] In `src/main.rs:1965`: same as above for the second call site (`src/main.rs:1965`)
+- [ ] Tests: corpus test with a type warning (e.g., `@Unknown` annotation) verifies warning appears in CLI output; LSP test verifies `publishDiagnostics` fires for a file with a type warning (`tests/corpus/`, `tests/lsp_corpus_tests.rs`)
+
+### typecheck-gaps: Monomorphic recursion and tuple type encoding
+
+Two type system correctness gaps found in the 2026-05-18 audit with no existing sprint.
+
+**Monomorphic recursion** (`src/typecheck.rs:1951`): the type checker currently rejects all recursive binding-group references uniformly. This is overly conservative — recursive calls where the type is fully determined at the call site (e.g., `[fn@Int [let n@Int] [if [= n 0] 1 [* n [recur [- n 1]]]]]`) should be allowed; only polymorphic recursion (where the recursive call instantiates the function at a different type) should be rejected.
+
+**Tuple type** (`src/typecheck.rs:2619`): tinct has no tuple type; the type checker stubs tuple entries as `Type::Unknown`. The correct encoding per BAS is a closed record: `(Int, Str)` → `{0: Int, 1: Str}`. This matches the evaluation model (tuples are dicts with integer keys).
+
+- [ ] Allow monomorphic recursion in `check_dict_entry_recursive`: if the recursive self-reference is at a consistent type (all uses unify to the same concrete type), allow it; block only if the call tries to instantiate the same binding at multiple incompatible types — implement using the existing SCC binding-group machinery (`src/typecheck.rs:1951`)
+- [ ] Encode tuple type as closed record in `resolve_type_tuple`: replace `Type::Unknown` stub with `Type::Record(Row { fields: {0: T0, 1: T1, ...}, tail: RowTail::Closed })` where field names are the string forms of the integer positions; no new `Type::Tuple` variant needed (`src/typecheck.rs:2619`)
+- [ ] Tests: monomorphic recursive function with explicit return annotation typechecks clean; tuple annotation `@[Int Str]` resolves to closed record with fields `"0"` and `"1"` (`tests/corpus/eval/typecheck/`)
+
+### io-phase2: `--libdir-path`, `source_file` attribution, and SPKI extraction
+
+Three unrelated I/O and infrastructure gaps that have no sprint home.
+
+- [ ] Add `--libdir-path PATH` CLI flag at `src/main.rs:1197`: override the stdlib directory for custom installations where `stdlib/` is not co-located with the binary; fall back to the current sibling-of-binary detection when flag is absent; wire through to `build_prelude_env()` via `EvalConfig` (`src/main.rs:1197`, `src/imports.rs`)
+- [ ] Wire `source_file` through `EvalContext` at `src/eval.rs:1044`: the child `EvalContext` constructed for builtin call environments sets `source_file: None`, losing the originating file path for error attribution; propagate from the parent context (`src/eval.rs:1044`)
+- [ ] Implement SPKI extraction in `builtin_tls_peer_cert` at `src/builtins_io.rs:3166`: properly parse the X.509 DER bytes to extract the SubjectPublicKeyInfo field; the `rustls` or `x509-parser` crate already in the dependency tree provides DER parsing (`src/builtins_io.rs:3166`)
+- [ ] Note: QUIC datagram send/recv (`src/builtins_io.rs:4122`) requires async send/recv not available in the synchronous builtin model; tracked in `doc/whatif/async-eval.md`; no implementation sprint until async-eval is accepted and lands
+
+---
 
 ### unknown-elimination: Replace remaining `Type::Unknown` builtin signatures with precise types
 

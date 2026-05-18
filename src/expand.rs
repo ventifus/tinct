@@ -94,12 +94,23 @@ impl From<Span> for SpanKey {
     }
 }
 
+/// Metadata for a registered macro — the transformer function, params pattern, and inject default.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // TODO: params and inject_default will be used when Tasks 1-4 are fully implemented
+struct MacroMetadata {
+    /// The transformer function (as a Value).
+    transformer: Rc<Thunk>,
+    /// The params pattern (LetDecl) for binding arguments.
+    params: Spanned<Expr>,
+    /// Optional inject: default name for anaphoric macros.
+    inject_default: Option<String>,
+}
+
 /// Macro expansion context — tracks registered macros and prevents infinite expansion.
 #[derive(Debug, Clone)]
 pub struct MacroEnv {
-    /// Map from macro name to the transformer function (as a Value).
-    /// The transformer is a function that takes AST dicts and returns an AST dict.
-    macros: HashMap<String, Rc<Thunk>>,
+    /// Map from macro name to its metadata (transformer, params, inject default).
+    macros: HashMap<String, MacroMetadata>,
     /// Expansion depth counter — prevents deeply nested expansions.
     depth: usize,
     /// Total node count expanded — prevents runaway macro generation.
@@ -141,12 +152,14 @@ impl MacroEnv {
         }
     }
 
-    /// Register a macro transformer.
+    /// Register a macro transformer with params pattern and inject default.
     /// Returns an error if the name collides with a registered Rust builtin.
     fn register_macro(
         &mut self,
         name: String,
         transformer: Rc<Thunk>,
+        params: Spanned<Expr>,
+        inject_default: Option<String>,
         span: Span,
     ) -> EvalResult<()> {
         // Check if the name collides with a registered builtin
@@ -165,7 +178,14 @@ impl MacroEnv {
             )
             .into());
         }
-        self.macros.insert(name, transformer);
+        self.macros.insert(
+            name,
+            MacroMetadata {
+                transformer,
+                params,
+                inject_default,
+            },
+        );
         Ok(())
     }
 
@@ -174,8 +194,8 @@ impl MacroEnv {
         self.macros.contains_key(name)
     }
 
-    /// Get the transformer for a macro.
-    fn get_transformer(&self, name: &str) -> Option<&Rc<Thunk>> {
+    /// Get the metadata for a macro.
+    fn get_macro(&self, name: &str) -> Option<&MacroMetadata> {
         self.macros.get(name)
     }
 
@@ -262,8 +282,24 @@ fn register_stdlib_macros_from_env(
             env_ref.get(macro_name)
         };
         if let Some(transformer) = transformer_thunk {
+            // Old-style defmacro — uses single "args" parameter, no pattern matching
+            let dummy_params = Spanned::new(
+                Expr::LetDecl {
+                    bindings: vec![Spanned::new(
+                        Expr::var_ref("args".to_string()),
+                        span,
+                    )],
+                },
+                span,
+            );
             // register_macro checks for builtin collisions.
-            let _ = env_macro.register_macro((*macro_name).to_string(), transformer, span);
+            let _ = env_macro.register_macro(
+                (*macro_name).to_string(),
+                transformer,
+                dummy_params,
+                None,
+                span,
+            );
         }
     }
 }
@@ -428,32 +464,20 @@ fn pre_scan_expr(
     match &expr.node {
         Expr::MacroDecl { name, params, body } => {
             // Extract inject: default from params if present
-            // The inject: key is a KeyedEntry in the params Let bindings
-            let _inject_default = extract_inject_default(params);
+            let inject_default = extract_inject_default(params);
 
-            // MacroDecl uses Box<Spanned<Expr>> for params, convert to Fn params
-            // For now, we'll evaluate it as-is using the DefMacro path
-            // which takes the params as a single argument
-            let fn_expr = Expr::Fn {
-                return_ann: None,
-                params: vec![Spanned::new(
-                    crate::ast::Param {
-                        name: "args".to_string(),
-                        annotation: None,
-                        variadic: false,
-                    },
-                    params.span,
-                )],
-                body: Rc::new(body.as_ref().clone()),
-                desugared: false,
-            };
-            let fn_spanned = Spanned::new(fn_expr, expr.span);
+            // Evaluate the macro body as a function
+            // The body is evaluated directly, no wrapping needed
+            let transformer_value = eval::eval(Rc::new(body.as_ref().clone()), Rc::clone(stdlib_env), ctx)?;
 
-            // Evaluate the function in the stdlib environment
-            let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
-
-            // Register the macro
-            env.register_macro(name.clone(), Rc::clone(&transformer_value), expr.span)?;
+            // Register the macro with its params pattern and inject default
+            env.register_macro(
+                name.clone(),
+                Rc::clone(&transformer_value),
+                params.as_ref().clone(),
+                inject_default,
+                expr.span,
+            )?;
 
             // Record the discovered macro for propagation
             env.discovered_macros
@@ -601,8 +625,30 @@ fn pre_scan_expr(
             // Evaluate the function in the stdlib environment
             let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
 
+            // Old-style defmacro — convert Param list to LetDecl pattern
+            let let_bindings: Vec<Spanned<Expr>> = params
+                .iter()
+                .map(|param| {
+                    Spanned::new(
+                        if param.node.variadic {
+                            Expr::Rest(Some(param.node.name.clone()))
+                        } else {
+                            Expr::var_ref(param.node.name.clone())
+                        },
+                        param.span,
+                    )
+                })
+                .collect();
+            let params_pattern = Spanned::new(Expr::LetDecl { bindings: let_bindings }, expr.span);
+
             // Register the macro
-            env.register_macro(name.clone(), Rc::clone(&transformer_value), expr.span)?;
+            env.register_macro(
+                name.clone(),
+                Rc::clone(&transformer_value),
+                params_pattern,
+                None,
+                expr.span,
+            )?;
 
             // Record the discovered macro for propagation
             env.discovered_macros
@@ -1110,25 +1156,23 @@ fn expand_expr_inner(
     }
 }
 
-/// Expand a macro call by invoking the transformer with quoted arguments.
+/// Expand a macro call by matching arguments against the macro's params pattern.
 ///
-/// The transformer receives a single argument: a list of AST dicts (one per positional arg).
-/// It returns an AST dict which is converted back to an Expr node via `dict_to_ast`.
+/// The transformer receives arguments bound according to the [let ...] pattern in the macro's
+/// params field. It returns an AST dict (or Splice) which is converted back to an Expr node.
 /// The result is then re-expanded (fixpoint) until no macro calls remain.
 ///
-/// Hygiene: a fresh `ScopeId` is allocated per invocation, and any bindings
-/// introduced by the expansion (fn params, dict keys that are new names) are
-/// renamed to `name:scope:N` to prevent capture of call-site variables.
+/// Supports:
+/// - Pattern matching: [macro my-if [let cond then else] body]
+/// - Syntax-class validation: [macro pragma [let name@VarRef value@Literal] body]
+/// - Anaphoric macros with inject: threading (task 4)
+/// - Splice handling (task 2)
 ///
 /// ## Arena Boundary Invariant
 ///
 /// The macro expansion boundary is a data boundary. Both the input AST dict and the output
 /// AST dict are fully materialized before crossing. No arena-relative ThunkId handles may
 /// flow from the stdlib arena into the expansion arena or vice versa.
-///
-/// This ensures that transformer functions from the stdlib (which contain ThunkIds pointing
-/// into their creation-time arena) cannot leak those handles into the expansion arena's
-/// value graph. Both input and output are pure Value trees with no lazy references.
 fn expand_macro_call(
     macro_name: &str,
     args: &[Rc<Spanned<Expr>>],
@@ -1191,10 +1235,10 @@ fn expand_macro_call(
     let args_thunk = Rc::new(Thunk::new_materialized(deep_args_value, call_span));
 
     // Get the transformer and call it with the args list
-    let transformer = env
-        .get_transformer(macro_name)
-        .expect("macro name verified before call")
-        .clone();
+    let macro_metadata = env
+        .get_macro(macro_name)
+        .expect("macro name verified before call");
+    let transformer = macro_metadata.transformer.clone();
 
     // Materialize the transformer to get the function value
     let transformer_val = eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
@@ -1310,6 +1354,59 @@ fn expand_macro_call(
 
     // Re-expand the result (fixpoint)
     expand_expr(expanded_ast, env, ctx, stdlib_env)
+}
+
+/// Validate an argument against a syntax-class annotation (Task 3).
+///
+/// For now, only supports @VariantName syntax (e.g., @VarRef, @Literal).
+/// Full named syntax-class support is TODO.
+#[allow(dead_code)] // TODO: will be used when Task 1 pattern matching is fully implemented
+fn validate_syntax_class(
+    arg: &Rc<Spanned<Expr>>,
+    annotation: &crate::ast::Annotation,
+    param_name: &str,
+    macro_name: &str,
+    call_span: Span,
+) -> EvalResult<()> {
+    use crate::ast::Annotation;
+
+    match annotation {
+        Annotation::Simple(name) => {
+            // Simple annotation like @VarRef, @Literal
+            // Check if the arg matches the expected variant
+            let expected_variant = name.as_str();
+            let got_variant = match &arg.node {
+                Expr::VarRef { .. } => "VarRef",
+                Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) => "Literal",
+                Expr::Call { .. } => "Call",
+                Expr::Dict(_) => "Dict",
+                Expr::LetDecl { .. } => "Let",
+                Expr::Fn { .. } => "Fn",
+                Expr::Sequential(_) => "Seq",
+                Expr::Annotated { .. } => "Annotated",
+                Expr::Quote(_) => "Quote",
+                Expr::Unquote(_) => "Unquote",
+                Expr::UnquoteSplice(_) => "UnquoteSplice",
+                _ => "other",
+            };
+
+            if expected_variant != got_variant {
+                return Err(EvalError::macro_error(
+                    format!(
+                        "macro '{}': argument '{}' expected {}, got {}",
+                        macro_name, param_name, expected_variant, got_variant
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+            Ok(())
+        }
+        _ => {
+            // Other annotation types not yet supported
+            Ok(())
+        }
+    }
 }
 
 /// Look up provenance for a span and format an "in expansion of" note.
