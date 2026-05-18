@@ -2514,45 +2514,48 @@ impl TypeEnv {
         );
 
         // Sequences: transforms
-        // TODO(unknown-elimination): map/filter/reduce use Unknown because the Mappable typeclass
-        // (MappableSeq, MappableDict in stdlib/prelude.llt) requires higher-kinded types
-        // (Type::App(Operator("f"), TypeVar("a"))) which are not yet representable in TypeScheme.
-        // Target signature: ∀f a b. Mappable f => (a → b) → f a → f b
+        // map: truly needs HKT (∀f a b. Mappable f ⇒ (a→b)→f a→f b) — requires Type::App/Operator
+        // resolution not yet ready. Dual-dispatch at runtime (Dict|Seq), Unknown for now.
+        // TODO(unknown-elimination): Replace with Mappable f => (a → b) → f a → f b once
+        // instance resolution works.
         env.insert(
             "map".to_string(),
             Type::Function {
                 params: vec![
-                    (
-                        Some("fn_".to_string()),
-                        Type::Function {
-                            params: vec![(None, Type::Unknown)], // Genuinely unknown: HKT required
-                            ret: Box::new(Type::Unknown),        // Genuinely unknown: HKT required
-                            variadic: false,
-                        },
-                    ),
-                    (Some("seq".to_string()), Type::Unknown), // Genuinely unknown: HKT required
+                    (None, Type::Top), // callback: any function
+                    (None, Type::Unknown), // collection: Dict or Seq, can't express yet
                 ],
-                ret: Box::new(Type::Unknown), // Genuinely unknown: HKT required
+                ret: Box::new(Type::Unknown), // returns same shape as input
                 variadic: false,
             },
         );
-        // Target signature: ∀f a. Mappable f => (a → Bool) → f a → f a
-        env.insert(
+        // filter: ∀a. (a → Bool) → Seq a → Seq a
+        // Seq-specific for now. Runtime also accepts Dict, but we can't express Dict|Seq
+        // without union subtyping. Dict callers will hit a type error; they should use
+        // [filter pred [each dict]] explicitly.
+        env.insert_scheme(
             "filter".to_string(),
-            Type::Function {
-                params: vec![
-                    (
-                        Some("pred".to_string()),
-                        Type::Function {
-                            params: vec![(None, Type::Unknown)], // Genuinely unknown: HKT required
-                            ret: Box::new(Type::Bool),
-                            variadic: false,
-                        },
-                    ),
-                    (Some("seq".to_string()), Type::Unknown), // Genuinely unknown: HKT required
-                ],
-                ret: Box::new(Type::Unknown), // Genuinely unknown: HKT required
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![
+                        (
+                            Some("pred".to_string()),
+                            Type::Function {
+                                params: vec![(None, Type::TypeVar("a".to_string(), 0))],
+                                ret: Box::new(Type::Bool),
+                                variadic: false,
+                            },
+                        ),
+                        (Some("xs".to_string()), Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                    ],
+                    ret: Box::new(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
         env.insert(
@@ -2573,25 +2576,37 @@ impl TypeEnv {
         );
 
         // Sequences: reductions
-        // TODO(unknown-elimination): reduce uses Unknown for the same HKT reason as map/filter.
-        // Target signature: ∀a b. (b → a → b) → b → Seq(a) → b
-        env.insert(
+        // reduce: ∀a b. (b → a → b) → b → Seq a → b
+        // Seq-specific for now. Runtime also accepts Dict, but we can't express Dict|Seq
+        // without union subtyping. Dict callers will hit a type error; they should use
+        // [reduce fn init [each dict]] explicitly.
+        env.insert_scheme(
             "reduce".to_string(),
-            Type::Function {
-                params: vec![
-                    (
-                        Some("fn_".to_string()),
-                        Type::Function {
-                            params: vec![(None, Type::Unknown), (None, Type::Unknown)], // Genuinely unknown: HKT
-                            ret: Box::new(Type::Unknown), // Genuinely unknown: HKT
-                            variadic: false,
-                        },
-                    ),
-                    (Some("init".to_string()), Type::Unknown), // Genuinely unknown: HKT
-                    (Some("seq".to_string()), Type::Seq(Box::new(Type::Unknown))), // Genuinely unknown: HKT
-                ],
-                ret: Box::new(Type::Unknown), // Genuinely unknown: HKT
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string(), "b".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![
+                        (
+                            Some("fn_".to_string()),
+                            Type::Function {
+                                params: vec![
+                                    (None, Type::TypeVar("b".to_string(), 0)),
+                                    (None, Type::TypeVar("a".to_string(), 0)),
+                                ],
+                                ret: Box::new(Type::TypeVar("b".to_string(), 0)),
+                                variadic: false,
+                            },
+                        ),
+                        (Some("init".to_string()), Type::TypeVar("b".to_string(), 0)),
+                        (Some("xs".to_string()), Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                    ],
+                    ret: Box::new(Type::TypeVar("b".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
         env.insert(
@@ -3160,21 +3175,81 @@ impl TypeEnv {
         }
 
         // Iteration builtins: each, each-key, each-kv
-        // Each takes 1 arg (a dict/collection) and returns a lazy Seq of elements/keys/kv-pairs.
-        // The return element type depends on the input dict's value types — requires HKT to
-        // express precisely. Top is used for the input (accepts any Dict or Map).
-        // TODO(unknown-elimination): Return type should be Seq(T) for element type T.
-        // Requires HKT or specific dict-to-element type inference.
-        for name in ["each", "each-key", "each-kv"] {
-            env.insert(
-                name.to_string(),
-                Type::Function {
-                    params: vec![(None, Type::Top)], // accepts any Dict or Map
-                    ret: Box::new(Type::Unknown),    // Genuinely unknown: element type requires HKT
+        // Runtime: 1-arg functions that convert Dict → Seq
+        // each: Dict a → Seq a (values)
+        // each-key: Dict → Seq (Int | Str) (keys)
+        // each-kv: Dict a → Seq [key: Int | Str, value: a] (key-value pairs)
+
+        // each: ∀a. Record → Seq a
+        env.insert_scheme(
+            "each".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(
+                        Some("xs".to_string()),
+                        Type::Record(Row { fields: HashMap::new() }), // Dict (open record)
+                    )],
+                    ret: Box::new(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
                     variadic: false,
                 },
-            );
-        }
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
+        // each-key: Record → Seq (Int | Str)
+        env.insert_scheme(
+            "each-key".to_string(),
+            TypeScheme {
+                type_vars: vec![],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(
+                        Some("xs".to_string()),
+                        Type::Record(Row { fields: HashMap::new() }), // Dict (open record)
+                    )],
+                    ret: Box::new(Type::Seq(Box::new(Type::normalize_union(vec![
+                        Type::Int,
+                        Type::Str,
+                    ])))),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
+        // each-kv: ∀a. Record → Seq [key: Int | Str, value: a]
+        env.insert_scheme(
+            "each-kv".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(
+                        Some("xs".to_string()),
+                        Type::Record(Row { fields: HashMap::new() }), // Dict (open record)
+                    )],
+                    ret: Box::new(Type::Seq(Box::new({
+                        let mut kv_fields = HashMap::new();
+                        kv_fields.insert(
+                            "key".to_string(),
+                            Type::normalize_union(vec![Type::Int, Type::Str]),
+                        );
+                        kv_fields.insert("value".to_string(), Type::TypeVar("a".to_string(), 0));
+                        Type::Record(Row { fields: kv_fields })
+                    }))),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
 
         // Type constructors
         // Map with Unknown K/V is the unparameterized Map type — used when the user writes
