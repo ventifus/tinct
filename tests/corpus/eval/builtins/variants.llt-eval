@@ -1,0 +1,33 @@
+# Comprehensive variant operations
+# Tests: variant, tag-of, type-of, equality, str coercion, VarRef access
+
+[
+  # Variant construction
+  Red: [variant "Red"]
+  Blue: [variant "Blue"]
+  Green: [variant "Green"]
+
+  # Unit constructor evaluation
+  unit_constructor: Red
+
+  # tag-of operation
+  tag_of_red: [tag-of Red]
+  tag_of_green: [tag-of Green]
+
+  # type-of operation
+  type_of_variant: [type-of Red]
+
+  # Equality operations
+  eq_same: [= Red Red]
+  eq_different: [= Red Blue]
+  eq_same_green: [= Green Green]
+
+  # String coercion
+  str_variant: [str Red]
+
+  # VarRef access
+  selected: Red
+  selected_type: [type-of selected]
+]
+=== out
+Dict({"Red": Variant(Red, Null), "Blue": Variant(Blue, Null), "Green": Variant(Green, Null), "unit_constructor": Variant(Red, Null), "tag_of_red": String("Red"), "tag_of_green": String("Green"), "type_of_variant": String("Variant"), "eq_same": Bool(true), "eq_different": Bool(false), "eq_same_green": Bool(true), "str_variant": String("Red"), "selected": Variant(Red, Null), "selected_type": String("Variant")})

@@ -142,10 +142,10 @@ The corpus test suite has grown to hundreds of fine-grained single-feature tests
 
 **Strategy:** Merge tests within the same subdirectory that share the same builtin or feature area. Keep negative/error tests separate (one file per distinct error code is fine). Target: reduce corpus file count by 30-40%. Use `=== info` for expected log/stdout output in consolidated tests.
 
-- [ ] Audit `tests/corpus/eval/builtins/` — merge arithmetic variants, string operation variants, and type-predicate variants into composite tests; use `=== info` for any `log` output (`tests/corpus/eval/builtins/`)
-- [ ] Audit `tests/corpus/eval/typecheck/` — merge related positive typecheck tests into 1-3 comprehensive files per feature area (`tests/corpus/eval/typecheck/`)
-- [ ] Audit `tests/corpus/eval/stdlib/` — merge related prelude function tests; use `=== info` for `log` output (`tests/corpus/eval/stdlib/`)
-- [ ] Verify `just test` passes after consolidation; update any CI time baselines (`tests/`)
+- [x] Audit `tests/corpus/eval/builtins/` — merge arithmetic variants, string operation variants, and type-predicate variants into composite tests; use `=== info` for any `log` output (`tests/corpus/eval/builtins/`)
+- [x] Audit `tests/corpus/eval/typecheck/` — merge related positive typecheck tests into 1-3 comprehensive files per feature area (`tests/corpus/eval/typecheck/`)
+- [x] Audit `tests/corpus/eval/stdlib/` — merge related prelude function tests; use `=== info` for `log` output (`tests/corpus/eval/stdlib/`)
+- [x] Verify `just test` passes after consolidation; update any CI time baselines (`tests/`)
 
 ---
 

@@ -1,0 +1,50 @@
+# Comprehensive dict operations
+# Tests: keys, merge, map, filter, reduce, length, take, drop, get
+# Covers construction, transformation, merging, and edge cases
+
+[
+  # Keys extraction
+  keys_basic: [keys [a: 1  b: 2]]
+
+  # Length operations
+  length_dict: [length [a: 1  b: 2  c: 3]]
+  length_string: [length "hello"]
+  length_bytes: [length [bytes-of [0 255]]]
+
+  # Merge operations
+  merge_basic: [merge [a: 1  b: 2] [b: 3  c: 4]]
+  merge_disjoint: [merge [a: 1] [b: 2]]
+  merge_right_overrides: [merge [a: 1] [a: 2]]
+  merge_lazy_overlay: [
+    merged: [merge [x: 10  y: 20] [y: 99  z: 30]]
+    x-val: merged.x
+    y-val: merged.y
+    z-val: merged.z
+  ]
+
+  # Map operations on dicts
+  map_dict: [map [fn [x] [* x 2]] [a: 1 b: 2 c: 3]]
+  map_empty_dict: [map [fn [x] [* x 2]] []]
+
+  # Filter operations on dicts (returns seq)
+  filter_dict: [collect [filter [fn [x] [> x 2]] [a: 1 b: 3 c: 5]]]
+  filter_dict_multi: [collect [filter [fn [x] [> x 2]] [a: 1 b: 2 c: 3 d: 4 e: 5]]]
+  filter_empty_dict: [collect [filter [fn [x] true] []]]
+
+  # Reduce operations on dicts
+  reduce_dict: [reduce [fn [acc x] [+ acc x]] 0 [10 20 30]]
+  reduce_empty_dict: [reduce [fn [acc x] [+ acc x]] 99 []]
+
+  # Take and drop on dicts
+  take_dict: [take 2 [a: 1  b: 2  c: 3]]
+  drop_dict: [drop 1 [a: 1  b: 2  c: 3]]
+  drop_exceeds_dict: [drop 5 [a: 1]]
+
+  # Get operations
+  get_basic: [get "a" [a: 1  b: 2]]
+
+  # Structural equality
+  dict_structural_eq: [= [a: 1  b: 2] [a: 1  b: 2]]
+]
+=== out
+Dict({"keys_basic": Dict({0: String("a"), 1: String("b")}), "length_dict": Int(3), "length_string": Int(5), "length_bytes": Int(2), "merge_basic": Dict({"a": Int(1), "b": Int(3), "c": Int(4)}), "merge_disjoint": Dict({"a": Int(1), "b": Int(2)}), "merge_right_overrides": Dict({"a": Int(2)}), "merge_lazy_overlay": Dict({"merged": Dict({"x": Int(10), "y": Int(99), "z": Int(30)}), "x-val": Int(10), "y-val": Int(99), "z-val": Int(30)}), "map_dict": Dict({"a": Int(2), "b": Int(4), "c": Int(6)}), "map_empty_dict": Dict({}), "filter_dict": Dict({0: Int(3), 1: Int(5)}), "filter_dict_multi": Dict({0: Int(3), 1: Int(4), 2: Int(5)}), "filter_empty_dict": Dict({}), "reduce_dict": Int(60), "reduce_empty_dict": Int(99), "take_dict": Dict({"a": Int(1), "b": Int(2)}), "drop_dict": Dict({"b": Int(2), "c": Int(3)}), "drop_exceeds_dict": Dict({}), "get_basic": Int(1), "dict_structural_eq": Bool(true)})

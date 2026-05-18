@@ -1,0 +1,37 @@
+# Comprehensive string interpolation
+# Tests: interpolated strings (i"..."), triple-quoted strings ("""..."""), expression interpolation, escaping
+
+[
+  # Basic interpolation
+  name: "world"
+  basic: i"Hello $name"
+
+  # Multiple variables
+  a: "foo"
+  b: "bar"
+  multi_var: i"$a and $b"
+
+  # Expression interpolation ${...}
+  x: 42
+  expr: i"result is ${[+ x 1]}"
+
+  # Escaped dollar sign $$
+  price: 42
+  escaped: i"Price: $$$price"
+
+  # Triple-quoted strings
+  query: """
+    SELECT *
+    FROM users
+    WHERE active = true
+    """
+
+  # Triple-quoted interpolated strings
+  user: "Bob"
+  message: i"""
+    Dear $user,
+    Welcome to the system.
+    """
+]
+=== out
+Dict({"name": String("world"), "basic": String("Hello world"), "a": String("foo"), "b": String("bar"), "multi_var": String("foo and bar"), "x": Int(42), "expr": String("result is 43"), "price": Int(42), "escaped": String("Price: $42"), "query": String("SELECT *\nFROM users\nWHERE active = true"), "user": String("Bob"), "message": String("Dear Bob,\nWelcome to the system.")})
