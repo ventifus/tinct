@@ -1,5 +1,5 @@
 # Legacy [instance [ClassName Type] ...] syntax is no longer supported.
 # Parser should reject brackets after instance keyword (expecting VarRef for class name).
 [instance [Equatable Int] eq: [fn [x y] [= x y]]]
-=== error
+=== out
 instance form expects class name (VarRef) after 'instance' keyword

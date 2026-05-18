@@ -45,7 +45,7 @@ This mirrors the three-tier type diagnostic design: Info-level type notes (e.g.,
 
 ### Design
 
-**Keep the log entry as a dict for as long as possible.** Only serialize to a string at the last moment — in the handler, just before output. This preserves the structured data for filtering, enrichment, and routing. Serialization format is the handler's concern, not the call site's.
+**Keep the log entry as a `LogLine` dict for as long as possible.** Only serialize to a string at the last moment — in the router, just before output to each sink. The router receives the full `LogLine` and can dispatch on any field — not just level.
 
 **Log levels as nominal variants:**
 
@@ -56,18 +56,25 @@ This mirrors the three-tier type diagnostic design: Info-level type notes (e.g.,
 
 Level values are ordered (`Debug < Info < Warn < Error`) for filtering.
 
-**Base `log` function — level, message, then variadic named KV pairs:**
+**`LogLine` — the canonical log entry type:**
+
+```tinct
+# Open record: level and message are required; any additional app-defined fields allowed.
+# {level: Warn, message: "disk full", component: "storage", used: 0.95, request-id: rid}
+LogLine: [type [record level: Level  message: Str]]
+```
+
+**Base `log` function — builds a `LogLine`, dispatches to ambient router:**
 
 ```tinct
 log: [fn [let level@Level message@Str ...kv]
-  [emit-log level message kv]]    # emit-log: Rust builtin, dispatches to current handler
+  [emit-log [merge [level: level  message: message] kv]]]
+  # emit-log: Rust builtin — dispatches the full LogLine dict to the ambient router
 ```
 
-`message` is a positional `Str` — the human-readable summary, distinct from structured
-metadata. The variadic `...kv` collects all named arguments into a dict. The entry stays
-as `(Level, Str, Dict)` until `emit-log` passes it to the handler. No string formatting
-at the call site. This matches every major structured logging API: Python
-`logger.warning("msg", **extra)`, Rust `warn!("msg", k=v)`, Go `slog.Warn("msg", "k", v)`.
+`message` is a positional `Str` — the human-readable summary. The variadic `...kv`
+merges into the `LogLine` alongside `level` and `message`. No string formatting at the
+call site; the entry stays as a dict until the router runs.
 
 **Convenience functions via `partial`:**
 
@@ -81,70 +88,61 @@ error: [partial log Error]
 **Usage:**
 
 ```tinct
-[warn  "disk almost full"    used: 0.95  path: "/var"]
-[info  "request completed"   status: 200  duration-ms: 42]
+[warn  "disk almost full"    used: 0.95   path: "/var"  component: "storage"]
+[info  "request completed"   status: 200  duration-ms: 42  request-id: rid]
 [debug "computed"            x: x]
 [error "connection refused"  peer: addr   retries: 3]
 ```
 
-**Logger — a bound (formatter, policy) pair:**
+**Logger — a router over `LogLine`:**
 
-A logger is a value that combines a formatter (structures → string) with a policy (string → output sink). The `make-logger` constructor returns a function with the same signature as `log`, so any logger is directly callable or partially applicable:
+The router receives the full `LogLine` dict and dispatches on any field — not just level.
+Each match arm returns a handler (a fn or partial) that performs the I/O for that case.
+The logger builds the `LogLine`, calls `[router line]` to get the handler, invokes it.
 
 ```tinct
-# Formatter: Level Str Dict → Str
-text-formatter: [fn [let level@Level message@Str kv@Dict]
-  [str [level-name level] "  " message " " [format-kv kv]]]
+# Formatters: LogLine → Str
+text-formatter: [fn [let line@LogLine]
+  [str [level-name line.level] "  " line.message " " [format-kv [dissoc line "level" "message"]]]]
 
-json-formatter: [fn [let level@Level message@Str kv@Dict]
-  [to-json [merge [level: [level-name level]  message: message] kv]]]
+json-formatter: [fn [let line@LogLine]
+  [to-json [merge [level: [level-name line.level]] line]]]
 
-# Policy: Level Str Dict Str → Null
-# Receives structured data AND pre-formatted string; routes to output sinks.
-# Errors → %stderr, everything else → %stdout (via emit).
-default-policy: [fn [let level@Level message@Str kv@Dict formatted@Str]
-  [if [>= level Error]
-    [write-handle %stderr formatted]
-    [emit formatted]]]
+# Router: LogLine → Fn@Null[Str]
+# Match on the full LogLine — dispatch by level, component, or any app key.
+default-router: [fn [let line@LogLine]
+  [match line.level
+    [case [let _: Error] [partial write-handle %stderr]]   # Fn@Null[Str]
+    [case [let _]        emit]]]                            # Fn@Null[Str]
 
-# Logger constructor: (formatter, policy) → log fn
-make-logger: [fn [let formatter@[Fn@Str [Level Str Dict]]
-                      policy@[Fn@Null [Level Str Dict Str]]]
+# Logger constructor: (formatter, router) → log fn
+make-logger: [fn [let formatter router]
   [fn [let level@Level message@Str ...kv]
-    [policy level message kv [formatter level message kv]]]]
+    [line:    [merge [level: level  message: message] kv]]
+    [fmt:     [formatter line]]
+    [handler: [router line]]
+    [handler fmt]]]
 
-# Default logger: text format, errors → %stderr, rest → %stdout
-default-logger: [make-logger text-formatter default-policy]
+# Default logger: text format, errors → %stderr, rest → emit
+default-logger: [make-logger text-formatter default-router]
 
-# Convenience partial applications on the default logger
 debug: [partial default-logger Debug]
 info:  [partial default-logger Info]
 warn:  [partial default-logger Warn]
 error: [partial default-logger Error]
 ```
 
-Usage — the default `warn`, `error` etc. route appropriately:
+Because the router gets the full `LogLine`, it can dispatch on any app-controlled field:
 
 ```tinct
-[warn  "disk almost full"    used: 0.95  path: "/var"]   # → stdout
-[error "connection refused"  peer: addr  retries: 3]      # → %stderr
+# Route by component AND level — not possible when only Level is visible
+app-router: [fn [let line@LogLine]
+  [if [= [get? line "component"] "storage"]
+    [partial write-handle %stderr]              # storage component → stderr always
+    [match line.level
+      [case [let _: Error] [partial write-handle %stderr]]   # other errors → stderr
+      [case [let _]        [partial write-handle log-file]]]]]  # rest → log file
 ```
-
-**Custom loggers** are created with `make-logger` and used directly or via partial application:
-
-```tinct
-# JSON Lines, filtering out Debug, to a log file
-file-logger: [make-logger
-  json-formatter
-  [fn [let level message kv formatted]
-    [if [> level Debug]
-      [write-handle log-file formatted]
-      null]]]
-
-debug-file:  [partial file-logger Debug]
-info-file:   [partial file-logger Info]
-warn-file:   [partial file-logger Warn]
-error-file:  [partial file-logger Error]
 ```
 
 **`with-log-handler` — scope-local logger rebinding (future):**
@@ -190,15 +188,20 @@ make-syslog-sink: [fn [let sock host@Str port@Port]
   syslog-fmt:  [make-syslog-formatter facility: 1  appname: "myapp"  clock: %clock]
   syslog-sink: [make-syslog-sink syslog-sock "syslog.internal" [@Port 514]]
 
-  # Fan-out policy: assemble it here, not in the library
-  log-policy: [fn [let level@Level message@Str kv@Dict formatted@Str]
-    [if [>= level Error]                  # console: text-formatted, split by level
-      [write-handle %stderr formatted]
-      [emit formatted]]
-    [syslog-sink level message kv         # syslog: separately formatted
-      [syslog-fmt level message kv]]]
+  # Fan-out router: full LogLine → handler fn
+  # Each arm returns a fn that writes to the appropriate sinks
+  log-router: [fn [let line@LogLine]
+    [if [>= line.level Error]
+      [fn [let fmt@Str]               # Error: console stderr + syslog
+        [write-handle %stderr fmt]
+        [syslog-sink line.level line.message
+          [dissoc line "level" "message"] [syslog-fmt line]]]
+      [fn [let fmt@Str]               # Other: console stdout + syslog
+        [emit fmt]
+        [syslog-sink line.level line.message
+          [dissoc line "level" "message"] [syslog-fmt line]]]]]
 
-  logger: [make-logger text-formatter log-policy]
+  logger: [make-logger text-formatter log-router]
 
   debug: [partial logger Debug]
   info:  [partial logger Info]
