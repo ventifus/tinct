@@ -1338,7 +1338,7 @@ fn apply_negation_narrowings(
             continue;
         };
         // In the false branch: x : ~ty (negation of the predicate type)
-        // Do NOT apply if ty is Unknown (fn? narrowing) — ~Unknown is not useful
+        // Skip Unknown — ~Unknown is not a useful constraint (gradual typing escape hatch).
         if matches!(ty, Type::Unknown) {
             continue;
         }
