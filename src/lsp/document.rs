@@ -115,8 +115,15 @@ impl DocumentState {
             // Run type checker (advisory), collecting the span-to-type map for hover.
             // Seed the type environment with prelude types and resolved includes via the
             // shared imports module to suppress false "undefined variable" errors.
+            // When no_fs is set, skip include resolution in the type checker too — passing
+            // None suppresses all $include path traversal while still seeding prelude types.
+            let type_base_dir = if eval_ctx.config.no_fs {
+                None
+            } else {
+                base_dir
+            };
             let (seeded_env, include_bindings) =
-                crate::imports::build_type_env(&file.node, base_dir);
+                crate::imports::build_type_env(&file.node, type_base_dir);
             let (errs, mut map, docs, smap, _diagnostics) =
                 typecheck_file_with_types_and_env(&file.node, seeded_env);
             // Post-pass: inject precise Record types for [include %cap "path"] expressions.
