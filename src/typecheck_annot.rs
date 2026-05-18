@@ -277,7 +277,7 @@ pub(crate) fn resolve_fn_metadata(
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
                                         let fresh = format!("_t{}", state.name_counter);
-                                        state.name_counter += 1;
+                                        state.name_counter = state.name_counter.saturating_add(1);
                                         state.levels.insert(fresh.clone(), state.level);
                                         if let Some(ref mut mapping) = ann_mapping {
                                             mapping.insert(name.clone(), fresh);
@@ -350,7 +350,7 @@ pub(crate) fn resolve_fn_metadata(
                                     ));
                                 }
                                 let fresh = format!("_t{}", state.name_counter);
-                                state.name_counter += 1;
+                                state.name_counter = state.name_counter.saturating_add(1);
                                 state.levels.insert(fresh.clone(), state.level);
                                 if let Some(ref mut mapping) = ann_mapping {
                                     mapping.insert(name.to_string(), fresh);
@@ -495,7 +495,7 @@ pub(crate) fn resolve_fn_metadata(
                                         existing_var.clone()
                                     } else {
                                         let fresh = format!("_t{}", state.name_counter);
-                                        state.name_counter += 1;
+                                        state.name_counter = state.name_counter.saturating_add(1);
                                         state.levels.insert(fresh.clone(), state.level);
                                         mapping.insert(typevar_name.clone(), fresh.clone());
                                         fresh
@@ -1131,7 +1131,8 @@ pub(crate) fn resolve_annotation(
                                             existing_var.clone()
                                         } else {
                                             let fresh = format!("_t{}", state.name_counter);
-                                            state.name_counter += 1;
+                                            state.name_counter =
+                                                state.name_counter.saturating_add(1);
                                             state.levels.insert(fresh.clone(), state.level);
                                             state
                                                 .kind_env
@@ -1707,7 +1708,7 @@ pub(crate) fn resolve_type_name(
             // Create a fresh system-generated name like `_label_0`.
             // This is for when the label TypeVar is not referenced elsewhere (e.g., `get`/`get-or`).
             let fresh = format!("_label_{}", state.name_counter);
-            state.name_counter += 1;
+            state.name_counter = state.name_counter.saturating_add(1);
             state.levels.insert(fresh.clone(), state.level);
             state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
             Ok(Type::TypeVar(fresh, state.level))
@@ -1785,7 +1786,7 @@ pub(crate) fn resolve_type_name(
                     } else {
                         // First time seeing this annotation: create fresh var and register level
                         let fresh = format!("_t{}", state.name_counter);
-                        state.name_counter += 1;
+                        state.name_counter = state.name_counter.saturating_add(1);
                         state.levels.insert(fresh.clone(), state.level);
                         mapping.insert(name.to_string(), fresh.clone());
                         Ok(Type::TypeVar(fresh, state.level))

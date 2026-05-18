@@ -451,14 +451,16 @@ Example: [not true] => false
 Example: [not 0] => true
 """] [let x] [builtin-if x false true]]
 
-and: [fn@[return: [a Bool]  doc: """
+and: [fn@[return: Unknown  doc: """
 Short-circuit AND.
 
-Example: [and true "yes"] => "yes"
+Example: [and true true] => true
 Example: [and false [expensive]] => false   (expensive never called)
 
-Note: If a is false, b is never evaluated (lazy short-circuit).
-"""] [let p b@a] [builtin-if p b false]]
+Note: If p is false, b is never evaluated (lazy short-circuit). Returns b when
+p is truthy, false otherwise. The return type is Unknown because b may be any
+truthy value — use [and p q] in Bool contexts where both p and q are boolean.
+"""] [let p b] [builtin-if p b false]]
 
 or: [fn@[return: Unknown  doc: """
 Short-circuit OR.
@@ -1888,7 +1890,9 @@ starts-with?@[doc: "Check if string starts with prefix"]: [fn@Bool [let s@String
 # assert: [ends-with? "hello" "lo"] => true
 # assert: [ends-with? "hello" "he"] => false
 ends-with?@[doc: "Check if string ends with suffix"]: [fn@Bool [let s@String suffix@String]
-  [= [str-index-of s suffix] [- [length s] [length suffix]]]]
+  [if [< [str-length s] [str-length suffix]]
+    false
+    [= [str-slice s [- [str-length s] [str-length suffix]] [str-length s]] suffix]]]
 
 # str-repeat: String -> Int -> String
 # assert: [str-repeat "x" 3] => "xxx"

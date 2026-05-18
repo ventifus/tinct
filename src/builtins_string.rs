@@ -59,7 +59,7 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             .state
             .borrow()
             .instance_registry
-            .get(&("Showable".to_string(), type_name.to_string()))
+            .get(&("Showable", type_name.to_string()))
             .cloned()
         {
             // Get the instance dict
@@ -888,15 +888,13 @@ pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
         return ok_val(string_val(""), call_span);
     }
 
-    // Collect character strings (as owned Strings for now; we'll concatenate at the end).
-    let chars: Vec<String> = s.chars().map(|c| c.to_string()).collect();
-
     // Build the result by calling f on each character.
     let mut result = String::with_capacity(s.len());
 
-    for ch_str in &chars {
+    for ch in s.chars() {
+        let ch_str = ch.to_string();
         // Wrap each char as a materialized thunk.
-        let char_thunk = Rc::new(Thunk::new_materialized(string_val(ch_str), call_span));
+        let char_thunk = Rc::new(Thunk::new_materialized(string_val(&ch_str), call_span));
 
         // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin.
         let call_result_thunk = match &func_val {

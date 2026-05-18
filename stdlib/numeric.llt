@@ -33,6 +33,6 @@ Int64@[doc: "64-bit signed integer (alias for Int)"]: [type Int]
 # The repr: annotation is a storage hint that guides serialization format
 # in downstream binary encoders. This stub returns the string form.
 # Usage: [to-bytes v] where v has a repr: annotation.
-to-bytes@[doc: "Convert a numeric value to its string representation"]: [fn@Str [v] [str v]]
+to-bytes@[doc: "Convert a numeric value to its string representation"]: [fn@String [v] [str v]]
 
 ]

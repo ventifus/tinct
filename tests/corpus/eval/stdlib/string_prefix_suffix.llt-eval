@@ -1,0 +1,13 @@
+# starts-with? and ends-with? — ASCII and Unicode correctness
+[
+    sw-ascii-true:    [starts-with? "hello" "he"]
+    sw-ascii-false:   [starts-with? "hello" "lo"]
+    sw-empty-prefix:  [starts-with? "hello" ""]
+    ew-ascii-true:    [ends-with? "hello" "lo"]
+    ew-ascii-false:   [ends-with? "hello" "he"]
+    ew-empty-suffix:  [ends-with? "hello" ""]
+    ew-unicode:       [ends-with? "€abc" "abc"]
+    ew-suffix-longer: [ends-with? "hi" "hello"]
+]
+=== out
+Dict({"sw-ascii-true": Bool(true), "sw-ascii-false": Bool(false), "sw-empty-prefix": Bool(true), "ew-ascii-true": Bool(true), "ew-ascii-false": Bool(false), "ew-empty-suffix": Bool(true), "ew-unicode": Bool(true), "ew-suffix-longer": Bool(false)})

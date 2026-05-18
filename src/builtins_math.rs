@@ -26,7 +26,7 @@ use crate::value::{BuiltinArgs, Thunk, Value};
 /// Helper to dispatch a typeclass method call if an instance is registered.
 /// Returns Some(result) if instance was found and method called, None to fall through.
 fn try_dispatch_method(
-    class_name: &str,
+    class_name: &'static str,
     method_name: &str,
     args: &[Rc<Thunk>],
     named: Option<&IndexMap<String, Rc<Thunk>>>,
@@ -52,7 +52,7 @@ fn try_dispatch_method(
         .state
         .borrow()
         .instance_registry
-        .get(&(class_name.to_string(), type_name.to_string()))
+        .get(&(class_name, type_name.to_string()))
         .cloned()?;
 
     let instance_val = materialize(&instance_thunk, Some(&call_span), ctx).ok()?;

@@ -159,7 +159,8 @@ pub struct EvalState {
     pub class_registry: HashMap<String, RuntimeClassDecl>,
     /// Runtime instance registry: (class_name, type_string) -> instance_dict
     /// Stores materialized method dictionaries for each instance.
-    pub instance_registry: HashMap<(String, String), Rc<Thunk>>,
+    /// class_name is `&'static str` to avoid allocation on every dispatch lookup.
+    pub instance_registry: HashMap<(&'static str, String), Rc<Thunk>>,
     /// O(1) set of class names that have at least one registered instance.
     /// Updated in sync with `instance_registry`. Used by builtins (e.g. `+`, `str`)
     /// to avoid a linear scan over registry keys on every arithmetic/string operation.
@@ -1368,9 +1369,10 @@ pub(crate) fn eval_recursive(
                 let type_tag = format!("arm_{}", arm_idx);
                 {
                     let mut state = ctx.state.borrow_mut();
-                    state
-                        .instance_registry
-                        .insert((class_name.clone(), type_tag), Rc::clone(&arm_dict_thunk));
+                    state.instance_registry.insert(
+                        (intern_class_name(class_name), type_tag),
+                        Rc::clone(&arm_dict_thunk),
+                    );
                     // Keep the O(1) class-name set in sync with instance_registry.
                     state.registered_classes.insert(class_name.clone());
                 }
@@ -1457,6 +1459,23 @@ fn extract_instance_type_name(expr: &Expr) -> String {
         // Fallback: use Debug representation for complex types
         // This handles TypeApp and other complex type expressions
         _ => format!("{:?}", expr),
+    }
+}
+
+/// Intern a runtime class name string as a `&'static str`.
+/// Known typeclass names return a compile-time literal (zero allocation).
+/// Unknown names are leaked — bounded by the number of distinct class declarations
+/// in user code, which is small in practice.
+fn intern_class_name(name: &str) -> &'static str {
+    match name {
+        "Add" => "Add",
+        "Sub" => "Sub",
+        "Mul" => "Mul",
+        "Div" => "Div",
+        "Equatable" => "Equatable",
+        "Comparable" => "Comparable",
+        "Showable" => "Showable",
+        other => Box::leak(other.to_string().into_boxed_str()),
     }
 }
 
@@ -2029,8 +2048,17 @@ pub fn materialize(
                 Ok(value)
             }
             Err(e) => {
-                // All errors are cacheable now that depth limit is removed
-                thunk.cache_failure(&e);
+                // Restore Unevaluated state for non-cacheable errors (e.g., DepthExceeded)
+                // so the thunk can be re-evaluated at a shallower continuation stack depth.
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                } else {
+                    thunk.set_state(ThunkState::Unevaluated {
+                        expr,
+                        env,
+                        ctx: thunk_ctx,
+                    });
+                }
                 Err(e)
             }
         }
@@ -2064,16 +2092,36 @@ pub fn materialize(
                             Ok(value)
                         }
                         Err(e) => {
-                            // All errors are cacheable now that depth limit is removed
-                            thunk.cache_failure(&e);
+                            // Restore PendingBuiltin for non-cacheable errors (e.g., DepthExceeded).
+                            if e.kind.is_cacheable() {
+                                thunk.cache_failure(&e);
+                            } else {
+                                thunk.set_state(ThunkState::PendingBuiltin {
+                                    def,
+                                    args: Box::new(args),
+                                    named,
+                                    call_span,
+                                    ctx: thunk_ctx,
+                                });
+                            }
                             Err(e)
                         }
                     }
                 }
             }
             Err(e) => {
-                // All errors are cacheable now that depth limit is removed
-                thunk.cache_failure(&e);
+                // Restore PendingBuiltin for non-cacheable errors (e.g., DepthExceeded).
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                } else {
+                    thunk.set_state(ThunkState::PendingBuiltin {
+                        def,
+                        args: Box::new(args),
+                        named,
+                        call_span,
+                        ctx: thunk_ctx,
+                    });
+                }
                 Err(e)
             }
         }
@@ -2092,8 +2140,19 @@ pub fn materialize(
         {
             Ok(v) => v,
             Err(e) => {
-                // All errors are cacheable now that depth limit is removed
-                thunk.cache_failure(&e);
+                // Restore PendingCall for non-cacheable errors (e.g., DepthExceeded).
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                } else {
+                    thunk.set_state(ThunkState::PendingCall {
+                        func: func_thunk.clone(),
+                        args: Box::new(args.clone()),
+                        named: named.clone().map(Box::new),
+                        call_span,
+                        caller_env: caller_env.clone(),
+                        ctx: thunk_ctx.clone(),
+                    });
+                }
                 return Err(e);
             }
         };
@@ -2138,8 +2197,19 @@ pub fn materialize(
                                 Ok(value)
                             }
                             Err(e) => {
-                                // All errors are cacheable now that depth limit is removed
-                                thunk.cache_failure(&e);
+                                // Restore PendingCall for non-cacheable errors (e.g., DepthExceeded).
+                                if e.kind.is_cacheable() {
+                                    thunk.cache_failure(&e);
+                                } else {
+                                    thunk.set_state(ThunkState::PendingCall {
+                                        func: func_thunk.clone(),
+                                        args: Box::new(args.clone()),
+                                        named: named.clone().map(Box::new),
+                                        call_span,
+                                        caller_env: caller_env.clone(),
+                                        ctx: thunk_ctx.clone(),
+                                    });
+                                }
                                 Err(e)
                             }
                         }
@@ -2291,15 +2361,54 @@ pub fn materialize(
                             Err(err) => {
                                 // Guard validation failed - use default if present
                                 if let Some((default_expr, default_env)) = default {
-                                    let default_thunk =
-                                        eval_recursive(default_expr, default_env, _ctx)?;
-                                    let default_value = run(
+                                    let default_thunk = match eval_recursive(
+                                        Rc::clone(&default_expr),
+                                        Rc::clone(&default_env),
+                                        _ctx,
+                                    ) {
+                                        Ok(t) => t,
+                                        Err(e) => {
+                                            // Restore Guarded state for non-cacheable errors.
+                                            if e.kind.is_cacheable() {
+                                                thunk.cache_failure(&e);
+                                            } else {
+                                                thunk.set_state(ThunkState::Guarded {
+                                                    inner,
+                                                    expected,
+                                                    field_path: Box::new(field_path),
+                                                    guard_span,
+                                                    blame_label,
+                                                    default: Some((default_expr, default_env)),
+                                                });
+                                            }
+                                            return Err(e);
+                                        }
+                                    };
+                                    let default_value = match run(
                                         Action::Materialize {
                                             thunk: default_thunk,
                                             mat_span: mat_span.copied(),
                                         },
                                         _ctx,
-                                    )?;
+                                    ) {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            // Restore Guarded state for non-cacheable errors.
+                                            if e.kind.is_cacheable() {
+                                                thunk.cache_failure(&e);
+                                            } else {
+                                                thunk.set_state(ThunkState::Guarded {
+                                                    inner,
+                                                    expected,
+                                                    field_path: Box::new(field_path),
+                                                    guard_span,
+                                                    blame_label,
+                                                    default: Some((default_expr, default_env)),
+                                                });
+                                            }
+                                            return Err(e);
+                                        }
+                                    };
                                     thunk
                                         .set_state(ThunkState::Materialized(default_value.clone()));
                                     return Ok(default_value);
@@ -2312,14 +2421,52 @@ pub fn materialize(
                     } else {
                         // Expected Record/Intersection but got non-Dict - use default if present
                         if let Some((default_expr, default_env)) = default {
-                            let default_thunk = eval_recursive(default_expr, default_env, _ctx)?;
-                            let default_value = run(
+                            let default_thunk = match eval_recursive(
+                                Rc::clone(&default_expr),
+                                Rc::clone(&default_env),
+                                _ctx,
+                            ) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure(&e);
+                                    } else {
+                                        thunk.set_state(ThunkState::Guarded {
+                                            inner,
+                                            expected,
+                                            field_path: Box::new(field_path),
+                                            guard_span,
+                                            blame_label,
+                                            default: Some((default_expr, default_env)),
+                                        });
+                                    }
+                                    return Err(e);
+                                }
+                            };
+                            let default_value = match run(
                                 Action::Materialize {
                                     thunk: default_thunk,
                                     mat_span: mat_span.copied(),
                                 },
                                 _ctx,
-                            )?;
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure(&e);
+                                    } else {
+                                        thunk.set_state(ThunkState::Guarded {
+                                            inner,
+                                            expected,
+                                            field_path: Box::new(field_path),
+                                            guard_span,
+                                            blame_label,
+                                            default: Some((default_expr, default_env)),
+                                        });
+                                    }
+                                    return Err(e);
+                                }
+                            };
                             thunk.set_state(ThunkState::Materialized(default_value.clone()));
                             return Ok(default_value);
                         }
@@ -2345,14 +2492,52 @@ pub fn materialize(
                     } else {
                         // Type mismatch for non-Record types - use default if present
                         if let Some((default_expr, default_env)) = default {
-                            let default_thunk = eval_recursive(default_expr, default_env, _ctx)?;
-                            let default_value = run(
+                            let default_thunk = match eval_recursive(
+                                Rc::clone(&default_expr),
+                                Rc::clone(&default_env),
+                                _ctx,
+                            ) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure(&e);
+                                    } else {
+                                        thunk.set_state(ThunkState::Guarded {
+                                            inner,
+                                            expected,
+                                            field_path: Box::new(field_path),
+                                            guard_span,
+                                            blame_label,
+                                            default: Some((default_expr, default_env)),
+                                        });
+                                    }
+                                    return Err(e);
+                                }
+                            };
+                            let default_value = match run(
                                 Action::Materialize {
                                     thunk: default_thunk,
                                     mat_span: mat_span.copied(),
                                 },
                                 _ctx,
-                            )?;
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure(&e);
+                                    } else {
+                                        thunk.set_state(ThunkState::Guarded {
+                                            inner,
+                                            expected,
+                                            field_path: Box::new(field_path),
+                                            guard_span,
+                                            blame_label,
+                                            default: Some((default_expr, default_env)),
+                                        });
+                                    }
+                                    return Err(e);
+                                }
+                            };
                             thunk.set_state(ThunkState::Materialized(default_value.clone()));
                             return Ok(default_value);
                         }

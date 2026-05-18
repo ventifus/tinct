@@ -29,7 +29,7 @@ const DEFAULT_ANNOTATION_KEY: &str = "default";
 /// Phase 2 format: implied calls use `[name ...]` (no `call` keyword, no `$` sigil).
 pub(crate) fn func_label(expr: &Expr) -> Option<Rc<str>> {
     match expr {
-        Expr::VarRef { name, .. } => Some(Rc::from(format!("[{name} ...]").as_str())),
+        Expr::VarRef { name, .. } => Some(Rc::from(format!("[{name} ...]"))),
         Expr::DotAccess { .. } => Some(Rc::from("[<dot-access> ...]")),
         Expr::Fn {
             desugared: true, ..

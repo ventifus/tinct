@@ -63,7 +63,7 @@
   #   http  — uses raw TCP connect + HTTP/1.0 request string
   #             returns parsed response dict (throws on network error)
   #   other — throws "unsupported scheme"
-  http-get: [fn [cap@NetCap url@Url]
+  http-get: [fn@Dict [cap@NetCap url@Url]
     [if [= url.scheme "https"]
       [http-request
         [http2-session cap [uri-origin url] []]
@@ -80,12 +80,12 @@
 
   # Parse URL string and call http-get.
   # Returns: {ok: response-dict} or {err: message}
-  fetch: [fn [cap@NetCap url-string@String]
+  fetch: [fn@Dict [cap@NetCap url-string@String]
     [try [fn [] [http-get cap [url url-string]]]]]
 
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.
-  uri-params: [fn@Dict [u]
+  uri-params: [fn@Dict [u@Url]
     [if [null? u.query]
       []
       [pairs: [split u.query "&"]
@@ -97,18 +97,18 @@
   # Create an SPKI pin dict for certificate pinning.
   # algorithm: HashAlgorithm variant (e.g. [Sha256]), fingerprint: Bytes
   # Returns: {algorithm: variant, fingerprint: bytes}
-  spki-pin: [fn [algorithm fingerprint]
+  spki-pin: [fn@Dict [algorithm fingerprint]
     [set [set [] "algorithm" algorithm] "fingerprint" fingerprint]]
 
   # Return "scheme://host:port" (origin).
   # Port is omitted if null.
-  uri-origin: [fn@String [u]
+  uri-origin: [fn@String [u@Url]
     [if [null? u.port]
       [str u.scheme "://" u.host]
       [str u.scheme "://" u.host ":" u.port]]]
 
   # Reconstruct full URI string from components.
-  uri->string: [fn@String [u]
+  uri->string: [fn@String [u@Url]
     [str u.scheme "://"
       [if [null? u.host] "" u.host]
       [if [null? u.port] "" [str ":" u.port]]

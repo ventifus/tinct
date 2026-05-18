@@ -234,7 +234,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
 | Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-materializes; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |
-| Type introspection | — | `type-of`, `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. |
+| Type introspection | — | `type-of`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. (`num?`, `record?`, `map?` are LLT stdlib aliases derived from these primitives.) |
 | Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `concat` (no stable aliases needed). |
 | I/O | — | `from-json`, `include` | serde_json, filesystem access. |
 
@@ -274,16 +274,16 @@ The following functions are tinct implementations in `stdlib/strings.llt` or `st
 
 | Function | Now lives in | Built on |
 |----------|-------------|----------|
-| `str-contains?` | `stdlib/strings.llt` | `str-index-of` (Rust, O(n) substr search) |
-| `starts-with?` | `stdlib/strings.llt` | `str-index-of` |
-| `ends-with?` | `stdlib/strings.llt` | `str-index-of`, `str-length` |
+| `str-contains?` | `stdlib/prelude.llt` | `str-index-of` (Rust, O(n) substr search) |
+| `starts-with?` | `stdlib/prelude.llt` | `str-index-of` |
+| `ends-with?` | `stdlib/prelude.llt` | `str-slice`, `str-length` (char-based; correct for Unicode) |
 | `upper` | `stdlib/strings.llt` | `str-map-chars` + `str-to-upper-char` |
 | `lower` | `stdlib/strings.llt` | `str-map-chars` + `str-to-lower-char` |
 | `copy` | `stdlib/io.llt` | `open`, `slurp`, `raw-create`, `write-handle`, `close` |
 | `spki-pin` | `stdlib/net.llt` | pure dict construction, no I/O |
 | `has-cap?` | `stdlib/io.llt` | `cap-data` (returns null on miss) + `null?` |
 
-Type predicates `num?`, `record?`, and `map?` remain Rust builtins — they inspect the `Value` enum variant and cannot be expressed in tinct without a primitive type-test.
+Type predicates `num?`, `record?`, and `map?` are LLT stdlib functions defined in `prelude.llt`: `num?` is `[or [int? x] [float? x]]`; `record?` and `map?` are both aliases for `dict?` (the runtime makes no key-type distinction).
 
 **Why shadowable wrappers matter:**
 
@@ -328,7 +328,7 @@ The `builtin-*` aliases are invisible to user code and non-prelude stdlib module
 | `cli/out/csv.llt` | `csv` | CSV output formatting |
 | `cli/out/toml.llt` | `toml` | TOML output formatting |
 
-Note: the Rust builtins in each domain (e.g., `starts-with?`, `pow`, `band`, `uri`) are always available without any include — only the pure-tinct helper functions require an explicit include.
+Note: the Rust builtins in each domain (e.g., `pow`, `band`, `uri`) are always available without any include — only the pure-tinct helper functions require an explicit include. Prelude functions (e.g., `starts-with?`, `ends-with?`, `str-contains?`, `str-find`, `str-repeat`) are also always available without any include.
 
 ## Organization
 
@@ -359,7 +359,7 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
 - **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
-- **Extended strings** (`starts-with?`, `ends-with?`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-length`, `str-slice`, `str-contains?`, `str-chars` as Rust builtins; `str-find`, `str-repeat` in prelude; `pad-left`, `pad-right`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching, padding, character/byte operations; `str-find` and `str-repeat` are prelude functions (always available); `pad-left`, `pad-right`, `str-reverse` require `[include libdir "strings.llt"]`
+- **Extended strings** (`char-code`, `chr`, `str-bytes`, `bytes-str`, `str-length`, `str-slice`, `str-chars` as Rust builtins; `str-contains?`, `starts-with?`, `ends-with?`, `str-find`, `str-repeat` in prelude; `pad-left`, `pad-right`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching, padding, character/byte operations; `str-contains?`, `starts-with?`, `ends-with?`, `str-find`, and `str-repeat` are prelude functions (always available); `pad-left`, `pad-right`, `str-reverse` require `[include libdir "strings.llt"]`
 - **Extended math** (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?` as Rust builtins; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` in `stdlib/math.llt`) — trigonometric, exponential, and logarithmic functions; NaN/infinity checks; constants and derived functions require `[include libdir "math.llt"]`
 - **Bitwise & Encoding** (`band`, `bor`, `bxor`, `shl`, `shr` as Rust builtins; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives and binary encoding; pure-tinct encoding functions require `[include libdir "encoding.llt"]`
 - **Bytes** (`bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?` as Rust builtins) — byte buffer operations with constant-time equality for cryptographic use
@@ -400,8 +400,8 @@ type errors:
   undefined variable: users at 9:13-9:18
   undefined variable: users at 10:22-10:27
   undefined variable: numbers at 13:17-13:24
-  arity mismatch: expected 2 arguments, got 1 at 14:9-14:16
   undefined variable: numbers at 14:19-14:26
+  arity mismatch: expected 2 arguments, got 1 at 14:1-14:27
 
 ```
 
@@ -476,7 +476,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `join` | Rust native builtin — no LLT wrapper | Join values as strings with separator (O(n) string builder; dual-dispatch Dict/Seq) |
 | `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq). Derived from `str`, `split`, and `filter`. |
 | `str-repeat` | `fn@Str [s@Str n@Int]` | Repeat string `s` exactly `n` times. Pure LLT implementation using `reduce` over `range` |
-| `str-find` | `fn@Int [haystack@String needle@String]` | Find first occurrence of `needle` in `haystack`; returns character index or -1 if not found. Pure LLT implementation |
+| `str-find` | `fn@Int [haystack@String needle@String]` | Find first occurrence of `needle` in `haystack`; returns byte index or -1 if not found. Pure LLT implementation |
 
 **Control Flow:**
 
@@ -593,15 +593,15 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|---------------|-------------|
 | `int?` | Rust builtin | Return true if value is an Int |
 | `float?` | Rust builtin | Return true if value is a Float |
-| `num?` | Rust builtin | Return true if value is an Int or Float |
+| `num?` | LLT stdlib | Return true if value is an Int or Float (`[or [int? x] [float? x]]`) |
 | `str?` | Rust builtin | Return true if value is a String |
 | `bool?` | Rust builtin | Return true if value is a Bool |
 | `null?` | Rust builtin | Return true if value is Null (empty dict `[]`) |
 | `dict?` | Rust builtin | Return true if value is a Dict (includes lists, which are dicts with integer keys) |
 | `fn?` | Rust builtin | Return true if value is callable (Function or Builtin) |
 | `seq?` | Rust builtin | Return true if value is a Seq |
-| `record?` | Rust builtin | Return true if value is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
-| `map?` | Rust builtin | Return true if value is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
+| `record?` | LLT stdlib | Return true if value is a Dict/Overlay; alias for `dict?` (runtime has no key-type tracking) |
+| `map?` | LLT stdlib | Return true if value is a Dict/Overlay; alias for `dict?` (runtime has no key-type tracking) |
 | `list?` | LLT stdlib | Return true if value is a Dict whose keys are all integers (i.e., a list-shaped dict) |
 
 **Numeric Predicates:**
@@ -1466,15 +1466,15 @@ Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and retur
 |----------|---------------|-------|
 | `int?` | `(Any -> Bool)` | Rust builtin |
 | `float?` | `(Any -> Bool)` | Rust builtin |
-| `num?` | `(Any -> Bool)` | Rust builtin |
+| `num?` | `(Any -> Bool)` | LLT stdlib; `[or [int? x] [float? x]]` |
 | `str?` | `(Any -> Bool)` | Rust builtin |
 | `bool?` | `(Any -> Bool)` | Rust builtin |
 | `null?` | `(Any -> Bool)` | Rust builtin |
 | `dict?` | `(Any -> Bool)` | Rust builtin |
 | `fn?` | `(Any -> Bool)` | Rust builtin |
 | `seq?` | `(Any -> Bool)` | Rust builtin |
-| `record?` | `(Any -> Bool)` | Rust builtin; runtime has no key-type tracking |
-| `map?` | `(Any -> Bool)` | Rust builtin; runtime has no key-type tracking |
+| `record?` | `(Any -> Bool)` | LLT stdlib alias for `dict?`; runtime has no key-type tracking |
+| `map?` | `(Any -> Bool)` | LLT stdlib alias for `dict?`; runtime has no key-type tracking |
 | `list?` | `(Any -> Bool)` | `fn@Bool [xs]` — LLT stdlib; checks all keys are integers |
 
 ### Error Handling and Assertions
