@@ -1,7 +1,5 @@
-# Test that [macro name [let params] body] parses correctly.
-# This is a parse-only test since macro expansion semantics are in the next sprint.
+# Test that [macro name [let params] body] parses and registers correctly.
+# MacroDecl is filtered from post-expansion AST and not typechecked directly.
 [macro double [let x] [quote [+ [unquote x] [unquote x]]]]
-=== warn
-undefined variable: x
 === out
 [macro double [let x] [quote [+ [unquote x] [unquote x]]]]

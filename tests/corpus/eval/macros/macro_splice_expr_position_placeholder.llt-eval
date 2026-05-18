@@ -1,13 +1,6 @@
-# PLACEHOLDER TEST: splice in expression position should error (TODO.md macros-v2-expand line 26)
-#
-# This test documents the INTENDED behavior: splice is only valid at dict top level,
-# not in expression position. When splice expansion is implemented, this should produce
-# an error like "splice is not valid in expression position".
-#
-# Current status: Splice expansion is not yet implemented (TODO.md line 26).
-# Deferring test creation until splice expansion logic is added.
-
-# For now, a simple test that works
+# Task 2: Splice in expression position — now implemented (returns error).
+# See macro_splice_expr_position.llt-eval for the real error test.
+# This test keeps a simple non-splice sanity check.
 [defmacro simple [args]
   [quote 42]]
 

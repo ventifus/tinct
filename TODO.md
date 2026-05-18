@@ -22,10 +22,10 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 **Depends on:** `macros-v2-ast`
 
-- [ ] Update expander to use `[let ...]` pattern matching for macro argument binding — replaces manual `nth` indexing (`src/expand.rs`)
-- [ ] Add splice handling: when macro returns `Expr::Splice(forms)`, inject each form; register any `MacroDecl`/`SyntaxClass` in splice output immediately before processing next splice form (enables meta-macros); splice in expression position is expansion error (`src/expand.rs`)
-- [ ] Validate macro arguments annotated with `@VariantName` or `@syntax-class-name` before calling macro body; raise `MacroError` at call-site span on failure (`src/expand.rs`)
-- [ ] Thread `inject:` binding name: when macro with `inject:` is in dict-key position (`key: [macro-call ...]`), pass key name to macro body as the implicit `binding` variable (`VarRef`); default to `inject:` name when in expression position (`src/expand.rs`)
+- [x] Update expander: `[let ...]` pattern matching for macro arg binding; MacroDecl converts params to Fn, registers as `new_style: true` (`src/expand.rs`)
+- [x] Splice handling: `Expr::Splice` in dict context injects forms; in expression position → E012 error; MacroDecl in splice output registered immediately (`src/expand.rs`)
+- [x] Syntax-class validation: `@VarRef`/`@Literal`/`@Call` annotations validated before macro body; E012 on mismatch (`src/expand.rs`)
+- [x] Inject threading: `inject_default` extracted and passed as `binding` arg; dict-key position passes key name (`src/expand.rs`)
 - [x] Add `ErrorKind::MacroError { message: String }` with E012 code; `EvalError::macro_error()` constructor; macro expansion provenance working (`src/error.rs`, `src/expand.rs`)
 - [x] Tests: placeholder tests for splice/inject/error provenance; macro keyword parsing corpus tests (`tests/corpus/eval/macros/`, `tests/corpus/valid/special_forms/`)
 
@@ -54,21 +54,37 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 ## Tooling
 
+### fmt-tinct-only: Remove Rust formatter, make tinct scripts the sole fmt backend
+
+`tinct fmt` currently has two backends: Rust-native (`format_source` / `format_source_compact` in `src/formatter.rs`) and tinct-hosted (`format_source_tinct`, gated behind `--tinct-fmt`). The Rust backend should be deleted; the tinct scripts are the only formatter going forward. `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` move to `stdlib/cli/fmt/` alongside `cli/in/` and `cli/out/`. A new `-o <name>` flag selects which `cli/fmt/<name>.llt` script to use (default: `pretty`). The Rust-formatter-specific flags (`--oneline`, `--nospaces`, `--minimize`, `--tinct-fmt`) are removed.
+
+- [ ] Move `stdlib/formatter/compact.llt` → `stdlib/cli/fmt/compact.llt` and `stdlib/formatter/pretty.llt` → `stdlib/cli/fmt/pretty.llt`; delete the now-empty `stdlib/formatter/` directory
+- [ ] Add `-o <name>` / `--output <name>` to `Subcommand::Fmt` in `src/main.rs`; resolves to `stdlib/cli/fmt/<name>.llt` via `%libdir`; default `pretty` when omitted; error if the named script does not exist (`src/main.rs:169–200`)
+- [ ] Remove `--tinct-fmt`, `--oneline`, `--nospaces`, `--minimize` flags from `Subcommand::Fmt` — these were Rust-formatter-specific; compact output is now `tinct fmt -o compact` (`src/main.rs:178–192`)
+- [ ] Replace the `if tinct_fmt / else if oneline ... / else` dispatch (src/main.rs:1970–1981) with a single `format_source_tinct(source, fmt_script_path)` call using the resolved `cli/fmt/<name>.llt`
+- [ ] Update `format_source_tinct` to accept a script path (or name) instead of a `compact: bool` flag; look up from `%libdir`/`cli/fmt/` (`src/main.rs` or wherever `format_source_tinct` is defined)
+- [ ] Delete `format_source` and `format_source_compact` from `src/formatter.rs`; if `src/formatter.rs` contains nothing else, delete the file and remove it from `src/lib.rs`
+- [ ] Update `just fmt-llt`, `just fmt-llt-check`, `just fmt-llt-fix` in `justfile` to drop any Rust-formatter flags; add `just fmt-llt-compact FILE` as `tinct fmt -o compact {{FILE}}` (`justfile:164–174`)
+- [ ] Switch LSP format-on-save to `format_source_tinct` using `cli/fmt/pretty.llt` — the LSP was intentionally left on the Rust path when `tinct-hosted-formatter` shipped (cycle #310); now that the Rust path is being deleted, the LSP must use the tinct path (`src/lsp/`)
+- [ ] Update any `--tinct-fmt` references in doc, tests, or corpus files
+- [ ] Verify `just test` passes
+
 ### unified-bindings-remove-old-syntax: Remove pre-unified-bindings param syntax from fn, type, and class
 
 `unified-bindings-migrate` (DONE.md) checked off "Remove old param-list parsing paths" prematurely. Old-form detection survives in three places:
 
-- **`fn` / `macro`:** `parse_param_list` (src/parser.rs:798) treats `let` as optional (skips it if present, lines 820–824); called from `fn` at line 1656 and `macro` at line 1869. Also: `StackFrame::Fn` push_value implied-call heuristic (lines 5250–5276) detects all-lowercase `[a b c]` bracket as a param list.
-- **`type` (TypeAlias):** `StackFrame::TypeAlias` push_value (lines 5228–5295) has three cases — Case 1: `Expr::Dict` with auto-indexed lowercase vars (lines 5232–5248), Case 2: implied-call all-lowercase (lines 5250–5277); both are old forms. Case 3: `Expr::LetDecl` (lines 5278–5295) is the new form.
-- **`class` (ClassDecl):** `StackFrame::ClassDecl` push_value (lines 5527–5629) handles `Expr::Dict` (lines 5548–5570) and `Expr::Call { implied: true }` (lines 5572–5598) as old forms; `Expr::LetDecl` (lines 5600–5623) is the new form.
+- **`fn` / `macro` / `defmacro`:** `parse_param_list` (src/parser.rs:798) treats `let` as optional (skips it if present, lines 820–824); called from `fn` (line 1656), `macro` (line 1869), and `defmacro` (line 1901). Also: `push_expr_to_parent` for `StackFrame::Fn` has an implied-call heuristic (lines 5250–5276) that detects all-lowercase `[a b c]` bracket as a param list.
+- **`type` (TypeAlias):** `push_expr_to_parent` for `StackFrame::TypeAlias` (lines 5228–5295) has three cases — Case 1: `Expr::Dict` with auto-indexed lowercase vars (lines 5232–5248), Case 2: implied-call all-lowercase (lines 5250–5277); both are old forms. Case 3: `Expr::LetDecl` (lines 5278–5295) is the new form.
+- **`class` (ClassDecl):** `push_expr_to_parent` for `StackFrame::ClassDecl` (lines 5527–5629) handles `Expr::VarRef` (lines 5541–5546), `Expr::Dict` (lines 5548–5570), and `Expr::Call { implied: true }` (lines 5572–5598) as old forms; `Expr::LetDecl` (lines 5600–5623) is the new form.
 
-The goal is complete deletion of old paths, not a fallback parse error. `[let ...]` already works in all three contexts via `Expr::LetDecl` in each frame's push_value handler — no new code needed, only deletions.
+The goal is complete deletion of old paths, not a fallback parse error. `[let ...]` already works in all three contexts via `Expr::LetDecl` in `push_expr_to_parent` — no new code needed, only deletions.
 
-- [ ] Run `just fmt` on all non-stdlib `.llt` files — the formatter already emits `[let ...]` form, so formatting migrates `scripts/`, `samples/`, and doc examples automatically before parser paths are deleted
-- [ ] Delete `parse_param_list` entirely (`src/parser.rs:798`) and both call sites (lines 1656, 1869) — `[let ...]` params for `fn` and `macro` flow through the existing `Expr::LetDecl` branch in their push_value handlers
-- [ ] Delete `StackFrame::Fn` push_value implied-call heuristic (lines 5250–5276)
-- [ ] Delete `StackFrame::TypeAlias` push_value Cases 1 and 2 (Dict and implied-call detection, lines 5228–5277); keep only the `Expr::LetDecl` branch
-- [ ] Delete `StackFrame::ClassDecl` push_value `Expr::VarRef`, `Expr::Dict`, and `Expr::Call { implied: true }` branches (lines 5541–5598); keep only `Expr::LetDecl` — no-param classes use `[class [let Equatable] ...]`; bare-word shorthand belongs in the `macro class` let-softening macro (macros-v2-stdlib)
+- [ ] Manually rewrite all non-stdlib `.llt` files using old param syntax to `[let ...]` form; known: `scripts/docgen.llt` (all fn params); audit `samples/` for others
+- [ ] Convert `defmacro` to deferred push_expr_to_parent pattern (receive name as VarRef, then LetDecl params) — currently the last remaining eager caller of `parse_param_list` besides `fn` and `macro`; migrate first, then delete `parse_param_list` and all three call sites
+- [ ] Delete `parse_param_list` entirely (`src/parser.rs:798`) and all call sites (lines 1656, 1869, 1901) once defmacro is migrated
+- [ ] Delete `push_expr_to_parent` `StackFrame::Fn` implied-call heuristic (lines 5250–5276)
+- [ ] Delete `push_expr_to_parent` `StackFrame::TypeAlias` Cases 1 and 2 (Dict and implied-call detection, lines 5228–5277); keep only the `Expr::LetDecl` branch
+- [ ] Delete `push_expr_to_parent` `StackFrame::ClassDecl` `Expr::VarRef`, `Expr::Dict`, and `Expr::Call { implied: true }` branches (lines 5541–5598); keep only `Expr::LetDecl` — no-param classes use `[class [let Equatable] ...]`; bare-word shorthand belongs in the `macro class` let-softening macro (macros-v2-stdlib)
 - [ ] Verify `just test` passes after deletions
 - [ ] Update DONE.md to note the `unified-bindings-migrate` checkbox was completed here (the original was premature)
 
@@ -206,6 +222,27 @@ Once resolver evaluation (Gap 1) is working, boundary guards at CALL-MONO/CALL-P
 ---
 
 ## Codebase Health
+
+### parser-uniformity: Fix special cases and non-uniform handling found in parser audit (2026-05-18)
+
+Full audit of `src/parser.rs` identified the following issues beyond what `unified-bindings-remove-old-syntax` already tracks. All locations are in `push_expr_to_parent` unless noted otherwise.
+
+**Correctness bugs:**
+- [ ] **F-03** `StackFrame::TypeAlias` Case 3 (`Expr::LetDecl`) only accepts `Expr::VarRef` bindings — rejects `Expr::Annotated`, so `[type [let a@K b] T]` silently treats the whole LetDecl as a type expression instead of extracting params; fix: accept `Expr::VarRef | Expr::Annotated` in the all_lowercase_params check (`src/parser.rs:5279–5295`)
+- [ ] **F-13** `StackFrame::CaseDecl` CloseBracket handler uses `ok_or_else(...)?` (fatal) instead of `close_bracket_recover!` — `[case]` with missing pattern/body is an unrecoverable error that breaks LSP incremental parsing; all other frames use `close_bracket_recover!` (`src/parser.rs:2956–2963`)
+- [ ] **F-14** `StackFrame::MacroDecl` accepts any expression in the params slot without validation — `[macro foo 42 body]` silently puts `Int(42)` into params; fix: validate that the second positional is `Expr::LetDecl`, emit parse error otherwise (`src/parser.rs:5383–5386`)
+
+**Content-driven heuristics to remove:**
+- [ ] **F-06** `StackFrame::InstanceDecl` silently explodes any `Expr::Dict` arriving with no `pending_key` and no `pending_arm_pattern` into per-method entries — undocumented content-driven heuristic; remove and require explicit keyed entry syntax (`src/parser.rs:5868–5886`)
+- [ ] **F-07** `SyntaxClass` is missing from the `Token::Identifier` + colon-ahead dispatch, so field names like `pattern:` fall through to `pending_key: Option<Spanned<Expr>>` (shared scratchpad); `pending_key` should store `(String, Span)` like `Call`'s version, not a full `Spanned<Expr>`; add `SyntaxClass` to the Identifier colon dispatch (`src/parser.rs:3093–3106, 5399–5472`)
+
+**Dead code:**
+- [ ] **F-01** `fn` annotation error recovery: `if !stack.is_empty() / else` both call `recover_from_failed_open` with identical arguments — `recover_from_failed_open` already handles the empty-stack case internally; remove the branch, call once unconditionally (`src/parser.rs:1617–1638`)
+- [ ] **F-09** `expr_to_pattern` Dict branch checks for `[seq h t]` as the first auto-indexed entry of a 3-element Dict — unreachable because `[seq h t]` always parses as an implied `Call`, never a `Dict`; delete the dead arm (`src/parser.rs:5006–5038`)
+
+**Minor inconsistencies:**
+- [ ] **F-04** `StackFrame::ClassDecl` `_ => Ok(())` catch-all leaves `name = None`; CloseBracket handler then emits a class with empty-string name instead of a parse error; fix: the catch-all should be a parse error (`src/parser.rs:5624–5628`)
+- [ ] **F-10** `Token::Let` / `Token::Case` handler is a near-verbatim copy of the Identifier+colon dispatch but silently omits `Match` from its colon arm, falling through to `_ => VarRef push`; the omission is undocumented; either share the logic or add an explicit error (`src/parser.rs:4393–4497`)
 
 ### compat-cleanup: Remove backwards-compatibility shims
 
@@ -406,6 +443,43 @@ Replaces `Unknown` signatures with proper polymorphic `TypeScheme`s using `Type:
 
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a`; compare `Mappable` extension vs separate class using `Data.Witherable` as precedent; include instance examples for `Seq` and `Dict` (`doc/whatif/filterable.md`)
 - [ ] Accept `doc/whatif/schema-directed-from-json.md` via `/rnd` and create implementation sprint in TODO.md for `from-json @Schema` schema-directed typed parse (`doc/whatif/schema-directed-from-json.md`)
+
+---
+
+## Documentation Consistency
+
+### doc-consistency: Fill content gaps and fix feature-doc stale language
+
+Doc consistency audit (2026-05-18). Principle: whatifs are the primary historical artifact (combined with git history). Main docs (`doc/*.md`) are the authoritative, atemporal reference — no temporal or hedging language, no references to whatifs, no "previously"/"planned"/"future" framing. Feature docs (`doc/feature/`) are optional deep-dive specs that may cross-reference whatifs as design history.
+
+**Immediate fixes already applied (2026-05-18):**
+- `doc/16-architecture.md:521` — removed "LLT has no network builtins" (replaced with NetCap description)
+- `doc/11a-builtins.md:735` — renamed "Future Async Builtins" → "Async Builtins"; updated framing
+- `doc/09-documents.md:299,794` — removed "Previously such bindings were silently ignored" and "Previously known defect (resolved)"
+- `doc/07-type-extensions.md:655,792` — removed migration-instruction language ("is replaced by," "become")
+- `doc/10-errors.md:436,729,937,945` — removed "currently," "future renderers," "backward compat during migration"
+- `doc/06-type-inference.md:914` — fixed reference `doc/whatif/chr-unification.md` → `doc/feature/chr-unification.md`
+
+**Content gaps to fill in main docs:**
+
+- [ ] Add type-stage resolver syntax to `doc/06-type-inference.md`: show how to write a resolver in a `--- stage: type ---` section; `[class [...] [determines: [...] resolver: fn-name]]` form with a worked example; source: `doc/feature/chr-unification.md §Type-Stage Resolvers` (`doc/06-type-inference.md`)
+- [ ] Add BAS intersection and negation annotation syntax to `doc/05-type-annotations.md`: `@[[all A B]]` for intersection, `@[[without A]]` for negation; currently absent from the annotation chapter (`doc/05-type-annotations.md`)
+- [ ] Add stdlib typeclass hierarchy section to `doc/11-stdlib.md`: `Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`, `Mappable`, `Appendable` with method signatures; source: `doc/feature/hkt-monads.md §Typeclass Hierarchy` (`doc/11-stdlib.md`)
+- [ ] Add `[do]` desugaring section to `doc/06-type-inference.md`: `[do [bind x: expr] body]` → `[>>= expr [fn [let x] body]]`, monad inference from return annotation, `>>=`/`>>` method lookup; source: `doc/feature/hkt-monads.md §do Desugaring` (`doc/06-type-inference.md`)
+- [ ] Add NetCap allowlist behavior to `doc/11a-builtins.md`: DNS pinning, allowlist precedence, IPv4-mapped IPv6 handling; `doc/feature/io.md:342` explicitly flags this as undocumented (`doc/11a-builtins.md`)
+
+**Stale language in feature docs:**
+
+- [ ] `doc/feature/io.md:575-579,710` — remove "Phase 2 (future):" annotations for `Type::DirCap`, `Type::NetCap`, `Type::Handle`; these are implemented; rewrite as current fact (`doc/feature/io.md`)
+
+**Completed whatifs without feature docs — verify content is in main docs:**
+
+Four completed whatifs have no feature doc. The whatif is the design history; the content should be in the main docs. Verify and add if missing.
+
+- [ ] `doc/whatif/completed/constraint-annotations.md` → verify `doc/05-type-annotations.md` covers `fn@[return: T constraint: [a: Comparable] doc: "..."]` dict syntax; add if missing (`doc/05-type-annotations.md`)
+- [ ] `doc/whatif/completed/builtin-privacy.md` → verify `doc/11a-builtins.md` covers `builtin-*` alias env-layer isolation and T009 warning; add if missing (`doc/11a-builtins.md`)
+- [ ] `doc/whatif/completed/multi-line-strings.md` → verify `doc/02-syntax.md` covers `"""..."""` triple-quoted strings, `unindent`, and `i"""..."""` interpolation; add if missing (`doc/02-syntax.md`)
+- [ ] `doc/whatif/completed/dir-cap-permissions.md` → verify `doc/11a-builtins.md` and `doc/12-tooling.md` cover `DirPerms` flags, `--cap-fs name=path:mode` letter bundles, and `[DirCap [Readable ...]]` type annotation; add if missing (`doc/11a-builtins.md`, `doc/12-tooling.md`)
 
 ---
 

@@ -1,22 +1,6 @@
-# PLACEHOLDER TEST: splice expansion not yet implemented (TODO.md macros-v2-expand line 26)
-#
-# This test documents the INTENDED behavior once splice is implemented.
-# Expected: A macro returning [splice form1 form2] should inject both forms as dict entries.
-#
-# Intended test case (from TODO.md line 30):
-#   [defmacro pair [k v]
-#     [splice
-#       [quote [unquote k] [unquote v]]
-#       [quote [str [unquote k] "-doubled"] [+ [unquote v] [unquote v]]]]]
-#   [result: [pair x 5]]
-#
-# Expected output: {"x": 5, "x-doubled": 10}
-#
-# Current status: Splice AST variant exists, but expansion logic (line 26 in TODO) is not implemented.
-# Deferring test creation until splice expansion is implemented.
-
-# Simple macro test for now (no splice)
-# When splice is implemented, this test should be replaced with actual splice testing.
+# Task 2: Splice in dict context — implemented.
+# See macro_splice_dict.llt-eval for the real splice test.
+# This test keeps a simple splice sanity check.
 [defmacro const-value [args]
   [quote 42]]
 
