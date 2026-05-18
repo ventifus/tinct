@@ -2435,7 +2435,7 @@ mod tests {
 
     #[test]
     fn test_bare_flag_on_bare_word_strings() {
-        use crate::parser::parse2;
+        use crate::parser::parse;
 
         // Parse "[foo: 1]" — the key "foo" should have bare: true
         let input = "[foo: 1]";
@@ -2536,7 +2536,7 @@ mod tests {
 
     #[test]
     fn test_bare_flag_on_quoted_strings() {
-        use crate::parser::parse2;
+        use crate::parser::parse;
 
         // Parse "[\"foo\": 1]" — the key "foo" should have bare: false
         let input = "[\"foo\": 1]";
@@ -2634,7 +2634,7 @@ mod tests {
 
     #[test]
     fn test_comment_embedding() {
-        use crate::parser::parse2;
+        use crate::parser::parse;
 
         // Parse "[# comment\nx: 1]" — the entry should have leading-comments: [" comment"]
         let input = "[# comment\nx: 1]";
@@ -2739,7 +2739,7 @@ mod tests {
 
     #[test]
     fn test_blank_before_flag() {
-        use crate::parser::parse2;
+        use crate::parser::parse;
         use std::collections::BTreeMap;
 
         // Manually inject blank-before data to test the ast_dict lookup.
@@ -2836,7 +2836,7 @@ mod tests {
 
     #[test]
     fn test_both_none_mode_unchanged() {
-        use crate::parser::parse2;
+        use crate::parser::parse;
 
         // Parse "[foo: 1]" with both source and comments None
         let input = "[foo: 1]";

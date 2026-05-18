@@ -783,6 +783,11 @@ pub enum ThunkState {
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        /// Optional flat environment ID for O(1) variable lookup (arena-phase3).
+        /// None for stdlib thunks or thunks created before flat environment migration.
+        /// Some(env_id) for user-scope thunks where the resolver populated VarRef coordinates.
+        /// The Rc<RefCell<Environment>> chain remains as a fallback for stdlib bindings.
+        env_id: Option<crate::arena::EnvId>,
         ctx: Rc<crate::eval::EvalContext>,
     },
     PendingBuiltin {
@@ -855,7 +860,26 @@ impl Thunk {
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Unevaluated { expr, env, ctx }),
+            state: RefCell::new(ThunkState::Unevaluated { expr, env, env_id: None, ctx }),
+            span,
+            origin: None,
+        }
+    }
+
+    /// Create an unevaluated thunk with a flat environment ID for O(1) variable lookup.
+    ///
+    /// The `env_id` parameter enables the O(1) variable lookup path when the resolver
+    /// has populated VarRef coordinates. The Rc<RefCell<Environment>> chain remains
+    /// as a fallback for stdlib bindings and computed keys.
+    pub fn new_unevaluated_with_env_id(
+        expr: Rc<Spanned<Expr>>,
+        env: Rc<RefCell<Environment>>,
+        env_id: crate::arena::EnvId,
+        ctx: Rc<crate::eval::EvalContext>,
+        span: Span,
+    ) -> Self {
+        Self {
+            state: RefCell::new(ThunkState::Unevaluated { expr, env, env_id: Some(env_id), ctx }),
             span,
             origin: None,
         }
@@ -1027,7 +1051,7 @@ impl Thunk {
     )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::Unevaluated { expr, env, ctx } => Some((expr, env, ctx)),
+            ThunkState::Unevaluated { expr, env, env_id: _, ctx } => Some((expr, env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1757,6 +1781,7 @@ mod tests {
                 ThunkState::Unevaluated {
                     expr: _,
                     env: _,
+                    env_id: _,
                     ctx,
                 } => {
                     // Use Rc::ptr_eq to verify it's the SAME Rc, not just equal content

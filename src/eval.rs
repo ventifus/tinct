@@ -2103,6 +2103,7 @@ pub fn materialize(
                     thunk.set_state(ThunkState::Unevaluated {
                         expr,
                         env,
+                        env_id: None,
                         ctx: thunk_ctx,
                     });
                 }
@@ -3157,9 +3158,9 @@ mod tests {
         let expr = sp(Expr::var_ref("missing".into()));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: missing"),
+            err.to_string().contains("undefined variable: missing"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -3355,9 +3356,9 @@ mod tests {
                 let x_id = map.get(&Key::String("x".into())).unwrap();
                 let err = mat_id(x_id, &ctx).unwrap_err();
                 assert!(
-                    err.message().contains("circular dependency"),
+                    err.to_string().contains("circular dependency"),
                     "got: {}",
-                    err.message()
+                    err.to_string()
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -3395,9 +3396,9 @@ mod tests {
         match &*x_thunk.state() {
             ThunkState::Failed(cached_err) => {
                 assert!(
-                    cached_err.message().contains("circular dependency"),
+                    cached_err.to_string().contains("circular dependency"),
                     "cached error should mention circular dependency, got: {}",
-                    cached_err.message()
+                    cached_err.to_string()
                 );
             }
             other => panic!("expected Failed state after cycle detection, got {other:?}"),
@@ -3507,9 +3508,9 @@ mod tests {
         let expr = sp(Expr::Dict(entries));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("duplicate key: x"),
+            err.to_string().contains("duplicate key: x"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -3661,11 +3662,11 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("type mismatch"),
+            err.to_string().contains("type mismatch"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
-        assert!(err.message().contains("Function"), "got: {}", err.message());
+        assert!(err.to_string().contains("Function"), "got: {}", err.to_string());
     }
 
     #[test]
@@ -3704,10 +3705,10 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("missing argument for required parameter"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -3740,9 +3741,9 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -3864,9 +3865,9 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("unexpected named argument: z"),
+            err.to_string().contains("unexpected named argument: z"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -3913,10 +3914,10 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("received both positional and named argument"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4081,10 +4082,10 @@ mod tests {
         let expr = sp(Expr::Rest(None));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("rest marker (...) is only valid inside type expressions"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4093,10 +4094,10 @@ mod tests {
         let expr = sp(Expr::Rest(Some("x".into())));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("rest marker (...) is only valid inside type expressions"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4107,9 +4108,9 @@ mod tests {
         let expr = sp(Expr::var_ref("_".into()));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: _"),
+            err.to_string().contains("undefined variable: _"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4356,9 +4357,9 @@ mod tests {
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("key not found: missing"),
+            err.to_string().contains("key not found: missing"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4379,11 +4380,11 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err.message().contains("expected"), "got: {}", err.message());
+        assert!(err.to_string().contains("expected"), "got: {}", err.to_string());
         assert!(
-            err.message().contains("expected Dict"),
+            err.to_string().contains("expected Dict"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4452,10 +4453,10 @@ mod tests {
         });
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4469,10 +4470,10 @@ mod tests {
         });
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("type assertion failed: expected String, got Int"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4520,10 +4521,10 @@ mod tests {
         });
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4604,10 +4605,10 @@ mod tests {
         });
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4755,9 +4756,9 @@ mod tests {
         let mat_span = test_span(5, 1, 5, 5);
         let err = materialize(&x_thunk, Some(&mat_span), &ctx).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: missing"),
+            err.to_string().contains("undefined variable: missing"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
         assert_eq!(
             err.materialization_span,
@@ -4784,7 +4785,7 @@ mod tests {
                 let x_thunk = get_thunk_rc(x_id, &ctx);
                 let mat_span = test_span(10, 1, 10, 5);
                 let err = materialize(&x_thunk, Some(&mat_span), &ctx).unwrap_err();
-                assert!(err.message().contains("circular dependency"));
+                assert!(err.to_string().contains("circular dependency"));
                 assert_eq!(err.materialization_span, Some(mat_span));
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -4801,16 +4802,16 @@ mod tests {
         let expr = sp(Expr::Dict(entries));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("type mismatch"),
+            err.to_string().contains("type mismatch"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
         assert!(
-            err.message().contains("expected String or Int"),
+            err.to_string().contains("expected String or Int"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
-        assert!(err.message().contains("got Bool"), "got: {}", err.message());
+        assert!(err.to_string().contains("got Bool"), "got: {}", err.to_string());
     }
 
     #[test]
@@ -4823,19 +4824,19 @@ mod tests {
         let expr = sp(Expr::Dict(entries));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("type mismatch"),
+            err.to_string().contains("type mismatch"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
         assert!(
-            err.message().contains("expected String or Int"),
+            err.to_string().contains("expected String or Int"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
         assert!(
-            err.message().contains("got Float"),
+            err.to_string().contains("got Float"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -4969,14 +4970,14 @@ mod tests {
         });
         let err = eval_document(&doc, empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("document pipeline"),
+            err.to_string().contains("document pipeline"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
         assert!(
-            err.message().contains("expected Dict"),
+            err.to_string().contains("expected Dict"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -5496,9 +5497,9 @@ mod tests {
                 let y_id = map.get(&Key::String("y".into())).unwrap();
                 let err = mat_id(y_id, &ctx).unwrap_err();
                 assert!(
-                    err.message().contains("undefined variable: x"),
+                    err.to_string().contains("undefined variable: x"),
                     "got: {}",
-                    err.message()
+                    err.to_string()
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -6292,9 +6293,9 @@ mod tests {
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("undefined variable: missing"),
+            err.to_string().contains("undefined variable: missing"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
         // The stack should contain a frame for "[f ...]"
         assert!(
@@ -6380,7 +6381,7 @@ mod tests {
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err.message().contains("undefined variable: missing"));
+        assert!(err.to_string().contains("undefined variable: missing"));
 
         // Should have frames for both call sites
         let labels: Vec<&str> = err.stack.iter().map(|f| f.label.as_str()).collect();
@@ -6447,7 +6448,7 @@ mod tests {
         let thunk = eval(Rc::new(access_expr.clone()), env, &ctx).unwrap();
         let mat_span = test_span(3, 1, 3, 10);
         let err = materialize(&thunk, Some(&mat_span), &ctx).unwrap_err();
-        assert!(err.message().contains("undefined variable: missing"));
+        assert!(err.to_string().contains("undefined variable: missing"));
         // The materialization span should be set
         assert!(err.materialization_span.is_some());
     }
@@ -6471,7 +6472,7 @@ mod tests {
 
         let thunk = eval(Rc::new(access_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err.message().contains("undefined variable: nonexistent"));
+        assert!(err.to_string().contains("undefined variable: nonexistent"));
         // Should have an "accessing .field" frame
         assert!(
             err.stack.iter().any(|f| f.label == "accessing .field"),
@@ -6527,7 +6528,7 @@ mod tests {
         // Materialize with a different span (simulating a reference from $b)
         let b_span = test_span(3, 1, 3, 5);
         let err = materialize(&thunk, Some(&b_span), &ctx).unwrap_err();
-        assert!(err.message().contains("undefined variable: missing"));
+        assert!(err.to_string().contains("undefined variable: missing"));
         // After threading outer_mat_span through DotAccessForceData, the error should
         // show b_span (the outermost call-site) rather than access_span (the .x access).
         assert_eq!(
@@ -6688,7 +6689,7 @@ mod tests {
 
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err.message().contains("test builtin failure"));
+        assert!(err.to_string().contains("test builtin failure"));
         // The stack should contain "[fail ...]"
         assert!(
             err.stack.iter().any(|f| f.label == "[fail ...]"),
@@ -6924,10 +6925,10 @@ mod tests {
 
         let err = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("expected Function or Builtin, got Int"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -7615,7 +7616,7 @@ mod tests {
                         .message()
                         .contains("undefined variable: undefined"),
                     "cached error mismatch: got: {}",
-                    cached_err.message()
+                    cached_err.to_string()
                 );
             }
             other => panic!("expected Failed state, got: {:?}", other),
@@ -7796,9 +7797,9 @@ mod tests {
         let err = materialize(&result, None, &ctx).unwrap_err();
 
         assert!(
-            err.message().contains("circular include") || err.message().contains("cycle"),
+            err.to_string().contains("circular include") || err.to_string().contains("cycle"),
             "expected circular include error, got: {}",
-            err.message()
+            err.to_string()
         );
 
         // Cleanup
@@ -8079,9 +8080,9 @@ mod tests {
         let err = materialize(&result2, None, &ctx2).unwrap_err();
 
         assert!(
-            err.message().contains("circular include") || err.message().contains("cycle"),
+            err.to_string().contains("circular include") || err.to_string().contains("cycle"),
             "expected circular include error from shared guard, got: {}",
-            err.message()
+            err.to_string()
         );
 
         // Cleanup
@@ -8117,10 +8118,10 @@ mod tests {
         });
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -8221,9 +8222,9 @@ mod tests {
 
         let err = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("record missing field \"id\""),
+            err.to_string().contains("record missing field \"id\""),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -8312,9 +8313,9 @@ mod tests {
 
         let err = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("type assertion failed"),
+            err.to_string().contains("type assertion failed"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -8343,10 +8344,10 @@ mod tests {
         });
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -8499,10 +8500,10 @@ mod tests {
         });
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.to_string()
                 .contains("type assertion failed: expected Record, got Int"),
             "Structural annotation with non-Dict value should fail; got: {}",
-            err.message()
+            err.to_string()
         );
     }
 
@@ -8717,7 +8718,7 @@ mod tests {
         // Should error with field path prefix in the message
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
-        let msg = err.message();
+        let msg = err.to_string();
         // definition_span should be data_span (where the invalid dict was constructed/bound),
         // not guard_span (the annotation site). validate_and_wrap_record uses data_span as the
         // definition site so errors point at the value, not at the type annotation.
@@ -8819,7 +8820,7 @@ mod tests {
 
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
-        let msg = err.message();
+        let msg = err.to_string();
         // definition_span should be data_span (where the invalid dict was constructed/bound),
         // not guard_span (the annotation site). validate_and_wrap_record uses data_span as the
         // definition site so errors point at the value, not at the type annotation.
@@ -9079,9 +9080,9 @@ mod tests {
         );
         let err = result1.unwrap_err();
         assert!(
-            err.message().contains("type assertion failed"),
+            err.to_string().contains("type assertion failed"),
             "error should say 'type assertion failed', got: {}",
-            err.message()
+            err.to_string()
         );
 
         // After failure, thunk must be in Failed state (cacheable memoization of error).
@@ -9243,9 +9244,9 @@ mod tests {
         assert!(result.is_err(), "Cycle should be detected");
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("circular dependency"),
+            err.to_string().contains("circular dependency"),
             "Error should mention circular dependency, got: {}",
-            err.message()
+            err.to_string()
         );
 
         // Test 3-node cycle: a→b→c→a
@@ -9712,7 +9713,7 @@ mod tests {
 
         // Forcing must return a type_assert_failed error.
         let err = materialize(&thunk, None, &ctx).unwrap_err();
-        let msg = err.message();
+        let msg = err.to_string();
         assert!(
             msg.contains("Int") || msg.contains("type"),
             "error should mention the expected type; got: {msg}"
