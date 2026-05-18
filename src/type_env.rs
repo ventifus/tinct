@@ -3708,6 +3708,7 @@ mod help_suggestion_tests {
         let instance = InstanceDecl {
             class_name: "Appendable".to_string(),
             instance_type: Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))),
+            det_positions: vec![], // Single-parameter class, no FDs
             method_types: {
                 let mut methods = HashMap::new();
                 methods.insert(

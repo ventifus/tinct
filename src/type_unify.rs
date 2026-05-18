@@ -572,35 +572,25 @@ fn improve_functional_dependency_inner(
 
 /// Instance lookup for multi-parameter type classes with functional dependencies.
 ///
-/// Given the class name and the determining types, returns the determined type.
+/// Given the class name and the ground determining types, returns the determined type.
 ///
 /// Two-tier lookup:
 ///
-/// 1. FAST PATH — hardcoded table for the 9 builtin Add/Sub/Mul/Div instances (all share
-///    the FD shape `(a,b) → c`). This avoids `instance_env` iteration for the common case.
+/// 1. FAST PATH — hardcoded table for the builtin Addable/Subtractable/Multipliable/Divisible
+///    instances (all share the FD shape `(a,b) → c`).  This avoids `instance_env` iteration
+///    for the common arithmetic case.
 ///
-/// 2. GENERAL PATH (stub) — for any MPTC class not in the hardcoded list, the caller
-///    would query `state.instance_env`.  This is currently a stub because `InstanceEnv`
-///    only supports single-parameter instances: the key is `(class_name, instance_type_string)`
-///    and `InstanceDecl.instance_type` holds one `Type`, not a tuple of types.
-///
-///    To support general MPTC lookup, the following API additions are needed:
-///
-///    a. `InstanceDecl` must store a `Vec<Type>` of instance head types (one per class param),
-///       not a single `instance_type`.
-///    b. `InstanceEnv::lookup_mptc(class, det_types, ded_positions, state)` should:
-///       - iterate instances for `class`
-///       - for each candidate, unify `candidate.head_types[det_pos]` against `det_types[i]`
-///         for each determining position
-///       - if all unify, return `candidate.head_types[ded_pos]` for each determined position
-///    c. The FD positions must be stored on the `InstanceDecl` (or looked up from `ClassDecl`).
-///
-///    Until that API exists, this function handles Add/Sub/Mul/Div via the fast path and
-///    returns a descriptive error for any other class (no other MPTCs with FDs exist yet).
+/// 2. GENERAL PATH — for any MPTC class not in the hardcoded list, delegates to
+///    `state.instance_env.lookup_mptc(class, det_types)`.  `InstanceEnv` now stores instances
+///    under a `(class_name, Vec<String>)` key built from the determining positions of each FD,
+///    so user-defined MPTC instances registered via `[instance ...]` are reachable here.
+///    On a successful lookup the determined type is extracted from the numbered-field Record
+///    that encodes the multi-param instance head.  On a miss a `no instance for …` error is
+///    returned.
 fn lookup_arithmetic_instance(
     class: &str,
     det_types: &[Type],
-    _state: &InferState,
+    state: &InferState,
     span: Span,
 ) -> Result<Type, TypeError> {
     if det_types.len() != 2 {
@@ -651,16 +641,61 @@ fn lookup_arithmetic_instance(
             )),
         },
         _ => {
-            // GENERAL PATH (stub): no other MPTCs with functional dependencies exist yet.
-            // When they do, query state.instance_env here — but InstanceEnv must first be
-            // extended to support multi-parameter instance heads (see doc comment above).
-            Err(TypeError::new(
-                format!(
-                    "no instance for {} {} {} (class not supported by MPTC lookup)",
-                    class, a, b
-                ),
-                span,
-            ))
+            // GENERAL PATH: query InstanceEnv for user-defined MPTC classes.
+            // `lookup_mptc` matches on the ground determining types via the key built
+            // during instance registration.
+            match state.instance_env.lookup_mptc(class, det_types) {
+                Some(inst) => {
+                    // Extract the determined type from the instance.
+                    // For a multi-param MPTC instance, instance_type is a Record with
+                    // numbered fields (0, 1, 2, …).  The determined position is the first
+                    // index not listed in inst.det_positions.
+                    let det_position_set: HashSet<usize> =
+                        inst.det_positions.iter().copied().collect();
+
+                    match &inst.instance_type {
+                        Type::Record(row) => {
+                            // Find the first field index not in the determining set
+                            let total_params = row.fields.len();
+                            let determined_pos =
+                                (0..total_params).find(|i| !det_position_set.contains(i));
+                            match determined_pos {
+                                Some(pos) => row
+                                    .fields
+                                    .get(&pos.to_string())
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        TypeError::new(
+                                            format!(
+                                                "no instance for {} {} {} (determined field {} missing)",
+                                                class, a, b, pos
+                                            ),
+                                            span,
+                                        )
+                                    }),
+                                None => Err(TypeError::new(
+                                    format!(
+                                        "no instance for {} {} {} (no determined position found)",
+                                        class, a, b
+                                    ),
+                                    span,
+                                )),
+                            }
+                        }
+                        _ => Err(TypeError::new(
+                            format!(
+                                "no instance for {} {} {} (unexpected instance_type shape)",
+                                class, a, b
+                            ),
+                            span,
+                        )),
+                    }
+                }
+                None => Err(TypeError::new(
+                    format!("no instance for {} {} {}", class, a, b),
+                    span,
+                )),
+            }
         }
     }
 }
