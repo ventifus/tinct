@@ -2,3 +2,5 @@
 [each-kv true]
 === error
 [E010] each-kv: expected Dict, got Bool
+=== warn
+cannot unify [] with Bool

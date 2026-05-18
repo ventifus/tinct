@@ -7,3 +7,5 @@
 [result: [head filtered]]
 === out
 Dict({"result": Int(1)})
+=== warn
+undefined variable: filtered

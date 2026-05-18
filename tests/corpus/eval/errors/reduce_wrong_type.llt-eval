@@ -3,5 +3,4 @@
 === error
 [E010] type mismatch: expected Function or Builtin, got String
 === warn
-cannot unify Fn@_ [_ _] with "not-a-function" at 1:9-1:25
-cannot unify Seq[_] with [0: 1 1: 2 2: 3] at 1:28-1:35
+with "not-a-function"

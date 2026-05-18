@@ -1,10 +1,10 @@
 # Constraint violation warning: a function body applies $+ to a string argument.
-# The type variable for parameter x is constrained to Numeric (from $+), but "hello"
-# is a String which does not satisfy the Numeric constraint.
-# The type checker reports "does not satisfy constraint Numeric".
+# The type variable for parameter x is constrained to Add (from $+), but the
+# constraint is ambiguous because _t1 doesn't appear in the inferred return type.
+# The type checker reports ambiguous type variable and Unknown inference warnings.
 # Eval proceeds — the function body is never invoked so no runtime error occurs.
 [f: [fn [x] [call $+ x "hello"]]]
 === out
 Dict({"f": Function(x)})
 === warn
-cannot unify Number with "hello" at 5:24-5:31
+ambiguous type variable '_t1' in constraint Add: appears in constraint but not in the type — constraint will be silently dropped

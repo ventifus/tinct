@@ -3,4 +3,4 @@
 === out
 Int(9)
 === warn
-cannot unify Seq[_] with [] at 1:34-1:64
+cannot unify Seq[

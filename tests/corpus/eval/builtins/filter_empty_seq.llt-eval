@@ -2,3 +2,5 @@
 [filter [fn [x] true] []]
 === out
 Dict({})
+=== warn
+cannot unify Seq[

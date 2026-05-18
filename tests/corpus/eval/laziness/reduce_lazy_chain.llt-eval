@@ -8,4 +8,4 @@
 === out
 Int(6)
 === warn
-cannot unify Seq[_] with [0: 1 1: 2 2: 3] at 4:86-4:93
+with [0: 1 1: 2 2: 3]

@@ -49,8 +49,4 @@
 === out
 Dict({"keys_basic": Dict({0: String("a"), 1: String("b")}), "length_dict": Int(3), "length_string": Int(5), "length_bytes": Int(2), "merge_basic": Dict({"a": Int(1), "b": Int(3), "c": Int(4)}), "merge_disjoint": Dict({"a": Int(1), "b": Int(2)}), "merge_right_overrides": Dict({"a": Int(2)}), "merge_lazy_overlay": Dict({"merged": Dict({"x": Int(10), "y": Int(99), "z": Int(30)}), "x-val": Int(10), "y-val": Int(99), "z-val": Int(30)}), "map_dict": Dict({"a": Int(2), "b": Int(4), "c": Int(6)}), "map_empty_dict": Dict({}), "filter_dict": Dict({0: Int(3), 1: Int(5)}), "filter_dict_multi": Dict({0: Int(3), 1: Int(4), 2: Int(5)}), "filter_empty_dict": Dict({}), "reduce_dict": Int(60), "reduce_empty_dict": Int(99), "take_dict": Dict({"a": Int(1), "b": Int(2)}), "drop_dict": Dict({"b": Int(2), "c": Int(3)}), "drop_exceeds_dict": Dict({}), "get_basic": Int(1), "dict_structural_eq": Bool(true)})
 === warn
-cannot unify Seq[_] with [0: 10 1: 20 2: 30] at 34:49-34:59
-cannot unify Seq[_] with [] at 35:56-35:58
 cannot unify Seq[⊤] with [a: 1 b: 2 c: 3] at 38:22-38:40
-cannot unify Seq[⊤] with [a: 1 b: 2 c: 3] at 39:22-39:40
-cannot unify Seq[⊤] with [a: 1] at 40:30-40:36

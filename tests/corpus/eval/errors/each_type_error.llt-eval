@@ -2,3 +2,5 @@
 [each 42]
 === error
 [E010] each: expected Dict, got Int
+=== warn
+cannot unify [] with 42
