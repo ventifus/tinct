@@ -2278,26 +2278,20 @@ fn infer_expr(
             )])
         }
 
-        Expr::MacroDecl { .. } => {
-            Err(vec![TypeError::new(
-                "MacroDecl should be removed by expansion pass before typechecking (internal error)",
-                expr.span,
-            )])
-        }
+        Expr::MacroDecl { .. } => Err(vec![TypeError::new(
+            "MacroDecl should be removed by expansion pass before typechecking (internal error)",
+            expr.span,
+        )]),
 
-        Expr::Splice(..) => {
-            Err(vec![TypeError::new(
-                "Splice should be removed by expansion pass before typechecking (internal error)",
-                expr.span,
-            )])
-        }
+        Expr::Splice(..) => Err(vec![TypeError::new(
+            "Splice should be removed by expansion pass before typechecking (internal error)",
+            expr.span,
+        )]),
 
-        Expr::SyntaxClass { .. } => {
-            Err(vec![TypeError::new(
-                "SyntaxClass should be removed by expansion pass before typechecking (internal error)",
-                expr.span,
-            )])
-        }
+        Expr::SyntaxClass { .. } => Err(vec![TypeError::new(
+            "SyntaxClass should be removed by expansion pass before typechecking (internal error)",
+            expr.span,
+        )]),
 
         Expr::ClassDecl {
             name,
@@ -7103,7 +7097,7 @@ mod tests {
     #[test]
     fn test_fn_type_concrete_types() {
         let ty = result_field(
-            "[Add: [type [Fn@Number [Number Number]]]]\n[x: [@Add [fn [a@Number b@Number] $a]]]",
+            "[Addable: [type [Fn@Number [Number Number]]]]\n[x: [@Addable [fn [a@Number b@Number] $a]]]",
             "x",
         );
         match ty {
@@ -7594,8 +7588,8 @@ mod tests {
 
     #[test]
     fn test_fn_type_expr_concrete_params() {
-        let env = doc_env("[Add: [type [Fn@Number [Number Number]]]]\n[x: 1]");
-        let alias = env.get_type_alias("Add").unwrap();
+        let env = doc_env("[Addable: [type [Fn@Number [Number Number]]]]\n[x: 1]");
+        let alias = env.get_type_alias("Addable").unwrap();
         match &alias.body {
             Type::Function {
                 params,

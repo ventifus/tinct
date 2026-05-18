@@ -168,8 +168,8 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     reject_named("+", named, call_span)?;
 
-    // Runtime typeclass dispatch: check for Add instance
-    if let Some(result) = try_dispatch_method("Add", "add", args, named, call_span, &ctx) {
+    // Runtime typeclass dispatch: check for Addable instance
+    if let Some(result) = try_dispatch_method("Addable", "add", args, named, call_span, &ctx) {
         return result;
     }
 
@@ -197,8 +197,8 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     reject_named("-", named, call_span)?;
 
-    // Runtime typeclass dispatch: check for Sub instance
-    if let Some(result) = try_dispatch_method("Sub", "sub", args, named, call_span, &ctx) {
+    // Runtime typeclass dispatch: check for Subtractable instance
+    if let Some(result) = try_dispatch_method("Subtractable", "sub", args, named, call_span, &ctx) {
         return result;
     }
 
@@ -226,8 +226,8 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     reject_named("*", named, call_span)?;
 
-    // Runtime typeclass dispatch: check for Mul instance
-    if let Some(result) = try_dispatch_method("Mul", "mul", args, named, call_span, &ctx) {
+    // Runtime typeclass dispatch: check for Multipliable instance
+    if let Some(result) = try_dispatch_method("Multipliable", "mul", args, named, call_span, &ctx) {
         return result;
     }
 
@@ -255,8 +255,8 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     reject_named("/", named, call_span)?;
 
-    // Runtime typeclass dispatch: check for Div instance
-    if let Some(result) = try_dispatch_method("Div", "div", args, named, call_span, &ctx) {
+    // Runtime typeclass dispatch: check for Divisible instance
+    if let Some(result) = try_dispatch_method("Divisible", "div", args, named, call_span, &ctx) {
         return result;
     }
 

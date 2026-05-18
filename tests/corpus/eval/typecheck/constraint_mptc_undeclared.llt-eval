@@ -2,8 +2,8 @@
 # Tests that bind: validation works for MPTC constraints and that
 # [each Comparable Showable] correctly applies both constraints.
 #
-# NOTE: Full MPTC validation with $Add requires Add class registration in class_env.
-# That case will need a separate test when Add class registration is added.
+# NOTE: Full MPTC validation with $Addable requires Addable class registration in class_env.
+# That case will need a separate test when Addable class registration is added.
 [
   multi-constrained: [fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]
     [x@a] x]

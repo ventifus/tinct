@@ -8,4 +8,4 @@
 [E010] +/-/*//: expected Int or Float, got Int and String
 
 === warn
-no instance for Add Int String at 3:12-3:32
+no instance for Addable Int String at 3:12-3:32

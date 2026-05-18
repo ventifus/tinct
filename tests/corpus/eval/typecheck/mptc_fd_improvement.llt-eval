@@ -1,8 +1,8 @@
 # MPTC functional dependency improvement: [+ 1 2.0] should infer Float.
-# The Add type class has FD (a,b) → c: once a=Int and b=Float are determined,
+# The Addable type class has FD (a,b) → c: once a=Int and b=Float are determined,
 # the result type c is resolved to Float via instance lookup.
 #
-# Tests all four Add cases: Int+Float, Float+Int, Int+Int, Float+Float.
+# Tests all four Addable cases: Int+Float, Float+Int, Int+Int, Float+Float.
 [r1: [+ 1 2.0]  r2: [+ 2.0 1]  r3: [+ 1 2]  r4: [+ 1.5 2.5]]
 === out
 Dict({"r1": Float(3), "r2": Float(3), "r3": Int(3), "r4": Float(4)})

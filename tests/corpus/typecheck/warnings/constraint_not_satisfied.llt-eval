@@ -1,5 +1,5 @@
 # Constraint violation warning: a function body applies $+ to a string argument.
-# The type variable for parameter x is constrained to Add (from $+), but the
+# The type variable for parameter x is constrained to Addable (from $+), but the
 # constraint is ambiguous because _t1 doesn't appear in the inferred return type.
 # The type checker reports ambiguous type variable and Unknown inference warnings.
 # Eval proceeds — the function body is never invoked so no runtime error occurs.
@@ -7,4 +7,4 @@
 === out
 Dict({"f": Function(x)})
 === warn
-ambiguous type variable '_t1' in constraint Add: appears in constraint but not in the type — constraint will be silently dropped
+ambiguous type variable '_t1' in constraint Addable: appears in constraint but not in the type — constraint will be silently dropped
