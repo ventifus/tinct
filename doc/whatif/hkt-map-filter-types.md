@@ -1,6 +1,6 @@
 # What If: Precise HKT Types for map/filter/reduce/each
 
-**State:** Proposal
+**State:** Superseded — implementation detail, not a language feature proposal. See `hkt-map-filter-types` sprint in TODO.md.
 
 What would it take to replace the `Type::Unknown` signatures on `map`, `filter`, `reduce`, `each`, `each-key`, and `each-kv` with precise polymorphic types using the already-accepted HKT machinery?
 

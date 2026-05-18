@@ -287,7 +287,9 @@ enum LiterateMode {
 #[derive(Debug)]
 struct BlockOutput {
     out: Option<String>,   // JSON result or (emit)
+    warn: Option<String>,  // Type warnings
     error: Option<String>, // Error message if evaluation failed
+    info: Option<String>,  // Log output (future: from `log` builtin)
 }
 
 fn main() {
@@ -2767,7 +2769,9 @@ fn run_literate_weave(
                 // Embed error and continue
                 block_outputs.push(BlockOutput {
                     out: None,
+                    warn: None,
                     error: Some(error_msg),
+                    info: None,
                 });
                 continue;
             }
@@ -2786,7 +2790,9 @@ fn run_literate_weave(
                 }
                 block_outputs.push(BlockOutput {
                     out: None,
+                    warn: None,
                     error: Some(msg),
+                    info: None,
                 });
                 continue;
             }
@@ -2796,6 +2802,17 @@ fn run_literate_weave(
         tinct::desugar::desugar_file(&mut ast.node);
         tinct::resolve::resolve_file(&ast.node);
         let (type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
+
+        // Capture type warnings (always non-fatal in literate mode unless --strict)
+        let type_warnings = if !strict && !type_errors.is_empty() {
+            let mut msg = String::new();
+            for err in &type_errors {
+                msg.push_str(&format!("{err}\n"));
+            }
+            Some(msg.trim_end().to_string())
+        } else {
+            None
+        };
 
         // In strict mode, type errors are fatal
         if strict && !type_errors.is_empty() {
@@ -2808,7 +2825,9 @@ fn run_literate_weave(
             }
             block_outputs.push(BlockOutput {
                 out: None,
+                warn: None,
                 error: Some(msg),
+                info: None,
             });
             continue;
         }
@@ -2835,7 +2854,9 @@ fn run_literate_weave(
                 }
                 block_outputs.push(BlockOutput {
                     out: None,
+                    warn: type_warnings,
                     error: Some(error_msg),
+                    info: None,
                 });
                 continue;
             }
@@ -2854,7 +2875,9 @@ fn run_literate_weave(
                 }
                 block_outputs.push(BlockOutput {
                     out: None,
+                    warn: type_warnings,
                     error: Some(error_msg),
+                    info: None,
                 });
                 continue;
             }
@@ -2868,7 +2891,9 @@ fn run_literate_weave(
 
         block_outputs.push(BlockOutput {
             out: Some(output_str),
+            warn: type_warnings,
             error: None,
+            info: None,
         });
         // Thread the result as pipeline input to the next block.
         pipeline_input = Some(Rc::clone(&thunk));
@@ -2904,6 +2929,29 @@ fn run_literate_weave(
                 }
             }
 
+            // Check warn section
+            if let Some(ref expected_warn) = expected.warn {
+                match &block_output.warn {
+                    Some(actual_warn) => {
+                        if !actual_warn.contains(expected_warn.trim()) {
+                            mismatches.push(format!(
+                                "Block {}: warning mismatch\nExpected substring:\n{}\nActual:\n{}",
+                                i + 1,
+                                expected_warn,
+                                actual_warn
+                            ));
+                        }
+                    }
+                    None => {
+                        mismatches.push(format!(
+                            "Block {}: expected warning but got none\nExpected warning:\n{}",
+                            i + 1,
+                            expected_warn
+                        ));
+                    }
+                }
+            }
+
             // Check error section
             if let Some(ref expected_error) = expected.error {
                 match &block_output.error {
@@ -2922,6 +2970,29 @@ fn run_literate_weave(
                             "Block {}: expected error but got success\nExpected error:\n{}",
                             i + 1,
                             expected_error
+                        ));
+                    }
+                }
+            }
+
+            // Check info section
+            if let Some(ref expected_info) = expected.info {
+                match &block_output.info {
+                    Some(actual_info) => {
+                        if !actual_info.contains(expected_info.trim()) {
+                            mismatches.push(format!(
+                                "Block {}: info mismatch\nExpected substring:\n{}\nActual:\n{}",
+                                i + 1,
+                                expected_info,
+                                actual_info
+                            ));
+                        }
+                    }
+                    None => {
+                        mismatches.push(format!(
+                            "Block {}: expected info but got none\nExpected info:\n{}",
+                            i + 1,
+                            expected_info
                         ));
                     }
                 }
@@ -2971,6 +3042,13 @@ fn run_literate_weave(
             if block_idx < block_outputs.len() {
                 let block_output = &block_outputs[block_idx];
 
+                // Add === warn section if there are warnings
+                if let Some(ref warn) = block_output.warn {
+                    output.push_str("=== warn\n");
+                    output.push_str(warn);
+                    output.push('\n');
+                }
+
                 // Add === out section if there's output
                 if let Some(ref out) = block_output.out {
                     output.push_str("=== out\n");
@@ -2982,6 +3060,13 @@ fn run_literate_weave(
                 if let Some(ref error) = block_output.error {
                     output.push_str("=== error\n");
                     output.push_str(error);
+                    output.push('\n');
+                }
+
+                // Add === info section if there's info/log output
+                if let Some(ref info) = block_output.info {
+                    output.push_str("=== info\n");
+                    output.push_str(info);
                     output.push('\n');
                 }
 

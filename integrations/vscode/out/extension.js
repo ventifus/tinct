@@ -18122,9 +18122,12 @@ function activate(context) {
     args: ["lsp"]
   };
   const clientOptions = {
-    documentSelector: [{ scheme: "file", language: "llt" }],
+    documentSelector: [
+      { scheme: "file", language: "llt" },
+      { scheme: "file", language: "markdown" }
+    ],
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher("**/*.llt")
+      fileEvents: vscode.workspace.createFileSystemWatcher("**/*.{llt,md}")
     }
   };
   client = new import_node.LanguageClient(

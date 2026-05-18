@@ -1315,6 +1315,22 @@ Note: Wraps the function call in error handling. Returns the function's result i
     [try-or-impl [try f] default]]
 
 # ============================================================================
+# Transport Type (Network Transport Variants)
+# ============================================================================
+
+# Transport type: union of network transport variants
+# Used by connect builtin to specify connection type
+Transport: [type [Tcp] [Udp] [UnixStream] [UnixDatagram] [NamedPipe] [Icmp]]
+
+# Re-export transport variant constructors
+Tcp: Tcp
+Udp: Udp
+UnixStream: UnixStream
+UnixDatagram: UnixDatagram
+NamedPipe: NamedPipe
+Icmp: Icmp
+
+# ============================================================================
 # Result Type and Combinators
 # ============================================================================
 

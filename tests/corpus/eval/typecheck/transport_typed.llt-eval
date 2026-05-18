@@ -1,0 +1,27 @@
+# Transport variant constructors are properly typed
+# Verifies that the prelude's [type [Tcp] [Udp] ...] declaration
+# creates typed variant constructors usable with connect builtin
+
+[
+  # type-of returns "Variant" for variant values
+  tcp-type: [type-of Tcp]
+  udp-type: [type-of Udp]
+
+  # tag-of extracts the constructor name
+  tcp-tag: [tag-of Tcp]
+  icmp-tag: [tag-of Icmp]
+
+  # Variants can be passed to functions
+  extract-tag: [fn [t] [tag-of t]]
+  tcp-via-fn: [extract-tag Tcp]
+
+  # Equality works on variants
+  tcp-eq-tcp: [= Tcp Tcp]
+  tcp-eq-udp: [= Tcp Udp]
+
+  # All 6 transport constructors exist
+  all-six: [0: Tcp  1: Udp  2: UnixStream  3: UnixDatagram  4: NamedPipe  5: Icmp]
+]
+
+=== out
+Dict({"tcp-type": String("Variant"), "udp-type": String("Variant"), "tcp-tag": String("Tcp"), "icmp-tag": String("Icmp"), "extract-tag": Function(t), "tcp-via-fn": String("Tcp"), "tcp-eq-tcp": Bool(true), "tcp-eq-udp": Bool(false), "all-six": Dict({0: Variant(Tcp, Null), 1: Variant(Udp, Null), 2: Variant(UnixStream, Null), 3: Variant(UnixDatagram, Null), 4: Variant(NamedPipe, Null), 5: Variant(Icmp, Null)})})
