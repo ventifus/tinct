@@ -436,7 +436,7 @@ Fix-later findings from the full panel codebase review (2026-05-17, commit 37f83
 
 `typecheck_document` currently discards the partially-built TypeEnv when a document has type errors, returning only the errors. This means the hybrid `merge_env_bindings_into` path in `imports.rs` contributes nothing for the prelude (which has type errors from class declarations). Fix allows polymorphic prelude function types to be preserved with proper `∀a b.` schemes instead of being erased to `Unknown`.
 
-- [ ] Change `typecheck_document` in `src/typecheck.rs` to return `(Vec<TypeError>, Rc<TypeEnv>)` — always include the partial env even when errors occur; update all callers (`src/typecheck.rs`, `src/imports.rs`)
+- [ ] Change `typecheck_document` to return partial TypeEnv on error — investigation showed the document's internal env scoping doesn't propagate bindings to the outer env as expected; the prelude's dict bindings are inferred inside a nested scope that's discarded on error. Needs design work: either thread env through error paths in `infer_dict`/`typecheck_document`, or extract bindings from the `InferState.scheme_map` instead of the env chain (`src/typecheck.rs`, `src/imports.rs`)
 - [ ] Update `typecheck_and_merge_stdlib_module` in `src/imports.rs` to use the partial env (already has hybrid merge path from commit 2acef0c; just remove the `Ok(())` check guarding `merge_env_bindings_into`)
 - [ ] Delete `erase_type_vars`, `extract_bindings_from_file_with_fallback`, and `extract_bindings_from_expr` dead code from `src/imports.rs`
 - [ ] Verify that polymorphic prelude functions (map, filter, fold, etc.) now have proper type schemes — write a typecheck corpus test that calls `map` with a typed callback and verifies the result type is inferred correctly
