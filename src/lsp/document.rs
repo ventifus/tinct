@@ -8,7 +8,7 @@ use lsp_types::Uri;
 
 use crate::ast::{File, Spanned};
 use crate::builtins::create_stdlib_env_with_arena;
-use crate::error::EvalError;
+use crate::error::{EvalError, TypeDiagnostic};
 use crate::parser::{parse, ParseError};
 use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, SchemeMap, TypeMap};
 use crate::types::TypeError;
@@ -27,6 +27,10 @@ pub struct DocumentState {
     pub parse_errors: Vec<ParseError>,
     /// Type errors (advisory; evaluation proceeds regardless).
     pub type_errors: Vec<TypeError>,
+    /// Type quality diagnostics (info/warn level; from `scan_type_quality` and inference).
+    /// Distinct from `type_errors` (which are always warning-severity type mismatches);
+    /// these carry their own `DiagnosticLevel` (Info for T011, Warn for T010, etc.).
+    pub type_diagnostics: Vec<TypeDiagnostic>,
     /// Evaluation errors (if eval was attempted and failed).
     pub eval_errors: Vec<EvalError>,
     /// Map from expression spans to inferred types (for hover).
@@ -66,6 +70,7 @@ impl DocumentState {
             Err(err) => Err(err),
         };
         let mut type_errors = Vec::new();
+        let mut type_diagnostics: Vec<TypeDiagnostic> = Vec::new();
         let eval_errors = Vec::new();
         let mut type_map = TypeMap::new();
         let mut doc_map = DocMap::new();
@@ -94,6 +99,7 @@ impl DocumentState {
                             span: None,
                         }],
                         type_errors: vec![],
+                        type_diagnostics: vec![],
                         eval_errors: vec![],
                         type_map: TypeMap::new(),
                         doc_map: DocMap::new(),
@@ -124,7 +130,7 @@ impl DocumentState {
             };
             let (seeded_env, include_bindings) =
                 crate::imports::build_type_env(&file.node, type_base_dir);
-            let (errs, mut map, docs, smap, _diagnostics) =
+            let (errs, mut map, docs, smap, tc_diagnostics) =
                 typecheck_file_with_types_and_env(&file.node, seeded_env);
             // Post-pass: inject precise Record types for [include %cap "path"] expressions.
             crate::imports::apply_include_type_post_pass(&file.node, &include_bindings, &mut map);
@@ -132,7 +138,9 @@ impl DocumentState {
             type_map = map;
             doc_map = docs;
             scheme_map = smap;
-            // TODO: Convert diagnostics to LSP diagnostics (type-warning-channel infrastructure only)
+            // Store type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …)
+            // so that diagnostics_for() can publish them as LSP diagnostics with correct severity.
+            type_diagnostics = tc_diagnostics;
 
             // Build the LSP eval environment, mirroring what main.rs does at startup.
             // The type checker gets runtime percent-vars via build_type_env(); we inject
@@ -294,6 +302,7 @@ impl DocumentState {
             ast,
             parse_errors,
             type_errors,
+            type_diagnostics,
             eval_errors,
             type_map,
             doc_map,
@@ -326,6 +335,7 @@ impl DocumentState {
             }),
             parse_errors: vec![],
             type_errors: vec![],
+            type_diagnostics: vec![],
             eval_errors: vec![],
             type_map: TypeMap::new(),
             doc_map: DocMap::new(),

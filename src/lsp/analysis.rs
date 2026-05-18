@@ -6,7 +6,7 @@ use lsp_types::{
 };
 
 use crate::ast::{Expr, File, Span, Spanned};
-use crate::error::render_span_snippet;
+use crate::error::{render_span_snippet, DiagnosticLevel, TypeDiagnostic};
 use crate::lsp::convert::llt_span_to_lsp_range;
 use crate::lsp::document::DocumentState;
 use crate::parser::ParseError;
@@ -1396,6 +1396,13 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
         diagnostics.push(type_error_to_diagnostic(err, source));
     }
 
+    // Type quality diagnostics -> severity per DiagnosticLevel (Info/Warn/Err)
+    // These include T010 (inferred Unknown), T011 (explicit @Unknown), T012 (overbroad
+    // annotation), T013 (ambiguous constraint), and any future scan_type_quality checks.
+    for diag in &doc.type_diagnostics {
+        diagnostics.push(type_diagnostic_to_diagnostic(diag, source));
+    }
+
     // Eval errors -> Error severity
     for err in &doc.eval_errors {
         diagnostics.push(eval_error_to_diagnostic(err, source, uri));
@@ -1449,6 +1456,28 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str) -> Diagnostic {
         code_description: None,
         source: Some("tinct-typecheck".to_string()),
         message: err.message.clone(),
+        related_information: None,
+        tags: None,
+        data: None,
+    }
+}
+
+fn type_diagnostic_to_diagnostic(diag: &TypeDiagnostic, source: &str) -> Diagnostic {
+    let range = llt_span_to_lsp_range(&diag.span, source);
+
+    let severity = Some(match diag.level {
+        DiagnosticLevel::Info => DiagnosticSeverity::INFORMATION,
+        DiagnosticLevel::Warn => DiagnosticSeverity::WARNING,
+        DiagnosticLevel::Err => DiagnosticSeverity::ERROR,
+    });
+
+    Diagnostic {
+        range,
+        severity,
+        code: Some(lsp_types::NumberOrString::String(diag.code.to_string())),
+        code_description: None,
+        source: Some("tinct-typecheck".to_string()),
+        message: diag.message.clone(),
         related_information: None,
         tags: None,
         data: None,

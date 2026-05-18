@@ -1944,12 +1944,22 @@ fn infer_expr(
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
             // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
             if let Expr::VarRef { name, .. } = &func.node {
-                // Polymorphic recursion check: reject recursive calls during function body inference.
-                // This implements depth-1 polyrecursion ban (conservative: rejects all unannotated
-                // recursion to prevent silent Unknown inference). Functions with explicit return
-                // type annotations are allowed to recurse because the return type is pinned.
-                // TODO: refine to allow monomorphic recursion by detecting when recursive call
-                // types match the inferred type (requires constraint-based approach).
+                // Monomorphic recursion check: allow recursive calls when the function's type
+                // is already resolved (monomorphic recursion), reject only polymorphic recursion.
+                //
+                // When we enter the recursive call detection path:
+                // - If the function's TypeVar has been resolved to a concrete Function type
+                //   (via prior unification from other code paths, e.g., the base-case `if` branch),
+                //   we can allow the call and return the resolved return type. This is correct:
+                //   all uses of the recursive call unify to the same concrete type (monomorphic).
+                // - If the TypeVar is still unresolved (or resolves to something non-Function),
+                //   we allow the call speculatively: infer args for constraint side-effects and
+                //   return a fresh TypeVar. The outer `infer_fn` and `unify` calls will enforce
+                //   consistency — if different arms return incompatible types, the outer `if`
+                //   expression or `infer_fn` body unification will catch it.
+                // - Polymorphic recursion (where the recursive call instantiates the function at a
+                //   different type) is handled implicitly: since the function only has one TypeVar
+                //   binding (not a polymorphic scheme), all uses must unify to the same type.
                 //
                 // LIMITATION: This check only fires for direct VarRef calls (not field access like
                 // $obj.f) and only when state.current_function is set (dict entries, not closure
@@ -1957,15 +1967,74 @@ fn infer_expr(
                 // check. This is intentional — detecting recursion through arbitrary expressions is
                 // much harder and rare in practice.
                 if state.current_function.as_ref() == Some(name) {
-                    let mut err = TypeError::new(
-                        "recursive function requires an explicit return type annotation — annotate with `fn@ReturnType [...]`",
-                        expr.span,
-                    );
-                    err.notes.push(
-                        "  = help: Recursive functions without return type annotations would get type `Unknown`. \
-                         Add a return type annotation (`fn@ReturnType [...]`) to enable recursion.".to_string()
-                    );
-                    return Err(vec![err]);
+                    // Look up the function's current type from the environment.
+                    // In Pass 1, this was bound to a fresh TypeVar. By the time a recursive call
+                    // is encountered, state.subst may have resolved it to a Function type (if prior
+                    // expression inference in the body unified it).
+                    let fn_resolved_ty = env
+                        .get(name)
+                        .map(|scheme| state.subst.apply(&scheme.body))
+                        .unwrap_or_else(|| state.fresh_type_var());
+
+                    match &fn_resolved_ty {
+                        Type::Function { params, ret, variadic } => {
+                            // Monomorphic recursion: the function's type is already known.
+                            // Infer arguments and unify with parameter types.
+                            let variadic = *variadic;
+                            let params = params.clone();
+                            let ret = ret.clone();
+
+                            let total_supplied = args.len() + named_args.len();
+                            let min_required = if variadic && !params.is_empty() {
+                                params.len() - 1
+                            } else {
+                                params.len()
+                            };
+                            if total_supplied < min_required
+                                || (!variadic && total_supplied != params.len())
+                            {
+                                return Err(vec![TypeError::new(
+                                    format!(
+                                        "arity mismatch: expected {}{} argument(s), got {}",
+                                        if variadic { "at least " } else { "" },
+                                        min_required,
+                                        total_supplied,
+                                    ),
+                                    expr.span,
+                                )]);
+                            }
+
+                            for (arg, (_param_name, param_ty)) in
+                                args.iter().zip(params.iter())
+                            {
+                                let arg_ty = infer_expr(arg, env, state, type_map)?;
+                                let mut subst = std::mem::take(&mut state.subst);
+                                let unify_result =
+                                    unify(&arg_ty, param_ty, &mut subst, state, arg.span);
+                                state.subst = subst;
+                                if let Err(uerr) = unify_result {
+                                    return Err(vec![uerr]);
+                                }
+                            }
+                            for na in named_args {
+                                let _ = infer_expr(&na.node.value, env, state, type_map)?;
+                            }
+                            return Ok(state.subst.apply(&ret));
+                        }
+                        _ => {
+                            // TypeVar or other non-Function type: allow speculatively.
+                            // Infer args for constraint side-effects, return a fresh TypeVar.
+                            // The outer unification will enforce consistency once the function
+                            // body is fully inferred.
+                            for arg in args {
+                                let _ = infer_expr(arg, env, state, type_map)?;
+                            }
+                            for na in named_args {
+                                let _ = infer_expr(&na.node.value, env, state, type_map)?;
+                            }
+                            return Ok(state.fresh_type_var());
+                        }
+                    }
                 }
 
                 match env.get(name) {

@@ -1,0 +1,17 @@
+# Monomorphic recursion: an unannotated recursive function where all return
+# paths produce a consistent type. The type checker must allow this without
+# requiring an explicit `fn@ReturnType` annotation.
+# All code paths return Int: base case is IntLiteral(1), recursive path is
+# Int because [if [= n 0] 1 [factorial [- n 1]]] returns Int in both branches
+# once the recursion bottoms out.
+[
+  factorial: [fn [n@Int]
+    [if [= n 0]
+      1
+      [factorial [- n 1]]
+    ]
+  ]
+  result: [factorial 5]
+]
+=== out
+Dict({"factorial": Function(), "result": Int(120)})
