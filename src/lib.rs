@@ -99,8 +99,7 @@ pub use eval_deep::deep_materialize;
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
 pub use builtins::{
-    create_root_env, create_stdlib_env, create_type_stage_env, json_to_value, MAX_COLLECT_SIZE,
-    MAX_FILE_SIZE,
+    create_stdlib_env, create_type_stage_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
 
 /// Import resolution for the type checker.

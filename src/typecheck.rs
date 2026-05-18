@@ -12573,7 +12573,7 @@ mod tests {
     fn test_check_get_unknown_type_falls_back_to_unknown() {
         // [get key unknown_dict] where unknown_dict : Unknown should return Unknown (no narrowing).
         let env = doc_env_with_builtins(
-            "[d: [builtin-if true [] []]]\n\
+            "[d: [if true [] []]]\n\
              [result: [get \"x\" d]]",
         );
         // We just verify it type-checks without error (returns Unknown or some type).
@@ -12628,7 +12628,7 @@ mod tests {
         // This is the common prelude-internal usage pattern.
         let env = doc_env_with_builtins(
             "[idx: 0]\n\
-             [coll: [builtin-if true [] []]]\n\
+             [coll: [if true [] []]]\n\
              [result: [builtin-get idx coll]]",
         );
         // No type error; result has some type (Unknown or more precise).
