@@ -33,9 +33,9 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 **Depends on:** `macros-v2-expand`
 
-- [ ] Implement `macro-injects` Rust builtin: takes macro name (`Str`), returns `inject:` default name (`Str`) or `Null` (`src/builtins_meta.rs`)
-- [ ] Store `inject:` default name in macro registry alongside form name and syntax-class declarations (`src/expand.rs`)
-- [ ] Tests: `[macro-injects aif]` → `"it"`; `[macro-injects swap]` → `null`; LSP hover for a macro with `inject:` shows the injected name (`tests/corpus/eval/macros/`)
+- [x] `macro-injects` Rust builtin: looks up inject default from `ctx.config.macro_injects_map`; registered in `standard_builtins()` (`src/builtins_meta.rs`, `src/builtins.rs`)
+- [x] Inject map wired from expansion to eval: `MacroEnv.get_inject_map()` → `ExpandResult.macro_injects_map` → `EvalConfig.macro_injects_map` (`src/expand.rs`, `src/eval.rs`, `src/lib.rs`)
+- [x] Tests: `macro_injects_with_inject.llt-eval` and `macro_injects_without_inject.llt-eval` (`tests/corpus/eval/macros/`)
 
 ### macros-v2-stdlib: Migrate defmacro, add stdlib/ast.llt and stdlib/syntax.llt
 
@@ -223,6 +223,23 @@ Once resolver evaluation (Gap 1) is working, boundary guards at CALL-MONO/CALL-P
 
 ## Codebase Health
 
+### error-nominal: Rename Err→Error, err?→error?, error→throw; lean on nominal Result type
+
+Errors in tinct should use the nominal `Result` type (`Ok`/`Error`) as the primary idiom. Current issues: the `Err` constructor is abbreviated (should be `Error`); the `[error "msg"]` throw builtin shares a name root with the new `Error` constructor (confusing); `err?` is abbreviated; `Type::Error` in the type checker is unrelated to the nominal `Error` but shares spelling.
+
+**Decision: rename the throw builtin from `error` to `throw`.** `[throw "msg"]` abends the program; `[Error "msg"]` wraps an error value. The distinction is clear and consistent with other languages.
+
+- [ ] Rename `Result` type: `[type [Ok a] [Err String]]` → `[type [Ok a] [Error String]]`; rename `Err: Err` re-export → `Error: Error`; update comment on line 1339 (`stdlib/prelude.llt:1340,1346`)
+- [ ] Rename all `[Err _]:` match arms in prelude to `[Error _]:` — lines 259, 405, 999, 1358, 1370, 1382, 1394, 1406, 1503, 1507, 1533 (`stdlib/prelude.llt`)
+- [ ] Rename `err?` → `error?` predicate; update doc strings and examples throughout (`stdlib/prelude.llt:1361–1370`)
+- [ ] Update all doc strings referencing `[Err ...]` or `Err` constructor (`stdlib/prelude.llt`)
+- [ ] Rename throw builtin: `"error"` → `"throw"` in `src/builtins_meta.rs` and `src/builtins.rs`; update denylist/env registration; update `src/type_dict.rs:776` entry from `"error"` to `"throw"` — and change its return type from `Type::Error` to `Type::Never` (see `typecheck-gaps` sprint) at the same time
+- [ ] Update `[try ...]` return tag in `src/builtins_meta.rs:185`: `tag: "Err"` → `tag: "Error"`; update the two `assert_eq!(tag, "Err")` in `src/builtins.rs:3764,3881`
+- [ ] Update type_env.rs comment at line 1666 and typecheck.rs at line 11473 which reference `"Ok"/"Err"` tags
+- [ ] Migrate all corpus tests using `[Err ...]`, `[throw ...]` (if already using `error`), `err?` → new names (`tests/corpus/`)
+- [ ] Update doc examples, README, and any doc/*.md files referencing `error`, `Err`, or `err?` (`doc/`)
+- [ ] Verify `just test` passes
+
 ### parser-uniformity: Fix special cases and non-uniform handling found in parser audit (2026-05-18)
 
 Full audit of `src/parser.rs` identified the following issues beyond what `unified-bindings-remove-old-syntax` already tracks. All locations are in `push_expr_to_parent` unless noted otherwise.
@@ -328,17 +345,20 @@ The type-warning infrastructure is wired (InferState collects diagnostics, EvalC
 - [ ] In `src/main.rs:1965`: same as above for the second call site (`src/main.rs:1965`)
 - [ ] Tests: corpus test with a type warning (e.g., `@Unknown` annotation) verifies warning appears in CLI output; LSP test verifies `publishDiagnostics` fires for a file with a type warning (`tests/corpus/`, `tests/lsp_corpus_tests.rs`)
 
-### typecheck-gaps: Monomorphic recursion and tuple type encoding
+### typecheck-gaps: Monomorphic recursion, tuple type encoding, and error return type
 
-Two type system correctness gaps found in the 2026-05-18 audit with no existing sprint.
+Three type system correctness gaps found in the 2026-05-18 audit with no existing sprint.
+
+**`error` return type** (`src/type_dict.rs:776`): `[error ...]` is typed as `Type::Error`, which poisons any union containing it — `String | Type::Error = Type::Error` (src/type_def.rs:1308–1309). This means any `match` with a `_: [error ...]` catch-all arm infers `Type::Error` as its return type, making the whole binding `Unknown`. The fix: type `error` as returning `Never` (bottom/`~`), which is a subtype of all types, so `String | Never = String`. This would allow leaf formatter functions like `format-literal` to infer correctly.
 
 **Monomorphic recursion** (`src/typecheck.rs:1951`): the type checker currently rejects all recursive binding-group references uniformly. This is overly conservative — recursive calls where the type is fully determined at the call site (e.g., `[fn@Int [let n@Int] [if [= n 0] 1 [* n [recur [- n 1]]]]]`) should be allowed; only polymorphic recursion (where the recursive call instantiates the function at a different type) should be rejected.
 
 **Tuple type** (`src/typecheck.rs:2619`): tinct has no tuple type; the type checker stubs tuple entries as `Type::Unknown`. The correct encoding per BAS is a closed record: `(Int, Str)` → `{0: Int, 1: Str}`. This matches the evaluation model (tuples are dicts with integer keys).
 
+- [ ] Type `error` builtin as returning `Never` instead of `Type::Error`: change `"error" => Ok(Type::Error)` to `"error" => Ok(Type::Never)` in `src/type_dict.rs:776`; verify `Type::Never` is already in the union-simplification rules (`src/type_def.rs:1308`) so `String | Never = String`; re-verify formatter functions type correctly after the fix
 - [ ] Allow monomorphic recursion in `check_dict_entry_recursive`: if the recursive self-reference is at a consistent type (all uses unify to the same concrete type), allow it; block only if the call tries to instantiate the same binding at multiple incompatible types — implement using the existing SCC binding-group machinery (`src/typecheck.rs:1951`)
 - [ ] Encode tuple type as closed record in `resolve_type_tuple`: replace `Type::Unknown` stub with `Type::Record(Row { fields: {0: T0, 1: T1, ...}, tail: RowTail::Closed })` where field names are the string forms of the integer positions; no new `Type::Tuple` variant needed (`src/typecheck.rs:2619`)
-- [ ] Tests: monomorphic recursive function with explicit return annotation typechecks clean; tuple annotation `@[Int Str]` resolves to closed record with fields `"0"` and `"1"` (`tests/corpus/eval/typecheck/`)
+- [ ] Tests: `error` return type is `Never`; match with `_: [error ...]` catch-all infers concrete return type from other arms; monomorphic recursive function typechecks clean; tuple annotation resolves to closed record (`tests/corpus/eval/typecheck/`)
 
 ### io-phase2: `--libdir-path`, `source_file` attribution, and SPKI extraction
 

@@ -1,0 +1,6 @@
+[macro test-inject [let x@Expr  [inject: my-name]]
+  [quote [unquote x]]]
+
+[macro-injects "test-inject"]
+=== out
+String("my-name")

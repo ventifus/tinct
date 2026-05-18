@@ -424,6 +424,38 @@ pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(string_val(&name), call_span)
 }
 
+/// `macro-injects`: Returns the inject: default name for a macro.
+///
+/// Takes one argument (macro name as String), returns the inject: default name (String)
+/// if the macro has an `inject:` declaration, or Null (empty dict) if not.
+///
+/// This is a reflection primitive for anaphoric macros per macros-v2.md §inject:.
+/// Enables runtime introspection of macro inject defaults for documentation tools.
+///
+/// Example:
+///   [macro-injects "aif"]   # → "it"  (if aif has inject: it)
+///   [macro-injects "swap"]  # → null  (if swap uses only gensym hygiene)
+///
+/// Non-materializing: only inspects the macro_injects_map from EvalConfig.
+pub(crate) fn builtin_macro_injects(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    let macro_name_val =
+        crate::builtins::expect_one_arg("macro-injects", args, named, &ctx, call_span)?;
+    let macro_name = require_string("macro-injects", macro_name_val, args[0].span)?;
+
+    // Look up the macro in the inject map
+    match ctx.config.macro_injects_map.get(&macro_name) {
+        Some(inject_default) => ok_val(string_val(inject_default), call_span),
+        None => ok_val(Value::Dict(IndexMap::new()), call_span), // Null = empty dict
+    }
+}
+
 /// `decimal`: Parse a string as an exact base-10 decimal (rust_decimal::Decimal).
 /// Returns Value::Decimal. Error on invalid format.
 pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {

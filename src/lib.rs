@@ -222,7 +222,13 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx = eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
+    let ctx = eval::EvalContext::new_sharing_arena(
+        base_dir,
+        Rc::clone(&env),
+        no_fs,
+        stdlib_arena,
+        expand_result.macro_injects_map,
+    );
     // Wire boundary guards from type inference to the eval context
     ctx.set_boundary_guards(infer_state.boundary_guards);
     // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
@@ -320,7 +326,13 @@ pub fn eval_source_with_cap_net(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx = eval::EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, stdlib_arena);
+    let ctx = eval::EvalContext::new_sharing_arena(
+        base_dir,
+        Rc::clone(&env),
+        no_fs,
+        stdlib_arena,
+        expand_result.macro_injects_map,
+    );
     // Wire boundary guards from type inference to the eval context
     ctx.set_boundary_guards(infer_state.boundary_guards);
 

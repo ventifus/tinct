@@ -365,8 +365,9 @@ pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_bool_check, builtin_bytes_check,
     builtin_decimal, builtin_dict_check, builtin_error, builtin_eval, builtin_eval_ast,
     builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
-    builtin_include, builtin_int_check, builtin_llt_repr, builtin_null_check, builtin_str_check,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_include, builtin_int_check, builtin_llt_repr, builtin_macro_injects,
+    builtin_null_check, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of,
+    builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1989,6 +1990,7 @@ pub fn inject_prelude_aliases(env: &mut Environment) {
         builtin!("builtin-sort", builtin_sort, [Strictness::Seq]),
         builtin!("builtin-eval-ast", builtin_eval_ast, [Strictness::Seq]),
         builtin!("builtin-gensym", builtin_gensym),
+        builtin!("builtin-macro-injects", builtin_macro_injects, [Strictness::Seq]),
         builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
         builtin!("builtin-variant", builtin_variant, [Strictness::Seq]),
