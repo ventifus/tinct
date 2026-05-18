@@ -2,3 +2,5 @@
 [take 3 "hello"]
 === error
 [E010] take: expected Dict or Seq, got String
+=== warn
+cannot unify Seq[⊤] with "hello" at 1:9-1:16

@@ -1,0 +1,11 @@
+# Polymorphic prelude functions work correctly with typed arguments.
+# Exercises map, filter, and fold (higher-order prelude functions) end-to-end,
+# verifying that the %rust pseudo-module registration fix enables correct
+# prelude typechecking so polymorphic functions retain their types.
+# No === warn section: clean code must produce zero type warnings.
+[add-one:  [fn [let x@Int] [+ x 1]]
+ mapped:   [map add-one [1 2 3]]
+ filtered: [filter [fn [let x] [< x 3]] [1 2 3 4 5]]
+ sum:      [fold [fn [let acc x] [+ acc x]] 0 [1 2 3 4 5]]]
+=== out
+Dict({"add-one": Function(x), "mapped": Dict({0: Int(2), 1: Int(3), 2: Int(4)}), "filtered": Seq(Int(1), ...), "sum": Int(15)})

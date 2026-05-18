@@ -2,3 +2,5 @@
 [drop 10 ["a" "b" "c"]]
 === out
 Dict({})
+=== warn
+cannot unify Seq[⊤] with [0: "a" 1: "b" 2: "c"] at 1:10-1:23

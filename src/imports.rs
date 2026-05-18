@@ -239,6 +239,17 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     builtins_env.insert("%pwd".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%stdin".to_string(), crate::types::Type::Handle);
+    // Inject %rust so that [include %rust "group"] calls in prelude.llt don't
+    // produce "undefined variable: %rust" errors during type-checking.
+    //
+    // %rust is a runtime-only pseudo-module (a Value::RustRegistry) with no
+    // static type representation — Type::Unknown is genuinely correct here
+    // (it's passed to `include` which already accepts and returns Unknown).
+    // Without this, the eight [include %rust "..."] sequential expressions at
+    // the top of the prelude document each cause a type error, causing
+    // typecheck_document to return Err and discard the properly-generalized
+    // prelude bindings from the final TypeEnv.
+    builtins_env.insert("%rust".to_string(), crate::types::Type::Unknown);
     let builtins_env = Rc::new(builtins_env);
 
     match typecheck_and_merge_stdlib_module(
@@ -1315,19 +1326,12 @@ mod tests {
         );
     }
 
-    /// Verify current behavior: LLT-defined prelude functions come from the TypeMap
-    /// fallback path (erase_type_vars) because the prelude document has type errors,
-    /// causing `typecheck_document` to return Err and not thread the partial env.
+    /// Verify that `identity` is present in the prelude environment as a Function.
     ///
-    /// `identity` is `[fn@[return: a] [let x] x]` — theoretically polymorphic.
-    /// With the TypeMap fallback, its body gets `erase_type_vars` treatment:
-    /// residual TypeVars → Unknown, so the type is `Fn@Unknown [Unknown]`.
-    ///
-    /// TODO: When the prelude document's type errors are fixed (or when
-    /// `typecheck_document` is changed to return partial env on error), this test
-    /// should be updated to assert that `identity` is polymorphic:
-    ///   - `scheme.type_vars` is non-empty
-    ///   - `scheme.body` is `Function { ret: TypeVar("a", ..), .. }`
+    /// `identity` is `[fn@[return: a] [let x] x]`. With `%rust` seeded into the
+    /// type-checking environment, the prelude document returns `Ok` and identity
+    /// is extracted via `merge_env_bindings_into` (the env-based path), giving it
+    /// a `Function` body — `Fn@Unknown [Unknown]` because its parameter is unannotated.
     #[test]
     fn build_prelude_env_identity_current_behavior() {
         use crate::types::Type;
@@ -1337,13 +1341,44 @@ mod tests {
             .get("identity")
             .expect("expected 'identity' in prelude env");
 
-        // Current behavior: identity comes from TypeMap fallback (erase_type_vars),
-        // so its body is Unknown (TypeVar erased), not a Function type.
-        // This is the same behavior as before the fix — the fix's env-based path
-        // only benefits prelude documents that typecheck WITHOUT errors.
+        // After the %rust fix, the prelude document type-checks successfully.
+        // identity comes from the env-based path (merge_env_bindings_into) as a Function.
+        // Its param is unannotated → Unknown, so the body is Fn@Unknown [Unknown].
         assert!(
-            matches!(scheme.body, Type::Unknown | Type::Function { .. }),
-            "expected 'identity' body to be Unknown (fallback) or Function (env path), \
+            matches!(scheme.body, Type::Function { .. }),
+            "expected 'identity' body to be Function (env path active after %rust fix), \
+             got: {:?}",
+            scheme.body
+        );
+    }
+
+    /// Verify that the prelude document type-checks successfully after the `%rust` fix.
+    ///
+    /// With `%rust` seeded into the builtins env, the prelude document no longer fails
+    /// with "undefined variable: %rust". The `merge_env_bindings_into` env-based path
+    /// now runs for the prelude, giving prelude functions their inferred types from the
+    /// final TypeEnv rather than the TypeMap fallback.
+    ///
+    /// `identity` is defined as `[fn@[return: a] [let x] x]`. Since its parameter `x`
+    /// is unannotated, it gets `Type::Unknown` (not a fresh TypeVar). This makes identity
+    /// appear as `Fn@Unknown [Unknown]` — monomorphic with Unknown types. This is the
+    /// correct behavior under the current unannotated-params-get-Unknown policy.
+    #[test]
+    fn build_prelude_env_identity_via_env_path() {
+        use crate::types::Type;
+
+        let env = build_prelude_env();
+        let scheme = env
+            .get("identity")
+            .expect("expected 'identity' in prelude env");
+
+        // With %rust seeded, the prelude document type-checks successfully and identity
+        // comes from the env-based path (merge_env_bindings_into). The env path gives
+        // identity as Fn@Unknown [Unknown] because its param is unannotated → Unknown.
+        // This is a Function body (not the fallback Unknown body), confirming env path.
+        assert!(
+            matches!(scheme.body, Type::Function { .. }),
+            "expected 'identity' body to be Function (env path active after %rust fix), \
              got: {:?}",
             scheme.body
         );

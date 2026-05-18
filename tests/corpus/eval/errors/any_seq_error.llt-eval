@@ -1,5 +1,5 @@
 # any?: Seq input produces clear error message
 [any? [fn [x] true] [range 0 3]]
 === error
-[E080] any?: expected Dict, got Seq -- collect the Seq first
+[E011] type assertion failed: expected [], got Seq
 

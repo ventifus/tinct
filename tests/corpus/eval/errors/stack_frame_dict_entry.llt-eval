@@ -8,4 +8,4 @@
 [E010] +/-/*//: expected Int or Float, got Int and String
 
 === warn
-cannot unify Number with "not a number" at 3:17-3:31
+no instance for Add Int String at 3:12-3:32

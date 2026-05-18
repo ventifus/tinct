@@ -2,3 +2,5 @@
 [proxy [fn [field] hello] [fn [field] world]]
 === error
 [E020] arity mismatch
+=== warn
+arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:1-1:46
