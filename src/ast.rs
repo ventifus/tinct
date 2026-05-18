@@ -466,7 +466,14 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Expr::Int(n) => write!(f, "{n}"),
-            Expr::Float(n) => write!(f, "{n}"),
+            Expr::Float(n) => {
+                let s = n.to_string();
+                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                    write!(f, "{s}.0")
+                } else {
+                    write!(f, "{s}")
+                }
+            }
             Expr::Bool(b) => write!(f, "{b}"),
             Expr::Str(s) => write!(f, "{s:?}"),
             // Emit name as-is. `%`-prefixed refs already include `%` in the name.
@@ -709,7 +716,14 @@ impl fmt::Display for LiteralPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LiteralPattern::Int(n) => write!(f, "{n}"),
-            LiteralPattern::Float(n) => write!(f, "{n}"),
+            LiteralPattern::Float(n) => {
+                let s = n.to_string();
+                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                    write!(f, "{s}.0")
+                } else {
+                    write!(f, "{s}")
+                }
+            }
             LiteralPattern::Bool(b) => write!(f, "{b}"),
             LiteralPattern::Str(s) => write!(f, "{s:?}"),
         }
