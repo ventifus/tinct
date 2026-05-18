@@ -41,24 +41,30 @@ use crate::value::{string_val, Environment, Key, Thunk, ThunkState, Value};
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 
 /// Check if a span matches a boundary guard and wrap the thunk if so.
-/// This is called at the end of eval() to automatically insert runtime
-/// guards for gradual typing boundaries detected by the type checker.
-#[allow(dead_code)]
-fn maybe_wrap_guard(thunk: Rc<Thunk>, span: Span, ctx: &Rc<EvalContext>) -> EvalResult<Rc<Thunk>> {
-    // Check if this span has a boundary guard
+///
+/// Called at the end of `eval()` to automatically insert runtime guards for
+/// gradual typing boundaries detected by the type checker. O(1) lookup via
+/// the `HashMap<Span, Type>` boundary_guards map.
+///
+/// The resulting [`ThunkState::Guarded`] thunk is lazy — the type check fires
+/// only when the thunk is forced (materialized), not at construction time.
+fn maybe_wrap_guard(thunk: Rc<Thunk>, span: Span, ctx: &Rc<EvalContext>) -> Rc<Thunk> {
+    // O(1) span lookup in the boundary guard table.
     let guards = ctx.boundary_guards.borrow();
-    if let Some((_, expected_type)) = guards.iter().find(|(guard_span, _)| *guard_span == span) {
-        // Create a guarded thunk wrapping the original
-        Ok(Rc::new(Thunk::new_guarded_full(
+    if let Some(expected_type) = guards.get(&span) {
+        // Create a guarded thunk wrapping the original. The guard fires lazily
+        // when the thunk is forced, validating the runtime value against
+        // expected_type and returning EvalError::type_assert_failed on mismatch.
+        Rc::new(Thunk::new_guarded_full(
             thunk,
             expected_type.clone(),
-            Vec::new(), // empty field path for top-level guard
+            Vec::new(), // empty field path for top-level boundary guard
             span,
-            None, // no blame label for automatic guards
-            None, // no default for automatic guards
-        )))
+            None, // no blame label for automatic guards (blame is the call site span)
+            None, // no default: fallback for automatic guards
+        ))
     } else {
-        Ok(thunk)
+        thunk
     }
 }
 
@@ -202,12 +208,13 @@ pub struct EvalContext {
     /// per Findler & Felleisen (2002). Avoids a `Value::Tagged` variant which would require
     /// updating all exhaustive `Value` matches.
     pub blame_map: RefCell<HashMap<ThunkId, String>>,
-    /// Boundary guards from type inference: (arg_span, expected_param_type).
+    /// Boundary guards from type inference: span → expected_param_type.
     /// When an Unknown-typed expression crosses into a concrete-typed context,
     /// the type checker records the boundary. The evaluator checks if a thunk's
-    /// span matches a guard and wraps it with runtime validation if so.
+    /// span matches a guard and wraps it with a runtime Guarded thunk if so.
+    /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
     /// Populated by typecheck_file via set_boundary_guards(), consumed during eval().
-    pub boundary_guards: RefCell<Vec<(Span, Type)>>,
+    pub boundary_guards: RefCell<HashMap<Span, Type>>,
 }
 
 impl EvalContext {
@@ -253,7 +260,7 @@ impl EvalContext {
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
-            boundary_guards: RefCell::new(Vec::new()),
+            boundary_guards: RefCell::new(HashMap::new()),
         })
     }
 
@@ -288,7 +295,7 @@ impl EvalContext {
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
             env_allowed,
             blame_map: RefCell::new(HashMap::new()),
-            boundary_guards: RefCell::new(Vec::new()),
+            boundary_guards: RefCell::new(HashMap::new()),
         })
     }
 
@@ -331,7 +338,7 @@ impl EvalContext {
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
-            boundary_guards: RefCell::new(Vec::new()),
+            boundary_guards: RefCell::new(HashMap::new()),
         })
     }
 
@@ -398,7 +405,7 @@ impl EvalContext {
 
     /// Set boundary guards from type inference.
     /// Called after type checking to wire gradual typing runtime checks.
-    pub fn set_boundary_guards(&self, guards: Vec<(Span, Type)>) {
+    pub fn set_boundary_guards(&self, guards: HashMap<Span, Type>) {
         *self.boundary_guards.borrow_mut() = guards;
     }
 }
@@ -1866,7 +1873,18 @@ pub fn eval(
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
-    eval_recursive(expr, env, ctx)
+    let span = expr.span;
+    let thunk = eval_recursive(expr, env, ctx)?;
+    // If the type checker recorded a boundary guard for this expression's span,
+    // wrap the thunk in a ThunkState::Guarded. The guard fires lazily — only
+    // when the thunk is forced — so this preserves call-by-need semantics.
+    // Fast-path: boundary_guards is empty for programs run without type checking,
+    // so the borrow and HashMap lookup add no overhead in the common case.
+    if ctx.boundary_guards.borrow().is_empty() {
+        Ok(thunk)
+    } else {
+        Ok(maybe_wrap_guard(thunk, span, ctx))
+    }
 }
 
 /// Force a thunk to its concrete value, memoizing the result.
@@ -9385,5 +9403,135 @@ mod tests {
             }
             _ => panic!("expected Dict value, got {:?}", val),
         }
+    }
+
+    // ── boundary_guards wiring ────────────────────────────────────────────────
+
+    /// Helper: create an EvalContext and install a single boundary guard for span `s`
+    /// expecting `expected_ty`. Used to simulate what the type checker produces for
+    /// gradual-typing boundaries (Unknown arg crossing into a concrete param type).
+    fn ctx_with_guard(s: Span, expected_ty: Type) -> Rc<EvalContext> {
+        let ctx = test_ctx();
+        let mut map = HashMap::new();
+        map.insert(s, expected_ty);
+        ctx.set_boundary_guards(map);
+        ctx
+    }
+
+    /// Boundary guard: Int expected, Int given — guard fires but passes.
+    #[test]
+    fn test_boundary_guard_passes_on_matching_type() {
+        // Span that will carry the guard.
+        let guarded_span = test_span(1, 1, 1, 4);
+
+        // AST node with the guarded span: `42` (Int literal)
+        let mut expr = sp(Expr::Int(42));
+        expr.span = guarded_span;
+
+        let ctx = ctx_with_guard(guarded_span, Type::Int);
+
+        // eval() should wrap the Int thunk in a Guarded thunk.
+        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+
+        // The outer thunk must be Guarded (not yet materialized).
+        assert!(
+            matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            "expected Guarded thunk when boundary guard matches span, got: {:?}",
+            thunk.state()
+        );
+
+        // Forcing the guard must succeed and return the Int value.
+        let val = materialize(&thunk, None, &ctx).unwrap();
+        assert_eq!(val, Value::Int(42), "guard should pass for matching type");
+    }
+
+    /// Boundary guard: Int expected, String given — guard fires and returns a
+    /// type_assert_failed error with a helpful message.
+    #[test]
+    fn test_boundary_guard_fires_on_type_mismatch() {
+        // Span that will carry the guard.
+        let guarded_span = test_span(1, 1, 1, 7);
+
+        // AST node with the guarded span: `"hello"` (String literal)
+        let mut expr = sp(Expr::Str("hello".into()));
+        expr.span = guarded_span;
+
+        // Guard expects Int — the String value will fail.
+        let ctx = ctx_with_guard(guarded_span, Type::Int);
+
+        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+
+        // The guard must be present.
+        assert!(
+            matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            "expected Guarded thunk for span with guard"
+        );
+
+        // Forcing must return a type_assert_failed error.
+        let err = materialize(&thunk, None, &ctx).unwrap_err();
+        let msg = err.message();
+        assert!(
+            msg.contains("Int") || msg.contains("type"),
+            "error should mention the expected type; got: {msg}"
+        );
+        assert!(
+            msg.contains("String") || msg.contains("Str"),
+            "error should mention the actual type; got: {msg}"
+        );
+    }
+
+    /// Boundary guard: guard is lazy — thunk is NOT forced during eval(), only during
+    /// materialize(). If the guard span doesn't match any AST node span, eval() returns
+    /// an unguarded thunk.
+    #[test]
+    fn test_boundary_guard_not_applied_for_non_matching_span() {
+        let guarded_span = test_span(5, 1, 5, 4); // a span on "line 5"
+        let expr_span = test_span(1, 1, 1, 4); // different span
+
+        let mut expr = sp(Expr::Int(42));
+        expr.span = expr_span;
+
+        // Guard is for guarded_span, but expr uses expr_span — no wrap.
+        let ctx = ctx_with_guard(guarded_span, Type::Int);
+        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+
+        // Must NOT be Guarded — guard did not match.
+        assert!(
+            !matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            "thunk must not be Guarded when span doesn't match any guard"
+        );
+
+        // Value is still accessible normally.
+        let val = materialize(&thunk, None, &ctx).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    /// Boundary guard: guard is lazy — eval() wraps the thunk without forcing it.
+    /// The Guarded state must persist between eval() and materialize().
+    #[test]
+    fn test_boundary_guard_is_lazy() {
+        let guarded_span = test_span(1, 1, 1, 5);
+
+        let mut expr = sp(Expr::Int(7));
+        expr.span = guarded_span;
+
+        let ctx = ctx_with_guard(guarded_span, Type::Int);
+        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+
+        // Thunk must be Guarded (lazy wrap, inner not yet forced).
+        assert!(
+            matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            "guard wrap must be lazy — Guarded state expected before materialization"
+        );
+
+        // Now force it — only here does the guard check run.
+        let val = materialize(&thunk, None, &ctx).unwrap();
+        assert_eq!(val, Value::Int(7));
+
+        // After successful materialization, the thunk must be Materialized (guard consumed).
+        assert!(
+            matches!(&*thunk.state(), ThunkState::Materialized(_)),
+            "thunk must be Materialized after successful guard check"
+        );
     }
 }

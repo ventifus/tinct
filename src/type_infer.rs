@@ -159,12 +159,12 @@ pub struct InferState {
     /// (Unused until chr-prelude sprint implements resolvers that produce TypeStageApp)
     #[allow(dead_code)]
     pub deferred_equalities: Vec<(Type, Type)>,
-    /// Boundary guards collected during inference: (arg_span, expected_param_type).
+    /// Boundary guards collected during inference: span → expected_param_type.
     /// When a call-site argument has inferred type `Unknown` and the function parameter
     /// has a concrete type (not Unknown, not TypeVar), this records the boundary crossing.
     /// Used for automatic guard insertion in gradual typing (see doc/feature/gradual-typing.md).
-    /// STUB: collection is implemented but eval-side wiring is deferred.
-    pub boundary_guards: Vec<(Span, Type)>,
+    /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
+    pub boundary_guards: HashMap<Span, Type>,
     /// Current functional dependency improvement recursion depth.
     /// Prevents infinite loops through the improve_functional_dependency → unify →
     /// check_constraints_on_var → improve_functional_dependency cycle. Incremented when
@@ -339,7 +339,7 @@ impl InferState {
             expected_return: None,
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
-            boundary_guards: Vec::new(),
+            boundary_guards: HashMap::new(),
             fd_depth: 0,
             instance_resolution_depth: 0,
             in_prelude_load: false,
