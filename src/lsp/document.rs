@@ -1016,13 +1016,15 @@ mod tests {
     #[test]
     fn test_resolve_include_uri_absolute_path() {
         let base_url = "file:///home/user/project/main.llt".parse::<Uri>().unwrap();
-        let include_path = "/etc/hosts"; // absolute path to a file that usually exists
+        let include_path = "/etc/hosts"; // absolute path outside the workspace
         let result = resolve_include_uri(&base_url, include_path);
-        // On systems where /etc/hosts exists, this should succeed
-        // On systems where it doesn't, it should return None
-        // We can't make strong assertions without knowing the test environment
-        // but we can at least verify it doesn't panic
-        let _ = result;
+        // Blocked by prefix check — cannot read files outside workspace.
+        // The canonicalized /etc/hosts does not start_with the document's
+        // parent directory (/home/user/project), so the security check returns None.
+        assert!(
+            result.is_none(),
+            "path traversal outside workspace must be blocked"
+        );
     }
 
     #[test]
