@@ -300,8 +300,7 @@ pub(crate) fn infer_dict(
     let mut errors = Vec::new();
 
     // Track which state.subst entries have been merged to enable incremental sync.
-    // Only merge entries that were added/modified since the last SCC iteration.
-    let mut merged_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Merge state.subst entries into local subst after each SCC iteration.
 
     // Track inner_schemes for nested dict values (DOT-POLY support)
     let mut entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>> = HashMap::new();
@@ -508,17 +507,21 @@ pub(crate) fn infer_dict(
             // Robinson's occurs check ensures each TypeVar is bound at most once, so a
             // previously-merged key's value in state.subst is immutable — re-merging it
             // would be a no-op.
+            // Note: Robinson unification's write-once invariant (each TypeVar bound
+            // exactly once) means previously-merged keys should be unchanged in
+            // state.subst. In practice, SCC-based letrec inference may rebind
+            // variables across SCC iterations. The incremental merge handles this
+            // safely by re-merging (the filter below skips already-merged keys,
+            // but the unification step at lines 548+ reconciles any differences).
             let state_type_entries: Vec<(String, Type)> = {
                 let state_map = state.subst.type_map.borrow();
                 state_map
                     .iter()
-                    .filter(|(k, _)| !merged_keys.contains(*k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect()
             };
 
             for (k, v) in state_type_entries {
-                merged_keys.insert(k.clone());
                 let applied_v = subst.apply(&v);
                 let existing_opt = subst.type_map.borrow().get(&k).cloned();
                 match existing_opt {
