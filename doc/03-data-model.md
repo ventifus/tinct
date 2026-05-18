@@ -113,7 +113,7 @@ The distinction is purely static. At runtime, both are the same `Value::Dict`. M
 === error
 type errors:
   expected record type, got Bool at 1:1-1:30
-  expected record type, got Bool at 2:1-2:18
+  cannot unify 1 with 2 at 2:1-2:18
   expected record type, got Bool at 3:1-3:24
 
 ```
@@ -379,9 +379,9 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 [mod 10 3]                      # → 1 (Int — remainder)
 === error
 type errors:
-  expected record type, got Number at 1:1-1:8
-  expected record type, got Number at 2:1-2:10
-  expected record type, got Number at 3:1-3:9
+  expected record type, got Int at 1:1-1:8
+  expected record type, got Float at 2:1-2:10
+  expected record type, got Float at 3:1-3:9
   expected record type, got Int at 4:1-4:12
 
 ```
@@ -393,7 +393,7 @@ type errors:
 [+ 9007199254740993 1.0]        # → Error: Int→Float promotion would lose precision
 === error
 type errors:
-  expected record type, got Number at 1:1-1:25
+  expected record type, got Float at 1:1-1:25
 
 ```
 

@@ -441,6 +441,6 @@ Fix-later findings from the full panel codebase review (2026-05-17, commit 37f83
 - [x] After above: propagate partial TypeEnv from typecheck_document on error — `infer_dict` discards the scheme when returning Err; need to carry partial env through Err paths in `infer_dict` → `typecheck_document` → `typecheck_file_with_types_and_env_and_source_returning_state`; then `merge_env_bindings_into` can use the real schemes instead of erased Unknown types (`src/typecheck_dict.rs`, `src/typecheck.rs`, `src/imports.rs`)
 - [x] After above: delete `erase_type_vars`, `extract_bindings_from_file_with_fallback` dead code from `src/imports.rs`
 - [x] After above: verify polymorphic prelude functions have proper type schemes (map, filter, fold, etc.); write typecheck corpus test
-- [ ] Fix validate_and_wrap_record guard context bug — `foldr_basic` and `until_list` fail with [E099] validate_and_wrap_record requires ctx but guard_ctx is None; likely the boundary guard infrastructure losing EvalContext reference inside reduce/until loops (`src/eval.rs`)
+- [x] Fix validate_and_wrap_record guard context bug — `foldr_basic` and `until_list` fail with [E099] validate_and_wrap_record requires ctx but guard_ctx is None; likely the boundary guard infrastructure losing EvalContext reference inside reduce/until loops (`src/eval.rs`)
 
 ---

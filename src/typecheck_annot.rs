@@ -815,7 +815,8 @@ pub(crate) fn resolve_fn_metadata(
                     let extracted = match &entry.node.value.node {
                         Expr::Str(s) => Some(s.clone()),
                         Expr::Call { func, args, .. } => {
-                            if matches!(&func.node, Expr::VarRef { name, .. } if name == "unindent") {
+                            if matches!(&func.node, Expr::VarRef { name, .. } if name == "unindent")
+                            {
                                 args.iter().find_map(|arg| {
                                     if let Expr::Str(s) = &arg.node {
                                         Some(s.clone())

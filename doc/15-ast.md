@@ -249,7 +249,7 @@ Example use in a try block:
 ```tinct
 [try [fn [] ...]]
 === out
-Variant(Err, String("placeholder `...` was evaluated — replace with an implementation"))
+{"Err":"placeholder `...` was evaluated — replace with an implementation"}
 ```
 
 ---
@@ -301,7 +301,7 @@ Duplicate keys within a single `[]` literal are parse errors:
 ["a" "b" "a"]                         # Not a duplicate — auto-indexed as 0: "a", 1: "b", 2: "a"
 === error
 error: duplicate key "name"
- --> block 2:1:17
+ --> block 3:1:17
   |
   1 | [name: "Alice"  name: "Bob"]          # ERROR: duplicate key "name"
     |                 ^^^^
@@ -323,10 +323,10 @@ The parameter list in `fn` is a `[let ...]` binding declaration containing zero 
 [fn [let ...rest x] body]             # ERROR: parameter after variadic
 === error
 error: multiple variadic parameters
- --> block 2:4:16
+ --> block 4:4:15
   |
   4 | [fn [let ...a ...b] body]             # ERROR: multiple variadics
-    |                ^^^
+    |               ^^^
 ```
 
 The older `[fn [x y] body]` syntax (bare parameter list without `let`) is still supported for backward compatibility but the formatter emits `[fn [let x y] body]`.
@@ -356,7 +356,7 @@ x@[@Number $val]                 # ERROR: type_assert_body in annotation bracket
 x@[type: Int  ...]               # ERROR: rest entry alongside type: key
 === error
 error: property dict annotation must be a dict expression, got: [call f x]
- --> block 4:6:3
+ --> block 5:6:3
   |
   6 | x@[call $f $x]                   # ERROR: explicit call special form in annotation bracket
     |   ^^^^^^^^^^^^
