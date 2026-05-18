@@ -770,6 +770,7 @@ fn expr_to_thunk_id(
             methods,
             determines: _,
             resolver: _,
+            resolver_injective: _,
         } => {
             dict.insert(
                 Key::String("type".into()),

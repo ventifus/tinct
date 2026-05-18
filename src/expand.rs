@@ -1322,6 +1322,7 @@ fn expand_expr_inner(
             methods,
             determines,
             resolver,
+            resolver_injective,
         } => {
             let expanded_methods = methods
                 .iter()
@@ -1345,6 +1346,7 @@ fn expand_expr_inner(
                     methods: expanded_methods,
                     determines: determines.clone(),
                     resolver: resolver.clone(),
+                    resolver_injective: *resolver_injective,
                 },
                 expr.span,
             ))

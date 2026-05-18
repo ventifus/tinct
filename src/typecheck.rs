@@ -2300,6 +2300,7 @@ fn infer_expr(
             methods,
             determines,
             resolver,
+            resolver_injective,
         } => {
             use crate::types::{ClassDecl, Kind};
 
@@ -2418,7 +2419,7 @@ fn infer_expr(
                 methods: method_types,
                 determines: fd_indices,
                 resolver: resolver_name,
-                resolver_injective: false, // TODO: Parser support for injective annotation
+                resolver_injective: *resolver_injective,
             };
 
             // Register in ClassEnv (replaces any prior registration, preserving inherited kinds)

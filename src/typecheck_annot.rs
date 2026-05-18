@@ -700,10 +700,12 @@ pub(crate) fn resolve_fn_metadata(
                                             ));
                                         }
 
-                                        // TODO: Extract fundeps from ClassDecl when the field is added.
-                                        // For now, use empty fundeps for user-defined classes.
-                                        // Builtin Add class fundeps are hardcoded in TypeEnv::with_builtins.
-                                        let fundeps = vec![];
+                                        // Extract fundeps from ClassDecl
+                                        let fundeps = state
+                                            .class_env
+                                            .get(class_name)
+                                            .map(|decl| decl.determines.clone())
+                                            .unwrap_or_default();
 
                                         // Collect TypeVar names from subsequent positional entries
                                         let mut typevar_names = Vec::new();

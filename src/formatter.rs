@@ -529,6 +529,7 @@ impl<'a> Formatter<'a> {
                 methods,
                 determines: _,
                 resolver: _,
+                resolver_injective: _,
             } => {
                 self.output.push('[');
                 self.output.push_str("class");
