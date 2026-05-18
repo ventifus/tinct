@@ -53,13 +53,13 @@
 
 # true if character c is a stop character for variable names in interpolated strings.
 # Mirrors the stop-char set in src/lexer.rs lex_interpolated_string VarRef branch.
-tmpl-is-stop: [fn [c]
+tmpl-is-stop: [fn [let c]
   [str-contains? " \t\n[]:#;\"@.,!?" c]]
 
 # Find the byte-length of the variable name at the start of string s.
 # Walks from index i until a stop char is found or end of string.
 # Returns i when done (i = number of ident chars consumed).
-tmpl-var-len: [fn [s len i]
+tmpl-var-len: [fn [let s len i]
   [if [< i len]
     [if [tmpl-is-stop [str-slice s i [+ i 1]]]
       i
@@ -67,16 +67,16 @@ tmpl-var-len: [fn [s len i]
     i]]
 
 # Build a string literal AST dict node.
-tmpl-str-node: [fn [text]
+tmpl-str-node: [fn [let text]
   [type: "literal"  kind: "str"  value: text  bare: false]]
 
 # Build a var reference AST dict node.
-tmpl-var-node: [fn [var-name]
+tmpl-var-node: [fn [let var-name]
   [type: "var"  name: var-name]]
 
 # Append an optional suffix literal to nodes (only if suffix is non-empty).
 # Returns the updated nodes list.
-tmpl-append-suffix: [fn [nodes suffix]
+tmpl-append-suffix: [fn [let nodes suffix]
   [if [= suffix ""]
     nodes
     [append nodes [tmpl-str-node suffix]]]]
@@ -85,7 +85,7 @@ tmpl-append-suffix: [fn [nodes suffix]
 # Appends the expression AST node (and optional suffix literal) to nodes.
 # Returns the updated nodes list.
 # Called when the piece starts with "{" after splitting on "$".
-tmpl-process-expr-piece: [fn [piece macro-args nodes]
+tmpl-process-expr-piece: [fn [let piece macro-args nodes]
   [if [str-contains? piece "}"]
     [tmpl-process-expr-with-close piece macro-args nodes]
     # Malformed ${}: no closing "}" found — emit "$" + piece as a literal
@@ -94,10 +94,10 @@ tmpl-process-expr-piece: [fn [piece macro-args nodes]
 
 # Helper: piece has a "}" — extract index and suffix.
 # split "}" on "{0}suffix" → [{0: "{0", 1: "suffix"}]
-tmpl-process-expr-with-close: [fn [piece macro-args nodes]
+tmpl-process-expr-with-close: [fn [let piece macro-args nodes]
   [tmpl-process-expr-parts [split "}" piece] macro-args nodes]]
 
-tmpl-process-expr-parts: [fn [brace-split macro-args nodes]
+tmpl-process-expr-parts: [fn [let brace-split macro-args nodes]
   [tmpl-process-expr-idx
     [get 0 brace-split]
     [get 1 brace-split]
@@ -105,26 +105,26 @@ tmpl-process-expr-parts: [fn [brace-split macro-args nodes]
     nodes]]
 
 # idx-part is "{N", suffix is the text after "}"
-tmpl-process-expr-idx: [fn [idx-part suffix macro-args nodes]
+tmpl-process-expr-idx: [fn [let idx-part suffix macro-args nodes]
   [tmpl-process-expr-insert
     [get [+ [to-int [str-slice idx-part 1 [length idx-part]]] 1] macro-args]
     suffix
     nodes]]
 
 # Insert the expression node and optional suffix into nodes.
-tmpl-process-expr-insert: [fn [expr-node suffix nodes]
+tmpl-process-expr-insert: [fn [let expr-node suffix nodes]
   [tmpl-append-suffix [append nodes expr-node] suffix]]
 
 # Process a piece that represents a variable reference ($name).
 # Appends the var-node (and optional suffix literal) to nodes.
 # Returns the updated nodes list.
-tmpl-process-var-piece: [fn [piece nodes]
+tmpl-process-var-piece: [fn [let piece nodes]
   [tmpl-process-var-split piece nodes [length piece]]]
 
-tmpl-process-var-split: [fn [piece nodes len]
+tmpl-process-var-split: [fn [let piece nodes len]
   [tmpl-process-var-emit piece nodes [tmpl-var-len piece len 0] len]]
 
-tmpl-process-var-emit: [fn [piece nodes var-end len]
+tmpl-process-var-emit: [fn [let piece nodes var-end len]
   [tmpl-append-suffix
     [append nodes [tmpl-var-node [str-slice piece 0 var-end]]]
     [str-slice piece var-end len]]]
@@ -136,7 +136,7 @@ tmpl-process-var-emit: [fn [piece nodes var-end len]
 #   is-first — true for the first piece (always a literal prefix, not preceded by "$")
 #
 # Returns the updated accumulator.
-tmpl-reduce-step: [fn [args] [fn [acc piece]
+tmpl-reduce-step: [fn [let args] [fn [let acc piece]
   [if acc.is-first
     # First piece: always a literal prefix (may be empty — skip if so)
     [tmpl-step-literal acc piece]
@@ -159,13 +159,13 @@ tmpl-reduce-step: [fn [args] [fn [acc piece]
 
 # Append piece as a literal to acc.nodes (empty string → skip).
 # Returns a new accumulator with is-first=false and skip=false.
-tmpl-step-literal: [fn [acc piece]
+tmpl-step-literal: [fn [let acc piece]
   [nodes: [if [= piece ""] acc.nodes [append acc.nodes [tmpl-str-node piece]]]
    skip: false
    is-first: false]]
 
 # Split template string on "$" and fold pieces into AST arg nodes.
-tmpl-expand: [fn [template-str args]
+tmpl-expand: [fn [let template-str args]
   [tmpl-emit-call
     [reduce
       [tmpl-reduce-step args]
@@ -173,7 +173,7 @@ tmpl-expand: [fn [template-str args]
       [split "$" template-str]]]]
 
 # Wrap the collected AST nodes in a [str ...] call AST dict.
-tmpl-emit-call: [fn [result]
+tmpl-emit-call: [fn [let result]
   [type: "call"
    fn:         [type: "var"  name: "str"]
    args:       result.nodes
@@ -204,18 +204,18 @@ tmpl-emit-call: [fn [result]
 [
 
 # Build a var-reference AST node.
-do-var-node: [fn [name]
+do-var-node: [fn [let name]
   [type: "var"  name: name]]
 
 # Build a single-param list (integer-keyed dict with one entry).
 # Uses p-name (not 'name') to avoid letrec key-shadowing: [name: name] would
 # shadow the outer 'name' binding with the dict's own letrec 'name' thunk.
-do-params-1: [fn [p-name]
+do-params-1: [fn [let p-name]
   [0: [name: p-name  annotation: []  variadic: false]]]
 
 # Build a fn AST node: [fn [param-name] body].
 # Uses p-name/p-body to avoid letrec key-shadowing of 'params'/'body' keys.
-do-fn-node: [fn [p-name p-body]
+do-fn-node: [fn [let p-name p-body]
   [type: "fn"
    params: [do-params-1 p-name]
    body: p-body
@@ -224,19 +224,19 @@ do-fn-node: [fn [p-name p-body]
 
 # Build a dot-access AST node: target.field
 # Uses p-target/p-field to avoid letrec key-shadowing of 'target'/'field' keys.
-do-access-node: [fn [p-target p-field]
+do-access-node: [fn [let p-target p-field]
   [type: "dot-access"  target: p-target  field: p-field]]
 
 # Build a 1-element list (integer-keyed dict).
-do-list-1: [fn [a]
+do-list-1: [fn [let a]
   [0: a]]
 
 # Build a 2-element list (integer-keyed dict).
-do-list-2: [fn [a b]
+do-list-2: [fn [let a b]
   [0: a  1: b]]
 
 # Build a call AST node with exactly one positional arg.
-do-call-1: [fn [p-func arg0]
+do-call-1: [fn [let p-func arg0]
   [type: "call"
    fn: p-func
    args: [do-list-1 arg0]
@@ -244,7 +244,7 @@ do-call-1: [fn [p-func arg0]
    implied: true]]
 
 # Build a call AST node with exactly two positional args.
-do-call-2: [fn [func arg0 arg1]
+do-call-2: [fn [let func arg0 arg1]
   [type: "call"
    fn: func
    args: [do-list-2 arg0 arg1]
@@ -252,20 +252,20 @@ do-call-2: [fn [func arg0 arg1]
    implied: true]]
 
 # Build an empty dict AST node (represents [] — the unit value for pure).
-do-empty-dict-node: [fn []
+do-empty-dict-node: [fn [let]
   [type: "dict"  entries: []]]
 
 # Check if a step AST is a binding step (a dict literal with at least one entry).
 # A binding step was written as [name: expr] in the do-block.
 # Its quoted AST has type "dict".
-do-is-binding: [fn [step]
+do-is-binding: [fn [let step]
   [= [get "type" step] "dict"]]
 
 # Check if the first arg looks like an inferred-form step rather than an explicit monad.
 # Explicit monad args are usually VarRef ("var") or DotAccess ("dot-access").
 # Inferred form: the first arg is a binding dict ("dict") or any other expression.
 # Returns true if this is the inferred form (unsupported).
-do-is-inferred-form: [fn [first-arg]
+do-is-inferred-form: [fn [let first-arg]
   [type: [get "type" first-arg]]
   # Explicit monad types: "var" and "dot-access"
   # Everything else is inferred form
@@ -278,18 +278,18 @@ do-is-inferred-form: [fn [first-arg]
 # Extract the binding name from a binding step.
 # step.entries[0].key is the key expr: {type: "literal", kind: "str", value: "name", bare: true}
 # We read the "value" field of that key literal to get the string name.
-do-binding-name: [fn [step]
+do-binding-name: [fn [let step]
   [get "value" [get "key" [get 0 [get "entries" step]]]]]
 
 # Extract the bound expression AST from a binding step.
 # step.entries[0].value is the value expr.
-do-binding-expr: [fn [step]
+do-binding-expr: [fn [let step]
   [get "value" [get 0 [get "entries" step]]]]
 
 # Wrap a single step and the desugared inner expression into a bind call:
 #   binding [x: expr]: [monad.bind expr [fn [x] inner]]
 #   non-binding expr:  [monad.bind expr [fn [_] inner]]
-do-wrap: [fn [monad-ast step inner]
+do-wrap: [fn [let monad-ast step inner]
   [if [do-is-binding step]
     [do-call-2
       [do-access-node monad-ast "bind"]
@@ -303,7 +303,7 @@ do-wrap: [fn [monad-ast step inner]
 # Recursively desugar steps[i..n-1] into nested bind calls.
 # Base case: i == n-1 — return the final step expression as-is.
 # Recursive case: wrap step[i] around the desugaring of step[i+1..n-1].
-do-fold: [fn [monad-ast steps i n]
+do-fold: [fn [let monad-ast steps i n]
   [if [= i [- n 1]]
     [get i steps]
     [do-wrap monad-ast [get i steps] [do-fold monad-ast steps [+ i 1] n]]]]
@@ -321,7 +321,7 @@ do-fold: [fn [monad-ast steps i n]
 [
 
 # tmpl macro transformer: string interpolation i"...$var..." syntax
-tmpl: [fn [args]
+tmpl: [fn [let args]
   # args[0] = AST dict for the template string literal
   # args[1..] = AST dicts for ${N} expression placeholders (if any)
   [tmpl-expand
@@ -342,7 +342,7 @@ tmpl: [fn [args]
 # The macro operates entirely at the AST level: it never accesses the runtime
 # monad dict. The dot-access (m.bind, m.pure) is generated as an AST node and
 # resolved at evaluation time. This avoids any arena-crossing ThunkId issues.
-do: [fn [args]
+do: [fn [let args]
   [n: [length args]]
   [if [= n 0]
     # Error: need at least the monad argument
@@ -377,10 +377,10 @@ do: [fn [args]
           n]]]]]
 
 # begin macro transformer: sequential expression grouping
-begin: [fn [args]
+begin: [fn [let args]
   # [begin e1 e2 ...] → {type: "sequential", exprs: [e1, e2, ...]}
   [n: [length args]]
-  [arglist: [reduce [fn [acc i] [append acc [get i args]]] [] [range 0 n]]]
+  [arglist: [reduce [fn [let acc i] [append acc [get i args]]] [] [range 0 n]]]
   [type: "sequential"  exprs: arglist]]
 
 ]
