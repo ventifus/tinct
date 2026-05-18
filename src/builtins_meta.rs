@@ -179,7 +179,7 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 _ => {}
             }
             // Error: return Value::Variant { tag: "Err", payload: Some(message) }
-            let msg_thunk_id = ctx.alloc_thunk(ok_val(string_val(&e.message()), call_span)?);
+            let msg_thunk_id = ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span)?);
             ok_val(
                 Value::Variant {
                     tag: "Err".to_string(),
@@ -476,7 +476,7 @@ pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             use std::str::FromStr;
             match rust_decimal::Decimal::from_str(s) {
                 Ok(d) => ok_val(Value::Decimal(d), call_span),
-                Err(e) => Err(EvalError::new(
+                Err(e) => Err(EvalError::internal(
                     format!("decimal: cannot parse \"{s}\": {e}"),
                     call_span,
                 )
@@ -507,7 +507,7 @@ pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let s = &source[start..end];
             match s.parse::<num_bigint::BigInt>() {
                 Ok(n) => ok_val(Value::BigInt(n), call_span),
-                Err(e) => Err(EvalError::new(
+                Err(e) => Err(EvalError::internal(
                     format!("big-int: cannot parse \"{s}\": {e}"),
                     call_span,
                 )
@@ -747,7 +747,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             entries.insert(
                 crate::value::Key::String("error".into()),
                 ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val(&err.message()),
+                    string_val(&err.kind.to_string()),
                     call_span,
                 ))),
             );
@@ -792,7 +792,7 @@ pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
     // Convert to display string
     let display_str = crate::value_to_display_string(&deep_val, &ctx)
-        .map_err(|e| EvalError::new(format!("llt-repr: {}", e.message()), call_span))?;
+        .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind.to_string()), call_span))?;
     ok_val(string_val(&display_str), call_span)
 }
 
@@ -1200,7 +1200,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         // Resolve the module to an environment.
         let module_env = crate::builtins::rust_module(&module_name)
-            .map_err(|e| EvalError::new(format!("Rust module error: {}", e), call_span))?;
+            .map_err(|e| EvalError::internal(format!("Rust module error: {}", e), call_span))?;
 
         // Convert the environment to a Dict value.
         // The environment already contains materialized Rc<Thunk> values, so we just
@@ -1225,7 +1225,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         } => {
             if revoked.get() {
                 return Err(
-                    EvalError::new("capability has been revoked".to_string(), call_span).into(),
+                    EvalError::internal("capability has been revoked".to_string(), call_span).into(),
                 );
             }
             (Rc::clone(inner), 1, 2)
@@ -1367,7 +1367,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     })?;
 
     // Parse.
-    let file = crate::parser::parse(&source).map_err(|e| {
+    let file = crate::parser::parse(&source).map(|o| o.file).map_err(|e| {
         EvalError::include_parse_failed(file_path_str.clone(), e.to_string(), call_span)
     })?;
 

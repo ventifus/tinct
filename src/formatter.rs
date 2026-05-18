@@ -8,10 +8,10 @@
 use std::rc::Rc;
 
 use crate::ast::{Annotation, Document, Entry, Expr, NamedArg, Param, Spanned};
-use crate::parser::{parse2, ParseError, ParseOutput};
+use crate::parser::{parse, ParseError, ParseOutput};
 
 pub fn format_source(input: &str) -> Result<String, ParseError> {
-    let output = parse2(input)?;
+    let output = parse(input)?;
     let mut formatter = Formatter::new(&output, input, false, false);
     formatter.format_file();
     Ok(formatter.output)
@@ -31,7 +31,7 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
     use crate::builtins::create_stdlib_env;
     use crate::desugar;
     use crate::eval::{self, EvalContext};
-    use crate::parser::{parse, parse2};
+    use crate::parser::parse;
     use crate::resolve;
     use crate::typecheck;
     use crate::value::Value;
@@ -53,9 +53,9 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
     let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
 
-    // Parse the source - always use parse2 to get comments
+    // Parse the source - always use parse to get comments
     use crate::ast_dict::CommentMaps;
-    let parse_output = parse2(input).map_err(|e| format!("{e}"))?;
+    let parse_output = parse(input).map_err(|e| format!("{e}"))?;
 
     // Convert AST to dict.
     // Compact mode: minimal (no source, no comments).
@@ -86,13 +86,13 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
         parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
 
     // Desugar, resolve, typecheck the formatter program.
-    desugar::desugar_file(&mut formatter_file.node);
-    resolve::resolve_file(&formatter_file.node);
-    let _ = typecheck::typecheck_file(&formatter_file.node);
+    desugar::desugar_file(&mut formatter_file.file.node);
+    resolve::resolve_file(&formatter_file.file.node);
+    let _ = typecheck::typecheck_file(&formatter_file.file.node);
 
     // Evaluate formatter with AST as % (pipeline input).
     let formatter_thunk =
-        eval::eval_file_with_input(&formatter_file.node, Rc::clone(&env), &ctx, Some(ast_thunk))
+        eval::eval_file_with_input(&formatter_file.file.node, Rc::clone(&env), &ctx, Some(ast_thunk))
             .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — should be [Ok String] or [Err msg].

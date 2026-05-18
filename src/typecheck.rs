@@ -5132,7 +5132,7 @@ mod tests {
     use std::cell::RefCell;
 
     fn check(input: &str) -> Result<(), Vec<TypeError>> {
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, _diagnostics) = typecheck_file(&file.node);
         if errors.is_empty() {
@@ -5147,7 +5147,7 @@ mod tests {
     }
 
     fn infer(input: &str) -> Type {
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -5156,7 +5156,7 @@ mod tests {
     }
 
     fn doc_env(input: &str) -> Rc<TypeEnv> {
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -5164,7 +5164,7 @@ mod tests {
     }
 
     fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         // Populate PRELUDE_INSTANCE_CACHE so Equatable/Comparable/Showable/etc. instances are
         // available via dynamic resolution (no longer hardcoded in satisfies_constraint).
@@ -5228,7 +5228,7 @@ mod tests {
     }
 
     fn file_env_impl(input: &str, with_builtins: bool) -> Rc<TypeEnv> {
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let mut env = if with_builtins {
             Rc::new(TypeEnv::with_builtins())
@@ -6056,7 +6056,7 @@ mod tests {
         // This guards the arm against removal or refactoring that would cause a panic
         // instead of a graceful error on malformed (but internally representable) schemes.
         let input = "[call $f 1]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         // Build env with `f: ∀a. Int` — polymorphic scheme, non-function body.
@@ -6102,7 +6102,7 @@ mod tests {
         // TypeEnv::with_builtins() registers builtin-range as Fn(Int, Int) -> Seq(Int).
         // (The user-facing $range wrapper lives in prelude.llt and is not present here.)
         let input = "[result: [call $builtin-range 0 10]]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let env = Rc::new(TypeEnv::with_builtins());
@@ -6129,7 +6129,7 @@ mod tests {
         // Regression test for type-seq sprint: $keys should return Type::Seq(Str).
         // TypeEnv::with_builtins() registers keys as Fn(Record) -> Seq(Str).
         let input = "[d: [a: 1  b: 2]]\n[result: [call $keys $d]]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let mut env = Rc::new(TypeEnv::with_builtins());
@@ -6159,7 +6159,7 @@ mod tests {
         // Negative test: $+ returns a numeric type (Numeric a => a -> a -> a), not Seq.
         // TypeEnv::with_builtins() registers + as Numeric a => a -> a -> a.
         let input = "[result: [call $+ 1 2]]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let env = Rc::new(TypeEnv::with_builtins());
@@ -6280,7 +6280,7 @@ mod tests {
         // TypeEnv::with_builtins() registers builtin-collect as Fn(Seq(Any)) -> Record({...}).
         // (The user-facing $collect and $range wrappers live in prelude.llt and are not present here.)
         let input = "[s: [call $builtin-range 0 5]]\n[result: [call $builtin-collect $s]]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let mut env = Rc::new(TypeEnv::with_builtins());
@@ -9079,7 +9079,7 @@ mod tests {
         // an FFI binding, or a value whose type cannot be statically determined). The call
         // `[call $f 42]` exercises check_call via the monomorphic (empty type_vars) path.
         let input = "[call $f 42]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         // Build a parent env with `f: Any` — monomorphic scheme, empty type_vars.
@@ -9503,7 +9503,7 @@ mod tests {
         "#;
 
         // Parse and desugar
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let mut env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -9996,7 +9996,7 @@ mod tests {
         // SETUP: A polymorphic identity function `id` in a separate document (so it is
         // fully generalized and the call routes to check_call_with_scheme, not check_call).
         let input = "[id: [fn [x@a] $x]]\n---\n[result: [call $id 42]]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let mut env = Rc::new(TypeEnv::new());
@@ -10151,7 +10151,7 @@ mod tests {
             [@Number 99]
         "#;
 
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         // First typecheck: should succeed
@@ -10197,7 +10197,7 @@ mod tests {
         // Test via typecheck_file_with_types: $undefined is a VarRef that fails, so the
         // type_map entry for its span must be Type::Error.
         let input = "$undefined";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, type_map, _doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types(&file.node);
@@ -10325,7 +10325,7 @@ mod tests {
             [unfold_result: [call $builtin-unfold [fn [x@a] [Just: [x  $x]]] 0]]
             [take_result: [call $take 5 $some_seq]]
         "#;
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let env = Rc::new(TypeEnv::with_builtins());
@@ -10417,7 +10417,7 @@ mod tests {
 
 [z: [+ %.x %.y]]
         "#;
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let (errors, _diagnostics) = typecheck_file(&file.node);
@@ -10434,7 +10434,7 @@ mod tests {
         // + is registered as Numeric a => a -> a -> a so the result is constrained numeric.
         // Uses file_env_with_builtins because + is a stdlib builtin (not in TypeEnv::new()).
         let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, _diagnostics) = typecheck_file(&file.node);
         assert!(
@@ -10455,7 +10455,7 @@ mod tests {
 
 [z: [+ %data.x %data.y]]
         "#;
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let (errors, _diagnostics) = typecheck_file(&file.node);
@@ -10472,7 +10472,7 @@ mod tests {
     fn test_typecheck_returns_diagnostics() {
         // Verify that typecheck_file returns a diagnostics vector (currently empty)
         let input = "[x: 42]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let (errors, diagnostics) = typecheck_file(&file.node);
@@ -10490,7 +10490,7 @@ mod tests {
     fn test_typecheck_with_types_returns_diagnostics() {
         // Verify that typecheck_file_with_types_and_env returns diagnostics in the tuple
         let input = "[x: 42]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let env = Rc::new(TypeEnv::new());
@@ -11789,7 +11789,7 @@ mod tests {
     fn test_doc_extraction_from_param_annotation() {
         // Test existing functionality: extract doc from parameter annotations
         let input = "[f: [fn [x@[doc: \"The input value\"]] x]]";
-        let file = crate::parse(input).unwrap();
+        let file = crate::parse(input).unwrap().file;
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types(&file.node);
 
@@ -11800,7 +11800,7 @@ mod tests {
     fn test_doc_extraction_from_dict_entry_key() {
         // Test Task 1: extract doc from dict entry key annotation
         let input = "[myFunc@[doc: \"My function\"]: [fn [] 42]]";
-        let file = crate::parse(input).unwrap();
+        let file = crate::parse(input).unwrap().file;
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types(&file.node);
 
@@ -11811,7 +11811,7 @@ mod tests {
     fn test_doc_extraction_from_fn_return_annotation() {
         // Test Task 2: extract doc from function return annotation
         let input = "[count@[]: [fn@[type: Int  doc: \"Returns the count\"] [] 42]]";
-        let file = crate::parse(input).unwrap();
+        let file = crate::parse(input).unwrap().file;
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types(&file.node);
 
@@ -11824,7 +11824,7 @@ mod tests {
         let input = r#"
 [helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
         "#;
-        let file = crate::parse(input).unwrap();
+        let file = crate::parse(input).unwrap().file;
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types(&file.node);
 
@@ -13199,7 +13199,7 @@ mod tests {
         // is Int (concrete) and the arg type is Unknown, satisfying the boundary guard
         // condition at line ~3497 → boundary_guards receives one entry.
         let input = "[call $f $x]";
-        let mut file = crate::parse(input).unwrap();
+        let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
         let mut parent_env = TypeEnv::new();

@@ -2162,7 +2162,7 @@ mod tests {
         let ctx = EvalContext::new(base_dir, Rc::new(RefCell::new(Environment::new())), false);
 
         fn error_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Rc<Thunk>> {
-            Err(Box::new(EvalError::new(
+            Err(Box::new(EvalError::internal(
                 "test error".into(),
                 args.call_span,
             )))
@@ -2183,7 +2183,7 @@ mod tests {
         );
 
         // Transition to Failed
-        let err = Box::new(EvalError::new("test error".into(), span));
+        let err = Box::new(EvalError::internal("test error".into(), span));
         thunk.set_state(ThunkState::Failed(err));
 
         // Verify final state is Failed

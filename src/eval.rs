@@ -1272,7 +1272,7 @@ pub(crate) fn eval_recursive(
             }
 
             // No arm matched
-            Err(EvalError::new(
+            Err(EvalError::internal(
                 "non-exhaustive match: no pattern matched the scrutinee".to_string(),
                 expr.span,
             )
@@ -9324,7 +9324,7 @@ mod tests {
 ]
         "#;
 
-        let parsed = crate::parse(source).expect("parse should succeed");
+        let parsed = crate::parse(source).expect("parse should succeed").file;
         let thunk = eval_file(&parsed.node, Rc::clone(&env), &ctx)
             .expect("eval_file should succeed (lazy dict construction)");
         // Dict construction is lazy — the cycle is only detected when forcing an entry.
@@ -9390,7 +9390,7 @@ mod tests {
     "#,
                     iterations
                 );
-                let parsed = crate::parse(&source).expect("parse should succeed");
+                let parsed = crate::parse(&source).expect("parse should succeed").file;
                 let mut file = parsed.node;
                 crate::desugar::desugar_file(&mut file);
                 let env = crate::builtins::create_stdlib_env()

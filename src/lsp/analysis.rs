@@ -40,14 +40,14 @@ pub fn hover_at(
         // not at document level). We must re-run here to populate hover type info.
         let block_file = crate::parser::parse(&block.code).ok()?;
         let mut block_file_mut = block_file.clone();
-        crate::desugar::desugar_file(&mut block_file_mut.node);
-        crate::resolve::resolve_file(&block_file_mut.node);
-        let (seeded_env, _) = crate::imports::build_type_env(&block_file_mut.node, None);
+        crate::desugar::desugar_file(&mut block_file_mut.file.node);
+        crate::resolve::resolve_file(&block_file_mut.file.node);
+        let (seeded_env, _) = crate::imports::build_type_env(&block_file_mut.file.node, None);
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_file_with_types_and_env(&block_file_mut.node, seeded_env);
+            crate::typecheck::typecheck_file_with_types_and_env(&block_file_mut.file.node, seeded_env);
 
         // Walk the block's AST with block-local offset
-        for document in &block_file.node.documents {
+        for document in &block_file.file.node.documents {
             for expr in &document.node.expressions {
                 if let Some(text) = hover_at_expr(
                     &expr.node,
@@ -1312,7 +1312,7 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
     if !doc.literate_blocks.is_empty() {
         for (block_idx, block) in doc.literate_blocks.iter().enumerate() {
             // Parse and analyze this block
-            let block_parse_result = crate::parser::parse2(&block.code);
+            let block_parse_result = crate::parser::parse(&block.code);
 
             match block_parse_result {
                 Ok(output) => {
@@ -1521,7 +1521,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &U
         )),
         code_description: None,
         source: Some("tinct-eval".to_string()),
-        message: err.message(),
+        message: err.kind.to_string(),
         related_information,
         tags: None,
         data: None,
@@ -3277,7 +3277,7 @@ pub fn completion_at(
 
         // Parse the block to get an AST
         if let Ok(block_file) = crate::parser::parse(&block.code) {
-            for document in &block_file.node.documents {
+            for document in &block_file.file.node.documents {
                 for expr in &document.node.expressions {
                     collect_dict_keys_in_scope(
                         &expr.node,
@@ -3526,7 +3526,7 @@ fn prelude_completions() -> &'static [lsp_types::CompletionItem] {
 
         // Parse the prelude source and extract all dict entry names
         if let Ok(file) = crate::parser::parse(prelude_source) {
-            for document in &file.node.documents {
+            for document in &file.file.node.documents {
                 for expr in &document.node.expressions {
                     extract_names_from_expr(&expr.node, &mut items, &mut seen, &builtin_names);
                 }

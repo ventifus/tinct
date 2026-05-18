@@ -584,9 +584,9 @@ mod tests {
         // Attempt to deep materialize — should fail
         let err = deep_materialize(&dict_val, &ctx, None).unwrap_err();
         assert!(
-            err.message().contains("undefined"),
+            err.kind.to_string().contains("undefined"),
             "Expected undefined variable error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
 
         // Verify the error_thunk is in Failed state (cacheable error was cached)
@@ -595,9 +595,9 @@ mod tests {
             match &*state {
                 ThunkState::Failed(cached_err) => {
                     assert!(
-                        cached_err.message().contains("undefined"),
+                        cached_err.kind.to_string().contains("undefined"),
                         "Expected cached error, got: {}",
-                        cached_err.message()
+                        cached_err.kind.to_string()
                     );
                 }
                 other => panic!("Expected Failed state for cacheable error, got {:?}", other),
@@ -607,9 +607,9 @@ mod tests {
         // A second deep_materialize should also fail (error is cached in thunk)
         let err2 = deep_materialize(&dict_val, &ctx, None).unwrap_err();
         assert!(
-            err2.message().contains("undefined"),
+            err2.kind.to_string().contains("undefined"),
             "Expected cached error on retry, got: {}",
-            err2.message()
+            err2.kind.to_string()
         );
     }
 }

@@ -497,7 +497,7 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Validate indices
     if start_idx > end_idx {
-        return Err(EvalError::new(
+        return Err(EvalError::internal(
             format!("str-slice: start index {start_idx} > end index {end_idx}"),
             call_span,
         )
@@ -514,7 +514,7 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let char_count = char_indices.len().saturating_sub(1);
     if end_idx > char_count {
-        return Err(EvalError::new(
+        return Err(EvalError::internal(
             format!(
                 "str-slice: end index {end_idx} out of bounds (string has {char_count} characters)"
             ),
@@ -633,7 +633,7 @@ pub(crate) fn builtin_char_code(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if let Some(ch) = input_str.chars().next() {
         ok_val(Value::Int(ch as u32 as i64), call_span)
     } else {
-        Err(EvalError::new("char-code: empty string".to_string(), call_span).into())
+        Err(EvalError::internal("char-code: empty string".to_string(), call_span).into())
     }
 }
 
@@ -658,7 +658,7 @@ pub(crate) fn builtin_chr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 ok_val(string_val(&ch.to_string()), call_span)
             } else {
                 Err(
-                    EvalError::new(format!("chr: invalid Unicode codepoint {}", n), call_span)
+                    EvalError::internal(format!("chr: invalid Unicode codepoint {}", n), call_span)
                         .into(),
                 )
             }
@@ -804,7 +804,7 @@ pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match val.as_bytes() {
         Some(bytes) => match std::str::from_utf8(bytes) {
             Ok(s) => ok_val(string_val(s), call_span),
-            Err(e) => Err(EvalError::new(
+            Err(e) => Err(EvalError::internal(
                 format!("bytes-str: invalid UTF-8 sequence: {}", e),
                 call_span,
             )
@@ -986,7 +986,7 @@ pub(crate) fn builtin_regex_match(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
 
     match regex::Regex::new(&pattern) {
         Ok(re) => ok_val(Value::Bool(re.is_match(&haystack)), call_span),
-        Err(e) => Err(EvalError::new(
+        Err(e) => Err(EvalError::internal(
             format!("regex-match?: invalid regex pattern {:?}: {}", pattern, e),
             call_span,
         )

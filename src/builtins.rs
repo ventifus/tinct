@@ -1958,7 +1958,7 @@ fn load_stdlib_module(
     env: &Rc<RefCell<Environment>>,
     ctx: &Rc<crate::eval::EvalContext>,
 ) -> Result<(), Box<crate::error::EvalError>> {
-    let mut file = crate::parser::parse(source).map_err(|e| {
+    let mut file = crate::parser::parse(source).map(|o| o.file).map_err(|e| {
         crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
     })?;
 
@@ -2135,7 +2135,7 @@ fn create_stdlib_env_inner() -> Result<
 pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
     // Parse the prelude source
     let prelude_source = include_str!("../stdlib/prelude.llt");
-    let mut file = crate::parser::parse(prelude_source).map_err(|e| {
+    let mut file = crate::parser::parse(prelude_source).map(|o| o.file).map_err(|e| {
         crate::error::EvalError::internal(
             format!("type-stage prelude parse error: {e}"),
             Span::origin(),
@@ -2445,7 +2445,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("NaN"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("NaN"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -2458,9 +2458,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2474,9 +2474,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2490,9 +2490,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected Int or Float"),
+            err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2506,9 +2506,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected Int or Float"),
+            err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2522,9 +2522,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected Int or Float"),
+            err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2538,9 +2538,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2554,9 +2554,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2572,9 +2572,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2588,9 +2588,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of range for Int"),
+            err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2604,9 +2604,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of range for Int"),
+            err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2744,7 +2744,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("NaN"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("NaN"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -2757,9 +2757,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2773,9 +2773,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite number"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2789,9 +2789,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected Int or Float"),
+            err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2805,9 +2805,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected Int or Float"),
+            err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2821,9 +2821,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2837,9 +2837,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2853,9 +2853,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of range for Int"),
+            err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2869,9 +2869,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("out of range for Int"),
+            err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2929,9 +2929,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot parse"),
+            err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2945,9 +2945,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot parse"),
+            err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2961,9 +2961,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot parse"),
+            err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2977,9 +2977,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot parse"),
+            err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -2993,14 +2993,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("Int"),
+            err.kind.to_string().contains("Int"),
             "should mention Int, got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3014,9 +3014,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3030,9 +3030,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3046,9 +3046,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3062,9 +3062,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3078,9 +3078,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3173,9 +3173,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot parse"),
+            err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3189,9 +3189,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot parse"),
+            err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3205,9 +3205,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("parses to a non-finite value"),
+            err.kind.to_string().contains("parses to a non-finite value"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3221,9 +3221,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("parses to a non-finite value"),
+            err.kind.to_string().contains("parses to a non-finite value"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3237,9 +3237,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("parses to a non-finite value"),
+            err.kind.to_string().contains("parses to a non-finite value"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3253,9 +3253,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("parses to a non-finite value"),
+            err.kind.to_string().contains("parses to a non-finite value"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3269,9 +3269,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3285,9 +3285,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3301,9 +3301,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3317,9 +3317,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3336,9 +3336,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3354,9 +3354,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3371,9 +3371,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot parse"),
+            err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3555,9 +3555,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3570,7 +3570,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert_eq!(err.message(), "boom");
+        assert_eq!(err.kind.to_string(), "boom");
     }
 
     #[test]
@@ -3582,7 +3582,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert_eq!(err.message(), "division by zero");
+        assert_eq!(err.kind.to_string(), "division by zero");
     }
 
     #[test]
@@ -3595,11 +3595,11 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
-        assert!(err.message().contains("String"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("String"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -3612,9 +3612,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3703,9 +3703,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected Function"),
+            err.kind.to_string().contains("expected Function"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3720,9 +3720,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("zero-argument function"),
+            err.kind.to_string().contains("zero-argument function"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3736,9 +3736,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -3821,9 +3821,9 @@ mod tests {
         .unwrap_err();
         // Should propagate as error, not return err dict
         assert!(
-            err.message().contains("maximum evaluation depth exceeded"),
+            err.kind.to_string().contains("maximum evaluation depth exceeded"),
             "expected depth error to propagate, got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert_eq!(err.kind.code(), "E040");
     }
@@ -3853,9 +3853,9 @@ mod tests {
         .unwrap_err();
         // Should propagate as error, not return err dict
         assert!(
-            err.message().contains("exceeded resource limit"),
+            err.kind.to_string().contains("exceeded resource limit"),
             "expected resource limit error to propagate, got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert_eq!(err.kind.code(), "E043");
     }
@@ -3994,10 +3994,10 @@ mod tests {
         .expect("should return thunk");
         let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
-            err.message()
+            err.kind.to_string()
                 .contains("missing argument for required parameter"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4022,9 +4022,9 @@ mod tests {
         .expect("should return thunk");
         let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
-            err.message().contains("expected Function"),
+            err.kind.to_string().contains("expected Function"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4040,9 +4040,9 @@ mod tests {
         .expect("should return thunk");
         let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("expected Dict"),
+            err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4057,9 +4057,9 @@ mod tests {
         .expect("should return thunk");
         let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4178,9 +4178,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4339,9 +4339,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("invalid JSON"),
+            err.kind.to_string().contains("invalid JSON"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4355,9 +4355,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4371,9 +4371,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4452,10 +4452,10 @@ mod tests {
         let ctx = test_ctx();
         let err = json_to_value(&deep, 0, call_span(), &ctx).unwrap_err();
         assert!(
-            err.message()
+            err.kind.to_string()
                 .contains("maximum JSON nesting depth exceeded"),
             "expected depth error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4845,9 +4845,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4863,9 +4863,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4879,9 +4879,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4897,9 +4897,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4915,9 +4915,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4933,9 +4933,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4948,13 +4948,13 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("keys"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind.to_string());
         assert!(
-            err.message().contains("expected Dict"),
+            err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
-        assert!(err.message().contains("got Int"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("got Int"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -4966,11 +4966,11 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("keys"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind.to_string());
         assert!(
-            err.message().contains("got String"),
+            err.kind.to_string().contains("got String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -4983,8 +4983,8 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("keys"), "got: {}", err.message());
-        assert!(err.message().contains("got Bool"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind.to_string());
+        assert!(err.kind.to_string().contains("got Bool"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -5031,13 +5031,13 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("length"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("length"), "got: {}", err.kind.to_string());
         assert!(
-            err.message().contains("expected Dict"),
+            err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
-        assert!(err.message().contains("got Bool"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("got Bool"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -5060,11 +5060,11 @@ mod tests {
             Value::Overlay(l, r) => {
                 let err = flatten_overlay(&l, &r, "merge", &ctx, call_span()).unwrap_err();
                 assert!(
-                    err.message().contains("expected Dict"),
+                    err.kind.to_string().contains("expected Dict"),
                     "got: {}",
-                    err.message()
+                    err.kind.to_string()
                 );
-                assert!(err.message().contains("got Int"), "got: {}", err.message());
+                assert!(err.kind.to_string().contains("got Int"), "got: {}", err.kind.to_string());
             }
             other => panic!("expected Overlay, got {other:?}"),
         }
@@ -5089,14 +5089,14 @@ mod tests {
             Value::Overlay(l, r) => {
                 let err = flatten_overlay(&l, &r, "merge", &ctx, call_span()).unwrap_err();
                 assert!(
-                    err.message().contains("expected Dict"),
+                    err.kind.to_string().contains("expected Dict"),
                     "got: {}",
-                    err.message()
+                    err.kind.to_string()
                 );
                 assert!(
-                    err.message().contains("got String"),
+                    err.kind.to_string().contains("got String"),
                     "got: {}",
-                    err.message()
+                    err.kind.to_string()
                 );
             }
             other => panic!("expected Overlay, got {other:?}"),
@@ -5249,7 +5249,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("2"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("2"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -5266,7 +5266,7 @@ mod tests {
             ctx: Rc::clone(&ctx),
         })
         .unwrap_err();
-        assert!(err.message().contains("2"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("2"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -5278,11 +5278,11 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(err.message().contains("append"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("append"), "got: {}", err.kind.to_string());
         assert!(
-            err.message().contains("expected Dict"),
+            err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -5300,9 +5300,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -5837,14 +5837,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("expected 2"),
+            err.kind.to_string().contains("expected 2"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -5862,9 +5862,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -5878,14 +5878,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("expected 3"),
+            err.kind.to_string().contains("expected 3"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -5899,9 +5899,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -5915,16 +5915,16 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
-        assert!(err.message().contains("got Int"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("got Int"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -5937,14 +5937,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -5962,11 +5962,11 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
-        assert!(err.message().contains("got Int"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("got Int"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -5983,11 +5983,11 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
-        assert!(err.message().contains("got Bool"), "got: {}", err.message());
+        assert!(err.kind.to_string().contains("got Bool"), "got: {}", err.kind.to_string());
     }
 
     #[test]
@@ -6004,14 +6004,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("got Float"),
+            err.kind.to_string().contains("got Float"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6025,19 +6025,19 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("expected String"),
+            err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("got Float"),
+            err.kind.to_string().contains("got Float"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6053,9 +6053,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6071,9 +6071,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6089,9 +6089,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6107,9 +6107,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6125,9 +6125,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6143,9 +6143,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6164,9 +6164,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6186,9 +6186,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6204,9 +6204,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6222,9 +6222,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6240,9 +6240,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6258,9 +6258,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6276,9 +6276,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6294,9 +6294,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6316,9 +6316,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6343,9 +6343,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6362,9 +6362,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6383,9 +6383,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6401,9 +6401,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6419,9 +6419,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6438,9 +6438,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6458,9 +6458,9 @@ mod tests {
         .expect("should return thunk");
         let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("named arguments"),
+            err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6803,9 +6803,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("expected Int or Float"),
+            e.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -6819,9 +6819,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -6839,9 +6839,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -6855,9 +6855,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6871,9 +6871,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -6953,9 +6953,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -6969,9 +6969,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -6989,9 +6989,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7005,9 +7005,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("expected Int or Float"),
+            e.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7098,9 +7098,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integer overflow"),
+            err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -7114,9 +7114,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite"),
+            err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -7134,9 +7134,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite"),
+            err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -7150,9 +7150,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite"),
+            err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -7173,9 +7173,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("is not a finite"),
+            err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -7246,9 +7246,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("division by zero"),
+            e.kind.to_string().contains("division by zero"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7262,9 +7262,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("division by zero"),
+            e.kind.to_string().contains("division by zero"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7278,9 +7278,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("division by zero"),
+            e.kind.to_string().contains("division by zero"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7491,9 +7491,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7639,7 +7639,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(e.message().contains("expected"), "got: {}", e.message());
+        assert!(e.kind.to_string().contains("expected"), "got: {}", e.kind.to_string());
     }
 
     #[test]
@@ -7698,7 +7698,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
-        assert!(e.message().contains("expected"), "got: {}", e.message());
+        assert!(e.kind.to_string().contains("expected"), "got: {}", e.kind.to_string());
     }
 
     #[test]
@@ -7711,9 +7711,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7838,14 +7838,14 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("expected Bool"),
+            e.kind.to_string().contains("expected Bool"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
         assert!(
-            e.message().contains("Bool"),
+            e.kind.to_string().contains("Bool"),
             "expected Bool mentioned, got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7864,9 +7864,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("expected Bool"),
+            e.kind.to_string().contains("expected Bool"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7881,9 +7881,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -7903,9 +7903,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            e.message().contains("arity mismatch"),
+            e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.message()
+            e.kind.to_string()
         );
     }
 
@@ -8001,7 +8001,7 @@ mod tests {
     #[test]
     fn prelude_parses_without_error() {
         let prelude_source = include_str!("../stdlib/prelude.llt");
-        match crate::parser::parse(prelude_source) {
+        match crate::parser::parse(prelude_source).map(|o| o.file) {
             Ok(_) => {}
             Err(e) => panic!("prelude parse failed: {e}"),
         }
@@ -8010,7 +8010,7 @@ mod tests {
     #[test]
     fn macros_parses_without_error() {
         let macros_source = include_str!("../stdlib/macros.llt");
-        match crate::parser::parse(macros_source) {
+        match crate::parser::parse(macros_source).map(|o| o.file) {
             Ok(_) => {}
             Err(e) => panic!("macros.llt parse failed: {e}"),
         }
@@ -8099,10 +8099,10 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("expected DirCap or String")
-                || err.message().contains("type mismatch"),
+            err.kind.to_string().contains("expected DirCap or String")
+                || err.kind.to_string().contains("type mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8125,9 +8125,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot access"),
+            err.kind.to_string().contains("cannot access"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8193,9 +8193,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("parse error"),
+            err.kind.to_string().contains("parse error"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8220,9 +8220,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("circular include"),
+            err.kind.to_string().contains("circular include"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8243,9 +8243,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("circular include"),
+            err.kind.to_string().contains("circular include"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8310,9 +8310,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("cannot access"),
+            err.kind.to_string().contains("cannot access"),
             "expected path rejection error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&other_dir).ok();
@@ -8333,9 +8333,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
 
         // Four arguments (include requires 2 or 3 args; 4 is an arity error)
@@ -8356,9 +8356,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8381,9 +8381,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("does not accept named arguments"),
+            err.kind.to_string().contains("does not accept named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8723,9 +8723,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integrity check failed"),
+            err.kind.to_string().contains("integrity check failed"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8752,9 +8752,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integrity hash must be"),
+            err.kind.to_string().contains("integrity hash must be"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8781,9 +8781,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("unsupported hash algorithm"),
+            err.kind.to_string().contains("unsupported hash algorithm"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8811,9 +8811,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("integrity hash required"),
+            err.kind.to_string().contains("integrity hash required"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8892,9 +8892,9 @@ mod tests {
 
         // The error should be a parse failure (bad.llt is the innermost problem).
         assert!(
-            err.message().contains("parse error"),
+            err.kind.to_string().contains("parse error"),
             "expected parse error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
 
         // The stack should contain include chain frames.
@@ -9129,9 +9129,9 @@ mod tests {
         });
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("on empty collection"),
+            err.kind.to_string().contains("on empty collection"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -9145,9 +9145,9 @@ mod tests {
         });
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("on empty collection"),
+            err.kind.to_string().contains("on empty collection"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -9352,12 +9352,12 @@ mod tests {
                 );
                 let err = collect_result.unwrap_err();
                 // Accept either error - both are valid protections
-                let is_depth_error = err.message().contains("maximum evaluation depth");
-                let is_size_error = err.message().contains("exceeded maximum collection size");
+                let is_depth_error = err.kind.to_string().contains("maximum evaluation depth");
+                let is_size_error = err.kind.to_string().contains("exceeded maximum collection size");
                 assert!(
                     is_depth_error || is_size_error,
                     "expected depth or size limit error, got: {}",
-                    err.message()
+                    err.kind.to_string()
                 );
             })
             .unwrap()
@@ -9705,7 +9705,7 @@ mod tests {
             ctx: test_ctx(),
         });
         assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("empty"));
+        assert!(result.unwrap_err().kind.to_string().contains("empty"));
     }
 
     #[test]
@@ -10262,12 +10262,12 @@ mod tests {
                 );
                 let err = join_result.unwrap_err();
                 // Accept either error - both are valid protections
-                let is_depth_error = err.message().contains("maximum evaluation depth");
-                let is_size_error = err.message().contains("sequence exceeds");
+                let is_depth_error = err.kind.to_string().contains("maximum evaluation depth");
+                let is_size_error = err.kind.to_string().contains("sequence exceeds");
                 assert!(
                     is_depth_error || is_size_error,
                     "expected depth or size limit error, got: {}",
-                    err.message()
+                    err.kind.to_string()
                 );
             })
             .unwrap()
@@ -10497,19 +10497,19 @@ mod tests {
 
         // type_mismatch_ctx with a context produces "concat: expected ..., got ..."
         assert!(
-            err.message().contains("concat"),
+            err.kind.to_string().contains("concat"),
             "expected 'concat' in error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("Dict or Seq"),
+            err.kind.to_string().contains("Dict or Seq"),
             "expected 'Dict or Seq' in error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert!(
-            err.message().contains("Int"),
+            err.kind.to_string().contains("Int"),
             "expected 'Int' in error (got type name), got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -10592,9 +10592,9 @@ mod tests {
                 );
                 let err = collect_result.unwrap_err();
                 assert!(
-                    err.message().contains("maximum evaluation depth"),
+                    err.kind.to_string().contains("maximum evaluation depth"),
                     "expected depth limit error, got: {}",
-                    err.message()
+                    err.kind.to_string()
                 );
             })
             .unwrap()
@@ -10637,9 +10637,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
 
         // Two args
@@ -10651,9 +10651,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
 
         // Three args
@@ -10669,9 +10669,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("arity mismatch"),
+            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -10688,9 +10688,9 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.message().contains("does not accept named arguments"),
+            err.kind.to_string().contains("does not accept named arguments"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 
@@ -10726,9 +10726,9 @@ mod tests {
             err.kind
         );
         assert!(
-            err.message().contains("drop") && err.message().contains("expected Int"),
+            err.kind.to_string().contains("drop") && err.kind.to_string().contains("expected Int"),
             "Expected message to contain 'drop' and 'expected Int', got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 

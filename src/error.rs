@@ -888,12 +888,6 @@ pub struct EvalError {
 }
 
 impl EvalError {
-    /// Compatibility shim for existing callers. Delegates to `internal()`.
-    /// New code should use typed ErrorKind variants instead.
-    pub fn new(message: String, definition_span: Span) -> Self {
-        Self::internal(message, definition_span)
-    }
-
     /// Create an error with the Internal escape hatch kind.
     /// Use typed ErrorKind variants instead when possible.
     pub fn internal(message: String, definition_span: Span) -> Self {
@@ -907,11 +901,6 @@ impl EvalError {
             blame: None,
             pipeline_stage: None,
         }
-    }
-
-    /// Compatibility shim — new code should match on `.kind` directly.
-    pub fn message(&self) -> String {
-        self.kind.to_string()
     }
 
     pub fn with_materialization_span(mut self, span: Span) -> Self {
@@ -1924,8 +1913,8 @@ mod tests {
     #[test]
     fn test_eval_error_new() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::new("something broke".to_string(), span);
-        assert_eq!(err.message(), "something broke");
+        let err = EvalError::internal("something broke".to_string(), span);
+        assert_eq!(err.kind.to_string(), "something broke");
         assert_eq!(err.definition_span, span);
         assert_eq!(err.materialization_span, None);
         assert!(err.stack.is_empty());
@@ -1955,21 +1944,21 @@ mod tests {
     fn test_eval_error_key_not_found() {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::key_not_found("foo", vec![], span);
-        assert_eq!(err.message(), "key not found: foo");
+        assert_eq!(err.kind.to_string(), "key not found: foo");
     }
 
     #[test]
     fn test_eval_error_type_mismatch() {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::type_mismatch("Int", "String", span);
-        assert_eq!(err.message(), "type mismatch: expected Int, got String");
+        assert_eq!(err.kind.to_string(), "type mismatch: expected Int, got String");
     }
 
     #[test]
     fn test_eval_error_arity_mismatch() {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::arity_mismatch(2, 3, span);
-        assert_eq!(err.message(), "arity mismatch: expected 2 arguments, got 3");
+        assert_eq!(err.kind.to_string(), "arity mismatch: expected 2 arguments, got 3");
     }
 
     #[test]
@@ -1977,7 +1966,7 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::circular_dependency("x", span, Vec::new());
         assert_eq!(
-            err.message(),
+            err.kind.to_string(),
             "circular dependency detected while evaluating x"
         );
     }
@@ -3754,7 +3743,7 @@ mod tests {
         let err = EvalError::depth_exceeded(256, span);
         assert!(matches!(err.kind, ErrorKind::DepthExceeded { limit: 256 }));
         assert_eq!(err.kind.code(), "E040");
-        assert_eq!(err.message(), "maximum evaluation depth exceeded (256)");
+        assert_eq!(err.kind.to_string(), "maximum evaluation depth exceeded (256)");
         assert!(
             !err.kind.is_cacheable(),
             "DepthExceeded must not be cacheable"
@@ -3772,7 +3761,7 @@ mod tests {
         let err = EvalError::user_error("custom error message".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::UserError { .. }));
         assert_eq!(err.kind.code(), "E080");
-        assert_eq!(err.message(), "custom error message");
+        assert_eq!(err.kind.to_string(), "custom error message");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3783,7 +3772,7 @@ mod tests {
         let err = EvalError::named_arg_rejected("floor".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::NamedArgRejected { .. }));
         assert_eq!(err.kind.code(), "E023");
-        assert_eq!(err.message(), "floor does not accept named arguments");
+        assert_eq!(err.kind.to_string(), "floor does not accept named arguments");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3794,7 +3783,7 @@ mod tests {
         let err = EvalError::integer_overflow("*".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::IntegerOverflow { .. }));
         assert_eq!(err.kind.code(), "E032");
-        assert_eq!(err.message(), "*: integer overflow");
+        assert_eq!(err.kind.to_string(), "*: integer overflow");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3812,7 +3801,7 @@ mod tests {
             }
         ));
         assert_eq!(err.kind.code(), "E010");
-        assert_eq!(err.message(), "document pipeline: expected Dict, got Int");
+        assert_eq!(err.kind.to_string(), "document pipeline: expected Dict, got Int");
         assert!(err.kind.is_catchable());
     }
 
@@ -3822,7 +3811,7 @@ mod tests {
         let err = EvalError::division_by_zero("%".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::DivisionByZero { .. }));
         assert_eq!(err.kind.code(), "E031");
-        assert_eq!(err.message(), "%: division by zero");
+        assert_eq!(err.kind.to_string(), "%: division by zero");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3833,7 +3822,7 @@ mod tests {
         let err = EvalError::float_not_finite("round".to_string(), f64::INFINITY, span);
         assert!(matches!(err.kind, ErrorKind::FloatNotFinite { .. }));
         assert_eq!(err.kind.code(), "E033");
-        assert!(err.message().contains("not a finite number"));
+        assert!(err.kind.to_string().contains("not a finite number"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3844,7 +3833,7 @@ mod tests {
         let err = EvalError::empty_collection("tail".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::EmptyCollection { .. }));
         assert_eq!(err.kind.code(), "E034");
-        assert_eq!(err.message(), "tail on empty collection");
+        assert_eq!(err.kind.to_string(), "tail on empty collection");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3855,7 +3844,7 @@ mod tests {
         let err = EvalError::value_not_serializable("Builtin".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::ValueNotSerializable { .. }));
         assert_eq!(err.kind.code(), "E035");
-        assert_eq!(err.message(), "cannot serialize Builtin to JSON");
+        assert_eq!(err.kind.to_string(), "cannot serialize Builtin to JSON");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3866,7 +3855,7 @@ mod tests {
         let err = EvalError::float_out_of_range("to-int".to_string(), 1e300, span);
         assert!(matches!(err.kind, ErrorKind::FloatOutOfRange { .. }));
         assert_eq!(err.kind.code(), "E036");
-        assert!(err.message().contains("out of range for Int"));
+        assert!(err.kind.to_string().contains("out of range for Int"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3879,7 +3868,7 @@ mod tests {
         assert_eq!(err.kind.code(), "E002");
         // "myvar" is all lowercase/alphanumeric and not a builtin, so triggers hint
         assert_eq!(
-            err.message(),
+            err.kind.to_string(),
             "undefined variable: myvar (did you mean the string \"myvar\"? Use quotes.)"
         );
         assert!(err.kind.is_catchable());
@@ -3893,7 +3882,7 @@ mod tests {
         assert!(matches!(err.kind, ErrorKind::TypeAssertFailed { .. }));
         assert_eq!(err.kind.code(), "E011");
         assert_eq!(
-            err.message(),
+            err.kind.to_string(),
             "type assertion failed: expected Bool, got String"
         );
         assert!(err.kind.is_catchable());
@@ -3907,7 +3896,7 @@ mod tests {
         assert!(matches!(err.kind, ErrorKind::NamedArgConflict { .. }));
         assert_eq!(err.kind.code(), "E021");
         assert_eq!(
-            err.message(),
+            err.kind.to_string(),
             "parameter 'separator' received both positional and named argument"
         );
         assert!(err.kind.is_catchable());
@@ -3924,9 +3913,9 @@ mod tests {
         );
         assert!(matches!(err.kind, ErrorKind::UnknownNamedArg { .. }));
         assert_eq!(err.kind.code(), "E022");
-        assert!(err.message().contains("unexpected named argument: typo"));
-        assert!(err.message().contains("sep"));
-        assert!(err.message().contains("limit"));
+        assert!(err.kind.to_string().contains("unexpected named argument: typo"));
+        assert!(err.kind.to_string().contains("sep"));
+        assert!(err.kind.to_string().contains("limit"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3937,7 +3926,7 @@ mod tests {
         let err = EvalError::duplicate_key("host", span);
         assert!(matches!(err.kind, ErrorKind::DuplicateKey { .. }));
         assert_eq!(err.kind.code(), "E030");
-        assert_eq!(err.message(), "duplicate key: host");
+        assert_eq!(err.kind.to_string(), "duplicate key: host");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3951,7 +3940,7 @@ mod tests {
             ErrorKind::JsonDepthExceeded { limit: 128 }
         ));
         assert_eq!(err.kind.code(), "E041");
-        assert_eq!(err.message(), "maximum JSON nesting depth exceeded (128)");
+        assert_eq!(err.kind.to_string(), "maximum JSON nesting depth exceeded (128)");
         // JsonDepthExceeded IS catchable (unlike DepthExceeded which is not)
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3963,7 +3952,7 @@ mod tests {
         let err = EvalError::include_forbidden(span);
         assert!(matches!(err.kind, ErrorKind::IncludeForbidden));
         assert_eq!(err.kind.code(), "E042");
-        assert_eq!(err.message(), "filesystem access is disabled (--no-fs)");
+        assert_eq!(err.kind.to_string(), "filesystem access is disabled (--no-fs)");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -3977,7 +3966,7 @@ mod tests {
         );
         assert!(matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }));
         assert_eq!(err.kind.code(), "E043");
-        assert!(err.message().contains("exceeded maximum collection size"));
+        assert!(err.kind.to_string().contains("exceeded maximum collection size"));
         // ResourceLimitExceeded is NOT catchable (safety boundary)
         assert!(
             !err.kind.is_catchable(),
@@ -3996,7 +3985,7 @@ mod tests {
         let err = EvalError::include_not_available(span);
         assert!(matches!(err.kind, ErrorKind::IncludeNotAvailable));
         assert_eq!(err.kind.code(), "E050");
-        assert_eq!(err.message(), "include: not available in this context");
+        assert_eq!(err.kind.to_string(), "include: not available in this context");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4011,8 +4000,8 @@ mod tests {
         );
         assert!(matches!(err.kind, ErrorKind::IncludeIoError { .. }));
         assert_eq!(err.kind.code(), "E051");
-        assert!(err.message().contains("cannot access \"missing.llt\""));
-        assert!(err.message().contains("No such file or directory"));
+        assert!(err.kind.to_string().contains("cannot access \"missing.llt\""));
+        assert!(err.kind.to_string().contains("No such file or directory"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4023,8 +4012,8 @@ mod tests {
         let err = EvalError::include_cycle("recursive.llt".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::IncludeCycle { .. }));
         assert_eq!(err.kind.code(), "E052");
-        assert!(err.message().contains("circular include detected"));
-        assert!(err.message().contains("recursive.llt"));
+        assert!(err.kind.to_string().contains("circular include detected"));
+        assert!(err.kind.to_string().contains("recursive.llt"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4039,8 +4028,8 @@ mod tests {
         );
         assert!(matches!(err.kind, ErrorKind::IncludeParseFailed { .. }));
         assert_eq!(err.kind.code(), "E053");
-        assert!(err.message().contains("parse error in \"broken.llt\""));
-        assert!(err.message().contains("unexpected token at line 3"));
+        assert!(err.kind.to_string().contains("parse error in \"broken.llt\""));
+        assert!(err.kind.to_string().contains("unexpected token at line 3"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4052,9 +4041,9 @@ mod tests {
             EvalError::include_file_too_large("huge.llt".to_string(), 20_000_000, 10_485_760, span);
         assert!(matches!(err.kind, ErrorKind::IncludeFileTooLarge { .. }));
         assert_eq!(err.kind.code(), "E054");
-        assert!(err.message().contains("huge.llt"));
-        assert!(err.message().contains("20000000"));
-        assert!(err.message().contains("10485760"));
+        assert!(err.kind.to_string().contains("huge.llt"));
+        assert!(err.kind.to_string().contains("20000000"));
+        assert!(err.kind.to_string().contains("10485760"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4070,10 +4059,10 @@ mod tests {
         );
         assert!(matches!(err.kind, ErrorKind::IncludeHashMismatch { .. }));
         assert_eq!(err.kind.code(), "E055");
-        assert!(err.message().contains("integrity check failed"));
-        assert!(err.message().contains("config.llt"));
-        assert!(err.message().contains("blake3:aabbcc"));
-        assert!(err.message().contains("blake3:112233"));
+        assert!(err.kind.to_string().contains("integrity check failed"));
+        assert!(err.kind.to_string().contains("config.llt"));
+        assert!(err.kind.to_string().contains("blake3:aabbcc"));
+        assert!(err.kind.to_string().contains("blake3:112233"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4084,8 +4073,8 @@ mod tests {
         let err = EvalError::include_hash_required("untrusted.llt".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::IncludeHashRequired { .. }));
         assert_eq!(err.kind.code(), "E056");
-        assert!(err.message().contains("integrity hash required"));
-        assert!(err.message().contains("untrusted.llt"));
+        assert!(err.kind.to_string().contains("integrity hash required"));
+        assert!(err.kind.to_string().contains("untrusted.llt"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4097,9 +4086,9 @@ mod tests {
         assert!(matches!(err.kind, ErrorKind::IncludePathNotAllowed { .. }));
         assert_eq!(err.kind.code(), "E057");
         assert!(err
-            .message()
+            .kind.to_string()
             .contains("not permitted by the --allow-path allowlist"));
-        assert!(err.message().contains("/etc/passwd"));
+        assert!(err.kind.to_string().contains("/etc/passwd"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4116,7 +4105,7 @@ mod tests {
         assert!(matches!(err.kind, ErrorKind::ParseConversion { .. }));
         assert_eq!(err.kind.code(), "E060");
         assert_eq!(
-            err.message(),
+            err.kind.to_string(),
             "to-float: cannot parse \"not-a-number\" as Float"
         );
         assert!(err.kind.is_catchable());
@@ -4129,8 +4118,8 @@ mod tests {
         let err = EvalError::json_parse("unexpected EOF at line 3".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::JsonParse { .. }));
         assert_eq!(err.kind.code(), "E061");
-        assert!(err.message().contains("invalid JSON"));
-        assert!(err.message().contains("unexpected EOF at line 3"));
+        assert!(err.kind.to_string().contains("invalid JSON"));
+        assert!(err.kind.to_string().contains("unexpected EOF at line 3"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4141,7 +4130,7 @@ mod tests {
         let err = EvalError::json_range(span);
         assert!(matches!(err.kind, ErrorKind::JsonRange));
         assert_eq!(err.kind.code(), "E062");
-        assert_eq!(err.message(), "JSON number outside representable range");
+        assert_eq!(err.kind.to_string(), "JSON number outside representable range");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4153,7 +4142,7 @@ mod tests {
         assert!(matches!(err.kind, ErrorKind::MissingRequiredParam { .. }));
         assert_eq!(err.kind.code(), "E024");
         assert_eq!(
-            err.message(),
+            err.kind.to_string(),
             "missing argument for required parameter 'separator'"
         );
         assert!(err.kind.is_catchable());

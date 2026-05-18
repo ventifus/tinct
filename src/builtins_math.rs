@@ -998,7 +998,7 @@ pub(crate) fn builtin_shl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Negative shift is undefined; shifts >= 64 produce 0
     if bits < 0 {
         return Err(
-            EvalError::new(format!("shl: negative shift count {}", bits), call_span).into(),
+            EvalError::internal(format!("shl: negative shift count {}", bits), call_span).into(),
         );
     }
 
@@ -1023,7 +1023,7 @@ pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Negative shift is undefined; shifts >= 64 produce 0
     if bits < 0 {
         return Err(
-            EvalError::new(format!("shr: negative shift count {}", bits), call_span).into(),
+            EvalError::internal(format!("shr: negative shift count {}", bits), call_span).into(),
         );
     }
 

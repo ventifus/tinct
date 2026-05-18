@@ -16,7 +16,7 @@ use std::str::FromStr;
 
 /// Helper to create a boxed EvalError from a message.
 fn dt_err(msg: impl Into<String>, span: Span) -> Box<EvalError> {
-    EvalError::new(msg.into(), span).into()
+    EvalError::internal(msg.into(), span).into()
 }
 
 /// Parse an RFC 3339 timestamp string to a Timestamp (i64 nanoseconds).

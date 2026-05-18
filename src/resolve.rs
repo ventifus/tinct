@@ -509,7 +509,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "[x: 1  y: $x]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
 
         // Resolve the file
         resolve_file(&file.node);
@@ -539,7 +539,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "[x: 42  inner: [y: $x]]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
 
         resolve_file(&file.node);
 
@@ -575,7 +575,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "[fn [x y] $x]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
 
         resolve_file(&file.node);
 
@@ -602,7 +602,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "$undefined";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
 
         resolve_file(&file.node);
 
@@ -630,7 +630,7 @@ mod tests {
         // Test: [$y: 1  $x: 2] where $y and $x should resolve correctly.
         // Use a simpler source that has clear key/value structure.
         let source = "[a: 1  b: 2]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -655,7 +655,7 @@ mod tests {
         // Verify that $x in a value position references the sibling binding x (level 1, slot 0).
         // Key expressions are walked before entering dict scope, so they see the outer scope only.
         let source = "[x: 1  y: $x]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -682,7 +682,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "[fallback: 99  x: [@[default: $fallback] 42]]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         // Navigate to the VarRef in the annotation
@@ -722,7 +722,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "[default_val: 0  f: [fn [x@[default: $default_val]] $x]]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         // Navigate to the VarRef in the param annotation
@@ -766,7 +766,7 @@ mod tests {
 
         // Use a VarRef that resolves successfully (x is in scope)
         let source = "[x: 1  y: $x]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
 
         // First resolution populates the cache
         resolve_file(&file.node);
@@ -784,7 +784,7 @@ mod tests {
 
         // $undefined cannot be resolved — writes Some(None) to the cache
         let source = "$undefined";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
 
         // First resolution writes Some(None)
         resolve_file(&file.node);
@@ -804,7 +804,7 @@ mod tests {
 
         // Two dict expressions in one document: second references first's keys.
         let source = "[helper: 1]\n[public: $helper]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -848,7 +848,7 @@ mod tests {
         // First dict: a and b are siblings (letrec — both visible to each other).
         // $b in the first dict resolves to slot 1 in level 1 (the dict's own scope).
         let source = "[a: 1  b: $a]\n[c: $b]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -894,7 +894,7 @@ mod tests {
 
         // Three dicts: third sees both first and second dict's keys.
         let source = "[a: 1]\n[b: 2]\n[c: $a  d: $b]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -943,7 +943,7 @@ mod tests {
         // Doc 1 defines x; doc 2 references $x (should NOT resolve — doc 1 scope not visible)
         // Use bare $x (not [$x]) so the expression is a VarRef, not a dict.
         let source = "[x: 1]\n---\n$x";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         assert_eq!(file.node.documents.len(), 2);
@@ -967,7 +967,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "[x: 1  result: $x.field]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -1002,7 +1002,7 @@ mod tests {
 
         // $x appears as the value of a named argument to f
         let source = "[x: 1  f: [fn [y] $y]  result: [f y: $x]]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -1038,7 +1038,7 @@ mod tests {
 
         // A zero-argument function — enter_scope(&[]) should work without panicking
         let source = "[fn [] 42]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
 
         // Must not panic
         resolve_file(&file.node);
@@ -1062,7 +1062,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "%";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -1083,7 +1083,7 @@ mod tests {
         use crate::parser::parse;
 
         let source = "[x: %]";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         let doc = &file.node.documents[0].node;
@@ -1117,7 +1117,7 @@ mod tests {
         // --- separates doc 3
         // Doc 3 (unnamed): %first (references doc 2)
         let source = "42\n--- %first\n[x: 1]\n---\n%first";
-        let file = parse(source).expect("parse failed");
+        let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
 
         assert_eq!(file.node.documents.len(), 3);

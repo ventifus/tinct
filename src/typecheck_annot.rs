@@ -525,7 +525,7 @@ pub(crate) fn resolve_fn_metadata(
                                         state.add_constraint(name.clone(), type_var.clone());
                                     }
                                     Expr::Dict(class_list) => {
-                                        // Check for [each ...] keyword form
+                                        // Require [each ...] keyword form
                                         let class_entries = if !class_list.is_empty()
                                             && class_list[0].node.key.is_none()
                                         {
@@ -536,14 +536,23 @@ pub(crate) fn resolve_fn_metadata(
                                                     // [a: [each Comparable Showable]] — skip the 'each' keyword
                                                     &class_list[1..]
                                                 } else {
-                                                    // [a: [Comparable Showable]] — legacy positional form
-                                                    class_list.as_slice()
+                                                    // [a: [Comparable Showable]] — no 'each', error
+                                                    return Err(TypeError::new(
+                                                        "constraint class list must start with 'each' keyword: use [each ClassName ...]",
+                                                        class_list[0].span,
+                                                    ));
                                                 }
                                             } else {
-                                                class_list.as_slice()
+                                                return Err(TypeError::new(
+                                                    "constraint class list must start with 'each' keyword: use [each ClassName ...]",
+                                                    class_list[0].span,
+                                                ));
                                             }
                                         } else {
-                                            class_list.as_slice()
+                                            return Err(TypeError::new(
+                                                "constraint class list cannot be empty",
+                                                c_entry.node.value.span,
+                                            ));
                                         };
 
                                         // Multiple classes: iterate and add each
@@ -1179,33 +1188,11 @@ pub(crate) fn resolve_annotation(
             if !positional_entries.is_empty() && !entries_look_like_type_dict(entries) {
                 // Type-stage keywords in the wrapped position: @[[or A B]] / @[[all A B]] / @[[without A]].
                 //
-                // The inner [or A B] bracket parses as either:
-                //   Expr::Dict(entries)  — when it contains keyed or mixed entries (rare/legacy)
-                //   Expr::Call { implied: true, func: VarRef("or"), args: [A, B] } — the common case,
-                //     because a bare identifier in head position followed by arguments is an implied call.
-                //
-                // We handle both by calling resolve_type_expr on the inner expression directly.
-                // resolve_type_expr already dispatches both Expr::Dict (via resolve_type_dict with its
-                // keyword guards) and Expr::Call { implied: true } (via the keyword arm added above).
-                //
-                // Legacy Expr::Dict path is preserved here for backwards compatibility only.
+                // The parser always produces Expr::Call { implied: true, func: VarRef("or"), args: [A, B] }
+                // for these forms. We dispatch to resolve_type_expr which handles the keyword.
                 if positional_entries.len() == 1 {
                     let inner_expr = &positional_entries[0].node.value;
                     match &inner_expr.node {
-                        Expr::Dict(inner_entries) if !inner_entries.is_empty() => {
-                            if let Expr::VarRef { name: kw, .. } = &inner_entries[0].node.value.node
-                            {
-                                if kw == "or" || kw == "all" || kw == "without" {
-                                    return resolve_type_expr(
-                                        inner_expr,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    );
-                                }
-                            }
-                        }
                         Expr::Call {
                             implied: true,
                             func,

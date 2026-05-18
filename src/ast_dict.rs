@@ -2439,7 +2439,7 @@ mod tests {
 
         // Parse "[foo: 1]" — the key "foo" should have bare: true
         let input = "[foo: 1]";
-        let parse_output = parse2(input).unwrap();
+        let parse_output = parse(input).unwrap();
         let opts = AstToDictOpts {
             source: Some(input),
             comments: None,
@@ -2540,7 +2540,7 @@ mod tests {
 
         // Parse "[\"foo\": 1]" — the key "foo" should have bare: false
         let input = "[\"foo\": 1]";
-        let parse_output = parse2(input).unwrap();
+        let parse_output = parse(input).unwrap();
         let opts = AstToDictOpts {
             source: Some(input),
             comments: None,
@@ -2638,7 +2638,7 @@ mod tests {
 
         // Parse "[# comment\nx: 1]" — the entry should have leading-comments: [" comment"]
         let input = "[# comment\nx: 1]";
-        let parse_output = parse2(input).unwrap();
+        let parse_output = parse(input).unwrap();
         let comment_maps = CommentMaps {
             leading_comments: &parse_output.leading_comments,
             trailing_comments: &parse_output.trailing_comments,
@@ -2747,7 +2747,7 @@ mod tests {
         // (skip_whitespace_tokens handles that in specific call sites), so we
         // construct the blank_before map by hand.
         let input = "[a: 1\nb: 2]";
-        let parse_output = parse2(input).unwrap();
+        let parse_output = parse(input).unwrap();
 
         // Find the offset of 'b' (the second entry's key).
         // In "[a: 1\nb: 2]": [ at 0, a at 1, : at 2, ' ' at 3, 1 at 4, \n at 5, b at 6
@@ -2840,7 +2840,7 @@ mod tests {
 
         // Parse "[foo: 1]" with both source and comments None
         let input = "[foo: 1]";
-        let parse_output = parse2(input).unwrap();
+        let parse_output = parse(input).unwrap();
         let opts = AstToDictOpts {
             source: None,
             comments: None,
