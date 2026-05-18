@@ -1,0 +1,6 @@
+# GuardedValidate branch 2: expected Record type, got non-Dict (Int) — use default
+# The type assertion expects {x: Int}, but 42 is an Int, not a dict.
+# Since a default is present, the default [x: 1] is returned.
+[@[type: [x: Int]  default: [x: 1]] 42]
+=== out
+Dict({"x": Int(1)})
