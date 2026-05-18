@@ -104,10 +104,6 @@ binary vs. text is a property of the opened `Handle`, not of the directory grant
 --- caps: [%data:  @[DirCap [Readable Statable]]]               # :[Readable Statable]
 ```
 
-`@DirCap` without flags in caps declarations is treated as
-`@[DirCap [Readable Listable Statable Writable Deletable Renameable Appendable]]`
-(full access) during a backward-compat transition period.
-
 **Row-polymorphic builtin signatures:**
 
 ```tinct

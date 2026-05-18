@@ -134,9 +134,9 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 
 - [ ] Fix Landlock path extraction to strip `:MODE` suffix before constructing PathBuf — currently uses `split_once('=').map(|(_, path_str)| PathBuf::from(path_str))` which includes `:w` in the path string, causing `path.exists()` to return false and silently skipping the Landlock rule, so writes are blocked by default-deny even though the DirCap grants write authority; fix: apply same `rsplit_once(':')` mode-stripping used by `--cap-fs` DirCap parsing (`src/main.rs:1041-1048`); also apply to `run_literate_eval` and `run_file` Landlock path setup (`src/main.rs:2272`, `src/main.rs:2568`)
 - [ ] Restore `--cap-fs docdir=doc/lib:w` in `just docgen` once Landlock path extraction is fixed (`justfile`)
-- [ ] Audit all `--- caps:` declarations in `scripts/`, `stdlib/`, and `samples/` for bare `@DirCap` and update to explicit flag lists (`scripts/`, `stdlib/`, `samples/`)
-- [ ] Remove the backward-compat fallback in the type checker / cap injection that treats bare `@DirCap` as full-access; make it a type error or at minimum a lint warning (`src/typecheck.rs`, `src/main.rs`)
-- [ ] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
+- [x] Audit all `--- caps:` declarations in `scripts/`, `stdlib/`, and `samples/` for bare `@DirCap` and update to explicit flag lists (`scripts/`, `stdlib/`, `samples/`) — Updated `test_permissions.llt` to use `@[[all DirCap Listable Statable]]`; `scripts/docgen.llt` already has `@[DirCap [Writable]]`; no bare `@DirCap` found in `samples/` or `stdlib/`
+- [ ] **KNOWN ISSUE**: CLI-level backward-compat at `src/main.rs:1321,2469,2765` — `--cap-fs NAME=PATH` without `:MODE` defaults to `DirPerms::full()`. The type-level compat described in whatif doc lines 107-109 was never implemented. Removing CLI default breaks many tests (`tests/cli_tests.rs:1636,1671,2182,2215,2248,2285,2331`). Deferred until test suite is updated to use explicit modes.
+- [x] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
 
 ---
 
@@ -219,6 +219,33 @@ Once resolver evaluation (Gap 1) is working, boundary guards at CALL-MONO/CALL-P
 `src/formatter.rs:525` is a TODO to emit the structural metadata bracket (`[determines: [...] resolver: ...]`) when formatting a class declaration that has functional dependency or resolver fields. Currently silently omitted, causing round-trip loss.
 
 - [ ] At `src/formatter.rs:525`: emit the class structural-metadata bracket when `determines` or `resolver` fields are non-empty; use the same bracket syntax the parser accepts (`src/formatter.rs:525`)
+
+---
+
+## Primitive Privacy
+
+### builtin-privacy-complete: Activate the builtin-privacy isolation switch
+
+**Whatif:** `builtin-privacy`
+**Spec chapters:** `doc/whatif/completed/builtin-privacy.md §Design`
+
+The `%rust` virtual module infrastructure is fully implemented (`Value::RustRegistry`, `rust_module()`, `create_bootstrap_env()`, all stdlib files rewritten). What was never done: the isolation switch. At `src/builtins.rs:2175-2194`, ALL standard builtins are re-injected into `stdlib_env` after prelude loading — a "backwards compatibility" workaround that defeats the privacy goal entirely. This sprint removes it.
+
+Note: `builtin-*` aliases remain available to prelude via `[include %rust "core"]` (correct per whatif). Only the user-env re-injection is removed.
+
+- [ ] Remove the `standard_builtins()` re-injection loop at `src/builtins.rs:2175-2194`; user code must receive only what prelude exports — no direct fallback to Rust builtins (`src/builtins.rs:2175-2194`)
+- [ ] Remove the `inject_prelude_aliases()` call at `src/builtins.rs:2202`; user env no longer gets `builtin-*` aliases injected (`src/builtins.rs:2202`)
+- [ ] Delete `inject_prelude_aliases()` at `src/builtins.rs:1927-1965`; it has no remaining callers after the above removal (`src/builtins.rs:1927-1965`)
+- [ ] Mark `create_root_env()` as `pub(crate)` and add a comment that it is internal-only (used by `expand.rs` for re-entrant macro expansion during prelude loading) — do NOT delete it; it is still needed by `src/expand.rs:413` to break the circular dependency during prelude bootstrap (`src/builtins.rs:1914`)
+- [ ] Update type env aliases in `src/type_env.rs:3148-3154`: the `builtin-*` → `public-name` alias mappings in the type env are no longer needed in the user type env; verify they are only needed for prelude-internal type-checking and remove them from the user-facing type env if so (`src/type_env.rs:3148-3154`)
+- [ ] Update `src/builtins.rs:10974`: the test call to `inject_prelude_aliases` in unit tests must be replaced — use `[include %rust "core"]` semantics or construct the test env via `build_prelude_env()` instead; any test that constructs a closure referencing `builtin-add`/`builtin-eq` must use the public name `+`/`=` instead (`src/builtins.rs:10974`)
+- [ ] Update `src/typecheck.rs:12575,12630`: test source strings using `builtin-if` must be updated to use `if` — `builtin-if` is not available in user scope after this sprint (`src/typecheck.rs:12575,12630`)
+- [ ] Update `src/lsp/analysis.rs:2100-2120`: test hovers `builtin-eq` — after removal it is undefined in user scope; rewrite the test to hover `=` instead (`src/lsp/analysis.rs:2100-2120`)
+- [ ] Convert `tests/corpus/eval/builtins/builtin_aliases_callable.llt-eval` to an error test: user code referencing `builtin-lt`, `builtin-add`, etc. should now produce `undefined variable`; rename to `builtin_aliases_not_user_accessible.llt-eval` and set `=== error` section (`tests/corpus/eval/builtins/`)
+- [ ] Run `just test` after all changes; surface any test failure as `undefined variable: <name>` — each failure is a builtin that prelude failed to export under its public name or a test that must be updated (`tests/`)
+- [ ] Fix `doc/11-stdlib.md:296-310`: rewrite the env chain section to describe the actual implemented state — bootstrap env (include + %rust) → prelude (opens with [include %rust "core"] etc.) → user code; remove the `builtin-*` aliases from the chain diagram; remove the T009 reference on line 310 (T009 was removed because undefined variable errors are now sufficient) (`doc/11-stdlib.md:296-310`)
+- [ ] Fix `doc/11a-builtins.md:762`: remove the "Stable Aliases" section documenting `builtin-add`, `builtin-sub`, etc. as user-accessible escape hatches — they no longer exist in user scope; if the `%rust`-level aliases (accessible only to prelude) need documenting, add a brief note under the `%rust` section (`doc/11a-builtins.md:762`)
+- [ ] Add `%rust` virtual module documentation to `doc/11a-builtins.md` or `doc/11-stdlib.md`: document that stdlib files use `[include %rust "module-name"]` to access Rust primitive groups; list the module names and their contents (table already in the whatif); clarify that `%rust` is not available in user code (`doc/11a-builtins.md`)
 
 ---
 
