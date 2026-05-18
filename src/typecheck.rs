@@ -1650,6 +1650,10 @@ fn types_can_unify(
     let saved_name_counter = state.name_counter;
 
     // Use a temporary substitution for the probe.
+    // Note: this probe uses a separate temp_subst; constraint checking via
+    // check_constraints_on_var may miss bindings from the probe. This is acceptable
+    // for instance consistency checks where types are typically concrete annotations,
+    // but would need to be addressed for general-purpose unification probes.
     let mut temp_subst = state.subst.clone();
     let can_unify = types_a
         .iter()

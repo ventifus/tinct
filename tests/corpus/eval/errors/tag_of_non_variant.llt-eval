@@ -1,0 +1,4 @@
+# tag-of: error when value is not a Variant
+[tag-of 42]
+=== error
+[E010] type mismatch: expected Variant, got Int

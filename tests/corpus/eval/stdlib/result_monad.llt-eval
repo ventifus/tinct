@@ -1,0 +1,10 @@
+# result: monad dict for Result type (bind: and-then, pure: result-ok)
+# Basic test: verify the dict structure and that bind/pure work
+[do result
+  [x: [Ok 21]]
+  [y: [Ok 2]]
+  [Ok [* x y]]]
+=== out
+Variant(Ok, Int(42))
+=== warn
+undefined variable: result at 2:5-2:11

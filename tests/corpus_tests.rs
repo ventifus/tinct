@@ -160,6 +160,7 @@ fn test_corpus_structure() {
         "tests/corpus/eval",
         "tests/corpus/eval/access",
         "tests/corpus/eval/builtins",
+        "tests/corpus/eval/builtins/errors",
         "tests/corpus/eval/cross_feature",
         "tests/corpus/eval/errors",
         "tests/corpus/eval/functions",
