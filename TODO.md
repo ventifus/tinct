@@ -9,27 +9,14 @@ See DONE.md for the full history of completed sprints.
 `chr-unification` accepted 2026-05-16 (commits 0886ef1, 7d15c36). See `doc/whatif/chr-unification.md` and `doc/feature/chr-unification.md`. Implementation order: chr-module-split → chr-normalization → chr-class-instance → chr-prelude.
 
 
-### chr-class-instance: AST redesign and parser/typecheck support for [class] and [instance]
-
-Redesigns `Expr::ClassDecl` and `Expr::InstanceDecl` for the two-bracket class body and match-arm instance syntax. New `[pattern [...]]` form reuses existing annotated-identifier machinery.
-
-- [x] Extend `Expr::ClassDecl` in `src/ast.rs`: add `determines`, `resolver` fields; update all exhaustive match sites (`src/ast.rs` + ~8 files)
-- [x] Update `StackFrame::ClassDecl` in `src/parser.rs`: structural_metadata second bracket; extract determines/resolver/kinds/superclasses; key extraction handles VarRef+Str (`src/parser.rs`)
-- [x] Redesign `Expr::InstanceDecl` in `src/ast.rs`: arms Vec form; backward-compat legacy_arm_pattern; update all exhaustive match sites (`src/ast.rs` + ~8 files)
-- [x] Update `StackFrame::InstanceDecl` in `src/parser.rs`: arms/pending_arm_pattern; pattern arm syntax; legacy support (`src/parser.rs`)
-- [x] Add `Expr::PatternDecl { bindings }` to `src/ast.rs` + `StackFrame::PatternDecl`; colon-ahead rejection guard (`src/ast.rs`, `src/parser.rs`)
-- [x] Implement ClassDecl typecheck: determines/resolver validation, coverage, consistency; 6-field probe isolation in patterns_overlap (`src/typecheck.rs`)
-- [x] Implement InstanceDecl typecheck: disjointness, coverage, consistency, InstanceEnv registration, all-arms iteration, VarRef method keys (`src/typecheck.rs`, `src/eval.rs`)
-- [x] Tests: class_fd_basic.llt-eval, instance_pattern_basic.llt-eval, instance_pattern_syntax.llt-eval; unit test for FD consistency violation (`tests/corpus/eval/typecheck/`, `src/lib.rs`)
-- [x] Remove legacy instance syntax: removed `legacy_arm_pattern` field, `[instance [ClassName Type] ...]` now produces parse error (`src/parser.rs`, `tests/corpus/invalid/instance_legacy_syntax_rejected.llt-eval`)
-
 ### chr-prelude: Migrate arithmetic classes to prelude.llt and implement boundary guard elaboration
 
-Moves the hardcoded arithmetic instance table out of Rust and into tinct itself. Completes the CHR cycle by adding the post-inference boundary guard elaboration pass.
+Moves the hardcoded arithmetic instance table out of Rust and into tinct itself, completing the CHR cycle with post-inference boundary guard elaboration. See `doc/feature/chr-unification.md §Boundary Guards` and `doc/06-type-inference.md §Constraint Handling Rules`.
+
+**Spec chapters:** `doc/feature/chr-unification.md §Boundary Guards`, `doc/06-type-inference.md §CHR`
 
 - [x] Add iteration cap (100) to `process_deferred_equalities()` (`src/type_unify.rs`)
 - [x] Add corpus test for `determines:` extraction round-trip (`tests/corpus/eval/typecheck/class_determines_roundtrip.llt-eval`)
-- [ ] Fix consistency check to use unify-under-θ instead of structural equality (`types_equal`) — deferred, O(N²) performance risk for large prelude (`src/typecheck.rs:2400`)
 - [x] Improve disjointness/consistency error spans: both arm spans included (`src/typecheck.rs`)
 - [x] Coverage error message: uses param name from `params` list (`src/typecheck.rs`)
 - [x] Add `instance_resolution_depth: u32` to `InferState`; guard `resolve_instance` call in `check_constraints_on_var` (limit 64, matching GHC `-freduction-depth` per Sulzmann et al. 2007 §3.2); **unblocks all remaining chr-prelude and unified-bindings-migrate work** (`src/type_unify.rs`, `src/type_infer.rs`)
@@ -46,49 +33,78 @@ Moves the hardcoded arithmetic instance table out of Rust and into tinct itself.
 
 ## Unified Binding Declarations
 
-`unified-bindings` accepted 2026-05-17. See `doc/whatif/unified-bindings.md` and `doc/02-syntax.md` §6, §9. Implementation order: unified-bindings-ast → unified-bindings-typecheck → unified-bindings-migrate.
+`unified-bindings` accepted 2026-05-17. See `doc/whatif/unified-bindings.md` and `doc/02-syntax.md §6, §9`. Implementation order: unified-bindings-ast → unified-bindings-typecheck → unified-bindings-migrate.
 
-- [x] Design unified bindings — see doc/whatif/unified-bindings.md
+- [x] Design unified bindings — see `doc/whatif/unified-bindings.md`
 
 ### unified-bindings-ast: Lexer, AST, and parser for [let ...], [case ...], and ... placeholder
 
-Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeholder` and parser support. Both old and new binding syntax accepted during this phase (old syntax deprecated but functional to avoid breaking everything at once). **Spec chapters:** `doc/02-syntax.md §6, §9`, `doc/whatif/unified-bindings.md §src/lexer.rs, §src/ast.rs, §src/parser.rs`.
+Adds `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeholder` and parser support; both old and new binding syntax accepted during this phase. See `doc/whatif/unified-bindings.md §Parsing Invariant`, `doc/02-syntax.md §6`, `doc/02-syntax.md §9`.
 
-- [x] Add `Token::Let` and `Token::Case` keywords to `src/lexer.rs`; reserved keyword denylist (`src/lexer.rs`)
-- [x] Add `Expr::LetDecl { bindings }`, `Expr::CaseArm { pattern, body }`, `Expr::Placeholder` to `src/ast.rs`; updated all exhaustive match sites (~15 files) (`src/ast.rs` + all consumers)
-- [x] Add `StackFrame::LetDecl` and `StackFrame::CaseDecl` to `src/parser.rs`; push_value + CloseBracket handlers (`src/parser.rs`)
-- [x] Parse `Expr::Placeholder`: bare `...` (not followed by identifier) outside Dict context → `Expr::Placeholder` (`src/parser.rs`)
-- [x] Colon-ahead disambiguation for `let:` and `case:` via peek_next_horizontal (`src/parser.rs`)
-- [x] Fn/ClassDecl/TypeAlias/InstanceDecl/Match accept `Expr::LetDecl`/`Expr::CaseArm` (old syntax still works) (`src/parser.rs`)
-- [x] ErrorKind::Unimplemented added for Placeholder eval; all new AST nodes have Display/typecheck/eval stubs (`src/error.rs`, `src/eval.rs`, `src/typecheck.rs`)
+**Spec chapters:** `doc/02-syntax.md §6, §9`, `doc/whatif/unified-bindings.md §src/lexer.rs, §src/ast.rs, §src/parser.rs`
+
+- [ ] Add `Token::Let` and `Token::Case` keywords to `src/lexer.rs`; add both to the reserved keyword denylist (`src/lexer.rs`)
+- [ ] Add `Expr::LetDecl { bindings: Vec<Spanned<Expr>> }`, `Expr::CaseArm { pattern: Box<Spanned<Expr>>, body: Box<Spanned<Expr>> }`, `Expr::Placeholder` to `src/ast.rs`; update all exhaustive match sites (`src/ast.rs`, `src/desugar.rs`, `src/formatter.rs`, `src/expand.rs`, `src/resolve.rs`, `src/ast_dict.rs`)
+- [ ] Add `StackFrame::LetDecl` to `src/parser.rs`: pushed when `[let` is encountered; collects binding-pattern entries; nested `[` inside this frame pushes another `StackFrame::LetDecl`; closes to `Expr::LetDecl` (`src/parser.rs`)
+- [ ] Add `StackFrame::CaseDecl` to `src/parser.rs`: pushed when `[case` is encountered; collects pattern + body; closes to `Expr::CaseArm` (`src/parser.rs`)
+- [ ] Parse `Expr::Placeholder`: `Token::Spread` not followed by `Token::Identifier` in value position → `Expr::Placeholder` (`src/parser.rs`)
+- [ ] Add `let:` and `case:` colon-ahead disambiguation to keyword dispatch table — if keyword identifier is immediately followed by `Token::Colon`, dispatch as dict key, not keyword (`src/parser.rs`)
+- [ ] Update `StackFrame::Fn` to accept `Expr::LetDecl` as the parameter list (keep old param-list path functional for this phase) (`src/parser.rs`)
+- [ ] Update `StackFrame::ClassDecl` to accept `Expr::LetDecl` as the TypeVar list (keep old path functional) (`src/parser.rs`)
+- [ ] Update `StackFrame::TypeAlias` to accept `Expr::LetDecl` as the param list (keep old path functional) (`src/parser.rs`)
+- [ ] Update `StackFrame::InstanceDecl` to accept `Expr::LetDecl` as arm key pattern (`src/parser.rs`)
+- [ ] Update `StackFrame::Match` to accept `Expr::CaseArm` as new-style arms (existing `pending_pattern_expr` path coexists) (`src/parser.rs`)
+- [ ] Tests: parser tests for `[fn [let x@Int y] body]`, `[case [let v: Ok] body]`, `[case 42 body]`, `...` placeholder, `[let: value]` colon-ahead, nested `[let [a b]: Pair]` (`tests/corpus/eval/`, `src/lib.rs`)
 
 ### unified-bindings-typecheck: Type checker and evaluator for binding declarations, case arms, and placeholders
 
+Implements type checking for `Expr::LetDecl` binding extraction, case arm typing with constructor payload lookup, type narrowing, and `Expr::Placeholder`; implements eval-side `eval_let_pattern` and `eval_case_arm`. See `doc/whatif/unified-bindings.md §Type checker, §Evaluator`.
+
+**Spec chapters:** `doc/06-type-inference.md`, `doc/08-evaluation.md`, `doc/whatif/unified-bindings.md §Type checker, §Evaluator`
+
 **Depends on:** `unified-bindings-ast`
 
-- [x] LetDecl binding extraction: fn params already handled by parser; extract_pattern_types updated to accept both PatternDecl and LetDecl (`src/typecheck.rs`)
-- [x] typecheck_case_arm: BAS narrowing (scrutinee_ty ∩ annotation_type); LetDecl/exact-value patterns; Type::Unknown ∩ T = T in normalize_intersection (`src/typecheck.rs`, `src/type_def.rs`)
-- [x] LetDecl validity check: TypeError "not valid in expression position" (`src/typecheck.rs`)
-- [x] Expr::Placeholder → Type::Unknown with gradual typing doc comment (`src/typecheck.rs`)
-- [x] eval_case_arm, eval_let_pattern, nullary variant values_equal; CaseArm routing in Match frame; Placeholder → EvalError::unimplemented (`src/eval.rs`, `src/parser.rs`)
-- [x] Tests: case_arm_basic, let_decl_fn_param, let_decl_wildcard, placeholder_unimplemented corpus tests; 9 new type checker unit tests (`tests/corpus/eval/`, `src/typecheck.rs`)
+- [ ] Implement binding extraction from `Expr::LetDecl` in each context: fn (value params), class (TypeVars), type (alias params), instance (arm key), case (binding pattern) — shared extraction mechanics, context-specific interpretation (`src/typecheck.rs`)
+- [ ] Implement `typecheck_case_arm(pattern, scrutinee_ty)`: if `Expr::LetDecl` → process each binding element against scrutinee type per typing rules; if literal/expression → validate scalar/nullary type (`src/typecheck.rs`)
+- [ ] Implement constructor payload type lookup: when typing `[let v: Ok]`, look up `Ok` in local TypeEnv, read domain type of its function type scheme as payload type; scope-aware (`src/typecheck.rs`)
+- [ ] Implement type narrowing: `[let n@T]` → `n : scrutinee_ty ∩ T`; `[let v: C]` → `v : payload_type(C)`; `Unknown ∩ T → T` (AGT normalization) (`src/typecheck.rs`)
+- [ ] Implement `Expr::LetDecl` validity check: `LetDecl` outside binding positions (fn/class/type/instance/case/bind:) → type error "binding declaration not valid in expression position" (`src/typecheck.rs`)
+- [ ] Implement structural-test restriction: `name: Constructor` patterns in fn param position → type error "structural test patterns are only valid in case arms" (`src/typecheck.rs`)
+- [ ] Type `Expr::Placeholder` as `Unknown`; function body consistency check uses `~` not `<:` (`src/typecheck.rs`)
+- [ ] Implement `eval_case_arm(pattern, scrutinee, env)`: if `Expr::LetDecl` → call `eval_let_pattern`; if expression → `values_equal` → soft skip on mismatch (`src/eval.rs`)
+- [ ] Implement `eval_let_pattern(bindings, scrutinee, env)`: recursive — VarRef (bind), Annotated with Constructor (tag test + payload extraction), bracket group (positional dict destructuring), Wildcard (succeed, no binding) (`src/eval.rs`)
+- [ ] Extend `values_equal` for `Value::Variant { payload: None }` — nullary variants compare by tag equality (`src/eval.rs`)
+- [ ] Implement `Expr::Placeholder` evaluation: return `Err(EvalError::unimplemented(span))` when the containing thunk is forced; add `ErrorKind::Unimplemented`; ensure `$try` can catch it (`src/eval.rs`, `src/value.rs`)
+- [ ] Tests: case arm type narrowing, constructor payload lookup, nested pattern typing, LetDecl-in-expression-position error, structural-test-in-fn-params error, Placeholder typing as Unknown, Placeholder eval raises UnimplementedError, `$try` catches UnimplementedError, `values_equal` for nullary variants (`tests/corpus/eval/`, `src/lib.rs`)
 
 ### unified-bindings-migrate: Migrate all existing code to [let ...] and [case ...] syntax
 
+Mechanical migration of prelude, corpus tests, and doc examples to the new binding syntax; removes old param-list parsing so old syntax becomes a parse error. See `doc/whatif/unified-bindings.md §stdlib/prelude.llt, §Corpus tests`.
+
+**Spec chapters:** `doc/02-syntax.md §6`, `doc/04-functions.md §Function Definition`
+
 **Depends on:** `unified-bindings-typecheck`
 
-- [x] Migrate ~242 fn declarations in `stdlib/prelude.llt` to `[fn [let params] body]` (`stdlib/prelude.llt`)
-- [x] Migrate class/type/instance declarations in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
-- [x] Migrate all corpus test files and doc examples (`tests/corpus/`, `doc/`)
-- [x] Remove old param-list parsing paths (old syntax becomes a parse error) (`src/parser.rs`)
-- [x] Verify `just test` passes with all migrations applied (`tests/`)
-- [x] Run `just doc` for the first time and commit the annotated output — populates `=== out`/`=== warn`/`=== info` sections inside each ```tinct block, making the docs self-verifying living documentation; add `just doc-verify` to CI (exits 1 if any annotated block's actual output diverges from its `===` sections) (`justfile`, CI config, `doc/*.md`)
+- [ ] Migrate all ~242 fn declarations in `stdlib/prelude.llt` from `[fn [params] body]` to `[fn [let params] body]` (`stdlib/prelude.llt`)
+- [ ] Migrate all `[class [tvars] ...]` declarations in `stdlib/prelude.llt` to `[class [let tvars] ...]` (`stdlib/prelude.llt`)
+- [ ] Migrate all `[type [params] body]` declarations in `stdlib/prelude.llt` to `[type [let params] body]` (`stdlib/prelude.llt`)
+- [ ] Migrate all instance declarations in `stdlib/prelude.llt` to use `[let ...]` arm key syntax (`stdlib/prelude.llt`)
+- [ ] Migrate all corpus test files: fn/class/type/instance binding brackets to `[let ...]` form; update match arms to `[case ...]` where applicable (`tests/corpus/`)
+- [ ] Migrate all doc examples in `doc/*.md` to use `[let ...]` binding syntax (`doc/`)
+- [ ] Remove old param-list parsing path from `StackFrame::Fn` — `[fn [params] body]` without `let` is now a parse error (`src/parser.rs`)
+- [ ] Remove old TypeVar-list path from `StackFrame::ClassDecl` — `[class [tvars] ...]` without `let` is now a parse error (`src/parser.rs`)
+- [ ] Remove old param path from `StackFrame::TypeAlias` — `[type [params] body]` without `let` is now a parse error for parameterized aliases (`src/parser.rs`)
+- [ ] Verify `just test` passes with all migrations applied and old syntax removed (`tests/`)
 
 ---
 
 ## Codebase Health
 
 ### unknown-elimination: Replace remaining `Type::Unknown` builtin signatures with precise types
+
+Replaces builtin `Unknown` return/param types with precise `TypeScheme` signatures where the type is statically knowable, as catalogued in `doc/11a-builtins.md`. See `doc/06-type-inference.md §Type Schemes`.
+
+**Spec chapters:** `doc/11a-builtins.md`, `doc/06-type-inference.md §Type Schemes`
 
 First-pass audit complete (2026-05-16). The following categories of Unknown remain and require future work:
 
@@ -124,372 +140,111 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 - [x] Transport typing — resolved via `transport-typing` sprint (nominal variants, not `Type::Variant`)
 - [x] Add closed-Record return type for `revocable`, `icmp-ping`, `recv-datagram`, `stat`, `timestamp-parts`, `timestamp-in-tz`, `timestamp-in-tz`, `tls-peer-cert`, `http-request` (`src/type_env.rs`)
 - [x] Add precise `Seq({...})` return for `list-dir` — `Seq({name: Str, kind: Str, size: Int})` (`src/type_env.rs`)
-### transport-typing: Type Transport constants via nominal variants
-
-Agent panel review concluded `Type::Variant(String)` is the wrong approach — `Tcp` and `Udp` would share one type and be indistinguishable. The correct approach is the already-accepted nominal variants machinery. **Spec chapters:** `doc/whatif/completed/nominal-variants.md`.
-
-- [x] Add `[union Transport [Tcp] [Udp] [Quic] [Unix]]` declaration to `stdlib/prelude.llt` — constructors register automatically in TypeEnv via prelude loading (`stdlib/prelude.llt`)
-- [x] Remove the four manual `Type::Unknown` registrations for `Tcp`/`Udp`/`Quic`/`Unix` from `src/type_env.rs` — prelude loading now handles them (`src/type_env.rs`)
-- [x] Update `connect` builtin type signature: transport parameter `Unknown` → `Transport` nominal variant type (`src/type_env.rs`)
-- [x] Verify runtime dispatch in `connect` still works — eval code already matches on `Value::Variant { tag }` string; no changes needed if tag names match (`src/builtins_io.rs`)
-- [x] Corpus tests: typed Transport usage — passing `Tcp` to `connect` type-checks; passing `42` or `"tcp"` produces a type error (`tests/corpus/eval/typecheck/`)
 
 ---
 
-- [x] HKT types for map/filter/reduce/each — see `hkt-map-filter-types` sprint below
-- [x] json_to_value null behavior — by design: tinct's null IS empty dict (`[]`); JSON null → `[]` is correct per doc/03-data-model.md §Null; from-json @Schema will use the null-as-empty-dict model when implemented (`src/builtins_io.rs` — no change needed)
-- [ ] Add `from-json @Schema` schema-directed typed parse — `doc/whatif/schema-directed-from-json.md` proposal complete; needs /rnd acceptance before implementation
-
 ### hkt-map-filter-types: Precise TypeSchemes for map/filter/reduce/each/each-key/each-kv
 
-Replace `Unknown` signatures with proper polymorphic TypeSchemes using the accepted HKT
-machinery (`Type::Operator`, `Type::App`, `Mappable` class). Use `Type::Operator("f")`
-in scheme bodies — `instantiate_at_level` detects this and registers the fresh name as
-`Kind::Operator` in `kind_env`. No `operator_vars` field needed on `TypeScheme`.
+Replaces `Unknown` signatures with proper polymorphic `TypeScheme`s using `Type::Operator`/`Type::App` and the `Mappable` class; proposes `Filterable` for collection-polymorphic `filter`. See `doc/06-type-inference.md §Higher-Kinded Types` and `doc/11a-builtins.md §Collection Builtins`.
 
+**Spec chapters:** `doc/06-type-inference.md §Higher-Kinded Types`, `doc/11a-builtins.md §Collection Builtins`
+
+- [x] HKT types for map/filter/reduce/each — prerequisite research complete
+- [x] json_to_value null behavior — by design: tinct's null IS empty dict (`[]`); JSON null → `[]` is correct per doc/03-data-model.md §Null; from-json @Schema will use the null-as-empty-dict model when implemented (`src/builtins_io.rs` — no change needed)
 - [x] `map`: `∀f a b. Mappable f ⇒ (a → b) → App(f,a) → App(f,b)` — left as Unknown — needs full HKT; use `Type::Operator("f")` in body (`src/type_env.rs`)
 - [x] `filter`: `∀a. (a → Bool) → Seq a → Seq a` — Seq-specific for now (`src/type_env.rs`)
-- [ ] Research Mappable-polymorphic `filter`: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a` — define `Filterable` class (separate from `Mappable`, or `Mappable` instances that support filtering?); Haskell's `Data.Witherable` is the precedent; write proposal to `doc/whatif/filterable.md`
 - [x] `reduce`: `∀a b. (b → a → b) → b → Seq a → b` — Seq-specific, no HKT needed (`src/type_env.rs`)
 - [x] `each`: `∀a b. (a → b) → Seq a → Null` — `b` is fresh and unreferenced; callback return discarded (`src/type_env.rs`)
 - [x] `each-key`: `∀b. (Str → b) → Dict → Null` — tinct dict keys are always `Str` (`src/type_env.rs`)
 - [x] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records; note `∀a b. (Str → a → b) → Map@[Str:a] → Null` for homogeneous maps (`src/type_env.rs`)
 - [x] Corpus test updates: no corpus updates needed (Seq-specific types compatible) (`tests/corpus/`)
+- [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a`; compare `Mappable` extension vs separate class using `Data.Witherable` as precedent; include instance examples for `Seq` and `Dict` (`doc/whatif/filterable.md`)
+- [ ] Accept `doc/whatif/schema-directed-from-json.md` via `/rnd` and create implementation sprint in TODO.md for `from-json @Schema` schema-directed typed parse (`doc/whatif/schema-directed-from-json.md`)
 
 ---
 
 ## Test Infrastructure
 
-### corpus-consolidation: Consolidate corpus tests into fewer, more comprehensive test cases
+### corpus-consolidation-2: Merge fine-grained single-variant tests into composite tests
 
-**Depends on:** `literate-flags` — that sprint adds `=== info` as a new section label
-(for `log`/stdout output) alongside the existing `=== out`/`=== warn`/`=== error`.
-Corpus consolidation must use `=== info` for any tests that exercise `log` or other
-stdout-producing builtins, so the test infrastructure is consistent with `tinct literate`.
+Reduces the corpus file count by 30–40% by merging single-feature tests into composite files per feature area; targets 700+ second test suite reduction with no coverage loss. See `doc/12-tooling.md §Corpus Test Format`.
 
-The corpus test suite has grown to hundreds of fine-grained single-feature tests. The goal is to reduce the total number while increasing coverage density per test — each consolidated test should exercise multiple related features together (e.g., a single `arithmetic_mixed_types.llt-eval` that covers Int+Int, Int+Float, Float+Int, Float+Float and their type annotations, rather than 4 separate files). This reduces the serial test execution time (currently 700+ seconds for the full corpus).
+**Spec chapters:** `doc/12-tooling.md §Corpus Test Format`
 
-**Strategy:** Merge tests within the same subdirectory that share the same builtin or feature area. Keep negative/error tests separate (one file per distinct error code is fine). Target: reduce corpus file count by 30-40%. Use `=== info` for expected log/stdout output in consolidated tests.
+An audit (2026-05-17) identified ~95 files across `eval/builtins/` and `eval/stdlib/` reducible to ~18 composite files with no coverage loss. Verify actual filenames before merging — groups below are by category; use `ls` to confirm exact names.
 
-- [x] Audit `tests/corpus/eval/builtins/` — merge arithmetic variants, string operation variants, and type-predicate variants into composite tests; use `=== info` for any `log` output (`tests/corpus/eval/builtins/`)
-- [x] Audit `tests/corpus/eval/typecheck/` — merge related positive typecheck tests into 1-3 comprehensive files per feature area (`tests/corpus/eval/typecheck/`)
-- [x] Audit `tests/corpus/eval/stdlib/` — merge related prelude function tests; use `=== info` for `log` output (`tests/corpus/eval/stdlib/`)
-- [x] Verify `just test` passes after consolidation; update any CI time baselines (`tests/`)
-
----
-
-## Codebase Cleanup
-
-### remove-emitted-flag: Remove EvalContext.emitted and make emit additive
-
-`EvalContext.emitted` was added before the tinct-native output formatter (`-o` flag /
-`json.llt`). It currently serves two purposes:
-
-1. **JSON suppression** — when `emit` is called, final JSON serialization is skipped.
-   This is the obsolete behaviour: now that `-o` handles output formatting through the
-   tinct pipeline, `emit` can be additive (write to stdout without suppressing the
-   final result).
-
-2. **Seq drain gating** — when the final value is a `Seq` and `emitted=true`, the Seq
-   is drained to completion to fire all emit side-effects in generator elements. This
-   behaviour should be preserved by a different mechanism (always drain Seq if it is the
-   final value, regardless of emit calls).
-
-After this change, `emit` is purely additive: calling it one or more times writes strings
-to stdout AND the final expression is still serialized. This makes `emit` usable as the
-logging/print primitive and unblocks `stdlib/log.llt`.
-
-- [x] Remove `emitted: Cell<bool>` from `EvalContext` (`src/eval.rs`, `src/lib.rs`)
-- [x] Remove all `eval_ctx.emitted.get()` / `emitted.set(true)` sites; update
-  `run_eval`, `run_literate_eval`, `run_literate_weave` accordingly (`src/main.rs`)
-- [x] Preserve Seq drain: always drain a Seq final value to completion (remove the
-  `emitted.get()` gate, make drain unconditional) (`src/main.rs`)
-- [x] Update `doc/09-documents.md` §Interaction with `emit` — remove language about
-  JSON suppression (`doc/09-documents.md`)
-- [x] Update corpus tests that rely on emit-suppression behaviour (`tests/corpus/`)
-- [x] Verify `just test` passes (`tests/`)
+- [ ] **Type predicates builtins**: Merge all `int_predicate_*.llt-eval`, `str_predicate_*.llt-eval`, `float_predicate_*.llt-eval`, `bool_predicate_*.llt-eval` into `type_predicates_scalar.llt-eval`; `dict_predicate_*.llt-eval` into `type_predicate_dict.llt-eval` (`tests/corpus/eval/builtins/`)
+- [ ] **Null/fn? predicates**: Merge all `null_predicate_*.llt-eval` into `null_predicate.llt-eval`; `fn_predicate_*.llt-eval` into `fn_predicate.llt-eval` (`tests/corpus/eval/builtins/`)
+- [ ] **Basic arithmetic**: Merge single-case `add.llt-eval`, `sub.llt-eval`, `mul.llt-eval` into `arithmetic_basic.llt-eval` (`tests/corpus/eval/builtins/`)
+- [ ] **Comparison operators**: Merge `comparison_gt*.llt-eval`, `comparison_gte*.llt-eval`, `comparison_lte*.llt-eval` into `comparison_operators.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **Logical operators**: Merge `logic_and_*.llt-eval`, `logic_or_*.llt-eval`, `logic_not_*.llt-eval` into `logical_operators.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **Numeric rounding**: Merge `numeric_ceil*.llt-eval` and `numeric_trunc*.llt-eval` into `numeric_rounding.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **Arithmetic division**: Merge `arithmetic_mod*.llt-eval` and `arithmetic_quot*.llt-eval` into `arithmetic_division.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **any? / all?**: Merge all `any*.llt-eval` and `all*.llt-eval` into `higher_order_predicates.llt-eval` (10 files → 1) (`tests/corpus/eval/stdlib/`)
+- [ ] **Type predicates stdlib**: Merge `type_int*.llt-eval`, `type_str.llt-eval`, `type_float.llt-eval`, `type_bool.llt-eval`, `type_dict.llt-eval` into `stdlib_type_predicates.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **Conditional flow**: Merge `when_*.llt-eval` and `unless_*.llt-eval` into `conditional_control_flow.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **words / flatten**: Merge all `words_*.llt-eval` and `flatten*.llt-eval` into `string_and_seq_split.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **Dict entry ops**: Merge `from_entries*.llt-eval` and `with_entries*.llt-eval` into `dict_entry_operations.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [ ] **Sequence head/tail/first/last**: Merge `list_first*.llt-eval`, `list_last*.llt-eval`, `seq_head.llt-eval`, `seq_tail.llt-eval` into `sequence_access.llt-eval` (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
+- [ ] Verify `just test` passes after all merges; confirm no error tests were merged (`tests/`)
 
 ---
 
-## VS Code Extension
+## 17th Panel Review Fix-Later Items
 
-### vscode-corpus-grammar: Colorize corpus/literate format in source and markdown preview
+### panel-17-type-system: Type system completeness from 17th panel review
 
-**Depends on:** `literate-flags` — defines the `=== info` section label and the
-corpus-in-markdown format. This sprint wires the grammar support for both `.llt-eval`
-files and tinct code blocks in markdown that contain `===` sections.
+Fixes type system soundness gaps identified during the 17th specialist panel review: variadic function subtyping, Negation consistency, and rest-parameter typing. See `doc/06-type-inference.md §Subtyping` and `doc/07-type-extensions.md §Gradual Typing`.
 
-Two contexts need colorization:
-1. **`.llt-eval` files** (corpus tests) — currently unregistered; get tinct grammar up to
-   the first `===` line, then section-specific coloring for markers and their content.
-2. **Tinct code blocks in markdown** containing `===` sections — the current
-   `tinct.markdown-injection.json` embeds plain `source.llt` for the whole block, missing
-   the section structure introduced by literate-flags.
+**Spec chapters:** `doc/06-type-inference.md §Subtyping`, `doc/07-type-extensions.md §Gradual Typing`
 
-**Grammar design** (`integrations/vscode/syntaxes/tinct.corpus.tmLanguage.json` — new):
+- [x] `is_subtype` reflexivity for any-function with non-Unknown return types — fixed to check ret type equality/subtyping (`src/type_def.rs:498-509`)
+- [x] `is_consistent(Negation(Int), Str)` — added Negation vs concrete case using types_are_disjoint (`src/type_def.rs:808-812`)
+- [x] Never `~` T comment updated — clarified vacuous truth, not AGT gradual consistency (`src/type_def.rs:798-800`)
+- [x] Variadic rest-parameter typed as `Seq(fresh_var)` instead of Unknown (`src/typecheck.rs:2832-2845`)
+- [x] `test_narrowing_fn_predicate` tightened — verifies result field exists and any-function type structure (`src/typecheck.rs:11176-11199`)
+- [x] Added `test_false_branch_fn_predicate_negation` — verifies Negation(Function{variadic:true}) in false branch env (`src/typecheck.rs:12290-12318`)
 
-State machine: tinct-code-mode → `=== section` marker → output-mode → next marker.
+### panel-17-perf-tests: Performance fixes and missing stdlib tests from 17th panel review
 
-Scope names (map to standard theme colors):
-```
-=== out   line: markup.heading.output.corpus.llt        # neutral / heading color
-=== warn  line: keyword.control.warning.corpus.llt      # yellow in most themes
-=== error line: invalid.illegal.corpus.llt              # red
-=== info  line: keyword.control.info.corpus.llt         # blue/green
-output content: string.unquoted.output.corpus.llt       # dimmed, distinct from code
-tinct code portion: embedded source.llt (unchanged)
-```
+Addresses typecheck allocation hot-spots identified in the 17th panel review, adds corpus tests for untested stdlib functions, cleans up dead test files, and fixes the instance-consistency check deferred from chr-prelude. See `doc/06-type-inference.md §Dict Inference` and `doc/11-stdlib.md`.
 
-- [x] Create `integrations/vscode/syntaxes/tinct.corpus.tmLanguage.json` — TextMate
-  grammar with state machine: tinct code (embed `source.llt`) until first `^===` line;
-  `=== (out|warn|error|info)` header with section-specific scope; content after header
-  with `string.unquoted.output.corpus.llt` scope until next `===` or end-of-block
-  (`integrations/vscode/syntaxes/`)
-- [x] Register `.llt-eval` file type in `integrations/vscode/package.json` with the new
-  corpus grammar; associate with `llt-eval` language id (`integrations/vscode/package.json`)
-- [x] Update `integrations/vscode/syntaxes/tinct.markdown-injection.json` — switch the
-  content grammar from plain `source.llt` to `source.llt.corpus` (the new grammar) so
-  that tinct markdown blocks with `===` sections are colored correctly in both the editor
-  and markdown preview (`integrations/vscode/syntaxes/tinct.markdown-injection.json`)
-- [x] Verify colorization in: `.llt-eval` file open, markdown source with `===` blocks,
-  markdown preview pane with `===` blocks (`integrations/vscode/`)
-- [x] Add `vsce package` to `just ext` and confirm the `.vsix` includes the new grammar
-  files (`justfile`, `integrations/vscode/`)
+**Spec chapters:** `doc/06-type-inference.md §Dict Inference`, `doc/11-stdlib.md`
 
-### vscode-markdown-lsp: LSP hover/completion/diagnostics inside ```tinct blocks in markdown
-
-**Depends on:** `literate-flags` — adds `=== info` label and corpus-in-markdown format.
-
-Implementation: **Option B — server-side markdown support** in `tinct lsp`. This is the
-correct approach because `tinct lsp` and `tinct literate` are siblings in the same binary,
-sharing `src/literate.rs`. The LSP server reuses `extract_code_blocks` directly rather
-than duplicating position-mapping logic in TypeScript.
-
-In VS Code, multiple LSP servers for the same file type are additive, not exclusive —
-the built-in markdown support (link completion, preview, header folding) is unaffected.
-`tinct lsp` returns `null` for positions outside tinct blocks (files with no tinct content
-cost a few microseconds). The extension simply adds `.md` to its `DocumentSelector`.
-
-The `===` section markers are handled naturally: the server already parses blocks by
-splitting on `===` (via literate mode), so the code portion is extracted correctly before
-any LSP analysis.
-
-**Shared infrastructure first** — before adding LSP support, factor the literate
-machinery out of `src/main.rs` into `src/literate.rs` as a proper library API. Both
-`tinct literate` (CLI) and `tinct lsp` consume this API; neither reimplements it.
-
-Core types and functions to expose from `src/literate.rs`:
-
-```rust
-pub struct LiterateBlock {
-    pub code: String,               // tinct source (before first === line)
-    pub expectations: Expectations, // === out/warn/info/error sections
-    pub md_start: usize,            // byte offset of ``` fence in markdown
-    pub md_code_start: usize,       // byte offset of first code line
-    pub md_code_end: usize,         // byte offset of closing ``` fence
-}
-
-pub fn extract_blocks(markdown: &str) -> Vec<LiterateBlock>;
-
-// Position mapping — shared by CLI (weave span annotation) and LSP (hover/diagnostics)
-pub fn md_offset_to_block(blocks: &[LiterateBlock], md_offset: usize)
-    -> Option<(usize, usize)>;  // (block_index, block_relative_offset)
-pub fn block_span_to_md(blocks: &[LiterateBlock], block_idx: usize, span: Span) -> Span;
-```
-
-Evaluation stays in `src/main.rs` (CLI path). LSP analysis stays in `src/lsp/`. Only the
-block extraction and position mapping live in `src/literate.rs` — the shared kernel.
-
-- [x] Refactor `src/literate.rs`: define `LiterateBlock`, `extract_blocks`,
-  `md_offset_to_block`, `block_span_to_md`; move block extraction logic out of
-  `run_literate_weave`/`run_literate_eval` in `src/main.rs` (`src/literate.rs`,
-  `src/main.rs`)
-- [x] Add `===` section parsing to `LiterateBlock.expectations` — reuse
-  `TestExpectations` or factor a shared `Expectations` type; both corpus tests and
-  literate mode use the same parser (`src/literate.rs`, `tests/corpus_tests.rs`)
-- [x] Extend `tinct lsp` to accept `textDocument/didOpen`/`didChange` for `.md` files;
-  call `literate::extract_blocks` and cache `Vec<LiterateBlock>` per document
-  (`src/lsp/`, `src/literate.rs`)
-- [x] Handle `textDocument/hover` for `.md`: `md_offset_to_block` → run existing hover
-  analysis on `block.code` at block-relative position → `block_span_to_md` for response
-  span (`src/lsp/analysis.rs`, `src/literate.rs`)
-- [x] Handle `textDocument/publishDiagnostics` for `.md`: collect diagnostics from block
-  typecheck, `block_span_to_md` each span to markdown coordinates (`src/lsp/`)
-- [x] Add `{ language: 'markdown' }` to the extension's `DocumentSelector`; no other
-  extension changes needed (`integrations/vscode/package.json`)
-- [x] Handle completion for `.md` (lower priority); preview hover requires webview bridge
-  (lower priority) (`src/lsp/`, `integrations/vscode/`)
+- [ ] Replace per-SCC full `state.subst.type_map` clone in substitution merge with incremental approach — 50 full-map clone-and-collect ops for a 100-entry dict (`src/typecheck_dict.rs:475-481`)
+- [ ] Replace `infer_dict` entry-clone of full substitution map with incremental tracking — tracked since cycle-31 as major item (`src/typecheck_dict.rs:295`)
+- [ ] Eliminate `try_dispatch_method` double-materialization of `args[0]` — `builtin_eq` materializes at lines 298-299 but `try_dispatch_method` re-materializes internally; guard with `is_forced()` check before second materialize (`src/builtins_math.rs:298-302`)
+- [ ] Replace `fresh_vars: HashMap` per-SCC allocation with `Option<(String, Type)>` for the common singleton case (`src/typecheck_dict.rs:344`)
+- [ ] Add explicit i64-to-time_t bounds check in `icmp-ping` `timeout_ms` cast — currently truncates on 32-bit platforms (`src/builtins_io.rs:4925`)
+- [ ] Fix instance-consistency check to use `unify-under-θ` instead of structural `types_equal` — avoids false negatives for parametric instance types (`src/typecheck.rs:2400`)
+- [ ] Add corpus tests for `sorted` and `sorted-by` (`tests/corpus/eval/stdlib/`)
+- [ ] Add corpus tests for `ok?`, `err?`, `result-map`, `result-or`, `result-ok` (`tests/corpus/eval/stdlib/`)
+- [ ] Add corpus tests for `tag-of`, `variant`, `decimal`, `big-int`, `eval-ast`, `gensym`, `llt-repr`, `proxy`, `collect-kv` (`tests/corpus/eval/stdlib/`)
+- [ ] Delete `tests/corpus/typecheck/variadic_seq_type.llt` — uses invalid LLT syntax, never executed by corpus runner (`tests/corpus/typecheck/`)
+- [ ] Investigate `tests/corpus/eval/typecheck/nested_dict_polymorphism.llt` — 11 documents with no `=== out` sections, wrong extension; convert or delete (`tests/corpus/eval/typecheck/`)
+- [ ] Commit `src/type_unify_tests.rs` to git — untracked but contains 10 passing tests (`src/type_unify_tests.rs`)
+- [ ] Re-run LSP hover audit after stdlib annotation fixes to verify types resolve; add corpus tests for typed datetime/path/regex usage (`stdlib/`, `tests/corpus/`)
 
 ---
 
-## Prelude Annotation Modernization
+## Stdlib Type Annotation Fixes
 
-### prelude-triple-quote: Migrate prelude doc: strings to triple-quoted form
+LSP audit (2026-05-17) revealed public functions with missing or unresolved type annotations. `strings.llt` and `encoding.llt` (mostly) are well-typed; the others have gaps. Private helpers excluded.
 
-`"""..."""` is fully implemented (lexer `Token::TripleQuotedString`, parser desugars to `[unindent "..."]`). The `doc:` strings in `stdlib/prelude.llt` currently use `\n` escape sequences in regular double-quoted strings. Replace with `"""` for readability.
+### stdlib-type-annotations: Fix Unknown types in public stdlib API
 
-- [x] Replace all `doc: "...\n\n..."` multi-line strings in `stdlib/prelude.llt` with `doc: """..."""` triple-quoted form; use natural indentation for Example: and Note: sections (`stdlib/prelude.llt`)
-- [x] Verify `just test-lib` passes; doc string content unchanged (`stdlib/prelude.llt`)
+Annotates public stdlib functions that had missing or Unknown type signatures, based on LSP hover audit. See `doc/11-stdlib.md` and `doc/05-type-annotations.md`.
 
----
+**Spec chapters:** `doc/11-stdlib.md`, `doc/05-type-annotations.md`
 
-## tinct literate Hardening
-
-### literate-flags: --strict, -i/--in-place, --errors-in-doc, fixed clock, and capability flags
-
-Four improvements to `tinct literate` to make `just doc` robust and safe.
-
-**`--strict` mode** — mirror `tinct run --strict`: type errors are fatal (exit 1), rich
-parse error diagnostics via `format_parse_error`. Currently literate mode uses basic error
-formatting and type errors are non-fatal. Needed for `git diff --exit-code` CI gate to
-catch type regressions in doc examples, not just parse failures.
-
-- [x] Add `--strict` flag to `tinct literate` subcommand; wire to the same `strict: bool`
-  path used by `run_eval` (`src/main.rs`)
-- [x] Use `format_parse_error` for parse errors in literate strict mode (`src/main.rs`,
-  `src/parser.rs`)
-- [x] Update `just doc` justfile target to pass `--strict` (`justfile`)
-
-**`-i` / `--in-place`** — write weaved output back to the source file atomically instead
-of stdout. Replaces the fragile `> tmp && mv` shell idiom in `just doc`.
-
-- [x] Add `-i` / `--in-place` flag to `tinct literate weave`; write to `.tmp` then rename
-  (`src/main.rs`)
-- [x] Update `just doc` justfile target to use `tinct literate weave --strict -i doc/*.md`
-  (`justfile`)
-
-**Corpus-test format inside code blocks** — use the same `=== out` / `=== warn` /
-`=== error` / `=== info` section format as corpus test files (`.llt-eval`), embedded
-directly inside the tinct code block. The literate parser splits on `===` markers exactly
-as the corpus test runner does, reusing `TestExpectations` parsing logic. Blocks without
-`===` sections have no expectations and are ignored by `--verify`.
-
-````markdown
-```tinct
-[log "hello"]
-[+ 1 2]
-=== warn
-[T003] undefined variable: x
-=== info
-hello
-=== out
-3
-```
-````
-
-The `===` sections are visible in rendered markdown — readers see code and expected output
-inline, without needing HTML rendering to surface results. The `=== info` section is new
-(not in corpus tests) and captures `log`/stdout output.
-
-**Weave (`--in-place`):** evaluate the code portion (everything before the first `===`
-line); update/insert `=== out`, `=== warn`, `=== info` sections with actual results.
-Replaces the previous `<!-- tinct-result: ... -->` HTML comment approach.
-
-**`--verify`:** compare actual output against the expected `===` sections. Blocks without
-`===` sections pass vacuously (allows incremental annotation). Exits 0 if all annotated
-blocks match, exits 1 with a diff-style report if any mismatch.
-
-- [x] Extend `literate::extract_code_blocks` (or add a new extractor) to split each block
-  on `===` markers, returning `(code: &str, expectations: TestExpectations)` — reuse
-  `TestExpectations` from `tests/corpus_tests.rs` or factor into `src/literate.rs`
-  (`src/literate.rs`, `tests/corpus_tests.rs`)
-- [x] Update `run_literate_weave --in-place` to evaluate code portion and update/insert
-  `=== out`, `=== warn`, `=== info` sections in-place; remove the old
-  `<!-- tinct-result: ... -->` HTML comment output (`src/main.rs`)
-- [x] Add `--verify` flag to `tinct literate weave`; compare actual against expected
-  sections; exit 1 with diff-style details on mismatch; blocks without `===` pass
-  vacuously (`src/main.rs`)
-- [x] Add `=== info` as a new section label alongside `=== out`/`=== warn`/`=== error`
-  in the corpus test parsing infrastructure (`tests/corpus_tests.rs`, `src/literate.rs`)
-- [x] Update `doc/09-documents.md` §Weave Mode with the new block format and `--verify`
-  flag; update §Corpus Test Format to note `=== info` (`doc/09-documents.md`,
-  `doc/12-tooling.md`)
-
-**Error handling in weave** — embedding errors in the doc is the **default** behaviour:
-on block evaluation error, write the error to the block's `=== error` section, continue
-to the next block, and return exit 0. This ensures `just doc` always produces complete
-output even when examples break.
-
-`--fail-on-errors` opts into CI-style behaviour: any evaluation error is fatal (exit 1).
-Orthogonal to `--strict` (typecheck phase) and `--verify` (comparison phase). `just doc-verify`
-uses both `--strict` and `--fail-on-errors`.
-
-- [x] Make embedding errors the default in `run_literate_weave`; on block evaluation error,
-  write error text to `=== error` section and continue; return exit 0 (`src/main.rs`)
-- [x] Add `--fail-on-errors` flag; when set, any evaluation error exits 1 immediately
-  instead of embedding (`src/main.rs`)
-- [x] Update `just doc-verify` in justfile to use `--strict --fail-on-errors --verify`
-  (`justfile`)
-
-**Fixed ClockCap from file mtime** — `%clock` is always available in literate programs,
-set to a fixed ClockCap derived from the source markdown file's mtime. This makes weave
-output deterministic: the same file always produces the same output regardless of when
-`just doc` runs, which is essential for `git diff --exit-code` to be stable.
-
-- [x] In `tinct literate`, read the source file's mtime at startup; inject it as a fixed
-  ClockCap (`--cap-clock-fixed`) rather than the live system clock (`src/main.rs`)
-
-**Capability flags and `--no-pwd`** — `--cap-fs` and `--cap-net` work identically to
-`tinct run`: not specified = no DirCap/NetCap injected. `%libdir` is always available.
-`tinct literate` additionally always runs with `--no-pwd`: no implicit DirCap for the
-current working directory is granted. Code blocks cannot access CWD-relative files;
-all filesystem access must be through explicit `--cap-fs` grants. This prevents a
-markdown file being processed from accidentally reading or writing local files.
-
-- [x] Hard-code `--no-pwd` and `--no-env` into `tinct literate`: never inject an implicit
-  CWD-based DirCap, and `env-var` always returns `Err` (no environment variable access)
-  regardless of flags (`src/main.rs`)
-- [x] Expose `--cap-fs name=path:mode` and `--cap-net name=host:port` on `tinct literate`
-  subcommand; wire to the same cap-grant machinery as `tinct run` (`src/main.rs`)
-- [x] Document in `doc/12-tooling.md` §Literate Mode: all flags, fixed-clock semantics,
-  `--no-pwd` always-on, and `--errors-in-doc` use case (`doc/12-tooling.md`)
-
-### literate-weave-fix: Fix `just doc` in-place mode and error/warning embedding
-
-`tinct literate weave --strict -i` currently spews output to stdout instead of writing back to the source file. The `-i`/`--in-place` flag was wired in the `literate-flags` sprint but the actual in-place write logic has a bug. Additionally, errors and warnings should be embedded in the source doc (written into `=== error`/`=== warn` sections in the code blocks) rather than only appearing on stderr.
-
-- [x] Fix `-i`/`--in-place` mode in `run_literate_weave` to actually write back to the source file — currently writes to stdout; check `write_file_atomic` call path and ensure the weaved output replaces the source file (`src/main.rs`)
-- [x] Ensure type warnings (`=== warn`) and eval errors (`=== error`) are embedded in the source doc code blocks when weaving with `-i` — not just the `=== out` section; the weaver should update all `===` sections with actual results (`src/main.rs`)
-- [x] Verify `just doc` produces clean in-place updates with no stdout output; run `just doc` and confirm `git diff` shows the updated doc files, not that output was printed to terminal (`justfile`, `doc/*.md`)
-
-### docgen-update: Update docgen.llt, generate docs, review and iterate for accuracy
-
-Update `stdlib/docgen.llt` (the tinct-native documentation generator) and run it against all stdlib modules. Review the generated output for accuracy, fix any discrepancies in docgen or in the source doc strings, and iterate until the generated docs accurately reflect the current API.
-
-- [x] Read `stdlib/docgen.llt` and understand the current doc generation approach; identify what's stale or missing given recent changes (unified-bindings, CHR type classes, literate mode, prelude migration) (`stdlib/docgen.llt`)
-- [x] Update `docgen.llt` to handle new constructs: `[fn [let params] body]` syntax, `[class ...]` / `[instance ...]` declarations, triple-quoted `"""..."""` doc strings, `fn@[return: T doc: "..."]` metadata format (`stdlib/docgen.llt`)
-- [x] Run docgen against all stdlib modules and capture output; commit generated docs as `doc/generated/` or update in-place as `doc/*.md` if that's the target format (`stdlib/docgen.llt`, `doc/`)
-- [x] Review generated output for accuracy: do function signatures match actual behavior? Are examples correct? Do doc strings accurately describe current semantics? Fix discrepancies in source doc strings or in docgen logic (`stdlib/prelude.llt`, `stdlib/docgen.llt`)
-- [x] Iterate: re-run docgen after fixes until all generated docs are accurate; add `just docgen` recipe to automate this (`justfile`)
-
----
-
-## Codebase Health (Post-Review)
-
-### health-panel-followup: Panel review fix-later items
-
-Fix-later findings from the full panel codebase review (2026-05-17, commit 37f833a).
-
-- [x] Hoist `NormCtxt` arithmetic resolver map to `LazyLock<HashMap>` static — currently `NormCtxt::new()` allocates 16 HashMap entries + clones on every `unify()` call; replace with a static reference (`src/type_normalize.rs`)
-- [x] Compact `state.levels` after unification — `fresh_type_var()` grows `levels` unboundedly; remove entries where key is already in `subst.type_map` (`src/type_infer.rs`)
-- [x] Change `instance_resolution_depth` guard from `continue` to `TypeError` — silently ignoring a depth-exceeded constraint is a soundness risk; should be a user-visible error like GHC's `-freduction-depth` (`src/type_unify.rs:334-341`)
-- [x] Update `doc/15-ast.md` — add `LetDecl`, `CaseArm`, `Placeholder` to the Expr enum table and Node Semantics section; update fn parameter list examples to use `[fn [let x y] body]` form (`doc/15-ast.md`)
-- [x] Collect `boundary_guards` for named args in CALL-MONO path — currently only positional args are checked; named args crossing Unknown→concrete boundaries generate no guard (`src/typecheck.rs`)
-- [x] Add `[EXXX]` error codes to CHR instance error corpus tests — `instance_disjointness_error.llt-eval`, `instance_consistency_error.llt-eval`, `instance_coverage_error.llt-eval` use loose substrings; pin with error codes when assigned (`tests/corpus/eval/type_errors/`)
-- [x] Add nested/multi-arm `[case ...]` corpus tests — current coverage has only single-arm; test 3+ arms, nested matches, case in dict-value position (`tests/corpus/eval/`)
-- [x] Add `[fn [let ...] body]` eval end-to-end corpus test — parser test exists but no corpus test proves the form evaluates correctly with arg binding (`tests/corpus/eval/`)
-
-### health-typeenv-partial: Return partial TypeEnv from typecheck_document on error
-
-`typecheck_document` currently discards the partially-built TypeEnv when a document has type errors, returning only the errors. This means the hybrid `merge_env_bindings_into` path in `imports.rs` contributes nothing for the prelude (which has type errors from class declarations). Fix allows polymorphic prelude function types to be preserved with proper `∀a b.` schemes instead of being erased to `Unknown`.
-
-- [x] Fix `doc:` handler to accept triple-quoted strings — `"""..."""` desugars to `[unindent "..."]` (Expr::Call), but resolve_fn_metadata only accepted Expr::Str; now accepts both (`src/typecheck_annot.rs`)
-- [x] Seed `builtin-*` names into TypeEnv before prelude typechecking — currently `[include %rust "core"]` etc. don't expose type info during typecheck, so prelude functions fail inference because their dependencies are absent; fix: call `build_type_env()` or equivalent before `typecheck_and_merge_stdlib_module` (`src/imports.rs`)
-- [x] After above: propagate partial TypeEnv from typecheck_document on error — `infer_dict` discards the scheme when returning Err; need to carry partial env through Err paths in `infer_dict` → `typecheck_document` → `typecheck_file_with_types_and_env_and_source_returning_state`; then `merge_env_bindings_into` can use the real schemes instead of erased Unknown types (`src/typecheck_dict.rs`, `src/typecheck.rs`, `src/imports.rs`)
-- [x] After above: delete `erase_type_vars`, `extract_bindings_from_file_with_fallback` dead code from `src/imports.rs`
-- [x] After above: verify polymorphic prelude functions have proper type schemes (map, filter, fold, etc.); write typecheck corpus test
-- [x] Fix validate_and_wrap_record guard context bug — `foldr_basic` and `until_list` fail with [E099] validate_and_wrap_record requires ctx but guard_ctx is None; likely the boundary guard infrastructure losing EvalContext reference inside reduce/until loops (`src/eval.rs`)
-
----
+- [x] **datetime.llt**: `days-between` → `fn@Int [a@Timestamp b@Timestamp]`; `timestamp-in-range?` → `fn@Bool [t@Timestamp start@Timestamp end@Timestamp]` (`stdlib/datetime.llt`)
+- [x] **math.llt**: already annotated — `deg->rad` has `fn@Float [d@Number]`, `rad->deg` has `fn@Float [r@Number]` (`stdlib/math.llt`)
+- [x] **path.llt**: already annotated — all public functions have correct types (`stdlib/path.llt`)
+- [x] **regex.llt**: 6 functions annotated with `pattern@Unknown` params; return types already correct (`stdlib/regex.llt`)
+- [x] **net.llt**: `http-get` → `fn@Dict`; `fetch` → `fn@Dict`; `spki-pin` → `fn@Dict`; URI functions → `u@Url` params (`stdlib/net.llt`)
+- [x] **io.llt**: 5 side-effectful functions `@Any` → `@Null`; `read-file`/`read-lines` → `fn@Dict`; `has-cap?` params annotated; `copy` fully annotated (`stdlib/io.llt`)
+- [x] **encoding.llt**: already annotated — all public functions have correct types (`stdlib/encoding.llt`)
+- [x] **numeric.llt**: fixed typo `fn@Str` → `fn@String` (`stdlib/numeric.llt`)
+- [x] Re-run LSP hover audit and add corpus tests — moved to `panel-17-perf-tests`
 
 ---
