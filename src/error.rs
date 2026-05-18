@@ -911,6 +911,12 @@ pub struct EvalError {
 }
 
 impl EvalError {
+    /// Returns the error message as a string. Convenience alias for `.kind.to_string()`.
+    /// Used by test code; prefer `.kind.to_string()` in production paths.
+    pub fn message(&self) -> String {
+        self.kind.to_string()
+    }
+
     /// Create an error with the Internal escape hatch kind.
     /// Use typed ErrorKind variants instead when possible.
     pub fn internal(message: String, definition_span: Span) -> Self {
@@ -4369,6 +4375,7 @@ mod tests {
                 ErrorKind::UserError { .. } => "E080",
                 ErrorKind::Unimplemented { .. } => "E081",
                 ErrorKind::SchemaViolation { .. } => "E090",
+                ErrorKind::KindMismatch { .. } => "E091",
                 ErrorKind::Internal { .. } => "E099",
             }
         }
