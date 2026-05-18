@@ -280,6 +280,9 @@ pub enum Expr {
         /// Resolver function name from `resolver:` key in structural metadata bracket.
         /// Names the type-stage function that computes determined types from determining types.
         resolver: Option<Box<Spanned<Expr>>>,
+        /// Resolver injectivity flag from `injective:` key in structural metadata bracket.
+        /// When true, the resolver is injective (enables congruence-based unification).
+        resolver_injective: bool,
     },
 
     /// Type class instance declaration with match-arm syntax.

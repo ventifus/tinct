@@ -1285,6 +1285,7 @@ pub(crate) fn eval_recursive(
             methods,
             determines: _,
             resolver: _,
+            resolver_injective: _,
         } => {
             // Register the class in the runtime registry
             // Default method implementations are stored as thunks

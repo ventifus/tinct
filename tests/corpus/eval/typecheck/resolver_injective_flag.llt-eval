@@ -1,0 +1,17 @@
+---
+[class [TestClass a b c]
+  [determines: [[[a b] c]]
+   resolver: TestResolver
+   injective: true]
+  test: [Fn@c [a b]]]
+
+---
+result: "ok"
+---
+EVAL
+---
+Str("ok")
+---
+TYPECHECK
+---
+result: Str

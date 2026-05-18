@@ -1,0 +1,22 @@
+---
+[class [Add a b c]
+  [determines: [[[a b] c]]
+   resolver: AddResult]
+  +: [Fn@c [a b]]]
+
+[instance Add
+  [Int Int]: [+: [fn [x y] [prim:add-int x y]]]]
+
+[instance Add
+  [Float Float]: [+: [fn [x y] [prim:add-float x y]]]]
+
+---
+result: [+ 1 2]
+---
+EVAL
+---
+Int(3)
+---
+TYPECHECK
+---
+result: Int

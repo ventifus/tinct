@@ -427,6 +427,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             methods,
             determines,
             resolver,
+            resolver_injective,
         } => Expr::ClassDecl {
             name,
             params,
@@ -434,6 +435,7 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             methods: adjust_entries(methods, base),
             determines,
             resolver,
+            resolver_injective,
         },
         Expr::InstanceDecl { class_name, arms } => Expr::InstanceDecl {
             class_name,
@@ -2462,9 +2464,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         } else {
-                            // Extract determines and resolver from structural_metadata dict
+                            // Extract determines, resolver, and injective from structural_metadata dict
                             let mut determines = Vec::new();
                             let mut resolver = None;
+                            let mut resolver_injective = false;
 
                             if let Some(metadata_expr) = structural_metadata {
                                 if let Expr::Dict(entries) = &metadata_expr.node {
@@ -2498,6 +2501,12 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                                             (*entry.node.value).clone(),
                                                         ));
                                                     }
+                                                    "injective" => {
+                                                        // Extract boolean value
+                                                        if let Expr::Bool(b) = &entry.node.value.node {
+                                                            resolver_injective = *b;
+                                                        }
+                                                    }
                                                     _ => {} // Ignore other keys for now (kinds, superclasses handled later)
                                                 }
                                             }
@@ -2526,6 +2535,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                     .collect(),
                                 determines,
                                 resolver,
+                                resolver_injective,
                             };
                             let spanned_class = Spanned::new(class_expr, dict_span(span_start));
                             if let Err(push_err) = push_value(
