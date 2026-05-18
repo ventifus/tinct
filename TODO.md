@@ -438,8 +438,8 @@ Fix-later findings from the full panel codebase review (2026-05-17, commit 37f83
 
 - [x] Fix `doc:` handler to accept triple-quoted strings — `"""..."""` desugars to `[unindent "..."]` (Expr::Call), but resolve_fn_metadata only accepted Expr::Str; now accepts both (`src/typecheck_annot.rs`)
 - [x] Seed `builtin-*` names into TypeEnv before prelude typechecking — currently `[include %rust "core"]` etc. don't expose type info during typecheck, so prelude functions fail inference because their dependencies are absent; fix: call `build_type_env()` or equivalent before `typecheck_and_merge_stdlib_module` (`src/imports.rs`)
-- [ ] After above: propagate partial TypeEnv from typecheck_document on error — `infer_dict` discards the scheme when returning Err; need to carry partial env through Err paths in `infer_dict` → `typecheck_document` → `typecheck_file_with_types_and_env_and_source_returning_state`; then `merge_env_bindings_into` can use the real schemes instead of erased Unknown types (`src/typecheck_dict.rs`, `src/typecheck.rs`, `src/imports.rs`)
-- [ ] After above: delete `erase_type_vars`, `extract_bindings_from_file_with_fallback` dead code from `src/imports.rs`
+- [x] After above: propagate partial TypeEnv from typecheck_document on error — `infer_dict` discards the scheme when returning Err; need to carry partial env through Err paths in `infer_dict` → `typecheck_document` → `typecheck_file_with_types_and_env_and_source_returning_state`; then `merge_env_bindings_into` can use the real schemes instead of erased Unknown types (`src/typecheck_dict.rs`, `src/typecheck.rs`, `src/imports.rs`)
+- [x] After above: delete `erase_type_vars`, `extract_bindings_from_file_with_fallback` dead code from `src/imports.rs`
 - [ ] After above: verify polymorphic prelude functions have proper type schemes (map, filter, fold, etc.); write typecheck corpus test
 
 ---
