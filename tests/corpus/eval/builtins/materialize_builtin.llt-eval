@@ -1,0 +1,4 @@
+# materialize: forces its argument to WHNF and returns it
+[materialize [+ 1 2]]
+=== out
+Int(3)

@@ -1,4 +1,0 @@
-# force: forces its argument to WHNF and returns it
-[force [+ 1 2]]
-=== out
-Int(3)

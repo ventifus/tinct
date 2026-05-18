@@ -53,7 +53,7 @@ pub(crate) mod builtins_dict;
 pub(crate) mod builtins_io;
 // Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
 pub(crate) mod builtins_math;
-// Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
+// Type/eval/meta builtins: type-of, deep-materialize, include, error, try, apply, validate.
 pub(crate) mod builtins_meta;
 // Seq primitive builtins: seq, head, tail, collect, seq?.
 pub(crate) mod builtins_seq_prim;
