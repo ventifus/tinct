@@ -50,13 +50,8 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Only materialize args[0] if at least one Showable instance is registered;
     // otherwise we would force a lazy thunk solely to check a registry key.
     // For multi-arg str, only check the first arg for an instance.
-    let has_showable = !args.is_empty()
-        && ctx
-            .state
-            .borrow()
-            .instance_registry
-            .keys()
-            .any(|(cn, _)| cn == "Showable");
+    let has_showable =
+        !args.is_empty() && ctx.state.borrow().registered_classes.contains("Showable");
     if has_showable {
         let val = materialize(&args[0], Some(&call_span), &ctx)?;
         let type_name = val.type_name();

@@ -269,38 +269,15 @@ fn is_superclass_of_impl(
 /// If no instance is found and the type is not in the fixed instance set,
 /// a type error is returned.
 ///
-/// FD improvement recursion depth is tracked in `state.fd_depth` to prevent
-/// infinite loops through the improve_functional_dependency → unify cycle.
+/// Instance resolution recursion depth is tracked in `state.instance_resolution_depth` to
+/// prevent infinite loops through the cycle:
+///   check_constraints_on_var → resolve_instance → unify → check_constraints_on_var
+///
+/// The depth counter accumulates across recursive calls — each entry into resolve_instance
+/// increments, each exit decrements. Because increments and decrements are matched, the counter
+/// naturally returns to 0 after each independent constraint resolution chain completes. This
+/// matches GHC's -freduction-depth semantics (Sulzmann et al. 2007 §3.2).
 fn check_constraints_on_var(
-    var_name: &str,
-    concrete_ty: &Type,
-    subst: &Substitution,
-    state: &mut InferState,
-    span: Span,
-) -> Result<(), TypeError> {
-    // Save and reset the depth counter at the start of each fresh call.
-    // The counter guards against recursive descent through the cycle:
-    //   check_constraints_on_var → resolve_instance → unify → check_constraints_on_var
-    //
-    // Save/restore (rather than a bare reset) is required for correct recursion detection:
-    //
-    //   1. Each fresh invocation starts at depth 0 so sibling constraints in the for loop
-    //      below do not accumulate depth from one another.
-    //   2. When a recursive call enters check_constraints_on_var it saves the outer frame's
-    //      counter, starts fresh at 0, and restores the outer counter on exit.
-    //   3. Within a single call chain the increment/decrement around resolve_instance
-    //      correctly tracks the live recursion depth.
-    //
-    // Without the save (bare reset), a recursive call would clobber the outer frame's
-    // counter back to 0, making recursion undetectable beyond depth 1.
-    let saved_depth = state.instance_resolution_depth;
-    state.instance_resolution_depth = 0;
-    let result = check_constraints_on_var_inner(var_name, concrete_ty, subst, state, span);
-    state.instance_resolution_depth = saved_depth;
-    result
-}
-
-fn check_constraints_on_var_inner(
     var_name: &str,
     concrete_ty: &Type,
     subst: &Substitution,

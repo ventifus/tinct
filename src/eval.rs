@@ -160,6 +160,10 @@ pub struct EvalState {
     /// Runtime instance registry: (class_name, type_string) -> instance_dict
     /// Stores materialized method dictionaries for each instance.
     pub instance_registry: HashMap<(String, String), Rc<Thunk>>,
+    /// O(1) set of class names that have at least one registered instance.
+    /// Updated in sync with `instance_registry`. Used by builtins (e.g. `+`, `str`)
+    /// to avoid a linear scan over registry keys on every arithmetic/string operation.
+    pub registered_classes: HashSet<String>,
     // future: trace_log, eval_stats
 }
 
@@ -255,6 +259,7 @@ impl EvalContext {
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
+                registered_classes: HashSet::new(),
             })),
             thunk_arena: Rc::new(RefCell::new(ThunkArena::new())),
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
@@ -290,6 +295,7 @@ impl EvalContext {
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
+                registered_classes: HashSet::new(),
             })),
             thunk_arena,
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
@@ -333,6 +339,7 @@ impl EvalContext {
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
+                registered_classes: HashSet::new(),
             })),
             thunk_arena: shared_arena,
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
@@ -1359,10 +1366,14 @@ pub(crate) fn eval_recursive(
                 // Register this arm in the runtime registry.
                 // TODO: extract canonical type tag from pattern_expr (chr-prelude sprint)
                 let type_tag = format!("arm_{}", arm_idx);
-                ctx.state
-                    .borrow_mut()
-                    .instance_registry
-                    .insert((class_name.clone(), type_tag), Rc::clone(&arm_dict_thunk));
+                {
+                    let mut state = ctx.state.borrow_mut();
+                    state
+                        .instance_registry
+                        .insert((class_name.clone(), type_tag), Rc::clone(&arm_dict_thunk));
+                    // Keep the O(1) class-name set in sync with instance_registry.
+                    state.registered_classes.insert(class_name.clone());
+                }
 
                 last_arm_thunk = Some(arm_dict_thunk);
             }
