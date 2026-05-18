@@ -527,9 +527,9 @@ impl<'a> Formatter<'a> {
                 params,
                 superclasses,
                 methods,
-                determines: _,
-                resolver: _,
-                resolver_injective: _,
+                determines,
+                resolver,
+                resolver_injective,
             } => {
                 self.output.push('[');
                 self.output.push_str("class");
@@ -540,7 +540,46 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(param);
                 }
                 self.output.push(']');
-                // TODO: emit structural metadata bracket if determines/resolver present
+
+                // Emit structural metadata bracket if determines/resolver/resolver_injective present
+                if !determines.is_empty() || resolver.is_some() || *resolver_injective {
+                    self.output.push_str(" [");
+                    let mut first = true;
+
+                    if !determines.is_empty() {
+                        if !first {
+                            self.output.push(' ');
+                        }
+                        first = false;
+                        self.output.push_str("determines: [");
+                        for (i, fd) in determines.iter().enumerate() {
+                            if i > 0 {
+                                self.output.push(' ');
+                            }
+                            self.format_expr(fd, false);
+                        }
+                        self.output.push(']');
+                    }
+
+                    if let Some(ref resolver_expr) = resolver {
+                        if !first {
+                            self.output.push(' ');
+                        }
+                        first = false;
+                        self.output.push_str("resolver: ");
+                        self.format_expr(resolver_expr, false);
+                    }
+
+                    if *resolver_injective {
+                        if !first {
+                            self.output.push(' ');
+                        }
+                        self.output.push_str("injective: true");
+                    }
+
+                    self.output.push(']');
+                }
+
                 // Emit extends clauses
                 for (super_class, super_param) in superclasses {
                     self.output.push_str(" extends [");

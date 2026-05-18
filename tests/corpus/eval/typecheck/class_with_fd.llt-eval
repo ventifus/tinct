@@ -3,7 +3,7 @@
 [
   # Define a test class with FD: (a, b) determines c
   # The resolver "TestAddResult" would compute c from (a, b) at type-stage
-  TestAdd: [class [TestAdd a b c] [determines: [[[a b] c]] resolver: TestAddResult]
+  TestAdd: [class [let TestAdd a b c] [determines: [[[a b] c]] resolver: TestAddResult]
     test-add: [Fn@c [a b]]]
 
   # Return a simple value to verify the class declaration typechecks
