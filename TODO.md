@@ -4,6 +4,74 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Macro System v2
+
+`macros-v2` accepted 2026-05-17. See `doc/whatif/macros-v2.md`. Unified `macro` form with `[let ...]` patterns, `inject:` for anaphoric binding, `splice` for multi-form output, `syntax-class` for declarative argument validation. Implementation order: macros-v2-ast → macros-v2-expand → macros-v2-inject → macros-v2-stdlib.
+
+### macros-v2-ast: New AST variants and parser changes
+
+See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whatif/macros-v2.md §AST Types`, `doc/02-syntax.md §Macros`.
+
+- [ ] Add `Expr::MacroDecl { name, params, body }` and `Expr::Splice(Vec<Spanned<Expr>>)` to `src/ast.rs`; update all exhaustive match sites; add `panic!`/error arms in eval/typecheck for these (expansion guarantees removal) (`src/ast.rs`, `src/eval.rs`, `src/typecheck.rs`)
+- [ ] Add `Expr::SyntaxClass { name, pattern, message }` to `src/ast.rs`; same treatment as `MacroDecl` (`src/ast.rs`)
+- [ ] Rename `defmacro` → `macro` in lexer keyword denylist; add `syntax-class` with `peek_next_horizontal` colon-ahead guard (so `[syntax-class: foo]` is a dict entry, not a declaration) (`src/lexer.rs`, `src/parser.rs`)
+- [ ] Add `StackFrame::MacroDecl` and `StackFrame::SyntaxClass` to parser (`src/parser.rs`)
+- [ ] Pre-scan pass: walk parsed AST before expansion, collect `MacroDecl`/`SyntaxClass` nodes — including `inject:` default names (extracted as `KeyedEntry` with key `"inject"`); follow only bare string-literal `include` paths; computed-path includes that declare macros are an expansion error (`src/expand.rs`)
+- [ ] Move fn/class/type param-list semantic enforcement from parser StackFrames to type checker: `check_fn_expr`, `check_class_decl`, `check_type_alias` reject non-`Let` params with type error (`src/parser.rs`, `src/typecheck.rs`)
+- [ ] Tests: `macro` keyword parses; `syntax-class` keyword parses; `[syntax-class: foo]` is dict entry not declaration; old `defmacro` produces parse error (`tests/corpus/eval/`)
+
+### macros-v2-expand: Expansion pass, splice, syntax-class validation, inject threading
+
+**Depends on:** `macros-v2-ast`
+
+- [ ] Update expander to use `[let ...]` pattern matching for macro argument binding — replaces manual `nth` indexing (`src/expand.rs`)
+- [ ] Add splice handling: when macro returns `Expr::Splice(forms)`, inject each form; register any `MacroDecl`/`SyntaxClass` in splice output immediately before processing next splice form (enables meta-macros); splice in expression position is expansion error (`src/expand.rs`)
+- [ ] Validate macro arguments annotated with `@VariantName` or `@syntax-class-name` before calling macro body; raise `MacroError` at call-site span on failure (`src/expand.rs`)
+- [ ] Thread `inject:` binding name: when macro with `inject:` is in dict-key position (`key: [macro-call ...]`), pass key name to macro body as the implicit `binding` variable (`VarRef`); default to `inject:` name when in expression position (`src/expand.rs`)
+- [ ] Add `ErrorKind::MacroError { span, message }` to error system; wrap unexpected runtime errors in macro bodies with `macro_expansion` provenance (`src/error.rs`, `src/expand.rs`)
+- [ ] Tests: splice produces multiple dict entries; splice in expression position errors; `inject:` default works; dict-key override works; syntax-class validation errors at call site (`tests/corpus/eval/macros/`)
+
+### macros-v2-inject: inject: and macro-injects reflection
+
+**Depends on:** `macros-v2-expand`
+
+- [ ] Implement `macro-injects` Rust builtin: takes macro name (`Str`), returns `inject:` default name (`Str`) or `Null` (`src/builtins_meta.rs`)
+- [ ] Store `inject:` default name in macro registry alongside form name and syntax-class declarations (`src/expand.rs`)
+- [ ] Tests: `[macro-injects aif]` → `"it"`; `[macro-injects swap]` → `null`; LSP hover for a macro with `inject:` shows the injected name (`tests/corpus/eval/macros/`)
+
+### macros-v2-stdlib: Migrate defmacro, add stdlib/ast.llt and stdlib/syntax.llt
+
+**Depends on:** `macros-v2-expand`
+
+- [ ] Migrate 27 corpus test files in `tests/corpus/eval/macros/` from `defmacro` to `macro` (`tests/corpus/eval/macros/`)
+- [ ] Migrate `tmpl`, `do`, `begin` macros in `stdlib/macros.llt` from `defmacro` to `macro` (`stdlib/macros.llt`)
+- [ ] Update `gensym` API: zero-arg → one-arg `[gensym prefix@Str]` returning `VarRef(name: ":prefix:N")`; migrate all call sites (`stdlib/prelude.llt`, `stdlib/macros.llt`)
+- [ ] Add `stdlib/ast.llt`: `Entry`, `Annotation`, `Expr` nominal types; `flatten-args`, `ident`; ~70 lines (`stdlib/ast.llt`)
+- [ ] Add `stdlib/syntax.llt`: `macro fn`, `macro class`, `macro type` let-softening macros using `flatten-args`; opt-in via `[include %libdir "syntax.llt"]` (`stdlib/syntax.llt`)
+- [ ] Add to `stdlib/prelude.llt`: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or`, `macro-error`, `macro-injects` (`stdlib/prelude.llt`)
+- [ ] Migrate `ast_to_dict` output from string `type:` fields to typed `Expr` variant values; update `stdlib/formatter/compact.llt`, `stdlib/formatter/pretty.llt`, `src/builtins_meta.rs` (`src/builtins_meta.rs`, `stdlib/`)
+- [ ] Tests: `stdlib/ast.llt` loads cleanly; `stdlib/syntax.llt` let-softening works end-to-end; all migrated macros produce same expansion as before (`tests/corpus/eval/macros/`)
+
+---
+
+## Tooling
+
+### tinct-lint: `tinct lint` subcommand and `just lint-stdlib` CI step
+
+`tinct lint file.llt` parses, expands macros, and type-checks a tinct file without evaluating it. Behaves like `tinct run --strict` up to and including type-checking; stops before the eval pass. Exit 0 = clean, exit 1 = errors/warnings. All type warnings are treated as fatal (lint mode is inherently strict). Enables fast feedback on stdlib and project files without execution overhead.
+
+**Spec chapters:** `doc/12-tooling.md §Lint Mode`
+
+- [ ] Add `Subcommand::Lint { file: String }` to CLI; pipeline: parse → desugar → macro-expand → typecheck; stop before eval; all type warnings AND INFO-level diagnostics are surfaced (lint mode shows everything the type checker finds, including Info-tier — explicitly-annotated `@Unknown`, over-broad annotations, deprecation notices); exit 1 on any Warning or Error, exit 0 only when all diagnostics are Info or below; report with `format_type_error`/`format_parse_error` (`src/main.rs`)
+- [ ] Lint respects capability flags: `--cap-fs`, `--cap-net` gate `include` resolution just as `tinct run` does; `--no-fs` blocks all includes; add `--no-fs` as the default for lint (no file execution, so no capability grants needed) (`src/main.rs`)
+- [ ] Add `just lint-stdlib` justfile target: run `tinct lint --no-fs` on every `stdlib/**/*.llt` file; exit 1 immediately if any file has errors; uses release binary for speed (`justfile`)
+- [ ] Wire `just lint-stdlib` into `just test` after `just lint` (Rust linter) and before `just fmt-check` (`justfile`)
+- [ ] Add `just lint-file FILE` justfile target: lint a single file; mirrors `just run-file FILE` pattern (`justfile`)
+- [ ] Document in `doc/12-tooling.md §Lint Mode`: flags, exit codes, what is and is not checked (`doc/12-tooling.md`)
+- [ ] Tests: lint on a clean stdlib file exits 0; lint on a file with a type error exits 1; lint does not execute side-effects (no `emit` output) (`tests/corpus/eval/`)
+
+---
+
 ## CHR Unification
 
 `chr-unification` accepted 2026-05-16 (commits 0886ef1, 7d15c36). See `doc/whatif/chr-unification.md` and `doc/feature/chr-unification.md`. Implementation order: chr-module-split → chr-normalization → chr-class-instance → chr-prelude.
@@ -105,6 +173,21 @@ Replaces `Unknown` signatures with proper polymorphic `TypeScheme`s using `Type:
 - [x] result monad dict corpus test — added `result_monad.llt-eval` (`tests/corpus/eval/stdlib/`)
 - [x] `and-then` argument ordering inconsistency — KNOWN ISSUE, pre-existing design question (`stdlib/prelude.llt`)
 - [x] `newline_breaks_dot_access.llt-eval` — fixed expected output (`tests/corpus/valid/edge_cases/`)
+
+---
+
+## 19th Panel Review Fix-Later Items
+
+### panel-19-followup: Performance and security improvements from 19th review
+
+- [ ] Add unit tests for `compute_sccs()` in typecheck_dict.rs — cover empty, two-node cycle, linear chain, diamond DAG; Tarjan algorithm is complex enough that corpus-only coverage is insufficient for lowlink propagation and root detection paths (`src/typecheck_dict.rs`)
+- [ ] Add unit test for `compact_levels()` — verify unified TypeVar names are removed from levels HashMap after compact_levels() call; silent perf regression risk with no crash signal (`src/type_infer.rs:376-380`)
+- [ ] Add unit test modules for builtins_math.rs and builtins_string.rs — cover MAX_SAFE_INT boundary (9007199254740992), try_dispatch_method fast-path, MAX_SPLIT_PARTS guard (`src/builtins_math.rs`, `src/builtins_string.rs`)
+- [ ] Bump EVAL_LAZINESS_MIN from 37 to 40 and add 3 laziness proof tests (`tests/corpus_tests.rs`)
+- [ ] SCC merge incremental optimization — current full re-merge is O(N×S); add snapshot tracking to only re-process entries whose value changed between SCC iterations (mitigation for O(N²) prelude startup cost) (`src/typecheck_dict.rs:516-542`)
+- [ ] `intern_class_name` Box::leak — replace `Box::leak` fallback for user-defined class names with a thread-local intern table leaking each unique name only once, or change `instance_registry` key from `(&'static str, String)` to `(String, String)` to eliminate Box::leak entirely (`src/eval.rs:1480`)
+- [ ] `values_eq_impl` depth parameter — add explicit `depth: usize` guard to make the implicit MAX_EVAL_DEPTH bound explicit and future-proof (`src/builtins_math.rs:378`)
+- [ ] `instance_registry` lookup String allocation — change key from `(&'static str, String)` to `(&'static str, &'static str)` to eliminate `.to_string()` allocation per dispatch lookup (`src/builtins_math.rs:55`, `src/builtins_string.rs:62`)
 
 ---
 

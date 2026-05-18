@@ -299,8 +299,7 @@ pub(crate) fn infer_dict(
     let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
 
-    // Track which state.subst entries have been merged to enable incremental sync.
-    // Merge state.subst entries into local subst after each SCC iteration.
+    // state.subst entries are fully re-merged into local subst after each SCC iteration.
 
     // Track inner_schemes for nested dict values (DOT-POLY support)
     let mut entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>> = HashMap::new();
@@ -501,18 +500,19 @@ pub(crate) fn infer_dict(
             }
         }
 
-        // Merge state.subst into local subst after each SCC (incremental — only new/changed entries)
+        // Merge state.subst into local subst after each SCC (full re-merge every iteration)
         {
-            // Collect only entries that weren't merged in previous SCC iterations.
-            // Robinson's occurs check ensures each TypeVar is bound at most once, so a
-            // previously-merged key's value in state.subst is immutable — re-merging it
-            // would be a no-op.
-            // Note: Robinson unification's write-once invariant (each TypeVar bound
-            // exactly once) means previously-merged keys should be unchanged in
-            // state.subst. In practice, SCC-based letrec inference may rebind
-            // variables across SCC iterations. The incremental merge handles this
-            // safely by re-merging (the filter below skips already-merged keys,
-            // but the unification step at lines 548+ reconciles any differences).
+            // Every entry in state.subst is re-merged into the local subst on each SCC iteration.
+            // For each entry (k, v) from state.subst:
+            //   - v is first resolved through the local subst (applied_v = subst.apply(v)).
+            //   - If k is already bound in the local subst, the two bindings are unified
+            //     (removing k first to avoid self-unification, then re-inserting the winner).
+            //     On unification failure the original local binding is restored and an error
+            //     is recorded, but inference continues.
+            //   - If k is not yet bound in the local subst, it is inserted directly.
+            // This handles the case where state.subst accumulates new bindings produced by
+            // recursive calls during SCC inference, and ensures the local subst stays
+            // consistent with the global state after each SCC is processed.
             let state_type_entries: Vec<(String, Type)> = {
                 let state_map = state.subst.type_map.borrow();
                 state_map

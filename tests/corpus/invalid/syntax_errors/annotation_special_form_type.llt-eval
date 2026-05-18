@@ -1,0 +1,4 @@
+# Annotation bracket restriction - type special form in annotation
+x@[type Number]
+=== out
+property dict annotation must be a dict expression

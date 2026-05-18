@@ -1,6 +1,6 @@
 # Newline between identifier and dot: dot is always emitted as Dot token.
-# a.b (no gap) = dot access; a\n.b = separate expressions (Call to a, then .b)
-# Test: newline before dot creates separate expressions
+# Dot handler pops the preceding expression regardless of intervening newlines,
+# so a.b and a\n.b are equivalent (both produce DotAccess).
 [x: [a: 1]
 x
 .a]

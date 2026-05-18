@@ -1099,7 +1099,7 @@ The parser determines how to interpret a `[]` by examining its first entry:
 | `a .b` | Dot access (same as `a.b`) | Dot is whitespace-insensitive |
 | `a[0]` | Two separate expressions | Bare identifier `a`, then dict `[0: 0]` — use `[get 0 a]` for key lookup |
 | `a [0]` | Two separate expressions | Bare identifier `a`, then dict `[0: 0]` |
-| `$a.b` | Access chain | No whitespace before `.` |
+| `$a.b` | Access chain | Dot is whitespace-insensitive; same as `$a .b` |
 | `$a [0]` | Two separate expressions | Escaped ref `$a`, then dict `[0: 0]` |
 | `x@Number` | Param with annotation | `@` in param context |
 | `fn@String` | fn with return annotation | `@` after `fn` keyword |
