@@ -1,0 +1,4 @@
+# result-ok: wrap value in Ok variant
+[result-ok 42]
+=== out
+Variant(Ok, Int(42))

@@ -1,0 +1,4 @@
+# result-map: pass Err through unchanged
+[result-map [fn [x] [* x 3]] [Err "error"]]
+=== out
+Variant(Err, String("error"))

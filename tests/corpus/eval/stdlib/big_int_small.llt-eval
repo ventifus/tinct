@@ -1,0 +1,4 @@
+# big-int: convert small int to arbitrary-precision integer
+[big-int 42]
+=== out
+BigInt(42)

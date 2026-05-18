@@ -1,0 +1,4 @@
+# tag-of: extract tag name from Ok variant
+[tag-of [Ok 42]]
+=== out
+String("Ok")

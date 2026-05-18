@@ -1,0 +1,5 @@
+# gensym: generate unique symbol name
+# Note: exact output varies but should start with :gensym:
+[starts-with? [gensym] ":gensym:"]
+=== out
+Bool(true)

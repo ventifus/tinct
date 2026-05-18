@@ -1,0 +1,4 @@
+# llt-repr: convert dict to LLT display representation
+[llt-repr [a: 1 b: 2]]
+=== out
+String("Dict({\"a\": Int(1), \"b\": Int(2)})")

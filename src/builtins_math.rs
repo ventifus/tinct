@@ -295,13 +295,17 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let left = materialize(&args[0], Some(&call_span), &ctx)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx)?;
 
-    // Runtime typeclass dispatch: check for Equatable instance
+    // Runtime typeclass dispatch: check for Equatable instance BEFORE materializing.
+    // try_dispatch_method materializes args[0] internally, so checking first avoids
+    // double-materialization when a typeclass instance exists.
     if let Some(result) = try_dispatch_method("Equatable", "eq", args, named, call_span, &ctx) {
         return result;
     }
+
+    // No typeclass instance — materialize for default equality comparison
+    let left = materialize(&args[0], Some(&call_span), &ctx)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx)?;
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a == b,

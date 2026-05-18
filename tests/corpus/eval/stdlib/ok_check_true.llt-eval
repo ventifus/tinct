@@ -1,0 +1,4 @@
+# ok?: check if Result is Ok - true case
+[ok? [Ok 42]]
+=== out
+Bool(true)

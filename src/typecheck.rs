@@ -1610,10 +1610,61 @@ fn patterns_overlap(
     Ok(overlaps)
 }
 
-/// Structural equality check for two type slices.
-/// Used by the consistency check to compare determined types without unification.
-fn types_equal(types_a: &[Type], types_b: &[Type]) -> bool {
-    types_a.len() == types_b.len() && types_a.iter().zip(types_b.iter()).all(|(a, b)| a == b)
+/// Probe whether two type slices can unify (for consistency checks).
+/// Returns true if all pairs successfully unify. Side-effect-free — restores state after probe.
+fn types_can_unify(
+    types_a: &[Type],
+    types_b: &[Type],
+    state: &mut InferState,
+) -> Result<bool, Vec<TypeError>> {
+    if types_a.len() != types_b.len() {
+        return Ok(false);
+    }
+
+    // Early bailout: if top-level constructors clearly differ, skip expensive unification.
+    for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
+        match (ty_a, ty_b) {
+            // Clearly disjoint constructors
+            (Type::Int, Type::Str)
+            | (Type::Int, Type::Float)
+            | (Type::Int, Type::Bool)
+            | (Type::Str, Type::Float)
+            | (Type::Str, Type::Bool)
+            | (Type::Float, Type::Bool)
+            | (Type::Str, Type::Int)
+            | (Type::Float, Type::Int)
+            | (Type::Bool, Type::Int)
+            | (Type::Bool, Type::Str)
+            | (Type::Bool, Type::Float)
+            | (Type::Float, Type::Str) => return Ok(false),
+            _ => {}
+        }
+    }
+
+    // Save every field that unify() may touch so this probe is side-effect-free.
+    let saved_levels = state.levels.clone();
+    let saved_constraints = state.constraints.clone();
+    let saved_kind_env = state.kind_env.clone();
+    let saved_deferred = state.deferred_equalities.clone();
+    let saved_subst = state.subst.clone();
+    let saved_name_counter = state.name_counter;
+
+    // Use a temporary substitution for the probe.
+    let mut temp_subst = state.subst.clone();
+    let can_unify = types_a
+        .iter()
+        .zip(types_b.iter())
+        .all(|(ty_a, ty_b)| unify(ty_a, ty_b, &mut temp_subst, state, Span::origin()).is_ok());
+
+    // Restore all mutated fields.
+    state.levels = saved_levels;
+    state.constraints = saved_constraints;
+    state.kind_env = saved_kind_env;
+    state.deferred_equalities = saved_deferred;
+    state.subst = saved_subst;
+    state.name_counter = saved_name_counter;
+
+    Ok(can_unify)
 }
 
 /// Extract parameter indices from a functional dependency variable list.
@@ -2459,10 +2510,10 @@ fn infer_expr(
                         }
                     }
 
-                    // Consistency check (Task 7.4): if determining positions are structurally equal,
-                    // determined types must also be structurally equal (Jones 2000 condition).
-                    // Uses types_equal (structural PartialEq) rather than a unify probe to avoid
-                    // O(N²) InferState clones that cause test-suite hangs.
+                    // Consistency check (Task 7.4): if determining positions can unify,
+                    // determined types must also unify (Jones 2000 condition).
+                    // Uses unification probes to detect parametric overlap that structural
+                    // equality misses (e.g., [a b Int] and [Int Int c] both match [Int Int Int]).
                     for i in 0..arm_data.len() {
                         for j in (i + 1)..arm_data.len() {
                             let (types_i, span_i, _) = &arm_data[i];
@@ -2477,8 +2528,8 @@ fn infer_expr(
                                 .map(|&idx| types_j[idx].clone())
                                 .collect();
 
-                            // Only check consistency when determining positions are structurally equal
-                            if types_equal(&determining_i, &determining_j) {
+                            // Check consistency when determining positions can unify (overlap).
+                            if types_can_unify(&determining_i, &determining_j, state)? {
                                 let determined_i: Vec<Type> = determined_indices
                                     .iter()
                                     .map(|&idx| types_i[idx].clone())
@@ -2488,10 +2539,10 @@ fn infer_expr(
                                     .map(|&idx| types_j[idx].clone())
                                     .collect();
 
-                                if !types_equal(&determined_i, &determined_j) {
+                                if !types_can_unify(&determined_i, &determined_j, state)? {
                                     let error = TypeError::new(
                                         format!(
-                                            "consistency violation for class '{}': arm at line {} and arm at line {} both match determining positions but disagree on determined types",
+                                            "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",
                                             class_name,
                                             span_i.start.line,
                                             span_j.start.line

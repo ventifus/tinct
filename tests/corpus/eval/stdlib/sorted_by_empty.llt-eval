@@ -1,0 +1,4 @@
+# sorted-by: empty collection with key function
+[sorted-by [fn [x] x] []]
+=== out
+Dict({})

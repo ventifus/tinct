@@ -4921,6 +4921,19 @@ fn icmp_ping_impl(
     // Set receive timeout via SO_RCVTIMEO
     let timeout_secs = timeout_ms / 1000;
     let timeout_usecs = (timeout_ms % 1000) * 1000;
+
+    // Bounds check for platforms where time_t is 32-bit (prevents silent truncation)
+    if timeout_secs > libc::time_t::MAX as i64 || timeout_secs < libc::time_t::MIN as i64 {
+        return icmp_err_val(
+            format!(
+                "icmp-ping: timeout-ms too large for platform (max {} seconds)",
+                libc::time_t::MAX
+            ),
+            span,
+            ctx,
+        );
+    }
+
     let tv = libc::timeval {
         tv_sec: timeout_secs as libc::time_t,
         tv_usec: timeout_usecs as libc::suseconds_t,
