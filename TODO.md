@@ -77,12 +77,12 @@ Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeh
 
 **Depends on:** `unified-bindings-typecheck`
 
-- [ ] Migrate ~242 fn declarations in `stdlib/prelude.llt` to `[fn [let params] body]` (`stdlib/prelude.llt`)
-- [ ] Migrate class/type/instance declarations in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
-- [ ] Migrate all corpus test files and doc examples (`tests/corpus/`, `doc/`)
-- [ ] Remove old param-list parsing paths (old syntax becomes a parse error) (`src/parser.rs`)
-- [ ] Verify `just test` passes with all migrations applied (`tests/`)
-- [ ] Run `just doc` for the first time and commit the annotated output — populates `=== out`/`=== warn`/`=== info` sections inside each ```tinct block, making the docs self-verifying living documentation; add `just doc-verify` to CI (exits 1 if any annotated block's actual output diverges from its `===` sections) (`justfile`, CI config, `doc/*.md`)
+- [x] Migrate ~242 fn declarations in `stdlib/prelude.llt` to `[fn [let params] body]` (`stdlib/prelude.llt`)
+- [x] Migrate class/type/instance declarations in `stdlib/prelude.llt` (`stdlib/prelude.llt`)
+- [x] Migrate all corpus test files and doc examples (`tests/corpus/`, `doc/`)
+- [x] Remove old param-list parsing paths (old syntax becomes a parse error) (`src/parser.rs`)
+- [x] Verify `just test` passes with all migrations applied (`tests/`)
+- [x] Run `just doc` for the first time and commit the annotated output — populates `=== out`/`=== warn`/`=== info` sections inside each ```tinct block, making the docs self-verifying living documentation; add `just doc-verify` to CI (exits 1 if any annotated block's actual output diverges from its `===` sections) (`justfile`, CI config, `doc/*.md`)
 
 ---
 

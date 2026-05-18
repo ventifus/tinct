@@ -392,11 +392,9 @@ impl<'a> Formatter<'a> {
                 self.output.push('[');
                 self.output.push_str("type");
                 if !params.is_empty() {
-                    self.output.push_str(" [");
-                    for (i, param) in params.iter().enumerate() {
-                        if i > 0 {
-                            self.output.push(' ');
-                        }
+                    self.output.push_str(" [let");
+                    for param in params.iter() {
+                        self.output.push(' ');
                         self.output.push_str(param);
                     }
                     self.output.push(']');
@@ -505,7 +503,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.output.push('[');
                 self.output.push_str("class");
-                self.output.push_str(" [");
+                self.output.push_str(" [let ");
                 self.output.push_str(name);
                 for param in params {
                     self.output.push(' ');
@@ -773,11 +771,9 @@ impl<'a> Formatter<'a> {
             }
             Expr::Fn { params, body, .. } => {
                 let mut w = 1 + 2 + 1; // [fn ]
-                w += 1; // [
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        w += 1;
-                    }
+                w += 1 + 3; // [let
+                for param in params.iter() {
+                    w += 1; // space before each param
                     w += param.node.name.len();
                     if param.node.variadic {
                         w += 3; // ...
@@ -794,11 +790,9 @@ impl<'a> Formatter<'a> {
             Expr::TypeAlias { params, body } => {
                 let mut w = 1 + 4; // [type
                 if !params.is_empty() {
-                    w += 2; // " ["
-                    for (i, param) in params.iter().enumerate() {
-                        if i > 0 {
-                            w += 1; // space
-                        }
+                    w += 2 + 3; // " [let"
+                    for param in params.iter() {
+                        w += 1; // space
                         w += param.len();
                     }
                     w += 1; // ]
@@ -870,7 +864,7 @@ impl<'a> Formatter<'a> {
                 methods,
                 ..
             } => {
-                let mut width = 1 + 5 + 2 + name.len(); // [class [<name>
+                let mut width = 1 + 5 + 2 + 4 + name.len(); // [class [let <name>
                 for param in params {
                     width += 1 + param.len();
                 }
@@ -1207,17 +1201,16 @@ impl<'a> Formatter<'a> {
         }
         self.push_space(Some('['));
 
-        // Params always single-line
+        // Params always single-line; emit [let ...] form
         self.output.push('[');
-        for (i, param) in params.iter().enumerate() {
-            if i > 0 {
-                let first_char = if param.node.variadic {
-                    Some('.')
-                } else {
-                    param.node.name.chars().next()
-                };
-                self.push_space(first_char);
-            }
+        self.output.push_str("let");
+        for param in params.iter() {
+            let first_char = if param.node.variadic {
+                Some('.')
+            } else {
+                param.node.name.chars().next()
+            };
+            self.push_space(first_char);
             if param.node.variadic {
                 self.output.push_str("...");
             }
@@ -1577,10 +1570,10 @@ mod tests {
     fn test_immediate_at_spacing() {
         // ImmediateAt in type-assert context: no space before @ — stays without space
         assert_eq!(format_source("[@Int 42]").unwrap(), "[@Int 42]\n");
-        // Annotation in param context
+        // Annotation in param context — formatter now emits [let ...] form
         assert_eq!(
             format_source("[fn [x@Int] $x]").unwrap(),
-            "[fn [x@Int] $x]\n"
+            "[fn [let x@Int] $x]\n"
         );
     }
 
@@ -1634,9 +1627,10 @@ mod tests {
 
     #[test]
     fn test_fn_params_always_single_line() {
+        // Formatter now emits [let ...] form for fn params
         let input = "[fn [param1 param2 param3 param4 param5] [x: 1]]";
         let formatted = format_source(input).unwrap();
-        assert!(formatted.contains("[param1 param2 param3 param4 param5]"));
+        assert!(formatted.contains("[let param1 param2 param3 param4 param5]"));
     }
 
     #[test]
@@ -1712,9 +1706,10 @@ mod tests {
 
     #[test]
     fn test_fn_definition_single_line() {
+        // Formatter now emits [let ...] form for fn params
         let input = "[fn [x y] [call $add $x $y]]";
         let formatted = format_source(input).unwrap();
-        assert_eq!(formatted, "[fn [x y] [call $add $x $y]]\n");
+        assert_eq!(formatted, "[fn [let x y] [call $add $x $y]]\n");
     }
 
     #[test]
@@ -1751,10 +1746,10 @@ mod tests {
 
     #[test]
     fn test_annotated_key() {
-        // Annotated param in function
+        // Annotated param in function — formatter now emits [let ...] form
         assert_eq!(
             format_source("[fn [x@Int] $x]").unwrap(),
-            "[fn [x@Int] $x]\n"
+            "[fn [let x@Int] $x]\n"
         );
     }
 

@@ -3,3 +3,5 @@
 
 === out
 Dict({0: Int(42)})
+=== warn
+undefined variable: FoldableResult
