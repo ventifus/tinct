@@ -229,3 +229,224 @@ fn test_unify_type_var_occurs_in_type_stage_app() {
         err.message
     );
 }
+
+// ============================================================================
+// fn-narrowing-variadic sprint tests
+// ============================================================================
+
+/// Test that zero-param variadic unifies with concrete 1-param function
+#[test]
+fn test_unify_variadic_zero_with_concrete_arity() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Zero-param variadic: the "any function" type
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    // Concrete 1-param function: Fn(Int) -> Bool
+    let concrete_fn = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Bool),
+        variadic: false,
+    };
+
+    // These should unify (zero-param variadic accepts any function)
+    let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "Zero-param variadic should unify with concrete arity, got error: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// Test that zero-param variadic does NOT unify with 0-param non-variadic
+#[test]
+fn test_unify_variadic_zero_with_zero_non_variadic() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Zero-param variadic: Function{params:[], ret:Unknown, variadic:true}
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    // Zero-param non-variadic: Fn() -> Int (a concrete 0-arity function)
+    let concrete_fn = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Int),
+        variadic: false,
+    };
+
+    // These should NOT unify (different semantics: one accepts args, one doesn't)
+    let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_err(),
+        "Zero-param variadic should NOT unify with 0-param non-variadic (different signatures)"
+    );
+}
+
+/// Test that zero-param variadic unifies with multi-param function
+#[test]
+fn test_unify_variadic_zero_with_multi_param() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Zero-param variadic: the "any function" type
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    // Concrete 3-param function: Fn(Int, Str, Bool) -> Float
+    let concrete_fn = Type::Function {
+        params: vec![(None, Type::Int), (None, Type::Str), (None, Type::Bool)],
+        ret: Box::new(Type::Float),
+        variadic: false,
+    };
+
+    // These should unify
+    let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "Zero-param variadic should unify with multi-param function, got error: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// Test is_subtype: concrete function is subtype of zero-param variadic
+#[test]
+fn test_is_subtype_concrete_to_any_function() {
+    // Concrete function: Fn(Int) -> Bool
+    let concrete_fn = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Bool),
+        variadic: false,
+    };
+
+    // Zero-param variadic: the "any function" type (supertype)
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    // Concrete <: AnyFunction (concrete is more specific)
+    assert!(
+        Type::is_subtype(&concrete_fn, &any_function),
+        "Concrete function should be subtype of any-function"
+    );
+
+    // AnyFunction is NOT a subtype of concrete (it's the other way around)
+    assert!(
+        !Type::is_subtype(&any_function, &concrete_fn),
+        "Any-function should NOT be subtype of concrete function"
+    );
+}
+
+/// Test is_subtype reflexivity: any-function is a subtype of any-function (τ <: τ).
+/// Uses TWO DISTINCT objects (different allocations) to exercise the Function arm directly.
+/// A same-reference test would short-circuit at `a == b => true` before entering the arm.
+#[test]
+fn test_is_subtype_any_function_reflexivity() {
+    let any_fn1 = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+    let any_fn2 = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    assert!(
+        Type::is_subtype(&any_fn1, &any_fn2),
+        "Any-function should be a subtype of any-function (reflexivity — distinct objects)"
+    );
+    assert!(
+        Type::is_subtype(&any_fn2, &any_fn1),
+        "Any-function subtyping should be symmetric (both directions)"
+    );
+}
+
+/// Test that two distinct any-function values unify (zero-param variadic with zero-param variadic).
+/// The unify path falls through to the standard equality check (both have params:[], variadic:true),
+/// so this should succeed.
+#[test]
+fn test_unify_two_any_functions() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    let any_function_1 = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    let any_function_2 = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    let result = unify(
+        &any_function_1,
+        &any_function_2,
+        &mut subst,
+        &mut state,
+        span,
+    );
+
+    assert!(
+        result.is_ok(),
+        "Two any-function types should unify, got error: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// Test symmetric unify: unify(concrete_fn, any_function) should succeed.
+/// The sprint implementation has branches for both orders; this test verifies the
+/// reverse direction (concrete_fn as first arg) is also covered.
+#[test]
+fn test_unify_concrete_fn_with_any_function_symmetric() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Concrete 1-param function: Fn(Int) -> Bool
+    let concrete_fn = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Bool),
+        variadic: false,
+    };
+
+    // Zero-param variadic: the "any function" type
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    // Symmetric direction: concrete as first argument
+    let result = unify(&concrete_fn, &any_function, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "unify(concrete_fn, any_function) should succeed (symmetric direction), got error: {:?}",
+        result.unwrap_err()
+    );
+}

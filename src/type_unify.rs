@@ -1963,6 +1963,25 @@ pub fn unify(
                 variadic: v2,
             },
         ) => {
+            // Special case: zero-param variadic is the "any function" type.
+            // Function{params:[], ret:Unknown, variadic:true} unifies with any function that
+            // has at least one parameter (concrete arity). It does NOT unify with zero-param
+            // non-variadic (different semantics: zero-param variadic accepts any args, zero-param
+            // non-variadic accepts exactly zero args).
+            // This enables precise `fn?` type predicate narrowing (fn-narrowing-variadic sprint).
+            let is_any_function_1 = p1.is_empty() && *v1;
+            let is_any_function_2 = p2.is_empty() && *v2;
+
+            // Apply special case when one side is zero-param variadic and the other has params.
+            if is_any_function_1 && !p2.is_empty() {
+                // Zero-param variadic unifies with any concrete-arity function.
+                return unify(r1, r2, subst, state, span);
+            }
+            if is_any_function_2 && !p1.is_empty() {
+                // Zero-param variadic unifies with any concrete-arity function (symmetric).
+                return unify(r1, r2, subst, state, span);
+            }
+
             if p1.len() != p2.len() {
                 return Err(TypeError::new(
                     format!(

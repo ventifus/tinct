@@ -1138,12 +1138,16 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                     }
                     "fn?" if args.len() == 1 => {
                         if let Expr::VarRef { name: var_name, .. } = &args[0].node {
-                            // fn? narrows to Unknown — Function{variadic:true} would fail
-                            // param-count unification with concrete types; Unknown preserves
-                            // gradual typing semantics
+                            // fn? narrows to Function{params:[], ret:Unknown, variadic:true},
+                            // the "any function" type. Zero-param variadic now unifies with any
+                            // concrete function signature (fn-narrowing-variadic sprint).
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Unknown,
+                                ty: Type::Function {
+                                    params: vec![],
+                                    ret: Box::new(Type::Unknown),
+                                    variadic: true,
+                                },
                             }];
                         }
                     }

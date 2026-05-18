@@ -1,0 +1,27 @@
+# fn? type predicate narrows to Function{params:[], ret:Unknown, variadic:true}
+# (the "any function" type) instead of Unknown, enabling precise type checking
+# on the narrowed result (fn-narrowing-variadic sprint).
+
+# Test 1: fn? on a zero-param non-variadic function — the "any function" type
+# (zero-param variadic) must NOT be confused with a zero-param non-variadic function.
+# result1: [if [fn? x] [x] 0] — x is narrowed to any-function in the true branch.
+# Calling [x] with zero args typechecks cleanly (any-function is variadic, min_args=0).
+# This verifies the unify/is_subtype special case for zero-param variadic vs non-variadic.
+# Test 2: Calling the narrowed function should typecheck cleanly (1-param function).
+# Test 3: fn? narrowing with match-style if chain (2-param function).
+# Test 4: Verify that calling a non-function after fn? guard returns the else branch.
+[
+  x: [fn [] 42]
+  result1: [if [fn? x] [x] 0]
+
+  f: [fn [a] [+ a 1]]
+  result2: [if [fn? f] [f 10] 0]
+
+  val: [fn [x y] [+ x y]]
+  result3: [if [fn? val] [val 5 10] 0]
+
+  notfn: 42
+  result4: [if [fn? notfn] [notfn] notfn]
+]
+=== out
+Dict({"x": Function(), "result1": Int(42), "f": Function(a), "result2": Int(11), "val": Function(x, y), "result3": Int(15), "notfn": Int(42), "result4": Int(42)})

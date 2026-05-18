@@ -2180,5 +2180,4 @@ mod tests {
         let result = format_source("[x: 3.14]").unwrap();
         assert_eq!(result, "[x: 3.14]\n");
     }
-
 }

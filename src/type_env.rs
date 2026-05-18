@@ -2032,7 +2032,10 @@ impl TypeEnv {
                     (None, Type::Int), // port
                 ],
                 // Returns Handle (stream) or DatagramHandle (datagram) depending on transport.
-                ret: Box::new(Type::normalize_union(vec![Type::Handle, Type::DatagramHandle])),
+                ret: Box::new(Type::normalize_union(vec![
+                    Type::Handle,
+                    Type::DatagramHandle,
+                ])),
                 variadic: false,
             },
         );
