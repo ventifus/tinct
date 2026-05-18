@@ -2046,7 +2046,6 @@ pub fn unify(
 /// This preserves the fixed-point invariant — a single failure mid-iteration must not
 /// abort processing of remaining equalities that might still make progress.
 ///
-/// (Unused until chr-prelude sprint implements resolvers that produce TypeStageApp)
 #[allow(dead_code)]
 pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitution, span: Span) {
     let max_iterations = 100;

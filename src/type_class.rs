@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
 
 use crate::ast::Span;
 use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type, TypeScheme};
@@ -123,44 +122,22 @@ pub struct InstanceDecl {
     pub method_types: HashMap<String, Type>,
 }
 
-/// Class environment: global registry of type class declarations
-/// Scoped like TypeEnv (supports shadowing in nested scopes)
+/// Class environment: global registry of type class declarations.
 #[derive(Debug, Clone)]
 pub struct ClassEnv {
     classes: HashMap<String, ClassDecl>,
-    #[allow(dead_code)] // Scaffolding for scoped class environments (future work)
-    parent: Option<Rc<ClassEnv>>,
 }
 
 impl ClassEnv {
     pub fn new() -> Self {
         Self {
             classes: HashMap::new(),
-            parent: None,
         }
     }
 
-    #[allow(dead_code)] // Scaffolding for scoped class environments (future work)
-    pub fn with_parent(parent: &Rc<ClassEnv>) -> Self {
-        Self {
-            classes: HashMap::new(),
-            parent: Some(Rc::clone(parent)),
-        }
-    }
-
-    /// Look up a class declaration by name, checking parent scopes if necessary.
+    /// Look up a class declaration by name.
     pub fn get(&self, name: &str) -> Option<&ClassDecl> {
-        if let Some(class) = self.classes.get(name) {
-            return Some(class);
-        }
-        let mut current = self.parent.as_deref();
-        while let Some(env) = current {
-            if let Some(class) = env.classes.get(name) {
-                return Some(class);
-            }
-            current = env.parent.as_deref();
-        }
-        None
+        self.classes.get(name)
     }
 
     pub fn insert(&mut self, class_decl: ClassDecl) {
@@ -199,46 +176,13 @@ impl Default for ClassEnv {
 #[derive(Debug, Clone)]
 pub struct InstanceEnv {
     instances: HashMap<(String, Vec<String>), InstanceDecl>,
-    #[allow(dead_code)] // Scaffolding for scoped instance environments (future work)
-    parent: Option<Rc<InstanceEnv>>,
 }
 
 impl InstanceEnv {
     pub fn new() -> Self {
         Self {
             instances: HashMap::new(),
-            parent: None,
         }
-    }
-
-    #[allow(dead_code)] // Scaffolding for scoped instance environments (future work)
-    pub fn with_parent(parent: &Rc<InstanceEnv>) -> Self {
-        Self {
-            instances: HashMap::new(),
-            parent: Some(Rc::clone(parent)),
-        }
-    }
-
-    /// Look up an instance by class name and a slice of determining type strings.
-    ///
-    /// For single-parameter classes, pass a one-element slice containing the instance type
-    /// string.  For MPTC classes, pass strings for each determining position in order.
-    ///
-    /// Traverses the parent chain so scoped instances are visible.
-    #[allow(dead_code)] // Instance lookup used during dictionary construction (future work)
-    pub fn get(&self, class_name: &str, det_type_strings: &[String]) -> Option<&InstanceDecl> {
-        let key = (class_name.to_string(), det_type_strings.to_vec());
-        if let Some(inst) = self.instances.get(&key) {
-            return Some(inst);
-        }
-        let mut current = self.parent.as_deref();
-        while let Some(env) = current {
-            if let Some(inst) = env.instances.get(&key) {
-                return Some(inst);
-            }
-            current = env.parent.as_deref();
-        }
-        None
     }
 
     /// Build the lookup key for an instance declaration.
@@ -313,17 +257,7 @@ impl InstanceEnv {
                 .map(type_to_string_key)
                 .collect::<Vec<String>>(),
         );
-        if let Some(inst) = self.instances.get(&key) {
-            return Some(inst);
-        }
-        let mut current = self.parent.as_deref();
-        while let Some(env) = current {
-            if let Some(inst) = env.instances.get(&key) {
-                return Some(inst);
-            }
-            current = env.parent.as_deref();
-        }
-        None
+        self.instances.get(&key)
     }
 
     /// Iterate over all locally registered instance declarations (does not traverse parent chain).
@@ -356,22 +290,10 @@ impl InstanceEnv {
         // Collect all instances for this class
         let mut candidates = Vec::new();
 
-        // Check local instances
         for ((cname, _), inst) in &self.instances {
             if cname == class_name {
                 candidates.push(inst);
             }
-        }
-
-        // Check parent instances
-        let mut current = self.parent.as_deref();
-        while let Some(env) = current {
-            for ((cname, _), inst) in &env.instances {
-                if cname == class_name {
-                    candidates.push(inst);
-                }
-            }
-            current = env.parent.as_deref();
         }
 
         // Try to unify with each candidate
