@@ -334,9 +334,39 @@ File loading, JSON parsing, and text output.
 - `from-json`: Type mismatch if arg is not String; parse error if JSON is invalid
 - `include`: Type mismatch if first arg is not DirCap or String; arity mismatch if DirCap is provided but path is missing; file not found; parse/eval errors from included file; revoked capability error if using a revoked `RevocableDirCap`
 - `emit`: Type mismatch if arg is not String; I/O error if stdout write fails
-- `write`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on file creation or write failure; revoked capability error if using a revoked `RevocableDirCap`
-- `write-atomic`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on temp file creation, write, sync, or rename failure; revoked capability error if using a revoked `RevocableDirCap`
+- `write`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on file creation or write failure; revoked capability error if using a revoked `RevocableDirCap`; capability permission error if `DirCap` does not hold the `Writable` flag
+- `write-atomic`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on temp file creation, write, sync, or rename failure; revoked capability error if using a revoked `RevocableDirCap`; capability permission error if `DirCap` does not hold the `Writable` flag
 - `revoke-cap`: Type mismatch if arg is not RevocableDirCap
+
+### DirCap Permission Flags
+
+`DirCap` values carry a set of orthogonal permission flags. Each I/O builtin checks the relevant flag and raises a capability error if the flag is absent. The type-level representation uses a row-polymorphic capability list: `[DirCap [Readable ...]]` means "a DirCap with at least the `Readable` flag."
+
+| Flag | Required by |
+|------|------------|
+| `Readable` | `open` in read mode (`"r"`), `slurp`, `lines` |
+| `Statable` | `stat`-style metadata queries on known paths |
+| `Listable` | `list-dir`; implies `Statable` |
+| `Writable` | `open` in write mode (`"w"`), `write`, `write-atomic` |
+| `Appendable` | `open` in append mode (`"a"`) |
+| `Deletable` | `delete-file` |
+| `Renameable` | `rename-file` |
+
+**Row-polymorphic signatures** express capability requirements without over-constraining the DirCap:
+
+```
+open      [cap@[DirCap [Readable ...]]   path@String "r"] → Handle@[Readable ...]
+open      [cap@[DirCap [Writable ...]]   path@String "w"] → Handle@[Writable ...]
+open      [cap@[DirCap [Appendable ...]] path@String "a"] → Handle@[Appendable ...]
+list-dir  [cap@[DirCap [Listable ...]]   path@String]     → [Seq Dict]
+write     [cap@[DirCap [Writable ...]]   path@String content@String]
+```
+
+The `...` row tail means "this flag plus possibly others." A `DirCap` holding `[Readable Listable Writable]` satisfies `[DirCap [Writable ...]]` because `Writable` is present; `...` absorbs the remaining flags. This allows callers to pass richer caps to functions that need only a subset of permissions.
+
+**Capability error message format:** `"DirCap: operation requires <Flag> permission"`. These errors are catchable via `try`.
+
+For DirCap creation (via `--cap-fs NAME=PATH[:MODE]`) and in-script attenuation (via `narrow`), see [Tooling](12-tooling.md) §Object Capability Model.
 
 ## Sequences
 
@@ -837,7 +867,22 @@ The following `builtin-*` aliases provide access to the raw Rust implementations
 | `builtin-big-int` | `big-int` | Escape hatch for raw big integer conversion |
 | `builtin-proxy` | `proxy` | Escape hatch for raw proxy construction |
 
-These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `$<` and `$not`) cannot shadow the underlying primitives. If a wrapper has a bug or performance issue, callers can always reach the Rust implementation.
+These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `<` and `not`) cannot shadow the underlying primitives. If a wrapper has a bug or performance issue, callers can always reach the Rust implementation.
+
+### Env-Layer Isolation
+
+The `builtin-*` aliases live in a dedicated env layer that is inserted below the prelude layer in the environment chain. This isolation model means:
+
+- **User code** inherits the prelude layer. If user code defines `+: [fn [a b] ...]`, it shadows the prelude's `+` but cannot shadow `builtin-add` (which is in a deeper layer user code cannot write to).
+- **Prelude code** calls `builtin-add` (not `+`) inside its own implementation of `+`. When prelude defines `+: [fn [a b] [builtin-add a b]]`, the self-reference in the wrapper is to `builtin-add` — not to itself — so there is no circularity, even if user code redefines `+`.
+- **The chain is:** `user env → prelude env → builtin-* alias env → Rust primitive env`. Each layer can shadow names in deeper layers; no layer can reach above itself.
+
+This design has a specific consequence for library authors: internal helpers that need guaranteed access to a primitive should use `builtin-*` names. Names without the `builtin-` prefix can be shadowed by any upstream layer.
+
+**When to use `builtin-*` names:**
+- Inside the stdlib itself, when writing wrappers that must not re-enter the wrapper
+- In testing or debugging, when you need to bypass a prelude wrapper to isolate behavior
+- Never in normal user code — the prelude wrappers provide coercion, better error messages, and typeclass dispatch
 
 ## Summary
 
