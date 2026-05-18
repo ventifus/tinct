@@ -5,6 +5,6 @@
 Convert value to compact JSON string
 
 ```tinct
-fn [val]
+fn@String [val@Any]
 ```
 

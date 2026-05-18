@@ -5,6 +5,6 @@
 Convert value to YAML 1.2 string
 
 ```tinct
-fn [val]
+fn@String [val@Any]
 ```
 

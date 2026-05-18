@@ -5,6 +5,6 @@
 Convert dict to TOML format (flat keys + tables)
 
 ```tinct
-fn [d]
+fn@String [d@Dict]
 ```
 

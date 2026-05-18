@@ -5,6 +5,6 @@
 Convert flat dict to KEY=VALUE format (.env file)
 
 ```tinct
-fn [d]
+fn@Str [d@Dict]
 ```
 

@@ -456,11 +456,11 @@ markdown file being processed from accidentally reading or writing local files.
 
 Update `stdlib/docgen.llt` (the tinct-native documentation generator) and run it against all stdlib modules. Review the generated output for accuracy, fix any discrepancies in docgen or in the source doc strings, and iterate until the generated docs accurately reflect the current API.
 
-- [ ] Read `stdlib/docgen.llt` and understand the current doc generation approach; identify what's stale or missing given recent changes (unified-bindings, CHR type classes, literate mode, prelude migration) (`stdlib/docgen.llt`)
-- [ ] Update `docgen.llt` to handle new constructs: `[fn [let params] body]` syntax, `[class ...]` / `[instance ...]` declarations, triple-quoted `"""..."""` doc strings, `fn@[return: T doc: "..."]` metadata format (`stdlib/docgen.llt`)
-- [ ] Run docgen against all stdlib modules and capture output; commit generated docs as `doc/generated/` or update in-place as `doc/*.md` if that's the target format (`stdlib/docgen.llt`, `doc/`)
-- [ ] Review generated output for accuracy: do function signatures match actual behavior? Are examples correct? Do doc strings accurately describe current semantics? Fix discrepancies in source doc strings or in docgen logic (`stdlib/prelude.llt`, `stdlib/docgen.llt`)
-- [ ] Iterate: re-run docgen after fixes until all generated docs are accurate; add `just docgen` recipe to automate this (`justfile`)
+- [x] Read `stdlib/docgen.llt` and understand the current doc generation approach; identify what's stale or missing given recent changes (unified-bindings, CHR type classes, literate mode, prelude migration) (`stdlib/docgen.llt`)
+- [x] Update `docgen.llt` to handle new constructs: `[fn [let params] body]` syntax, `[class ...]` / `[instance ...]` declarations, triple-quoted `"""..."""` doc strings, `fn@[return: T doc: "..."]` metadata format (`stdlib/docgen.llt`)
+- [x] Run docgen against all stdlib modules and capture output; commit generated docs as `doc/generated/` or update in-place as `doc/*.md` if that's the target format (`stdlib/docgen.llt`, `doc/`)
+- [x] Review generated output for accuracy: do function signatures match actual behavior? Are examples correct? Do doc strings accurately describe current semantics? Fix discrepancies in source doc strings or in docgen logic (`stdlib/prelude.llt`, `stdlib/docgen.llt`)
+- [x] Iterate: re-run docgen after fixes until all generated docs are accurate; add `just docgen` recipe to automate this (`justfile`)
 
 ---
 
