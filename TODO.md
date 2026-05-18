@@ -137,8 +137,8 @@ Agent panel review concluded `Type::Variant(String)` is the wrong approach — `
 ---
 
 - [x] HKT types for map/filter/reduce/each — see `hkt-map-filter-types` sprint below
-- [ ] Fix `json_to_value` null bug: JSON `null` currently maps to `Value::Dict(IndexMap::new())` (empty dict — wrong, loses information). Should map to `Value::Null`. Breaking change for untyped `from-json` callers that rely on null-as-empty-dict, but the current behaviour is a bug. Required prerequisite for schema-directed from-json nullable fields (`src/builtins_io.rs`)
-- [ ] After null fix: add `from-json @Schema` schema-directed typed parse — see `doc/whatif/schema-directed-from-json.md` (proposal complete)
+- [x] json_to_value null behavior — by design: tinct's null IS empty dict (`[]`); JSON null → `[]` is correct per doc/03-data-model.md §Null; from-json @Schema will use the null-as-empty-dict model when implemented (`src/builtins_io.rs` — no change needed)
+- [ ] Add `from-json @Schema` schema-directed typed parse — `doc/whatif/schema-directed-from-json.md` proposal complete; needs /rnd acceptance before implementation
 
 ### hkt-map-filter-types: Precise TypeSchemes for map/filter/reduce/each/each-key/each-kv
 
