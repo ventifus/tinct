@@ -6952,3 +6952,9 @@ Follow-up items from fn-narrowing-variadic panel review.
 - [x] Extend `is_consistent` (src/type_def.rs) to handle `Function{params:[], variadic:true}` ("any function") against concrete Function types (`src/type_def.rs`)
 - [x] Extend `types_are_disjoint` to include Function vs primitive pairs (Int, Str, Bool, Float, Number, Bytes, etc.) and structural types (Record, Seq, Map) (`src/type_def.rs`)
 - [x] Add false-branch fn? narrowing corpus test (`tests/corpus/eval/typecheck/fn_predicate_false_branch_narrows.llt-eval`)
+
+### fn-narrowing-tests: Additional fn? narrowing test coverage
+
+- [x] Add corpus test for fn? narrowing in `cond` guard (`tests/corpus/eval/typecheck/fn_predicate_cond_guard.llt-eval`)
+- [x] Add corpus test for fn? narrowing with user-defined variadic function (`tests/corpus/eval/typecheck/fn_predicate_variadic_user.llt-eval`)
+- [x] Document fn? narrowing limitation: when/unless are prelude functions, narrowing only fires for if/cond/match AST forms (`doc/05-type-annotations.md`)

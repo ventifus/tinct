@@ -735,6 +735,8 @@ type errors:
 
 **Type narrowing.** Recognized type predicates narrow the TypeVar's type in the arm body: `int?` → `Int`, `string?` → `String`, `dict?` → open record. User-defined predicates produce no narrowing — the type in the body is the matched value's pre-guard type.
 
+**Narrowing only applies to AST control flow constructs.** Type narrowing fires only for `if`, `cond`, and `match` expressions (AST special forms with dedicated type checking rules). Prelude functions like `when` and `unless` (defined in `stdlib/prelude.llt` as calls to `builtin-if`) do NOT trigger narrowing because the type checker does not analyze function bodies — narrowing requires AST-level inspection. To narrow a value with a type predicate, use `if` directly: `[if [fn? x] ...]` instead of `[when [fn? x] ...]`.
+
 **`is:` fires at materialization boundary** — when the value is first accessed, not at binding time.
 
 ### 19. Numeric Representation (`repr:`)

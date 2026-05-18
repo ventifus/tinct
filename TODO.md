@@ -156,14 +156,6 @@ in scheme bodies — `instantiate_at_level` detects this and registers the fresh
 - [x] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records; note `∀a b. (Str → a → b) → Map@[Str:a] → Null` for homogeneous maps (`src/type_env.rs`)
 - [x] Corpus test updates: no corpus updates needed (Seq-specific types compatible) (`tests/corpus/`)
 
-### fn-narrowing-tests: Additional fn? narrowing test coverage
-
-Minor test additions from the 16th panel review (test-crafter fix-later findings).
-
-- [ ] Add corpus test for fn? narrowing in `cond` guard: `[cond [[fn? x] [x]] [else 0]]` — verify narrowing fires in cond context (`tests/corpus/eval/typecheck/`)
-- [ ] Add corpus test for fn? narrowing with user-defined variadic function: `[f: [fn [...xs] xs]  result: [if [fn? f] [f 1 2 3] []]]` — verify any-function type unifies with user-defined variadic (`tests/corpus/eval/typecheck/`)
-- [ ] Document fn? narrowing architectural limitation in doc/: `when`/`unless` are prelude functions (not AST special forms), so fn? narrowing does not fire in `when`/`unless` guards; only `if`/`cond`/`match` AST forms support narrowing (`doc/`)
-
 ---
 
 ## Test Infrastructure
