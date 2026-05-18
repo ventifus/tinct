@@ -264,6 +264,15 @@ pub enum ErrorKind {
         /// Note: ambiguous for keys containing `.` — documented limitation.
         violations: Vec<(String, String)>,
     },
+    /// Type kind mismatch — a type constructor's kind does not match the expected kind.
+    /// `expected` is the required kind (e.g., `"Type"` for a ground type, `"Type → Type"`
+    /// for a unary type constructor). `got` is the actual kind produced by the expression.
+    /// Raised when HKT annotations supply a kind-`*` type where `* → *` is required, or
+    /// vice versa.
+    KindMismatch {
+        expected: String,
+        got: String,
+    },
 
     // --- Escape hatch (E095-E099) ---
     Internal {
@@ -473,6 +482,16 @@ impl PartialEq for ErrorKind {
                 Self::SchemaViolation { violations: v1 },
                 Self::SchemaViolation { violations: v2 },
             ) => v1 == v2,
+            (
+                Self::KindMismatch {
+                    expected: e1,
+                    got: g1,
+                },
+                Self::KindMismatch {
+                    expected: e2,
+                    got: g2,
+                },
+            ) => e1 == e2 && g1 == g2,
             (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
 
             // Different variants are never equal
@@ -522,6 +541,7 @@ impl ErrorKind {
             Self::UserError { .. } => "E080",
             Self::Unimplemented { .. } => "E081",
             Self::SchemaViolation { .. } => "E090",
+            Self::KindMismatch { .. } => "E091",
             Self::Internal { .. } => "E099",
         }
     }
@@ -850,6 +870,9 @@ impl fmt::Display for ErrorKind {
                     writeln!(f, "  {}: {}", field, msg)?;
                 }
                 Ok(())
+            }
+            Self::KindMismatch { expected, got } => {
+                write!(f, "kind mismatch: expected {expected}, got {got}")
             }
             Self::Internal { message } => write!(f, "{message}"),
         }
@@ -2318,6 +2341,10 @@ mod tests {
             ErrorKind::SchemaViolation {
                 violations: vec![("field".to_string(), "error".to_string())],
             },
+            ErrorKind::KindMismatch {
+                expected: "Type".to_string(),
+                got: "Type → Type".to_string(),
+            },
             ErrorKind::Internal {
                 message: "test".to_string(),
             },
@@ -2958,7 +2985,19 @@ mod tests {
             "invalid config"
         );
 
-        // Escape hatch (E090-E099)
+        // Schema validation (E090-E094)
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::KindMismatch {
+                    expected: "Type".to_string(),
+                    got: "Type → Type".to_string(),
+                }
+            ),
+            "kind mismatch: expected Type, got Type → Type"
+        );
+
+        // Escape hatch (E095-E099)
         assert_eq!(
             format!(
                 "{}",

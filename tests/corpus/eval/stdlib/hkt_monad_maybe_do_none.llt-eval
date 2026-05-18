@@ -1,0 +1,10 @@
+# Test do-notation with MonadMaybe short-circuits on None
+# [do MonadMaybe [x: None] [Some [+ x 1]]]
+# → [MonadMaybe.bind None [fn [x] [Some [+ x 1]]]]
+# → None (short-circuits because bind on None returns None)
+[do MonadMaybe [x: None] [Some [+ x 1]]]
+
+=== out
+Variant(None, Null)
+=== warn
+undefined variable: MonadMaybe
