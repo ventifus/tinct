@@ -129,6 +129,9 @@ pub struct EvalConfig {
     /// Only macros with `inject:` declarations have entries; macros without
     /// inject: (using only gensym hygiene) are absent from this map.
     pub macro_injects_map: HashMap<String, String>,
+    /// Source file path where evaluation started (if available).
+    /// Propagated to FnAnnotation for LSP hover and diagnostics.
+    pub source_file: Option<String>,
 }
 
 /// Mutable evaluation state (include guard, caching).
@@ -260,6 +263,7 @@ impl EvalContext {
                 no_fs,
                 require_integrity: false,
                 macro_injects_map: HashMap::new(),
+                source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -297,6 +301,7 @@ impl EvalContext {
                 no_fs,
                 require_integrity,
                 macro_injects_map: HashMap::new(),
+                source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -343,6 +348,7 @@ impl EvalContext {
                 no_fs,
                 require_integrity: false,
                 macro_injects_map,
+                source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -381,6 +387,7 @@ impl EvalContext {
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
                 macro_injects_map: self.config.macro_injects_map.clone(),
+                source_file: self.config.source_file.clone(),
             }),
             state: Rc::clone(&self.state),
             thunk_arena: Rc::clone(&self.thunk_arena),
@@ -1051,7 +1058,7 @@ pub(crate) fn eval_recursive(
                 doc.map(|doc_str| {
                     Box::new(crate::value::FnAnnotation {
                         doc: Some(doc_str),
-                        source_file: None, // TODO: wire through from EvalContext
+                        source_file: ctx.config.source_file.clone(),
                     })
                 })
             });
