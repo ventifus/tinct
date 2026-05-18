@@ -2727,10 +2727,28 @@ fn infer_expr(
                     }
                 }
 
+                // Build determining positions from the class's functional dependency list.
+                // For single-parameter classes (no FDs), det_positions is empty.
+                // For MPTC classes, collect the union of all LHS (determining) indices.
+                let det_positions: Vec<usize> = {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut positions = Vec::new();
+                    for (det_indices, _) in &fd_list {
+                        for &idx in det_indices {
+                            if seen.insert(idx) {
+                                positions.push(idx);
+                            }
+                        }
+                    }
+                    positions.sort_unstable();
+                    positions
+                };
+
                 // Build instance declaration
                 let instance_decl = InstanceDecl {
                     class_name: class_name.clone(),
                     instance_type: inst_type,
+                    det_positions,
                     method_types,
                 };
 
