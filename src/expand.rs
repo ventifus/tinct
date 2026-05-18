@@ -249,6 +249,20 @@ impl MacroEnv {
         self.depth -= 1;
         self.in_progress.remove(&call_site);
     }
+
+    /// Extract the macro inject defaults map for runtime access.
+    /// Returns a HashMap of macro_name -> inject_default_name for all macros
+    /// that have an `inject:` declaration. Macros without inject: are omitted.
+    fn get_inject_map(&self) -> HashMap<String, String> {
+        self.macros
+            .iter()
+            .filter_map(|(name, meta)| {
+                meta.inject_default
+                    .as_ref()
+                    .map(|inject| (name.clone(), inject.clone()))
+            })
+            .collect()
+    }
 }
 
 /// Result of macro expansion: the expanded AST plus provenance metadata.
@@ -259,6 +273,10 @@ pub struct ExpandResult {
     /// Each entry is `(macro_name, transformer_thunk)`.
     /// Used to propagate stdlib macros from macros.llt to user code expansion.
     pub discovered_macros: Vec<(String, Rc<Thunk>)>,
+    /// Macro inject defaults: `macro_name -> inject_default_name`.
+    /// Populated from all macros with `inject:` declarations encountered during expansion.
+    /// Used by the `macro-injects` builtin for runtime introspection.
+    pub macro_injects_map: HashMap<String, String>,
 }
 
 /// Register stdlib macros by looking up transformer functions in the stdlib environment.
@@ -371,7 +389,13 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
                 register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
                 // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
                 // remain valid when transformer functions access them during expansion.
-                let ctx = EvalContext::new_sharing_arena(base_dir, Rc::clone(&env), no_fs, arena);
+                let ctx = EvalContext::new_sharing_arena(
+                    base_dir,
+                    Rc::clone(&env),
+                    no_fs,
+                    arena,
+                    HashMap::new(), // No macros registered yet during initial expansion
+                );
                 Ok((env, ctx))
             }
             Err(e) => Err(EvalError::internal(
@@ -409,6 +433,7 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
         })
         .collect::<EvalResult<Vec<_>>>()?;
 
+    let macro_injects_map = env_macro.get_inject_map();
     Ok(ExpandResult {
         file: Spanned::new(
             File {
@@ -418,6 +443,7 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
         ),
         provenance: env_macro.provenance,
         discovered_macros: env_macro.discovered_macros,
+        macro_injects_map,
     })
 }
 

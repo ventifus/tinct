@@ -1,0 +1,6 @@
+[macro no-inject [let x@Expr  y@Expr]
+  [quote [unquote x]]]
+
+[macro-injects "no-inject"]
+=== out
+Dict({})

@@ -124,6 +124,11 @@ pub struct EvalConfig {
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
     pub require_integrity: bool,
+    /// Macro inject defaults: macro_name -> inject_default_name.
+    /// Populated by the expansion pass, used by the `macro-injects` builtin.
+    /// Only macros with `inject:` declarations have entries; macros without
+    /// inject: (using only gensym hygiene) are absent from this map.
+    pub macro_injects_map: HashMap<String, String>,
 }
 
 /// Mutable evaluation state (include guard, caching).
@@ -254,6 +259,7 @@ impl EvalContext {
                 stdlib_env,
                 no_fs,
                 require_integrity: false,
+                macro_injects_map: HashMap::new(),
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -290,6 +296,7 @@ impl EvalContext {
                 stdlib_env,
                 no_fs,
                 require_integrity,
+                macro_injects_map: HashMap::new(),
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -327,6 +334,7 @@ impl EvalContext {
         stdlib_env: Rc<RefCell<Environment>>,
         no_fs: bool,
         shared_arena: Rc<RefCell<ThunkArena>>,
+        macro_injects_map: HashMap<String, String>,
     ) -> Rc<Self> {
         Rc::new(Self {
             config: Rc::new(EvalConfig {
@@ -334,6 +342,7 @@ impl EvalContext {
                 stdlib_env,
                 no_fs,
                 require_integrity: false,
+                macro_injects_map,
             }),
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
@@ -371,6 +380,7 @@ impl EvalContext {
                 stdlib_env: Rc::clone(&self.config.stdlib_env),
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
+                macro_injects_map: self.config.macro_injects_map.clone(),
             }),
             state: Rc::clone(&self.state),
             thunk_arena: Rc::clone(&self.thunk_arena),

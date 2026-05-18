@@ -590,6 +590,7 @@ impl DocumentStore {
             Rc::clone(&stdlib_env),
             false,
             stdlib_arena,
+            std::collections::HashMap::new(), // LSP doesn't track macro injects yet
         );
 
         // Parse the embedded prelude source once for go-to-definition support.
@@ -808,6 +809,7 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
         Rc::clone(&stdlib_env),
         false,
         stdlib_arena,
+        std::collections::HashMap::new(),
     ));
 
     // Create document state with the file's directory as base_dir for include resolution
@@ -840,7 +842,13 @@ mod tests {
         let (env, arena) = test_env_and_arena();
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new_sharing_arena(base_dir, env, false, arena)
+        crate::eval::EvalContext::new_sharing_arena(
+            base_dir,
+            env,
+            false,
+            arena,
+            std::collections::HashMap::new(),
+        )
     }
 
     #[test]

@@ -150,6 +150,7 @@ impl ReplSession {
             Rc::clone(&stdlib_env),
             false,
             stdlib_arena,
+            std::collections::HashMap::new(), // REPL doesn't track macro injects yet
         );
 
         Ok(Self {

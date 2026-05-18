@@ -1337,7 +1337,7 @@ Icmp: Icmp
 # ============================================================================
 
 # Result type: Ok[a] | Err[String]
-Result: [type [Ok a] [Err Stringing]]
+Result: [type [Ok a] [Err String]]
 
 # Re-export Ok constructor: wraps a success value
 Ok: Ok
@@ -2111,6 +2111,19 @@ Example: [gensym] => "__g0"
 
 Note: Used by macros to create hygienic bindings. Each call produces a unique identifier.
 """] [let] [builtin-gensym]]
+
+macro-injects: [fn@[return: String  doc: """
+Get the inject: default name for a macro.
+
+Takes a macro name (String), returns the inject: default name if the macro has an
+inject: declaration, or null if not.
+
+Example:
+  [macro-injects "aif"]   => "it"  (if aif has inject: it)
+  [macro-injects "swap"]  => null  (if swap uses only gensym hygiene)
+
+Note: Reflection primitive for anaphoric macros. Used by documentation tools.
+"""] [let macro-name] [builtin-macro-injects macro-name]]
 
 llt-repr: [fn@[return: String  doc: """
 Convert value to LLT source representation.
