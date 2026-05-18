@@ -621,7 +621,12 @@ impl<'a> Formatter<'a> {
         // Decide single-line vs multi-line
         let has_comments = self.dict_has_comments(entries);
         let entry_count = entries.len();
-        let single_line_width = self.measure_dict_width(entries);
+        // Add indent_level * 2 here to account for the column at which this dict begins.
+        // This is the correct place to apply the line-start offset: format_dict is called
+        // at a known indentation level and needs to know the total occupied column width.
+        // measure_dict_width itself must NOT include this offset, because it is also called
+        // recursively from measure_expr_width where the indent offset would double-count.
+        let single_line_width = self.measure_dict_width(entries) + self.indent_level * 2;
 
         let use_single_line = if has_comments {
             false
@@ -637,10 +642,13 @@ impl<'a> Formatter<'a> {
     }
 
     fn is_simple_dict(&self, entries: &[Spanned<Entry>]) -> bool {
-        // A simple dict is one that would fit on a single line (4 or fewer entries, width <= 80)
+        // A simple dict is one that would fit on a single line (4 or fewer entries, width <= 80).
+        // Add indent_level * 2 here to account for the column at which this dict begins,
+        // mirroring the same adjustment in format_dict. measure_dict_width itself does not
+        // include this offset so that recursive calls from measure_expr_width are not affected.
         let has_comments = self.dict_has_comments(entries);
         let entry_count = entries.len();
-        let single_line_width = self.measure_dict_width(entries);
+        let single_line_width = self.measure_dict_width(entries) + self.indent_level * 2;
         !has_comments && entry_count <= 4 && single_line_width <= 80
     }
 
@@ -678,7 +686,7 @@ impl<'a> Formatter<'a> {
             }
             width += self.measure_expr_width(entry.node.value.as_ref());
         }
-        width + self.indent_level * 2
+        width
     }
 
     fn measure_expr_width(&self, expr: &Spanned<Expr>) -> usize {

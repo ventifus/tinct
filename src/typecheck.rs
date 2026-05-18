@@ -1138,10 +1138,16 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                     }
                     "fn?" if args.len() == 1 => {
                         if let Expr::VarRef { name: var_name, .. } = &args[0].node {
-                            // fn? narrows to Unknown (can't express "any function" precisely yet)
+                            // fn? narrows to "any function": variadic with unknown return.
+                            // Function { params: [], ret: Unknown, variadic: true } is the
+                            // most precise expressible type for an unconstrained callable.
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Unknown,
+                                ty: Type::Function {
+                                    params: vec![],
+                                    ret: Box::new(Type::Unknown),
+                                    variadic: true,
+                                },
                             }];
                         }
                     }
@@ -11161,7 +11167,7 @@ mod tests {
 
     #[test]
     fn test_narrowing_fn_predicate() {
-        // After `[fn? x]`, the true branch knows `x : Unknown` (can't express "any function" precisely yet)
+        // After `[fn? x]`, the true branch knows `x : Fn@Unknown []...` (any function).
         let result = check("[x: [fn [] 1]]\n[result: [if [fn? x] x [fn [] 0]]]");
         assert!(result.is_ok(), "fn? narrowing should work");
     }
