@@ -20,6 +20,7 @@ toml-scalar: [fn@String [val@Any]
     [[int? val] [str val]]
     [[float? val] [str val]]
     [[str? val] [toml-quote val]]
+    [[seq? val] [raise "cannot serialize Seq to TOML — use | collect"]]
     [true "null"]
   ]]]
 

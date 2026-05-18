@@ -8,8 +8,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_with_json_llt, json_to_value,
-    literate, materialize, parse, value_to_json, EvalContext, Span, Thunk, MAX_COLLECT_SIZE,
-    MAX_FILE_SIZE,
+    literate, materialize, parse, value_to_json, EvalContext, Span, Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -1854,7 +1853,7 @@ fn run_eval(
     // - --eval flag was given (explicit deep materialization)
     // - -o flag was given (output formatter stage may contain lazy emit calls inside a Dict
     //   module; deep materialization forces all entries, triggering the emit side effects)
-    let val = if force_eval || output.is_some() {
+    let _val = if force_eval || output.is_some() {
         deep_materialize(&val, &eval_ctx, None).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
@@ -1867,70 +1866,6 @@ fn run_eval(
         val
     };
 
-    // Handle top-level Seq value.
-    //
-    // A Seq at the top level is always drained by forcing each element's tail to
-    // completion. This drives any emit side-effects inside generator elements and
-    // prevents silent no-output scenarios. Element values themselves are discarded.
-    //
-    // After draining, the final expression is still serialized to JSON (unless -o
-    // was used to specify a different formatter).
-    if matches!(val, tinct::Value::Seq { .. }) {
-        {
-            // Drive the Seq to completion so all emit calls inside generator elements fire.
-            // We force each head (which triggers emit side-effects) then advance to the tail.
-            // This mirrors builtin_collect's spine traversal but discards the collected values.
-            let mut current = val;
-            let mut drain_count: usize = 0;
-            loop {
-                match current {
-                    tinct::Value::Seq { head, tail } => {
-                        // Enforce element limit to prevent unbounded CPU/memory consumption
-                        // from infinite sequences (mirrors MAX_COLLECT_SIZE in builtins_seq_prim.rs).
-                        if drain_count >= MAX_COLLECT_SIZE {
-                            return Err(format!(
-                                "top-level Seq drain exceeded maximum collection size ({}). Use $take to limit infinite sequences.",
-                                MAX_COLLECT_SIZE
-                            ));
-                        }
-                        drain_count += 1;
-                        // Force the head to trigger any emit calls inside it.
-                        let head_thunk = eval_ctx.get_thunk(head);
-                        materialize(&head_thunk, None, &eval_ctx).map_err(|e| {
-                            let mut error_str = format!("{e}");
-                            if let Some(snippet) =
-                                tinct::render_span_snippet(&last_source, e.definition_span)
-                            {
-                                error_str.push('\n');
-                                error_str.push_str(&snippet);
-                            }
-                            error_str
-                        })?;
-                        // Advance to the tail.
-                        let tail_thunk = eval_ctx.get_thunk(tail);
-                        current = materialize(&tail_thunk, None, &eval_ctx).map_err(|e| {
-                            let mut error_str = format!("{e}");
-                            if let Some(snippet) =
-                                tinct::render_span_snippet(&last_source, e.definition_span)
-                            {
-                                error_str.push('\n');
-                                error_str.push_str(&snippet);
-                            }
-                            error_str
-                        })?;
-                    }
-                    tinct::Value::Dict(ref d) if d.is_empty() => break,
-                    other => {
-                        return Err(format!(
-                            "top-level Seq has malformed tail: expected Seq or [] but got {}",
-                            other.type_name()
-                        ));
-                    }
-                }
-            }
-        }
-        // After draining the Seq, we still continue to serialize the final value
-    }
 
     // Serialize and output
     // When no -o flag is given, no JSON output is produced (emit-only mode).

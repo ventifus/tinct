@@ -173,6 +173,30 @@ tinct run -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
 
 **Included output formatters:**
 - `raw` — Emit strings unquoted; Seq elements one per line; error for other types
+- `json` — Serialize to compact JSON (Seq requires `| collect` first; error otherwise)
+- `json-pretty` — Serialize to indented JSON (Seq requires `| collect` first; error otherwise)
+- `yaml` — Serialize to YAML (Seq requires `| collect` first; error otherwise)
+- `toml` — Serialize to TOML (Seq requires `| collect` first; error otherwise)
+- `csv` — Convert list-of-dicts to CSV
+- `env` — Convert flat dict to KEY=VALUE format
+- `llt` — Display value in LLT debug format (uses `$llt-repr`)
+- `none` — Force the value (collect Seq if needed) and emit nothing; for side-effect-only pipelines
+
+**Seq handling:** Most serialization formatters (`json`, `yaml`, `toml`) do not support Seq values directly — you must use `| collect` to materialize a Seq to a dict before serialization. The `raw` formatter handles Seq by emitting each element on its own line. The `none` formatter handles Seq by calling `collect` (to drive side-effects) and then discarding the result.
+
+```bash
+# ERROR: cannot serialize Seq to JSON
+tinct run -o json -e '[range 0 3]'
+
+# OK: collect first, then serialize
+tinct run -o json -e '[collect [range 0 3]]'  # → [0,1,2]
+
+# OK: use raw formatter for Seq
+tinct run -o raw -e '[range 0 3]'  # → 0\n1\n2\n
+
+# OK: use none formatter to drive side-effects without output
+tinct run -o none -e '[map [fn [n] [emit n]] [range 0 3]]'  # emits 0 1 2, no final output
+```
 
 ### Symmetric Pipeline Model
 
