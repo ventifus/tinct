@@ -226,10 +226,12 @@ impl InstanceEnv {
 
     /// Insert an instance.
     ///
-    /// Returns an error if an overlapping instance with the SAME class but a DIFFERENT
-    /// instance type string already exists. Exact duplicates (same class + same instance type)
-    /// are treated as idempotent and succeed silently — this handles the case where user code
-    /// re-declares an instance that was already seeded from the prelude cache.
+    /// Inserts idempotently: if an instance with the same (class_name, instance_type_string)
+    /// key already exists, the duplicate is silently discarded (returns `Ok(())`). This handles
+    /// user code re-declaring an instance that was already seeded from the prelude cache.
+    ///
+    /// Note: this function does NOT detect or reject overlapping instances with different
+    /// instance type strings for the same class. Overlap checking is deferred to future work.
     pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
         let key = (inst.class_name.clone(), inst.instance_type.to_string());
         if self.instances.contains_key(&key) {

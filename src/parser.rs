@@ -4987,9 +4987,7 @@ fn push_expr_to_parent(
                         let all_valid_params = bindings.iter().all(|binding| {
                             matches!(
                                 &binding.node,
-                                Expr::VarRef { .. }
-                                    | Expr::Placeholder { .. }
-                                    | Expr::Annotated { .. }
+                                Expr::VarRef { .. } | Expr::Placeholder | Expr::Annotated { .. }
                             )
                         });
 
@@ -5019,7 +5017,7 @@ fn push_expr_to_parent(
                                             binding.span,
                                         ));
                                     }
-                                    Expr::Placeholder { .. } => {
+                                    Expr::Placeholder => {
                                         // Wildcard parameter — skip (valid but unusual)
                                         // Don't add to params, as Param requires a name
                                     }

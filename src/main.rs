@@ -2421,7 +2421,15 @@ fn run_literate_eval(
         }
     }
 
-    let eval_ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
+    // Literate mode always runs with --no-env (hard-coded, per doc comment).
+    // env_allowed: Some(empty) = all env vars denied.
+    let eval_ctx = EvalContext::new_with_options(
+        base_dir,
+        Rc::clone(&env),
+        false,
+        false,
+        Some(std::collections::HashSet::new()),
+    );
 
     let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, None).map_err(|e| {
         let mut msg = format!("{e}");
@@ -2717,7 +2725,15 @@ fn run_literate_weave(
     let base_dir_initial =
         cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let base_eval_ctx = EvalContext::new(base_dir_initial, Rc::clone(&env), false);
+    // Literate mode always runs with --no-env (hard-coded, per doc comment).
+    // env_allowed: Some(empty) = all env vars denied.
+    let base_eval_ctx = EvalContext::new_with_options(
+        base_dir_initial,
+        Rc::clone(&env),
+        false,
+        false,
+        Some(std::collections::HashSet::new()),
+    );
 
     // Evaluate each block in turn, passing the previous result as pipeline input.
     // Collect (block_index -> actual output sections) for weaving/verification.

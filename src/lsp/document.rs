@@ -344,6 +344,14 @@ pub fn resolve_include_uri(base_uri: &Uri, path: &str) -> Option<Uri> {
     // Canonicalize to handle .. and . components
     let canonical_path = resolved_path.canonicalize().ok()?;
 
+    // Security: reject paths that escape the workspace root (base_dir).
+    // A canonicalized path that no longer starts with the document's parent
+    // directory indicates path traversal via `..` or an absolute path.
+    let canonical_base = base_dir.canonicalize().ok()?;
+    if !canonical_path.starts_with(&canonical_base) {
+        return None;
+    }
+
     // Convert back to URI
     file_path_to_uri(&canonical_path)
 }

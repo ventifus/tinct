@@ -342,25 +342,34 @@ pub fn md_offset_to_block(blocks: &[LiterateBlock], md_offset: usize) -> Option<
 
 /// Map a tinct span (from block-local source) to markdown coordinates.
 ///
-/// Returns a `Span` with byte offsets adjusted to markdown coordinates.
+/// Returns a `Span` with byte offsets and line numbers adjusted to markdown coordinates.
+/// `markdown` is the full markdown source (needed to compute the block's start line).
 pub fn block_span_to_md(
     blocks: &[LiterateBlock],
     block_idx: usize,
     span: crate::ast::Span,
+    markdown: &str,
 ) -> crate::ast::Span {
     use crate::ast::{Position, Span};
 
     if let Some(block) = blocks.get(block_idx) {
         let offset_delta = block.md_code_start;
+        // Count newlines in markdown before block.md_code_start to get the block's
+        // 1-indexed start line in the markdown. Block-local line numbers are 1-indexed,
+        // so we add (block_start_line - 1) to get markdown-absolute line numbers.
+        let block_start_line = markdown[..offset_delta]
+            .chars()
+            .filter(|&c| c == '\n')
+            .count();
         Span::new(
             Position {
                 offset: span.start.offset + offset_delta,
-                line: span.start.line, // Line/column not adjusted — LSP recomputes from offset
+                line: span.start.line + block_start_line,
                 column: span.start.column,
             },
             Position {
                 offset: span.end.offset + offset_delta,
-                line: span.end.line,
+                line: span.end.line + block_start_line,
                 column: span.end.column,
             },
         )
@@ -636,9 +645,13 @@ mod tests {
                 column: 3,
             },
         );
-        let md_span = block_span_to_md(&blocks, 0, block_span);
+        let md_span = block_span_to_md(&blocks, 0, block_span, md);
         // Code starts at md offset 9, so offset 1 → 10
         assert_eq!(md_span.start.offset, 10);
         assert_eq!(md_span.end.offset, 11);
+        // "```tinct\n" has 1 newline, so block_start_line = 1.
+        // Block-local line 1 → markdown line 2 (1 + 1).
+        assert_eq!(md_span.start.line, 2);
+        assert_eq!(md_span.end.line, 2);
     }
 }
