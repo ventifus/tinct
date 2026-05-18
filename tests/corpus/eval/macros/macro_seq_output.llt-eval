@@ -11,18 +11,18 @@
 # body and evaluated in the expansion context. This validates that prelude
 # functions producing structural values can be called freely in transformer bodies.
 
-[defmacro add-range-length [macro-args]
+[macro add-range-length [let arg]
   # Compute how many elements are in [range 0 3] to produce a literal int.
   # `collect` forces the seq, `length` counts it. Both are prelude/builtin calls
   # that produce structural intermediate values (Value::Seq, Value::Dict).
-  [n: [length [collect [range 0 3]]]]
-  # Return an AST call: first-arg + n  (i.e., arg0 + 3)
-  [type: "call"
+  # The result is an AST call: first-arg + n  (i.e., arg0 + 3)
+  [n: [length [collect [range 0 3]]]
+   type: "call"
    implied: true
    fn: [type: "var"  name: "+"]
    args: [
-     [get 0 macro-args]
-     [type: "literal"  kind: "int"  value: n]
+     0: arg
+     1: [type: "literal"  kind: "int"  value: n]
    ]
    named-args: []]
 ]

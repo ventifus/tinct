@@ -1,5 +1,5 @@
 # Macro returns invalid AST dict (missing required type field)
-[defmacro bad-macro [macro-args]
+[macro bad-macro [let arg]
   [value: 42]
 ]
 

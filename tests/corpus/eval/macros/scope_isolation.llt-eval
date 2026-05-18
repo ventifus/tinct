@@ -5,18 +5,18 @@
 # [add-one [double 3]] should produce 7 (3*2 + 1), not any
 # confused cross-macro value.
 
-[defmacro double [macro-args]
+[macro double [let arg]
   [type: "call"
    fn: [type: "var"  name: "*"]
-   args: [[get 0 macro-args]  [type: "literal"  kind: "int"  value: 2]]
+   args: [0: arg  1: [type: "literal"  kind: "int"  value: 2]]
    named-args: []
    implied: true]
 ]
 
-[defmacro add-one [macro-args]
+[macro add-one [let arg]
   [type: "call"
    fn: [type: "var"  name: "+"]
-   args: [[get 0 macro-args]  [type: "literal"  kind: "int"  value: 1]]
+   args: [0: arg  1: [type: "literal"  kind: "int"  value: 1]]
    named-args: []
    implied: true]
 ]

@@ -2,8 +2,17 @@
 # LLT Standard Library Macros (stdlib/macros.llt)
 # ============================================================================
 #
-# Compile-time AST transformations via [defmacro ...] declarations.
-# Each macro transformer receives a single `args` parameter (dict with integer
+# Compile-time AST transformations via macro declarations.
+#
+# NOTE: All macros in this file use [defmacro ...] instead of [macro ... [let params]]
+# because they require variadic arguments, and variadic [let ...args] patterns are not
+# yet supported in macro parameter lists (as of macros-v2-stdlib sprint).
+# Once variadic support is added, these should be migrated to:
+#   [macro tmpl [let template@Expr ...exprs@[Seq Expr]] ...]
+#   [macro do [let monad@Expr ...steps@[Seq Expr]] ...]
+#   [macro begin [let ...exprs@[Seq Expr]] ...]
+#
+# Each defmacro transformer receives a single `args` parameter (dict with integer
 # keys, one per positional argument at the call site).
 #
 # Loaded automatically via create_stdlib_env(). All prelude functions

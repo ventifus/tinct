@@ -1,0 +1,50 @@
+# stdlib/syntax.llt — Let-softening macros for fn/class/type
+#
+# This opt-in module provides macros that allow writing function, class,
+# and type definitions with softer syntax — bare parameter lists instead
+# of explicit [let ...] declarations.
+#
+# Usage: [include %libdir "syntax.llt"]
+#
+# With this module loaded:
+#   [fn [x y] body]              works (softened)
+#   [fn [x@Int y@Float] body]    works (softened with annotations)
+#   [fn [let x y] body]          works (explicit, idempotent)
+#
+# Without this module:
+#   [fn [x y] body]              type error: "parameter list must be [let ...]"
+#
+# NOTE: These macros are stubs until the MacroDecl expansion pass is implemented
+# (macros-v2-expand sprint). The [macro ...] declarations will be registered
+# but not yet expanded.
+
+[include %libdir "ast.llt"]
+
+# macro fn — Let-softening for function definitions
+#
+# Wraps non-LetDecl parameter expressions in [let ...] automatically.
+# If the params are already a LetDecl, passes through unchanged.
+#
+# TODO: Implement body once MacroDecl expansion is available
+[macro fn [let params@Expr  body@Expr]
+  [quote [error "fn macro not yet implemented"]]]
+
+# macro class — Let-softening for type class declarations
+#
+# Wraps non-LetDecl type variable lists in [let ...] automatically.
+# Handles both basic form [class tvars methods...] and extended form
+# with structural metadata.
+#
+# TODO: Implement body once MacroDecl expansion and variadic support is available
+# For now, takes only tvars (single param). Full implementation will need variadic params.
+[macro class [let tvars@Expr]
+  [quote [error "class macro not yet implemented"]]]
+
+# macro type — Let-softening for type alias declarations
+#
+# Wraps non-LetDecl parameter lists in [let ...] automatically.
+# Handles both nullary [type body] and parameterized [type params body].
+#
+# TODO: Implement body once MacroDecl expansion is available
+[macro type [let params@Expr  body@Expr]
+  [quote [error "type macro not yet implemented"]]]
