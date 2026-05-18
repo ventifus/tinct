@@ -114,10 +114,9 @@ tree:
 
 # Lint all stdlib .llt files for type errors without executing them
 lint-stdlib: build-release
-    {{container}} run {{run_flags}} {{rust_image}} sh -c \
-        "for f in stdlib/**/*.llt stdlib/*.llt; do \
-           ./target/release/tinct lint --no-fs \"$$f\" || exit 1; \
-         done"
+    for f in stdlib/**/*.llt stdlib/*.llt; do \
+        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --no-fs "$f" || exit 1; \
+    done
 
 # Lint a single tinct source file
 lint-file FILE: build-release

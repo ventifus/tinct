@@ -118,7 +118,10 @@ const _: () = {
 };
 
 /// Error types with source spans and stack traces.
-pub use error::{render_span_snippet, ArityBound, ErrorKind, EvalError, EvalResult, StackFrame};
+pub use error::{
+    render_span_snippet, ArityBound, DiagnosticLevel, ErrorKind, EvalError, EvalResult, StackFrame,
+    TypeDiagnostic,
+};
 
 /// Type error diagnostic formatting.
 pub use types::{format_type_error, TypeError};

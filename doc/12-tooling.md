@@ -266,6 +266,61 @@ The extension lives in `integrations/vscode/`:
 | `src/extension.ts` | Extension entry point — LSP client wiring |
 | `tsconfig.json` | TypeScript build configuration |
 
+## Lint Mode
+
+The `tinct lint` subcommand type-checks files without evaluating them. It runs the parse → desugar → macro-expand → typecheck pipeline and reports all type errors and warnings. Useful for CI pipelines, pre-commit hooks, and editor integrations.
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Clean — no type errors or warnings |
+| 1 | Type errors or warnings detected |
+
+**Basic usage:**
+
+```bash
+# Type-check a single file
+tinct lint config.llt
+
+# Type-check all stdlib files (example usage in CI)
+for f in stdlib/**/*.llt; do tinct lint "$f" || exit 1; done
+```
+
+**Filesystem access:**
+
+By default, `lint` runs with `--no-fs` (filesystem access disabled). This means `$include` calls will fail during type checking. To enable include resolution for type checking, use `--cap-fs` to allow specific directories:
+
+```bash
+# Allow includes from current directory
+tinct lint --no-fs=false --cap-fs pwd=. config.llt
+
+# Allow includes from a specific vendor directory
+tinct lint --cap-fs vendor=./vendor main.llt
+```
+
+**What is checked:**
+
+- Parse errors (syntax errors)
+- Type errors (type mismatches, undefined variables)
+- Type warnings (unused variables, annotation mismatches in advisory mode)
+
+**What is NOT checked:**
+
+- Runtime errors (division by zero, key not found, etc.)
+- Evaluation semantics (no code is executed)
+- Output correctness (no `emit` calls are processed)
+
+**Integration with CI:**
+
+The `just lint-stdlib` recipe uses `tinct lint` to verify all stdlib files are type-clean:
+
+```bash
+just lint-stdlib
+```
+
+This is part of the `just ci` pipeline and runs before tests and other checks.
+
 ## Strict Mode
 
 The `--strict` flag makes type errors fatal instead of advisory. Useful for CI pipelines and pre-commit hooks where type errors should block builds.
