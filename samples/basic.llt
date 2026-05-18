@@ -1,6 +1,6 @@
 # Helper functions (scope chain -- not in output)
 [
-    double: [fn [x] [* x 2]]
+    double: [fn [let x] [* x 2]]
 ]
 
 # Data output
@@ -16,8 +16,8 @@
     ]
 
     active-names: [sorted
-        [map [fn [u] u.name]
-            [filter [fn [u] u.active] users]]]
+        [map [fn [let u] u.name]
+            [filter [fn [let u] u.active] users]]]
 
     port: [@Number 8080]
     doubled-timeout: [double base.timeout]

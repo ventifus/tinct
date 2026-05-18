@@ -7,7 +7,7 @@
 # Usage (from project root via justfile):
 #   just docgen
 
---- caps: [%root: @DirCap  %docdir: @DirCap]
+--- caps: [%docdir: @[DirCap [Writable]]]
 
 [
   strings: [include %libdir "strings.llt"]
@@ -18,32 +18,34 @@
 
 # ── File Discovery ────────────────────────────────────────────────────────────
 
-# Collect all .llt paths under a directory prefix (relative to %root).
-# Returns a positional dict of path strings like "stdlib/strings.llt".
-scan-dir: [fn@Dict [prefix@String acc@Dict]
-  [call [fn@Dict [entries]
+scan-dir: [fn@[return: Dict  doc: """
+  Collect all .llt paths under a directory prefix (relative to %root).
+  Returns a positional dict of path strings like "stdlib/strings.llt".
+"""] [let prefix@String acc@Dict]
+  [call [fn@Dict [let entries]
     [reduce
-      [fn@Dict [files entry]
-        [call [fn@Dict [full@String]
+      [fn@Dict [let files entry]
+        [call [fn@Dict [let full@String]
           [builtin-if [= entry.type "dir"]
             [scan-dir full files]
             [builtin-if [ends-with? entry.name ".llt"]
               [append files full]
               files]]]
-          [str prefix "/" entry.name]]]
+          [if [= prefix ""] [str entry.name] [str prefix "/" entry.name]]]]
       acc
       entries]]
-    [collect [list-dir %root prefix]]]]
+    [collect [list-dir %libdir [if [= prefix ""] "." prefix]]]]]
 
-llt-files: [sorted [scan-dir "stdlib" []]]
+llt-files: [sorted [scan-dir "" []]]
 
 # ── Bracket Matching ──────────────────────────────────────────────────────────
 
-# Find the index of the ']' that closes the '[' at position 0 of s.
-# Call with depth=1, i=1 (already stepped past the opening '[').
-# Returns -1 if unmatched or s is exhausted.
-find-close: [fn@Int [s@String depth@Int i@Int]
-  [call [fn@Int [i1@Int c@String]
+find-close: [fn@[return: Int  doc: """
+  Find the index of the ']' that closes the '[' at position 0 of s.
+  Call with depth=1, i=1 (already stepped past the opening '[').
+  Returns -1 if unmatched or s is exhausted.
+"""] [let s@String depth@Int i@Int]
+  [call [fn@Int [let i1@Int c@String]
     [builtin-if [>= i [length s]]
       -1
       [builtin-if [= c "["]
@@ -56,12 +58,10 @@ find-close: [fn@Int [s@String depth@Int i@Int]
 
 # ── String Helpers ────────────────────────────────────────────────────────────
 
-# Text before the first occurrence of needle (returns full s if absent).
-before-first: [fn@String [needle@String s@String]
+before-first: [fn@[return: String  doc: """Text before the first occurrence of needle (returns full s if absent)."""] [let needle@String s@String]
   [get 0 [split needle s]]]
 
-# Text after the first occurrence of needle (returns "" if absent).
-after-first: [fn@String [needle@String s@String]
+after-first: [fn@[return: String  doc: """Text after the first occurrence of needle (returns "" if absent)."""] [let needle@String s@String]
   [idx: [str-index-of needle s]]
   [if [= idx -1]
     ""
@@ -69,17 +69,18 @@ after-first: [fn@String [needle@String s@String]
 
 # ── Doc Entry Parsing ─────────────────────────────────────────────────────────
 
-# Parse NEW fn@[return: T doc: "..."] pattern (single-line only).
-# Returns [name: String sig: String doc: String] or [].
-# Skips OLD-style name@[doc: "..."] lines even when they also contain fn@[.
-parse-new-fn: [fn@Dict [line@String]
+parse-new-fn: [fn@[return: Dict  doc: """
+  Parse NEW fn@[return: T doc: "..."] pattern (single-line only).
+  Returns [name: String sig: String doc: String] or [].
+  Skips OLD-style name@[doc: "..."] lines even when they also contain fn@[.
+"""] [let line@String]
   [if [not [str-contains? line "fn@["]]
     []
     [if [str-contains? line "@[doc:"]
       []
       [if [not [str-contains? line "doc:"]]
         []
-        [call [fn@Dict []
+        [call [fn@Dict [let]
           [key-part: [trim [before-first ":" line]]]
         [after-fn: [after-first "fn@[" line]]
         [return-type: [extract-return-from-metadata after-fn]]
@@ -90,46 +91,44 @@ parse-new-fn: [fn@Dict [line@String]
                 [str "fn@" return-type " [" params "]"]]]
         [name: key-part doc: doc-text sig: sig-text]]]]]]]
 
-# Extract return type from fn@[return: T ...] metadata.
-extract-return-from-metadata: [fn@String [metadata@String]
+extract-return-from-metadata: [fn@[return: String  doc: """Extract return type from fn@[return: T ...] metadata."""] [let metadata@String]
   [if [starts-with? [trim metadata] "return:"]
-    [call [fn@String []
+    [call [fn@String [let]
       [after-return: [trim [after-first "return:" metadata]]]
       [trim [before-first " " after-return]]]]
     "Unknown"]]
 
-# Extract doc string from fn@[... doc: "..."] metadata (first line only).
-# Multi-line doc strings (triple-quoted) return just the first line.
-extract-doc-from-metadata: [fn@String [metadata@String]
+extract-doc-from-metadata: [fn@[return: String  doc: """
+  Extract doc string from fn@[... doc: "..."] metadata (first line only).
+  Multi-line doc strings (triple-quoted) return just the first line.
+"""] [let metadata@String]
   [if [not [str-contains? metadata "doc:"]]
     ""
-    [call [fn@String []
+    [call [fn@String [let]
       [after-doc: [trim [after-first "doc:" metadata]]]
       [if [not [starts-with? after-doc "\""]]
         ""
-        [call [fn@String []
+        [call [fn@String [let]
           [after-quote: [str-slice after-doc 1 [length after-doc]]]
           [if [starts-with? after-quote "\"\""]
-            [call [fn@String []
+            [call [fn@String [let]
               [content: [trim [str-slice after-quote 2 [length after-quote]]]]
               [if [= content ""]
                 "(multi-line doc string - see source)"
                 [before-first "\"" content]]]]
             [before-first "\"" after-quote]]]]]]]]]
 
-# Extract parameters from [let ...] portion of line.
-extract-params-from-line: [fn@String [line@String]
+extract-params-from-line: [fn@[return: String  doc: """Extract parameters from [let ...] portion of line."""] [let line@String]
   [if [not [str-contains? line "[let "]]
     ""
-    [call [fn@String []
+    [call [fn@String [let]
       [after-let: [after-first "[let " line]]
       [trim [before-first "]" after-let]]]]]]
 
-# Parse OLD name@[doc: "..."] pattern (for backwards compatibility).
-parse-old-doc: [fn@Dict [line@String]
+parse-old-doc: [fn@[return: Dict  doc: """Parse OLD name@[doc: "..."] pattern (for backwards compatibility)."""] [let line@String]
   [if [not [str-contains? line "@[doc:"]]
     []
-    [call [fn@Dict []
+    [call [fn@Dict [let]
       [raw-key: [trim [before-first "@[doc:" line]]]
       [key-name: [if [starts-with? raw-key "["]
                    [str-slice raw-key 1 [length raw-key]]
@@ -139,11 +138,10 @@ parse-old-doc: [fn@Dict [line@String]
       [sig-text: [sig-from-old-line line]]
       [name: key-name doc: doc-text sig: sig-text]]]]]
 
-# Build signature from OLD fn@Type [params] pattern.
-sig-from-old-line: [fn@String [line@String]
+sig-from-old-line: [fn@[return: String  doc: """Build signature from OLD fn@Type [params] pattern."""] [let line@String]
   [if [not [str-contains? line "fn@"]]
     "(value)"
-    [call [fn@String []
+    [call [fn@String [let]
       [after-fn: [after-first "fn@" line]]
       [ret: [extract-return-old after-fn]]
       [params: [extract-params-old after-fn ret]]
@@ -151,46 +149,41 @@ sig-from-old-line: [fn@String [line@String]
         [str "fn@" ret]
         [str "fn@" ret " [" params "]"]]]]]]
 
-extract-return-old: [fn@String [s@String]
-  [call [fn@String [t@String close@Int]
+extract-return-old: [fn@String [let s@String]
+  [call [fn@String [let t@String close@Int]
     [if [starts-with? t "["]
       [if [= close -1] t [str-slice t 0 [+ close 1]]]
       [before-first " [" t]]]
     [trim s]
     [find-close [trim s] 1 1]]]
 
-extract-params-old: [fn@String [s@String ret@String]
+extract-params-old: [fn@String [let s@String ret@String]
   [after-ret: [trim [str-slice s [length ret] [length s]]]]
   [close: [find-close after-ret 1 1]]
   [if [starts-with? after-ret "["]
     [if [= close -1] "" [str-slice after-ret 1 close]]
     ""]]
 
-# Try both NEW and OLD patterns on each line.
-parse-doc-line: [fn@Dict [line@String]
+parse-doc-line: [fn@[return: Dict  doc: """Try both NEW and OLD patterns on each line."""] [let line@String]
   [new: [parse-new-fn line]]
   [if [not [empty? new]]
     new
     [parse-old-doc line]]]
 
-# Extract all annotated bindings from file text (line-by-line).
-extract-docs: [fn@Dict [text@String]
+extract-docs: [fn@[return: Dict  doc: """Extract all annotated bindings from file text (line-by-line)."""] [let text@String]
   [collect [filter
-    [fn@Bool [e@Dict] [has? e "name"]]
+    [fn@Bool [let e@Dict] [has? e "name"]]
     [map parse-doc-line [split "\n" text]]]]]
 
 # ── Markdown Rendering ────────────────────────────────────────────────────────
 
-# Strip the "stdlib/" prefix and ".llt" suffix to get the module name.
-mod-name: [fn@String [full-path@String]
-  [before-first ".llt" [after-first "stdlib/" full-path]]]
+mod-name: [fn@[return: String  doc: """Strip the ".llt" suffix to get the module name."""] [let full-path@String]
+  [before-first ".llt" full-path]]
 
-# Convert a module name to a flat filename-safe string (replace "/" with "-").
-mod-filename: [fn@String [name@String]
+mod-filename: [fn@[return: String  doc: """Convert a module name to a flat filename-safe string (replace "/" with "-")."""] [let name@String]
   [join "-" [split "/" name]]]
 
-# Render one doc entry as a Markdown subsection.
-render-entry: [fn@String [e@Dict]
+render-entry: [fn@[return: String  doc: """Render one doc entry as a Markdown subsection."""] [let e@Dict]
   [str
     "\n### `" e.name "`\n\n"
     e.doc "\n\n"
@@ -200,15 +193,15 @@ render-entry: [fn@String [e@Dict]
 
 # ── Per-Module File Writing ───────────────────────────────────────────────────
 
-# Write content to %docdir/<filename>.md and return name.
-write-module-file: [fn@String [name@String content@String]
+write-module-file: [fn@[return: String  doc: """Write content to %docdir/<filename>.md and return name."""] [let name@String content@String]
   [w: [write %docdir [str [mod-filename name] ".md"] content]]
   [if [= w w] name name]]
 
-# Write documentation for one stdlib file to %docdir and return the module name,
-# or "" if the file has no annotated bindings.
-write-module: [fn@String [full-path@String]
-  [text: [str [slurp [open %root full-path "r"]]]]
+write-module: [fn@[return: String  doc: """
+  Write documentation for one stdlib file to %docdir and return the module name,
+  or "" if the file has no annotated bindings.
+"""] [let full-path@String]
+  [text: [str [slurp [open %libdir full-path "r"]]]]
   [docs: [extract-docs text]]
   [name: [mod-name full-path]]
   [if [empty? docs]
@@ -226,6 +219,6 @@ write-module: [fn@String [full-path@String]
   "## Modules\n\n"
   [join ""
     [map
-      [fn [name] [if [= name ""] "" [str "- [" name "](lib/" [mod-filename name] ".md)\n"]]]
+      [fn [let name] [if [= name ""] "" [str "- [" name "](lib/" [mod-filename name] ".md)\n"]]]
       [map write-module llt-files]]]
   "\n"]]

@@ -479,7 +479,11 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
                 .map(|f| adjust_spanned_expr(f, base))
                 .collect(),
         ),
-        Expr::SyntaxClass { pattern, name, message } => Expr::SyntaxClass {
+        Expr::SyntaxClass {
+            pattern,
+            name,
+            message,
+        } => Expr::SyntaxClass {
             name,
             pattern: Box::new(adjust_spanned_expr(*pattern, base)),
             message,
@@ -789,219 +793,6 @@ fn parse_annotation(
     }
 }
 
-/// Parse a function parameter list: `[param1 param2@Type ...rest]`
-/// Expects the current token to be OpenBracket. Advances index past CloseBracket.
-/// Returns (Vec<Param>, next_index) on success.
-///
-/// If `recovered_errors` is provided, certain errors will be recovered from by collecting
-/// valid parameters and recording errors instead of failing.
-fn parse_param_list(
-    tokens: &[Spanned<Token>],
-    i: &mut usize,
-    leading_comments: &mut BTreeMap<usize, Vec<String>>,
-    blank_before: &mut BTreeMap<usize, bool>,
-    input: &str,
-    mut recovered_errors: Option<&mut Vec<ParseError>>,
-) -> Result<Vec<Spanned<Param>>, ParseError> {
-    let _param_list_start = *i;
-
-    // Consume OpenBracket
-    if !matches!(&tokens[*i].node, Token::OpenBracket) {
-        return Err(ParseError {
-            message: "expected '[' to start param list".to_string(),
-            span: Some(tokens[*i].span),
-        });
-    }
-    *i += 1;
-
-    // Skip whitespace after OpenBracket
-    *i += skip_whitespace_tokens(tokens, *i, leading_comments, blank_before);
-
-    // Check if this is a [let ...] param list
-    if *i < tokens.len() && matches!(&tokens[*i].node, Token::Let) {
-        // Consume the 'let' keyword
-        *i += 1;
-    }
-
-    let mut params = Vec::new();
-    let mut saw_variadic = false;
-
-    loop {
-        *i += skip_whitespace_tokens(tokens, *i, leading_comments, blank_before);
-
-        if *i >= tokens.len() {
-            return Err(ParseError {
-                message: "unexpected end of input in param list".to_string(),
-                span: None,
-            });
-        }
-
-        match &tokens[*i].node {
-            Token::CloseBracket => {
-                *i += 1; // Consume CloseBracket
-                break;
-            }
-            Token::Ellipsis => {
-                // Variadic param: ...name
-                if saw_variadic {
-                    let err = ParseError {
-                        message: "multiple variadic parameters".to_string(),
-                        span: Some(tokens[*i].span),
-                    };
-                    if let Some(errors) = recovered_errors.as_deref_mut() {
-                        errors.push(err);
-                        *i += 1; // Skip the invalid ellipsis
-                        continue;
-                    }
-                    return Err(err);
-                }
-                saw_variadic = true;
-                let ellipsis_span = tokens[*i].span;
-                *i += 1;
-
-                *i += skip_whitespace_tokens(tokens, *i, leading_comments, blank_before);
-
-                if *i >= tokens.len() {
-                    let err = ParseError {
-                        message: "expected parameter name after '...'".to_string(),
-                        span: Some(ellipsis_span),
-                    };
-                    if let Some(errors) = recovered_errors.as_deref_mut() {
-                        errors.push(err);
-                        break; // End of input, exit loop
-                    }
-                    return Err(err);
-                }
-
-                match &tokens[*i].node {
-                    Token::Identifier(name) => {
-                        let param_span = Span {
-                            start: ellipsis_span.start,
-                            end: tokens[*i].span.end,
-                        };
-                        params.push(Spanned::new(
-                            Param {
-                                name: name.clone(),
-                                annotation: None,
-                                variadic: true,
-                            },
-                            param_span,
-                        ));
-                        *i += 1;
-
-                        // Check for illegal annotation on variadic param
-                        if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
-                            let err = ParseError {
-                                message: "annotations on variadic parameters are not allowed"
-                                    .to_string(),
-                                span: Some(tokens[*i].span),
-                            };
-                            if let Some(errors) = recovered_errors.as_deref_mut() {
-                                errors.push(err);
-                                *i += 1; // Skip the annotation token
-                                continue;
-                            }
-                            return Err(err);
-                        }
-                    }
-                    _ => {
-                        let err = ParseError {
-                            message: "expected parameter name after '...'".to_string(),
-                            span: Some(tokens[*i].span),
-                        };
-                        if let Some(errors) = recovered_errors.as_deref_mut() {
-                            errors.push(err);
-                            *i += 1; // Skip the invalid token
-                            continue;
-                        }
-                        return Err(err);
-                    }
-                }
-            }
-            Token::Identifier(name) => {
-                if saw_variadic {
-                    let err = ParseError {
-                        message: "parameter after variadic parameter".to_string(),
-                        span: Some(tokens[*i].span),
-                    };
-                    if let Some(errors) = recovered_errors.as_deref_mut() {
-                        errors.push(err);
-                        *i += 1; // Skip the invalid param
-                        continue;
-                    }
-                    return Err(err);
-                }
-
-                let param_start_span = tokens[*i].span;
-                let param_name = name.clone();
-                *i += 1;
-
-                // Check for annotation: param@Type or param@[type: ...]
-                let annotation =
-                    if *i < tokens.len() && matches!(&tokens[*i].node, Token::ImmediateAt) {
-                        match parse_annotation(
-                            tokens,
-                            *i,
-                            leading_comments,
-                            blank_before,
-                            input,
-                            recovered_errors.as_deref_mut(),
-                        ) {
-                            Ok((ann, next_i)) => {
-                                *i = next_i;
-                                Some(ann)
-                            }
-                            Err(e) => {
-                                // Invariant: parse_annotation with Some(errors) should always return Ok
-                                // with a placeholder. Err here means we're NOT in recovery mode.
-                                if recovered_errors.is_none() {
-                                    return Err(e);
-                                }
-                                // If we reach here, parse_annotation failed despite being in recovery mode.
-                                // This shouldn't happen (indicates a programming error), but handle gracefully.
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-
-                let param_span = if let Some(ref ann) = annotation {
-                    Span {
-                        start: param_start_span.start,
-                        end: ann.span.end,
-                    }
-                } else {
-                    param_start_span
-                };
-
-                params.push(Spanned::new(
-                    Param {
-                        name: param_name,
-                        annotation,
-                        variadic: false,
-                    },
-                    param_span,
-                ));
-            }
-            _ => {
-                let err = ParseError {
-                    message: format!("unexpected token in param list: {:?}", tokens[*i].node),
-                    span: Some(tokens[*i].span),
-                };
-                if let Some(errors) = recovered_errors.as_deref_mut() {
-                    errors.push(err);
-                    *i += 1; // Skip the unexpected token
-                    continue;
-                }
-                return Err(err);
-            }
-        }
-    }
-
-    Ok(params)
-}
-
 /// Stack frame types for the iterative parser.
 ///
 /// Each variant corresponds to a bracket-form being parsed. The parser pushes
@@ -1069,17 +860,17 @@ enum StackFrame {
         expr: Option<Spanned<Expr>>,
         span_start: Position,
     },
-    /// Macro definition: `[defmacro name [params] body...]`
+    /// Macro definition: `[defmacro name [let ...] body...]`
     DefMacro {
         name: Option<String>,
-        params: Vec<Spanned<Param>>,
+        params: Option<Spanned<Expr>>, // [let ...] pattern
         body: Vec<Spanned<Expr>>,
         span_start: Position,
     },
     /// Macro declaration (macros-v2): `[macro name [let ...] body]`
     MacroDecl {
         name: Option<String>,
-        params: Option<Spanned<Expr>>,  // [let ...] pattern
+        params: Option<Spanned<Expr>>, // [let ...] pattern
         body: Option<Spanned<Expr>>,
         span_start: Position,
     },
@@ -1643,46 +1434,10 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             None
                         };
 
-                        // Parse param list if present: [fn [params] body]
-                        i += skip_whitespace_tokens(
-                            &token_vec,
-                            i,
-                            &mut leading_comments,
-                            &mut blank_before,
-                        );
-                        let params = if i < token_vec.len()
-                            && matches!(&token_vec[i].node, Token::OpenBracket)
-                        {
-                            match parse_param_list(
-                                &token_vec,
-                                &mut i,
-                                &mut leading_comments,
-                                &mut blank_before,
-                                input,
-                                Some(&mut recovered_errors),
-                            ) {
-                                Ok(ps) => ps,
-                                Err(param_err) => {
-                                    // The [fn ...] bracket was opened but the Fn frame was not
-                                    // yet pushed; use recover_from_failed_open (no pop needed).
-                                    i = recover_from_failed_open(
-                                        param_err,
-                                        span,
-                                        &token_vec,
-                                        i,
-                                        &mut stack,
-                                        &mut current_document_expressions,
-                                        &mut recovered_errors,
-                                    );
-                                    continue;
-                                }
-                            }
-                        } else {
-                            Vec::new()
-                        };
-
+                        // Fn uses deferred param parsing: [fn [let ...] body] or [fn@RetType [let ...] body]
+                        // Params will be extracted via push_expr_to_parent when the [let ...] bracket is encountered.
                         stack.push(StackFrame::Fn {
-                            params,
+                            params: Vec::new(),
                             body: Vec::new(),
                             return_ann,
                             span_start: span.start,
@@ -1821,10 +1576,14 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // DefMacro form: [defmacro name [params] body...]
+                        // DefMacro form: [defmacro name [let ...] body...]
                         // (Not a defmacro form if the keyword is followed by colon: [defmacro: x] is a dict.)
-                        // (depth already checked above)
-
+                        stack.push(StackFrame::DefMacro {
+                            name: None,
+                            params: None,
+                            body: Vec::new(),
+                            span_start: span.start,
+                        });
                         i += 1; // Consume the OpenBracket
                                 // Skip whitespace and consume the "defmacro" token
                         i += skip_whitespace_tokens(
@@ -1833,71 +1592,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             &mut leading_comments,
                             &mut blank_before,
                         );
-                        i += 1; // consume "defmacro"
-
-                        // Parse the macro name inline
-                        i += skip_whitespace_tokens(
-                            &token_vec,
-                            i,
-                            &mut leading_comments,
-                            &mut blank_before,
-                        );
-                        let macro_name = if i < token_vec.len() {
-                            match &token_vec[i].node {
-                                Token::Identifier(n) => {
-                                    let n = n.clone();
-                                    i += 1;
-                                    Some(n)
-                                }
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        };
-
-                        // Parse the param list inline (like fn does) so that
-                        // [x] is treated as a param list, not an implied call.
-                        i += skip_whitespace_tokens(
-                            &token_vec,
-                            i,
-                            &mut leading_comments,
-                            &mut blank_before,
-                        );
-                        let params = if i < token_vec.len()
-                            && matches!(&token_vec[i].node, Token::OpenBracket)
-                        {
-                            match parse_param_list(
-                                &token_vec,
-                                &mut i,
-                                &mut leading_comments,
-                                &mut blank_before,
-                                input,
-                                Some(&mut recovered_errors),
-                            ) {
-                                Ok(ps) => ps,
-                                Err(param_err) => {
-                                    i = recover_from_failed_open(
-                                        param_err,
-                                        span,
-                                        &token_vec,
-                                        i,
-                                        &mut stack,
-                                        &mut current_document_expressions,
-                                        &mut recovered_errors,
-                                    );
-                                    continue;
-                                }
-                            }
-                        } else {
-                            Vec::new()
-                        };
-
-                        stack.push(StackFrame::DefMacro {
-                            name: macro_name,
-                            params,
-                            body: Vec::new(),
-                            span_start: span.start,
-                        });
+                        i += 1;
                         continue;
                     }
                     Some((Token::Identifier(s), keyword_idx))
@@ -2581,7 +2276,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         }
-                        if params.is_empty() {
+                        if params.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "defmacro form requires a parameter list".to_string(),
                                 span: Some(span),
@@ -2608,7 +2303,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
 
                         let defmacro_expr = Expr::DefMacro {
                             name: name.unwrap(),
-                            params,
+                            params: Rc::new(params.unwrap()),
                             body: body_expr,
                         };
                         let spanned_defmacro = Spanned::new(defmacro_expr, dict_span(span_start));
@@ -2635,7 +2330,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                         if params.is_none() {
                             close_bracket_recover!(ParseError {
-                                message: "macro form requires a params expression ([let ...])".to_string(),
+                                message: "macro form requires a params expression ([let ...])"
+                                    .to_string(),
                                 span: Some(span),
                             });
                         }
@@ -2652,11 +2348,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             body: Box::new(body.unwrap()),
                         };
                         let spanned_macro = Spanned::new(macro_expr, dict_span(span_start));
-                        if let Err(push_err) = push_value(
-                            &mut stack,
-                            &mut current_document_expressions,
-                            spanned_macro,
-                        ) {
+                        if let Err(push_err) =
+                            push_value(&mut stack, &mut current_document_expressions, spanned_macro)
+                        {
                             close_bracket_recover!(push_err);
                         }
                     }
@@ -2682,7 +2376,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                         if pattern.is_none() {
                             close_bracket_recover!(ParseError {
-                                message: "syntax-class form requires a 'pattern:' field".to_string(),
+                                message: "syntax-class form requires a 'pattern:' field"
+                                    .to_string(),
                                 span: Some(span),
                             });
                         }
@@ -2692,7 +2387,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             pattern: Box::new(pattern.unwrap()),
                             message,
                         };
-                        let spanned_syntax_class = Spanned::new(syntax_class_expr, dict_span(span_start));
+                        let spanned_syntax_class =
+                            Spanned::new(syntax_class_expr, dict_span(span_start));
                         if let Err(push_err) = push_value(
                             &mut stack,
                             &mut current_document_expressions,
@@ -5225,57 +4921,9 @@ fn push_expr_to_parent(
                 ref mut type_exprs,
                 ..
             }) => {
-                // First expression: check if it's a parameter list
+                // First expression: check if it's a LetDecl parameter list
                 if params.is_empty() && type_exprs.is_empty() {
-                    // Try to parse as parameter list: [a b c]
-                    // Case 1: Dict with auto-indexed lowercase identifiers
-                    if let Expr::Dict(entries) = &expr.node {
-                        // Check if all entries are auto-indexed identifiers (no colons)
-                        let all_params = entries.iter().all(|entry| {
-                            entry.node.key.is_none()
-                                && matches!(&entry.node.value.node, Expr::VarRef { name, .. } if name.chars().all(|c| c.is_lowercase() || c == '_'))
-                        });
-
-                        if all_params {
-                            // Extract parameter names
-                            for entry in entries {
-                                if let Expr::VarRef { name, .. } = &entry.node.value.node {
-                                    params.push(name.clone());
-                                }
-                            }
-                            return Ok(());
-                        }
-                    }
-                    // Case 2: Implied call [a b c] parsed as Call { func: VarRef("a"), args: [VarRef("b"), ...] }
-                    // When all identifiers are lowercase, this is a parameter list, not a call.
-                    if let Expr::Call {
-                        implied: true,
-                        func,
-                        args,
-                        ..
-                    } = &expr.node
-                    {
-                        if let Expr::VarRef {
-                            name: func_name, ..
-                        } = &func.node
-                        {
-                            if func_name.chars().all(|c| c.is_lowercase() || c == '_') {
-                                let all_lowercase_args = args.iter().all(|arg| {
-                                    matches!(&arg.node, Expr::VarRef { name, .. } if name.chars().all(|c| c.is_lowercase() || c == '_'))
-                                });
-                                if all_lowercase_args {
-                                    params.push(func_name.clone());
-                                    for arg in args {
-                                        if let Expr::VarRef { name, .. } = &arg.node {
-                                            params.push(name.clone());
-                                        }
-                                    }
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                    // Case 3: LetDecl with lowercase identifiers: [let a b c]
+                    // Only LetDecl is supported for type params: [type [let a b c] ...]
                     if let Expr::LetDecl { bindings } = &expr.node {
                         let all_lowercase_params =
                             bindings.iter().all(|binding| match &binding.node {
@@ -5352,11 +5000,37 @@ fn push_expr_to_parent(
                 *unquote_splice_expr = Some(expr);
                 Ok(())
             }
-            Some(StackFrame::DefMacro { ref mut body, .. }) => {
-                // Name and params are parsed inline at open-bracket time.
-                // All remaining expressions are body expressions.
-                body.push(expr);
-                Ok(())
+            Some(StackFrame::DefMacro {
+                ref mut name,
+                ref mut params,
+                ref mut body,
+                ..
+            }) => {
+                // DefMacro expects: [defmacro name [let ...] body...]
+                // First expression: name (VarRef)
+                // Second expression: params ([let ...])
+                // Remaining expressions: body
+                if name.is_none() {
+                    // First expression should be a VarRef (macro name)
+                    if let Expr::VarRef { name: n, .. } = &expr.node {
+                        *name = Some(n.clone());
+                        Ok(())
+                    } else {
+                        Err(ParseError {
+                            message: "defmacro declaration requires a name (bare identifier)"
+                                .to_string(),
+                            span: Some(expr.span),
+                        })
+                    }
+                } else if params.is_none() {
+                    // Second expression: params ([let ...])
+                    *params = Some(expr);
+                    Ok(())
+                } else {
+                    // Remaining expressions: body
+                    body.push(expr);
+                    Ok(())
+                }
             }
             Some(StackFrame::MacroDecl {
                 ref mut name,
@@ -5390,8 +5064,9 @@ fn push_expr_to_parent(
                     Ok(())
                 } else {
                     Err(ParseError {
-                        message: "macro declaration expects exactly 3 arguments: name, params, body"
-                            .to_string(),
+                        message:
+                            "macro declaration expects exactly 3 arguments: name, params, body"
+                                .to_string(),
                         span: Some(expr.span),
                     })
                 }
@@ -5531,72 +5206,13 @@ fn push_expr_to_parent(
                 superclasses: _,
                 ..
             }) => {
-                // ClassDecl expects: [class [Name params...] [structural-metadata] method: Type ...]
-                // First expression is the class header: [Name params...]
+                // ClassDecl expects: [class [let Name params...] [structural-metadata] method: Type ...]
+                // First expression is the class header: [let Name params...]
                 // Second expression (if Dict) is structural metadata: [determines: [...] resolver: ...]
+                // No-param classes use: [class [let Equatable] ...]
                 if name.is_none() {
-                    // This is the class header — must be a dict or call with class name
-                    // Parse: [Equatable a] or [Ord] or just Ord
+                    // This is the class header — must be a LetDecl with class name
                     match &expr.node {
-                        Expr::VarRef {
-                            name: class_name, ..
-                        } => {
-                            // Simple class: [class Equatable ...]
-                            *name = Some(class_name.clone());
-                            Ok(())
-                        }
-                        Expr::Dict(entries) if !entries.is_empty() => {
-                            // Dict form: [class [Equatable a] ...]
-                            // First entry should be the class name, rest are params
-                            if let Expr::VarRef {
-                                name: class_name, ..
-                            } = &entries[0].node.value.node
-                            {
-                                *name = Some(class_name.clone());
-                                // Extract params that are identifiers; skip others (type checker will validate)
-                                for entry in entries.iter().skip(1) {
-                                    if let Expr::VarRef {
-                                        name: param_name, ..
-                                    } = &entry.node.value.node
-                                    {
-                                        params.push(param_name.clone());
-                                    }
-                                    // Non-identifier params silently skipped; semantic validation in type checker
-                                }
-                                Ok(())
-                            } else {
-                                // First entry/func is not a VarRef; semantic validation in type checker
-                                Ok(())
-                            }
-                        }
-                        Expr::Call {
-                            func,
-                            args,
-                            implied: true,
-                            ..
-                        } => {
-                            // Implied call form: [class [Equatable a b] ...]
-                            if let Expr::VarRef {
-                                name: class_name, ..
-                            } = &func.node
-                            {
-                                *name = Some(class_name.clone());
-                                // Extract params that are identifiers; skip others (type checker will validate)
-                                for arg in args {
-                                    if let Expr::VarRef {
-                                        name: param_name, ..
-                                    } = &arg.node
-                                    {
-                                        params.push(param_name.clone());
-                                    }
-                                    // Non-identifier params silently skipped; semantic validation in type checker
-                                }
-                                Ok(())
-                            } else {
-                                // First entry/func is not a VarRef; semantic validation in type checker
-                                Ok(())
-                            }
-                        }
                         Expr::LetDecl { bindings } if !bindings.is_empty() => {
                             // LetDecl form: [class [let ClassName a b] ...]
                             // First binding is the class name, rest are type params
@@ -5617,14 +5233,16 @@ fn push_expr_to_parent(
                                 }
                                 Ok(())
                             } else {
-                                // First entry/func is not a VarRef; semantic validation in type checker
+                                // First entry is not a VarRef; semantic validation in type checker
                                 Ok(())
                             }
                         }
                         _ => {
-                            // Accept any expression; semantic validation moved to type checker.
-                            // name remains None, will be caught at close or by type checker.
-                            Ok(())
+                            // Not a LetDecl — parse error
+                            Err(ParseError {
+                                message: "class declaration requires [let ClassName ...] form".to_string(),
+                                span: Some(expr.span),
+                            })
                         }
                     }
                 } else if structural_metadata.is_none() {

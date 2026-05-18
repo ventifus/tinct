@@ -481,21 +481,9 @@ impl<'a> Formatter<'a> {
                 self.output.push('[');
                 self.output.push_str("defmacro ");
                 self.output.push_str(name);
-                self.output.push_str(" [");
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        self.output.push(' ');
-                    }
-                    if param.node.variadic {
-                        self.output.push_str("...");
-                    }
-                    self.output.push_str(&param.node.name);
-                    if let Some(ann) = &param.node.annotation {
-                        self.output.push('@');
-                        self.format_annotation(ann);
-                    }
-                }
-                self.output.push(']');
+                self.output.push(' ');
+                // Format params (which is a [let ...] pattern)
+                self.format_expr(params, true);
                 // Format body expressions
                 if let Expr::Sequential(exprs) = &body.node {
                     for expr in exprs {
@@ -874,21 +862,8 @@ impl<'a> Formatter<'a> {
             Expr::UnquoteSplice(inner) => 1 + 14 + 1 + self.measure_expr_width(inner) + 1, // [unquote-splice <expr>]
             Expr::DefMacro { name, params, body } => {
                 let mut w = 1 + 8 + 1 + name.len(); // [defmacro <name>
-                w += 2; // " ["
-                for (i, param) in params.iter().enumerate() {
-                    if i > 0 {
-                        w += 1; // space
-                    }
-                    w += param.node.name.len();
-                    if param.node.annotation.is_some() {
-                        w += 1; // @ (simplified, doesn't measure annotation fully)
-                    }
-                    if param.node.variadic {
-                        w += 3; // ...
-                    }
-                }
-                w += 1; // ]
-                        // Measure body
+                w += 1 + self.measure_expr_width(params); // params (LetDecl)
+                // Measure body
                 if let Expr::Sequential(exprs) = &body.node {
                     for expr in exprs {
                         w += 1 + self.measure_expr_width(expr);
