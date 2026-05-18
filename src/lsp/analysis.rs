@@ -35,8 +35,16 @@ pub fn hover_at(
             crate::literate::md_offset_to_block(&doc.literate_blocks, offset)?;
         let block = &doc.literate_blocks[block_idx];
 
-        // Parse the block's code to get an AST for hover analysis
+        // Parse and type-check the block to get a local type_map and scheme_map.
+        // doc.type_map is empty for markdown documents (type-checking runs per-block,
+        // not at document level). We must re-run here to populate hover type info.
         let block_file = crate::parser::parse(&block.code).ok()?;
+        let mut block_file_mut = block_file.clone();
+        crate::desugar::desugar_file(&mut block_file_mut.node);
+        crate::resolve::resolve_file(&block_file_mut.node);
+        let (seeded_env, _) = crate::imports::build_type_env(&block_file_mut.node, None);
+        let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
+            crate::typecheck::typecheck_file_with_types_and_env(&block_file_mut.node, seeded_env);
 
         // Walk the block's AST with block-local offset
         for document in &block_file.node.documents {
@@ -45,9 +53,9 @@ pub fn hover_at(
                     &expr.node,
                     expr.span,
                     block_offset,
-                    &doc.type_map,
-                    &doc.scheme_map,
-                    &doc.doc_map,
+                    &block_type_map,
+                    &block_scheme_map,
+                    &block_doc_map,
                     &block.code,
                     include_graph,
                     doc_url,
@@ -1239,6 +1247,7 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
                                 &doc.literate_blocks,
                                 block_idx,
                                 span,
+                                source,
                             );
                             diag.range = llt_span_to_lsp_range(&md_span, source);
                         }
@@ -1267,6 +1276,7 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
                             &doc.literate_blocks,
                             block_idx,
                             err.span,
+                            source,
                         );
                         diag.range = llt_span_to_lsp_range(&md_span, source);
                         diagnostics.push(diag);
@@ -1281,6 +1291,7 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
                             &doc.literate_blocks,
                             block_idx,
                             span,
+                            source,
                         );
                         diag.range = llt_span_to_lsp_range(&md_span, source);
                     }

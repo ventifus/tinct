@@ -2886,6 +2886,60 @@ fn literate_missing_file_is_error() {
     );
 }
 
+#[test]
+fn literate_weave_verify_pass_when_expected_matches_actual() {
+    // --verify exits 0 when the === out section matches the actual block output.
+    // The tinct block evaluates to {"x":10} (compact JSON), so the === out section
+    // must contain the same compact JSON.
+    let md = concat!(
+        "# Verify test\n\n",
+        "```tinct\n",
+        "[x: 10]\n",
+        "=== out\n",
+        "{\"x\":10}\n",
+        "```\n",
+    );
+    let (path, _dir) = write_temp_md("literate_verify_pass", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", "--verify", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 when expected matches actual; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn literate_weave_verify_fail_when_expected_does_not_match_actual() {
+    // --verify exits 1 when the === out section does not match the actual block output.
+    let md = concat!(
+        "# Verify test\n\n",
+        "```tinct\n",
+        "[x: 10]\n",
+        "=== out\n",
+        "{\"x\":999}\n",
+        "```\n",
+    );
+    let (path, _dir) = write_temp_md("literate_verify_fail", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "weave", "--verify", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected exit 1 when expected does not match actual"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("verification failed") || stderr.contains("mismatch"),
+        "expected verification failure message in stderr, got: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Seq-at-top-level handling (access-pipeline Phase 2)
 // ---------------------------------------------------------------------------

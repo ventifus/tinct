@@ -2562,12 +2562,16 @@ fn infer_expr(
             )])
         }
 
-        Expr::LetDecl { .. } => {
-            // LetDecl should never appear in value positions (only in binding contexts)
-            Err(vec![TypeError::new(
-                "binding declaration [let ...] is not valid in expression position",
-                expr.span,
-            )])
+        Expr::LetDecl { bindings } => {
+            // LetDecl in value position is always an error (only valid in binding contexts).
+            // Provide a more specific message for multi-element bindings since the likely
+            // intent is a pattern match arm, not a value expression.
+            let msg = if bindings.len() > 1 {
+                "multi-element [let ...] pattern not yet supported — use single binding".to_string()
+            } else {
+                "binding declaration [let ...] is not valid in expression position".to_string()
+            };
+            Err(vec![TypeError::new(msg, expr.span)])
         }
 
         Expr::CaseArm { pattern, body } => {
@@ -3842,6 +3846,24 @@ fn check_call(
                     .enumerate()
                 {
                     consumed_params.insert(idx);
+
+                    // Boundary guard tracking (mirrors check_call_with_scheme lines ~3568-3576):
+                    // if the argument's inferred type is Unknown and the parameter expects a
+                    // concrete type, record the span for gradual typing boundary guard insertion.
+                    // Infer first (may update type_map for LSP hover), then check_expr for
+                    // bidirectional checking. Double-inference is safe: state remains consistent.
+                    if is_concrete_type(param_ty) {
+                        if let Ok(arg_ty) = infer_expr(arg, env, state, type_map) {
+                            let resolved_arg_ty = if state.subst.is_empty() {
+                                arg_ty
+                            } else {
+                                state.subst.apply(&arg_ty)
+                            };
+                            if matches!(resolved_arg_ty, Type::Unknown) {
+                                state.boundary_guards.insert(arg.span, param_ty.clone());
+                            }
+                        }
+                    }
 
                     if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
                         errors.append(&mut errs);

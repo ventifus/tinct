@@ -1236,7 +1236,7 @@ uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to repeated O(
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
-foldr@[doc: "Right fold"]: [fn [let f@Fn acc xs] [builtin-reduce f acc [builtin-reverse xs]]]
+foldr@[doc: "Right fold"]: [fn@a [let f@Fn acc@a xs] [builtin-reduce f acc [builtin-reverse xs]]]
 
 # ============================================================================
 # Composition
