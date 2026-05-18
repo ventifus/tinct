@@ -1,0 +1,13 @@
+# Task 2: Splice output in dict context.
+# A macro returning {type: "splice" forms: [...]} injects each form as a separate entry.
+# This uses a defmacro that returns a splice AST dict with two literal forms.
+[defmacro two-ints [macro-args]
+  [type: "splice"
+   forms: [
+     [type: "literal"  kind: "int"  value: 10]
+     [type: "literal"  kind: "int"  value: 20]
+   ]]]
+
+[[two-ints]]
+=== out
+Dict({0: Int(10), 1: Int(20)})

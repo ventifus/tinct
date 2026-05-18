@@ -190,17 +190,12 @@ fn test_promote_literal_label_kind_never_promotes() {
 }
 
 /// chr-normalization: Occurs check for TypeStageApp args
-///
-/// unify(TypeVar("a"), TypeStageApp("F", [TypeVar("a")])) must fail with an
-/// infinite-type error — TypeVar "a" occurs in its own binding via TypeStageApp.
-/// This verifies lower_levels_check_occurs traverses TypeStageApp.args (line 1249-1255).
 #[test]
 fn test_unify_type_var_occurs_in_type_stage_app() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
     let span = Span::origin();
 
-    // Register level for "a" so lower_levels_check_occurs can look it up
     state.levels.insert("a".to_string(), 0);
 
     let type_var_a = Type::TypeVar("a".to_string(), 0);
@@ -209,7 +204,6 @@ fn test_unify_type_var_occurs_in_type_stage_app() {
         args: vec![Type::TypeVar("a".to_string(), 0)],
     };
 
-    // unify(a, F(a)) should fail: "a" occurs in F(a)
     let result = unify(
         &type_var_a,
         &type_stage_app_f_a,
@@ -234,28 +228,24 @@ fn test_unify_type_var_occurs_in_type_stage_app() {
 // fn-narrowing-variadic sprint tests
 // ============================================================================
 
-/// Test that zero-param variadic unifies with concrete 1-param function
 #[test]
 fn test_unify_variadic_zero_with_concrete_arity() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
     let span = Span::origin();
 
-    // Zero-param variadic: the "any function" type
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
     };
 
-    // Concrete 1-param function: Fn(Int) -> Bool
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
     };
 
-    // These should unify (zero-param variadic accepts any function)
     let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
 
     assert!(
@@ -265,58 +255,50 @@ fn test_unify_variadic_zero_with_concrete_arity() {
     );
 }
 
-/// Test that zero-param variadic does NOT unify with 0-param non-variadic
 #[test]
 fn test_unify_variadic_zero_with_zero_non_variadic() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
     let span = Span::origin();
 
-    // Zero-param variadic: Function{params:[], ret:Unknown, variadic:true}
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
     };
 
-    // Zero-param non-variadic: Fn() -> Int (a concrete 0-arity function)
     let concrete_fn = Type::Function {
         params: vec![],
         ret: Box::new(Type::Int),
         variadic: false,
     };
 
-    // These should NOT unify (different semantics: one accepts args, one doesn't)
     let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
 
     assert!(
         result.is_err(),
-        "Zero-param variadic should NOT unify with 0-param non-variadic (different signatures)"
+        "Zero-param variadic should NOT unify with 0-param non-variadic"
     );
 }
 
-/// Test that zero-param variadic unifies with multi-param function
 #[test]
 fn test_unify_variadic_zero_with_multi_param() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
     let span = Span::origin();
 
-    // Zero-param variadic: the "any function" type
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
     };
 
-    // Concrete 3-param function: Fn(Int, Str, Bool) -> Float
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int), (None, Type::Str), (None, Type::Bool)],
         ret: Box::new(Type::Float),
         variadic: false,
     };
 
-    // These should unify
     let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
 
     assert!(
@@ -326,39 +308,31 @@ fn test_unify_variadic_zero_with_multi_param() {
     );
 }
 
-/// Test is_subtype: concrete function is subtype of zero-param variadic
 #[test]
 fn test_is_subtype_concrete_to_any_function() {
-    // Concrete function: Fn(Int) -> Bool
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
     };
 
-    // Zero-param variadic: the "any function" type (supertype)
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
     };
 
-    // Concrete <: AnyFunction (concrete is more specific)
     assert!(
         Type::is_subtype(&concrete_fn, &any_function),
         "Concrete function should be subtype of any-function"
     );
 
-    // AnyFunction is NOT a subtype of concrete (it's the other way around)
     assert!(
         !Type::is_subtype(&any_function, &concrete_fn),
         "Any-function should NOT be subtype of concrete function"
     );
 }
 
-/// Test is_subtype reflexivity: any-function is a subtype of any-function (τ <: τ).
-/// Uses TWO DISTINCT objects (different allocations) to exercise the Function arm directly.
-/// A same-reference test would short-circuit at `a == b => true` before entering the arm.
 #[test]
 fn test_is_subtype_any_function_reflexivity() {
     let any_fn1 = Type::Function {
@@ -382,9 +356,6 @@ fn test_is_subtype_any_function_reflexivity() {
     );
 }
 
-/// Test that two distinct any-function values unify (zero-param variadic with zero-param variadic).
-/// The unify path falls through to the standard equality check (both have params:[], variadic:true),
-/// so this should succeed.
 #[test]
 fn test_unify_two_any_functions() {
     let mut state = InferState::new();
@@ -418,30 +389,24 @@ fn test_unify_two_any_functions() {
     );
 }
 
-/// Test symmetric unify: unify(concrete_fn, any_function) should succeed.
-/// The sprint implementation has branches for both orders; this test verifies the
-/// reverse direction (concrete_fn as first arg) is also covered.
 #[test]
 fn test_unify_concrete_fn_with_any_function_symmetric() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
     let span = Span::origin();
 
-    // Concrete 1-param function: Fn(Int) -> Bool
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
     };
 
-    // Zero-param variadic: the "any function" type
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
     };
 
-    // Symmetric direction: concrete as first argument
     let result = unify(&concrete_fn, &any_function, &mut subst, &mut state, span);
 
     assert!(
@@ -455,37 +420,31 @@ fn test_unify_concrete_fn_with_any_function_symmetric() {
 // fn-narrowing-followup sprint tests
 // ============================================================================
 
-/// Task 1: is_consistent should accept any-function with all function types
 #[test]
 fn test_is_consistent_any_function_with_concrete() {
-    // Any-function type: Function{params:[], variadic:true}
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
     };
 
-    // Concrete function: Fn(Int) -> Bool
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
     };
 
-    // Any-function ~ Concrete function (should be consistent)
     assert!(
         Type::is_consistent(&any_function, &concrete_fn),
         "Any-function should be consistent with concrete function"
     );
 
-    // Symmetric: Concrete ~ Any-function
     assert!(
         Type::is_consistent(&concrete_fn, &any_function),
         "Concrete function should be consistent with any-function (symmetric)"
     );
 }
 
-/// Task 1: is_consistent should accept any-function with multi-param functions
 #[test]
 fn test_is_consistent_any_function_with_multi_param() {
     let any_function = Type::Function {
@@ -510,7 +469,6 @@ fn test_is_consistent_any_function_with_multi_param() {
     );
 }
 
-/// Task 1: is_consistent should accept any-function with zero-param non-variadic
 #[test]
 fn test_is_consistent_any_function_with_zero_param_non_variadic() {
     let any_function = Type::Function {
@@ -525,14 +483,12 @@ fn test_is_consistent_any_function_with_zero_param_non_variadic() {
         variadic: false,
     };
 
-    // Under consistency, these ARE consistent (gradual typing allows it)
     assert!(
         Type::is_consistent(&any_function, &zero_param_fn),
         "Any-function should be consistent with zero-param non-variadic"
     );
 }
 
-/// Task 2: types_are_disjoint for Function vs Int
 #[test]
 fn test_types_are_disjoint_function_vs_int() {
     let fn_ty = Type::Function {
@@ -541,7 +497,6 @@ fn test_types_are_disjoint_function_vs_int() {
         variadic: false,
     };
 
-    // Function vs Int (both directions)
     assert!(
         Type::types_are_disjoint(&fn_ty, &Type::Int),
         "Function should be disjoint from Int"
@@ -552,7 +507,6 @@ fn test_types_are_disjoint_function_vs_int() {
     );
 }
 
-/// Task 2: types_are_disjoint for Function vs all primitive types
 #[test]
 fn test_types_are_disjoint_function_vs_primitives() {
     let fn_ty = Type::Function {
@@ -561,14 +515,12 @@ fn test_types_are_disjoint_function_vs_primitives() {
         variadic: true,
     };
 
-    // Function is disjoint from all primitives
     assert!(Type::types_are_disjoint(&fn_ty, &Type::Int));
     assert!(Type::types_are_disjoint(&fn_ty, &Type::Float));
     assert!(Type::types_are_disjoint(&fn_ty, &Type::Str));
     assert!(Type::types_are_disjoint(&fn_ty, &Type::Bool));
     assert!(Type::types_are_disjoint(&fn_ty, &Type::Bytes));
 
-    // Symmetric
     assert!(Type::types_are_disjoint(&Type::Int, &fn_ty));
     assert!(Type::types_are_disjoint(&Type::Float, &fn_ty));
     assert!(Type::types_are_disjoint(&Type::Str, &fn_ty));
@@ -576,7 +528,6 @@ fn test_types_are_disjoint_function_vs_primitives() {
     assert!(Type::types_are_disjoint(&Type::Bytes, &fn_ty));
 }
 
-/// Task 2: types_are_disjoint for Function vs literal types
 #[test]
 fn test_types_are_disjoint_function_vs_literals() {
     let fn_ty = Type::Function {
@@ -585,11 +536,9 @@ fn test_types_are_disjoint_function_vs_literals() {
         variadic: false,
     };
 
-    // Function vs IntLiteral
     assert!(Type::types_are_disjoint(&fn_ty, &Type::IntLiteral(42)));
     assert!(Type::types_are_disjoint(&Type::IntLiteral(42), &fn_ty));
 
-    // Function vs StringLiteral
     assert!(Type::types_are_disjoint(
         &fn_ty,
         &Type::StringLiteral("hello".to_string())
@@ -600,7 +549,6 @@ fn test_types_are_disjoint_function_vs_literals() {
     ));
 }
 
-/// Task 2: types_are_disjoint for Function vs Record
 #[test]
 fn test_types_are_disjoint_function_vs_record() {
     let fn_ty = Type::Function {
@@ -613,7 +561,6 @@ fn test_types_are_disjoint_function_vs_record() {
     fields.insert("x".to_string(), Type::Int);
     let record_ty = Type::Record(Row { fields });
 
-    // Function vs Record (both directions)
     assert!(
         Type::types_are_disjoint(&fn_ty, &record_ty),
         "Function should be disjoint from Record"
@@ -624,7 +571,6 @@ fn test_types_are_disjoint_function_vs_record() {
     );
 }
 
-/// Task 2: types_are_disjoint for Function vs Seq
 #[test]
 fn test_types_are_disjoint_function_vs_seq() {
     let fn_ty = Type::Function {
@@ -635,7 +581,6 @@ fn test_types_are_disjoint_function_vs_seq() {
 
     let seq_ty = Type::Seq(Box::new(Type::Int));
 
-    // Function vs Seq (both directions)
     assert!(
         Type::types_are_disjoint(&fn_ty, &seq_ty),
         "Function should be disjoint from Seq"
@@ -646,7 +591,6 @@ fn test_types_are_disjoint_function_vs_seq() {
     );
 }
 
-/// Task 2: types_are_disjoint for Function vs Map
 #[test]
 fn test_types_are_disjoint_function_vs_map() {
     let fn_ty = Type::Function {
@@ -657,7 +601,6 @@ fn test_types_are_disjoint_function_vs_map() {
 
     let map_ty = Type::Map(Box::new(Type::Str), Box::new(Type::Int));
 
-    // Function vs Map (both directions)
     assert!(
         Type::types_are_disjoint(&fn_ty, &map_ty),
         "Function should be disjoint from Map"
@@ -668,7 +611,6 @@ fn test_types_are_disjoint_function_vs_map() {
     );
 }
 
-/// Task 2: Two different function types are NOT disjoint (conservative)
 #[test]
 fn test_types_are_not_disjoint_function_vs_function() {
     let fn1 = Type::Function {
@@ -683,7 +625,6 @@ fn test_types_are_not_disjoint_function_vs_function() {
         variadic: false,
     };
 
-    // Two different functions are NOT disjoint (conservative - they're both functions)
     assert!(
         !Type::types_are_disjoint(&fn1, &fn2),
         "Different function types should NOT be disjoint (conservative)"

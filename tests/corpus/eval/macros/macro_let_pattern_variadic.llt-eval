@@ -1,0 +1,8 @@
+# Task 1: [macro ...] with three positional [let ...] params.
+# Verifies that each param is bound to its corresponding argument position.
+[macro my-if [let cond then else]
+  [quote [if [unquote cond] [unquote then] [unquote else]]]]
+
+[my-if true 1 2]
+=== out
+Int(1)

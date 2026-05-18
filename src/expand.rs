@@ -96,14 +96,16 @@ impl From<Span> for SpanKey {
 
 /// Metadata for a registered macro — the transformer function, params pattern, and inject default.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // TODO: params and inject_default will be used when Tasks 1-4 are fully implemented
 struct MacroMetadata {
-    /// The transformer function (as a Value).
+    /// The transformer function (as a Value::Function thunk).
     transformer: Rc<Thunk>,
     /// The params pattern (LetDecl) for binding arguments.
     params: Spanned<Expr>,
     /// Optional inject: default name for anaphoric macros.
     inject_default: Option<String>,
+    /// True for `[macro ...]` (macros-v2 pattern-matching style),
+    /// false for `[defmacro ...]` (old single-args-dict style).
+    new_style: bool,
 }
 
 /// Macro expansion context — tracks registered macros and prevents infinite expansion.
@@ -160,6 +162,7 @@ impl MacroEnv {
         transformer: Rc<Thunk>,
         params: Spanned<Expr>,
         inject_default: Option<String>,
+        new_style: bool,
         span: Span,
     ) -> EvalResult<()> {
         // Check if the name collides with a registered builtin
@@ -184,6 +187,7 @@ impl MacroEnv {
                 transformer,
                 params,
                 inject_default,
+                new_style,
             },
         );
         Ok(())
@@ -298,6 +302,7 @@ fn register_stdlib_macros_from_env(
                 transformer,
                 dummy_params,
                 None,
+                false, // old-style: single args dict
                 span,
             );
         }
@@ -466,16 +471,101 @@ fn pre_scan_expr(
             // Extract inject: default from params if present
             let inject_default = extract_inject_default(params);
 
-            // Evaluate the macro body as a function
-            // The body is evaluated directly, no wrapping needed
-            let transformer_value = eval::eval(Rc::new(body.as_ref().clone()), Rc::clone(stdlib_env), ctx)?;
+            // Convert LetDecl bindings to Vec<Spanned<Param>> for function creation.
+            // LetDecl bindings can be:
+            //   VarRef { name }         → Param { name, annotation: None, variadic: false }
+            //   Annotated { name, ann } → Param { name, annotation: Some(ann), variadic: false }
+            //   Rest(Some(name))        → Param { name, annotation: None, variadic: true }
+            //   Rest(None)              → skip (anonymous spread)
+            let fn_params: Vec<Spanned<crate::ast::Param>> = match &params.node {
+                Expr::LetDecl { bindings } => {
+                    let mut fn_params = Vec::with_capacity(bindings.len());
+                    for binding in bindings {
+                        match &binding.node {
+                            Expr::VarRef { name: n, .. } => {
+                                fn_params.push(Spanned::new(
+                                    crate::ast::Param {
+                                        name: n.clone(),
+                                        annotation: None,
+                                        variadic: false,
+                                    },
+                                    binding.span,
+                                ));
+                            }
+                            Expr::Annotated { name: n, annotation } => {
+                                fn_params.push(Spanned::new(
+                                    crate::ast::Param {
+                                        name: n.clone(),
+                                        annotation: Some(annotation.clone()),
+                                        variadic: false,
+                                    },
+                                    binding.span,
+                                ));
+                            }
+                            Expr::Rest(Some(n)) => {
+                                fn_params.push(Spanned::new(
+                                    crate::ast::Param {
+                                        name: n.clone(),
+                                        annotation: None,
+                                        variadic: true,
+                                    },
+                                    binding.span,
+                                ));
+                            }
+                            Expr::Rest(None) => {
+                                // Anonymous spread — no binding, skip
+                            }
+                            _ => {
+                                // Other binding forms not yet supported; skip
+                            }
+                        }
+                    }
+                    fn_params
+                }
+                _ => {
+                    // Params is not a LetDecl — treat as single arg named "args"
+                    vec![Spanned::new(
+                        crate::ast::Param {
+                            name: "args".to_string(),
+                            annotation: None,
+                            variadic: false,
+                        },
+                        params.span,
+                    )]
+                }
+            };
 
-            // Register the macro with its params pattern and inject default
+            // Wrap params+body in a function expression and evaluate to get Value::Function.
+            // This is identical to the DefMacro path, but using derived params.
+            // If the macro has inject:, add an implicit `binding` param as well.
+            let mut all_fn_params = fn_params;
+            if inject_default.is_some() {
+                all_fn_params.push(Spanned::new(
+                    crate::ast::Param {
+                        name: "binding".to_string(),
+                        annotation: None,
+                        variadic: false,
+                    },
+                    params.span,
+                ));
+            }
+
+            let fn_expr = Expr::Fn {
+                return_ann: None,
+                params: all_fn_params,
+                body: Rc::new(body.as_ref().clone()),
+                desugared: false,
+            };
+            let fn_spanned = Spanned::new(fn_expr, expr.span);
+            let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
+
+            // Register the macro with its params pattern and inject default (new-style)
             env.register_macro(
                 name.clone(),
                 Rc::clone(&transformer_value),
                 params.as_ref().clone(),
                 inject_default,
+                true, // new-style: individual positional args per LetDecl binding
                 expr.span,
             )?;
 
@@ -641,12 +731,13 @@ fn pre_scan_expr(
                 .collect();
             let params_pattern = Spanned::new(Expr::LetDecl { bindings: let_bindings }, expr.span);
 
-            // Register the macro
+            // Register the macro (old-style: single args dict)
             env.register_macro(
                 name.clone(),
                 Rc::clone(&transformer_value),
                 params_pattern,
                 None,
+                false, // old-style: single args dict
                 expr.span,
             )?;
 
@@ -732,22 +823,55 @@ fn extract_inject_default(params: &Spanned<Expr>) -> Option<String> {
 }
 
 /// Expand macros in a Document.
+///
+/// Splice handling: when a macro call returns `Expr::Splice(forms)`, each form is injected
+/// as a separate document expression. Any MacroDecl or SyntaxClass in splice output is
+/// registered immediately (enabling meta-macros) before processing subsequent forms.
 fn expand_document(
     doc: Document,
     env: &mut MacroEnv,
     ctx: &Rc<EvalContext>,
     stdlib_env: &Rc<RefCell<Environment>>,
 ) -> EvalResult<Document> {
-    // Expand each expression in the document, filtering out DefMacro nodes
     let mut expanded_exprs = Vec::new();
 
     for expr in doc.expressions {
         let expanded = expand_expr(expr.as_ref().clone(), env, ctx, stdlib_env)?;
-        // Filter out DefMacro, MacroDecl, and SyntaxClass nodes (they've been registered and should not appear post-expansion)
-        if !matches!(
+        // Filter out declaration nodes (they've been registered and must not appear post-expansion)
+        if matches!(
             expanded.node,
             Expr::DefMacro { .. } | Expr::MacroDecl { .. } | Expr::SyntaxClass { .. }
         ) {
+            continue;
+        }
+
+        // Splice: inject each form as a separate expression.
+        // Register any MacroDecl/SyntaxClass in splice output immediately so subsequent
+        // forms in the same document can use the newly registered macros.
+        if let Expr::Splice(forms) = expanded.node {
+            for form in forms {
+                match &form.node {
+                    Expr::MacroDecl { .. } | Expr::SyntaxClass { .. } => {
+                        // Register the new macro/syntax-class immediately
+                        pre_scan_expr_spanned(&form, env, ctx, stdlib_env)?;
+                        // Do not emit the declaration into the output
+                    }
+                    Expr::DefMacro { .. } => {
+                        pre_scan_expr_spanned(&form, env, ctx, stdlib_env)?;
+                    }
+                    _ => {
+                        // Re-expand the spliced form (fixpoint)
+                        let re_expanded = expand_expr(form.clone(), env, ctx, stdlib_env)?;
+                        if !matches!(
+                            re_expanded.node,
+                            Expr::DefMacro { .. } | Expr::MacroDecl { .. } | Expr::SyntaxClass { .. }
+                        ) {
+                            expanded_exprs.push(Rc::new(re_expanded));
+                        }
+                    }
+                }
+            }
+        } else {
             expanded_exprs.push(Rc::new(expanded));
         }
     }
@@ -815,16 +939,29 @@ fn expand_expr_inner(
             };
 
             if let Some(macro_name) = macro_name {
-                // This is a macro call — expand it
-                expand_macro_call(
+                // This is a macro call — expand it (in expression position, no dict key)
+                let expanded = expand_macro_call(
                     &macro_name,
                     args,
                     named_args,
                     expr.span,
+                    None, // expression position — no dict key
                     env,
                     ctx,
                     stdlib_env,
-                )
+                )?;
+                // Task 2: Splice in expression position is an expansion-time error.
+                if matches!(expanded.node, Expr::Splice(_)) {
+                    return Err(EvalError::macro_error(
+                        format!(
+                            "macro '{}' returned splice, which is not valid in expression position",
+                            macro_name
+                        ),
+                        expr.span,
+                    )
+                    .into());
+                }
+                Ok(expanded)
             } else {
                 // Not a macro call — recursively expand children
                 let expanded_func = expand_expr(func.as_ref().clone(), env, ctx, stdlib_env)?;
@@ -905,16 +1042,82 @@ fn expand_expr_inner(
         Expr::Dict(entries) => {
             let mut expanded_entries = Vec::new();
             for entry in entries {
-                let expanded_value =
-                    expand_expr(entry.node.value.as_ref().clone(), env, ctx, stdlib_env)?;
-                // Filter out DefMacro, MacroDecl, and SyntaxClass entries — they've been registered during
-                // expand_expr and should not appear in the post-expansion AST.
+                // Task 4: extract the dict key string for inject: threading.
+                // The key is available if this is a string/bareword key expression.
+                let dict_key_str: Option<String> = entry.node.key.as_ref().and_then(|k| {
+                    match &k.node {
+                        Expr::Str(s) => Some(s.clone()),
+                        Expr::VarRef { name, .. } => Some(name.clone()),
+                        _ => None,
+                    }
+                });
+
+                // Task 4: if the entry value is a macro call, expand with the dict key.
+                // This is necessary for inject: threading — the macro needs to know its key.
+                let expanded_value = {
+                    let value_expr = entry.node.value.as_ref();
+                    if let Expr::Call { func, args, named_args, .. } = &value_expr.node {
+                        if let Expr::VarRef { name, .. } = &func.node {
+                            if env.is_macro(name) {
+                                let macro_name_clone = name.clone();
+                                let expanded = expand_macro_call(
+                                    &macro_name_clone,
+                                    args,
+                                    named_args,
+                                    value_expr.span,
+                                    dict_key_str.as_deref(), // Task 4: pass key
+                                    env,
+                                    ctx,
+                                    stdlib_env,
+                                )?;
+                                expanded
+                            } else {
+                                expand_expr(value_expr.clone(), env, ctx, stdlib_env)?
+                            }
+                        } else {
+                            expand_expr(value_expr.clone(), env, ctx, stdlib_env)?
+                        }
+                    } else {
+                        expand_expr(value_expr.clone(), env, ctx, stdlib_env)?
+                    }
+                };
+
+                // Filter out declaration nodes — they've been registered and must not appear post-expansion.
                 if matches!(
                     expanded_value.node,
                     Expr::DefMacro { .. } | Expr::MacroDecl { .. } | Expr::SyntaxClass { .. }
                 ) {
                     continue;
                 }
+
+                // Splice in dict context: inject each spliced form as a separate unkeyed entry.
+                // Any MacroDecl/SyntaxClass in the splice output is registered immediately.
+                if let Expr::Splice(forms) = expanded_value.node {
+                    for form in forms {
+                        match &form.node {
+                            Expr::MacroDecl { .. } | Expr::SyntaxClass { .. } | Expr::DefMacro { .. } => {
+                                pre_scan_expr_spanned(&form, env, ctx, stdlib_env)?;
+                            }
+                            _ => {
+                                let re_expanded = expand_expr(form.clone(), env, ctx, stdlib_env)?;
+                                if !matches!(
+                                    re_expanded.node,
+                                    Expr::DefMacro { .. } | Expr::MacroDecl { .. } | Expr::SyntaxClass { .. }
+                                ) {
+                                    expanded_entries.push(Spanned::new(
+                                        Entry {
+                                            key: None, // splice output is unkeyed
+                                            value: Rc::new(re_expanded),
+                                        },
+                                        entry.span,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 let expanded_key = if let Some(key) = &entry.node.key {
                     Some(expand_expr(key.clone(), env, ctx, stdlib_env)?)
                 } else {
@@ -1163,10 +1366,10 @@ fn expand_expr_inner(
 /// The result is then re-expanded (fixpoint) until no macro calls remain.
 ///
 /// Supports:
-/// - Pattern matching: [macro my-if [let cond then else] body]
+/// - [let ...] pattern matching: [macro my-if [let cond then else] body]
 /// - Syntax-class validation: [macro pragma [let name@VarRef value@Literal] body]
-/// - Anaphoric macros with inject: threading (task 4)
-/// - Splice handling (task 2)
+/// - Anaphoric macros with inject: threading
+/// - Splice output: returned as Expr::Splice for the caller to handle
 ///
 /// ## Arena Boundary Invariant
 ///
@@ -1178,6 +1381,9 @@ fn expand_macro_call(
     args: &[Rc<Spanned<Expr>>],
     _named_args: &[Spanned<NamedArg>],
     call_span: Span,
+    // dict_key: the key under which this macro call appears (for inject: threading).
+    // None when in expression position.
+    dict_key: Option<&str>,
     env: &mut MacroEnv,
     ctx: &Rc<EvalContext>,
     stdlib_env: &Rc<RefCell<Environment>>,
@@ -1197,97 +1403,262 @@ fn expand_macro_call(
     // Enter expansion (depth check + blackhole detection)
     env.enter_expansion(call_site_id, call_span)?;
 
-    // Quote each argument to an AST dict value
-    let opts = AstToDictOpts::default();
-    let mut quoted_args = Vec::with_capacity(args.len());
-    for arg in args {
-        let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
-        quoted_args.push(dict_thunk);
-    }
-
-    // Build the args list as a Value::Dict with integer keys (tinct list)
-    let mut args_dict = indexmap::IndexMap::new();
-    for (i, thunk) in quoted_args.into_iter().enumerate() {
-        let thunk_id = ctx.alloc_thunk(thunk);
-        args_dict.insert(Key::Int(i as i64), thunk_id);
-    }
-    let args_value = Value::Dict(args_dict);
-
-    // ARENA BOUNDARY: Deep-materialize the input AST dict before passing to the transformer.
-    // ast_to_dict_expr creates all thunks as Materialized, so this is a validation pass
-    // with no lazy computation triggered. Cost is O(AST node count) cache hits.
-    let deep_args_value =
-        eval::deep_materialize(&args_value, ctx, Some(&call_span)).map_err(|mut e| {
-            e.push_frame(
-                format!("deep-materializing input to macro '{}'", macro_name),
-                call_span,
-            );
-            e
-        })?;
-
-    // Debug assertion: verify all thunks in the input are materialized
-    #[cfg(debug_assertions)]
-    debug_assert!(
-        all_thunks_materialized(&deep_args_value, ctx),
-        "macro expansion boundary violated: input contains lazy thunks"
-    );
-
-    let args_thunk = Rc::new(Thunk::new_materialized(deep_args_value, call_span));
-
-    // Get the transformer and call it with the args list
+    // Clone out what we need from macro_metadata before taking mutable references to env.
     let macro_metadata = env
         .get_macro(macro_name)
         .expect("macro name verified before call");
     let transformer = macro_metadata.transformer.clone();
+    let params_pattern = macro_metadata.params.clone();
+    let inject_default = macro_metadata.inject_default.clone();
+    let new_style = macro_metadata.new_style;
 
-    // Materialize the transformer to get the function value
-    let transformer_val = eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "macro '{}' transformer failed to evaluate: {}",
-                macro_name, e.kind
-            ),
-            call_span,
-        )
-    })?;
+    let opts = AstToDictOpts::default();
 
-    // Call the transformer function with the args list
-    let result_thunk = match &transformer_val {
-        Value::Function {
-            params,
-            body,
-            env: closure_env,
-            ..
-        } => {
-            use crate::eval_call::{invoke_function, CallContext};
-            let call_ctx = CallContext {
-                params: params.as_slice(),
-                body,
-                positional: &[args_thunk],
-                named: None,
-                closure_env,
-                default_env: closure_env,
-                ctx,
-                call_span,
-                origin: Some(Rc::from(format!("macro:{}", macro_name))),
-            };
-            invoke_function(&call_ctx).map_err(|e| {
+    // Build the positional thunks to pass to invoke_function.
+    let result_thunk = if new_style {
+        // ====================================================================
+        // Task 1: New-style [macro ...] with [let ...] pattern matching.
+        // Each LetDecl binding corresponds to one positional argument.
+        // ====================================================================
+
+        // Extract bindings from the LetDecl pattern
+        let bindings: Vec<&Spanned<Expr>> = match &params_pattern.node {
+            Expr::LetDecl { bindings } => bindings.iter().collect(),
+            _ => vec![],
+        };
+
+        // Task 3: Validate annotated params (syntax-class check) BEFORE calling the transformer.
+        // Walk through non-variadic params and check their annotations against the args.
+        let mut arg_idx = 0usize;
+        for binding in &bindings {
+            match &binding.node {
+                Expr::Rest(_) => {
+                    // Variadic — consumes all remaining args; no per-arg validation here
+                    break;
+                }
+                Expr::Annotated { name: param_name, annotation } => {
+                    if arg_idx < args.len() {
+                        validate_syntax_class(
+                            &args[arg_idx],
+                            &annotation.node,
+                            param_name,
+                            macro_name,
+                            call_span,
+                        )?;
+                    }
+                    arg_idx += 1;
+                }
+                Expr::VarRef { .. } => {
+                    arg_idx += 1;
+                }
+                _ => {
+                    arg_idx += 1;
+                }
+            }
+        }
+
+        // Quote each argument individually to an AST dict thunk.
+        // Each quoted arg becomes a separate positional thunk for invoke_function.
+        let mut positional_thunks: Vec<Rc<Thunk>> = Vec::with_capacity(args.len());
+        for arg in args {
+            let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
+            // ARENA BOUNDARY: deep-materialize before crossing
+            let arg_val = eval::materialize(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
                 EvalError::user_error(
-                    format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
+                    format!(
+                        "macro '{}': failed to quote argument for expansion: {}",
+                        macro_name, e.kind
+                    ),
                     call_span,
                 )
-            })?
+            })?;
+            let deep_arg_val =
+                eval::deep_materialize(&arg_val, ctx, Some(&call_span)).map_err(|mut e| {
+                    e.push_frame(
+                        format!("deep-materializing argument for macro '{}'", macro_name),
+                        call_span,
+                    );
+                    e
+                })?;
+            positional_thunks.push(Rc::new(Thunk::new_materialized(deep_arg_val, call_span)));
         }
-        other => {
-            return Err(EvalError::user_error(
-                format!(
-                    "macro '{}' transformer must be a function, got {}",
-                    macro_name,
-                    other.type_name()
-                ),
-                call_span,
-            )
-            .into());
+
+        // Task 4: Thread inject: binding.
+        // If the macro declares inject:, add the `binding` argument as the last positional.
+        // In dict-key position: use the key name. In expression position: use inject_default.
+        if inject_default.is_some() {
+            let binding_name = dict_key
+                .map(|k| k.to_string())
+                .or_else(|| inject_default.clone())
+                .unwrap_or_default();
+            // Build a VarRef AST node for the binding name
+            let binding_expr = Spanned::new(Expr::var_ref(binding_name.clone()), call_span);
+            let binding_rc = Rc::new(binding_expr);
+            let binding_thunk = ast_to_dict_expr(&binding_rc, &opts, ctx)?;
+            let binding_val = eval::materialize(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "macro '{}': failed to quote binding name '{}': {}",
+                        macro_name, binding_name, e.kind
+                    ),
+                    call_span,
+                )
+            })?;
+            let deep_binding_val =
+                eval::deep_materialize(&binding_val, ctx, Some(&call_span)).map_err(|mut e| {
+                    e.push_frame(
+                        format!("deep-materializing binding arg for macro '{}'", macro_name),
+                        call_span,
+                    );
+                    e
+                })?;
+            positional_thunks
+                .push(Rc::new(Thunk::new_materialized(deep_binding_val, call_span)));
+        }
+
+        // Materialize the transformer to get the function value
+        let transformer_val =
+            eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "macro '{}' transformer failed to evaluate: {}",
+                        macro_name, e.kind
+                    ),
+                    call_span,
+                )
+            })?;
+
+        match &transformer_val {
+            Value::Function {
+                params,
+                body,
+                env: closure_env,
+                ..
+            } => {
+                use crate::eval_call::{invoke_function, CallContext};
+                let call_ctx = CallContext {
+                    params: params.as_slice(),
+                    body,
+                    positional: &positional_thunks,
+                    named: None,
+                    closure_env,
+                    default_env: closure_env,
+                    ctx,
+                    call_span,
+                    origin: Some(Rc::from(format!("macro:{}", macro_name))),
+                };
+                invoke_function(&call_ctx).map_err(|e| {
+                    EvalError::user_error(
+                        format!(
+                            "macro '{}' transformer call failed: {}",
+                            macro_name, e.kind
+                        ),
+                        call_span,
+                    )
+                })?
+            }
+            other => {
+                env.leave_expansion(call_site_id);
+                return Err(EvalError::user_error(
+                    format!(
+                        "macro '{}' transformer must be a function, got {}",
+                        macro_name,
+                        other.type_name()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+        }
+    } else {
+        // ====================================================================
+        // Old-style [defmacro ...]: single args dict passed as one positional arg.
+        // ====================================================================
+        let mut quoted_args = Vec::with_capacity(args.len());
+        for arg in args {
+            let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
+            quoted_args.push(dict_thunk);
+        }
+
+        // Build the args list as a Value::Dict with integer keys (tinct list)
+        let mut args_dict = indexmap::IndexMap::new();
+        for (i, thunk) in quoted_args.into_iter().enumerate() {
+            let thunk_id = ctx.alloc_thunk(thunk);
+            args_dict.insert(Key::Int(i as i64), thunk_id);
+        }
+        let args_value = Value::Dict(args_dict);
+
+        // ARENA BOUNDARY: Deep-materialize the input AST dict before passing to the transformer.
+        let deep_args_value =
+            eval::deep_materialize(&args_value, ctx, Some(&call_span)).map_err(|mut e| {
+                e.push_frame(
+                    format!("deep-materializing input to macro '{}'", macro_name),
+                    call_span,
+                );
+                e
+            })?;
+
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            all_thunks_materialized(&deep_args_value, ctx),
+            "macro expansion boundary violated: input contains lazy thunks"
+        );
+
+        let args_thunk = Rc::new(Thunk::new_materialized(deep_args_value, call_span));
+
+        // Materialize the transformer to get the function value
+        let transformer_val =
+            eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "macro '{}' transformer failed to evaluate: {}",
+                        macro_name, e.kind
+                    ),
+                    call_span,
+                )
+            })?;
+
+        match &transformer_val {
+            Value::Function {
+                params,
+                body,
+                env: closure_env,
+                ..
+            } => {
+                use crate::eval_call::{invoke_function, CallContext};
+                let call_ctx = CallContext {
+                    params: params.as_slice(),
+                    body,
+                    positional: &[args_thunk],
+                    named: None,
+                    closure_env,
+                    default_env: closure_env,
+                    ctx,
+                    call_span,
+                    origin: Some(Rc::from(format!("macro:{}", macro_name))),
+                };
+                invoke_function(&call_ctx).map_err(|e| {
+                    EvalError::user_error(
+                        format!(
+                            "macro '{}' transformer call failed: {}",
+                            macro_name, e.kind
+                        ),
+                        call_span,
+                    )
+                })?
+            }
+            other => {
+                env.leave_expansion(call_site_id);
+                return Err(EvalError::user_error(
+                    format!(
+                        "macro '{}' transformer must be a function, got {}",
+                        macro_name,
+                        other.type_name()
+                    ),
+                    call_span,
+                )
+                .into());
+            }
         }
     };
 
@@ -1300,7 +1671,6 @@ fn expand_macro_call(
             ),
             call_span,
         );
-        // Record provenance for the error
         err.push_frame(format!("in expansion of `{}`", macro_name), call_span);
         err
     })?;
@@ -1311,7 +1681,6 @@ fn expand_macro_call(
         e
     })?;
 
-    // Debug assertion: verify all thunks in the output are materialized
     #[cfg(debug_assertions)]
     debug_assert!(
         all_thunks_materialized(&deep_result, ctx),
@@ -1327,17 +1696,12 @@ fn expand_macro_call(
     })?;
 
     // Set the expanded AST's top-level span to the call site span.
-    // This ensures errors in expanded code carry the call site span, which the
-    // provenance map uses to attach "in expansion of `<name>`" notes.
     if expanded_ast.span == Span::origin() {
         expanded_ast.span = call_span;
     }
 
-    // Allocate a fresh scope ID for hygiene tracking.
-    // Phase 1: the scope ID is recorded for provenance but automatic renaming
-    // is not applied — macro authors use `gensym` for internal bindings.
-    // Phase 2 (future): apply scope-based alpha-renaming to macro-template
-    // bindings, distinguishing them from user-spliced code.
+    // Phase 1: allocate a fresh scope ID for hygiene provenance tracking.
+    // Phase 2 (future): apply scope-based alpha-renaming to macro-template bindings.
     let _scope_id = ScopeId::fresh();
 
     // Record provenance for this expansion (dual-span tracking)
@@ -1351,6 +1715,13 @@ fn expand_macro_call(
 
     // Leave expansion
     env.leave_expansion(call_site_id);
+
+    // Task 2: Splice handling — if the expansion returns Expr::Splice, return it as-is.
+    // The caller (expand_document or expand_expr_inner for Dict context) will handle injection.
+    // In expression position, Expr::Splice is an expansion-time error (checked in expand_expr_inner).
+    if matches!(expanded_ast.node, Expr::Splice(_)) {
+        return Ok(expanded_ast);
+    }
 
     // Re-expand the result (fixpoint)
     expand_expr(expanded_ast, env, ctx, stdlib_env)
