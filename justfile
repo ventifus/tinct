@@ -193,7 +193,7 @@ versions:
 # Writes one file per module to doc/lib/<module>.md.
 # The module index is now maintained manually in doc/11-stdlib.md §Supplemental Module Reference.
 docgen:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs docdir=doc/lib scripts/docgen.llt"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs docdir=doc/lib:w scripts/docgen.llt"
 
 # Weave tinct code block outputs into doc/*.md (living documentation).
 # Updates the === out / === warn / === info sections inside each ```tinct block.
