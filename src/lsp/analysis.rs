@@ -2097,27 +2097,26 @@ mod tests {
     #[test]
     fn test_hover_builtin_shows_constraint() {
         // Task 2: hover on a constrained builtin should show the constraint.
-        // `builtin-eq` has scheme `Equatable a => Fn@Bool [a a]` and is NOT redefined
-        // by the prelude (unlike `=` which the prelude wraps as a concrete function).
+        // `=` has scheme `Equatable a => Fn@Bool [a a]` from the prelude.
         //
-        // "[call $builtin-eq 1 2]"
+        // "[call $= 1 2]"
         //  0123456789...
-        //       ^ 6 = '$' of '$builtin-eq'
+        //       ^ 6 = '$' of '$='
         let env = test_env();
-        let source = "[call $builtin-eq 1 2]";
+        let source = "[call $= 1 2]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
-        // Offset 6 is on '$builtin-eq'
+        // Offset 6 is on '$='
         let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph());
-        assert!(hover.is_some(), "should have hover on $builtin-eq");
+        assert!(hover.is_some(), "should have hover on $=");
         let text = hover.unwrap();
         // Should show the "Equatable" constraint in the type display
         assert!(
             text.contains("Equatable"),
-            "hover should show Equatable constraint for $builtin-eq, got: {text}"
+            "hover should show Equatable constraint for $=, got: {text}"
         );
         assert!(
             text.contains("Bool"),
-            "hover should show Bool return type for $builtin-eq, got: {text}"
+            "hover should show Bool return type for $=, got: {text}"
         );
     }
 

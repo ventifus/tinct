@@ -1,17 +1,6 @@
-# builtin-* aliases are directly callable as stable escape hatches
+# builtin-* aliases are no longer accessible in user code
 [
   a: [builtin-lt 1 2]
-  b: [builtin-add 3 4]
-  c: [builtin-eq "hello" "hello"]
-  d: [builtin-if true 10 20]
-  e: [collect [builtin-filter [fn [x] [builtin-lt x 3]] [seq 1 [seq 2 []]]]]
-  f: [collect [builtin-map [fn [x] [builtin-add x 1]] [seq 10 [seq 20 []]]]]
-  g: [builtin-sub 10 3]
-  h: [builtin-mul 6 7]
-  i: [builtin-div 15 3]
-  j: [builtin-reduce [fn [acc x] [builtin-add acc x]] 0 [seq 1 [seq 2 [seq 3 []]]]]
-  k: [collect [builtin-take 2 [seq 1 [seq 2 [seq 3 []]]]]]
-  l: [collect [builtin-drop 1 [seq 1 [seq 2 [seq 3 []]]]]]
 ]
-=== out
-Dict({"a": Bool(true), "b": Int(7), "c": Bool(true), "d": Int(10), "e": Dict({0: Int(1), 1: Int(2)}), "f": Dict({0: Int(11), 1: Int(21)}), "g": Int(7), "h": Int(42), "i": Float(5), "j": Int(6), "k": Dict({0: Int(1), 1: Int(2)}), "l": Dict({0: Int(2), 1: Int(3)})})
+=== err
+undefined variable: `builtin-lt`

@@ -1539,6 +1539,20 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_icmp_ping,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
+        // Meta primitives (exposed via %rust "meta" module)
+        builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
+        builtin!("gensym", builtin_gensym),
+        builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
+        builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
+        builtin!("variant", builtin_variant, [Strictness::Seq]),
+        builtin!("decimal", builtin_decimal, [Strictness::Seq]),
+        builtin!("big-int", builtin_big_int, [Strictness::Seq]),
+        builtin!("proxy", builtin_proxy),
+        builtin!(
+            "macro-injects",
+            builtin_macro_injects,
+            [Strictness::Seq]
+        ),
     ]
 }
 
@@ -1832,6 +1846,19 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "variant");
             insert(&env, "eval-ast");
             insert(&env, "proxy");
+            insert(&env, "macro-injects");
+            // Alias for prelude compatibility
+            let alias_from_public =
+                |env: &Rc<RefCell<Environment>>, alias_name: &'static str, public_name: &str| {
+                    if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
+                        let thunk = Rc::new(Thunk::new_materialized(
+                            Value::Builtin(*def),
+                            Span::origin(),
+                        ));
+                        env.borrow_mut().insert(alias_name.to_string(), thunk);
+                    }
+                };
+            alias_from_public(&env, "builtin-macro-injects", "macro-injects");
         }
         "type-core" => {
             // Core primitives needed for type system implementation
@@ -1911,7 +1938,8 @@ pub fn create_bootstrap_env() -> Rc<RefCell<Environment>> {
 }
 
 /// Create the root environment with all builtins registered as `Value::Builtin`.
-pub fn create_root_env() -> Rc<RefCell<Environment>> {
+/// Used only by `src/expand.rs` for macro expansion during prelude bootstrap.
+pub(crate) fn create_root_env() -> Rc<RefCell<Environment>> {
     let env = Rc::new(RefCell::new(Environment::new()));
     for def in standard_builtins() {
         let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
@@ -1924,86 +1952,6 @@ pub fn create_root_env() -> Rc<RefCell<Environment>> {
     env
 }
 
-/// Inject internal `builtin-*` aliases into an environment.
-///
-/// Called by `create_stdlib_env_inner` AFTER prelude loading to inject `builtin-*`
-/// stable aliases into the stdlib env. These cannot be re-exported from inside
-/// prelude's letrec dict (that would cause circular dependencies), so they are
-/// injected at the Rust level here.
-///
-/// Also used by unit tests that need closures with `builtin-*` names in scope.
-pub fn inject_prelude_aliases(env: &mut Environment) {
-    let aliases: Vec<crate::value::BuiltinDef> = vec![
-        builtin!("builtin-lt", builtin_lt, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-eq", builtin_eq, [Strictness::Seq, Strictness::Seq]),
-        builtin!(
-            "builtin-add",
-            builtin_add,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-sub",
-            builtin_sub,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-mul",
-            builtin_mul,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-div",
-            builtin_div_float,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!("builtin-if", builtin_if),
-        builtin!("builtin-filter", builtin_filter),
-        builtin!("builtin-map", builtin_map),
-        builtin!("builtin-reduce", builtin_reduce),
-        builtin!("builtin-take", builtin_take),
-        builtin!("builtin-drop", builtin_drop),
-        builtin!("builtin-get", builtin_get),
-        builtin!("builtin-seq", builtin_seq),
-        builtin!("builtin-head", builtin_head, [Strictness::Seq]),
-        builtin!("builtin-tail", builtin_tail, [Strictness::Seq]),
-        builtin!("builtin-collect", builtin_collect, [Strictness::Seq]),
-        builtin!("builtin-range", builtin_range),
-        builtin!("builtin-repeat", builtin_repeat),
-        builtin!("builtin-cycle", builtin_cycle),
-        builtin!("builtin-iterate", builtin_iterate),
-        builtin!("builtin-unfold", builtin_unfold),
-        builtin!(
-            "builtin-join",
-            builtin_join,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-concat",
-            builtin_concat,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!("builtin-first", builtin_first, [Strictness::Seq]),
-        builtin!("builtin-last", builtin_last, [Strictness::Seq]),
-        builtin!("builtin-rest", builtin_rest, [Strictness::Seq]),
-        builtin!("builtin-cons", builtin_cons),
-        builtin!("builtin-reverse", builtin_reverse, [Strictness::Seq]),
-        builtin!("builtin-sort", builtin_sort, [Strictness::Seq]),
-        builtin!("builtin-eval-ast", builtin_eval_ast, [Strictness::Seq]),
-        builtin!("builtin-gensym", builtin_gensym),
-        builtin!("builtin-macro-injects", builtin_macro_injects, [Strictness::Seq]),
-        builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
-        builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!("builtin-variant", builtin_variant, [Strictness::Seq]),
-        builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
-        builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
-        builtin!("builtin-proxy", builtin_proxy),
-    ];
-
-    for def in aliases {
-        let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
-        env.insert(def.name.to_string(), thunk);
-    }
-}
 
 /// Create the stdlib environment: root builtins + prelude functions.
 ///
@@ -2168,35 +2116,7 @@ fn create_stdlib_env_inner() -> Result<
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
 
-    // Inject ALL standard builtins into stdlib_env AFTER prelude loading.
-    //
-    // Rationale: user code (child of stdlib_env) expects all builtins to be in scope
-    // (e.g., `str`, `error`, `keys`, `builtin-lt`, `emit`). Since stdlib_env's parent
-    // is bootstrap_env (which has only `include` + `%rust`), we must inject the
-    // builtins here directly rather than relying on the parent chain.
-    //
-    // This preserves backwards compatibility: user code that references raw builtins
-    // directly (e.g., `builtin-add`, `str`, `emit`) still works.
-    //
-    // Note: this does NOT override prelude's dict entries (those were inserted first
-    // and take lexical priority), but it DOES make all builtins accessible via parent
-    // chain lookup when not shadowed by prelude.
-    //
-    {
-        let mut env_borrow = stdlib_env.borrow_mut();
-        for def in standard_builtins() {
-            // Only insert if not already present (prelude entries take priority).
-            if env_borrow.get(def.name).is_none() {
-                let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
-                env_borrow.insert(def.name.to_string(), thunk);
-            }
-        }
-        // Transport nominal variant constants (Tcp, Udp, etc.)
-        // Now registered automatically by the prelude's [type [Tcp] [Udp] ...] declaration.
-
-        // builtin-* aliases (inject after standard builtins)
-        inject_prelude_aliases(&mut env_borrow);
-    }
+    // User code now only sees what prelude exports — no direct access to Rust builtins.
 
     // Load macros — exports tmpl-transformer and helpers used by expand_macros.
     // Loaded after prelude so macro helpers can reference prelude functions.
@@ -6587,10 +6507,10 @@ mod tests {
         let count = standard_builtins().len();
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
-        // 8 primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy)
-        // were moved to builtin-* aliases for prelude-only use, reducing count from 184 to 176.
+        // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
+        // are now in standard_builtins and accessible only via %rust "meta" module.
         assert_eq!(
-            count, 176,
+            count, 185,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6810,8 +6730,8 @@ mod tests {
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
         assert_eq!(
             names.len(),
-            176,
-            "expected 176 builtins, got {} (8 primitives moved to builtin-* aliases: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy)",
+            185,
+            "expected 185 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)",
             names.len()
         );
     }
@@ -10964,10 +10884,9 @@ mod tests {
     }
 
     /// Helper: create a function whose closure env contains builtins (needed for
-    /// tests where the function body calls builtins like $builtin-add).
+    /// tests where the function body calls builtins).
     fn n_arg_fn_with_builtins(param_names: &[&str], body_expr: Expr) -> Value {
         let env = create_root_env();
-        inject_prelude_aliases(&mut env.borrow_mut());
         Value::Function {
             params: Rc::new(
                 param_names
@@ -10998,7 +10917,7 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::var_ref("builtin-eq".to_string()),
+                            Expr::var_ref("=".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
@@ -11016,7 +10935,7 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::var_ref("builtin-add".to_string()),
+                            Expr::var_ref("+".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
@@ -11096,7 +11015,7 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::var_ref("builtin-eq".to_string()),
+                            Expr::var_ref("=".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
@@ -11114,7 +11033,7 @@ mod tests {
                     &["x"],
                     Expr::Call {
                         func: Box::new(Spanned::new(
-                            Expr::var_ref("builtin-add".to_string()),
+                            Expr::var_ref("+".to_string()),
                             test_span(1, 1, 1, 10),
                         )),
                         args: vec![
