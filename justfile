@@ -112,10 +112,22 @@ update-precise PKG VER:
 tree:
     {{container}} run {{run_flags}} {{rust_image}} cargo tree
 
-# Run full CI pipeline (check, test, lint, fmt-check, audit)
+# Lint all stdlib .llt files for type errors without executing them
+lint-stdlib: build-release
+    {{container}} run {{run_flags}} {{rust_image}} sh -c \
+        "for f in stdlib/**/*.llt stdlib/*.llt; do \
+           ./target/release/tinct lint --no-fs \"$$f\" || exit 1; \
+         done"
+
+# Lint a single tinct source file
+lint-file FILE: build-release
+    {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint {{FILE}}
+
+# Run full CI pipeline (check, test, lint-stdlib, lint, fmt-check, audit)
 ci:
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo check
     just test
+    just lint-stdlib
     just lint
     just fmt-check
     just audit
@@ -149,9 +161,13 @@ ts-parse FILE:
 ext:
     {{container}} run --rm -v .:/workspace:z -w /workspace/integrations/vscode {{node_image}} sh -c "npm install && npm run compile && npx @vscode/vsce package --no-dependencies"
 
-# Format LLT source file and print to stdout
+# Format LLT source file and print to stdout (pretty formatter, default)
 fmt-llt FILE:
     {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- fmt {{FILE}}
+
+# Format LLT source file with compact (single-line) output
+fmt-llt-compact FILE:
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- fmt -o compact {{FILE}}
 
 # Check LLT source formatting (exit 1 if unformatted)
 fmt-llt-check FILE:
@@ -178,7 +194,7 @@ versions:
 # Writes one file per module to doc/lib/<module>.md.
 # The module index is now maintained manually in doc/11-stdlib.md §Supplemental Module Reference.
 docgen:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs root=. --cap-fs docdir=doc/lib scripts/docgen.llt"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs docdir=doc/lib scripts/docgen.llt"
 
 # Weave tinct code block outputs into doc/*.md (living documentation).
 # Updates the === out / === warn / === info sections inside each ```tinct block.

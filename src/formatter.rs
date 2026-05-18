@@ -17,22 +17,16 @@ pub fn format_source(input: &str) -> Result<String, ParseError> {
     Ok(formatter.output)
 }
 
-pub fn format_source_compact(
-    input: &str,
-    oneline: bool,
-    nospaces: bool,
-) -> Result<String, ParseError> {
-    let output = parse2(input)?;
-    let mut formatter = Formatter::new(&output, input, oneline, nospaces);
-    formatter.format_file();
-    Ok(formatter.output)
-}
-
-/// Format source using the tinct-hosted formatter.
+/// Format source using the tinct-hosted formatter script at `script_path`.
 ///
-/// When `compact` is true, uses `stdlib/formatter/compact.llt` (oneline/minimize mode).
-/// When `compact` is false, uses `stdlib/formatter/pretty.llt` (full pretty-printing with comments).
-pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String> {
+/// The script receives the AST dict as `%` and must return `[Ok String]` on success
+/// or `[Err msg]` on failure (both formatters use `[try [fn [] [format-file %]]]`).
+///
+/// `script_path` is the path to a `.llt` formatter script (e.g. `stdlib/cli/fmt/pretty.llt`).
+/// Whether to pass source/comment information is inferred from the script name:
+/// scripts named `compact` receive a minimal AST (no source, no comments); all others
+/// receive the full AST (with source info and comments for comment preservation).
+pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result<String, String> {
     use crate::ast_dict::{ast_to_dict, AstToDictOpts};
     use crate::builtins::create_stdlib_env;
     use crate::desugar;
@@ -41,6 +35,12 @@ pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String>
     use crate::resolve;
     use crate::typecheck;
     use crate::value::Value;
+
+    // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
+    let compact = script_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map_or(false, |name| name == "compact");
 
     // Set up evaluation context
     let base_dir_path = std::env::current_dir()
@@ -57,9 +57,9 @@ pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String>
     use crate::ast_dict::CommentMaps;
     let parse_output = parse2(input).map_err(|e| format!("{e}"))?;
 
-    // Convert AST to dict
-    // Compact mode: minimal (no source, no comments)
-    // Pretty mode: full (with source info and comments)
+    // Convert AST to dict.
+    // Compact mode: minimal (no source, no comments).
+    // Pretty mode: full (with source info and comments).
     let opts = if compact {
         AstToDictOpts::default()
     } else {
@@ -75,41 +75,70 @@ pub fn format_source_tinct(input: &str, compact: bool) -> Result<String, String>
     let ast_thunk =
         ast_to_dict(&parse_output.file.node, &opts, &ctx).map_err(|e| format!("{e}"))?;
 
-    // Load the appropriate formatter
-    let formatter_source = if compact {
-        include_str!("../stdlib/formatter/compact.llt")
-    } else {
-        include_str!("../stdlib/formatter/pretty.llt")
-    };
+    // Load the formatter script from disk.
+    let formatter_source = std::fs::read_to_string(script_path).map_err(|e| {
+        format!(
+            "cannot read formatter script {}: {e}",
+            script_path.display()
+        )
+    })?;
     let mut formatter_file =
-        parse(formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
+        parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
 
-    // Desugar, resolve, typecheck the formatter program
+    // Desugar, resolve, typecheck the formatter program.
     desugar::desugar_file(&mut formatter_file.node);
     resolve::resolve_file(&formatter_file.node);
     let _ = typecheck::typecheck_file(&formatter_file.node);
 
-    // Evaluate formatter with AST as % (pipeline input)
+    // Evaluate formatter with AST as % (pipeline input).
     let formatter_thunk =
         eval::eval_file_with_input(&formatter_file.node, Rc::clone(&env), &ctx, Some(ast_thunk))
             .map_err(|e| format!("formatter eval error: {e}"))?;
 
-    // Materialize the result (should be a string)
-    let formatted = eval::materialize(&formatter_thunk, None, &ctx)
+    // Materialize the result — should be [Ok String] or [Err msg].
+    let result_val = eval::materialize(&formatter_thunk, None, &ctx)
         .map_err(|e| format!("formatter materialize error: {e}"))?;
 
-    match formatted {
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => Ok(source[start..end].to_string()),
+    // Unwrap [Ok s] / surface [Err msg].
+    // The formatters return `[try [fn [] [format-file %]]]` which produces
+    // Value::Variant { tag: "Ok", payload: Some(string_thunk) } on success
+    // or Value::Variant { tag: "Err", payload: Some(msg_thunk) } on failure.
+    match result_val {
+        Value::Variant { tag, payload } if tag == "Ok" => {
+            let payload_id = payload.ok_or_else(|| "formatter Ok has no payload".to_string())?;
+            let payload_thunk = ctx.get_thunk(payload_id);
+            let ok_val = eval::materialize(&payload_thunk, None, &ctx)
+                .map_err(|e| format!("formatter Ok materialize error: {e}"))?;
+            match ok_val {
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => Ok(source[start..end].to_string()),
+                _ => {
+                    let display_str = crate::value_to_display_string(&ok_val, &ctx)
+                        .unwrap_or_else(|_| "<error displaying value>".to_string());
+                    Err(format!("formatter Ok value is not a string: {display_str}"))
+                }
+            }
+        }
+        Value::Variant { tag, payload } if tag == "Err" => {
+            let msg = if let Some(err_id) = payload {
+                let err_thunk = ctx.get_thunk(err_id);
+                let err_val = eval::materialize(&err_thunk, None, &ctx)
+                    .map_err(|e| format!("formatter Err materialize error: {e}"))?;
+                crate::value_to_display_string(&err_val, &ctx)
+                    .unwrap_or_else(|_| "<error displaying value>".to_string())
+            } else {
+                "(no message)".to_string()
+            };
+            Err(format!("formatter error: {msg}"))
+        }
         _ => {
-            let display_str = crate::value_to_display_string(&formatted, &ctx)
+            let display_str = crate::value_to_display_string(&result_val, &ctx)
                 .unwrap_or_else(|_| "<error displaying value>".to_string());
             Err(format!(
-                "formatter returned non-string value: {}",
-                display_str
+                "formatter returned non-Result value: {display_str}"
             ))
         }
     }
@@ -2045,136 +2074,45 @@ mod tests {
         assert_eq!(formatted, "[x: 1]\n\n---\n\n[y: 2]\n");
     }
 
-    // --- Oneline mode tests ---
-
-    #[test]
-    fn test_oneline_basic() {
-        let input = "[x: 1 y: 2]";
-        let formatted = format_source_compact(input, true, false).unwrap();
-        // oneline mode: no trailing newline
-        assert_eq!(formatted, "[x: 1 y: 2]");
-    }
-
-    #[test]
-    fn test_oneline_strips_comments() {
-        let input = "# comment\n[x: 1]";
-        let formatted = format_source_compact(input, true, false).unwrap();
-        assert_eq!(formatted, "[x: 1]");
-        assert!(!formatted.contains('#'));
-    }
-
-    #[test]
-    fn test_oneline_document_separator() {
-        let input = "[x: 1]\n---\n[y: 2]";
-        let formatted = format_source_compact(input, true, false).unwrap();
-        // Document separator becomes "; " in oneline mode
-        assert_eq!(formatted, "[x: 1] ---; [y: 2]");
-    }
-
-    #[test]
-    fn test_oneline_named_section() {
-        let input = "[x: 1]\n--- %defaults\n[y: 2]";
-        let formatted = format_source_compact(input, true, false).unwrap();
-        assert_eq!(formatted, "[x: 1] --- %defaults; [y: 2]");
-    }
-
-    #[test]
-    fn test_oneline_section_with_type() {
-        let input = "[x: 1]\n--- %cfg@Dict\n[y: 2]";
-        let formatted = format_source_compact(input, true, false).unwrap();
-        assert_eq!(formatted, "[x: 1] --- %cfg@Dict; [y: 2]");
-    }
-
-    #[test]
-    fn test_nospaces_basic() {
-        let input = "[x: 1 y: 2]";
-        let formatted = format_source_compact(input, false, true).unwrap();
-        // nospaces: remove spaces except where required
-        // "[x:1 y:2]" - space needed between "1" and "y" (both bare-word chars)
-        assert_eq!(formatted, "[x:1 y:2]\n");
-    }
-
-    #[test]
-    fn test_nospaces_preserves_required_spaces() {
-        let input = "[call f arg]";
-        let formatted = format_source_compact(input, false, true).unwrap();
-        // "call" and "f" both end/start with bare-word chars, need space
-        // "f" and "arg" both end/start with bare-word chars, need space
-        assert_eq!(formatted, "[call f arg]\n");
-    }
-
-    #[test]
-    fn test_minimize_combines_both() {
-        let input = "# comment\n[x: 1]\n---\n[y: 2]";
-        let formatted = format_source_compact(input, true, true).unwrap();
-        // minimize = oneline + nospaces
-        // no comments, no trailing newline, minimal spaces
-        assert_eq!(formatted, "[x:1]---;[y:2]");
-    }
-
-    #[test]
-    fn test_oneline_idempotent() {
-        let input = "[x: 1 y: 2]";
-        let once = format_source_compact(input, true, false).unwrap();
-        let twice = format_source_compact(&once, true, false).unwrap();
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn test_nospaces_idempotent() {
-        let input = "[x: 1 y: 2]";
-        let once = format_source_compact(input, false, true).unwrap();
-        let twice = format_source_compact(&once, false, true).unwrap();
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn test_minimize_idempotent() {
-        let input = "[x: 1 y: 2]";
-        let once = format_source_compact(input, true, true).unwrap();
-        let twice = format_source_compact(&once, true, true).unwrap();
-        assert_eq!(once, twice);
-    }
-
     #[test]
     fn test_format_quote() {
         let input = "[quote [+ 1 2]]";
-        let formatted = format_source_compact(input, false, false).unwrap();
+        let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[quote [+ 1 2]]\n");
     }
 
     #[test]
     fn test_format_unquote() {
         let input = "[quote [+ [unquote x] 2]]";
-        let formatted = format_source_compact(input, false, false).unwrap();
+        let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[quote [+ [unquote x] 2]]\n");
     }
 
     #[test]
     fn test_format_unquote_splice() {
         let input = "[quote [call f [unquote-splice args]]]";
-        let formatted = format_source_compact(input, false, false).unwrap();
+        let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[quote [call f [unquote-splice args]]]\n");
     }
 
     #[test]
     fn test_format_defmacro() {
         let input = "[defmacro my-macro [x] x]";
-        let formatted = format_source_compact(input, false, false).unwrap();
+        let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[defmacro my-macro [x] x]\n");
     }
 
     #[test]
     fn test_format_nested_quote() {
         let input = "[quote [quote [unquote x]]]";
-        let formatted = format_source_compact(input, false, false).unwrap();
+        let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[quote [quote [unquote x]]]\n");
     }
 
     #[test]
     fn test_format_macro_with_complex_transformer() {
         let input = "[defmacro unless [args] [if [get 0 args] [get 2 args] [get 1 args]]]";
-        let formatted = format_source_compact(input, false, false).unwrap();
+        let formatted = format_source(input).unwrap();
         assert_eq!(
             formatted,
             "[defmacro unless [args] [if [get 0 args] [get 2 args] [get 1 args]]]\n"

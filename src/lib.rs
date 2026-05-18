@@ -124,7 +124,7 @@ pub use error::{render_span_snippet, ArityBound, ErrorKind, EvalError, EvalResul
 pub use types::{format_type_error, TypeError};
 
 /// Formatter: canonical source reformatter.
-pub use formatter::{format_source, format_source_compact, format_source_tinct};
+pub use formatter::{format_source, format_source_tinct};
 
 #[cfg(feature = "repl")]
 pub use repl::run_repl;

@@ -372,7 +372,11 @@ fn handle_request(
             };
 
             let edits: Option<Vec<TextEdit>> = source.and_then(|text| {
-                crate::formatter::format_source(&text)
+                // Resolve the pretty formatter script from %libdir/cli/fmt/pretty.llt.
+                // If the script cannot be found, return None (no edits — silently no-op).
+                let script_path = crate::find_libdir_path()
+                    .map(|p| p.join("cli").join("fmt").join("pretty.llt"))?;
+                crate::formatter::format_source_tinct(&text, &script_path)
                     .ok()
                     .map(|formatted| {
                         // Single whole-document replace-all edit: start at (0,0), end past last char.
@@ -1098,7 +1102,9 @@ mod tests {
 
     #[test]
     fn test_formatting_produces_valid_text_edit() {
-        // A simple document that the formatter can handle.
+        // Verify that the Rust formatter (still used in formatter.rs unit tests) can
+        // parse and reformat a simple document. The LSP path uses format_source_tinct,
+        // but format_source is still available for unit testing.
         let source = "[x:1  y:2]";
         let result = crate::formatter::format_source(source);
         assert!(result.is_ok(), "formatter should succeed on valid source");
