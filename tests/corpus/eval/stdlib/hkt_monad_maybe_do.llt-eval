@@ -1,0 +1,10 @@
+# Test do-notation with MonadMaybe: desugars to MonadMaybe.bind calls
+# [do MonadMaybe [x: [Some 42]] [Some [+ x 1]]]
+# → [MonadMaybe.bind [Some 42] [fn [x] [Some [+ x 1]]]]
+# → [Some 43]
+[do MonadMaybe [x: [Some 42]] [Some [+ x 1]]]
+
+=== out
+Variant(Some, Int(43))
+=== warn
+undefined variable: MonadMaybe

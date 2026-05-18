@@ -433,7 +433,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **Interaction with Failed state:** When `try` materializes a Failed thunk *inside* the body, the cached error is returned via MEMO-REACCESS and caught by `try`. The Failed thunk's cache is updated (stack frame added) but the error is converted to `[err: message]` — it does not propagate past `try`.
 
-**`try` interaction with structured errors:** `try` currently extracts `ε.kind.to_string()` — the Display output of ErrorKind. This preserves the behavior that the caught value is a human-readable error message string, not a structured error object. Error codes are not exposed through `try`.
+**`try` interaction with structured errors:** `try` extracts `ε.kind.to_string()` — the Display output of ErrorKind. This preserves the behavior that the caught value is a human-readable error message string, not a structured error object. Error codes are not exposed through `try`.
 
 **Rationale:** `try` is for program-level error recovery ("did it fail?"), not error introspection. Programs that need to distinguish error kinds should use type checking and validation, not `try`-and-parse. Exposing structured error data through `try` would create a coupling between error representation (an implementation detail) and user programs.
 
@@ -591,6 +591,8 @@ pub enum ErrorKind {
 
     // --- Schema validation (E090-E094) ---
     SchemaViolation { violations: Vec<(String, String)> },
+    /// Type kind mismatch — a type constructor's kind does not match the expected kind.
+    KindMismatch { expected: String, got: String },
 
     // --- Escape hatch (E095-E099) ---
     Internal { message: String },
@@ -663,6 +665,7 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E070 | `CircularDependency` | Evaluation |
 | E080 | `UserError` | User |
 | E090 | `SchemaViolation` | Schema validation |
+| E091 | `KindMismatch` | Schema validation |
 | E099 | `Internal` | Internal |
 
 **Numbering scheme:** Codes are grouped in decades by domain with explicit ranges:
@@ -721,12 +724,13 @@ impl ErrorKind {
             Self::CircularDependency { .. } => "E070",
             Self::UserError { .. } => "E080",
             Self::SchemaViolation { .. } => "E090",
+            Self::KindMismatch { .. } => "E091",
             Self::Internal { .. } => "E099",
         }
     }
 
     /// Returns `false` for errors that must not be cached in Failed thunk state.
-    /// Currently only `DepthExceeded` — a thunk that fails at one depth may
+    /// Only `DepthExceeded` — a thunk that fails at one depth may
     /// succeed at a shallower depth (PROP-DEPTH in §Error Semantics).
     pub fn is_cacheable(&self) -> bool {
         !matches!(self, Self::DepthExceeded { .. })
@@ -934,7 +938,7 @@ impl EvalError {
 }
 ```
 
-The freeform `EvalError::new(message, span)` is replaced by `EvalError::internal(message, span)` which constructs `ErrorKind::Internal`. This preserves backward compatibility during migration while making escape-hatch usage explicit and greppable.
+`EvalError::internal(message, span)` constructs `ErrorKind::Internal` as an escape hatch for cases where no typed `ErrorKind` variant applies. Prefer typed constructors; `internal()` usage is greppable and intentionally verbose.
 
 ### Part 6: `try` Interaction
 
@@ -942,7 +946,7 @@ See the `try` Catching Boundary section above (Error Semantics Part 6) for the f
 
 ### Part 7: Rendering Separation
 
-The `ErrorKind` enum separates error **data** from error **presentation**. The `Display` impl is the default text renderer. Future renderers can pattern-match on `ErrorKind` directly:
+The `ErrorKind` enum separates error **data** from error **presentation**. The `Display` impl is the default text renderer. Renderers pattern-match on `ErrorKind` directly:
 
 - **JSON output** (`--error-format json`): serialize `ErrorKind` variant name, structured fields, code, spans
 - **LSP diagnostics**: map `ErrorKind` to `DiagnosticSeverity`, use structured fields for `relatedInformation`
