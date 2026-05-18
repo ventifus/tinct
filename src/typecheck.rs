@@ -3565,13 +3565,14 @@ fn check_call_with_scheme(
 
                     // Boundary guard tracking: if argument is Unknown and parameter expects
                     // a concrete type, record this as a gradual typing boundary.
-                    // STUB: guards are collected but not yet wired into eval-side checking.
                     if matches!(arg_ty, Type::Unknown) && is_concrete_type(param_ty) {
-                        // Record the argument span and expected type
+                        // Record the argument span and expected type for gradual typing
+                        // boundary guard insertion at eval time. HashMap ensures O(1)
+                        // lookup per span in eval_recursive.
                         if idx < args.len() {
                             state
                                 .boundary_guards
-                                .push((args[idx].span, param_ty.clone()));
+                                .insert(args[idx].span, param_ty.clone());
                         }
                     }
 
@@ -12902,13 +12903,13 @@ mod tests {
         );
     }
 
-    // --- Boundary guard collection tests (gradual typing stub) ---
+    // --- Boundary guard collection tests (gradual typing) ---
 
     #[test]
     fn test_boundary_guard_collection_stub() {
         // Verify that boundary guards are collected when Unknown crosses a concrete-typed
-        // function parameter boundary.  Full eval-side wiring is deferred — this checks
-        // the inference-side collection path in check_call_with_scheme.
+        // function parameter boundary. The eval-side wiring (eval.rs maybe_wrap_guard)
+        // inserts ThunkState::Guarded at thunk creation time for any span in this map.
         //
         // SETUP: `f` is registered as a polymorphic scheme (non-empty type_vars so that
         // the dispatcher at line ~1846 routes to check_call_with_scheme, not check_call).
