@@ -1,0 +1,27 @@
+# Comprehensive control flow operations
+# Tests: if, try, eval, force, apply, emit
+
+[
+  # if conditionals
+  if_true: [if true 1 2]
+  if_false: [if false 1 2]
+
+  # try operations
+  try_success: [try [fn [] 42]]
+  try_error: [try [fn [] [error "caught"]]]
+
+  # eval and force
+  eval_deep: [eval [x: [+ 1 2]]]
+  force_whnf: [force [+ 1 2]]
+
+  # apply
+  f: [fn [x y] [+ x y]]
+  apply_result: [apply f [0: 3  1: 4]]
+
+  # emit (returns null)
+  emit_null: [emit "test"]
+]
+=== out
+Dict({"if_true": Int(1), "if_false": Int(2), "try_success": Variant(Ok, Int(42)), "try_error": Variant(Err, String("caught")), "eval_deep": Dict({"x": Int(3)}), "force_whnf": Int(3), "f": Function(x, y), "apply_result": Int(7), "emit_null": Dict({})})
+=== warn
+cannot unify Fn@⊤ [⊤] with Fn@Number
