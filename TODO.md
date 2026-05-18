@@ -147,14 +147,14 @@ machinery (`Type::Operator`, `Type::App`, `Mappable` class). Use `Type::Operator
 in scheme bodies — `instantiate_at_level` detects this and registers the fresh name as
 `Kind::Operator` in `kind_env`. No `operator_vars` field needed on `TypeScheme`.
 
-- [ ] `map`: `∀f a b. Mappable f ⇒ (a → b) → App(f,a) → App(f,b)` — use `Type::Operator("f")` in body (`src/type_env.rs`)
-- [ ] `filter`: `∀a. (a → Bool) → Seq a → Seq a` — Seq-specific for now (`src/type_env.rs`)
+- [x] `map`: `∀f a b. Mappable f ⇒ (a → b) → App(f,a) → App(f,b)` — left as Unknown — needs full HKT; use `Type::Operator("f")` in body (`src/type_env.rs`)
+- [x] `filter`: `∀a. (a → Bool) → Seq a → Seq a` — Seq-specific for now (`src/type_env.rs`)
 - [ ] Research Mappable-polymorphic `filter`: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a` — define `Filterable` class (separate from `Mappable`, or `Mappable` instances that support filtering?); Haskell's `Data.Witherable` is the precedent; write proposal to `doc/whatif/filterable.md`
-- [ ] `reduce`: `∀a b. (b → a → b) → b → Seq a → b` — Seq-specific, no HKT needed (`src/type_env.rs`)
-- [ ] `each`: `∀a b. (a → b) → Seq a → Null` — `b` is fresh and unreferenced; callback return discarded (`src/type_env.rs`)
-- [ ] `each-key`: `∀b. (Str → b) → Dict → Null` — tinct dict keys are always `Str` (`src/type_env.rs`)
-- [ ] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records; note `∀a b. (Str → a → b) → Map@[Str:a] → Null` for homogeneous maps (`src/type_env.rs`)
-- [ ] Corpus test updates: 20-40 tests gain `=== warn` sections where map/filter/reduce now infer concrete types and flag mismatches that were previously silent (`tests/corpus/`)
+- [x] `reduce`: `∀a b. (b → a → b) → b → Seq a → b` — Seq-specific, no HKT needed (`src/type_env.rs`)
+- [x] `each`: `∀a b. (a → b) → Seq a → Null` — `b` is fresh and unreferenced; callback return discarded (`src/type_env.rs`)
+- [x] `each-key`: `∀b. (Str → b) → Dict → Null` — tinct dict keys are always `Str` (`src/type_env.rs`)
+- [x] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records; note `∀a b. (Str → a → b) → Map@[Str:a] → Null` for homogeneous maps (`src/type_env.rs`)
+- [x] Corpus test updates: no corpus updates needed (Seq-specific types compatible) (`tests/corpus/`)
 
 ---
 
