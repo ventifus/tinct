@@ -1094,14 +1094,14 @@ impl TypeEnv {
             Type::normalize_intersection(members)
         };
 
-        // Addition: Add a b c => a -> b -> c
+        // Addition: Addable a b c => a -> b -> c
         // Multi-parameter type class with functional dependency (a,b) → c
         env.insert_scheme(
             "+".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Add".to_string(),
+                    class: "Addable".to_string(),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                     fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],
@@ -1119,13 +1119,13 @@ impl TypeEnv {
             },
         );
 
-        // Subtraction: Sub a b c => a -> b -> c
+        // Subtraction: Subtractable a b c => a -> b -> c
         env.insert_scheme(
             "-".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Sub".to_string(),
+                    class: "Subtractable".to_string(),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                     fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],
@@ -1143,13 +1143,13 @@ impl TypeEnv {
             },
         );
 
-        // Multiplication: Mul a b c => a -> b -> c
+        // Multiplication: Multipliable a b c => a -> b -> c
         env.insert_scheme(
             "*".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Mul".to_string(),
+                    class: "Multipliable".to_string(),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                     fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],
@@ -1167,13 +1167,13 @@ impl TypeEnv {
             },
         );
 
-        // Division: Div a b c => a -> b -> c
+        // Division: Divisible a b c => a -> b -> c
         env.insert_scheme(
             "/".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Div".to_string(),
+                    class: "Divisible".to_string(),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                     fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],

@@ -217,10 +217,10 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Add: 3-parameter type class with functional dependency (a,b) → c
+        // Addable: 3-parameter type class with functional dependency (a,b) → c
         // determines will be populated with FD data in chr-normalization sprint
         class_env.insert(ClassDecl {
-            name: "Add".to_string(),
+            name: "Addable".to_string(),
             params: vec![
                 ("a".to_string(), Kind::Type),
                 ("b".to_string(), Kind::Type),
@@ -233,9 +233,9 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Sub: 3-parameter type class with functional dependency (a,b) → c
+        // Subtractable: 3-parameter type class with functional dependency (a,b) → c
         class_env.insert(ClassDecl {
-            name: "Sub".to_string(),
+            name: "Subtractable".to_string(),
             params: vec![
                 ("a".to_string(), Kind::Type),
                 ("b".to_string(), Kind::Type),
@@ -248,9 +248,9 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Mul: 3-parameter type class with functional dependency (a,b) → c
+        // Multipliable: 3-parameter type class with functional dependency (a,b) → c
         class_env.insert(ClassDecl {
-            name: "Mul".to_string(),
+            name: "Multipliable".to_string(),
             params: vec![
                 ("a".to_string(), Kind::Type),
                 ("b".to_string(), Kind::Type),
@@ -263,9 +263,9 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Div: 3-parameter type class with functional dependency (a,b) → c
+        // Divisible: 3-parameter type class with functional dependency (a,b) → c
         class_env.insert(ClassDecl {
-            name: "Div".to_string(),
+            name: "Divisible".to_string(),
             params: vec![
                 ("a".to_string(), Kind::Type),
                 ("b".to_string(), Kind::Type),

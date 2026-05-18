@@ -1647,39 +1647,39 @@ Note: Returns action result if condition is true, otherwise returns wrapped empt
 
 # Arithmetic type classes with functional dependencies (a, b) → c
 
-Add@[doc: "Type class for addition with FD (a, b) → c"]:
-  [class [let Add a b c]  [determines: [[[a b] c]]  resolver: AddResult]]
+Addable@[doc: "Type class for addition with FD (a, b) → c"]:
+  [class [let Addable a b c]  [determines: [[[a b] c]]  resolver: AddResult]]
 
-Sub@[doc: "Type class for subtraction with FD (a, b) → c"]:
-  [class [let Sub a b c]  [determines: [[[a b] c]]  resolver: SubResult]]
+Subtractable@[doc: "Type class for subtraction with FD (a, b) → c"]:
+  [class [let Subtractable a b c]  [determines: [[[a b] c]]  resolver: SubResult]]
 
-Mul@[doc: "Type class for multiplication with FD (a, b) → c"]:
-  [class [let Mul a b c]  [determines: [[[a b] c]]  resolver: MulResult]]
+Multipliable@[doc: "Type class for multiplication with FD (a, b) → c"]:
+  [class [let Multipliable a b c]  [determines: [[[a b] c]]  resolver: MulResult]]
 
-Div@[doc: "Type class for division with FD (a, b) → c"]:
-  [class [let Div a b c]  [determines: [[[a b] c]]  resolver: DivResult]]
+Divisible@[doc: "Type class for division with FD (a, b) → c"]:
+  [class [let Divisible a b c]  [determines: [[[a b] c]]  resolver: DivResult]]
 
 # Arithmetic instances for Int/Float combinations
 
-[instance Add
+[instance Addable
   [let a@Int   b@Int   c@Int  ]: [+: [fn@Int   [let x@Int   y@Int  ] [builtin-add x y]]]
   [let a@Int   b@Float c@Float]: [+: [fn@Float [let x@Int   y@Float] [builtin-add x y]]]
   [let a@Float b@Int   c@Float]: [+: [fn@Float [let x@Float y@Int  ] [builtin-add x y]]]
   [let a@Float b@Float c@Float]: [+: [fn@Float [let x@Float y@Float] [builtin-add x y]]]]
 
-[instance Sub
+[instance Subtractable
   [let a@Int   b@Int   c@Int  ]: [-: [fn@Int   [let x@Int   y@Int  ] [builtin-sub x y]]]
   [let a@Int   b@Float c@Float]: [-: [fn@Float [let x@Int   y@Float] [builtin-sub x y]]]
   [let a@Float b@Int   c@Float]: [-: [fn@Float [let x@Float y@Int  ] [builtin-sub x y]]]
   [let a@Float b@Float c@Float]: [-: [fn@Float [let x@Float y@Float] [builtin-sub x y]]]]
 
-[instance Mul
+[instance Multipliable
   [let a@Int   b@Int   c@Int  ]: [*: [fn@Int   [let x@Int   y@Int  ] [builtin-mul x y]]]
   [let a@Int   b@Float c@Float]: [*: [fn@Float [let x@Int   y@Float] [builtin-mul x y]]]
   [let a@Float b@Int   c@Float]: [*: [fn@Float [let x@Float y@Int  ] [builtin-mul x y]]]
   [let a@Float b@Float c@Float]: [*: [fn@Float [let x@Float y@Float] [builtin-mul x y]]]]
 
-[instance Div
+[instance Divisible
   [let a@Int   b@Int   c@Int  ]: [/: [fn@Int   [let x@Int   y@Int  ] [builtin-div x y]]]
   [let a@Int   b@Float c@Float]: [/: [fn@Float [let x@Int   y@Float] [builtin-div x y]]]
   [let a@Float b@Int   c@Float]: [/: [fn@Float [let x@Float y@Int  ] [builtin-div x y]]]

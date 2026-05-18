@@ -1495,10 +1495,10 @@ fn extract_instance_type_name(expr: &Expr) -> String {
 /// in user code, which is small in practice.
 fn intern_class_name(name: &str) -> &'static str {
     match name {
-        "Add" => "Add",
-        "Sub" => "Sub",
-        "Mul" => "Mul",
-        "Div" => "Div",
+        "Addable" => "Addable",
+        "Subtractable" => "Subtractable",
+        "Multipliable" => "Multipliable",
+        "Divisible" => "Divisible",
         "Equatable" => "Equatable",
         "Comparable" => "Comparable",
         "Showable" => "Showable",
@@ -1941,7 +1941,11 @@ fn eval_quote_preprocess(
             Ok(Spanned::new(Expr::Splice(processed_forms), span))
         }
 
-        Expr::SyntaxClass { name, pattern, message } => {
+        Expr::SyntaxClass {
+            name,
+            pattern,
+            message,
+        } => {
             let processed_pattern = eval_quote_preprocess(&pattern.node, pattern.span, env, ctx)?;
             Ok(Spanned::new(
                 Expr::SyntaxClass {

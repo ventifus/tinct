@@ -501,11 +501,11 @@ fn improve_functional_dependency_inner(
 
         // All determining positions are ground - look up the instance.
         // Two paths:
-        // 1. EXISTING PATH: hardcoded lookup_arithmetic_instance for Add/Sub/Mul/Div
+        // 1. EXISTING PATH: hardcoded lookup_arithmetic_instance for Addable/Subtractable/Multipliable/Divisible
         // 2. NEW PATH (additive): resolver-based lookup for classes with resolver names
 
-        // Check if this is a hardcoded arithmetic class (Add, Sub, Mul, Div)
-        let result_type = if matches!(class, "Add" | "Sub" | "Mul" | "Div") {
+        // Check if this is a hardcoded arithmetic class (Addable, Subtractable, Multipliable, Divisible)
+        let result_type = if matches!(class, "Addable" | "Subtractable" | "Multipliable" | "Divisible") {
             // Hardcoded arithmetic path — propagate errors
             lookup_arithmetic_instance(
                 class,
@@ -608,9 +608,9 @@ fn lookup_arithmetic_instance(
     // Normalize types for comparison
     let key = (type_key(a), type_key(b));
 
-    // FAST PATH: hardcoded instances for Add/Sub/Mul/Div (performance)
+    // FAST PATH: hardcoded instances for Addable/Subtractable/Multipliable/Divisible (performance)
     match class {
-        "Add" | "Sub" | "Mul" => match key {
+        "Addable" | "Subtractable" | "Multipliable" => match key {
             ("Int", "Int") => Ok(Type::Int),
             ("Float", "Float") => Ok(Type::Float),
             ("Int", "Float") | ("Float", "Int") => Ok(Type::Float),
@@ -624,7 +624,7 @@ fn lookup_arithmetic_instance(
                 span,
             )),
         },
-        "Div" => match key {
+        "Divisible" => match key {
             ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
                 Ok(Type::Float)
             }
@@ -634,7 +634,7 @@ fn lookup_arithmetic_instance(
             | ("Number", "Float")
             | ("Float", "Number") => Ok(Type::Number),
             _ => Err(TypeError::new(
-                format!("no instance for Div {} {}", a, b),
+                format!("no instance for Divisible {} {}", a, b),
                 span,
             )),
         },
@@ -688,10 +688,10 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
         "Comparable",
         "Equatable",
         "Showable",
-        "Add",
-        "Sub",
-        "Mul",
-        "Div",
+        "Addable",
+        "Subtractable",
+        "Multipliable",
+        "Divisible",
     ];
 
     let has_promotable_constraint = state.constraints.iter().any(|c| match c {
