@@ -616,6 +616,10 @@ pub(crate) fn infer_dict(
     // Restore enclosing level
     state.level = enclosing_level;
 
+    // Compact the levels map: remove entries for TypeVars that have been unified.
+    // This prevents unbounded growth during long inference sessions (e.g., prelude loading).
+    state.compact_levels();
+
     let record_type = Type::Record(Row {
         fields: field_types,
     });

@@ -3940,6 +3940,26 @@ fn check_call(
                             }
                             // Mark param as consumed (Task 1: Robinson idempotency)
                             consumed_params.insert(param_idx);
+
+                            // Boundary guard tracking (mirrors positional args at lines ~3850-3866):
+                            // if the named arg's inferred type is Unknown and the parameter expects a
+                            // concrete type, record the span for gradual typing boundary guard insertion.
+                            if is_concrete_type(param_ty) {
+                                if let Ok(arg_ty) = infer_expr(&na.node.value, env, state, type_map)
+                                {
+                                    let resolved_arg_ty = if state.subst.is_empty() {
+                                        arg_ty.clone()
+                                    } else {
+                                        state.subst.apply(&arg_ty)
+                                    };
+                                    if matches!(resolved_arg_ty, Type::Unknown) {
+                                        state
+                                            .boundary_guards
+                                            .insert(na.node.value.span, param_ty.clone());
+                                    }
+                                }
+                            }
+
                             // Infer the named arg type and unify against the param type
                             // Fix 2: accumulate errors instead of using `?` to short-circuit
                             match infer_expr(&na.node.value, env, state, type_map) {
@@ -4100,6 +4120,25 @@ fn check_call(
                             }
                             // Mark param as consumed
                             consumed_params.insert(param_idx);
+
+                            // Boundary guard tracking: if the named arg's inferred type is Unknown
+                            // and the parameter expects a concrete type, record the span.
+                            if is_concrete_type(param_ty) {
+                                if let Ok(arg_ty) = infer_expr(&na.node.value, env, state, type_map)
+                                {
+                                    let resolved_arg_ty = if state.subst.is_empty() {
+                                        arg_ty.clone()
+                                    } else {
+                                        state.subst.apply(&arg_ty)
+                                    };
+                                    if matches!(resolved_arg_ty, Type::Unknown) {
+                                        state
+                                            .boundary_guards
+                                            .insert(na.node.value.span, param_ty.clone());
+                                    }
+                                }
+                            }
+
                             // Check named arg via check_expr (unified path)
                             if let Err(mut errs) =
                                 check_expr(&na.node.value, param_ty, env, state, type_map)

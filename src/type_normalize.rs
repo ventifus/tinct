@@ -5,44 +5,20 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::LazyLock;
 
 use crate::type_def::Type;
 use crate::types::Substitution;
 
-/// Normalization context for type expressions.
+/// Static resolver cache for arithmetic type functions.
+/// Pre-populated with the 16 arithmetic type resolver results:
+/// - Add/Sub/Mul: (Int, Int) -> Int, mixed Int/Float -> Float, (Float, Float) -> Float
+/// - Div: all combinations -> Float
 ///
-/// Tracks state for TypeStageApp reduction and caching.
-#[derive(Debug, Clone)]
-pub struct NormCtxt {
-    /// Cache for normalized types (ground types only)
-    pub cache: HashMap<Type, Type>,
-    /// Current normalization depth
-    pub depth: u32,
-    /// Maximum normalization depth before aborting
-    pub max_depth: u32,
-    /// Call stack for cycle detection (resolver function names)
-    pub call_stack: Vec<String>,
-    /// Resolver result cache: (resolver_name, [arg_types]) -> result_type
-    /// Pre-populated with arithmetic resolver results (Add/Sub/Mul/Div).
-    /// Key is (resolver function name, arg types), value is the resolved type.
-    pub resolver_cache: HashMap<(String, Vec<Type>), Type>,
-}
-
-impl NormCtxt {
-    /// Create an empty normalization context with default limits.
-    pub fn new() -> Self {
-        Self::with_arithmetic_cache()
-    }
-
-    /// Create a normalization context pre-populated with arithmetic resolver results.
-    ///
-    /// The resolver_cache is populated with the 16 arithmetic type resolver results:
-    /// - Add/Sub/Mul: (Int, Int) -> Int, mixed Int/Float -> Float, (Float, Float) -> Float
-    /// - Div: all combinations -> Float
-    ///
-    /// This replaces the hardcoded `lookup_arithmetic_instance` function with a cache-based lookup.
-    pub fn with_arithmetic_cache() -> Self {
-        let mut resolver_cache = HashMap::new();
+/// This is computed once at first access and shared across all NormCtxt instances.
+static ARITHMETIC_RESOLVER_CACHE: LazyLock<HashMap<(String, Vec<Type>), Type>> =
+    LazyLock::new(|| {
+        let mut cache = HashMap::new();
 
         // Arithmetic resolver results: Add/Sub/Mul share the same type rules, Div always returns Float
         let ops = [
@@ -67,19 +43,45 @@ impl NormCtxt {
                 } else {
                     Type::Float // Any Float involvement -> Float
                 };
-                resolver_cache.insert(
+                cache.insert(
                     (resolver_name.to_string(), vec![a.clone(), b.clone()]),
                     result_type,
                 );
             }
         }
 
+        cache
+    });
+
+/// Normalization context for type expressions.
+///
+/// Tracks state for TypeStageApp reduction and caching.
+#[derive(Debug, Clone)]
+pub struct NormCtxt {
+    /// Cache for normalized types (ground types only)
+    pub cache: HashMap<Type, Type>,
+    /// Current normalization depth
+    pub depth: u32,
+    /// Maximum normalization depth before aborting
+    pub max_depth: u32,
+    /// Call stack for cycle detection (resolver function names)
+    pub call_stack: Vec<String>,
+    /// Resolver result cache: (resolver_name, [arg_types]) -> result_type
+    /// Pre-populated with arithmetic resolver results (Add/Sub/Mul/Div).
+    /// Key is (resolver function name, arg types), value is the resolved type.
+    pub resolver_cache: HashMap<(String, Vec<Type>), Type>,
+}
+
+impl NormCtxt {
+    /// Create an empty normalization context with default limits.
+    /// The arithmetic resolver cache is shared across all instances via the static ARITHMETIC_RESOLVER_CACHE.
+    pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
             depth: 0,
             max_depth: 64,
             call_stack: Vec::new(),
-            resolver_cache,
+            resolver_cache: ARITHMETIC_RESOLVER_CACHE.clone(),
         }
     }
 }

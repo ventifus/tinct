@@ -206,11 +206,14 @@ enum Annotation {
 | `Sequential(exprs)` | Multi-expression fn body | Sequential expressions with let\* semantics; each expression's result dict extends environment for subsequent expressions |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
-| `Fn` | `[fn [x] body]` | Function definition |
+| `Fn` | `[fn [let x y] body]` | Function definition with binding list parameters |
 | `TypeAlias` | `[type expr]` | Type alias declaration |
 | `TypeAssert` | `[@T expr]` | Type assertion |
 | `Annotated` | `Fn@Number` | Annotated bare word |
-| `Rest(None)` | `...` | Open record marker |
+| `LetDecl { bindings }` | `[let x@Int y]` | Binding declaration list for fn params, case arms, and pattern contexts |
+| `CaseArm { pattern, body }` | `[case [let x] body]` | Match arm with explicit scoping — pattern can be LetDecl (binding) or exact-value match |
+| `Placeholder` | `...` | Placeholder expression — type Unknown, evaluates to lazy error on materialization |
+| `Rest(None)` | `...` | Open record marker in type expressions |
 | `Rest(Some("r"))` | `...r` | Named row variable |
 | `Quote(expr)` | `[quote expr]` | Quote special form — prevents evaluation of expr |
 | `Unquote(expr)` | `[unquote expr]` | Unquote inside quote — evaluates expr and splices result into quoted AST |
@@ -219,6 +222,35 @@ enum Annotation {
 | `Match { scrutinee, arms }` | `[match val pat1: body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
 | `ClassDecl { name, params, superclasses, methods }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters and method signatures |
 | `InstanceDecl { class_name, instance_type, methods }` | `[instance [Name Type] methods...]` | Type class instance with method implementations |
+
+#### LetDecl, CaseArm, and Placeholder Details
+
+**LetDecl** — `Expr::LetDecl { bindings: Vec<Spanned<Expr>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
+- `VarRef { name, escaped: false, .. }` — bare identifier binding (e.g., `x`)
+- `Annotated { name, annotation }` — typed binding (e.g., `x@Int`) or structural test (e.g., `v: Ok`)
+- `Placeholder` (represented as `_`) — wildcard match, introduces no binding
+- Nested `LetDecl` — multi-level pattern for constructor payloads (e.g., `[let [let inner]]`)
+
+LetDecl appears in:
+- Function parameter lists: `[fn [let x@Int y] body]`
+- Case arm patterns: `[case [let x@Int] body]`
+- Type class declarations: `[class [let Equatable a] ...]` (TypeVar binding list)
+- Instance patterns: `[instance Class [pattern [let a@Int b@Float]] ...]`
+
+**CaseArm** — `Expr::CaseArm { pattern, body }` — is a match arm with explicit scoping introduced by the `case` keyword. The pattern can be:
+- `LetDecl` — binding pattern that introduces variables into the body's scope (e.g., `[case [let x@Int] body]`)
+- Any other expression — exact-value match (e.g., `[case 42 body]`, `[case "hello" body]`)
+
+CaseArm is used inside `[match ...]` expressions. The `match` evaluator tries each arm's pattern in order. For LetDecl patterns, the type checker validates that the binding constraints are satisfiable and binds the matched value. For exact-value patterns, the evaluator compares the scrutinee for equality.
+
+**Placeholder** — `Expr::Placeholder` — represents the `...` token when used as an expression (not as a Rest marker in type contexts). The type checker assigns it type `Unknown`, meaning it satisfies any constraint without producing a type error. At evaluation time, forcing a Placeholder thunk raises an `UnimplementedError` with the message `"placeholder \`...\` was evaluated — replace with an implementation"`. This allows developers to write incomplete code that type-checks but defers implementation details.
+
+Example use in a try block:
+```tinct
+[try [fn [] ...]]
+=== out
+Variant(Err, String("placeholder `...` was evaluated — replace with an implementation"))
+```
 
 ---
 
@@ -281,22 +313,23 @@ Duplicate detection applies to explicit keys only. Auto-indexed entries cannot d
 
 ### `fn` Parameter List Structure
 
-The parameter list in `fn` must be a `[]` containing zero or more `param` entries, optionally ending with one variadic parameter (`...name`). Parameters are bare words (not variable references — no `$`):
+The parameter list in `fn` is a `[let ...]` binding declaration containing zero or more binding entries, optionally ending with one variadic parameter (`...name`). Parameters are bare identifiers or annotated bindings:
 
 ```tinct
-[fn [x y] body]                   # valid
-[fn [x@Number y] body]            # valid: x has annotation
-[fn [x ...rest] body]             # valid: variadic
-[fn [...a ...b] body]             # ERROR: multiple variadics
-[fn [...rest x] body]             # ERROR: parameter after variadic
-[fn [$x] body]                    # ERROR: $x is a var ref, not a param name
+[fn [let x y] body]                   # valid: two parameters
+[fn [let x@Number y] body]            # valid: x has type annotation
+[fn [let x ...rest] body]             # valid: variadic parameter
+[fn [let ...a ...b] body]             # ERROR: multiple variadics
+[fn [let ...rest x] body]             # ERROR: parameter after variadic
 === error
 error: multiple variadic parameters
- --> block 3:4:11
+ --> block 2:4:16
   |
-  4 | [fn [...a ...b] body]             # ERROR: multiple variadics
-    |           ^^^
+  4 | [fn [let ...a ...b] body]             # ERROR: multiple variadics
+    |                ^^^
 ```
+
+The older `[fn [x y] body]` syntax (bare parameter list without `let`) is still supported for backward compatibility but the formatter emits `[fn [let x y] body]`.
 
 ### Bracket Nesting Depth Limit
 
