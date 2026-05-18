@@ -524,3 +524,72 @@ pub fn unify_kind(k1: &Kind, k2: &Kind, state: &mut KindState) -> Result<(), Kin
 // Substitution is defined in type_unify.rs and re-exported here so that
 // type_infer.rs callers can use it without a separate import.
 pub use crate::types::Substitution;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Type;
+
+    /// `compact_levels()` removes entries for TypeVars that have been unified
+    /// (i.e., whose names appear in `state.subst.type_map`), while keeping entries
+    /// for unbound TypeVars.
+    ///
+    /// Mutation resistance: if `compact_levels()` were a no-op, the unified var
+    /// would still be present in `state.levels` after the call, failing the
+    /// `!state.levels.contains_key("_t0")` assertion.
+    #[test]
+    fn test_compact_levels_removes_unified_var() {
+        let mut state = InferState::new();
+
+        // Create two fresh TypeVars: _t0 and _t1.
+        let _tv0 = state.fresh_type_var(); // registers "_t0" in levels at level 0
+        let _tv1 = state.fresh_type_var(); // registers "_t1" in levels at level 0
+
+        assert!(
+            state.levels.contains_key("_t0"),
+            "_t0 should be in levels before compaction"
+        );
+        assert!(
+            state.levels.contains_key("_t1"),
+            "_t1 should be in levels before compaction"
+        );
+
+        // Bind _t0 → Int by inserting it into the substitution's type_map.
+        // This simulates what unification does when it solves a TypeVar.
+        state
+            .subst
+            .type_map
+            .borrow_mut()
+            .insert("_t0".to_string(), Type::Int);
+
+        // compact_levels() should remove _t0 (now in type_map) but keep _t1 (unbound).
+        state.compact_levels();
+
+        assert!(
+            !state.levels.contains_key("_t0"),
+            "_t0 should be removed from levels after compaction (it is unified)"
+        );
+        assert!(
+            state.levels.contains_key("_t1"),
+            "_t1 should remain in levels after compaction (it is still unbound)"
+        );
+    }
+
+    /// `compact_levels()` is a no-op when no TypeVars have been unified.
+    /// All registered TypeVars remain in `levels`.
+    #[test]
+    fn test_compact_levels_preserves_unbound_vars() {
+        let mut state = InferState::new();
+        let _tv0 = state.fresh_type_var();
+        let _tv1 = state.fresh_type_var();
+
+        let count_before = state.levels.len();
+        state.compact_levels();
+        let count_after = state.levels.len();
+
+        assert_eq!(
+            count_before, count_after,
+            "compact_levels() must not remove unbound TypeVars"
+        );
+    }
+}

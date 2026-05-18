@@ -1065,3 +1065,117 @@ pub(crate) fn builtin_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::create_root_env;
+    use crate::error::ErrorKind;
+    use crate::test_util::test_span;
+    use crate::value::{BuiltinArgs, Thunk, Value};
+    use std::rc::Rc;
+
+    fn thunk(val: Value) -> Rc<Thunk> {
+        Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
+    }
+
+    fn call_span() -> Span {
+        test_span(1, 1, 1, 5)
+    }
+
+    fn no_named() -> Option<&'static indexmap::IndexMap<String, Rc<Thunk>>> {
+        None
+    }
+
+    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        crate::eval::EvalContext::new(base_dir, create_root_env(), false)
+    }
+
+    fn mat(result: EvalResult<Rc<Thunk>>) -> Value {
+        crate::eval::materialize(&result.unwrap(), None, &test_ctx()).unwrap()
+    }
+
+    // --- MAX_SAFE_INT boundary ---
+
+    /// Exactly at MAX_SAFE_INT (9007199254740992 = 2^53): the boundary value itself
+    /// is one above the largest integer representable without precision loss in f64.
+    /// `check_int_to_float_precision` rejects |n| > MAX_SAFE_INT, so MAX_SAFE_INT exactly
+    /// triggers the error (it is > MAX_SAFE_INT - 1 but is == MAX_SAFE_INT, so |n| > MAX_SAFE_INT
+    /// is FALSE — this should PASS). The first rejected value is MAX_SAFE_INT + 1.
+    #[test]
+    fn test_max_safe_int_boundary_accepted() {
+        // MAX_SAFE_INT exactly: 9007199254740992
+        // The guard is `n.abs() > MAX_SAFE_INT`, so MAX_SAFE_INT itself is accepted.
+        let result = builtin_add(BuiltinArgs {
+            args: &[
+                thunk(Value::Int(MAX_SAFE_INT)),
+                thunk(Value::Float(0.0)),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        // Should succeed: MAX_SAFE_INT is not > MAX_SAFE_INT
+        assert!(
+            result.is_ok(),
+            "MAX_SAFE_INT should be accepted by precision guard: {:?}",
+            result.err()
+        );
+    }
+
+    /// MAX_SAFE_INT + 1 triggers the precision error.
+    #[test]
+    fn test_max_safe_int_plus_one_rejected() {
+        let result = builtin_add(BuiltinArgs {
+            args: &[
+                thunk(Value::Int(MAX_SAFE_INT + 1)),
+                thunk(Value::Float(0.0)),
+            ],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        assert!(result.is_err(), "MAX_SAFE_INT + 1 should be rejected");
+        let err = result.unwrap_err();
+        let kind_matches = matches!(
+            &err.kind,
+            ErrorKind::UserError { message } if message.contains("precision")
+        );
+        assert!(
+            kind_matches,
+            "expected a precision error, got: {:?}",
+            err.kind
+        );
+    }
+
+    // --- try_dispatch_method fast-path (no instance registered) ---
+
+    /// When no Addable instance is registered, `try_dispatch_method` returns None
+    /// and `builtin_add` falls through to the built-in Rust dispatch path.
+    /// Verifying the result is correct proves the fast-path was taken (not an instance method).
+    #[test]
+    fn test_add_no_instance_falls_through_to_rust_dispatch() {
+        // Fresh context has empty `registered_classes` → try_dispatch_method returns None immediately.
+        let result = builtin_add(BuiltinArgs {
+            args: &[thunk(Value::Int(3)), thunk(Value::Int(4))],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        assert_eq!(mat(result), Value::Int(7));
+    }
+
+    /// Same fast-path for `builtin_mul` (uses the same try_dispatch_method with "Multipliable").
+    #[test]
+    fn test_mul_no_instance_falls_through_to_rust_dispatch() {
+        let result = builtin_mul(BuiltinArgs {
+            args: &[thunk(Value::Int(6)), thunk(Value::Int(7))],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        assert_eq!(mat(result), Value::Int(42));
+    }
+}

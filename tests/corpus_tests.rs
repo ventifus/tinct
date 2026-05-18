@@ -201,7 +201,7 @@ fn test_corpus_structure() {
     }
 
     // Minimum test count assertions for key directories
-    const EVAL_LAZINESS_MIN: usize = 37;
+    const EVAL_LAZINESS_MIN: usize = 40;
     const EVAL_BUILTINS_MIN: usize = 120;
     const EVAL_STDLIB_MIN: usize = 195;
     const EVAL_ERRORS_MIN: usize = 120;

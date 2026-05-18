@@ -1,0 +1,12 @@
+# Laziness proof: $reduce accumulator not forced for an unused key.
+# The callback builds a dict with both a real "sum" key and an error-trap "boom" key.
+# We only access "sum" from the final accumulator. "boom" is never forced because
+# dict entries are lazy thunks — the error inside "boom" never fires.
+[result: [reduce
+    [fn [acc x] [sum: [+ acc.sum x]  boom: [raise "accumulator key should not fire"]]]
+    [sum: 0  boom: [raise "init should not fire"]]
+    [10 20 30]]]
+---
+%.result.sum
+=== out
+Int(60)

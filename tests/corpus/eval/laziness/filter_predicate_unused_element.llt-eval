@@ -1,0 +1,11 @@
+# Laziness proof: $filter predicate not called for elements beyond what is consumed.
+# We filter a Seq whose second element contains an error-trap sentinel.
+# [take 1] consumes only the first element. The predicate for the sentinel is never
+# called because $filter is lazy — it produces a Seq where each element's predicate
+# application is deferred until that element is demanded.
+[collect [take 1
+    [filter
+     [fn [x] [< x 100]]
+     [seq 42 [seq [raise "predicate should not fire"] []]]]]]
+=== out
+Dict({0: Int(42)})
