@@ -491,3 +491,15 @@ Fix-later findings from the full panel codebase review (2026-05-17, commit 37f83
 - [x] Fix validate_and_wrap_record guard context bug — `foldr_basic` and `until_list` fail with [E099] validate_and_wrap_record requires ctx but guard_ctx is None; likely the boundary guard infrastructure losing EvalContext reference inside reduce/until loops (`src/eval.rs`)
 
 ---
+
+## Type System
+
+### fn-narrowing-followup: Type system completeness for function negation narrowing
+
+Follow-up items from fn-narrowing-variadic panel review. Not blocking — fn? narrowing is sound without these.
+
+- [ ] Extend `is_consistent` (src/type_def.rs:684) to handle `Function{params:[], variadic:true}` ("any function") against concrete Function types — currently reports inconsistency, which is wrong under Garcia et al. 2016 AGT where the any-function type should be consistent with all function types (`src/type_def.rs`)
+- [ ] Extend `types_are_disjoint` to include Function vs primitive pairs (Int, Str, Bool, Float, Null, etc.) — enables precise false-branch narrowing after `fn?` guards: `x : ~Function{...}` correctly excludes all function types when x is known to be a primitive (`src/type_def.rs`)
+- [ ] Add false-branch fn? narrowing corpus test: `x : Int` in `[if [fn? x] branch1 branch2]` should allow type-checking in branch2 knowing x is not a function (`tests/corpus/eval/typecheck/`)
+
+---

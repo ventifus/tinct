@@ -1,0 +1,13 @@
+# fn? narrowing in the false branch: the variable gets type Negation(any-function),
+# i.e., "definitely not a function". Calling such a value in the false branch
+# produces a type warning: "expected function type, got ~Fn@_ [ ...]".
+#
+# At runtime, x IS a function so fn? returns true and the false branch is never
+# executed — eval succeeds and returns "is-a-function". The type warning comes
+# from the static false-branch analysis (fn-narrowing-variadic sprint).
+[x: [fn [a] a]
+ result: [if [fn? x] "is-a-function" [x 1]]]
+=== out
+Dict({"x": Function(a), "result": String("is-a-function")})
+=== warn
+expected function type, got ~Fn@_

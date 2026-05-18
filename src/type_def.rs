@@ -487,6 +487,35 @@ impl Type {
                     variadic: pv,
                 },
             ) => {
+                // Special case: zero-param variadic is the "any function" type.
+                // Function{params:[], ret:Unknown, variadic:true} is a supertype of functions
+                // with concrete arity (at least one param). It is NOT a supertype of zero-param
+                // non-variadic (different semantics).
+                // (fn-narrowing-variadic sprint).
+                let sub_is_any_function = sub_p.is_empty() && *sv;
+                let sup_is_any_function = sup_p.is_empty() && *pv;
+
+                if sub_is_any_function && sup_is_any_function {
+                    // Reflexivity: any-function <: any-function. Return true directly.
+                    // Cannot delegate to is_subtype(sub_r, sup_r) because Unknown is not
+                    // a subtype of Unknown under is_subtype (it hits a false-returning guard
+                    // before the a==b reflexivity check). The canonical any-function type
+                    // has ret:Unknown by definition, so two any-functions are always equal.
+                    return true;
+                }
+
+                if sup_is_any_function && !sub_p.is_empty() {
+                    // Concrete-arity function is a subtype of "any function".
+                    // No need to check return type - "any function" accepts all return types
+                    // (its return type is Unknown, meaning unconstrained).
+                    return true;
+                }
+
+                if sub_is_any_function {
+                    // "Any function" is NOT a subtype of any other function type.
+                    return false;
+                }
+
                 sv == pv
                     && sub_p.len() == sup_p.len()
                     && sub_p.iter().zip(sup_p.iter()).all(

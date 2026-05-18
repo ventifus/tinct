@@ -6924,3 +6924,23 @@ Deferred (blocked on instance_resolution_depth architectural fix):
 - resolver functions + arithmetic class declarations in prelude
 - instance migration to [pattern [...]] syntax
 - boundary guard eval-side wiring
+
+## Type System
+
+### fn-narrowing-variadic: Restore precise `fn?` narrowing once variadic unification is implemented
+
+`fn?` type narrowing currently produces `Type::Unknown` (`src/typecheck.rs`). The more
+precise form `Function{params:[], ret:Unknown, variadic:true}` was attempted but reverted
+because `unify` rejects a zero-param variadic as incompatible with any concrete arity (the
+param-count check fires before the variadic flag is inspected). `Unknown` is sound under
+gradual typing (Garcia et al. 2016, AGT), so the revert is correct as a stop-gap.
+
+**Fix**: when variadic unification is implemented, extend `unify` / `is_subtype` to treat
+`Function{params:[], variadic:true}` as compatible with any concrete function arity, then
+restore the precise narrowing. This will enable the type checker to reject non-callable
+values inside `[fn? narrowed-branch ...]` arms.
+
+- [x] Extend `unify` / `is_subtype` in `src/type_unify.rs`: zero-param variadic
+  `Function` is a subtype of any `Function{params: [..n]}` (`src/type_unify.rs`)
+- [x] Restore `fn?` narrowing to `Type::Function { params: vec![], ret: Box::new(Type::Unknown), variadic: true }` in `extract_narrowings` (`src/typecheck.rs`)
+- [x] Add corpus test: `fn?` guard narrows to `Function` type, non-function produces type warning (`tests/corpus/eval/typecheck/`)

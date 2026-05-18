@@ -2596,7 +2596,7 @@ fn literate_eval_no_blocks_is_error() {
 
 #[test]
 fn literate_weave_outputs_markdown_with_comments() {
-    // weave should output the original Markdown with result comments after each block.
+    // weave should output the original Markdown with === out sections inside each block.
     let md = "# Config\n\n```tinct\n[x: 10]\n```\n";
     let (path, _dir) = write_temp_md("literate_weave_basic", md);
     let output = Command::new(tinct_bin())
@@ -2616,14 +2616,14 @@ fn literate_weave_outputs_markdown_with_comments() {
         stdout.contains("[x: 10]"),
         "expected original block content"
     );
-    // Result comment appended after the closing fence
+    // Result injected as === out section inside the code block
     assert!(
-        stdout.contains("tinct-result:"),
-        "expected tinct-result comment in weave output, got: {stdout}"
+        stdout.contains("=== out"),
+        "expected === out section in weave output, got: {stdout}"
     );
     assert!(
         stdout.contains("10"),
-        "expected value 10 in weave result comment, got: {stdout}"
+        "expected value 10 in weave result, got: {stdout}"
     );
 }
 
@@ -2762,18 +2762,17 @@ fn literate_weave_no_substitute_preserves_markers() {
 
 #[test]
 fn literate_weave_replaces_existing_markers() {
-    // Test that re-running weave replaces existing markers instead of appending duplicates
-    let md_with_old_result = concat!(
+    // Test that re-running weave replaces existing === out sections rather than appending.
+    // Input has stale === out values; weave should overwrite with fresh evaluated results.
+    let md_with_old_sections = concat!(
         "# Config\n\n",
-        "```tinct\n[x: 10]\n```\n",
-        "<!-- tinct-result: {\"x\":999} -->\n", // Old result that should be replaced
+        "```tinct\n[x: 10]\n=== out\n{\"x\":999}\n```\n",
         "\n",
         "Some prose.\n\n",
-        "```tinct\n[y: 20]\n```\n",
-        "<!-- tinct-result: {\"y\":888} -->\n", // Old result that should be replaced
+        "```tinct\n[y: 20]\n=== out\n{\"y\":888}\n```\n",
         "\n",
     );
-    let (path, _dir) = write_temp_md("literate_weave_replace", md_with_old_result);
+    let (path, _dir) = write_temp_md("literate_weave_replace", md_with_old_sections);
     let output = Command::new(tinct_bin())
         .args(["literate", "weave", path.to_str().unwrap()])
         .output()
@@ -2786,45 +2785,44 @@ fn literate_weave_replaces_existing_markers() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Should contain the NEW result (x: 10), not the old one (x: 999)
+    // Should contain the NEW result (x: 10), not the stale one (x: 999)
     assert!(
-        stdout.contains("<!-- tinct-result: {\"x\":10} -->"),
+        stdout.contains("{\"x\":10}"),
         "expected updated result for first block, got: {stdout}"
     );
     assert!(
         !stdout.contains("{\"x\":999}"),
-        "expected old result to be replaced, not preserved, got: {stdout}"
+        "expected stale result to be replaced, not preserved, got: {stdout}"
     );
 
-    // Should contain the NEW result (y: 20), not the old one (y: 888)
+    // Should contain the NEW result (y: 20), not the stale one (y: 888)
     assert!(
-        stdout.contains("<!-- tinct-result: {\"y\":20} -->"),
+        stdout.contains("{\"y\":20}"),
         "expected updated result for second block, got: {stdout}"
     );
     assert!(
         !stdout.contains("{\"y\":888}"),
-        "expected old result to be replaced, not preserved, got: {stdout}"
+        "expected stale result to be replaced, not preserved, got: {stdout}"
     );
 
-    // Should not have duplicate markers
-    let result_count = stdout.matches("<!-- tinct-result:").count();
+    // Should not have duplicate === out sections
+    let section_count = stdout.matches("=== out").count();
     assert_eq!(
-        result_count, 2,
-        "expected exactly 2 result markers (one per block), got {result_count} in: {stdout}"
+        section_count, 2,
+        "expected exactly 2 === out sections (one per block), got {section_count} in: {stdout}"
     );
 }
 
 #[test]
 fn literate_weave_mixed_marker_presence() {
-    // Test a file with some blocks having markers and some not
+    // Test a file with some blocks having existing === out sections and some without.
+    // Weave should add/update === out sections in all blocks correctly.
     let md = concat!(
-        "```tinct\n[x: 10]\n```\n",
-        "<!-- tinct-result: {\"x\":999} -->\n", // Has old marker
+        "```tinct\n[x: 10]\n=== out\n{\"x\":999}\n```\n", // Has stale === out
         "\n",
-        "```tinct\n[y: 20]\n```\n", // No marker
+        "```tinct\n[y: 20]\n```\n", // No === section
         "\n",
-        "```tinct\n[z: 30]\n```\n",
-        "<!-- tinct-result: {\"z\":888} -->\n", // Has old marker
+        "```tinct\n[z: 30]\n=== out\n{\"z\":888}\n```\n", // Has stale === out
         "\n",
     );
     let (path, _dir) = write_temp_md("literate_weave_mixed", md);
@@ -2840,31 +2838,31 @@ fn literate_weave_mixed_marker_presence() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // All three blocks should have correct, updated markers
+    // All three blocks should have correct, fresh results
     assert!(
-        stdout.contains("<!-- tinct-result: {\"x\":10} -->"),
+        stdout.contains("{\"x\":10}"),
         "expected updated result for first block, got: {stdout}"
     );
     assert!(
-        stdout.contains("<!-- tinct-result: {\"y\":20} -->"),
+        stdout.contains("{\"y\":20}"),
         "expected new result for second block, got: {stdout}"
     );
     assert!(
-        stdout.contains("<!-- tinct-result: {\"z\":30} -->"),
+        stdout.contains("{\"z\":30}"),
         "expected updated result for third block, got: {stdout}"
     );
 
-    // Old values should be gone
+    // Stale values should be gone
     assert!(
-        !stdout.contains("999") && !stdout.contains("888"),
-        "expected old results to be replaced, got: {stdout}"
+        !stdout.contains("{\"x\":999}") && !stdout.contains("{\"z\":888}"),
+        "expected stale results to be replaced, got: {stdout}"
     );
 
-    // Should have exactly 3 markers
-    let result_count = stdout.matches("<!-- tinct-result:").count();
+    // Should have exactly 3 === out sections
+    let section_count = stdout.matches("=== out").count();
     assert_eq!(
-        result_count, 3,
-        "expected exactly 3 result markers, got {result_count} in: {stdout}"
+        section_count, 3,
+        "expected exactly 3 === out sections, got {section_count} in: {stdout}"
     );
 }
 
