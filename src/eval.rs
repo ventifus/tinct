@@ -165,12 +165,11 @@ pub struct EvalState {
     /// Runtime class registry: class_name -> (params, superclasses, method_defaults)
     /// Stores default method implementations for filling in instance dictionaries.
     pub class_registry: HashMap<String, RuntimeClassDecl>,
-    /// Runtime instance registry: (class_name, type_tag) -> instance_dict
+    /// Runtime instance registry: (class_name, type_tags) -> instance_dict
     /// Stores materialized method dictionaries for each instance.
-    /// class_name is interned via `intern_class_name` (&'static str); type_tag is a
-    /// plain String (from Value::type_name() or arm placeholder) to avoid unbounded
-    /// Box::leak calls in REPL/LSP sessions.
-    pub instance_registry: HashMap<(&'static str, String), Rc<Thunk>>,
+    /// class_name is interned via `intern_class_name` (&'static str); type_tags is a
+    /// Vec<String> (from Value::type_name() on determining-position args) for MPTC support.
+    pub instance_registry: HashMap<(&'static str, Vec<String>), Rc<Thunk>>,
     /// O(1) set of class names that have at least one registered instance.
     /// Updated in sync with `instance_registry`. Used by builtins (e.g. `+`, `str`)
     /// to avoid a linear scan over registry keys on every arithmetic/string operation.
@@ -188,6 +187,29 @@ pub struct RuntimeClassDecl {
     /// Default method implementations: method_name -> thunk
     /// These are wrapped as thunks to preserve laziness.
     pub method_defaults: IndexMap<String, Rc<Thunk>>,
+}
+
+/// Extract type names from an instance pattern for MPTC dispatch.
+/// For `[instance Addable [x@Int y@Float] ...]`, returns `vec!["Int", "Float"]`.
+/// Falls back to empty vec if pattern is malformed (will cause dispatch to fail).
+fn extract_instance_type_tags(pattern_expr: &Spanned<Expr>) -> Vec<String> {
+    match &pattern_expr.node {
+        Expr::PatternDecl { bindings } => bindings
+            .iter()
+            .filter_map(|binding| match &binding.node {
+                Expr::Annotated { annotation, .. } => match &annotation.node {
+                    Annotation::Simple(type_name) => Some(type_name.clone()),
+                    Annotation::Annotated(outer, _inner) => {
+                        // For nested annotations like Seq@Int, use the outer constructor
+                        Some(outer.clone())
+                    }
+                    Annotation::PropertyDict(_) => None, // Skip property dict annotations
+                },
+                _ => None, // Skip bare VarRef bindings (no type info)
+            })
+            .collect(),
+        _ => Vec::new(), // Malformed pattern
+    }
 }
 
 /// Evaluation infrastructure context: separates session config from variable bindings.
@@ -1366,7 +1388,7 @@ pub(crate) fn eval_recursive(
 
             let mut last_arm_thunk: Option<Rc<Thunk>> = None;
 
-            for (arm_idx, (_pattern_expr, methods)) in arms.iter().enumerate() {
+            for (_pattern_expr, methods) in arms.iter() {
                 // Start with class-level defaults for each arm independently.
                 let mut method_dict = if let Some(ref decl) = class_decl {
                     decl.method_defaults.clone()
@@ -1409,12 +1431,12 @@ pub(crate) fn eval_recursive(
                 ));
 
                 // Register this arm in the runtime registry.
-                // TODO: extract canonical type tag from pattern_expr (chr-prelude sprint)
-                let type_tag = format!("arm_{}", arm_idx);
+                // Extract type names from pattern_expr annotations for MPTC dispatch.
+                let type_tags = extract_instance_type_tags(&_pattern_expr);
                 {
                     let mut state = ctx.state.borrow_mut();
                     state.instance_registry.insert(
-                        (intern_class_name(class_name), type_tag),
+                        (intern_class_name(class_name), type_tags),
                         Rc::clone(&arm_dict_thunk),
                     );
                     // Keep the O(1) class-name set in sync with instance_registry.
