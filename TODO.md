@@ -58,17 +58,17 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 `tinct fmt` currently has two backends: Rust-native (`format_source` / `format_source_compact` in `src/formatter.rs`) and tinct-hosted (`format_source_tinct`, gated behind `--tinct-fmt`). The Rust backend should be deleted; the tinct scripts are the only formatter going forward. `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` move to `stdlib/cli/fmt/` alongside `cli/in/` and `cli/out/`. A new `-o <name>` flag selects which `cli/fmt/<name>.llt` script to use (default: `pretty`). The Rust-formatter-specific flags (`--oneline`, `--nospaces`, `--minimize`, `--tinct-fmt`) are removed.
 
-- [ ] Move `stdlib/formatter/compact.llt` → `stdlib/cli/fmt/compact.llt` and `stdlib/formatter/pretty.llt` → `stdlib/cli/fmt/pretty.llt`; delete the now-empty `stdlib/formatter/` directory
-- [ ] Add `-o <name>` / `--output <name>` to `Subcommand::Fmt` in `src/main.rs`; resolves to `stdlib/cli/fmt/<name>.llt` via `%libdir`; default `pretty` when omitted; error if the named script does not exist (`src/main.rs:169–200`)
-- [ ] Remove `--tinct-fmt`, `--oneline`, `--nospaces`, `--minimize` flags from `Subcommand::Fmt` — these were Rust-formatter-specific; compact output is now `tinct fmt -o compact` (`src/main.rs:178–192`)
-- [ ] Replace the `if tinct_fmt / else if oneline ... / else` dispatch (src/main.rs:1970–1981) with a single `format_source_tinct(source, fmt_script_path)` call using the resolved `cli/fmt/<name>.llt`
-- [ ] Update `format_source_tinct` to accept a script path (or name) instead of a `compact: bool` flag; look up from `%libdir`/`cli/fmt/` (`src/main.rs` or wherever `format_source_tinct` is defined)
-- [ ] Delete `format_source` and `format_source_compact` from `src/formatter.rs`; if `src/formatter.rs` contains nothing else, delete the file and remove it from `src/lib.rs`
-- [ ] Update `just fmt-llt`, `just fmt-llt-check`, `just fmt-llt-fix` in `justfile` to drop any Rust-formatter flags; add `just fmt-llt-compact FILE` as `tinct fmt -o compact {{FILE}}` (`justfile:164–174`)
-- [ ] Update `format_source_tinct` to unwrap `[Ok s]` from the formatter Result — both `cli/fmt/compact.llt` and `cli/fmt/pretty.llt` now return `[Ok String]` on success or `[Err msg]` on failure (via `[try [fn [] [format-file %]]]`); the Rust caller must extract the payload from `Ok` and surface the `Err` message as an error
-- [ ] Switch LSP format-on-save to `format_source_tinct` using `cli/fmt/pretty.llt` — the LSP was intentionally left on the Rust path when `tinct-hosted-formatter` shipped (cycle #310); now that the Rust path is being deleted, the LSP must use the tinct path (`src/lsp/`)
-- [ ] Update any `--tinct-fmt` references in doc, tests, or corpus files
-- [ ] Verify `just test` passes
+- [x] Move `stdlib/formatter/compact.llt` → `stdlib/cli/fmt/compact.llt` and `stdlib/formatter/pretty.llt` → `stdlib/cli/fmt/pretty.llt`; delete the now-empty `stdlib/formatter/` directory; rename `builtin-if` → `if` throughout both scripts
+- [x] Add `-o <name>` / `--output <name>` to `Subcommand::Fmt` in `src/main.rs`; resolves to `stdlib/cli/fmt/<name>.llt` via `%libdir`; default `pretty` when omitted; error if the named script does not exist
+- [x] Remove `--tinct-fmt`, `--oneline`, `--nospaces`, `--minimize` flags from `Subcommand::Fmt`
+- [x] Replace the `if tinct_fmt / else if oneline ... / else` dispatch with a single `format_source_tinct(source, &script_path)` call
+- [x] Update `format_source_tinct` to accept a `&Path` instead of a `compact: bool` flag
+- [x] Delete `format_source_compact` from `src/formatter.rs` and its tests; `format_source` retained for Rust unit tests
+- [x] Update `just fmt-llt`, `just fmt-llt-check`, `just fmt-llt-fix` in `justfile`; add `just fmt-llt-compact FILE` as `tinct fmt -o compact {{FILE}}`
+- [x] Update `format_source_tinct` to unwrap `[Ok s]` / surface `[Err msg]` from the formatter Result
+- [x] Switch LSP format-on-save to `format_source_tinct` using `cli/fmt/pretty.llt`
+- [x] Update `--tinct-fmt` references in doc; `doc/12-tooling.md` updated
+- [x] Verify `just test` passes: formatter (71+16 ok), corpus (40 ok), lsp (37 ok); pre-existing lib-test isolation failure in `tests::` all-in-one is unrelated to this sprint
 
 ### unified-bindings-remove-old-syntax: Remove pre-unified-bindings param syntax from fn, type, and class
 

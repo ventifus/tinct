@@ -1,4 +1,6 @@
 # join: error when separator is not a string
 [join 42 [1 2 3]]
+=== warn
+cannot unify String with 42 at 1:7-1:9
 === error
 [E010] join: expected String, got Int

@@ -1,32 +1,17 @@
 # Compact Formatter for Tinct AST
-# Converts AST dict (from ast_to_dict) to compact source text
-#
-# This formatter renders AST dicts as single-line representations:
-# - Semicolons instead of newlines for section separators
-# - Dicts rendered as [key: value ...] space-separated
-# - No layout decisions (always single-line)
-# - No comments (they're stripped by ast_to_dict in compact mode)
-#
-# Structure: two-expression document.
-# - Expression 1 (intermediate dict): all helpers + format functions.
-#   Its string-keyed entries become scope bindings for expression 2.
-# - Expression 2 (final): [format-file %] — returns the formatted String.
-#
-# The % binding refers to the AST file dict from ast_to_dict.
+# Converts AST dict (from ast_to_dict) to compact source text.
+# Single-line output: semicolons for separators, no comments, no layout decisions.
 
-# ============================================================================
-# Expression 1: All helpers + format functions (intermediate scope)
-# ============================================================================
+[include %rust "core"]
 
 [
 
 # ---- String utilities ----
 
-# Join strings with a separator
-join-strings: [fn@Str [sep@Str items@Dict]
+join-strings: [fn@[return: String  doc: """Join a 0-indexed dict of strings with sep."""] [let sep@String items@Dict]
   [join-strings-impl sep items 0 ""]]
 
-join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
+join-strings-impl: [fn@[return: String] [let sep@String items@Dict i@Int acc@String]
   [if [>= i [length items]]
     acc
     [join-strings-impl
@@ -35,32 +20,30 @@ join-strings-impl: [fn@Str [sep@Str items@Dict i@Int acc@Str]
       [+ i 1]
       [str acc [if [> i 0] sep ""] [get i items]]]]]
 
-# Map a function over a list-shaped dict (int-keyed 0..n-1)
-map-list: [fn@Dict [f@Fn xs@Dict]
+map-list: [fn@[return: Dict  doc: """Map f over a 0-indexed dict, returning a new 0-indexed dict."""] [let f@Fn xs@Dict]
   [map-list-impl f xs 0]]
 
-map-list-impl: [fn@Dict [f@Fn xs@Dict i@Int]
+map-list-impl: [fn@[return: Dict] [let f@Fn xs@Dict i@Int]
   [if [>= i [length xs]]
     []
     [merge
       [make-entry i [f [get i xs]]]
       [map-list-impl f xs [+ i 1]]]]]
 
-# Construct a single-entry dict with an integer key (for map-list-impl)
-make-entry: [fn@Dict [k v] [$k: v]]
+make-entry: [fn@[return: Dict] [let k v]
+  [$k: v]]
 
 # ---- Pattern formatting ----
 
-# Format a literal pattern value: {type: "literal", value: <int|float|bool|str>}
-# Note: pattern literals have no "kind" field. Bool check must come first since
-# [str false] renders "false" correctly, but bool? check ensures we use if/else format.
-format-pattern-literal: [fn@Str [pat@Dict]
+format-pattern-literal: [fn@[return: String  doc: """Format a literal pattern value (no 'kind' field; bool check must come first)."""] [let pat@Dict]
   [if [bool? [get "value" pat]]
     [if [get "value" pat] "true" "false"]
     [str [get "value" pat]]]]
 
-# Format a match pattern to source text
-format-pattern: [fn@Str [pat@Dict]
+has-binding?: [fn@[return: Bool  doc: """Check if a constructor pattern has a binding."""] [let pat@Dict]
+  [has? pat "binding"]]
+
+format-pattern: [fn@[return: String  doc: """Format a match pattern to source text."""] [let pat@Dict]
   [match [get "type" pat]
     "wildcard":    "_"
     "var":         [get "name" pat]
@@ -74,26 +57,19 @@ format-pattern: [fn@Str [pat@Dict]
     "or":          [join-strings " | " [map-list format-pattern [get "patterns" pat]]]
     _:             [error [str "unknown pattern type: " [get "type" pat]]]]]
 
-# Check if a constructor pattern has a binding
-has-binding?: [fn@Bool [pat@Dict]
-  [has? pat "binding"]]
-
-# Format a dict pattern: [key: pat ...]
-# Note: fields dict has string keys "0","1"... so use values to get 0-indexed list
-format-pattern-dict: [fn@Str [pat@Dict]
+format-pattern-dict: [fn@[return: String  doc: """Format a dict pattern: [key: pat ...]."""] [let pat@Dict]
   [if [empty? [get "fields" pat]]
     "[]"
     [str "["
       [join-strings " "
         [map-list
-          [fn [f] [str [get "key" f] ": " [format-pattern [get "pattern" f]]]]
+          [fn [let f] [str [get "key" f] ": " [format-pattern [get "pattern" f]]]]
           [values [get "fields" pat]]]]
       "]"]]]
 
 # ---- Node formatters ----
 
-# Main entry point: dispatch on node.type
-format-node: [fn@Str [node@Dict]
+format-node: [fn@[return: String  doc: """Main dispatch: format any AST node to compact source text."""] [let node@Dict]
   [match [get "type" node]
     "literal":        [format-literal node]
     "var":            [get "name" node]
@@ -118,8 +94,7 @@ format-node: [fn@Str [node@Dict]
     "error":          "<error>"
     _:                [error [str "unknown node type: " [get "type" node]]]]]
 
-# Format a literal (int, float, bool, str)
-format-literal: [fn@Str [node@Dict]
+format-literal: [fn@[return: String  doc: """Format a literal node (int, float, bool, str)."""] [let node@Dict]
   [match [get "kind" node]
     "int":   [str [get "value" node]]
     "float": [str [get "value" node]]
@@ -129,8 +104,7 @@ format-literal: [fn@Str [node@Dict]
                [str "\"" [get "value" node] "\""]]
     _:       [error [str "unknown literal kind: " [get "kind" node]]]]]
 
-# Format dot access: target.field
-format-dot-access: [fn@Str [node@Dict]
+format-dot-access: [fn@[return: String  doc: """Format dot access: target.field"""] [let node@Dict]
   [str
     [format-node [get "target" node]]
     "."
@@ -138,20 +112,17 @@ format-dot-access: [fn@Str [node@Dict]
       [str [get "field" node]]
       [get "field" node]]]]
 
-# Format pipe: lhs | rhs
-format-pipe: [fn@Str [node@Dict]
+format-pipe: [fn@[return: String  doc: """Format pipe: lhs | rhs"""] [let node@Dict]
   [str
     [format-node [get "lhs" node]]
     " | "
     [format-node [get "rhs" node]]]]
 
-# Format sequential: expr1; expr2; ...
-format-sequential: [fn@Str [node@Dict]
+format-sequential: [fn@[return: String  doc: """Format sequential expressions with semicolons."""] [let node@Dict]
   [join-strings "; "
     [map-list format-node [get "exprs" node]]]]
 
-# Format dict: [key: value ...]
-format-dict: [fn@Str [node@Dict]
+format-dict: [fn@[return: String  doc: """Format dict: [key: value ...]"""] [let node@Dict]
   [if [empty? [get "entries" node]]
     "[]"
     [str "["
@@ -159,19 +130,15 @@ format-dict: [fn@Str [node@Dict]
         [map-list format-entry [get "entries" node]]]
       "]"]]]
 
-# Format a single entry
-format-entry: [fn@Str [entry@Dict]
+format-entry: [fn@[return: String  doc: """Format a single dict entry."""] [let entry@Dict]
   [if [empty? [get "key" entry]]
-    # Auto-indexed entry (no key)
     [format-node [get "value" entry]]
-    # Keyed entry: key is a node dict
     [str
       [format-node [get "key" entry]]
       ": "
       [format-node [get "value" entry]]]]]
 
-# Format call: [fn args...] or [call fn args...]
-format-call: [fn@Str [node@Dict]
+format-call: [fn@[return: String  doc: """Format call: [fn args...] or [call fn args...]"""] [let node@Dict]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
@@ -186,29 +153,25 @@ format-call: [fn@Str [node@Dict]
       ""]
     "]"]]
 
-# Format named argument: name: value
-format-named-arg: [fn@Str [na@Dict]
+format-named-arg: [fn@[return: String  doc: """Format a named argument: name: value"""] [let na@Dict]
   [str
     [get "name" na]
     ": "
     [format-node [get "value" na]]]]
 
-# Format function: [fn[@RetAnn] [params] body]
-format-fn: [fn@Str [node@Dict]
+format-fn: [fn@[return: String  doc: """Format function: [fn[@RetAnn] [let params] body]"""] [let node@Dict]
   [str
     "[fn"
     [if [not [empty? [get "return-ann" node]]]
       [str "@" [format-annotation [get "return-ann" node]]]
       ""]
-    " ["
-    [join-strings " "
-      [map-list format-param [get "params" node]]]
+    " [let "
+    [join-strings " " [map-list format-param [get "params" node]]]
     "] "
     [format-node [get "body" node]]
     "]"]]
 
-# Format parameter
-format-param: [fn@Str [param@Dict]
+format-param: [fn@[return: String  doc: """Format a function parameter with optional annotation."""] [let param@Dict]
   [str
     [get "name" param]
     [if [not [empty? [get "annotation" param]]]
@@ -216,79 +179,68 @@ format-param: [fn@Str [param@Dict]
       ""]
     [if [get "variadic" param] "..." ""]]]
 
-# Format annotation
-format-annotation: [fn@Str [ann@Dict]
+format-annotation: [fn@[return: String  doc: """Format a type annotation."""] [let ann@Dict]
   [match [get "kind" ann]
     "simple": [get "value" ann]
     "dict":   [str "["
                 [join-strings " "
                   [map-list
-                    [fn [e] [str [get "key" e] ": " [format-annotation-value [get "value" e]]]]
+                    [fn [let e] [str [get "key" e] ": " [format-annotation-value [get "value" e]]]]
                     [get "entries" ann]]]
                 "]"]
     _:        [error [str "unknown annotation kind: " [get "kind" ann]]]]]
 
-# Format an annotation value (which may be a string, int, or nested AST node)
-format-annotation-value: [fn@Str [v]
+format-annotation-value: [fn@[return: String  doc: """Format an annotation value (string, int, or nested AST node)."""] [let v]
   [if [str? v]
     v
     [if [int? v]
       [str v]
       [format-node v]]]]
 
-# Format type alias: `expr
-format-type-alias: [fn@Str [node@Dict]
+format-type-alias: [fn@[return: String  doc: """Format type alias: `expr"""] [let node@Dict]
   [str "`" [format-node [get "expr" node]]]]
 
-# Format type assert: expr@Ann
-format-type-assert: [fn@Str [node@Dict]
+format-type-assert: [fn@[return: String  doc: """Format type assert: expr@Ann"""] [let node@Dict]
   [str
     [format-node [get "expr" node]]
     "@"
     [format-annotation [get "annotation" node]]]]
 
-# Format annotated: @Name ann
-format-annotated: [fn@Str [node@Dict]
+format-annotated: [fn@[return: String  doc: """Format annotated: @Name ann"""] [let node@Dict]
   [str
     "@"
     [get "name" node]
     " "
     [format-annotation [get "annotation" node]]]]
 
-# Format rest: ... or ...name
-format-rest: [fn@Str [node@Dict]
+format-rest: [fn@[return: String  doc: """Format rest: ... or ...name"""] [let node@Dict]
   [if [empty? [get "name" node]]
     "..."
     [str "..." [get "name" node]]]]
 
-# Format quote: [quote expr]
-format-quote: [fn@Str [node@Dict]
+format-quote: [fn@[return: String  doc: """Format quote: [quote expr]"""] [let node@Dict]
   [str "[quote " [format-node [get "expr" node]] "]"]]
 
-# Format unquote: [unquote expr]
-format-unquote: [fn@Str [node@Dict]
+format-unquote: [fn@[return: String  doc: """Format unquote: [unquote expr]"""] [let node@Dict]
   [str "[unquote " [format-node [get "expr" node]] "]"]]
 
-# Format unquote-splice: [unquote-splice expr]
-format-unquote-splice: [fn@Str [node@Dict]
+format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unquote-splice expr]"""] [let node@Dict]
   [str "[unquote-splice " [format-node [get "expr" node]] "]"]]
 
-# Format defmacro: [defmacro name transformer]
-format-defmacro: [fn@Str [node@Dict]
+format-defmacro: [fn@[return: String  doc: """Format defmacro: [defmacro name transformer]"""] [let node@Dict]
   [str "[defmacro " [get "name" node] " " [format-node [get "body" node]] "]"]]
 
-# Format match: [match scrutinee pat1 body1 pat2 body2 ...]
-format-match: [fn@Str [node@Dict]
+format-match: [fn@[return: String  doc: """Format match: [match scrutinee pat1: body1 ...]"""] [let node@Dict]
   [str
     "[match "
     [format-node [get "scrutinee" node]]
     [format-match-arms [get "arms" node]]
     "]"]]
 
-format-match-arms: [fn@Str [arms@Dict]
+format-match-arms: [fn@[return: String] [let arms@Dict]
   [format-match-arms-impl arms 0 ""]]
 
-format-match-arms-impl: [fn@Str [arms@Dict i@Int acc@Str]
+format-match-arms-impl: [fn@[return: String] [let arms@Dict i@Int acc@String]
   [if [>= i [length arms]]
     acc
     [format-match-arms-impl
@@ -300,18 +252,16 @@ format-match-arms-impl: [fn@Str [arms@Dict i@Int acc@Str]
         ": "
         [format-node [get "body" [get i arms]]]]]]]
 
-# Format class declaration: [class Name params methods...]
-format-class: [fn@Str [node@Dict]
+format-class: [fn@[return: String  doc: """Format class declaration."""] [let node@Dict]
   [str
     "[class "
     [get "name" node]
     [if [> [length [get "params" node]] 0]
-      [str " " [join-strings " " [map-list [fn [p] p] [get "params" node]]]]
+      [str " " [join-strings " " [map-list [fn [let p] p] [get "params" node]]]]
       ""]
     "]"]]
 
-# Format instance declaration: [instance ClassName type methods...]
-format-instance: [fn@Str [node@Dict]
+format-instance: [fn@[return: String  doc: """Format instance declaration."""] [let node@Dict]
   [str
     "[instance "
     [get "class" node]
@@ -319,22 +269,19 @@ format-instance: [fn@Str [node@Dict]
     [format-node [get "instance_type" node]]
     "]"]]
 
-# Format type application: @[func arg]
-format-type-app: [fn@Str [node@Dict]
+format-type-app: [fn@[return: String  doc: """Format type application: @[func arg]"""] [let node@Dict]
   [str "@[" [format-node [get "func" node]] " " [format-node [get "arg" node]] "]"]]
 
 # ---- Document & File formatters ----
 
-# Format a document (list of expressions, separated by "; ")
-format-document: [fn@Str [doc@Dict]
+format-document: [fn@[return: String  doc: """Format a document as semicolon-separated expressions."""] [let doc@Dict]
   [join-strings "; "
     [map-list format-node [get "expressions" doc]]]]
 
-# Format a file (list of documents with "---" separators)
-format-file: [fn@Str [file@Dict]
+format-file: [fn@[return: String  doc: """Format a file: documents joined with '; ---' separators."""] [let file@Dict]
   [format-file-impl [get "documents" file] 0 ""]]
 
-format-file-impl: [fn@Str [docs@Dict i@Int acc@Str]
+format-file-impl: [fn@[return: String] [let docs@Dict i@Int acc@String]
   [if [>= i [length docs]]
     [str acc "\n"]
     [format-file-impl
@@ -349,8 +296,7 @@ format-file-impl: [fn@Str [docs@Dict i@Int acc@Str]
           ""]
         [format-document [get i docs]]]]]]
 
-# Format document header (section name, output type, expects)
-format-doc-header: [fn@Str [doc@Dict]
+format-doc-header: [fn@[return: String  doc: """Format document section header (name, output type, expects)."""] [let doc@Dict]
   [str
     [if [not [empty? [get "name" doc]]]
       [str " %" [get "name" doc]]
@@ -364,8 +310,4 @@ format-doc-header: [fn@Str [doc@Dict]
 
 ]
 
-# ============================================================================
-# Expression 2: return formatted source as a String
-# ============================================================================
-
-[format-file %]
+[try [fn [] [format-file %]]]

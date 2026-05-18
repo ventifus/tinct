@@ -7,9 +7,9 @@ use std::process;
 use std::rc::Rc;
 use std::str::FromStr;
 use tinct::{
-    create_stdlib_env, deep_materialize, eval_file_with_input, format_source, format_with_json_llt,
-    json_to_value, literate, materialize, parse, value_to_json, EvalContext, Span, Thunk,
-    MAX_COLLECT_SIZE, MAX_FILE_SIZE,
+    create_stdlib_env, deep_materialize, eval_file_with_input, format_with_json_llt, json_to_value,
+    literate, materialize, parse, value_to_json, EvalContext, Span, Thunk, MAX_COLLECT_SIZE,
+    MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -175,21 +175,15 @@ enum Commands {
         #[arg(short, long)]
         in_place: bool,
 
-        /// Produce single-line output (strip comments, replace newlines with spaces).
-        #[arg(long)]
-        oneline: bool,
-
-        /// Minimize inter-token spaces (only insert when required for tokenization).
-        #[arg(long)]
-        nospaces: bool,
-
-        /// Shorthand for --oneline --nospaces (maximally compact output).
-        #[arg(long)]
-        minimize: bool,
-
-        /// Use tinct-hosted formatter instead of Rust formatter (experimental).
-        #[arg(long)]
-        tinct_fmt: bool,
+        /// Formatter script to use, resolved from stdlib/cli/fmt/<name>.llt.
+        /// Defaults to `pretty`. Use `-o compact` for single-line compact output.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "NAME",
+            default_value = "pretty"
+        )]
+        output: String,
 
         /// Type errors are fatal (exit with code 1). Without --strict, formatting proceeds regardless of type errors.
         #[arg(long)]
@@ -377,15 +371,10 @@ fn main() {
         Commands::Fmt {
             check,
             in_place,
-            oneline,
-            nospaces,
-            minimize,
-            tinct_fmt,
+            output,
             strict,
             file,
-        } => run_fmt(
-            &file, check, in_place, oneline, nospaces, minimize, tinct_fmt, strict,
-        ),
+        } => run_fmt(&file, check, in_place, &output, strict),
         #[cfg(feature = "repl")]
         Commands::Repl => tinct::repl::run_repl(),
         #[cfg(feature = "lsp")]
@@ -1925,16 +1914,9 @@ fn run_fmt(
     file_path: &str,
     check: bool,
     in_place: bool,
-    oneline: bool,
-    nospaces: bool,
-    minimize: bool,
-    tinct_fmt: bool,
+    output_name: &str,
     strict: bool,
 ) -> Result<(), String> {
-    // --minimize is shorthand for both --oneline and --nospaces
-    let oneline = oneline || minimize;
-    let nospaces = nospaces || minimize;
-
     let source = read_source(file_path)?;
 
     // If --strict is set, typecheck the file first and fail if type errors exist.
@@ -1965,20 +1947,28 @@ fn run_fmt(
         // TODO: Process diagnostics here (type-warning-channel infrastructure only, no emission yet)
     }
 
-    // Format the source. The formatter re-parses internally; we cannot reuse the
-    // typecheck AST because the formatter needs to preserve comments and layout details.
-    let formatted = if tinct_fmt {
-        // Use tinct-hosted formatter
-        // Compact mode if oneline or nospaces is specified, pretty mode otherwise
-        let compact = oneline || nospaces;
-        tinct::format_source_tinct(&source, compact)?
-    } else if oneline || nospaces {
-        // Use Rust compact formatter
-        tinct::format_source_compact(&source, oneline, nospaces).map_err(|e| format!("{e}"))?
-    } else {
-        // Use Rust full formatter
-        format_source(&source).map_err(|e| format!("{e}"))?
+    // Resolve the formatter script from %libdir/cli/fmt/<name>.llt.
+    let script_path = {
+        let libdir = find_libdir_path().ok_or_else(|| {
+            format!("stdlib directory not found — cannot locate formatter script '{output_name}'")
+        })?;
+        let path = libdir
+            .join("cli")
+            .join("fmt")
+            .join(format!("{output_name}.llt"));
+        if !path.exists() {
+            return Err(format!(
+                "fmt: formatter script not found: {} (resolved from -o '{output_name}')",
+                path.display()
+            ));
+        }
+        path
     };
+
+    // Format the source using the tinct-hosted formatter.
+    // The formatter re-parses internally; we cannot reuse the typecheck AST because
+    // the formatter needs to preserve comments and layout details.
+    let formatted = tinct::format_source_tinct(&source, &script_path)?;
 
     if check {
         if source != formatted {

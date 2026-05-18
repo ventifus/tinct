@@ -34,19 +34,19 @@ Semicolons are normalized away. They are syntactic sugar for newlines, and the f
 
 ### Configurability: Zero-Config for Canonical Style
 
-The formatter defines one canonical Tinct style with no layout configuration options. CLI flags control I/O behavior and output mode:
+The formatter defines one canonical Tinct style with no layout configuration options. CLI flags control I/O behavior and formatter selection:
 
 **I/O flags:**
 - `--check` — exit 1 if any file is not formatted (CI mode)
 - `--in-place` — overwrite files in place
 - `stdin` (`-` as file argument) — read from stdin, write to stdout
 
-**Compact mode flags:**
-- `--oneline` — single-line output (comments stripped, no trailing newline)
-- `--nospaces` — minimize inter-token spacing
-- `--minimize` — shorthand for `--oneline --nospaces`
+**Formatter selection:**
+- `-o <name>` / `--output <name>` — select formatter by name; resolves to `stdlib/cli/fmt/<name>.llt`; defaults to `pretty`
+  - `-o pretty` (default) — full layout with comment preservation (multi-line, indented)
+  - `-o compact` — single-line compact output (comments stripped, semicolons for separators)
 
-**Rationale:** gofmt's zero-config philosophy. One canonical style eliminates bikeshedding. Compact modes are for embedding and piping, not for primary source formatting. Pre-1.0, if a genuine need for layout configurability emerges (e.g. `--width 100`), knobs can be added later. Starting opinionated is easier than tightening.
+**Rationale:** gofmt's zero-config philosophy. One canonical style eliminates bikeshedding. The compact mode is for embedding and piping, not for primary source formatting. Pre-1.0, if a genuine need for layout configurability emerges (e.g. `--width 100`), knobs can be added later. Starting opinionated is easier than tightening.
 
 ### Additional Rules
 
@@ -63,41 +63,26 @@ The formatter defines one canonical Tinct style with no layout configuration opt
 | Quoted strings | Preserved exactly (escapes not normalized; idempotency) |
 | Comments in access chains | Cannot occur (compound-atomic grammar); formatter does not handle |
 
-### Compact Formatter Modes
+### Compact Output Mode
 
-Three compact modes produce space-efficient output for embedding tinct expressions in shell scripts, piping through `-e` strings, or minimizing file size.
-
-**Note:** The `--tinct-fmt` flag opts into the tinct-hosted formatter (`stdlib/formatter/pretty.llt` or `compact.llt`). Without this flag, compact modes use the Rust formatter (`src/formatter.rs`).
-
-| Flag | Behavior |
-|------|----------|
-| `--oneline` | All output on a single line; comments stripped; no trailing newline; section headers emit `; ` after metadata |
-| `--nospaces` | Spaces removed except where required for unambiguous tokenization |
-| `--minimize` | Shorthand for `--oneline --nospaces` (maximally compact) |
-
-**Examples:**
+The compact formatter produces single-line output for embedding tinct expressions in shell scripts, piping through `-e` strings, or minimizing file size.
 
 ```bash
-# Normal format (default)
+# Normal format (default: pretty)
 $ tinct fmt config.llt
+[
+  x: 1
+  y: 2
+]
+
+# Compact mode: single line, comments stripped
+$ tinct fmt -o compact config.llt
 [x: 1 y: 2]
-
-# Oneline mode: single line, comments stripped
-$ tinct fmt --oneline config.llt
-[x: 1 y: 2]
-
-# Nospaces mode: minimal inter-token spacing
-$ tinct fmt --nospaces config.llt
-[x:1 y:2]
-
-# Minimize mode: both oneline and nospaces
-$ tinct fmt --minimize config.llt
-[x:1 y:2]
 ```
 
-**Section headers in oneline mode:**
+**Section headers in compact mode:**
 
-Section headers (`---`) emit as `; ` (semicolon + space) after the header metadata when in oneline mode:
+Section headers (`---`) emit as `; ` (semicolon + space) after the header metadata:
 
 ```bash
 # Input
@@ -105,41 +90,36 @@ Section headers (`---`) emit as `; ` (semicolon + space) after the header metada
 --- %defaults@Dict
 [y: 2]
 
-# Oneline output
+# Compact output
 [x: 1] --- %defaults@Dict; [y: 2]
 ```
 
-The `---` separator is preserved verbatim even in minimize mode to ensure document structure remains parseable.
-
-**Bare-word adjacency rule (nospaces mode):**
-
-When `--nospaces` is enabled, a space is inserted between two consecutive tokens **only** when both the preceding token's last character **and** the following token's first character are bare-word characters (alphanumeric, `-`, `_`, `?`, `!`, `/`, `%`, `~`).
-
-This rule prevents unintended token merging. For example:
-
-- `[x: 1 y: 2]` → `[x:1 y:2]` — space required between `1` (ends with digit) and `y` (starts with letter)
-- `[call f arg]` → `[call f arg]` — all tokens are bare words, spaces required
-- `--- %name` → `---%name` would lex as a single bare word, so the space is preserved
+The `---` separator is preserved verbatim to ensure document structure remains parseable.
 
 **Round-trip guarantee:**
 
-All three modes are re-parseable:
+Compact output is re-parseable and idempotent:
 
 ```bash
-# Round-trip via oneline
-$ tinct fmt --oneline file.llt | tinct run -
+# Round-trip via compact
+$ tinct fmt -o compact file.llt | tinct run -
 (same output as `tinct run file.llt`)
 
 # Idempotency
-$ tinct fmt --minimize file.llt | tinct fmt --minimize -
+$ tinct fmt -o compact file.llt | tinct fmt -o compact -
 (output unchanged)
 ```
 
-Comments are stripped in `--oneline` and `--minimize` modes (comments cannot survive without newlines). Section headers with `%name@Type` and `expects: @Type` metadata survive all modes.
+Comments are stripped in compact mode (comments cannot survive without newlines). Section headers with `%name@Type` and `expects: @Type` metadata survive compact mode.
 
 ### Tinct-Hosted Formatter
 
-The full formatter is implemented in `stdlib/formatter/pretty.llt`, which receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source. The compact formatter is implemented in `stdlib/formatter/compact.llt`. The Rust formatter (`src/formatter.rs`) is retained for LSP use (where loading a tinct program would be too slow).
+Both formatters are implemented as tinct scripts in `stdlib/cli/fmt/`:
+
+- `stdlib/cli/fmt/pretty.llt` — full layout with comment preservation. Receives the AST dict (from `ast_to_dict(Some(src), Some(comments))`) as `%` and returns formatted source.
+- `stdlib/cli/fmt/compact.llt` — single-line compact output. Receives a minimal AST dict (no source info, no comments) as `%`.
+
+Both scripts return `[Ok String]` on success or `[Err msg]` on failure (via `[try [fn [] [format-file %]]]`). Custom formatter scripts can be added to `stdlib/cli/fmt/` and selected with `-o <name>`.
 
 See `doc/whatif/completed/tinct-hosted-formatter.md` for the full design.
 
