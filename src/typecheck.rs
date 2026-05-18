@@ -1138,16 +1138,12 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                     }
                     "fn?" if args.len() == 1 => {
                         if let Expr::VarRef { name: var_name, .. } = &args[0].node {
-                            // fn? narrows to "any function": variadic with unknown return.
-                            // Function { params: [], ret: Unknown, variadic: true } is the
-                            // most precise expressible type for an unconstrained callable.
+                            // fn? narrows to Unknown — Function{variadic:true} would fail
+                            // param-count unification with concrete types; Unknown preserves
+                            // gradual typing semantics
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Function {
-                                    params: vec![],
-                                    ret: Box::new(Type::Unknown),
-                                    variadic: true,
-                                },
+                                ty: Type::Unknown,
                             }];
                         }
                     }
