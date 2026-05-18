@@ -231,6 +231,29 @@ pub enum Expr {
         body: Rc<Spanned<Expr>>,
     },
 
+    /// Macro declaration (macros-v2), e.g. `[macro my-if [let cond then else] body...]`
+    /// Uses `[let ...]` pattern for parameter binding. The macro expander registers this
+    /// and removes it from the AST before type-checking.
+    MacroDecl {
+        name: String,
+        params: Box<Spanned<Expr>>,  // [let ...] pattern (reuses existing LetDecl)
+        body: Box<Spanned<Expr>>,
+    },
+
+    /// Multi-form splice (macros-v2), e.g. `[splice form1 form2 ...]`
+    /// Only valid at dict top level. Injects multiple forms into the surrounding context.
+    /// The expander removes this from the AST before type-checking.
+    Splice(Vec<Spanned<Expr>>),
+
+    /// Syntax class declaration (macros-v2), e.g. `[syntax-class pragma-name pattern: [let _ : VarRef] message: "..."]`
+    /// Declares a named pattern validator for macro arguments. The expander registers this
+    /// and removes it from the AST before type-checking.
+    SyntaxClass {
+        name: String,
+        pattern: Box<Spanned<Expr>>,
+        message: Option<String>,
+    },
+
     /// Pattern matching, e.g. `[match scrutinee pat1 body1 pat2 body2 ...]`
     Match {
         scrutinee: Box<Spanned<Expr>>,
@@ -579,6 +602,23 @@ impl fmt::Display for Expr {
                     write!(f, "{}", param.node)?;
                 }
                 write!(f, "] {}]", body.node)
+            }
+            Expr::MacroDecl { name, params, body } => {
+                write!(f, "[macro {} {} {}]", name, params.node, body.node)
+            }
+            Expr::Splice(forms) => {
+                write!(f, "[splice")?;
+                for form in forms {
+                    write!(f, " {}", form.node)?;
+                }
+                write!(f, "]")
+            }
+            Expr::SyntaxClass { name, pattern, message } => {
+                write!(f, "[syntax-class {} pattern: {}", name, pattern.node)?;
+                if let Some(msg) = message {
+                    write!(f, " message: {:?}", msg)?;
+                }
+                write!(f, "]")
             }
             Expr::Match { scrutinee, arms } => {
                 write!(f, "[match {}", scrutinee.node)?;

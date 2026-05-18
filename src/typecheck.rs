@@ -128,6 +128,9 @@ fn reset_expr(expr: &Spanned<Expr>) {
         | Expr::Rest(_)
         | Expr::Placeholder
         | Expr::TypeApp { .. }
+        | Expr::MacroDecl { .. }
+        | Expr::Splice(..)
+        | Expr::SyntaxClass { .. }
         | Expr::Error(_) => {}
 
         // Access expressions: recurse into target
@@ -2019,9 +2022,21 @@ fn infer_expr(
             params,
             body,
             ..
-        } => infer_fn(return_ann, params, body, env, expr.span, state, type_map),
+        } => {
+            // Note: Fn does not need semantic validation of params at type-check time.
+            // The parser's param extraction is permissive and handles [fn [let x y] body]
+            // as well as [fn [x y] body]. Empty params is valid for zero-parameter functions.
+            // Macro-generated Fn nodes will have params extracted by the parser after expansion.
+            infer_fn(return_ann, params, body, env, expr.span, state, type_map)
+        }
 
-        Expr::TypeAlias { body, .. } => expand_type_alias(body, env, state).map_err(|e| vec![e]),
+        Expr::TypeAlias { body, .. } => {
+            // Note: TypeAlias does not need semantic validation of params at type-check time.
+            // The parser's param extraction is permissive and handles [type [let a b] T]
+            // as well as [type [a b] T]. Empty params is valid for non-parametric type aliases.
+            // Macro-generated TypeAlias nodes will have params extracted by the parser after expansion.
+            expand_type_alias(body, env, state).map_err(|e| vec![e])
+        }
 
         Expr::TypeAssert {
             annotation,
@@ -2263,6 +2278,27 @@ fn infer_expr(
             )])
         }
 
+        Expr::MacroDecl { .. } => {
+            Err(vec![TypeError::new(
+                "MacroDecl should be removed by expansion pass before typechecking (internal error)",
+                expr.span,
+            )])
+        }
+
+        Expr::Splice(..) => {
+            Err(vec![TypeError::new(
+                "Splice should be removed by expansion pass before typechecking (internal error)",
+                expr.span,
+            )])
+        }
+
+        Expr::SyntaxClass { .. } => {
+            Err(vec![TypeError::new(
+                "SyntaxClass should be removed by expansion pass before typechecking (internal error)",
+                expr.span,
+            )])
+        }
+
         Expr::ClassDecl {
             name,
             params,
@@ -2272,6 +2308,15 @@ fn infer_expr(
             resolver,
         } => {
             use crate::types::{ClassDecl, Kind};
+
+            // Validate that class declaration has a valid name.
+            // Parser accepts any first expression; validation happens here.
+            if name.is_empty() {
+                return Err(vec![TypeError::new(
+                    "class declaration must have a name declared with [class [ClassName ...] ...]",
+                    expr.span,
+                )]);
+            }
 
             // Parse method signatures and build ClassDecl
             let mut method_types = HashMap::new();
@@ -4791,6 +4836,18 @@ pub fn scan_type_quality(
                 Expr::DefMacro { body, .. } => {
                     walk_expr(body, spans);
                 }
+                Expr::MacroDecl { params, body, .. } => {
+                    walk_expr(params, spans);
+                    walk_expr(body, spans);
+                }
+                Expr::Splice(forms) => {
+                    for form in forms {
+                        walk_expr(form, spans);
+                    }
+                }
+                Expr::SyntaxClass { pattern, .. } => {
+                    walk_expr(pattern, spans);
+                }
                 Expr::ClassDecl { methods, .. } => {
                     for entry in methods {
                         if let Some(key) = &entry.node.key {
@@ -5013,6 +5070,18 @@ fn check_overbroad_annotations(
             }
             Expr::DefMacro { body, .. } => {
                 walk_for_functions(body, type_map, diagnostics);
+            }
+            Expr::MacroDecl { params, body, .. } => {
+                walk_for_functions(params, type_map, diagnostics);
+                walk_for_functions(body, type_map, diagnostics);
+            }
+            Expr::Splice(forms) => {
+                for form in forms {
+                    walk_for_functions(form, type_map, diagnostics);
+                }
+            }
+            Expr::SyntaxClass { pattern, .. } => {
+                walk_for_functions(pattern, type_map, diagnostics);
             }
             Expr::ClassDecl { methods, .. } => {
                 for entry in methods {

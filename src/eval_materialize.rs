@@ -1824,6 +1824,10 @@ pub(crate) fn eval_step(
             expr.span,
         )
         .into())),
+        Expr::MacroDecl { .. } | Expr::Splice(_) | Expr::SyntaxClass { .. } => {
+            // These should be removed by macro expansion before evaluation
+            unreachable!("MacroDecl/Splice/SyntaxClass should be removed by expansion")
+        }
         Expr::Pipe { .. } => {
             unreachable!("Pipe should be desugared before evaluation")
         }

@@ -1,0 +1,5 @@
+# Test that [syntax-class: foo] is treated as a dict entry, NOT a syntax-class declaration.
+# The colon-ahead guard should prevent special form recognition.
+[syntax-class: "test"]
+=== out
+Dict({"syntax-class": String("test")})

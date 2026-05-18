@@ -596,6 +596,9 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
             collect_include_paths_from_expr(&pattern.node, paths);
             collect_include_paths_from_expr(&body.node, paths);
         }
+        Expr::MacroDecl { .. } | Expr::Splice(_) | Expr::SyntaxClass { .. } => {
+            // Macro declarations are removed by expansion before include resolution
+        }
         // Literals and other leaf nodes: no recursive traversal needed
         Expr::Int(_)
         | Expr::Float(_)
@@ -929,6 +932,9 @@ fn apply_include_type_to_spanned(
         Expr::CaseArm { pattern, body } => {
             apply_include_type_to_spanned(pattern, include_bindings, type_map);
             apply_include_type_to_spanned(body, include_bindings, type_map);
+        }
+        Expr::MacroDecl { .. } | Expr::Splice(_) | Expr::SyntaxClass { .. } => {
+            // Macro declarations are removed by expansion before type resolution
         }
         // Leaf nodes: no recursive traversal needed
         Expr::Int(_)

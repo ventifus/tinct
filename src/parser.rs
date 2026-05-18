@@ -468,6 +468,22 @@ fn adjust_expr(expr: Expr, base: Position) -> Expr {
             func: Box::new(adjust_spanned_expr(*func, base)),
             arg: Box::new(adjust_spanned_expr(*arg, base)),
         },
+        Expr::MacroDecl { params, body, name } => Expr::MacroDecl {
+            name,
+            params: Box::new(adjust_spanned_expr(*params, base)),
+            body: Box::new(adjust_spanned_expr(*body, base)),
+        },
+        Expr::Splice(forms) => Expr::Splice(
+            forms
+                .into_iter()
+                .map(|f| adjust_spanned_expr(f, base))
+                .collect(),
+        ),
+        Expr::SyntaxClass { pattern, name, message } => Expr::SyntaxClass {
+            name,
+            pattern: Box::new(adjust_spanned_expr(*pattern, base)),
+            message,
+        },
     }
 }
 
@@ -1058,6 +1074,21 @@ enum StackFrame {
         name: Option<String>,
         params: Vec<Spanned<Param>>,
         body: Vec<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Macro declaration (macros-v2): `[macro name [let ...] body]`
+    MacroDecl {
+        name: Option<String>,
+        params: Option<Spanned<Expr>>,  // [let ...] pattern
+        body: Option<Spanned<Expr>>,
+        span_start: Position,
+    },
+    /// Syntax class declaration (macros-v2): `[syntax-class name pattern: [...] message: "..."]`
+    SyntaxClass {
+        name: Option<String>,
+        pattern: Option<Spanned<Expr>>,
+        message: Option<String>,
+        pending_key: Option<Spanned<Expr>>,
         span_start: Position,
     },
     /// Match expression: `[match scrutinee pattern: body ...]`
@@ -1870,6 +1901,59 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         continue;
                     }
                     Some((Token::Identifier(s), keyword_idx))
+                        if s == "macro"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // MacroDecl form: [macro name [let ...] body]
+                        // (Not a macro form if the keyword is followed by colon: [macro: x] is a dict.)
+                        stack.push(StackFrame::MacroDecl {
+                            name: None,
+                            params: None,
+                            body: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "macro" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Identifier(s), keyword_idx))
+                        if s == "syntax-class"
+                            && !matches!(
+                                peek_next_horizontal(&token_vec, keyword_idx),
+                                Some((Token::Colon, _))
+                            ) =>
+                    {
+                        // SyntaxClass form: [syntax-class name pattern: [...] message: "..."]
+                        // (Not a syntax-class form if the keyword is followed by colon: [syntax-class: x] is a dict.)
+                        stack.push(StackFrame::SyntaxClass {
+                            name: None,
+                            pattern: None,
+                            message: None,
+                            pending_key: None,
+                            span_start: span.start,
+                        });
+                        i += 1; // Consume the OpenBracket
+                                // Skip whitespace and consume the "syntax-class" token
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+                        i += 1;
+                        continue;
+                    }
+                    Some((Token::Identifier(s), keyword_idx))
                         if s == "match"
                             && !matches!(
                                 peek_next_horizontal(&token_vec, keyword_idx),
@@ -2537,6 +2621,87 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                     }
 
+                    StackFrame::MacroDecl {
+                        name,
+                        params,
+                        body,
+                        span_start,
+                    } => {
+                        if name.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "macro form requires a name".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        if params.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "macro form requires a params expression ([let ...])".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        if body.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "macro form requires a body expression".to_string(),
+                                span: Some(span),
+                            });
+                        }
+
+                        let macro_expr = Expr::MacroDecl {
+                            name: name.unwrap(),
+                            params: Box::new(params.unwrap()),
+                            body: Box::new(body.unwrap()),
+                        };
+                        let spanned_macro = Spanned::new(macro_expr, dict_span(span_start));
+                        if let Err(push_err) = push_value(
+                            &mut stack,
+                            &mut current_document_expressions,
+                            spanned_macro,
+                        ) {
+                            close_bracket_recover!(push_err);
+                        }
+                    }
+
+                    StackFrame::SyntaxClass {
+                        name,
+                        pattern,
+                        message,
+                        pending_key,
+                        span_start,
+                    } => {
+                        if pending_key.is_some() {
+                            close_bracket_recover!(ParseError {
+                                message: "syntax-class: key without value".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        if name.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "syntax-class form requires a name".to_string(),
+                                span: Some(span),
+                            });
+                        }
+                        if pattern.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "syntax-class form requires a 'pattern:' field".to_string(),
+                                span: Some(span),
+                            });
+                        }
+
+                        let syntax_class_expr = Expr::SyntaxClass {
+                            name: name.unwrap(),
+                            pattern: Box::new(pattern.unwrap()),
+                            message,
+                        };
+                        let spanned_syntax_class = Spanned::new(syntax_class_expr, dict_span(span_start));
+                        if let Err(push_err) = push_value(
+                            &mut stack,
+                            &mut current_document_expressions,
+                            spanned_syntax_class,
+                        ) {
+                            close_bracket_recover!(push_err);
+                        }
+                    }
+
                     StackFrame::Match {
                         scrutinee,
                         arms,
@@ -2592,12 +2757,9 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                         structural_metadata,
                         span_start,
                     } => {
-                        if name.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "class form requires a class name".to_string(),
-                                span: Some(span),
-                            });
-                        } else if pending_key.is_some() {
+                        // Semantic validation of class name moved to type checker.
+                        // Use empty string as placeholder if name not set.
+                        if pending_key.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "class form has incomplete method (key without value)"
                                     .to_string(),
@@ -2649,7 +2811,7 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             }
 
                             let class_expr = Expr::ClassDecl {
-                                name: name.unwrap(),
+                                name: name.unwrap_or_else(|| String::new()),
                                 params,
                                 superclasses,
                                 methods: methods
@@ -2928,9 +3090,23 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
                             }
                         }
                     }
+                    Some(StackFrame::SyntaxClass {
+                        ref mut pending_key,
+                        ..
+                    }) => {
+                        if pending_key.is_none() {
+                            Some(ParseError {
+                                message: "`:` without a key (expected 'pattern' or 'message' before `:`)"
+                                    .to_string(),
+                                span: Some(span),
+                            })
+                        } else {
+                            None // Pending key is set; next expression will be the value
+                        }
+                    }
                     _ => Some(ParseError {
                         message:
-                            "`:` can only appear in dict, call, class, instance, or match forms"
+                            "`:` can only appear in dict, call, class, instance, match, or syntax-class forms"
                                 .to_string(),
                         span: Some(span),
                     }),
@@ -4337,6 +4513,8 @@ pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Unquote { span_start, .. } => *span_start,
             StackFrame::UnquoteSplice { span_start, .. } => *span_start,
             StackFrame::DefMacro { span_start, .. } => *span_start,
+            StackFrame::MacroDecl { span_start, .. } => *span_start,
+            StackFrame::SyntaxClass { span_start, .. } => *span_start,
             StackFrame::Match { span_start, .. } => *span_start,
             StackFrame::ClassDecl { span_start, .. } => *span_start,
             StackFrame::InstanceDecl { span_start, .. } => *span_start,
@@ -4603,6 +4781,14 @@ fn pop_last_value_from_frame(
         }
         Some(StackFrame::DefMacro { .. }) => Err(ParseError {
             message: "dot access is not valid inside defmacro form".to_string(),
+            span: Some(span),
+        }),
+        Some(StackFrame::MacroDecl { .. }) => Err(ParseError {
+            message: "dot access is not valid inside macro form".to_string(),
+            span: Some(span),
+        }),
+        Some(StackFrame::SyntaxClass { .. }) => Err(ParseError {
+            message: "dot access is not valid inside syntax-class form".to_string(),
             span: Some(span),
         }),
         Some(StackFrame::ClassDecl { .. }) => Err(ParseError {
@@ -5172,6 +5358,119 @@ fn push_expr_to_parent(
                 body.push(expr);
                 Ok(())
             }
+            Some(StackFrame::MacroDecl {
+                ref mut name,
+                ref mut params,
+                ref mut body,
+                ..
+            }) => {
+                // MacroDecl expects: [macro name [let ...] body]
+                // First expression: name (VarRef)
+                // Second expression: params ([let ...])
+                // Third expression: body
+                if name.is_none() {
+                    // First expression should be a VarRef (macro name)
+                    if let Expr::VarRef { name: n, .. } = &expr.node {
+                        *name = Some(n.clone());
+                        Ok(())
+                    } else {
+                        Err(ParseError {
+                            message: "macro declaration requires a name (bare identifier)"
+                                .to_string(),
+                            span: Some(expr.span),
+                        })
+                    }
+                } else if params.is_none() {
+                    // Second expression: params ([let ...])
+                    *params = Some(expr);
+                    Ok(())
+                } else if body.is_none() {
+                    // Third expression: body
+                    *body = Some(expr);
+                    Ok(())
+                } else {
+                    Err(ParseError {
+                        message: "macro declaration expects exactly 3 arguments: name, params, body"
+                            .to_string(),
+                        span: Some(expr.span),
+                    })
+                }
+            }
+            Some(StackFrame::SyntaxClass {
+                ref mut name,
+                ref mut pattern,
+                ref mut message,
+                ref mut pending_key,
+                ..
+            }) => {
+                // SyntaxClass expects: [syntax-class name pattern: [...] message: "..."]
+                // First expression: name (VarRef)
+                // Then key-value pairs for pattern and message
+                if name.is_none() {
+                    // First expression should be a VarRef (syntax-class name)
+                    if let Expr::VarRef { name: n, .. } = &expr.node {
+                        *name = Some(n.clone());
+                        Ok(())
+                    } else {
+                        Err(ParseError {
+                            message: "syntax-class declaration requires a name (bare identifier)"
+                                .to_string(),
+                            span: Some(expr.span),
+                        })
+                    }
+                } else if pending_key.is_some() {
+                    // We have a pending key — this expression is the value
+                    let key = pending_key.take().unwrap();
+                    if let Expr::VarRef { name: key_name, .. } = &key.node {
+                        match key_name.as_str() {
+                            "pattern" => {
+                                if pattern.is_some() {
+                                    return Err(ParseError {
+                                        message: "syntax-class: duplicate 'pattern' key".to_string(),
+                                        span: Some(expr.span),
+                                    });
+                                }
+                                *pattern = Some(expr);
+                                Ok(())
+                            }
+                            "message" => {
+                                if message.is_some() {
+                                    return Err(ParseError {
+                                        message: "syntax-class: duplicate 'message' key".to_string(),
+                                        span: Some(expr.span),
+                                    });
+                                }
+                                if let Expr::Str(s) = &expr.node {
+                                    *message = Some(s.clone());
+                                    Ok(())
+                                } else {
+                                    Err(ParseError {
+                                        message: "syntax-class 'message' value must be a string literal"
+                                            .to_string(),
+                                        span: Some(expr.span),
+                                    })
+                                }
+                            }
+                            _ => Err(ParseError {
+                                message: format!(
+                                    "syntax-class: unknown key '{}' (expected 'pattern' or 'message')",
+                                    key_name
+                                ),
+                                span: Some(key.span),
+                            }),
+                        }
+                    } else {
+                        Err(ParseError {
+                            message: "syntax-class keys must be bare identifiers".to_string(),
+                            span: Some(key.span),
+                        })
+                    }
+                } else {
+                    // No pending key — this expression should become a pending key
+                    *pending_key = Some(expr);
+                    Ok(())
+                }
+            }
             Some(StackFrame::Match {
                 ref mut scrutinee,
                 ref mut arms,
@@ -5254,26 +5553,20 @@ fn push_expr_to_parent(
                             } = &entries[0].node.value.node
                             {
                                 *name = Some(class_name.clone());
+                                // Extract params that are identifiers; skip others (type checker will validate)
                                 for entry in entries.iter().skip(1) {
                                     if let Expr::VarRef {
                                         name: param_name, ..
                                     } = &entry.node.value.node
                                     {
                                         params.push(param_name.clone());
-                                    } else {
-                                        return Err(ParseError {
-                                            message: "class parameters must be identifiers"
-                                                .to_string(),
-                                            span: Some(entry.span),
-                                        });
                                     }
+                                    // Non-identifier params silently skipped; semantic validation in type checker
                                 }
                                 Ok(())
                             } else {
-                                Err(ParseError {
-                                    message: "class header must start with class name".to_string(),
-                                    span: Some(expr.span),
-                                })
+                                // First entry/func is not a VarRef; semantic validation in type checker
+                                Ok(())
                             }
                         }
                         Expr::Call {
@@ -5288,26 +5581,20 @@ fn push_expr_to_parent(
                             } = &func.node
                             {
                                 *name = Some(class_name.clone());
+                                // Extract params that are identifiers; skip others (type checker will validate)
                                 for arg in args {
                                     if let Expr::VarRef {
                                         name: param_name, ..
                                     } = &arg.node
                                     {
                                         params.push(param_name.clone());
-                                    } else {
-                                        return Err(ParseError {
-                                            message: "class parameters must be identifiers"
-                                                .to_string(),
-                                            span: Some(arg.span),
-                                        });
                                     }
+                                    // Non-identifier params silently skipped; semantic validation in type checker
                                 }
                                 Ok(())
                             } else {
-                                Err(ParseError {
-                                    message: "class header must start with class name".to_string(),
-                                    span: Some(expr.span),
-                                })
+                                // First entry/func is not a VarRef; semantic validation in type checker
+                                Ok(())
                             }
                         }
                         Expr::LetDecl { bindings } if !bindings.is_empty() => {
@@ -5318,33 +5605,27 @@ fn push_expr_to_parent(
                             } = &bindings[0].node
                             {
                                 *name = Some(class_name.clone());
+                                // Extract params that are identifiers; skip others (type checker will validate)
                                 for binding in bindings.iter().skip(1) {
                                     if let Expr::VarRef {
                                         name: param_name, ..
                                     } = &binding.node
                                     {
                                         params.push(param_name.clone());
-                                    } else {
-                                        return Err(ParseError {
-                                            message: "class parameters must be identifiers"
-                                                .to_string(),
-                                            span: Some(binding.span),
-                                        });
                                     }
+                                    // Non-identifier params silently skipped; semantic validation in type checker
                                 }
                                 Ok(())
                             } else {
-                                Err(ParseError {
-                                    message: "class header must start with class name".to_string(),
-                                    span: Some(expr.span),
-                                })
+                                // First entry/func is not a VarRef; semantic validation in type checker
+                                Ok(())
                             }
                         }
-                        _ => Err(ParseError {
-                            message: "class header must be class name or [ClassName params...]"
-                                .to_string(),
-                            span: Some(expr.span),
-                        }),
+                        _ => {
+                            // Accept any expression; semantic validation moved to type checker.
+                            // name remains None, will be caught at close or by type checker.
+                            Ok(())
+                        }
                     }
                 } else if structural_metadata.is_none() {
                     // Second positional expression after header

@@ -1143,6 +1143,21 @@ pub(crate) fn eval_recursive(
             expr.span,
         )
         .into()),
+        Expr::MacroDecl { .. } => Err(EvalError::internal(
+            "MacroDecl should be removed by expansion pass before evaluation".to_string(),
+            expr.span,
+        )
+        .into()),
+        Expr::Splice(..) => Err(EvalError::internal(
+            "Splice should be removed by expansion pass before evaluation".to_string(),
+            expr.span,
+        )
+        .into()),
+        Expr::SyntaxClass { .. } => Err(EvalError::internal(
+            "SyntaxClass should be removed by expansion pass before evaluation".to_string(),
+            expr.span,
+        )
+        .into()),
         Expr::Match { scrutinee, arms } => {
             // Evaluate the scrutinee and materialize it
             let scrutinee_thunk = eval(Rc::new(scrutinee.as_ref().clone()), Rc::clone(&env), ctx)?;
@@ -1890,6 +1905,39 @@ fn eval_quote_preprocess(
                     name: name.clone(),
                     params: params.clone(),
                     body: Rc::new(processed_body),
+                },
+                span,
+            ))
+        }
+
+        Expr::MacroDecl { name, params, body } => {
+            let processed_params = eval_quote_preprocess(&params.node, params.span, env, ctx)?;
+            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::MacroDecl {
+                    name: name.clone(),
+                    params: Box::new(processed_params),
+                    body: Box::new(processed_body),
+                },
+                span,
+            ))
+        }
+
+        Expr::Splice(forms) => {
+            let processed_forms = forms
+                .iter()
+                .map(|form| eval_quote_preprocess(&form.node, form.span, env, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Spanned::new(Expr::Splice(processed_forms), span))
+        }
+
+        Expr::SyntaxClass { name, pattern, message } => {
+            let processed_pattern = eval_quote_preprocess(&pattern.node, pattern.span, env, ctx)?;
+            Ok(Spanned::new(
+                Expr::SyntaxClass {
+                    name: name.clone(),
+                    pattern: Box::new(processed_pattern),
+                    message: message.clone(),
                 },
                 span,
             ))

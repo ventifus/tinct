@@ -220,6 +220,10 @@ fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usiz
                 worklist.push(func);
                 worklist.push(arg);
             }
+            Expr::MacroDecl { .. } | Expr::Splice(_) | Expr::SyntaxClass { .. } => {
+                // Macro declarations, splices, and syntax classes have no dependencies
+                // in the dict scope (they're removed by expansion before typechecking)
+            }
             Expr::Placeholder | Expr::Error(_) => {}
         }
     }
