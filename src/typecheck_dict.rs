@@ -402,7 +402,7 @@ pub(crate) fn infer_dict(
                             entry.node.value.span,
                         ) {
                             Ok((ty, schemes)) => (Ok(ty), Some(schemes)),
-                                        Err(errs) => (Err(errs), None),
+                            Err(errs) => (Err(errs), None),
                         }
                     } else {
                         (

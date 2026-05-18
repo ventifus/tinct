@@ -268,7 +268,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 [Fn@Int [Int Int]]
 === error
 type errors:
-  cannot unify Int with Number at 2:23-2:30
+  expected record type, got Fn@Int [x: Int y: Int] at 2:1-2:31
   undefined variable: Int at 5:10-5:13
 
 ```

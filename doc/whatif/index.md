@@ -11,6 +11,9 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
+| [Type::Variant for Transport Constants](type-variant.md) | `Type::Variant(String)` nominal opaque variant type; Transport constants (`Tcp`, `Udp`, `Quic`, `Unix`) typed as `Variant("Transport")`; `connect` typed to accept transport variant; pattern match exhaustiveness |
+| [Precise HKT Types for map/filter/reduce/each](hkt-map-filter-types.md) | Replace `Unknown` signatures on `map`/`filter`/`reduce`/`each`/`each-key`/`each-kv` with precise polymorphic types using accepted HKT machinery; `map: ∀f a b. Mappable f ⇒ (a→b) → f a → f b` |
+| [Schema-Directed from-json](schema-directed-from-json.md) | `[from-json @[host: Str port: Int] input]` — typed JSON parse returning specific Record type; boundary guard at parse site; schema doubles as documentation |
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
 | [Constraint Annotations and fn@[...] Metadata](completed/constraint-annotations.md) | **Accepted 2026-05-11.** Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K: V]` type split with bracket application form `@[Map [K: V]]`; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |

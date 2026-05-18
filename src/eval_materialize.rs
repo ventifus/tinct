@@ -200,9 +200,9 @@ pub(crate) struct GuardedValidateData {
     pub(crate) origin: Option<Rc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
-    /// EvalContext for flattening Value::Overlay results. None when inner thunk was already
-    /// Materialized/Failed at guard-push time (these states can't produce new Overlays).
-    pub(crate) ctx: Option<Rc<EvalContext>>,
+    /// EvalContext for flattening Value::Overlay results and allocating guard-wrapped field thunks.
+    /// Always populated from force_step's ctx parameter (all thunks share one EvalContext).
+    pub(crate) ctx: Rc<EvalContext>,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
     /// Default expression and environment from TypeAssert `default:` annotation.
     pub(crate) default: Option<(
@@ -673,20 +673,15 @@ pub(crate) fn force_step(
         thunk.take_guarded()
     {
         let inner_span = inner.span;
-        // Extract ctx from the inner thunk's current state for use during GuardedValidate
-        // when the materialized result is a Value::Overlay (needs flattening with ctx).
-        // The inner thunk has not yet been materialized, so its state still carries ctx.
-        // For Materialized/Failed/InProgress inner thunks, ctx isn't needed (these can't
-        // produce new Overlay values during re-materialization).
-        let guard_ctx: Option<Rc<EvalContext>> = {
-            let state = inner.state();
-            match &*state {
-                ThunkState::Unevaluated { ctx, .. } => Some(Rc::clone(ctx)),
-                ThunkState::PendingBuiltin { ctx, .. } => Some(Rc::clone(ctx)),
-                ThunkState::PendingCall { ctx, .. } => Some(Rc::clone(ctx)),
-                _ => None,
-            }
-        };
+        // Always use the outer force_step ctx for GuardedValidate. All thunks in a single
+        // evaluation share one EvalContext (same arena/state). The ctx is needed for:
+        //   1. Flattening Value::Overlay results (flatten_overlay requires ctx)
+        //   2. Allocating guard-wrapped field thunks (ctx.alloc_thunk in validate_and_wrap_record)
+        // Previously this sniffed the inner thunk's state to extract ctx, returning None for
+        // already-Materialized inner thunks. That caused E099 when a Record guard wrapped a
+        // Materialized dict (e.g., the output of $append), because validate_and_wrap_record
+        // could not allocate new field-guard thunks without a ctx.
+        let guard_ctx: Rc<EvalContext> = Rc::clone(ctx);
         // Create RestoreState before pushing continuation (for non-cacheable error recovery)
         let restore = RestoreState::Guarded {
             inner: Rc::clone(&inner),
@@ -1034,21 +1029,16 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Ok(value) => {
                     // Flatten Overlay to Dict before record validation.
                     // Value::Overlay is produced by $merge; guard wrapping it needs flattened entries.
+                    // guard_ctx is always Some (force_step always populates it from its own ctx param).
                     let value = match value {
                         Value::Overlay(l, r) => {
-                            if let Some(ref ctx) = guard_ctx {
-                                match flatten_overlay(&l, &r, "type guard", ctx, guard_span) {
-                                    Ok(map) => Value::Dict(map),
-                                    Err(e) => {
-                                        let e = decorate(e);
-                                        thunk.cache_failure(&e);
-                                        return Action::Continue(Err(e));
-                                    }
+                            match flatten_overlay(&l, &r, "type guard", &guard_ctx, guard_span) {
+                                Ok(map) => Value::Dict(map),
+                                Err(e) => {
+                                    let e = decorate(e);
+                                    thunk.cache_failure(&e);
+                                    return Action::Continue(Err(e));
                                 }
-                            } else {
-                                // ctx unavailable (inner was already Materialized at push time);
-                                // cannot flatten. Treat as Dict-compatible for non-Record types.
-                                Value::Overlay(l, r)
                             }
                         }
                         other => other,
@@ -1057,25 +1047,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     // as_record_row_merged handles both forms by merging fields into a single Row.
                     if let Some(row) = as_record_row_merged(&expected) {
                         if let Value::Dict(ref entries) = value {
-                            let ctx_ref = match guard_ctx.as_ref() {
-                                Some(ctx) => ctx,
-                                None => {
-                                    let err = EvalError::internal(
-                                        "validate_and_wrap_record requires ctx but guard_ctx is None".to_string(),
-                                        guard_span,
-                                    );
-                                    let err = decorate(Box::new(err));
-                                    thunk.cache_failure(&err);
-                                    return Action::Continue(Err(err));
-                                }
-                            };
                             match validate_and_wrap_record(
                                 entries,
                                 row.as_ref(),
                                 &mut *field_path,
                                 guard_span,
                                 inner_span,
-                                ctx_ref,
+                                &guard_ctx,
                                 default.clone(),
                             ) {
                                 Ok(new_entries) => {
@@ -1087,21 +1065,18 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 Err(err) => {
                                     // Guard validation failed - use default if present
                                     if let Some((default_expr, default_env)) = default {
-                                        let ctx_for_default = guard_ctx
-                                            .clone()
-                                            .expect("guard_ctx should be Some for Record guards");
                                         stack.push(Cont::Memoize(Box::new(MemoizeData {
                                             thunk: Rc::clone(&thunk),
                                             origin: Some(Rc::from("default fallback")),
                                             thunk_span,
                                             mat_span,
                                             restore: restore.take(),
-                                            ctx: Rc::clone(&ctx_for_default),
+                                            ctx: Rc::clone(&guard_ctx),
                                         })));
                                         return Action::Eval {
                                             expr: default_expr,
                                             env: default_env,
-                                            ctx: ctx_for_default,
+                                            ctx: guard_ctx,
                                         };
                                     }
                                     let err = decorate(err);
@@ -1112,21 +1087,18 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         } else {
                             // Expected Record but got non-Dict - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                let ctx_for_default = guard_ctx
-                                    .clone()
-                                    .expect("guard_ctx should be Some for Record guards");
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Rc::clone(&thunk),
                                     origin: Some(Rc::from("default fallback")),
                                     thunk_span,
                                     mat_span,
                                     restore: restore.take(),
-                                    ctx: Rc::clone(&ctx_for_default),
+                                    ctx: Rc::clone(&guard_ctx),
                                 })));
                                 return Action::Eval {
                                     expr: default_expr,
                                     env: default_env,
-                                    ctx: ctx_for_default,
+                                    ctx: guard_ctx,
                                 };
                             }
                             let field_path_prefix = if field_path.is_empty() {
@@ -1164,27 +1136,19 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         } else {
                             // Type mismatch for non-Record types - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                // For non-Record guards, guard_ctx may be None (inner was already Materialized).
-                                // Defaults still need a ctx to evaluate in. Use guard_ctx if available, otherwise
-                                // we need to get ctx from somewhere. Since this is a fallback path, we can use
-                                // the default_env's associated ctx if needed, but we don't have direct access.
-                                // The safest approach: require guard_ctx for defaults (enforced at guard creation).
-                                if let Some(ctx_for_default) = guard_ctx {
-                                    stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                        thunk: Rc::clone(&thunk),
-                                        origin: Some(Rc::from("default fallback")),
-                                        thunk_span,
-                                        mat_span,
-                                        restore: restore.take(),
-                                        ctx: Rc::clone(&ctx_for_default),
-                                    })));
-                                    return Action::Eval {
-                                        expr: default_expr,
-                                        env: default_env,
-                                        ctx: ctx_for_default,
-                                    };
-                                }
-                                // If guard_ctx is None, we can't evaluate the default. Fall through to error.
+                                stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                    thunk: Rc::clone(&thunk),
+                                    origin: Some(Rc::from("default fallback")),
+                                    thunk_span,
+                                    mat_span,
+                                    restore: restore.take(),
+                                    ctx: Rc::clone(&guard_ctx),
+                                })));
+                                return Action::Eval {
+                                    expr: default_expr,
+                                    env: default_env,
+                                    ctx: guard_ctx,
+                                };
                             }
                             let field_path_prefix = if field_path.is_empty() {
                                 String::new()

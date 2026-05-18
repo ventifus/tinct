@@ -400,6 +400,7 @@ type errors:
   undefined variable: users at 9:13-9:18
   undefined variable: users at 10:22-10:27
   undefined variable: numbers at 13:17-13:24
+  arity mismatch: expected 2 arguments, got 1 at 14:9-14:16
   undefined variable: numbers at 14:19-14:26
 
 ```
