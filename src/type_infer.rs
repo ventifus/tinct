@@ -367,6 +367,17 @@ impl InferState {
     pub fn fresh_var(&mut self) -> Type {
         self.fresh_type_var()
     }
+
+    /// Compact the levels map by removing entries for TypeVars that have been unified.
+    /// A TypeVar is considered unified if its name appears in the substitution's type_map.
+    /// This prevents unbounded growth of the levels HashMap during long inference sessions.
+    ///
+    /// Call this periodically after unification rounds (e.g., at the end of infer_dict).
+    pub fn compact_levels(&mut self) {
+        let type_map = self.subst.type_map.borrow();
+        self.levels
+            .retain(|name, _level| !type_map.contains_key(name));
+    }
 }
 
 impl Default for InferState {

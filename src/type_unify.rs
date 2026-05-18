@@ -333,11 +333,18 @@ fn check_constraints_on_var(
                 // field access) and mutably (as the unify parameter) at the same time.
                 const MAX_INSTANCE_RESOLUTION_DEPTH: u32 = 64;
                 if state.instance_resolution_depth >= MAX_INSTANCE_RESOLUTION_DEPTH {
-                    // Too deep — skip this constraint to prevent infinite recursion.
+                    // Too deep — return a type error instead of silently skipping.
                     // The recursion cycle is: check_constraints_on_var → resolve_instance →
                     // unify → check_constraints_on_var. This matches GHC's -freduction-depth
                     // semantics (Sulzmann et al. 2007 §3.2).
-                    continue;
+                    return Err(TypeError::new(
+                        format!(
+                            "instance resolution depth limit exceeded (max {}) — possible recursive instance definitions for constraint {}",
+                            MAX_INSTANCE_RESOLUTION_DEPTH,
+                            class
+                        ),
+                        span,
+                    ));
                 }
                 state.instance_resolution_depth += 1;
                 let inst_env = state.instance_env.clone();

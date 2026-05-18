@@ -1,0 +1,9 @@
+# Multiple case arms with exact-value matching
+# Tests that the correct arm is selected based on the scrutinee value
+[match 2
+  [case 1 "one"]
+  [case 2 "two"]
+  [case 3 "three"]
+  [case [let _] "other"]]
+=== out
+String("two")

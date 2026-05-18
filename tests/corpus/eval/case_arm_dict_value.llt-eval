@@ -1,0 +1,10 @@
+# Match expression as dict value
+# Tests that case arms work correctly when the match is a dict value
+[input: 42
+ classification: [match $input
+   [case 0 "zero"]
+   [case 1 "one"]
+   [case [let x@Int] "number"]]
+ data: "other"]
+=== out
+Dict({"input": Int(42), "classification": String("number"), "data": String("other")})
