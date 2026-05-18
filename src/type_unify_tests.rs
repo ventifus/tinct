@@ -450,3 +450,242 @@ fn test_unify_concrete_fn_with_any_function_symmetric() {
         result.unwrap_err()
     );
 }
+
+// ============================================================================
+// fn-narrowing-followup sprint tests
+// ============================================================================
+
+/// Task 1: is_consistent should accept any-function with all function types
+#[test]
+fn test_is_consistent_any_function_with_concrete() {
+    // Any-function type: Function{params:[], variadic:true}
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    // Concrete function: Fn(Int) -> Bool
+    let concrete_fn = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Bool),
+        variadic: false,
+    };
+
+    // Any-function ~ Concrete function (should be consistent)
+    assert!(
+        Type::is_consistent(&any_function, &concrete_fn),
+        "Any-function should be consistent with concrete function"
+    );
+
+    // Symmetric: Concrete ~ Any-function
+    assert!(
+        Type::is_consistent(&concrete_fn, &any_function),
+        "Concrete function should be consistent with any-function (symmetric)"
+    );
+}
+
+/// Task 1: is_consistent should accept any-function with multi-param functions
+#[test]
+fn test_is_consistent_any_function_with_multi_param() {
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    let multi_param_fn = Type::Function {
+        params: vec![
+            (None, Type::Int),
+            (None, Type::Str),
+            (Some("x".to_string()), Type::Bool),
+        ],
+        ret: Box::new(Type::Float),
+        variadic: false,
+    };
+
+    assert!(
+        Type::is_consistent(&any_function, &multi_param_fn),
+        "Any-function should be consistent with multi-param function"
+    );
+}
+
+/// Task 1: is_consistent should accept any-function with zero-param non-variadic
+#[test]
+fn test_is_consistent_any_function_with_zero_param_non_variadic() {
+    let any_function = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    let zero_param_fn = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Int),
+        variadic: false,
+    };
+
+    // Under consistency, these ARE consistent (gradual typing allows it)
+    assert!(
+        Type::is_consistent(&any_function, &zero_param_fn),
+        "Any-function should be consistent with zero-param non-variadic"
+    );
+}
+
+/// Task 2: types_are_disjoint for Function vs Int
+#[test]
+fn test_types_are_disjoint_function_vs_int() {
+    let fn_ty = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Bool),
+        variadic: false,
+    };
+
+    // Function vs Int (both directions)
+    assert!(
+        Type::types_are_disjoint(&fn_ty, &Type::Int),
+        "Function should be disjoint from Int"
+    );
+    assert!(
+        Type::types_are_disjoint(&Type::Int, &fn_ty),
+        "Int should be disjoint from Function (symmetric)"
+    );
+}
+
+/// Task 2: types_are_disjoint for Function vs all primitive types
+#[test]
+fn test_types_are_disjoint_function_vs_primitives() {
+    let fn_ty = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    // Function is disjoint from all primitives
+    assert!(Type::types_are_disjoint(&fn_ty, &Type::Int));
+    assert!(Type::types_are_disjoint(&fn_ty, &Type::Float));
+    assert!(Type::types_are_disjoint(&fn_ty, &Type::Str));
+    assert!(Type::types_are_disjoint(&fn_ty, &Type::Bool));
+    assert!(Type::types_are_disjoint(&fn_ty, &Type::Bytes));
+
+    // Symmetric
+    assert!(Type::types_are_disjoint(&Type::Int, &fn_ty));
+    assert!(Type::types_are_disjoint(&Type::Float, &fn_ty));
+    assert!(Type::types_are_disjoint(&Type::Str, &fn_ty));
+    assert!(Type::types_are_disjoint(&Type::Bool, &fn_ty));
+    assert!(Type::types_are_disjoint(&Type::Bytes, &fn_ty));
+}
+
+/// Task 2: types_are_disjoint for Function vs literal types
+#[test]
+fn test_types_are_disjoint_function_vs_literals() {
+    let fn_ty = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Str),
+        variadic: false,
+    };
+
+    // Function vs IntLiteral
+    assert!(Type::types_are_disjoint(&fn_ty, &Type::IntLiteral(42)));
+    assert!(Type::types_are_disjoint(&Type::IntLiteral(42), &fn_ty));
+
+    // Function vs StringLiteral
+    assert!(Type::types_are_disjoint(
+        &fn_ty,
+        &Type::StringLiteral("hello".to_string())
+    ));
+    assert!(Type::types_are_disjoint(
+        &Type::StringLiteral("hello".to_string()),
+        &fn_ty
+    ));
+}
+
+/// Task 2: types_are_disjoint for Function vs Record
+#[test]
+fn test_types_are_disjoint_function_vs_record() {
+    let fn_ty = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Bool),
+        variadic: false,
+    };
+
+    let mut fields = HashMap::new();
+    fields.insert("x".to_string(), Type::Int);
+    let record_ty = Type::Record(Row { fields });
+
+    // Function vs Record (both directions)
+    assert!(
+        Type::types_are_disjoint(&fn_ty, &record_ty),
+        "Function should be disjoint from Record"
+    );
+    assert!(
+        Type::types_are_disjoint(&record_ty, &fn_ty),
+        "Record should be disjoint from Function (symmetric)"
+    );
+}
+
+/// Task 2: types_are_disjoint for Function vs Seq
+#[test]
+fn test_types_are_disjoint_function_vs_seq() {
+    let fn_ty = Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Unknown),
+        variadic: true,
+    };
+
+    let seq_ty = Type::Seq(Box::new(Type::Int));
+
+    // Function vs Seq (both directions)
+    assert!(
+        Type::types_are_disjoint(&fn_ty, &seq_ty),
+        "Function should be disjoint from Seq"
+    );
+    assert!(
+        Type::types_are_disjoint(&seq_ty, &fn_ty),
+        "Seq should be disjoint from Function (symmetric)"
+    );
+}
+
+/// Task 2: types_are_disjoint for Function vs Map
+#[test]
+fn test_types_are_disjoint_function_vs_map() {
+    let fn_ty = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Str),
+        variadic: false,
+    };
+
+    let map_ty = Type::Map(Box::new(Type::Str), Box::new(Type::Int));
+
+    // Function vs Map (both directions)
+    assert!(
+        Type::types_are_disjoint(&fn_ty, &map_ty),
+        "Function should be disjoint from Map"
+    );
+    assert!(
+        Type::types_are_disjoint(&map_ty, &fn_ty),
+        "Map should be disjoint from Function (symmetric)"
+    );
+}
+
+/// Task 2: Two different function types are NOT disjoint (conservative)
+#[test]
+fn test_types_are_not_disjoint_function_vs_function() {
+    let fn1 = Type::Function {
+        params: vec![(None, Type::Int)],
+        ret: Box::new(Type::Bool),
+        variadic: false,
+    };
+
+    let fn2 = Type::Function {
+        params: vec![(None, Type::Str)],
+        ret: Box::new(Type::Float),
+        variadic: false,
+    };
+
+    // Two different functions are NOT disjoint (conservative - they're both functions)
+    assert!(
+        !Type::types_are_disjoint(&fn1, &fn2),
+        "Different function types should NOT be disjoint (conservative)"
+    );
+}

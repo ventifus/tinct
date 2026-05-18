@@ -609,6 +609,28 @@ impl Type {
             (Type::Bool, Type::Seq(_)) => true,
             (Type::Bytes, Type::Seq(_)) => true,
 
+            // Function vs primitives (for precise false-branch narrowing after fn? guards)
+            (Type::Function { .. }, Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Function { .. }, Type::Float) => true,
+            (Type::Function { .. }, Type::Number) => true,
+            (Type::Function { .. }, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Function { .. }, Type::Bool) => true,
+            (Type::Function { .. }, Type::Bytes) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Function { .. }) => true,
+            (Type::Float, Type::Function { .. }) => true,
+            (Type::Number, Type::Function { .. }) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Function { .. }) => true,
+            (Type::Bool, Type::Function { .. }) => true,
+            (Type::Bytes, Type::Function { .. }) => true,
+
+            // Function vs structural types (Record, Seq, Map)
+            (Type::Function { .. }, Type::Record(_)) => true,
+            (Type::Function { .. }, Type::Seq(_)) => true,
+            (Type::Function { .. }, Type::Map(_, _)) => true,
+            (Type::Record(_), Type::Function { .. }) => true,
+            (Type::Seq(_), Type::Function { .. }) => true,
+            (Type::Map(_, _), Type::Function { .. }) => true,
+
             // Union: disjoint if ALL members are disjoint from the other type
             (Type::Union(members), t) | (t, Type::Union(members)) => {
                 members.iter().all(|m| Type::types_are_disjoint(m, t))
@@ -685,6 +707,15 @@ impl Type {
                     variadic: v2,
                 },
             ) => {
+                // Special case: any-function (Function{params:[], variadic:true}) is consistent
+                // with all function types under gradual typing (Garcia et al. 2016).
+                let a_is_any_fn = p1.is_empty() && *v1;
+                let b_is_any_fn = p2.is_empty() && *v2;
+                if a_is_any_fn || b_is_any_fn {
+                    return true;
+                }
+
+                // Normal structural consistency for concrete function types
                 v1 == v2
                     && p1.len() == p2.len()
                     && p1

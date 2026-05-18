@@ -6944,3 +6944,11 @@ values inside `[fn? narrowed-branch ...]` arms.
   `Function` is a subtype of any `Function{params: [..n]}` (`src/type_unify.rs`)
 - [x] Restore `fn?` narrowing to `Type::Function { params: vec![], ret: Box::new(Type::Unknown), variadic: true }` in `extract_narrowings` (`src/typecheck.rs`)
 - [x] Add corpus test: `fn?` guard narrows to `Function` type, non-function produces type warning (`tests/corpus/eval/typecheck/`)
+
+### fn-narrowing-followup: Type system completeness for function negation narrowing
+
+Follow-up items from fn-narrowing-variadic panel review.
+
+- [x] Extend `is_consistent` (src/type_def.rs) to handle `Function{params:[], variadic:true}` ("any function") against concrete Function types (`src/type_def.rs`)
+- [x] Extend `types_are_disjoint` to include Function vs primitive pairs (Int, Str, Bool, Float, Number, Bytes, etc.) and structural types (Record, Seq, Map) (`src/type_def.rs`)
+- [x] Add false-branch fn? narrowing corpus test (`tests/corpus/eval/typecheck/fn_predicate_false_branch_narrows.llt-eval`)
