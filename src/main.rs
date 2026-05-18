@@ -1053,13 +1053,19 @@ fn run_eval(
     // part of the --cap-fs allowlist; they're just for reading the primary input files.
     #[cfg(target_os = "linux")]
     if !no_landlock && !cap_fs.is_empty() {
-        // Extract directory paths from --cap-fs NAME=PATH entries
+        // Extract directory paths from --cap-fs NAME=PATH[:MODE] entries
+        // Strip the :MODE suffix if present (same logic as DirCap parsing)
         let cap_fs_paths: Vec<PathBuf> = cap_fs
             .iter()
             .filter_map(|entry| {
-                entry
-                    .split_once('=')
-                    .map(|(_, path_str)| PathBuf::from(path_str.trim()))
+                entry.split_once('=').map(|(_, path_and_mode)| {
+                    // Split PATH:MODE on the last colon (rsplit_once handles Windows drive letters)
+                    let (path_str, _mode_str) = match path_and_mode.rsplit_once(':') {
+                        Some((path, mode)) => (path, Some(mode)),
+                        None => (path_and_mode, None),
+                    };
+                    PathBuf::from(path_str.trim())
+                })
             })
             .collect();
 
