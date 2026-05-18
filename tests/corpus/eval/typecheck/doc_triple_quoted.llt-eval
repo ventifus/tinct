@@ -1,0 +1,15 @@
+# Triple-quoted string as doc: value in function annotation
+# Verifies that """...""" (desugared to unindent(...)) is accepted by the doc: handler
+[
+  add: [fn@[doc: """
+    Adds two numbers.
+    Returns their sum.
+    """ return: Int] [x@Int y@Int] [+ x y]]
+  result: [add 2 3]
+]
+
+---
+
+%.result
+=== out
+Int(5)
