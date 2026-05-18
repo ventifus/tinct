@@ -1,0 +1,13 @@
+# Recursive type alias: a type that references itself in field positions.
+# Before the fix, recursive positions returned Type::Unknown, silently widening
+# the field types. Now they return a fresh TypeVar that can be unified with the
+# alias body, giving recursive fields a proper type.
+# The type alias itself evaluates to Dict({}) at runtime (a type-level marker).
+# The key property verified: type-checking this recursive alias does not
+# infinite-loop or error, and evaluation produces correct results.
+[
+  Node: [type [value: Int next: Node]]
+  result: 42
+]
+=== out
+Dict({"Node": Dict({}), "result": Int(42)})
