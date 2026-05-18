@@ -162,9 +162,6 @@ struct EvalConfig {
     stdlib_env: Rc<RefCell<Environment>>,
     no_fs: bool,
     require_integrity: bool,
-    allowed_paths: Vec<std::path::PathBuf>,
-    base_dir_path: Option<std::path::PathBuf>,
-    allowed_hosts: Vec<String>,
 }
 
 struct EvalState {
@@ -173,7 +170,9 @@ struct EvalState {
     include_chain: Vec<(String, Span)>,
     eval_stack: Vec<(String, Span)>,
     class_registry: HashMap<String, RuntimeClassDecl>,
-    instance_registry: HashMap<(String, String), Rc<Thunk>>,
+    // class_name interned via intern_class_name (&'static str); type_tag is String
+    instance_registry: HashMap<(&'static str, String), Rc<Thunk>>,
+    registered_classes: HashSet<String>,
     // trace_log, eval_stats
 }
 

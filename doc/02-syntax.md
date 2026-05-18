@@ -1095,7 +1095,7 @@ The parser determines how to interpret a `[]` by examining its first entry:
 | `[$f x]` | Data sequence `[ref(f), ref(x)]` | Escaped ref in head |
 | `[f]` | Zero-arg call `f()` | Identifier in head |
 | `[$f]` | Single-element sequence `[ref(f)]` | Escaped ref in head |
-| `a.b` | Access chain | No whitespace before `.`, identifier enables access |
+| `a.b` | Dot access | Dot access; whitespace-insensitive (same as `a .b`) |
 | `a .b` | Dot access (same as `a.b`) | Dot is whitespace-insensitive |
 | `a[0]` | Two separate expressions | Bare identifier `a`, then dict `[0: 0]` — use `[get 0 a]` for key lookup |
 | `a [0]` | Two separate expressions | Bare identifier `a`, then dict `[0: 0]` |

@@ -91,6 +91,23 @@ Replaces `Unknown` signatures with proper polymorphic `TypeScheme`s using `Type:
 - [x] `each-key`: `∀b. (Str → b) → Dict → Null` — tinct dict keys are always `Str` (`src/type_env.rs`)
 - [x] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records; note `∀a b. (Str → a → b) → Map@[Str:a] → Null` for homogeneous maps (`src/type_env.rs`)
 - [x] Corpus test updates: no corpus updates needed (Seq-specific types compatible) (`tests/corpus/`)
+## 18th Panel Review Fix-Later Items
+
+### panel-18-followup: Minor completeness and invariant documentation from 18th review
+
+- [ ] Add `"tests/corpus/eval/builtins/errors"` to `required_dirs` in `tests/corpus_tests.rs:173` — 21 cap/network error tests have no structural floor guard (`tests/corpus_tests.rs`)
+- [ ] Move 13 eval-success typecheck-warning tests out of `tests/corpus/eval/errors/` into `tests/corpus/eval/typecheck/` — files use `=== out`/`=== warn` but live in `errors/`, violating the directory contract (`tests/corpus/eval/errors/`)
+- [ ] Rename `closed_record_rejects_extra.llt-eval` — filename contradicts behavior (BAS width subtyping accepts extra fields) (`tests/corpus/eval/errors/`)
+- [ ] `types_can_unify` substitution split — probe passes `temp_subst` but `check_constraints_on_var` reads `state.subst`; for instance consistency's concrete-type inputs this is safe but the two-substitution split should be unified or documented (`src/typecheck.rs:1652-1657`)
+- [ ] Incremental SCC merge `merged_keys` write-once assumption — correct under Robinson unification but implicit; add `debug_assert!` verifying no binding is overwritten between SCC iterations (`src/typecheck_dict.rs:505-537`)
+- [ ] `sorted_by_empty.llt-eval` uses 1-arg identity function where 2-arg comparator is expected — vacuously correct but misleading; fix to use a proper 2-arg comparator (`tests/corpus/eval/stdlib/sorted_by_empty.llt-eval`)
+- [ ] Add corpus test for `[tag-of 42]` error case — docstring says "errors on non-variant values" but no `=== error` test exists (`tests/corpus/eval/stdlib/`)
+- [ ] Add corpus test for `result` monad dict `[bind: and-then  pure: result-ok]` — no test exercises `[do result ...]` chains (`tests/corpus/eval/stdlib/`)
+- [ ] `and-then` is data-first `(result f)` but stdlib convention is data-last for `->` threading; `result-or` is `(default result)` while `try-or` is `(f default)` — inconsistent ordering across "default on failure" combinators (`stdlib/prelude.llt:1372-1394`)
+- [ ] `newline_breaks_dot_access.llt-eval` — test name implies newline-before-dot is tested but actual input `[a [0]]` is an implied call, not a dot-access edge case; add explicit `a\n.b` test (`tests/corpus/valid/edge_cases/`)
+
+---
+
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a`; compare `Mappable` extension vs separate class using `Data.Witherable` as precedent; include instance examples for `Seq` and `Dict` (`doc/whatif/filterable.md`)
 - [ ] Accept `doc/whatif/schema-directed-from-json.md` via `/rnd` and create implementation sprint in TODO.md for `from-json @Schema` schema-directed typed parse (`doc/whatif/schema-directed-from-json.md`)
 

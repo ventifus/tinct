@@ -149,19 +149,12 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
     if let Some(tag_thunk) = ctx.closure_env.borrow().get(VARIANT_TAG_MARKER) {
         // Validate: variant constructors take exactly one positional argument, no named args
         if ctx.positional.len() != 1 {
-            return Err(EvalError::new(
-                format!(
-                    "variant constructor expects exactly 1 argument, got {}",
-                    ctx.positional.len()
-                ),
-                ctx.call_span,
-            )
-            .into());
+            return Err(EvalError::arity_mismatch(1, ctx.positional.len(), ctx.call_span).into());
         }
 
         if ctx.named.map_or(false, |n| !n.is_empty()) {
-            return Err(EvalError::new(
-                "variant constructor does not accept named arguments".to_string(),
+            return Err(EvalError::named_arg_rejected(
+                "variant constructor".to_string(),
                 ctx.call_span,
             )
             .into());

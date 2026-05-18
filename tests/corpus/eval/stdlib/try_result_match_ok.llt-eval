@@ -1,9 +1,7 @@
 # Test try result pattern matching - Ok arm
 # try returns [Ok value] on success; pattern match extracts value
-
-[result: [try [fn [] [+ 10 5]]]
-[match result
+[match [try [fn [] [+ 10 5]]]
   [Ok v]: v
-  [Err _]: 0]]
----
-15
+  [Err _]: 0]
+=== out
+Int(15)

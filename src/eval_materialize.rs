@@ -751,9 +751,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     } else if let Some(restore_state) = restore {
                         restore_state.restore(&thunk);
                     }
-                    // Note: if restore is None, the thunk remains in InProgress state,
-                    // which will trigger a CircularDependency error on next access.
-                    // This is correct for cases where restoration isn't possible.
+                    // Note: every Cont::Memoize push MUST supply restore: Some(...).
+                    // Passing None would leave the thunk permanently stuck in
+                    // InProgress, which is a bug — not an accepted fallback pattern.
                     Action::Continue(Err(e))
                 }
             }
