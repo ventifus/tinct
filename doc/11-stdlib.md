@@ -11,6 +11,13 @@
   [filter is-active]
   [map get-name]
   [sort]]
+=== error
+type errors:
+  undefined variable: users at 1:5-1:10
+  arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 2:3-2:21
+  arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 3:3-3:17
+  arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 4:3-4:9
+
 ```
 
 Each function receives data as its **last** parameter: `[map fn data]`, `[filter pred data]`, etc. This aligns with Unix pipe semantics (`data | transform`) and allows partial application patterns in languages with currying.
@@ -20,6 +27,15 @@ Each function receives data as its **last** parameter: `[map fn data]`, `[filter
 ```tinct
 [get-or config key default]      # data-first
 [get-in-or config path default]  # data-first
+=== error
+type errors:
+  undefined variable: config at 1:9-1:15
+  undefined variable: key at 1:16-1:19
+  undefined variable: default at 1:20-1:27
+  undefined variable: config at 2:12-2:18
+  undefined variable: path at 2:19-2:23
+  undefined variable: default at 2:24-2:31
+
 ```
 
 **Rationale:** Data-first order follows Clojure's `get` convention, making lookups read naturally as "from collection, get key, or default." The trade-off: these functions don't compose directly with `->` threading (they would require wrapping in a lambda to reorder arguments).
@@ -53,6 +69,12 @@ Everything else can be a regular function in the stdlib:
 [if [> x 0] positive non-positive]
 [and [valid? input] [process input]]  # process never called if invalid
 [or cached-value [expensive-compute]]  # compute skipped if cached
+=== error
+type errors:
+  undefined variable: x at 2:8-2:9
+  undefined variable: cached-value at 4:5-4:17
+  undefined variable: expensive-compute at 4:19-4:36
+
 ```
 
 ### Language vs Stdlib
@@ -187,6 +209,12 @@ naturals: [range 0]   # O(1), nothing computed
 squares: [map [fn [n] [* n n]] naturals]  # still O(1)
 first-ten: [collect [take 10 squares]]
 # -> [0 1 4 9 16 25 36 49 64 81]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 4:2:11
+  |
+  2 | big-result: [map [fn [x] [expensive x]] big-dict]
+    |           ^
 ```
 
 ## Rust-Native vs Tinct-Implemented Boundary
@@ -365,6 +393,15 @@ The `_` placeholder creates anonymous single-argument lambda functions, enabling
 # Compose with other functions:
 [filter [> _ 0] numbers]
 [reduce [+ _ _] 0 numbers]  # sum (both _ refer to the same arg in binary position)
+=== error
+type errors:
+  undefined variable: list at 2:14-2:18
+  undefined variable: list at 3:23-3:27
+  undefined variable: users at 9:13-9:18
+  undefined variable: users at 10:22-10:27
+  undefined variable: numbers at 13:17-13:24
+  undefined variable: numbers at 14:19-14:26
+
 ```
 
 **Limitations:**
@@ -622,6 +659,10 @@ Tinct ships a set of ready-made formatters in `stdlib/out/`. They are not bundle
 [include libdir "out/yaml.llt"]
 ---
 [emit [yaml %]]
+=== error
+type errors:
+  undefined variable: yaml at 3:8-3:12
+
 ```
 
 `libdir` is the built-in reference to the directory that contains `stdlib/`. The `emit` builtin writes the string to stdout and exits. `%` is the pipeline variable holding the document value.
@@ -651,6 +692,10 @@ Converts any tinct value to a YAML 1.2 string. Dicts with integer keys are emitt
 # tags:
 # - admin
 # - editor
+=== error
+type errors:
+  undefined variable: yaml at 3:2-3:6
+
 ```
 
 ### `fmt/json.llt` — compact JSON
@@ -662,6 +707,10 @@ Converts any tinct value to compact (single-line) JSON. This is the formatter us
 ---
 [json [name: "Alice" age: 30]]
 # => {"name":"Alice","age":30}
+=== error
+type errors:
+  undefined variable: json at 3:2-3:6
+
 ```
 
 ### `fmt/json-pretty.llt` — indented JSON
@@ -680,6 +729,10 @@ Converts any tinct value to indented JSON. Dicts with integer keys become JSON a
 #     3
 #   ]
 # }
+=== error
+type errors:
+  undefined variable: json-pretty at 3:2-3:13
+
 ```
 
 ### `fmt/toml.llt` — TOML
@@ -697,6 +750,10 @@ Converts a tinct dict to TOML format. Flat scalar keys are emitted as top-level 
 # [db]
 # name = "prod"
 # pool = 10
+=== error
+type errors:
+  undefined variable: toml at 3:2-3:6
+
 ```
 
 ### `fmt/env.llt` — KEY=VALUE
@@ -710,6 +767,10 @@ Converts a flat string-keyed dict to `.env`-style `KEY=VALUE` lines. Each entry 
 # =>
 # DATABASE_URL=postgres://localhost/mydb
 # PORT=3000
+=== error
+type errors:
+  cannot unify String with [DATABASE_URL: "postgres://localhost/mydb" PORT: 3000] at 3:6-3:60
+
 ```
 
 ### `fmt/csv.llt` — CSV from list of dicts
@@ -727,6 +788,10 @@ Converts a list of dicts (all sharing the same keys) to CSV format. The header r
 # "name","score"
 # "Alice","95"
 # "Bob","87"
+=== error
+type errors:
+  undefined variable: csv at 3:2-3:5
+
 ```
 
 **Note:** All formatters are implemented entirely in LLT (no Rust native code). They use recursion and will hit `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
@@ -753,6 +818,12 @@ Build and parse WebSocket frames. All frame construction is for client-to-server
 ---
 [build-ws-frame Text "hello" "\x01\x02\x03\x04"]
 # => [header: <bytes> payload: <masked-bytes> frame: <full-frame>]
+=== error
+error: invalid escape sequence: \x
+ --> block 13:3:30
+  |
+  3 | [build-ws-frame Text "hello" "\x01\x02\x03\x04"]
+    |                              ^^
 ```
 
 | Function | Type | Description |
@@ -772,6 +843,10 @@ Build client greeting and CONNECT request messages; parse server responses. Uses
 ---
 [build-socks5-greeting [0: NO-AUTH]]
 # => "\x05\x01\x00"
+=== error
+type errors:
+  undefined variable: build-socks5-greeting at 3:2-3:23
+
 ```
 
 | Function | Type | Description |
@@ -791,6 +866,10 @@ Encode and decode the 5-byte gRPC LPM header that wraps serialized protobuf payl
 ---
 [build-grpc-frame my-proto-bytes false]
 # => "\x00" + 4-byte big-endian length + proto-bytes
+=== error
+type errors:
+  undefined variable: build-grpc-frame at 3:2-3:18
+
 ```
 
 | Function | Type | Description |
@@ -809,6 +888,10 @@ Build DNS wire-format query messages ready to send over UDP. Only query construc
 ---
 [build-dns-query 42 "example.com" A]
 # => 12-byte header + question section (wire format, ready for UDP send)
+=== error
+type errors:
+  undefined variable: build-dns-query at 3:2-3:17
+
 ```
 
 | Function | Type | Description |
@@ -830,6 +913,12 @@ Not language syntax. Implemented in stdlib:
 ```tinct
 ->: [fn [x ...stages]
     [builtin-reduce [fn [acc f] [f acc]] x stages]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 17:1:3
+  |
+  1 | ->: [fn [x ...stages]
+    |   ^
 ```
 
 ## Equality and Comparison — Formal Specification
@@ -1190,6 +1279,12 @@ The overlay introduces two observable differences, both intentional:
 ```tinct
 base:  [timeout: 30  retries: 3  env: "staging"]
 prod:  [merge base [env: "prod"  timeout: 60]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 18:1:5
+  |
+  1 | base:  [timeout: 30  retries: 3  env: "staging"]
+    |     ^
 ```
 
 Applying MERGE:

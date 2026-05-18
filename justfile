@@ -184,14 +184,16 @@ docgen:
 # Updates the === out / === warn / === info sections inside each ```tinct block.
 # Re-run to update. Use `just doc-verify` in CI to check without modifying.
 doc: build-release
-    {{container}} run {{run_flags}} {{rust_image}} sh -c \
-        "for f in doc/*.md; do ./target/release/tinct literate weave --strict -i \"$$f\"; done"
+    for f in doc/*.md; do \
+        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct literate weave --strict -i "$f"; \
+    done
 
 # Verify that all annotated ```tinct blocks in doc/*.md match their === expected sections.
 # Exits 0 if all match, exits 1 with diff details if any mismatch. Use in CI.
 doc-verify: build-release
-    {{container}} run {{run_flags}} {{rust_image}} sh -c \
-        "for f in doc/*.md; do ./target/release/tinct literate weave --strict --fail-on-errors --verify \"$$f\"; done"
+    for f in doc/*.md; do \
+        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct literate weave --strict --fail-on-errors --verify "$f"; \
+    done
 
 # Build Rust API documentation
 rust-doc:

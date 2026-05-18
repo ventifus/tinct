@@ -49,6 +49,14 @@ A list is equivalent to a dict with integer keys:
 
 ```tinct
 [a b c]  ≡  [0: a  1: b  2: c]
+=== error
+type errors:
+  undefined variable: a at 1:2-1:3
+  undefined variable: ≡ at 1:10-1:11
+  undefined variable: a at 1:17-1:18
+  undefined variable: b at 1:23-1:24
+  undefined variable: c at 1:29-1:30
+
 ```
 
 **Why this design:**
@@ -69,6 +77,11 @@ A list is equivalent to a dict with integer keys:
 [a b c]                         # All auto-indexed — a "list" = [0: a  1: b  2: c]
 [f x timeout: 60]               # Mixed — positional + named (implied call)
 []                              # Empty — list and dict are identical
+=== error
+type errors:
+  undefined variable: a at 2:2-2:3
+  undefined variable: f at 3:2-3:3
+
 ```
 
 **Parsing rule:** After parsing an entry, look ahead for `:`. If found, the entry is a key and the next thing is its value. If not, the entry is auto-indexed. The integer counter only increments for unkeyed entries — keyed entries don't consume an index.
@@ -83,6 +96,14 @@ A list is equivalent to a dict with integer keys:
 [a b c]                # Call: a(b, c) — bare identifier in head
 [f x y]                # Call: f(x, y)
 [$f x y]               # Data: sequence [ref(f), ref(x), ref(y)] — $ prevents call
+=== error
+type errors:
+  undefined variable: a at 1:2-1:3
+  undefined variable: f at 2:2-2:3
+  undefined variable: f at 3:2-3:4
+  undefined variable: x at 3:5-3:6
+  undefined variable: y at 3:7-3:8
+
 ```
 
 Syntactically, `[f x]` is a bracket expression with unkeyed entries (the same parsing mechanism as `[a b c]`). The bare identifier `f` in head position triggers call interpretation: the parser interprets the head as the function and remaining entries as arguments. The AST represents this as a `Call` node with `func`, `args`, and `named_args` — not as a dict.
@@ -95,6 +116,11 @@ Syntactically, `[f x]` is a bracket expression with unkeyed entries (the same pa
 [f x y]                        # Parsed as CallExpr (implied call) — requires exact arity
 [call f x]                     # Parsed as CallExpr (explicit call) — same AST as [f x]
 [fn [x] [+ x 1]]               # Parsed as FnExpr — function definition
+=== error
+type errors:
+  undefined variable: f at 1:2-1:3
+  undefined variable: f at 2:7-2:8
+
 ```
 
 **Edge cases:**
@@ -121,6 +147,11 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
     # Short-circuit: if condition is true, never evaluate the else branch
     value: [if condition cheap-option very-expensive-option]
 ]
+=== error
+type errors:
+  undefined variable: expensive-computation at 3:14-3:35
+  undefined variable: condition at 12:16-12:25
+
 ```
 
 ### Principle 5: Composition Over Duplication
@@ -133,6 +164,8 @@ Build complex things from simple things. No repetition.
     dev:  [merge base [env: "dev"]]
     prod: [merge base [env: "prod"  timeout: 60]]
 ]
+=== out
+{"base":{"retries":3,"timeout":30},"dev":{"env":"dev","retries":3,"timeout":30},"prod":{"env":"prod","retries":3,"timeout":60}}
 ```
 
 Compare to JSON where every field must be repeated:

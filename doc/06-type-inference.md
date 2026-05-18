@@ -842,6 +842,12 @@ result: [+ 1 "hello"]
 7. Unify _t0 with StringLiteral("hello"):
    - Resolve _t0 via substitution → IntLiteral(1)
    - Unify IntLiteral(1) with StringLiteral("hello") → type mismatch error
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 1:2:7
+  |
+  2 | result: [+ 1 "hello"]
+    |       ^
 ```
 
 Alternative failing case:
@@ -855,6 +861,12 @@ result: [= [fn [] 1] [fn [] 2]]
 4. Unify _t0 with Fn@Int []:
    - Check: satisfies_constraint(Fn@Int [], "Equatable") → false
    - Error: "type Fn@Int [] does not satisfy constraint Equatable"
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 2:1:7
+  |
+  1 | result: [= [fn [] 1] [fn [] 2]]
+    |       ^
 ```
 
 ### Multi-Parameter Type Classes and Functional Dependencies
@@ -883,6 +895,12 @@ Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
 [instance Addable
   [pattern [a@Int  b@Int   c@Int  ]]: [+: [fn@Int   [x@Int   y@Int  ] [builtin-add x y]]]
   [pattern [a@Int  b@Float c@Float]]: [+: [fn@Float [x@Int   y@Float] [builtin-add x y]]]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 3:4:8
+  |
+  4 | Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
+    |        ^
 ```
 
 The structural metadata bracket (`[determines: ... resolver: ...]`) is the second positional argument to `[class ...]`. Classes are **scope-resident values** in the TypeEnv, not global registry entries. `[$Addable a b c]` resolves the class via the `$`-sigil from current scope at constraint-creation time.
@@ -965,6 +983,12 @@ Functor: [class [f]  [kinds: [f: Operator]]
 
 Equatable: [class [a]
   eq?: [fn@Bool [a a]]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 4:1:8
+  |
+  1 | Functor: [class [f]  [kinds: [f: Operator]]
+    |        ^
 ```
 
 Instances use match-arm syntax with `[pattern [...]]` arm keys:
@@ -974,6 +998,10 @@ Instances use match-arm syntax with `[pattern [...]]` arm keys:
   [pattern [f@Seq  ]]: [fmap: [fn@[return: [Seq b]]   [g@[Fn@b [a]]  xs@[Seq a]] [map g xs]]]
   [pattern [f@Maybe]]: [fmap: [fn@[return: [Maybe b]] [g@[Fn@b [a]]  m@[Maybe a]]
                  [match m  [Some v]: [Some [g v]]  None: None]]]]
+=== error
+type errors:
+  undefined type: Maybe at 3:15-3:20
+
 ```
 
 **Superclasses** use `superclasses:` in the structural bracket:
@@ -984,6 +1012,12 @@ Comparable: [class [a]  [superclasses: [Equatable]]
 
 Monad: [class [m]  [kinds: [m: Operator]  superclasses: [Applicative]]
   bind: [fn@[return: [m b]] [ma@[m a]  k@[Fn@[return: [m b]] [a]]]]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 6:1:11
+  |
+  1 | Comparable: [class [a]  [superclasses: [Equatable]]
+    |           ^
 ```
 
 The superclass chain provides constraint entailment. Functions constrained by `[a: Comparable]` can call `eq?` from `Equatable` without an additional explicit constraint. Superclass instances must exist before a subclass instance can be declared.
@@ -1027,6 +1061,12 @@ traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
   [t.traverse f xs]]
 
 # forM, when, liftM2 also defined
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 7:2:9
+  |
+  2 | sequence: [fn@[f [t a]] [f@Monad  t@Traversable  xs@[t [f a]]]
+    |         ^
 ```
 
 ### `[do]` Inference
@@ -1047,6 +1087,11 @@ The `[do]` macro infers the monad from context when no explicit monad argument i
     [r:    [fetch %nc url]]
     [data: [from-json r.body]]
     [get "items" data]]]]
+=== error
+type errors:
+  undefined variable: result at 2:5-2:11
+  undefined type: Str at 7:48-7:51
+
 ```
 
 **Inference priority:**
@@ -1255,6 +1300,12 @@ resolve_instance(class_name, target_type, state):
 # User code
 [fmap: [fn@[m b] [m@Monad  f@b [a]  xs@[m a]]
   [m.bind xs [fn [x@a] [m.pure [f x]]]]]]
+=== error
+error: unmatched closing bracket
+ --> block 9:3:41
+  |
+  3 |   [m.bind xs [fn [x@a] [m.pure [f x]]]]]]
+    |                                         ^
 ```
 
 **Inference steps:**

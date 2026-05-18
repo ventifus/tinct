@@ -234,6 +234,18 @@ Positional (auto-indexed) and keyed (named) entries may appear in any order with
 [$a $b key: val]        # valid: 0: ref(a), 1: ref(b), key: val
 [key: val $a $b]        # valid: key: val, 0: ref(a), 1: ref(b)
 [$a key: val $b]        # valid: 0: ref(a), key: val, 1: ref(b)
+=== error
+type errors:
+  undefined variable: a at 1:2-1:4
+  undefined variable: b at 1:5-1:7
+  undefined variable: val at 1:13-1:16
+  undefined variable: val at 2:7-2:10
+  undefined variable: a at 2:11-2:13
+  undefined variable: b at 2:14-2:16
+  undefined variable: a at 3:2-3:4
+  undefined variable: val at 3:10-3:13
+  undefined variable: b at 3:14-3:16
+
 ```
 
 Rest entries (`...` and `...name`) may also appear at any position.
@@ -255,6 +267,12 @@ Duplicate keys within a single `[]` literal are parse errors:
 ```tinct
 [name: "Alice"  name: "Bob"]          # ERROR: duplicate key "name"
 ["a" "b" "a"]                         # Not a duplicate — auto-indexed as 0: "a", 1: "b", 2: "a"
+=== error
+error: duplicate key "name"
+ --> block 2:1:17
+  |
+  1 | [name: "Alice"  name: "Bob"]          # ERROR: duplicate key "name"
+    |                 ^^^^
 ```
 
 Duplicate detection applies to explicit keys only. Auto-indexed entries cannot duplicate because the counter always increments.
@@ -272,6 +290,12 @@ The parameter list in `fn` must be a `[]` containing zero or more `param` entrie
 [fn [...a ...b] body]             # ERROR: multiple variadics
 [fn [...rest x] body]             # ERROR: parameter after variadic
 [fn [$x] body]                    # ERROR: $x is a var ref, not a param name
+=== error
+error: multiple variadic parameters
+ --> block 3:4:11
+  |
+  4 | [fn [...a ...b] body]             # ERROR: multiple variadics
+    |           ^^^
 ```
 
 ### Bracket Nesting Depth Limit
@@ -297,6 +321,12 @@ x@[fn [a] $a]                    # ERROR: fn special form in annotation bracket
 x@[type Number]                  # ERROR: type special form in annotation bracket
 x@[@Number $val]                 # ERROR: type_assert_body in annotation bracket
 x@[type: Int  ...]               # ERROR: rest entry alongside type: key
+=== error
+error: property dict annotation must be a dict expression, got: [call f x]
+ --> block 4:6:3
+  |
+  6 | x@[call $f $x]                   # ERROR: explicit call special form in annotation bracket
+    |   ^^^^^^^^^^^^
 ```
 
 The following constructs are rejected inside annotation brackets:

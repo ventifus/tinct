@@ -14,6 +14,12 @@
 x@Int                       # parameter x has type Int
 fn@String                   # function returns String
 [@Int expr]                 # type assertion: expr must be Int at runtime
+=== error
+type errors:
+  expected record type, got Int at 1:1-1:6
+  expected record type, got String at 2:1-2:10
+  undefined variable: expr at 3:7-3:11
+
 ```
 
 Two forms:
@@ -32,6 +38,13 @@ x@String                    # x has type String
 x@a                         # x has TypeVar type a (polymorphic)
 x@[or Int Null]             # x has union type Int | Null
 x@[host: String  port: Int] # x has record type
+=== error
+type errors:
+  expected record type, got Int at 1:1-1:6
+  expected record type, got String at 2:1-2:9
+  expected record type, got _t0 at 3:1-3:4
+  expected record type, got Int | [] at 4:1-4:16
+
 ```
 
 **Annotations are contracts.** The compiler infers types when omitted. If you write an annotation, the inferred type must match — a mismatch is a type error, not a coercion.
@@ -46,6 +59,12 @@ fetch: [fn@String [url@String
 
 [fetch "https://example.com" timeout: 60]
 # url = "https://example.com", timeout = 60, retries = 3
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 3:1:6
+  |
+  1 | fetch: [fn@String [url@String
+    |      ^
 ```
 
 **Type conventions:**
@@ -72,6 +91,12 @@ port: [@Int    data.port]         # throws if data.port is not an Int
 # With fallback — safe cast
 port: [@[type: Int  default: 8080] config.port]
 # Returns 8080 if config.port is absent or not Int
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 4:1:5
+  |
+  1 | data: [from-json input]           # type: Any
+    |     ^
 ```
 
 `[@Type expr]` is unambiguous: inside `[...]`, if the first token is `@`, it is always a type assertion. `@` cannot start a bare word or variable reference.
@@ -96,6 +121,13 @@ xs@[Seq Int]               # Seq of Int
 scores@[Map [String: Int]] # Map from String to Int
 nested@[Seq [Seq Int]]     # Seq of Seq of Int
 pair@[Pair Int String]     # Pair of Int and String (user-defined)
+=== error
+type errors:
+  expected record type, got Seq[Int] at 1:1-1:13
+  expected record type, got Map[_ [String: Int]] at 2:1-2:27
+  expected record type, got Seq[Seq[Int]] at 3:1-3:23
+  undefined type: Pair at 4:7-4:11
+
 ```
 
 **Bare type constructors** produce unconstrained versions:
@@ -110,6 +142,12 @@ process: [fn [x@Dict  y@Dict] ...]   # x and y may have different shapes
 
 # @[Seq Int] in assertion position
 items: [@[Seq Int] [from-json input]]   # checks element type
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 6:2:8
+  |
+  2 | process: [fn [x@Dict  y@Dict] ...]   # x and y may have different shapes
+    |        ^
 ```
 
 Parameterized aliases use `[ConstructorName TypeArgs...]`:
@@ -119,6 +157,12 @@ Either: [type [a b] [or a b]]
 
 x@[Either Int String]     # resolves to Int | String
 y@[Either a b]            # TypeVars — must be in bind: if in fn@[...]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 7:1:7
+  |
+  1 | Either: [type [a b] [or a b]]
+    |       ^
 ```
 
 ### 5. Union and Intersection Types
@@ -129,6 +173,12 @@ y@[Either a b]            # TypeVars — must be in bind: if in fn@[...]
 x@[or Int Null]           # Int | Null
 x@[or String Int Bool]    # String | Int | Bool
 fn@[return: [or Int Null]] [xs@[Seq Int]  target@Int] ...]
+=== error
+error: unmatched closing bracket
+ --> block 8:3:58
+  |
+  3 | fn@[return: [or Int Null]] [xs@[Seq Int]  target@Int] ...]
+    |                                                          ^
 ```
 
 `or` is a type-stage function in the prelude. It produces `[kind: "union" members: [...]]` → `Type::Union(Vec<Type>)`. Union members are normalized: deduplicated, sorted, and flattened (nested unions collapse).
@@ -138,6 +188,12 @@ fn@[return: [or Int Null]] [xs@[Seq Int]  target@Int] ...]
 ```tinct
 x@[each Comparable Showable]       # Comparable ∩ Showable
 constraint: [a: [each Comparable Showable]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 9:2:11
+  |
+  2 | constraint: [a: [each Comparable Showable]]
+    |           ^
 ```
 
 `each` produces `[kind: "inter" members: [...]]` → `Type::Intersection(Vec<Type>)`. In `constraint:` position, each member becomes a separate `Constraint::Class`. In annotation position, it produces `Type::Intersection`.
@@ -154,6 +210,10 @@ A record type is a dict of field names to types. Records are **closed by default
 ```tinct
 x@[name: String  age: Int]    # closed record: exactly these fields
 x@[name: String]              # closed record: exactly {name: String}
+=== error
+type errors:
+  expected record type, got [age: Int] & [name: String] at 1:1-1:27
+
 ```
 
 **Width subtyping:** a function annotated `@[name: String]` accepts any record that has at least a `name: String` field — because any record with more fields is a subtype of one with fewer fields.
@@ -161,6 +221,12 @@ x@[name: String]              # closed record: exactly {name: String}
 ```tinct
 # Accepts {name: String, age: Int, ...} and {name: String} alike
 greet: [fn@String [p@[name: String]] [str "Hello " p.name]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 11:2:6
+  |
+  2 | greet: [fn@String [p@[name: String]] [str "Hello " p.name]]
+    |      ^
 ```
 
 **`...` rest syntax** in record annotations is accepted and expresses openness intent, but produces the same closed record type — width subtyping handles it automatically.
@@ -169,6 +235,12 @@ greet: [fn@String [p@[name: String]] [str "Hello " p.name]]
 
 ```tinct
 count-keys: [fn@Int [d@Dict] [length [keys d]]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 12:1:11
+  |
+  1 | count-keys: [fn@Int [d@Dict] [length [keys d]]]
+    |           ^
 ```
 
 **Records with reserved field names** (`type:`, `return:`, `default:`, `doc:`, `is:`, `repr:`, `constraint:`, `bind:`, `kinds:`) must use a type alias:
@@ -176,6 +248,12 @@ count-keys: [fn@Int [d@Dict] [length [keys d]]]
 ```tinct
 TypedItem: [type [type: String  id: Int]]   # alias for the record type
 x@TypedItem
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 13:1:10
+  |
+  1 | TypedItem: [type [type: String  id: Int]]   # alias for the record type
+    |          ^
 ```
 
 ### 7. Function Types
@@ -188,6 +266,11 @@ x@TypedItem
 
 # Type:         Fn@Return [ParamTypes]
 [Fn@Int [Int Int]]
+=== error
+type errors:
+  cannot unify Int with Number at 2:23-2:30
+  undefined variable: Int at 5:10-5:13
+
 ```
 
 ```tinct
@@ -195,6 +278,15 @@ x@TypedItem
 [Fn@Bool [a]]                 # predicate
 [Fn@c [a b]]                  # two-arg function
 [Fn@[return: [f b]] [[Fn@b [a]]  [f a]]]  # HKT: (a→b) → f a → f b
+=== error
+type errors:
+  undefined variable: a at 1:8-1:9
+  undefined variable: a at 2:11-2:12
+  undefined variable: a at 3:8-3:9
+  invalid type expression in annotation: [f b] at 4:14-4:19
+  undefined variable: a at 4:29-4:30
+  undefined variable: f at 4:35-4:36
+
 ```
 
 `Fn` is uppercase (type constructor convention). The annotation after `@` is the return type; the bracket is the list of parameter types. All types must be explicit — there is no body to infer from.
@@ -219,6 +311,12 @@ min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]]
 # Multiple TypeVars
 zip: [fn@[bind: [a b]  return: [Seq [record left: a  right: b]]]
       [xs@[Seq a]  ys@[Seq b]] ...]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 16:2:4
+  |
+  2 | min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]]
+    |    ^
 ```
 
 **TypeVar scoping rules:**
@@ -231,6 +329,12 @@ zip: [fn@[bind: [a b]  return: [Seq [record left: a  right: b]]]
 # a declared in bind:, referenced everywhere
 transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Showable]]
              [xs@[Seq a]  f@[Fn@b [a]]] ...]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 17:2:10
+  |
+  2 | transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Showable]]
+    |          ^
 ```
 
 **Without `bind:`:** TypeVars introduced solely through `constraint:` keyed entries are also valid for single-TypeVar cases (backward compatible):
@@ -238,6 +342,12 @@ transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Showable]]
 ```tinct
 # Equivalent — a introduced via constraint:
 min: [fn@[return: a  constraint: [a: Comparable]] [xs@[Seq a]] ...]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 18:2:4
+  |
+  2 | min: [fn@[return: a  constraint: [a: Comparable]] [xs@[Seq a]] ...]
+    |    ^
 ```
 
 But when TypeVars appear only in MPTC positional entries (like `c` in `[$Addable a b c]`), `bind:` is required to declare them before use.
@@ -255,6 +365,12 @@ constraint: [a: Comparable  b: Showable]
 
 # Multiple constraints on one TypeVar — each combinator
 constraint: [a: [each Comparable Showable]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 19:2:11
+  |
+  2 | constraint: [a: Comparable]
+    |           ^
 ```
 
 **Routing:** constraint values are type-stage expressions. `Comparable` resolves to `[kind: "named" name: "Comparable"]` → `Constraint::Class("Comparable", α)`. `[each Comparable Showable]` resolves to `[kind: "inter" members: [...]]` → two separate `Constraint::Class` entries.
@@ -293,6 +409,12 @@ between: [fn@[bind: [a]
               doc: "Return a predicate for [lo, hi)"]
           [lo@a  hi@a]
           [fn@Bool [x@a] [and [>= x lo] [< x hi]]]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 20:1:4
+  |
+  1 | min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: "Return smallest element"]
+    |    ^
 ```
 
 ### 10. Multi-Parameter Type Classes
@@ -301,6 +423,12 @@ between: [fn@[bind: [a]
 
 ```tinct
 constraint: [a: Numeric  b: Numeric  [$Addable a b c]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 21:1:11
+  |
+  1 | constraint: [a: Numeric  b: Numeric  [$Addable a b c]]
+    |           ^
 ```
 
 `[$Addable a b c]` — the `$` sigil looks up `Addable` in the ClassEnv (not the type-stage Env). All three TypeVars (`a`, `b`, `c`) must be declared in `bind:`. The class's functional dependency `(a, b) → c` means: when `a` and `b` are known, `c` is determined.
@@ -314,6 +442,12 @@ scale: [fn@[bind: [a b c]
 
 [scale 10 2]        # a=Int, b=Int → c=Int via FD
 [scale 10 2.0]      # a=Int, b=Float → c=Float via FD
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 22:1:6
+  |
+  1 | scale: [fn@[bind: [a b c]
+    |      ^
 ```
 
 **`kinds:` for higher-kinded TypeVars.** When a TypeVar is a type constructor (kind `Operator`), declare it with `kinds:`:
@@ -324,6 +458,12 @@ fmap-generic: [fn@[bind: [a b f]
                    constraint: [f: Functor]
                    return: [f b]]
                [[Fn@b [a]]  xs@[f a]] ...]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 23:1:13
+  |
+  1 | fmap-generic: [fn@[bind: [a b f]
+    |             ^
 ```
 
 `kinds: [f: Operator]` registers `f` in `kind_env` as an Operator-kinded TypeVar. Kind names: `Operator` (type constructor `* → *`), `Label` (dict field key).
@@ -339,6 +479,12 @@ get-field: [fn@[return: a] [key@Label  dict@d] [get key dict]]
 
 # Named form — when the same label appears twice
 get-or-default: [fn@[return: a] [key@[label: l]  default@a  dict@d] ...]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 24:2:10
+  |
+  2 | get-field: [fn@[return: a] [key@Label  dict@d] [get key dict]]
+    |          ^
 ```
 
 `HasField` constraints are never written explicitly — they arise from `key@Label` annotations. The type checker looks up the label type in the record type of `dict` and unifies with `a`.
@@ -360,6 +506,11 @@ get-or-default: [fn@[return: a] [key@[label: l]  default@a  dict@d] ...]
 ---
 x@[Nullable Int]       # Int | Null
 p@[Pair String Bool]   # {first: String  second: Bool}
+=== error
+type errors:
+  undefined type: Nullable at 7:4-7:12
+  undefined type: Pair at 8:4-8:8
+
 ```
 
 **Isolation.** The type-stage Env is separate from the runtime Env. Type-stage functions cannot reference runtime bindings. The type-stage Env is built from:
@@ -395,6 +546,8 @@ The prelude `--- stage: type` section defines all built-in type combinators:
   Any:    [kind: "named"  name: "Any"]
   Unknown:[kind: "named"  name: "Unknown"]
 ]
+=== out
+{}
 ```
 
 **Name resolution order** in type-stage Env:
@@ -414,6 +567,12 @@ Annotation brackets `@[...]` are resolved by evaluating their contents in the ty
 @[Seq Int]
 # eval("Seq Int", type_stage_env) → [kind: "seq"  element: [kind: "named"  name: "Int"]]
 # dict_to_type → Type::Seq(Type::Int)
+=== error
+error: @ annotations outside type-assert or param contexts not yet supported
+ --> block 27:1:1
+  |
+  1 | @[or Int Null]
+    | ^
 ```
 
 **Disambiguation of bracket annotation contents:**
@@ -426,6 +585,12 @@ Annotation brackets `@[...]` are resolved by evaluating their contents in the ty
 ```tinct
 @[or: Int  port: Int]    # Record schema: fields "or" and "port"
 @[or Int Null]           # Union type: Int | Null
+=== error
+error: @ annotations outside type-assert or param contexts not yet supported
+ --> block 28:1:1
+  |
+  1 | @[or: Int  port: Int]    # Record schema: fields "or" and "port"
+    | ^
 ```
 
 **`TypeStageApp`** — when annotation brackets contain TypeVar arguments that are not yet ground, the resolver produces a lazy `TypeStageApp` node instead of evaluating eagerly. It reduces to a concrete type when the TypeVars are resolved during inference.
@@ -447,6 +612,12 @@ Scores:  [type [Map String: Int]]
 # Use site
 x@NullableInt
 y@[Either Int String]    # a=Int, b=String substituted directly
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 29:2:12
+  |
+  2 | NullableInt: [type [or Int Null]]
+    |            ^
 ```
 
 **Parameterized alias use:** `x@[Either Int String]` substitutes `a=Int`, `b=String` directly — it is a substitution, not instantiation of fresh TypeVars. Using `x@Either` (bare) leaves `a`, `b` as fresh inference variables.
@@ -457,6 +628,12 @@ y@[Either Int String]    # a=Int, b=String substituted directly
 Result: [type [Ok a] [Err String]]     # nominal ADT — structural registration
 Shape:  [type [circle: [radius: Int]]
               [rect:   [w: Int  h: Int]]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 30:1:7
+  |
+  1 | Result: [type [Ok a] [Err String]]     # nominal ADT — structural registration
+    |       ^
 ```
 
 **Type alias entries are excluded from record fields.** A `[type ...]` entry registers an alias in the type environment but contributes no field to the enclosing record's type. The evaluator returns an empty dict for type alias entries.
@@ -465,6 +642,12 @@ Shape:  [type [circle: [radius: Int]]
 
 ```tinct
 List: [type [head: Int  tail: List]]    # recursive — two-pass resolves self-reference
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 31:1:5
+  |
+  1 | List: [type [head: Int  tail: List]]    # recursive — two-pass resolves self-reference
+    |     ^
 ```
 
 ### 16. Type Dict Schema
@@ -504,6 +687,12 @@ fetch: [fn@String [url@String  timeout@[type: Int  default: 30]] ...]
 
 # In type assertion — fallback on type mismatch
 port: [@[type: Int  default: 8080] config.port]  # 8080 if port absent or wrong type
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 32:2:6
+  |
+  2 | fetch: [fn@String [url@String  timeout@[type: Int  default: 30]] ...]
+    |      ^
 ```
 
 **`default:` does not interact with `is:`.** `default:` substitutes when the argument is **absent**. `is:` validates when the argument **is present**. A caller providing a value that fails `is:` gets a runtime error — the default is never used as a fallback for failed predicates.
@@ -520,6 +709,12 @@ port: [@[type: Int  default: 8080] config.port]  # 8080 if port absent or wrong 
 positive: [fn@Int [x@[type: Int  is: positive?]] ...]
 # If caller passes x=(-1), predicate fails → runtime TypeError
 # The default: value is NEVER used as fallback for is: failure
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 33:1:9
+  |
+  1 | positive: [fn@Int [x@[type: Int  is: positive?]] ...]
+    |         ^
 ```
 
 **In match arms (soft guard):**
@@ -528,6 +723,10 @@ positive: [fn@Int [x@[type: Int  is: positive?]] ...]
 [match value
   n@[type: Int  is: positive?]: [str "positive: " n]   # falsy → skip to next arm
   n@Int:                         [str "non-positive: " n]]
+=== error
+type errors:
+  undefined variable: value at 1:8-1:13
+
 ```
 
 - `is:` in match arm: falsy → arm skipped, next arm tried (soft)
@@ -546,6 +745,12 @@ positive: [fn@Int [x@[type: Int  is: positive?]] ...]
 encode-byte: [fn@Null [value@[type: Int  repr: "u8"]] ...]
 # repr: "u8" — type checker verifies value has a numeric type (Int, Float, or Number)
 # runtime: no range checking — repr: is a static annotation, not a range validator
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 35:1:12
+  |
+  1 | encode-byte: [fn@Null [value@[type: Int  repr: "u8"]] ...]
+    |            ^
 ```
 
 Accepted `repr:` values: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`.
@@ -576,6 +781,12 @@ connect: [fn@Handle [nc@NetCap  host@String  port@Int] ...]
 # caps: pragma on document header — declared required capabilities
 --- caps: [%nc: @NetCap  %data: @DirCap]
 [emit [connect %nc "api.example.com" 443]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 36:2:10
+  |
+  2 | read-file: [fn@String [cap@DirCap  path@String]
+    |          ^
 ```
 
 `DirCap`, `NetCap`, `Handle` are opaque base types — no parametric polymorphism. Subtyping is reflexive only (`DirCap <: DirCap`, all <: `Any`). `RevocableDirCap` matches `DirCap` at the type level (revocation is a runtime property).
@@ -593,6 +804,12 @@ Tree: [type [value: Int  left: Tree  right: Tree]]
 # Mutually recursive — must be in the same dict
 A: [type [b_field: B]]
 B: [type [a_field: A]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 37:1:5
+  |
+  1 | List: [type [head: Int  tail: List]]
+    |     ^
 ```
 
 **Depth limit.** Alias expansion is bounded at 256 layers (`MAX_ALIAS_DEPTH`). Exceeding this limit produces: `recursive type alias 'Name' exceeds maximum unfolding depth (256)`.
@@ -618,6 +835,12 @@ Float and Bool literals do not have literal types: float equality is fragile (ro
 [k: dynamic  $k: 42]
 # k : String (not literal) → field "hello" excluded from Record type
 # value 42 is still type-checked; field name is unknown statically
+=== error
+error: duplicate key "k"
+ --> block 38:1:14
+  |
+  1 | [k: "hello"  $k: 42]
+    |              ^^
 ```
 
 Literal types widen only when an annotation demands the base type — they never widen implicitly.
@@ -706,6 +929,12 @@ ast-of: [fn@a  min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]] [xs@
 #    return: [kind: "named" name: "a"]
 #    params: [[kind: "seq" element: [kind: "named" name: "a"]]]
 #    constraints: [[class: "Comparable" var: "a"]]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 39:1:7
+  |
+  1 | ast-of: [fn@a  min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]] [xs@[Seq a]] ...]]
+    |       ^
 ```
 
 `ast-of` on a default: value returns the unevaluated AST expression dict — not the evaluated default value. This enables tooling to inspect the source expression of defaults without forcing evaluation.
