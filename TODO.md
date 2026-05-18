@@ -428,7 +428,7 @@ Fix-later findings from the full panel codebase review (2026-05-17, commit 37f83
 - [x] Change `instance_resolution_depth` guard from `continue` to `TypeError` — silently ignoring a depth-exceeded constraint is a soundness risk; should be a user-visible error like GHC's `-freduction-depth` (`src/type_unify.rs:334-341`)
 - [x] Update `doc/15-ast.md` — add `LetDecl`, `CaseArm`, `Placeholder` to the Expr enum table and Node Semantics section; update fn parameter list examples to use `[fn [let x y] body]` form (`doc/15-ast.md`)
 - [x] Collect `boundary_guards` for named args in CALL-MONO path — currently only positional args are checked; named args crossing Unknown→concrete boundaries generate no guard (`src/typecheck.rs`)
-- [ ] Add `[EXXX]` error codes to CHR instance error corpus tests — `instance_disjointness_error.llt-eval`, `instance_consistency_error.llt-eval`, `instance_coverage_error.llt-eval` use loose substrings; pin with error codes when assigned (`tests/corpus/eval/type_errors/`)
+- [x] Add `[EXXX]` error codes to CHR instance error corpus tests — `instance_disjointness_error.llt-eval`, `instance_consistency_error.llt-eval`, `instance_coverage_error.llt-eval` use loose substrings; pin with error codes when assigned (`tests/corpus/eval/type_errors/`)
 - [x] Add nested/multi-arm `[case ...]` corpus tests — current coverage has only single-arm; test 3+ arms, nested matches, case in dict-value position (`tests/corpus/eval/`)
 - [x] Add `[fn [let ...] body]` eval end-to-end corpus test — parser test exists but no corpus test proves the form evaluates correctly with arg binding (`tests/corpus/eval/`)
 
