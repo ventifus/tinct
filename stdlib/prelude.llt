@@ -1607,21 +1607,21 @@ Note: Same as traverse but with collection and function arguments swapped for pi
 liftM2: [fn@[return: Unknown  doc: """
 Lift binary function into monad.
 
-Example: [liftM2 + [Ok 1] [Ok 2]] => [Ok 3]
+Example: [liftM2 ApplicativeResult + [Ok 1] [Ok 2]] => [Ok 3]
 
-Note: Applies a two-argument function to two wrapped values, combining results. Generic over any Applicative.
-"""] [let f ma mb]
-  [ma.lift2 f ma mb]]
+Note: Applies a two-argument function to two wrapped values, combining results. Generic over any Applicative. Requires an explicit Applicative instance dict as the first argument.
+"""] [let app f ma mb]
+  [app.lift2 f ma mb]]
 
 whenM: [fn@[return: Unknown  doc: """
 Conditionally execute monadic action.
 
-Example: [whenM true [Ok "done"]] => [Ok "done"]
-Example: [whenM false [Ok "skip"]] => [Ok []]
+Example: [whenM ApplicativeResult true [Ok "done"]] => [Ok "done"]
+Example: [whenM ApplicativeResult false [Ok "skip"]] => [Ok []]
 
-Note: Returns action result if condition is true, otherwise returns wrapped empty dict. Generic over any Applicative with pure.
-"""] [let cond action]
-  [if cond action [action.pure []]]]
+Note: Returns action result if condition is true, otherwise returns wrapped empty dict. Generic over any Applicative with pure. Requires an explicit Applicative instance dict as the first argument.
+"""] [let app cond action]
+  [if cond action [app.pure []]]]
 
 # ============================================================================
 # Type Class Declarations: Arithmetic

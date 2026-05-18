@@ -40,12 +40,7 @@ fn try_dispatch_method(
     // Only materialize if at least one instance for this class is registered.
     // Registry keys use type names (post chr-prelude); until then all lookups miss.
     // Gating here avoids forcing a lazy thunk solely to check a registry key.
-    let has_candidate = ctx
-        .state
-        .borrow()
-        .instance_registry
-        .keys()
-        .any(|(cn, _)| cn == class_name);
+    let has_candidate = ctx.state.borrow().registered_classes.contains(class_name);
     if !has_candidate {
         return None;
     }

@@ -126,7 +126,7 @@ enum Expr {
     Fn {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<Param>>,
-        body: Box<Spanned<Expr>>,
+        body: Rc<Spanned<Expr>>,
         // True if created by `_` underscore desugaring (src/desugar.rs), false if user-written.
         // Used for origin tracking (Pombrio & Krishnamurthi 2014) — tooling can distinguish
         // sugar-generated from explicit lambdas.
@@ -164,7 +164,7 @@ enum Expr {
 /// A dict entry — keyed or auto-indexed
 struct Entry {
     key: Option<Spanned<Expr>>,   // None = auto-indexed
-    value: Spanned<Expr>,
+    value: Rc<Spanned<Expr>>,
 }
 
 /// A named argument in a call expression

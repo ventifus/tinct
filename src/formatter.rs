@@ -448,14 +448,13 @@ impl<'a> Formatter<'a> {
                     if i > 0 {
                         self.output.push(' ');
                     }
+                    if param.node.variadic {
+                        self.output.push_str("...");
+                    }
                     self.output.push_str(&param.node.name);
                     if let Some(ann) = &param.node.annotation {
                         self.output.push('@');
                         self.format_annotation(ann);
-                    }
-                    if param.node.variadic {
-                        self.output
-                            .insert_str(self.output.len() - param.node.name.len(), "...");
                     }
                 }
                 self.output.push(']');
