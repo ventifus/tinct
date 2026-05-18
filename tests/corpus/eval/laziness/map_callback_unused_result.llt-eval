@@ -1,0 +1,11 @@
+# Laziness proof: $map callback not called when the mapped result is never accessed.
+# The mapped dict is stored in "expensive", which is never accessed.
+# If map were eager, the [raise "should not fire"] callback would execute and error.
+# Since dict entries are lazy thunks and "expensive" is unused, the callback is
+# never invoked and no error fires.
+[cheap: 7
+ expensive: [map [fn [x] [raise "should not fire"]] [p: 1  q: 2  r: 3]]]
+---
+%.cheap
+=== out
+Int(7)

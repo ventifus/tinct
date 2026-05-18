@@ -637,6 +637,152 @@ pub(crate) fn builtin_char_code(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Span;
+    use crate::builtins::create_root_env;
+    use crate::error::ErrorKind;
+    use crate::eval::materialize;
+    use crate::test_util::test_span;
+    use crate::value::{BuiltinArgs, Thunk, Value};
+    use std::rc::Rc;
+
+    fn str_thunk(s: &str, span: Span) -> Rc<Thunk> {
+        Rc::new(Thunk::new_materialized(
+            crate::value::string_val(s),
+            span,
+        ))
+    }
+
+    fn call_span() -> Span {
+        test_span(1, 1, 1, 5)
+    }
+
+    fn no_named() -> Option<&'static IndexMap<String, Rc<Thunk>>> {
+        None
+    }
+
+    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test base_dir");
+        crate::eval::EvalContext::new(base_dir, create_root_env(), false)
+    }
+
+    // --- MAX_SPLIT_PARTS guard ---
+
+    /// The guard constant itself has the documented value.
+    #[test]
+    fn test_max_split_parts_constant() {
+        assert_eq!(MAX_SPLIT_PARTS, 1_000_000);
+    }
+
+    /// Splitting a string with a non-empty separator that would produce exactly 2 parts
+    /// succeeds (well within the limit).
+    #[test]
+    fn test_split_two_parts_succeeds() {
+        let span = call_span();
+        let ctx = test_ctx();
+        let result = builtin_split(BuiltinArgs {
+            args: &[str_thunk(",", span), str_thunk("a,b", span)],
+            named: no_named(),
+            call_span: span,
+            ctx: Rc::clone(&ctx),
+        });
+        assert!(result.is_ok(), "splitting 'a,b' by ',' should succeed");
+        let val = materialize(&result.unwrap(), None, &ctx).unwrap();
+        // Should produce a 2-entry dict {0: "a", 1: "b"}
+        assert!(
+            matches!(val, Value::Dict(_)),
+            "split result should be a Dict"
+        );
+    }
+
+    /// Empty separator on a very short string succeeds (char_count + 1 is small).
+    #[test]
+    fn test_split_empty_separator_short_string() {
+        let span = call_span();
+        let ctx = test_ctx();
+        let result = builtin_split(BuiltinArgs {
+            args: &[str_thunk("", span), str_thunk("abc", span)],
+            named: no_named(),
+            call_span: span,
+            ctx: Rc::clone(&ctx),
+        });
+        assert!(
+            result.is_ok(),
+            "splitting 'abc' by empty string should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    // --- try_dispatch_method fast-path (no Showable instance registered) ---
+
+    /// When no Showable instance is registered, `builtin_str` falls through to
+    /// the built-in stringify path. The result is the decimal representation of
+    /// the integer, proving the fast-path was taken (not an instance method).
+    #[test]
+    fn test_str_no_showable_instance_falls_through() {
+        let span = call_span();
+        let ctx = test_ctx();
+        // registered_classes is empty in a fresh context → Showable fast-path not taken.
+        let int_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let result = builtin_str(BuiltinArgs {
+            args: &[int_thunk],
+            named: no_named(),
+            call_span: span,
+            ctx: Rc::clone(&ctx),
+        });
+        assert!(result.is_ok(), "builtin_str(42) should succeed");
+        let val = materialize(&result.unwrap(), None, &ctx).unwrap();
+        assert!(
+            matches!(&val, Value::String { source, start, end } if &source[*start..*end] == "42"),
+            "expected string '42', got: {:?}",
+            val
+        );
+    }
+
+    /// `builtin_str` with zero args returns an empty string.
+    #[test]
+    fn test_str_zero_args_returns_empty_string() {
+        let span = call_span();
+        let ctx = test_ctx();
+        let result = builtin_str(BuiltinArgs {
+            args: &[],
+            named: no_named(),
+            call_span: span,
+            ctx: Rc::clone(&ctx),
+        });
+        assert!(result.is_ok(), "builtin_str() with 0 args should succeed");
+        let val = materialize(&result.unwrap(), None, &ctx).unwrap();
+        assert!(
+            matches!(&val, Value::String { source, start, end } if &source[*start..*end] == ""),
+            "expected empty string, got: {:?}",
+            val
+        );
+    }
+
+    /// Arity error: `builtin_split` with 1 arg returns an arity mismatch error.
+    #[test]
+    fn test_split_arity_error() {
+        let span = call_span();
+        let ctx = test_ctx();
+        let result = builtin_split(BuiltinArgs {
+            args: &[str_thunk(",", span)],
+            named: no_named(),
+            call_span: span,
+            ctx,
+        });
+        assert!(result.is_err(), "split with 1 arg should return an error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::ArityMismatch { .. }),
+            "expected ArityMismatch, got: {:?}",
+            err.kind
+        );
+    }
+}
+
 /// `chr`: Convert a Unicode codepoint to a single-character string.
 ///
 /// Takes 1 arg: `codepoint` (Int).
