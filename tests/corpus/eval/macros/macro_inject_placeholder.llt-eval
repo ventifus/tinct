@@ -1,0 +1,21 @@
+# PLACEHOLDER TEST: inject threading not yet implemented (TODO.md macros-v2-expand line 28)
+#
+# This test documents the INTENDED behavior once inject is implemented.
+# Expected: When a macro with inject: default-name is used in dict-key position,
+# the key name should be passed to the macro as a binding.
+#
+# Example intended use case (from macros-v2.md):
+#   [macro aif [let test then else] [inject: it] ...]
+#   [my-val: [aif [some-check] [use it here]]]
+#
+# Would pass "my-val" as the value of `it` inside the macro body.
+#
+# Current status: inject: extraction is implemented (expand.rs:707 extract_inject_default),
+# but the exact syntax and threading logic are not finalized.
+# Skipping test creation until inject: syntax is clarified in parser.
+
+# Simple macro without inject for now
+[defmacro simple [args] [get 0 args]]
+[simple 42]
+=== out
+Int(42)

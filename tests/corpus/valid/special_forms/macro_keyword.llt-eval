@@ -1,5 +1,7 @@
 # Test that [macro name [let params] body] parses correctly.
 # This is a parse-only test since macro expansion uses [let ...] patterns.
 [macro my-if [let cond then else] [quote [if [unquote cond] [unquote then] [unquote else]]]]
+=== warn
+unquote of Function(pairs) is not supported
 === out
 [macro my-if [let cond then else] [quote [if [unquote cond] [unquote then] [unquote else]]]]
