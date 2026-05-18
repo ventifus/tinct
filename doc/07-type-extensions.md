@@ -41,6 +41,8 @@ Under BAS, the Result type must use **nominal variants** to be discriminated:
 
 ```tinct
 [Result: [type [Ok a] [Err String]]]
+=== out
+{"Result":{}}
 ```
 
 `Ok@T | Err@String` is discriminated by S-ClsBot (`#Ok & #Err ≤ Never`). Pattern matching uses nominal patterns `[Ok v]` / `[Err msg]`. The `try` builtin returns `Ok(value)` on success and `Err(message)` on caught error. Structural `{ok: v}` / `{err: msg}` dicts remain valid as plain dicts but are not a discriminated union under BAS.
@@ -149,6 +151,12 @@ data: [@[name: String age: Int] [from-json input]]
 # Shape check passes immediately (dict has "name" and "age" keys)
 # data.name — materializes, guard checks String, returns value
 # data.age — never accessed, never materialized, never validated
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 2:1:5
+  |
+  1 | data: [@[name: String age: Int] [from-json input]]
+    |     ^
 ```
 
 **Validation depth by type constructor:**
@@ -180,6 +188,12 @@ Note on type-level variables: `TypeVar(α)` and `RowVar(r)` are both "variables"
 ```tinct
 Person: [type [name: String  age: Int]]
 person: [@Person data]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 3:1:7
+  |
+  1 | Person: [type [name: String  age: Int]]
+    |       ^
 ```
 
 The type checker resolves `Person` → `Record([name: Str, age: Int], Closed)` during elaboration and stores the resolved type in `Expr::TypeAssert.resolved_type`. The evaluator reads it directly — no alias registry at runtime.
@@ -254,6 +268,12 @@ flags@[repr: "u32"]: 0x1F
 
 # Type error: repr: requires numeric type
 name@[type: String  repr: "u8"]: "hello"   # ERROR: repr: requires numeric type
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 4:2:30
+  |
+  2 | port@[type: Int  repr: "u16"]: 8080
+    |                              ^
 ```
 
 **Semantics:**

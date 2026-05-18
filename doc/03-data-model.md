@@ -8,6 +8,14 @@ A list is equivalent to a dict with integer keys:
 
 ```tinct
 [a b c]  ≡  [0: a  1: b  2: c]
+=== error
+type errors:
+  undefined variable: a at 1:2-1:3
+  undefined variable: ≡ at 1:10-1:11
+  undefined variable: a at 1:17-1:18
+  undefined variable: b at 1:23-1:24
+  undefined variable: c at 1:29-1:30
+
 ```
 
 **Why this design:**
@@ -34,6 +42,12 @@ A list is equivalent to a dict with integer keys:
 ```tinct
 [name: "Alice"  name: "Bob"]              # → Error: duplicate key "name"
 [merge [name: "Alice"] [name: "Bob"]]     # → [name: "Bob"]  (right-biased, intentional)
+=== error
+error: duplicate key "name"
+ --> block 2:1:17
+  |
+  1 | [name: "Alice"  name: "Bob"]              # → Error: duplicate key "name"
+    |                 ^^^^
 ```
 
 **Why:** Duplicate keys + lazy evaluation creates confusing semantics — depending on the scoping model, derived values may see different bindings of the same key. Prohibiting duplicates eliminates the ambiguity entirely and catches copy-paste errors.
@@ -77,6 +91,12 @@ cache@Map                                         # bare: Map@[Any: Any]
 
 # Dict — either form accepted
 process: [fn@Null [d@Dict] ...]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 3:2:7
+  |
+  2 | Config: [type [record host: String  port: Int]]
+    |       ^
 ```
 
 The distinction is purely static. At runtime, both are the same `Value::Dict`. Most dict literals are Records unless annotated otherwise.
@@ -90,6 +110,12 @@ The distinction is purely static. At runtime, both are the same `Value::Dict`. M
 [= [a: 1] [a: 2]]                 # → false (value at "a" differs)
 [= [a: 1  b: 2] [a: 1]]          # → false (different key sets)
 [= [] []]                          # → true  (empty dicts are equal)
+=== error
+type errors:
+  expected record type, got Bool at 1:1-1:30
+  expected record type, got Bool at 2:1-2:18
+  expected record type, got Bool at 3:1-3:24
+
 ```
 
 Both Record and Map forms use the same order-insensitive comparison — the runtime representation is the same `Value::Dict`, so `=` treats them identically. Cycle detection via a visited-pair set prevents infinite loops on self-referential structures.
@@ -104,6 +130,11 @@ Functions and builtins always compare as unequal to each other (no meaningful cl
 [null? []]         # → true
 [null? [a: 1]]     # → false
 [null? "hello"]    # → false
+=== error
+type errors:
+  expected record type, got Bool at 1:1-1:11
+  expected record type, got Bool at 2:1-2:15
+
 ```
 
 Functions that may return nothing return `[]`. Annotate with `@Null`:
@@ -111,6 +142,12 @@ Functions that may return nothing return `[]`. Annotate with `@Null`:
 ```tinct
 find: [fn@[Ok String | Null] [haystack@String needle@String]
   [if [str-contains haystack needle] [Ok haystack] []]]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 6:1:5
+  |
+  1 | find: [fn@[Ok String | Null] [haystack@String needle@String]
+    |     ^
 ```
 
 **Missing keys are errors.** A key not being present in a dict is distinct from a key being present with value `[]`. Accessing a missing key errors immediately:
@@ -122,6 +159,13 @@ find: [fn@[Ok String | Null] [haystack@String needle@String]
 # Safe alternatives
 [get-or config "timeout" 30]    # → 30 if "timeout" missing
 [has? config "timeout"]          # → true/false
+=== error
+type errors:
+  undefined variable: person at 1:6-1:12
+  undefined variable: person at 2:6-2:12
+  undefined variable: config at 5:9-5:15
+  undefined variable: config at 6:7-6:13
+
 ```
 
 **JSON null mapping:** `from-json` maps JSON `null` to `[]`. After conversion, `null?` on the result returns true, consistent with tinct's null-as-empty-dict model.
@@ -143,6 +187,16 @@ data.0                          # integer dot access — looks up Key::Int(0)
 [get "name" data]               # String key "name"
 [get $key data]                 # Computed key lookup ($key is a variable reference)
 [get 0 config.services].host    # Dynamic key then dot chain
+=== error
+type errors:
+  undefined variable: person at 2:1-2:7
+  undefined variable: config at 3:1-3:7
+  undefined variable: data at 4:1-4:5
+  undefined variable: data at 7:8-7:12
+  undefined variable: data at 8:13-8:17
+  undefined variable: key at 9:6-9:10
+  undefined variable: config at 10:8-10:14
+
 ```
 
 **Rules:** Identifiers can start access chains directly — `foo.bar` and `$foo.bar` are both valid. `[get key data]` finds the entry whose key matches `key`, not the nth entry by position.
@@ -155,6 +209,12 @@ Use `[get key data]` for integer and dynamic key access.
 [slice data 2 5]                # Entries at positions 2, 3, 4 (position-based)
 [take 3 data]                   # First 3 entries
 [drop 2 data]                   # All entries after the first 2
+=== error
+type errors:
+  undefined variable: data at 1:8-1:12
+  undefined variable: data at 2:9-2:13
+  undefined variable: data at 3:9-3:13
+
 ```
 
 Use `slice`, `take`, and `drop` for subsequences.
@@ -166,6 +226,13 @@ Use `slice`, `take`, and `drop` for subsequences.
 [nth data -1]                   # Last entry (negative = from end)
 [last data]                     # Last entry (alias)
 [slice data 2 5]                # Entries at positions 2, 3, 4
+=== error
+type errors:
+  undefined variable: data at 1:6-1:10
+  undefined variable: data at 2:6-2:10
+  undefined variable: data at 3:7-3:11
+  undefined variable: data at 4:8-4:12
+
 ```
 
 **Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `[get 0 data]` (key 0) and `[nth data 0]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
@@ -184,6 +251,22 @@ Use `slice`, `take`, and `drop` for subsequences.
 [reverse [a b c]]                       # → [c b a] = [0: c  1: b  2: a]
 [sort [cherry apple banana]]            # → [apple banana cherry] — sorts by value, discards original keys
 [reindex [0: a  5: b  10: c]]           # → [a b c] = [0: a  1: b  2: c]
+=== error
+type errors:
+  undefined variable: alice at 2:9-2:14
+  undefined variable: alice at 3:8-3:13
+  undefined variable: z at 4:7-4:8
+  undefined variable: a at 4:10-4:11
+  undefined variable: a at 5:8-5:9
+  undefined variable: d at 5:15-5:16
+  undefined variable: a at 6:10-6:11
+  undefined variable: c at 6:16-6:17
+  undefined variable: a at 7:11-7:12
+  undefined variable: cherry at 8:8-8:14
+  undefined variable: a at 9:14-9:15
+  undefined variable: b at 9:20-9:21
+  undefined variable: c at 9:27-9:28
+
 ```
 
 **Why this split:**
@@ -206,6 +289,12 @@ data: [alice bob carol dave]
 # filter on string-keyed dicts also returns Seq of values
 [collect [filter [fn [v] [> v 0]] [x: 1  y: -2  z: 3]]]
 # → [0: 1  1: 3]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 12:2:5
+  |
+  2 | data: [alice bob carol dave]
+    |     ^
 ```
 
 **`conj` on sparse data:** `conj` delegates to `append`, which uses the maximum existing integer key + 1 as the new key (or 0 if no integer keys exist). This avoids key collisions even on sparse data:
@@ -217,6 +306,12 @@ data: [alice bob carol dave]
 # Sparse data — no collision, key 11 is used (max 10 + 1)
 sparse: [0: a  5: b  10: c]
 [conj sparse d]                         # → [0: a  5: b  10: c  11: d]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 13:5:7
+  |
+  5 | sparse: [0: a  5: b  10: c]
+    |       ^
 ```
 
 ## Value Types — Overview
@@ -257,6 +352,12 @@ pi: 3.14                        # Float — has decimal point
 x@Int                           # must be an integer
 y@Float                         # must be a float
 z@Number                        # accepts either
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 14:1:5
+  |
+  1 | port: 8080                      # Int — no decimal point
+    |     ^
 ```
 
 **Arithmetic auto-promotes.** The compiler handles promotion with a fixed table — no typeclasses needed:
@@ -276,6 +377,13 @@ z@Number                        # accepts either
 [/ 10 3]                        # → 3.333... (Float — / always returns Float)
 [quot 10 3]                     # → 3 (Int — truncated integer division, prelude function using trunc)
 [mod 10 3]                      # → 1 (Int — remainder)
+=== error
+type errors:
+  expected record type, got Number at 1:1-1:8
+  expected record type, got Number at 2:1-2:10
+  expected record type, got Number at 3:1-3:9
+  expected record type, got Int at 4:1-4:12
+
 ```
 
 **Precision-safe promotion.** Implicit Int→Float promotion in mixed-type arithmetic operations errors when the integer's magnitude exceeds `2^53`, the largest integer exactly representable in an `f64` mantissa. This prevents silent precision loss:
@@ -283,6 +391,10 @@ z@Number                        # accepts either
 ```tinct
 [+ 9007199254740992 1.0]        # → 9007199254740993.0 (2^53, exact)
 [+ 9007199254740993 1.0]        # → Error: Int→Float promotion would lose precision
+=== error
+type errors:
+  expected record type, got Number at 1:1-1:25
+
 ```
 
 **Explicit float conversion** — `[float n]` builtin performs unconditional Int→Float conversion without precision checks, allowing controlled precision loss when desired. For Float inputs, `float` is a no-op.
@@ -290,6 +402,11 @@ z@Number                        # accepts either
 ```tinct
 [float 9007199254740993]        # → 9007199254740992.0 (loss of precision, intentional)
 [float 3.14]                    # → 3.14 (no-op on Float inputs)
+=== error
+type errors:
+  undefined variable: float at 1:2-1:7
+  undefined variable: float at 2:2-2:7
+
 ```
 
 **Integer arithmetic uses checked semantics.** `Int` operations (`+`, `-`, `*`) use Rust's `checked_add`/`checked_sub`/`checked_mul`, so overflow returns an error rather than wrapping or panicking. This prevents silent data corruption on large values. Width-specific types like `Int32` could enforce narrower range constraints via the contracts system.
@@ -362,6 +479,13 @@ Layers compose left-to-right with Connectors:
 [tcp:  [connect %nc Tcp "proxy.corp" 1080]]
 [tun:  [socks5-layer tcp "api.internal" 443]]
 [tls:  [tls-layer tun "api.internal" tls-opts]]
+=== error
+type errors:
+  undefined variable: %nc at 1:17-1:20
+  undefined variable: socks5-layer at 2:9-2:21
+  undefined variable: tun at 3:19-3:22
+  undefined variable: tls-opts at 3:38-3:46
+
 ```
 
 The original Handle is consumed; subsequent operations on it produce a runtime error. The new Handle wraps the protocol-upgraded connection.
@@ -377,6 +501,12 @@ Three Session types exist as runtime-only opaque values:
 ```tinct
 [quic:   [quic-session %nc "api.example.com" 443 quic-opts]]
 [stream: [quic-open-stream quic]]    # → Handle{ Binary Readable Writable Stream }
+=== error
+type errors:
+  undefined variable: %nc at 1:24-1:27
+  undefined variable: quic-opts at 1:50-1:59
+  undefined variable: quic at 2:28-2:32
+
 ```
 
 **`Value::Http2Session`** — HTTP/2 (RFC 7540), via reqwest/h2. Created from a `Handle@[Stream Tls]` with h2 ALPN:
@@ -384,6 +514,11 @@ Three Session types exist as runtime-only opaque values:
 ```tinct
 [h2: [http2-session tls-handle]]
 [r:  [http-request h2 "GET" "/api" []]]
+=== error
+type errors:
+  arity mismatch: expected 3 argument(s), got 1 (1 positional, 0 named) at 1:6-1:32
+  arity mismatch: expected 5 argument(s), got 4 (4 positional, 0 named) at 2:6-2:39
+
 ```
 
 **`Value::Http3Session`** — HTTP/3 (RFC 9114), over a QuicSession:
@@ -391,6 +526,11 @@ Three Session types exist as runtime-only opaque values:
 ```tinct
 [h3: [http3-session quic-session]]
 [r:  [http-request h3 "GET" "/api" []]]
+=== error
+type errors:
+  arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 1:6-1:34
+  arity mismatch: expected 5 argument(s), got 4 (4 positional, 0 named) at 2:6-2:39
+
 ```
 
 `http-request` is the uniform application-level call across all HTTP session types, returning `{ok: {status: Int  headers: Dict  body: Bytes}} | {err: String}`.
@@ -429,6 +569,8 @@ u.fragment  # → "frag"
 m.scheme    # → "mailto"
 m.host      # → [] (empty dict — non-hierarchical)
 m.path      # → "user@example.com"
+=== error
+[E010] document pipeline: expected Dict, got String (defined at 2:1-2:9)
 ```
 
 ### url (RFC 3986 §3.2)
@@ -459,6 +601,8 @@ u.query     # → "page=2"
 # url errors for non-hierarchical URIs:
 [url "mailto:user@example.com"]   # → Error: no authority component
 [url "urn:isbn:978-0-306-40615-7"] # → Error: no authority component
+=== error
+[E010] document pipeline: expected Dict, got String (defined at 2:1-2:9)
 ```
 
 ### urn (RFC 8141)
@@ -483,6 +627,8 @@ u.nss    # → "978-0-306-40615-7"
 [u: [urn "urn:uuid:6e8bc430-9c3a-11d9-9669-0800200c9a66"]]
 u.nid    # → "uuid"
 u.nss    # → "6e8bc430-9c3a-11d9-9669-0800200c9a66"
+=== error
+[E010] document pipeline: expected Dict, got String (defined at 2:1-2:6)
 ```
 
 ## Access Chain Evaluation — Formal Specification
@@ -634,6 +780,8 @@ The type checker mirrors the access algebra with type-level projections:
 [config: [database: [host: "localhost"  port: 5432]]]
 
 [str config.database.host]
+=== out
+"localhost"
 ```
 
 Chain: `dot("database") · dot("host")` applied to `config`.
@@ -648,6 +796,10 @@ Note: `θ_port` is never materialized — Property 2 (result laziness) means acc
 
 ```tinct
 [get 0 services].host
+=== error
+type errors:
+  undefined variable: services at 1:8-1:16
+
 ```
 
 `[get 0 services]` calls the `get` builtin with key `Int(0)` and dict `services`. The builtin materializes `services`, looks up `Key::Int(0)` → `θ_svc0`. Then `.host` dot-accesses `θ_svc0`.
@@ -658,6 +810,12 @@ Note: `θ_port` is never materialized — Property 2 (result laziness) means acc
 ```tinct
 data: [a: 1  b: 2  c: 3  d: 4]
 [slice data 1 3]
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 27:1:5
+  |
+  1 | data: [a: 1  b: 2  c: 3  d: 4]
+    |     ^
 ```
 
 `[slice data 1 3]` returns entries at positions 1 and 2 (half-open interval `[1, 3)` by insertion order), yielding `[0: 2  1: 3]` (renumbered). Use `slice`, `take`, and `drop` for subsequences.

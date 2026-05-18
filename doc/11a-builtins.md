@@ -287,6 +287,12 @@ config: [
 [validate $nginx-schema $config]
 # Returns config unchanged on success
 # Throws SchemaViolation with all violations on failure
+=== error
+error: `:` can only appear in dict, call, class, instance, or match forms
+ --> block 1:1:13
+  |
+  1 | nginx-schema: [
+    |             ^
 ```
 
 **Error cases:**
@@ -432,6 +438,14 @@ Each transport variant determines the connection semantics and argument requirem
 
 # Tcp is the default when Transport is omitted:
 [connect net "api.example.com" 443]       # same as Tcp form
+=== error
+type errors:
+  undefined variable: net at 2:10-2:13
+  undefined variable: net at 3:10-3:13
+  arity mismatch: expected 4 argument(s), got 3 (3 positional, 0 named) at 6:1-6:36
+  arity mismatch: expected 4 argument(s), got 3 (3 positional, 0 named) at 9:1-9:29
+  arity mismatch: expected 4 argument(s), got 3 (3 positional, 0 named) at 12:1-12:36
+
 ```
 
 The first argument is any Connector — a capability value that authorizes connections. `NetCap` (injected via `--cap-net`) gates TCP/UDP/ICMP connections to allowlist hosts. `DirCap` (injected via `--cap-dir`) gates Unix socket connections relative to the directory. User-defined Connectors implement custom routing or tunneling.
@@ -465,6 +479,11 @@ Establishes a TLS 1.3 session and returns a `Handle` with the `Tls` capability.
 [tcp: [connect net Tcp "10.0.0.5" 443]]
 [tls: [tls-layer tcp "api.example.com" []]]
 # → Handle{ Binary Readable Writable Stream Tls }
+=== error
+type errors:
+  undefined variable: net at 1:16-1:19
+  undefined variable: tcp at 2:18-2:21
+
 ```
 
 `tls-layer` is the general Layer pattern for composing Handle transformations. It consumes the underlying Handle's raw TCP stream (via `raw_tcp: Option<TcpStream>`) and returns a new Handle wrapping the TLS session. After `tls-layer` extracts the TCP stream, the original Handle is invalidated — subsequent operations on it produce a runtime error.
@@ -493,6 +512,16 @@ All three trust sources (`ca-bundle`, system roots, Mozilla roots) union when co
 [cert: [open fs "certs/client.pem" Readable]]
 [key:  [open fs "certs/client-key.pem" Readable]]
 [h: [tls-layer tcp "api.internal" [client-cert: cert  client-key: key]]]
+=== error
+type errors:
+  undefined variable: fs at 1:14-1:16
+  undefined variable: Readable at 1:36-1:44
+  undefined variable: fs at 2:14-2:16
+  undefined variable: Readable at 2:40-2:48
+  undefined variable: tcp at 3:16-3:19
+  undefined variable: cert at 3:49-3:53
+  undefined variable: key at 3:67-3:70
+
 ```
 
 **Error cases:** Type mismatch if handle is not a Handle or sni is not String; capability error if the Handle does not carry the `Stream` capability or the underlying TCP stream has already been consumed; TLS handshake failure (certificate verification, expired cert, hostname mismatch); SPKI pin mismatch if `pins` is specified and the leaf cert matches none.
@@ -506,6 +535,11 @@ A `SpkiPin` value carries the hash algorithm and raw fingerprint bytes:
 ```tinct
 [spki-pin Sha3-256 [hex-decode "aabbcc..."]]   # SHA3-256 (preferred)
 [spki-pin Sha256   [base64-decode "AAAA...="]] # SHA-256 (compatibility)
+=== error
+type errors:
+  undefined variable: spki-pin at 1:2-1:10
+  undefined variable: spki-pin at 2:2-2:10
+
 ```
 
 `SpkiPin` is constructed via the `spki-pin` stdlib function (two positional args: `HashAlgorithm` variant and `Bytes`). SHA-3 (Keccak construction) is preferred for new deployments; SHA-256 is accepted for compatibility with existing tooling.
@@ -540,6 +574,13 @@ The returned dict has these fields:
 [if [< days-left 30]
   [emit [str "WARNING: cert expires in " days-left " days"]]
   null]
+=== error
+type errors:
+  undefined variable: tls-connect at 1:9-1:20
+  undefined variable: h at 2:23-2:24
+  undefined variable: days-between at 3:14-3:26
+  undefined variable: days-left at 4:8-4:17
+
 ```
 
 **Error cases:** Type mismatch if arg is not a Handle; capability error if the Handle does not carry the `Tls` capability (calling `tls-peer-cert` on a plain TCP Handle is a static type error and a runtime capability error).
@@ -557,6 +598,12 @@ Read capability data from the Handle's capability row.
 [has-cap? h "Tls"]        # → true if h was created by tls-connect
 [cap-data h "Tls"]        # → dict with cert fields (same as tls-peer-cert)
 [has-cap? h "Readable"]   # → true for all read-capable Handles
+=== error
+type errors:
+  undefined variable: has-cap? at 1:2-1:10
+  undefined variable: h at 2:11-2:12
+  undefined variable: has-cap? at 3:2-3:10
+
 ```
 
 `cap-data` errors if the named capability is absent. Use `has-cap?` to test first. Boolean capabilities (Readable, Writable, Stream, Datagram, Seekable, Binary, Text) store `Value::Null` as their data; `cap-data` on these returns `null`.
@@ -593,6 +640,12 @@ The returned dict:
 [resp: [fetch net [url "https://api.example.com/config"]]]
 resp.status   # → 200
 resp.body     # → "{...}"
+=== error
+type errors:
+  undefined variable: fetch at 1:9-1:14
+  undefined variable: resp at 2:1-2:5
+  undefined variable: resp at 3:1-3:5
+
 ```
 
 **Error cases:** Type mismatch if url is not Url; unsupported scheme (only `"http"` and `"https"` are handled); connection or TLS errors; non-UTF-8 response body.
@@ -636,6 +689,11 @@ icmp-ping : [fn [cap@NetCap  host@String  timeout-ms@Int]]
 [if [= [$r.ok?] true]
   [str "RTT: " r.ok.latency-ms "ms"]
   [str "failed: " r.err]]
+=== error
+type errors:
+  undefined variable: net at 1:16-1:19
+  undefined variable: r at 2:9-2:11
+
 ```
 
 `timeout-ms` is the maximum wait time in milliseconds. A value of `0` disables the timeout (not recommended). The host may be an IPv4 address string or a hostname — DNS resolution is performed before sending.
