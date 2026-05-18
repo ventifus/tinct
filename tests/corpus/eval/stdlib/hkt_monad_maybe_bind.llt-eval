@@ -1,7 +1,9 @@
 # Test: MonadMaybe.bind — bind a Some value through a transformation.
-# MonadMaybe is not yet defined in the stdlib (pending hkt-stdlib implementation).
-# This test documents the expected behavior once MonadMaybe is available.
-# Current behavior: E099 cannot evaluate error node (MonadMaybe undefined).
+# MonadMaybe is defined in prelude.llt as an instance of the Monad typeclass.
+# The type checker does not know about MonadMaybe (no prelude type env seeding),
+# so it warns "undefined variable: MonadMaybe", but the evaluator succeeds.
 [MonadMaybe.bind [Some 42] [fn [x] [Some [+ x 1]]]]
-=== error
-[E099] cannot evaluate error node
+=== out
+Variant(Some, Int(43))
+=== warn
+undefined variable: MonadMaybe

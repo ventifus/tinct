@@ -1,0 +1,7 @@
+# Test: inferred [do] with Result monad and return-type annotation on the enclosing fn.
+# [fn@[Ok Int] [] [do [x: [Ok 42]] [Ok x]]] — the [do] macro detects the inferred form
+# (dict as first arg instead of explicit monad var) and emits a helpful error.
+# Once hkt do-inference is implemented, this should return Variant(Ok, Int(42)).
+[fn@[Ok Int] [] [do [x: [Ok 42]] [Ok x]]]
+=== error
+[E080] inferred [do] not yet supported

@@ -1,0 +1,7 @@
+# Test: inferred [do] with Maybe monad — monad should be inferred from [Some 42]
+# in the first binding step. The [do] macro detects the inferred form (dict as first arg)
+# and emits a helpful error directing the user to add an explicit monad argument.
+# Once hkt do-inference is implemented, this should return Variant(Some, Int(43)).
+[do [x: [Some 42]] [Some [+ x 1]]]
+=== error
+[E080] inferred [do] not yet supported
