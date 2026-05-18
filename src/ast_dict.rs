@@ -768,9 +768,9 @@ fn expr_to_thunk_id(
             params,
             superclasses: _,
             methods,
-            determines: _,
-            resolver: _,
-            resolver_injective: _,
+            determines,
+            resolver,
+            resolver_injective,
         } => {
             dict.insert(
                 Key::String("type".into()),
@@ -827,6 +827,43 @@ fn expr_to_thunk_id(
                     span,
                 ))),
             );
+            // Serialize determines as a list
+            if !determines.is_empty() {
+                let determines_dict: IndexMap<Key, ThunkId> = determines
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, fd_expr)| {
+                        Some((
+                            Key::Int(i as i64),
+                            expr_to_thunk_id(&fd_expr.node, fd_expr.span, opts, ctx).ok()?,
+                        ))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("determines".into()),
+                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        Value::Dict(determines_dict),
+                        span,
+                    ))),
+                );
+            }
+            // Serialize resolver
+            if let Some(resolver_expr) = resolver {
+                dict.insert(
+                    Key::String("resolver".into()),
+                    expr_to_thunk_id(&resolver_expr.node, resolver_expr.span, opts, ctx)?,
+                );
+            }
+            // Serialize resolver_injective
+            if *resolver_injective {
+                dict.insert(
+                    Key::String("injective".into()),
+                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        Value::Bool(true),
+                        span,
+                    ))),
+                );
+            }
         }
 
         Expr::InstanceDecl { class_name, arms } => {

@@ -398,10 +398,31 @@ format-match-arms-impl: [fn@[return: String] [let arms@Dict indent@Int i@Int acc
 
 format-class: [fn@[return: String  doc: """Format class declaration."""] [let node@Dict]
   [str
-    "[class "
+    "[class [let "
     [get "name" node]
     [if [> [length [get "params" node]] 0]
       [str " " [join-strings " " [map-list [fn [let p] p] [get "params" node]]]]
+      ""]
+    "]"
+    # Emit structural metadata bracket if determines/resolver/injective present
+    [if [or [field-has? node "determines"]
+            [or [field-has? node "resolver"]
+                [and [field-has? node "injective"] [get "injective" node]]]]
+      [str " ["
+        [if [field-has? node "determines"]
+          [str "determines: [" [join-strings " " [map-list [fn [let fd] [render-inline fd]] [get "determines" node]]] "]"]
+          ""]
+        [if [field-has? node "resolver"]
+          [str [if [field-has? node "determines"] " " ""] "resolver: " [render-inline [get "resolver" node]]]
+          ""]
+        [if [and [field-has? node "injective"] [get "injective" node]]
+          [str [if [or [field-has? node "determines"] [field-has? node "resolver"]] " " ""] "injective: true"]
+          ""]
+        "]"]
+      ""]
+    # Emit methods (methods is a dict with method-name: type-expr entries)
+    [if [> [length [get "methods" node]] 0]
+      [str " " [join-strings " " [map-list [fn [let method-name] [str method-name ": " [render-inline [get method-name [get "methods" node]]]]] [keys [get "methods" node]]]]]
       ""]
     "]"]]
 
