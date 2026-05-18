@@ -27,18 +27,6 @@ impl TypeVarBounds {
             upper: vec![],
         }
     }
-
-    /// Add a lower bound: `ty <: var`
-    #[allow(dead_code)] // Scaffolding for algebraic subtyping migration
-    pub fn add_lower(&mut self, ty: Type) {
-        self.lower.push(ty);
-    }
-
-    /// Add an upper bound: `var <: ty`
-    #[allow(dead_code)] // Scaffolding for algebraic subtyping migration
-    pub fn add_upper(&mut self, ty: Type) {
-        self.upper.push(ty);
-    }
 }
 
 impl Default for TypeVarBounds {
