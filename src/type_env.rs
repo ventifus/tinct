@@ -995,6 +995,15 @@ impl TypeEnv {
         self.lookup(name).map(|(scheme, _)| scheme)
     }
 
+    /// Look up a binding in the CURRENT frame only (does not walk the parent chain).
+    ///
+    /// Used by `imports::extract_bindings_from_file_with_fallback` to check whether
+    /// `merge_env_bindings_into` already inserted a binding into the flat output env,
+    /// without accidentally matching builtins in a parent env.
+    pub fn get_own(&self, name: &str) -> Option<&TypeScheme> {
+        self.bindings.get(name)
+    }
+
     pub fn get_type_alias(&self, name: &str) -> Option<&TypeAlias> {
         self.lookup_type_alias(name).map(|(alias, _)| alias)
     }
@@ -1037,6 +1046,19 @@ impl TypeEnv {
 
     pub fn insert_type_alias(&mut self, name: String, alias: TypeAlias) {
         self.type_aliases.insert(name, alias);
+    }
+
+    /// Collect all binding names visible from this environment (including parent scopes).
+    ///
+    /// Walks the scope chain and inserts every bound name into `names`. Used by
+    /// `imports::merge_env_bindings_into` to enumerate what the prelude introduced.
+    pub fn collect_all_names(&self, names: &mut std::collections::HashSet<String>) {
+        for name in self.bindings.keys() {
+            names.insert(name.clone());
+        }
+        if let Some(ref parent) = self.parent {
+            parent.collect_all_names(names);
+        }
     }
 
     /// Create a `TypeEnv` pre-registered with builtin function type signatures.

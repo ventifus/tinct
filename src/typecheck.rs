@@ -336,7 +336,7 @@ pub fn typecheck_file_with_types_and_env_and_source(
     SchemeMap,
     Vec<crate::error::TypeDiagnostic>,
 ) {
-    let (errors, type_map, doc_map, scheme_map, diagnostics, _state) =
+    let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _final_env) =
         typecheck_file_with_types_and_env_and_source_returning_state(
             file,
             initial_env,
@@ -347,9 +347,19 @@ pub fn typecheck_file_with_types_and_env_and_source(
 }
 
 /// Like [`typecheck_file_with_types_and_env_and_source`], but also returns the final
-/// [`InferState`]. Used by `imports::build_prelude_env_inner` to capture the prelude's
-/// `instance_env` for propagation to user-code type-checking sessions. Also used by eval
-/// pipeline to extract boundary_guards for gradual typing runtime checks.
+/// [`InferState`] and the final [`TypeEnv`].
+///
+/// The returned [`InferState`] is used by `imports::build_prelude_env_inner` to capture
+/// the prelude's `instance_env` for propagation to user-code type-checking sessions, and
+/// by the eval pipeline to extract `boundary_guards` for gradual typing runtime checks.
+///
+/// The returned [`TypeEnv`] holds the accumulated type environment after processing all
+/// documents. Bindings for successfully-typechecked documents appear as generalized
+/// [`TypeScheme`]s — the authoritative source for polymorphic prelude function types.
+/// Documents that return errors (via [`typecheck_document`] → `Err`) do NOT contribute
+/// to the returned env (their partial env is discarded). Callers requiring best-effort
+/// coverage (e.g., `imports::typecheck_and_merge_stdlib_module`) should fall back to
+/// the [`TypeMap`] for any bindings missing from the returned env.
 pub fn typecheck_file_with_types_and_env_and_source_returning_state(
     file: &File,
     initial_env: Rc<TypeEnv>,
@@ -362,6 +372,7 @@ pub fn typecheck_file_with_types_and_env_and_source_returning_state(
     SchemeMap,
     Vec<crate::error::TypeDiagnostic>,
     InferState,
+    Rc<TypeEnv>,
 ) {
     // Reset elaboration state to allow re-typechecking cached ASTs
     reset_elaboration(file);
@@ -433,7 +444,15 @@ pub fn typecheck_file_with_types_and_env_and_source_returning_state(
     // state directly — typecheck_source (and the corpus test pipeline) would silently drop them.
     diagnostics.append(&mut state.diagnostics);
 
-    (errors, type_map, doc_map, scheme_map, diagnostics, state)
+    (
+        errors,
+        type_map,
+        doc_map,
+        scheme_map,
+        diagnostics,
+        state,
+        env,
+    )
 }
 
 /// Extract documentation strings from parameter and function annotations.

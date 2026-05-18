@@ -1698,7 +1698,7 @@ fn run_eval(
                 tinct::build_prelude_env()
             }
         };
-        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state) =
+        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
             tinct::typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
                 &ast.node, type_env, false, // disable scheme_map (not needed for eval)
                 false, // not in prelude load
