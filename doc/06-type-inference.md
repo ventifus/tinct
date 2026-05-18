@@ -911,7 +911,7 @@ The structural metadata bracket (`[determines: ... resolver: ...]`) is the secon
 
 **Cross-arity entailment.** `Addable a b c` does not automatically entail `Numeric a`. The closed instance set restricts operands to numeric types — any non-numeric operand produces a type error at the call site. Same-arity superclass entailment (`Comparable a` entails `Equatable a`) traverses `ClassDecl.superclasses`.
 
-See `doc/whatif/chr-unification.md` for the complete formal specification including normalization algorithm, resolver soundness obligations, TypeStageApp unification rules, and boundary guard elaboration.
+See `doc/feature/chr-unification.md` for the complete formal specification including normalization algorithm, resolver soundness obligations, TypeStageApp unification rules, and boundary guard elaboration.
 
 ### Nested Dict Polymorphism
 
@@ -1169,7 +1169,7 @@ For each param (name, Kind::Operator) in ClassDecl.params:
 
 **Implementation:** `src/typecheck.rs:1869-1874`. After ClassDecl registration in `class_env`, a loop populates `state.kind_env` for Operator-kinded params.
 
-**Current limitation:** The parser (`src/parser.rs:4564`) extracts plain identifiers from class headers and does not preserve `@Operator` annotations. The kind environment is seeded via hardcoded mappings in `InferState::new()` (e.g., `Mappable` → `Kind::Operator`). Full parser support for `[class [Mappable f@Operator] ...]` is deferred.
+**Current limitation:** The parser (`src/parser.rs:4564`) extracts plain identifiers from class headers and does not preserve `@Operator` annotations. The kind environment is seeded via hardcoded mappings in `InferState::new()` (e.g., `Mappable` → `Kind::Operator`). User-defined class declarations cannot declare `Operator`-kinded parameters via `@Operator` syntax; only built-in classes pre-registered in `InferState` carry the correct kind.
 
 ### KIND-OPERATOR — Type Constructor Application
 
@@ -1317,6 +1317,165 @@ error: unmatched closing bracket
 5. **Method dispatch:** The `m.bind` field access resolves to the `bind` method from the MonadResult instance dict.
 
 **References:** Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." Robinson, J.A. (1965). "A machine-oriented logic based on the resolution principle." Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc."
+
+## Type-Stage Resolvers
+
+A **resolver** is a tinct function declared in a `--- stage: type` section. It receives the determining type dicts as arguments and returns the determined type dict. The type checker calls the resolver at type-check time — not at runtime — when all determining positions are ground.
+
+### Writing a Resolver
+
+```tinct
+--- stage: type
+[
+  AddResult: [fn [...args]
+    [match [[builtin-get 0 args]  [builtin-get 1 args]]
+      [[kind: "named" name: "Int"]    [kind: "named" name: "Int"]]:   [kind: "named" name: "Int"]
+      [[kind: "named" name: "Int"]    [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
+      [[kind: "named" name: "Float"]  [kind: "named" name: "Int"]]:   [kind: "named" name: "Float"]
+      [[kind: "named" name: "Float"]  [kind: "named" name: "Float"]]: [kind: "named" name: "Float"]
+      _:                                                               [kind: "named" name: "Unknown"]]]
+]
+---
+Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
+  +: [fn@c [a b]]]
+```
+
+The resolver receives all determining types as a positional sequence (via `...args`); `[builtin-get 0 args]` extracts the first, `[builtin-get 1 args]` extracts the second. Each argument and the return value are **type dicts** in the standard schema (see §Type Dict Schema in [Type Annotations](05-type-annotations.md) §16).
+
+### Naming a Resolver
+
+The `resolver:` key in the class structural-metadata bracket specifies the resolver by name. The name must be bound in the type-stage Env — either the prelude `--- stage: type` section or the program's own `--- stage: type` sections:
+
+```tinct
+Addable: [class [a b c]  [determines: [[[a b] c]]  resolver: AddResult]
+  +: [fn@c [a b]]]
+```
+
+The resolver `AddResult` must be declared in a `--- stage: type` section before the class declaration.
+
+### Multi-Output Resolvers
+
+For FDs with multiple determined variables, the resolver returns a `multi-output` dict keyed by variable name:
+
+```tinct
+--- stage: type
+[
+  DivModResult: [fn [...args]
+    [match [[builtin-get 0 args]  [builtin-get 1 args]]
+      [[kind: "named" name: "Int"]  [kind: "named" name: "Int"]]:
+        [kind: "multi-output"
+         q: [kind: "named" name: "Int"]
+         r: [kind: "named" name: "Int"]]]]
+]
+---
+DivMod: [class [a b q r]  [determines: [[[a b] [q r]]]  resolver: DivModResult]
+  divmod: [fn@[record q: q  r: r] [a b]]]
+```
+
+### Composing Resolvers
+
+Resolvers are ordinary type-stage functions — they can call other type-stage functions:
+
+```tinct
+--- stage: type
+[
+  NullableAddResult: [fn [...args]
+    [or [AddResult [builtin-get 0 args] [builtin-get 1 args]]
+        [kind: "named" name: "Null"]]]
+]
+```
+
+### Depth Limit
+
+If a resolver's type-stage evaluation exceeds the recursion limit (256 frames), the type checker raises:
+
+```
+type-stage reduction depth exceeded while computing AddResult(...)
+  check resolver for infinite recursion or increase --type-stage-depth
+```
+
+## `[do]` Desugaring
+
+The `[do]` form is syntactic sugar for monadic bind chains. It is implemented as a macro in `stdlib/macros.llt`.
+
+### Desugaring Rule
+
+Each `[bind x: expr]` binding in a `[do ...]` form desugars to a `[>>= expr [fn [let x] body]]` chain:
+
+```
+[do monad
+  [bind x: expr₁]
+  [bind y: expr₂]
+  final-expr]
+
+desugars to:
+
+[monad.bind expr₁ [fn [x]
+  [monad.bind expr₂ [fn [y]
+    final-expr]]]]
+```
+
+In the concrete tinct syntax, bindings use named dict entry syntax. The monad dict provides `bind` and `pure` methods. The `[do]` macro threads the monad value through the chain:
+
+```tinct
+# Explicit monad argument
+[do result
+  [r:    [fetch %nc url]]
+  [data: [from-json r.body]]
+  [get "items" data]]
+
+# Expands to:
+[result.bind [fetch %nc url] [fn [r]
+  [result.bind [from-json r.body] [fn [data]
+    [get "items" data]]]]]
+```
+
+Entries without a key are plain expression steps (the value is ignored — used for effects):
+
+```tinct
+[do result
+  [[validate-url url]]    # plain step — result discarded
+  [r: [fetch %nc url]]
+  r.body]
+
+# Expands to:
+[result.bind [validate-url url] [fn [_]
+  [result.bind [fetch %nc url] [fn [r]
+    r.body]]]]
+```
+
+### Monad Inference
+
+When no explicit monad argument is given (`[do [bind x: expr] ...]`), the type checker infers the monad:
+
+1. If the enclosing function has an explicit return type annotation `@T` where `T` unifies with `App(m, _)` for a registered `Monad m` instance, use that instance.
+2. If the first binding's RHS infers as `App(m, a)` for a known `Monad m`, use that instance.
+3. If neither provides context, require an explicit monad argument.
+
+The explicit `[do monad ...]` form always takes priority. Backward-compatible — all existing `[do monad ...]` forms are unaffected.
+
+### Result Monad Example
+
+```tinct
+fetch-and-parse: [fn@[ok: Str  err: Str] [url@Str]
+  [do
+    [r:    [fetch %nc url]]         # inferred: Result monad from return type
+    [data: [from-json r.body]]
+    [get "items" data]]]
+```
+
+The return annotation `@[ok: Str  err: Str]` unifies with `App(Result, Str)`, so the monad is inferred as `result`. No explicit monad argument needed.
+
+### Maybe Monad Example
+
+```tinct
+safe-lookup: [fn@[Maybe Str] [config@Dict key@Str]
+  [do
+    [section: [get? "section" config]]
+    [value:   [get? key section]]
+    value]]
+# → [Some value-str] | [None] — short-circuits on first absent key
+```
 
 ## Limitations and Non-Guarantees
 

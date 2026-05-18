@@ -612,6 +612,119 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `non-negative` | `fn@Bool [v]` | Predicate for `v >= 0` |
 | `positive` | `fn@Bool [v]` | Predicate for `v > 0` |
 
+## Typeclass Hierarchy
+
+The stdlib declares the following typeclass hierarchy in `stdlib/prelude.llt`. All classes use `[class ...]` and `[instance ...]` forms — no Rust special-casing. User-defined types can implement any of these classes by declaring instances.
+
+### Functor
+
+```tinct
+[Functor: [class [f@Operator]
+  [fmap: [fn@[f b] [fn@b [a]  [f a]]]]]]
+```
+
+Instances: `Result`, `Seq`, `Maybe`.
+
+`fmap` lifts a function `a → b` over the container `f`, producing `f b`. All `Functor` instances are covariant — the BAS rule `a <: b` implies `App(f, a) <: App(f, b)` for all stdlib Functor instances.
+
+### Applicative
+
+```tinct
+[Applicative: [class [f@Operator] extends [Functor f]
+  [pure:  [fn@[f a] [a]]]
+  [lift2: [fn@[f c] [fn@c [a b]  [f a]  [f b]]]]]]
+```
+
+Instances: `Result`, `Seq`, `Maybe`.
+
+`pure` wraps a plain value in the applicative. `lift2` lifts a two-argument function over two containers simultaneously, combining effects.
+
+### Monad
+
+```tinct
+[Monad: [class [m@Operator] extends [Applicative m]
+  [bind: [fn@[m b] [[m a]  fn@[m b] [a]]]]]]
+```
+
+Instances: `Result`, `Seq`, `Maybe`.
+
+`bind` (the `>>=` operation) sequences monadic computations. Used by `[do]` desugaring. The monad dict provides `bind` and `pure` for the `[do]` macro:
+
+```tinct
+[do result
+  [r: [fetch %nc url]]
+  [data: [from-json r.body]]
+  [get "items" data]]
+```
+
+### Foldable
+
+```tinct
+[Foldable: [class [t@Operator]
+  [fold:   [fn@b [fn@b [b a]  b  [t a]]]]
+  [to-seq: [fn@[Seq a] [[t a]]]]]]
+```
+
+Instances: `Seq`, `Record`.
+
+`fold` is a left fold (accumulator-first, element-second argument order). Named `fold` rather than `foldl`/`foldr` because tinct sequences are finite — the left/right distinction applies only to lazy infinite structures. `FoldableSeq.fold = reduce` and `FoldableRecord.fold = reduce`.
+
+### Traversable
+
+```tinct
+[Traversable: [class [t@Operator]
+  extends [Functor t]
+  extends [Foldable t]
+  [traverse: [fn@[f [t b]] [f@Applicative  fn@[f b] [a]  [t a]]]]]]
+```
+
+Instances: `Seq`, `Result`.
+
+`traverse` maps a function `a → f b` over a traversable container, collecting the applicative effects. With `Traversable`, the generic functions `sequence` and `traverse` (defined in `prelude.llt`) work over any traversable container:
+
+```tinct
+sequence: [fn@[f [t a]] [f@Monad  t@Traversable  xs@[t [f a]]]
+  [traverse f [fn [x] x] xs]]
+
+traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
+  [t.traverse f xs]]
+```
+
+### Mappable
+
+```tinct
+[Mappable: [class [f@Operator]
+  [map: [fn@[f b] [fn@b [a]  [f a]]]]]]
+```
+
+Instances: `Seq`, `Record`.
+
+`Mappable` is a weaker contract than `Functor` — it requires only a `map` operation with no naturality law enforcement. Every `Functor` is `Mappable`. The stdlib `map` builtin dispatches through the `Mappable` class rather than using hardcoded special cases, so user-defined types can participate by declaring a `Mappable` instance.
+
+### Appendable
+
+```tinct
+[Appendable: [class [a]
+  [append: [fn@a [a a]]]
+  [empty:  a]]]
+```
+
+Instances: `Str`, `[Seq b]`, `Record`.
+
+`append` concatenates two values of the same appendable type. `empty` is the identity element. The `AppendableSeq` instance head is `[Seq b]` — the instance resolver pattern-matches any `Seq(T)` for fresh `b = T`.
+
+### Instance Summary
+
+| Class | Kind | Instances |
+|-------|------|-----------|
+| `Functor` | `Operator` | `Result`, `Seq`, `Maybe` |
+| `Applicative` | `Operator` | `Result`, `Seq`, `Maybe` |
+| `Monad` | `Operator` | `Result`, `Seq`, `Maybe` |
+| `Foldable` | `Operator` | `Seq`, `Record` |
+| `Traversable` | `Operator` | `Seq`, `Result` |
+| `Mappable` | `Operator` | `Seq`, `Record` |
+| `Appendable` | `*` | `Str`, `[Seq b]`, `Record` |
+
 **Result Type Combinators:**
 
 | Function | Signature | Description |
@@ -1314,6 +1427,48 @@ Note: `timeout` stays at position 0 (its position in L), not position 1 (its pos
 Type signatures for LLT-implemented prelude functions, as declared by `@`-annotations on `fn` forms in `stdlib/prelude.llt`. Return types come from the `fn@T` annotation; parameter types come from `param@T` annotations. Functions without annotations are intentionally polymorphic (noted below).
 
 Notation: `(A -> B -> C)` means a curried function taking `A` then `B` and returning `C`. `a` and `b` are type variables (polymorphic). `Comparable` means any type accepted by `<`: `Number`, `String`, or `Bool`.
+
+### Type Class Hierarchy
+
+Tinct provides a hierarchy of typeclasses in `stdlib/prelude.llt` enabling generic functions polymorphic over any type constructor (`Seq`, `Result`, `Maybe`, or user-defined).
+
+**Kind-`* → *` classes (Operator-kinded):**
+
+| Class | Extends | Key methods | Purpose |
+|-------|---------|-------------|---------|
+| `Functor` | — | `fmap: (a → b) → f a → f b` | Map a function over a wrapped value |
+| `Applicative` | `Functor` | `pure: a → f a`; `lift2: (a → b → c) → f a → f b → f c` | Lift values and apply wrapped functions |
+| `Monad` | `Applicative` | `bind: m a → (a → m b) → m b` | Sequential monadic composition |
+| `Foldable` | — | `fold: (b → a → b) → b → t a → b`; `to-seq: t a → Seq a` | Collapse a structure to a value |
+| `Traversable` | `Functor`, `Foldable` | `traverse: (a → f b) → t a → f (t b)` | Map with effects, preserving structure |
+| `Mappable` | — | `map: (a → b) → f a → f b` | Weaker variant of `Functor`; no naturality law |
+
+Instances: `FunctorResult`, `FunctorSeq`, `FunctorMaybe`, `ApplicativeResult`, `ApplicativeSeq`, `ApplicativeMaybe`, `MonadResult`, `MonadSeq`, `MonadMaybe`, `FoldableSeq`, `FoldableRecord`, `FoldableResult`, `TraversableSeq`, `TraversableResult`, `TraversableMaybe`, `MappableSeq`, `MappableDict`.
+
+**Kind-`*` classes:**
+
+| Class | Extends | Key methods | Purpose |
+|-------|---------|-------------|---------|
+| `Appendable` | — | `append: a → a → a`; `empty: a` | Monoid — concatenation with identity |
+| `Equatable` | — | `eq?: a → a → Bool` | Structural equality |
+| `Comparable` | `Equatable` | `lt?: a → a → Bool` | Ordering |
+| `Showable` | — | `show: a → String` | String representation |
+
+Instances: `AppendableStr`, `AppendableSeq`, `AppendableDict`, and instances of `Equatable`, `Comparable`, `Showable` for `Int`, `Float`, `Str`, `Bool`.
+
+**Generic functions over any `Monad` + `Traversable`:**
+
+| Function | Notes |
+|----------|-------|
+| `sequence` | `t (m a) → m (t a)` — collect effects from a traversable |
+| `traverse` | `(a → m b) → t a → m (t b)` — map with effects |
+| `forM` | `t a → (a → m b) → m (t b)` — `traverse` with arguments flipped |
+| `when` | `Bool → m [] → m []` — conditionally execute a monadic action |
+| `liftM2` | `(a → b → c) → m a → m b → m c` — lift a binary function into the monad |
+
+The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]]`.
+
+---
 
 ### Identity
 

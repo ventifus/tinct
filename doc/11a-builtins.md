@@ -413,6 +413,59 @@ All network operations materialize their non-Handle arguments. Handle arguments 
 
 **Connector security policy:** User-defined Connectors are pure-tinct functions that cannot call I/O builtins directly. All network I/O flows through `connect` which enforces the NetCap allowlist. Custom Connectors (WireGuard clients, test fakes, protocol layers) receive allowlist-validated connections from `connect` and may transform them, but cannot bypass the allowlist to create new OS-level network connections.
 
+### NetCap Allowlist Specification
+
+A `NetCap`'s allowlist is a list of entries. Each entry is one of:
+
+| Entry form | Matches |
+|-----------|---------|
+| `"api.internal"` | Exact hostname (case-insensitive), any port |
+| `"api.internal:5432"` | Exact hostname and port |
+| `"*.internal"` | Hostname glob — prefix wildcard only |
+| `"10.42.0.0/16"` | IPv4 CIDR range |
+| `"fd00::/8"` | IPv6 CIDR range |
+
+**Matching at `connect`/`tls-layer` time:**
+
+1. Check the target hostname against all hostname and glob entries (exact match, pre-DNS, case-insensitive)
+2. Resolve the hostname to one or more IP addresses
+3. Check each resolved IP against all CIDR entries
+4. The connection is **allowed if step 1 or step 3 produces a match**; denied otherwise
+
+**Allowlist precedence:** Hostname entries check pre-DNS; CIDR entries check post-DNS. If both a hostname entry and a CIDR entry are present, the connection is allowed if either matches. When you need to require BOTH (for DNS rebinding defense), include the CIDR alongside the hostname — both checks fire at connection time regardless of precedence.
+
+**DNS pinning and rebinding defense:** Hostname-only entries (`"api.external.com"`) check the hostname before DNS resolution. An attacker who controls DNS can change the resolved IP after the hostname check. To prevent this, include target CIDR ranges alongside the hostname entry:
+
+```bash
+# Hostname-only: vulnerable to DNS rebinding
+llt eval --cap-net net=api.internal script.llt
+
+# Hostname + CIDR: connection requires both hostname match and IP in range
+llt eval --cap-net net=api.internal --cap-net net=10.0.1.0/24 script.llt
+```
+
+**IPv4-mapped IPv6:** When a hostname resolves to an IPv4-mapped IPv6 address (`::ffff:10.42.0.1`), the allowlist checker extracts the embedded IPv4 address (`10.42.0.1`) and tests it against IPv4 CIDR entries. This ensures that a `"10.42.0.0/16"` entry matches connections that the OS reports as IPv6 on dual-stack systems.
+
+**Multiple resolved addresses:** When DNS returns multiple addresses (e.g., both A and AAAA records), the checker tests all of them against CIDR entries. The connection is allowed if any resolved address matches any CIDR entry, or if the hostname matches any hostname entry.
+
+**No default deny:** No ranges are blocked by default. Developer and microservice environments legitimately connect to RFC1918 addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and link-local addresses (`169.254.0.0/16`). The operator specifies exactly what is permitted.
+
+**Creating a NetCap:**
+
+From the CLI (entries accumulate into one cap under the same name):
+
+```bash
+llt eval --cap-net net=api.internal --cap-net net=10.42.0.0/16 script.llt
+```
+
+From tinct code:
+
+```tinct
+[net: [net-cap ["api.internal" "db.internal:5432" "10.42.0.0/16"]]]
+```
+
+**ICMP and port-based entries:** Port-based entries (`hostname:port`) do not match ICMP checks because ICMP has no port concept. Hostname-only and CIDR entries apply normally to ICMP.
+
 ### Transport — connect
 
 Opens a transport-layer connection via a Connector and returns a `Handle`.
@@ -732,13 +785,13 @@ If socket creation fails, the error dict includes a message explaining the `ping
 - Negative `timeout-ms` (E080)
 - `cap` allowlist violation before socket creation (E080)
 
-### Implementation Note: Tokio Runtime Strategy for Future Async Builtins
+### Tokio Runtime Strategy for Async Builtins
 
-When `quic-session` or other async network builtins (`http2-session`, `http3-session`) are implemented, the Tokio runtime strategy must be carefully managed to avoid the "cannot start a runtime from within a runtime" panic.
+`quic-session`, `http2-session`, and `http3-session` use the Tokio async runtime internally. The runtime must be carefully managed to avoid the "cannot start a runtime from within a runtime" panic.
 
 **Rule: one runtime per builtin call, never nested.**
 
-Each async builtin (e.g., `quic-session`, a future `http3-connect`) must create and block on its own scoped runtime:
+Each async builtin (e.g., `quic-session`, `http3-session`) creates and blocks on its own scoped runtime:
 
 ```rust
 // In builtin_quic_session():

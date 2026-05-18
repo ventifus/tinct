@@ -165,6 +165,30 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |       ^
 ```
 
+**Type constructor variables — `@Operator` kind:**
+
+A type parameter annotated with an `Operator`-kinded typeclass (`@Functor`, `@Monad`, `@Traversable`, etc.) ranges over type constructors of kind `* → *` — types that take one type argument, such as `Seq`, `Result`, and `Maybe`:
+
+```tinct
+# f@Functor: f ranges over Seq, Result, Maybe, ...
+fmap: [fn@[f b] [f@Functor  fn@b [a]  [f a]]]
+
+# m@Monad: m is a type constructor with a Monad instance
+sequence: [fn@[m [Seq a]] [m@Monad  xs@[Seq [m a]]]
+  [traverse m [fn [x] x] xs]]
+```
+
+In annotation positions, `@[m a]` applies type constructor `m` to type argument `a`. The disambiguation rule: bracket annotations without colons are type constructor application; with colons they are record types.
+
+| Syntax | When valid | Meaning |
+|--------|-----------|---------|
+| `@[m a]` | `m` is an Operator-kinded variable | Apply constructor `m` to type `a` |
+| `@[Seq Int]` | always | Sequence of `Int` (builtin shorthand) |
+| `@[m [Seq a]]` | `m` is Operator-kinded | `m` applied to `Seq a` |
+| `@[name: Str]` | always | Record type (colon present — not application) |
+
+---
+
 ### 5. Union and Intersection Types
 
 **Union — `or` type-stage combinator:**
@@ -198,10 +222,31 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 `each` produces `[kind: "inter" members: [...]]` → `Type::Intersection(Vec<Type>)`. In `constraint:` position, each member becomes a separate `Constraint::Class`. In annotation position, it produces `Type::Intersection`.
 
+**BAS annotation call-form — `@[[all A B]]` and `@[[without A]]`:**
+
+The `all` and `without` type-stage functions are also available in the double-bracket annotation form for inline BAS types:
+
+```tinct
+x@[[all Comparable Showable]]    # intersection: Comparable ∩ Showable
+x@[[without String]]             # negation: ~String (any type except String)
+```
+
+`@[[all T1 T2 ...]]` — the inner `[all T1 T2]` parses as `Expr::Call { func: VarRef("all"), args: [T1, T2, ...], implied: true }`. The annotation resolver dispatches on the `all` head and produces `Type::normalize_intersection([T1, T2, ...])`.
+
+`@[[without T]]` — the inner `[without T]` likewise parses as a Call with head `without`, producing `Type::Negation(T)`.
+
+The double-bracket form is equivalent to the single-bracket form using `each` or a negation-combinator:
+
+| Double-bracket form | Equivalent single-bracket form |
+|--------------------|-------------------------------|
+| `@[[all A B]]` | `@[each A B]` |
+| `@[[without A]]` | negation; no `each`-based equivalent |
+
 **Subtyping rules (BAS):**
 - `T <: Union(T, U)` — injection
 - `Union(T, U) <: V` iff `T <: V` and `U <: V` — elimination
 - `Intersection(T, U) <: T` and `Intersection(T, U) <: U` — projection
+- `T <: ~A` holds conservatively (full BAS RDNF requires `T ∩ A = Never`)
 
 ### 6. Record Types
 
