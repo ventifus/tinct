@@ -25,6 +25,7 @@ use crate::value::{BuiltinArgs, Thunk, Value};
 
 /// Helper to dispatch a typeclass method call if an instance is registered.
 /// Returns Some(result) if instance was found and method called, None to fall through.
+/// For MPTC, materializes all determining-position args to build the lookup key.
 fn try_dispatch_method(
     class_name: &'static str,
     method_name: &str,
@@ -45,14 +46,27 @@ fn try_dispatch_method(
         return None;
     }
 
-    let first_val = materialize(&args[0], Some(&call_span), ctx).ok()?;
-    let type_name = first_val.type_name();
+    // Determine number of determining-position args based on class.
+    // Arithmetic ops (Addable, Subtractable, Multipliable, Divisible) have 2 determining args.
+    // Equatable, Comparable have 1 determining arg (first arg only).
+    // TODO: get this from RuntimeClassDecl.determines once that field is added.
+    let num_determining = match class_name {
+        "Addable" | "Subtractable" | "Multipliable" | "Divisible" => 2,
+        _ => 1, // Equatable, Comparable, Showable
+    };
+
+    // Materialize determining-position args and collect type names.
+    let mut type_tags = Vec::with_capacity(num_determining);
+    for i in 0..num_determining.min(args.len()) {
+        let val = materialize(&args[i], Some(&call_span), ctx).ok()?;
+        type_tags.push(val.type_name().to_string());
+    }
 
     let instance_thunk = ctx
         .state
         .borrow()
         .instance_registry
-        .get(&(class_name, type_name.to_string()))
+        .get(&(class_name, type_tags))
         .cloned()?;
 
     let instance_val = materialize(&instance_thunk, Some(&call_span), ctx).ok()?;
@@ -92,24 +106,13 @@ fn try_dispatch_method(
     }
 }
 
-/// Two-operand numeric pair after auto-promotion.
-///
-/// Used by arithmetic builtins to implement the promotion table:
-/// - Int op Int   -> Ints(a, b)
-/// - Int op Float -> Floats(a as f64, b)
-/// - Float op Int -> Floats(a, b as f64)
-/// - Float op Float -> Floats(a, b)
-enum NumPair {
-    Ints(i64, i64),
-    Floats(f64, f64),
-}
-
 /// Maximum safe integer for Int→Float promotion (2^53).
 /// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
 const MAX_SAFE_INT: i64 = 9007199254740992;
 
 /// Check if an Int→Float promotion would lose precision.
 /// Returns Err if |n| > 2^53, suggesting explicit [float n] cast.
+/// Used by `=` and `<` for cross-type Int/Float comparison.
 fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()> {
     if n.abs() > MAX_SAFE_INT {
         return Err(EvalError::user_error(
@@ -124,39 +127,6 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
     Ok(())
 }
 
-/// Extract two numeric operands with auto-promotion, enforcing arity == 2.
-/// Int→Float promotion is guarded by precision check (|n| ≤ 2^53).
-fn extract_num_pair(
-    args: &[Rc<Thunk>],
-    ctx: &Rc<crate::eval::EvalContext>,
-    call_span: crate::ast::Span,
-) -> EvalResult<NumPair> {
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    let left = materialize(&args[0], Some(&call_span), ctx)?;
-    let right = materialize(&args[1], Some(&call_span), ctx)?;
-    match (&left, &right) {
-        (Value::Int(a), Value::Int(b)) => Ok(NumPair::Ints(*a, *b)),
-        (Value::Int(a), Value::Float(b)) => {
-            check_int_to_float_precision(*a, args[0].span)?;
-            Ok(NumPair::Floats(*a as f64, *b))
-        }
-        (Value::Float(a), Value::Int(b)) => {
-            check_int_to_float_precision(*b, args[1].span)?;
-            Ok(NumPair::Floats(*a, *b as f64))
-        }
-        (Value::Float(a), Value::Float(b)) => Ok(NumPair::Floats(*a, *b)),
-        _ => Err(EvalError::type_mismatch_ctx(
-            "+/-/*//".to_string(),
-            "Int or Float",
-            &format!("{} and {}", left.type_name(), right.type_name()),
-            args[0].span,
-        )
-        .into()),
-    }
-}
-
 /// `+`: Addition with auto-promotion. Int + Int -> Int, any Float operand -> Float.
 /// Inherently materializing: must extract numeric values to compute sum.
 pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -169,21 +139,18 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     reject_named("+", named, call_span)?;
 
     // Runtime typeclass dispatch: check for Addable instance
-    if let Some(result) = try_dispatch_method("Addable", "add", args, named, call_span, &ctx) {
+    if let Some(result) = try_dispatch_method("Addable", "+", args, named, call_span, &ctx) {
         return result;
     }
 
-    // Fall through to existing Rust dispatch
-    match extract_num_pair(args, &ctx, call_span)? {
-        NumPair::Ints(a, b) => a
-            .checked_add(b)
-            .map(|n| ok_val(Value::Int(n), call_span))
-            .unwrap_or_else(|| {
-                // Overflow error: def_span is call_span (the + operation itself)
-                Err(EvalError::integer_overflow("+".to_string(), call_span).into())
-            }),
-        NumPair::Floats(a, b) => check_float_result(a + b, "+", call_span),
+    // No instance found — return error (no Rust fallback for arithmetic)
+    if args.len() >= 2 {
+        let left = materialize(&args[0], Some(&call_span), &ctx)?;
+        let right = materialize(&args[1], Some(&call_span), &ctx)?;
+        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+        return Err(EvalError::no_instance("Addable", type_tags, call_span).into());
     }
+    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
 /// `-`: Subtraction with auto-promotion. Int - Int -> Int, any Float operand -> Float.
@@ -198,21 +165,18 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     reject_named("-", named, call_span)?;
 
     // Runtime typeclass dispatch: check for Subtractable instance
-    if let Some(result) = try_dispatch_method("Subtractable", "sub", args, named, call_span, &ctx) {
+    if let Some(result) = try_dispatch_method("Subtractable", "-", args, named, call_span, &ctx) {
         return result;
     }
 
-    // Fall through to existing Rust dispatch
-    match extract_num_pair(args, &ctx, call_span)? {
-        NumPair::Ints(a, b) => a
-            .checked_sub(b)
-            .map(|n| ok_val(Value::Int(n), call_span))
-            .unwrap_or_else(|| {
-                // Overflow error: def_span is call_span (the - operation itself)
-                Err(EvalError::integer_overflow("-".to_string(), call_span).into())
-            }),
-        NumPair::Floats(a, b) => check_float_result(a - b, "-", call_span),
+    // No instance found — return error (no Rust fallback for arithmetic)
+    if args.len() >= 2 {
+        let left = materialize(&args[0], Some(&call_span), &ctx)?;
+        let right = materialize(&args[1], Some(&call_span), &ctx)?;
+        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+        return Err(EvalError::no_instance("Subtractable", type_tags, call_span).into());
     }
+    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
 /// `*`: Multiplication with auto-promotion. Int * Int -> Int, any Float operand -> Float.
@@ -227,21 +191,18 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     reject_named("*", named, call_span)?;
 
     // Runtime typeclass dispatch: check for Multipliable instance
-    if let Some(result) = try_dispatch_method("Multipliable", "mul", args, named, call_span, &ctx) {
+    if let Some(result) = try_dispatch_method("Multipliable", "*", args, named, call_span, &ctx) {
         return result;
     }
 
-    // Fall through to existing Rust dispatch
-    match extract_num_pair(args, &ctx, call_span)? {
-        NumPair::Ints(a, b) => a
-            .checked_mul(b)
-            .map(|n| ok_val(Value::Int(n), call_span))
-            .unwrap_or_else(|| {
-                // Overflow error: def_span is call_span (the * operation itself)
-                Err(EvalError::integer_overflow("*".to_string(), call_span).into())
-            }),
-        NumPair::Floats(a, b) => check_float_result(a * b, "*", call_span),
+    // No instance found — return error (no Rust fallback for arithmetic)
+    if args.len() >= 2 {
+        let left = materialize(&args[0], Some(&call_span), &ctx)?;
+        let right = materialize(&args[1], Some(&call_span), &ctx)?;
+        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+        return Err(EvalError::no_instance("Multipliable", type_tags, call_span).into());
     }
+    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
 /// `/`: Float division. ALWAYS returns Float, even for Int / Int. Division by zero produces an error.
@@ -256,27 +217,18 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     reject_named("/", named, call_span)?;
 
     // Runtime typeclass dispatch: check for Divisible instance
-    if let Some(result) = try_dispatch_method("Divisible", "div", args, named, call_span, &ctx) {
+    if let Some(result) = try_dispatch_method("Divisible", "/", args, named, call_span, &ctx) {
         return result;
     }
 
-    // Fall through to existing Rust dispatch
-    match extract_num_pair(args, &ctx, call_span)? {
-        NumPair::Ints(a, b) => {
-            if b == 0 {
-                Err(EvalError::division_by_zero("/".to_string(), call_span).into())
-            } else {
-                ok_val(Value::Float(a as f64 / b as f64), call_span)
-            }
-        }
-        NumPair::Floats(a, b) => {
-            if b == 0.0 {
-                Err(EvalError::division_by_zero("/".to_string(), call_span).into())
-            } else {
-                check_float_result(a / b, "/", call_span)
-            }
-        }
+    // No instance found — return error (no Rust fallback for arithmetic)
+    if args.len() >= 2 {
+        let left = materialize(&args[0], Some(&call_span), &ctx)?;
+        let right = materialize(&args[1], Some(&call_span), &ctx)?;
+        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+        return Err(EvalError::no_instance("Divisible", type_tags, call_span).into());
     }
+    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
 /// `=`: Equality comparison.

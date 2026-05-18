@@ -54,12 +54,12 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         !args.is_empty() && ctx.state.borrow().registered_classes.contains("Showable");
     if has_showable {
         let val = materialize(&args[0], Some(&call_span), &ctx)?;
-        let type_name = val.type_name();
+        let type_tags = vec![val.type_name().to_string()];
         if let Some(instance_thunk) = ctx
             .state
             .borrow()
             .instance_registry
-            .get(&("Showable", type_name.to_string()))
+            .get(&("Showable", type_tags))
             .cloned()
         {
             // Get the instance dict

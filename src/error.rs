@@ -112,6 +112,12 @@ pub enum ErrorKind {
         expected: String,
         got: String,
     },
+    /// No typeclass instance found for the given types.
+    /// Raised when runtime dispatch fails to find a matching instance declaration.
+    NoInstance {
+        class_name: String,
+        type_tags: Vec<String>,
+    },
     /// Macro expansion error — validation failures, splice position errors, etc.
     /// Distinct from UserError because it occurs during the expansion pass, not evaluation.
     MacroError {
@@ -350,6 +356,16 @@ impl PartialEq for ErrorKind {
                     got: g2,
                 },
             ) => e1 == e2 && g1 == g2,
+            (
+                Self::NoInstance {
+                    class_name: c1,
+                    type_tags: t1,
+                },
+                Self::NoInstance {
+                    class_name: c2,
+                    type_tags: t2,
+                },
+            ) => c1 == c2 && t1 == t2,
             (Self::MacroError { message: m1 }, Self::MacroError { message: m2 }) => m1 == m2,
             (
                 Self::ArityMismatch {
@@ -508,6 +524,7 @@ impl ErrorKind {
             Self::UndefinedVariable { .. } => "E002",
             Self::TypeMismatch { .. } => "E010",
             Self::TypeAssertFailed { .. } => "E011",
+            Self::NoInstance { .. } => "E013",
             Self::MacroError { .. } => "E012",
             Self::ArityMismatch { .. } => "E020",
             Self::MissingRequiredParam { .. } => "E024",
@@ -758,6 +775,13 @@ impl fmt::Display for ErrorKind {
             } => write!(f, "type mismatch: expected {expected}, got {got}"),
             Self::TypeAssertFailed { expected, got } => {
                 write!(f, "type assertion failed: expected {expected}, got {got}")
+            }
+            Self::NoInstance {
+                class_name,
+                type_tags,
+            } => {
+                let types_str = type_tags.join(", ");
+                write!(f, "no instance for {class_name} ({types_str})")
             }
             Self::MacroError { message } => {
                 write!(f, "macro expansion error: {message}")
@@ -1261,6 +1285,22 @@ impl EvalError {
             kind: ErrorKind::TypeAssertFailed {
                 expected: expected.to_string(),
                 got: got.to_string(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
+    pub fn no_instance(class_name: &str, type_tags: Vec<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::NoInstance {
+                class_name: class_name.to_string(),
+                type_tags,
             },
             definition_span,
             materialization_span: None,
@@ -4342,6 +4382,7 @@ mod tests {
                 ErrorKind::UndefinedVariable { .. } => "E002",
                 ErrorKind::TypeMismatch { .. } => "E010",
                 ErrorKind::TypeAssertFailed { .. } => "E011",
+                ErrorKind::NoInstance { .. } => "E013",
                 ErrorKind::MacroError { .. } => "E012",
                 ErrorKind::ArityMismatch { .. } => "E020",
                 ErrorKind::NamedArgConflict { .. } => "E021",
