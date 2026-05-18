@@ -2,5 +2,3 @@
 [remove [a: 1 b: 2 c: 3] "b"]
 === out
 Dict({"a": Int(1), "c": Int(3)})
-=== warn
-cannot unify DirCap with [a: 1 b: 2 c: 3] at 1:9-1:25

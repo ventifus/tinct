@@ -2311,7 +2311,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "remove".to_string(),
+            "builtin-remove".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
                 // Null -- Type::Record(Row::Empty)

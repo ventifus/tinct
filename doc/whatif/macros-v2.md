@@ -217,7 +217,9 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 # :tmp:42 can never be written by the user (: is in the denylist)
 ```
 
-`tmp` is gensym'd — macro-introduced, named `:tmp:42`. `a` and `b` are from the `[let ...]` pattern — user-provided. `gensym` returns `VarRef(name: ":tmp:42")`, so `[unquote tmp]` splices the fresh identifier directly in binding position and reference position. Scope set activation (Phase 2) becomes straightforward: pattern-bound names carry the caller's scope; gensym names carry the macro's scope.
+`tmp` is gensym'd — macro-introduced, named `:tmp:42`. `a` and `b` are from the `[let ...]` pattern — user-provided. `gensym` returns `VarRef(name: ":tmp:42")`, so `[unquote tmp]` splices the fresh identifier directly in binding position and reference position.
+
+**Hygiene is complete without scope sets.** In tinct's macro system, every name in a macro body is either (a) pattern-bound from user input — inherently in user scope, never capturing anything — or (b) gensym'd with `:prefix:N` naming — structurally unforgeable, never written by users. There is no third category where a macro could accidentally introduce a name that captures user scope. Scope sets (Flatt 2016) solve that third-category problem; tinct's design eliminates the category. Manual gensym with unforgeable names is both necessary and sufficient.
 
 ---
 
@@ -382,19 +384,31 @@ When a macro parameter is annotated with a specific `Expr` variant (e.g., `name@
 
 Named syntax classes can be reused across multiple macros. The `pattern:` field is a `[let ...]` binding pattern — the same syntax used everywhere in tinct. The `message:` field is the user-facing description of what the validator expects.
 
-**Syntax class attributes.** When a syntax class pattern extracts fields, those fields are available in the macro body as named bindings:
+**Syntax class attributes.** `arg@SyntaxClass` binds `arg` to the full matched `Expr` node. Payload fields are accessed via dot notation using the Expr type's actual field names — not pattern aliases. For `arg@VarRef`, `arg.name : Str` gives the identifier name. For `arg@Annotated`, `arg.expr : Expr` and `arg.ann : Annotation` give the payload fields. If you want shorter names in the body, bind them explicitly:
 
 ```tinct
 [syntax-class var-with-type
-  pattern: [let [expr: e  ann: a] : Annotated]]
-  # attributes: e (the inner expr), a (the annotation)
+  pattern: [let _ : Annotated]
+  message: "annotated expression (e.g., x@Int)"]
 
 [macro log-type [let arg@var-with-type]
-  # arg.e is the expression, arg.a is its annotation
-  [quote [log [str "type of " [unquote [ident arg.e.name]] " is " [unquote [to-str arg.a]]]]]]
+  # arg is the full Annotated Expr node; access fields by actual name
+  [e: arg.expr  a: arg.ann]
+  [quote [log [str "type of " [unquote [ident e.name]] " is " [unquote [to-str a]]]]]]
 ```
 
-`[ident str]` constructs a `VarRef` for an existing name — here, `arg.e.name` is a string from the VarRef payload, and `[ident arg.e.name]` recreates the VarRef node for that identifier. This is distinct from `gensym` (which generates a fresh unforgeable name): `ident` is for reconstructing identifiers the user wrote.
+`[ident str]` constructs a `VarRef` for an existing name — here `e.name` is the VarRef payload's name string, and `[ident e.name]` recreates the identifier. Distinct from `gensym` (fresh unforgeable name): `ident` reconstructs names the user wrote.
+
+**Variadic params with syntax class validation.** `...args@Seq@VarRef` collects all remaining arguments into `args` and validates each element is a `VarRef`. The expander checks every element; if any fails, the error identifies which position failed:
+
+```tinct
+[macro define-accessors [let type-name@VarRef  ...fields@Seq@VarRef]
+  ...]
+
+[define-accessors Point  x  y  z]    # ✓ — x, y, z are all VarRef
+[define-accessors Point  x  [+ 1 2]] # expansion error: argument 2 in 'fields'
+                                      #   expected VarRef, got Call
+```
 
 ---
 
@@ -672,7 +686,7 @@ Point: [type [x@Float  y@Float]]
 # type error: splice not valid in expression position
 ```
 
-`splice` is only valid at dict top level. The type checker rejects it in any value position.
+`splice` is only valid at dict top level. The expander rejects it in expression position — `Splice` is an `Expr` variant, so the type checker cannot distinguish it; the expander must check.
 
 ---
 
@@ -729,14 +743,47 @@ Expansion trace:
 
 ---
 
-### Complex 4: `pragma` — `macro-error` for Structural Validation
+### Complex 4: `pragma` — Syntax Classes vs. Manual Validation
+
+With syntax classes, `pragma` is three lines. The expander handles validation; error messages are automatic:
+
+```tinct
+[macro pragma [let name@VarRef  value@Literal]
+  [quote [pragma [unquote name] [unquote value]]]]
+```
+
+```tinct
+[pragma optimize true]    # ✓
+[pragma [+ 1 2] true]     # expansion error: "'name' expected VarRef, got Call"
+[pragma optimize x]       # expansion error: "'value' expected Literal, got VarRef"
+```
+
+For custom error messages, declare named syntax classes:
+
+```tinct
+[syntax-class pragma-name
+  pattern: [let _ : VarRef]
+  message: "bare identifier (e.g., optimize, debug)"]
+
+[syntax-class pragma-value
+  pattern: [let _ : Literal]
+  message: "literal value (e.g., true, 42, \"fast\")"]
+
+[macro pragma [let name@pragma-name  value@pragma-value]
+  [quote [pragma [unquote name] [unquote value]]]]
+```
+
+```tinct
+[pragma [+ 1 2] true]
+# "pragma: 'name' — expected bare identifier (e.g., optimize, debug), got Call"
+```
+
+**Without syntax classes** (manual validation using `macro-error`), the same macro requires explicit dispatch:
 
 ```tinct
 [macro pragma [let name@Expr  value@Expr]
   [name-seq: [flatten-args name]]
   [match [length name-seq]
-    [case 0
-      [macro-error [span-of name] "pragma: name required"]]
     [case 1
       [match [first name-seq]
         [case [let _ : VarRef]
@@ -749,17 +796,7 @@ Expansion trace:
       [macro-error [span-of name] "pragma: exactly one name allowed"]]]]
 ```
 
-Each level of dispatch is a `[match ...]` on `Expr` variants — no string field access. `name-seq` is the flattened name bracket; `value` is matched structurally to confirm it is a `Literal` variant.
-
-```tinct
-[pragma optimize true]       # → [pragma optimize true]  ✓
-[pragma]                     # compile error at pragma span: "pragma: name required"
-[pragma "opt" true]          # compile error at "opt": "pragma name must be a bare identifier"
-[pragma optimize x]          # compile error at x: "pragma value must be a literal"
-[pragma optimize debug true] # compile error at span: "pragma: exactly one name allowed"
-```
-
-Each error points at the exact source location of the violation: the macro uses `span-of` to attach the error to the specific offending token, not the entire `[pragma ...]` call. A caller sees a precise message, not a generic macro failure.
+Both versions produce errors at the exact offending source location. Syntax classes eliminate the dispatch boilerplate while keeping the same error quality.
 
 ---
 
@@ -821,14 +858,17 @@ Add: `macro-error` as a Rust builtin.
 ```rust
 Expr::SyntaxClass {
     name: String,
-    pattern: Box<Spanned<Expr>>,   // a [let ...] binding pattern
-    message: String,               // user-facing description
+    pattern: Box<Spanned<Expr>>,   // a [let ...] binding pattern (same as case arm patterns)
+    message: String,               // user-facing description for validation failures
 }
 ```
 
-Syntax class declarations are pre-scanned and registered alongside `MacroDecl` nodes. When a macro parameter is annotated with a syntax class name (e.g., `name@pragma-name`), the expander validates the argument against the pattern before calling the macro body. Validation failure raises `MacroError` with the `message` string.
+`Expr::SyntaxClass` is a declaration form — same treatment as `Expr::MacroDecl`. Both are filtered from the post-expansion AST before type-checking; both have `panic!` arms in the evaluator (expansion guarantees their removal). Syntax class declarations are pre-scanned and registered alongside `MacroDecl` nodes before the main expansion walk.
 
-For built-in `Expr` variant annotations (`name@VarRef`, `value@Literal`, etc.), the expander generates a default message: "argument 'name' expected VarRef, got [ActualType]."
+When a macro parameter is annotated with a syntax class name (`name@pragma-name`) or a built-in `Expr` variant (`name@VarRef`), the expander validates the argument before calling the macro body:
+- Built-in variant: "argument 'name' expected VarRef, got Call"
+- Named syntax class: uses the `message:` field
+Validation failure raises `MacroError` at the call-site span.
 
 ### `stdlib/ast.llt` (new file)
 
