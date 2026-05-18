@@ -2164,13 +2164,13 @@ mod tests {
         // f64::to_string() for 1.0 yields "1" with no '.' or 'e',
         // so the formatter must append ".0" to preserve the float literal.
         let result = format_source("[x: 1.0]").unwrap();
-        assert!(result.contains("1.0"), "expected '1.0' in output, got: {result}");
+        assert_eq!(result, "[x: 1.0]\n");
     }
 
     #[test]
     fn test_format_float_with_decimal() {
         let result = format_source("[x: 3.14]").unwrap();
-        assert!(result.contains("3.14"), "expected '3.14' in output, got: {result}");
+        assert_eq!(result, "[x: 3.14]\n");
     }
 
 }
