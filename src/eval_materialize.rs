@@ -1029,7 +1029,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Ok(value) => {
                     // Flatten Overlay to Dict before record validation.
                     // Value::Overlay is produced by $merge; guard wrapping it needs flattened entries.
-                    // guard_ctx is always Some (force_step always populates it from its own ctx param).
+                    // guard_ctx is Rc<EvalContext> (non-optional); destructured directly from the continuation.
                     let value = match value {
                         Value::Overlay(l, r) => {
                             match flatten_overlay(&l, &r, "type guard", &guard_ctx, guard_span) {

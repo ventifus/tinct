@@ -1304,7 +1304,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_make_dir,
             [Strictness::Seq, Strictness::Seq]
         ),
-        builtin!("remove", builtin_remove, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "builtin-remove",
+            builtin_remove,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         builtin!(
             "rename",
             builtin_rename,
@@ -1719,7 +1723,7 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "list-dir");
             insert(&env, "stat");
             insert(&env, "make-dir");
-            insert(&env, "remove");
+            insert(&env, "builtin-remove");
             insert(&env, "rename");
             insert(&env, "link");
             insert(&env, "read-link");
@@ -6714,7 +6718,7 @@ mod tests {
         assert!(names.contains(&"list-dir"), "missing list-dir");
         assert!(names.contains(&"stat"), "missing stat");
         assert!(names.contains(&"make-dir"), "missing make-dir");
-        assert!(names.contains(&"remove"), "missing remove");
+        assert!(names.contains(&"builtin-remove"), "missing builtin-remove");
         assert!(names.contains(&"rename"), "missing rename");
         assert!(names.contains(&"link"), "missing link");
         assert!(names.contains(&"read-link"), "missing read-link");
