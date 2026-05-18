@@ -1,0 +1,16 @@
+# fn? narrowing in cond guard
+# Tests that fn? works correctly in cond arm guards to narrow the type
+# to Function{params:[], ret:Unknown, variadic:true} (the "any function" type).
+
+[
+  apply-if-fn: [fn [x]
+    [cond [
+      [[fn? x] [x 42]]
+      [true x]
+    ]]]
+
+  r1: [apply-if-fn [fn [n] [+ n 1]]]
+  r2: [apply-if-fn "not a function"]
+]
+=== out
+Dict({"apply-if-fn": Function(x), "r1": Int(43), "r2": String("not a function")})

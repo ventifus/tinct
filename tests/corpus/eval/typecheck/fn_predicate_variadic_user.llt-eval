@@ -1,0 +1,10 @@
+# fn? narrowing with user-defined variadic function
+# Verifies that the "any function" type (zero-param variadic) unifies
+# correctly with user-defined variadic functions.
+
+[
+  f: [fn [...xs] xs]
+  result: [if [fn? f] [f 1 2 3] []]
+]
+=== out
+Dict({"f": Function(xs), "result": Seq(Int(1), ...)})
