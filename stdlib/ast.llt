@@ -1,0 +1,126 @@
+# stdlib/ast.llt — AST type definitions and utilities for macro writing
+#
+# This file defines nominal types for LLT's AST nodes (Entry, Annotation, Expr)
+# and helper functions for working with AST structures in macro bodies.
+#
+# Usage: [include %libdir "ast.llt"]
+
+[
+
+# Entry type — dict entry (keyed or auto-indexed)
+[type Entry
+  [KeyedEntry   key: String  value: Expr]
+  [UnkeyedEntry value: Expr]]
+
+# Annotation type — type annotations in the AST
+[type Annotation
+  [Simple   name: String]                    # @Int, @Bool
+  [PropDict entries: [Seq Entry]]         # @[return: T  constraint: ...]
+  Null]                                   # no annotation
+
+# Expr type — the central expression type
+# Matches the Rust Expr enum in src/ast.rs
+[type Expr
+  # Literals
+  [Int        value: Int]
+  [Float      value: Float]
+  [Bool       value: Bool]
+  [Str        value: Stringing]
+
+  # Variables and references
+  [VarRef     name: String]
+  [DotAccess  expr: Expr  field: Unknown]  # field is DotKey (Str or Int)
+  [Pipe       lhs: Expr  rhs: Expr]
+
+  # Collections and calls
+  [Sequential exprs: [Seq Expr]]
+  [Dict       entries: [Seq Entry]]
+  [Call       func: Expr  args: [Seq Expr]]  # simplified: ignores named_args, implied flag
+
+  # Functions and types
+  [Fn         params: [Seq Unknown]  body: Expr]  # params is Vec<Spanned<Param>> — opaque from LLT
+  [TypeAlias  params: [Seq Str]  body: Expr]
+  [TypeAssert annotation: Annotation  expr: Expr]
+  [Annotated  name: String  annotation: Annotation]
+
+  # Pattern matching
+  [Rest       name: [String Null]]
+  [Match      scrutinee: Expr  arms: [Seq Unknown]]  # arms is Vec<MatchArm> — opaque
+  [LetDecl    bindings: [Seq Expr]]
+  [CaseArm    pattern: Expr  body: Expr]
+
+  # Macros and quoting
+  [Quote          expr: Expr]
+  [Unquote        expr: Expr]
+  [UnquoteSplice  expr: [Seq Expr]]
+  [DefMacro       name: String  params: [Seq Unknown]  body: Expr]  # params is Vec<Spanned<Param>>
+  [MacroDecl      name: String  params: Expr  body: Expr]
+  [Splice         forms: [Seq Expr]]
+  [SyntaxClass    name: String  pattern: Expr  message: [String Null]]
+
+  # Type classes
+  [ClassDecl   name: String  params: [Seq Str]  methods: [Seq Entry]]  # simplified
+  [InstanceDecl class-name: String  arms: [Seq Unknown]]  # arms structure opaque
+  [TypeApp     func: Expr  arg: Expr]
+  [PatternDecl bindings: [Seq Expr]]
+
+  # Special
+  [Placeholder]
+  [Error span: Unknown]]  # span is Span — opaque from LLT
+
+# flatten-args — re-extract flat element sequence from a parsed bracket
+#
+# When the parser processes [x y z], it applies implied-call semantics:
+#   [x y z] → Call(VarRef("x"), [VarRef("y"), VarRef("z")])
+#
+# flatten-args recovers the flat sequence [x, y, z] that let-softening
+# macros need to wrap in [let ...].
+#
+# NOTE: This is a placeholder implementation until ast_to_dict produces
+# typed Expr variants (macros-v2 design §ast_to_dict migration).
+# Currently returns the input unchanged.
+flatten-args: [fn@[return: Unknown  doc: """
+Re-extract the flat element sequence from a parsed bracket expression.
+
+Used by let-softening macros (fn, class, type) that need to recover
+the original bracket elements after the parser has applied implied-call
+or other structural interpretations.
+
+TODO: Implement variant matching once ast_to_dict produces typed Expr variants.
+Currently returns input unchanged.
+
+Examples (when implemented):
+  [flatten-args [Call f [x y]]]    => [f x y]
+  [flatten-args [Let [x y]]]       => [x y]
+  [flatten-args [Seq [x y]]]       => [x y]
+  [flatten-args [Dict []]]         => []
+  [flatten-args [VarRef "x"]]      => [x]
+"""] [let node]
+  # TODO: Implement variant dispatch once Expr types exist
+  # For now, return input unchanged
+  node]
+
+# ident — construct a VarRef from a string name
+#
+# For reconstructing existing identifiers from extracted name fields.
+# Distinct from gensym (which generates fresh unforgeable names).
+#
+# NOTE: This is a placeholder implementation until Expr variant constructors
+# are available (macros-v2 design §ast_to_dict migration).
+ident: [fn@[return: Unknown  doc: """
+Construct a VarRef AST node from a string name.
+
+Used in macro bodies to create identifier nodes from computed or
+extracted name strings. For generating fresh names, use gensym instead.
+
+TODO: Implement once Expr variant constructors are available.
+Currently returns a dict with type field.
+
+Example (when implemented):
+  [ident "counter"]  => VarRef(name: "counter")
+"""] [let name@String]
+  # TODO: [VarRef name: name] once variant constructors exist
+  # For now, return old-style AST dict
+  [type: "var-ref"  name: name]]
+
+]

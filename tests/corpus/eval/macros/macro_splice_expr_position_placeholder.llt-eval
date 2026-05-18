@@ -1,6 +1,7 @@
 # Task 2: Splice in expression position — now implemented (returns error).
 # See macro_splice_expr_position.llt-eval for the real error test.
 # This test keeps a simple non-splice sanity check.
+# Note: Using defmacro because variadic [let ...args] not yet supported in macro params.
 [defmacro simple [args]
   [quote 42]]
 

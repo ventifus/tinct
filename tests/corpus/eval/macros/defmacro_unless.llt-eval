@@ -1,14 +1,12 @@
 # Custom unless macro using manual AST dict construction.
 # Transforms [my-unless cond body] into [if cond [] body].
-# Note: param is named `macro-args` to avoid shadowing by the `args` key
-# in the generated AST dict (dict keys create letrec bindings).
-[defmacro my-unless [macro-args]
+[macro my-unless [let cond body]
   [type: "call"
    fn: [type: "var"  name: "if"]
    args: [
-     [get 0 macro-args]
-     [type: "dict"  entries: []]
-     [get 1 macro-args]
+     0: cond
+     1: [type: "dict"  entries: []]
+     2: body
    ]
    named-args: []
    implied: true]

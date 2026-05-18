@@ -1,9 +1,9 @@
 # Hygiene test using gensym — macro-introduced param uses gensym
 # to avoid capturing caller's variables.
-[defmacro my-const [macro-args]
+[macro my-const [let value]
   [type: "fn"
    params: [[name: [gensym]  variadic: false]]
-   body: [get 0 macro-args]
+   body: value
    desugared: false]
 ]
 

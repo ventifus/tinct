@@ -627,7 +627,7 @@ Note: Returns lo if x < lo, hi if x > hi, otherwise x. Inherently materializing:
 # Example: [collect [words "hello world"]] => ["hello" "world"]
 # Example: [collect [words "  spaces  "]] => ["spaces"]
 # Inherently materializing: splits string content, derived from split.
-words@[doc: "Split string on spaces into words"]: [fn@Seq [let s@Stringing]
+words@[doc: "Split string on spaces into words"]: [fn@Seq [let s@String]
     [builtin-filter [fn [let w] [not [builtin-eq w ""]]] [split " " s]]]
 
 # Strip common leading indentation from a multi-line string.
@@ -636,7 +636,7 @@ words@[doc: "Split string on spaces into words"]: [fn@Seq [let s@Stringing]
 # Type: (Stringing -> Stringing)
 # Example: [unindent "\n  line one\n  line two\n  "] => "line one\nline two"
 # Inherently materializing: must process all lines to determine indentation and strip.
-unindent@[doc: "Strip common leading indentation from a multi-line string"]: [fn@Stringing [let s@Stringing]
+unindent@[doc: "Strip common leading indentation from a multi-line string"]: [fn@String [let s@String]
     [ls: [split "\n" s]
      last-line: [builtin-last ls]
      indent: [str-length last-line]
@@ -1785,7 +1785,7 @@ Appendable@[doc: "Type class for appendable types (String, Dict, Seq)"]:
 # Appendable instance for String type
 AppendableStr@[doc: "Appendable instance for String: append-one = str, empty = empty string"]:
   [instance Appendable
-    [let a@String]: [
+    [let a@Stringing]: [
       append-one: [fn [let a b] [str a b]]
       empty: ""]]
 
@@ -1824,7 +1824,7 @@ Example: [assert true "never fails"] => true
 Example: [assert false "fails"] => error "fails"
 
 Note: Returns true if condition is true; raises an error with the given message if false. Inherently materializing: must materialize condition to check.
-"""] [let cond msg@Stringing] [builtin-if cond true [error msg]]]
+"""] [let cond msg@String] [builtin-if cond true [error msg]]]
 
 # ============================================================================
 # Shadowable Operator Wrappers
@@ -1877,19 +1877,19 @@ collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [let xs] [bu
 # str-contains?: String -> String -> Bool
 # assert: [str-contains? "hello world" "world"] => true
 # assert: [str-contains? "hello" "xyz"] => false
-str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [let haystack@String needle@String]
+str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [let haystack@Stringing needle@Stringing]
   [>= [str-index-of haystack needle] 0]]
 
 # starts-with?: String -> String -> Bool
 # assert: [starts-with? "hello" "he"] => true
 # assert: [starts-with? "hello" "lo"] => false
-starts-with?@[doc: "Check if string starts with prefix"]: [fn@Bool [let s@String prefix@String]
+starts-with?@[doc: "Check if string starts with prefix"]: [fn@Bool [let s@Stringing prefix@Stringing]
   [= [str-index-of s prefix] 0]]
 
 # ends-with?: String -> String -> Bool
 # assert: [ends-with? "hello" "lo"] => true
 # assert: [ends-with? "hello" "he"] => false
-ends-with?@[doc: "Check if string ends with suffix"]: [fn@Bool [let s@String suffix@String]
+ends-with?@[doc: "Check if string ends with suffix"]: [fn@Bool [let s@Stringing suffix@Stringing]
   [if [< [str-length s] [str-length suffix]]
     false
     [= [str-slice s [- [str-length s] [str-length suffix]] [str-length s]] suffix]]]
@@ -1898,7 +1898,7 @@ ends-with?@[doc: "Check if string ends with suffix"]: [fn@Bool [let s@String suf
 # assert: [str-repeat "x" 3] => "xxx"
 # assert: [str-repeat "ab" 2] => "abab"
 # assert: [str-repeat "x" 0] => ""
-str-repeat@[doc: "Repeat string n times"]: [fn@String [let s@String n@Int]
+str-repeat@[doc: "Repeat string n times"]: [fn@Stringing [let s@Stringing n@Int]
   [builtin-reduce [fn [let acc _] [str acc s]] "" [builtin-range 0 n]]]
 
 # Find the first occurrence of needle in haystack.
@@ -1908,7 +1908,7 @@ str-repeat@[doc: "Repeat string n times"]: [fn@String [let s@String n@Int]
 # assert: [str-find "hello world" "world"] => 6
 # assert: [str-find "hello world" "x"] => -1
 # assert: [str-find "abc" ""] => 0
-str-find@[doc: "Find first occurrence of needle in haystack; returns byte index or -1"]: [fn@Int [let haystack@String needle@String]
+str-find@[doc: "Find first occurrence of needle in haystack; returns byte index or -1"]: [fn@Int [let haystack@Stringing needle@Stringing]
   [str-index-of haystack needle]]
 
 # ============================================================================
@@ -2029,7 +2029,7 @@ Join collection elements as strings with a separator.
 Example: [join ", " ["a" "b" "c"]] => "a, b, c"
 
 Note: Converts each element to a string, then concatenates with separator between elements. Works on both Dict and Seq.
-"""] [let sep@Stringing xs] [builtin-join sep xs]]
+"""] [let sep@String xs] [builtin-join sep xs]]
 
 concat: [fn@[return: Unknown  doc: """
 Concatenate two collections.
@@ -2175,5 +2175,77 @@ Example: [proxy handler-fn]
 
 Note: Wraps a function as a proxy. Field access calls the handler. Used for capability-based security patterns.
 """] [let handler] [builtin-proxy handler]]
+
+span-of: [fn@[return: Unknown  doc: """
+Extract the source span from an AST expression node.
+
+Returns the span metadata (start/end positions) associated with an Expr node.
+Used in macro bodies for precise error reporting via macro-error.
+
+Example:
+  [span-of some-expr]  => Span { start: ..., end: ... }
+
+Note: TODO — requires builtin-span-of. Returns empty dict until implemented.
+"""] [let expr]
+  # TODO: [builtin-span-of expr]
+  []]
+
+wrap-in-let: [fn@[return: Unknown  doc: """
+Wrap a list of expressions in a LetDecl AST node.
+
+Constructs [let ...elems] as an Expr variant. Used by let-softening macros
+to convert flat parameter lists into binding declarations.
+
+Example:
+  [wrap-in-let [x y z]]  => LetDecl(bindings: [x, y, z])
+
+Note: TODO — requires builtin-wrap-in-let or Expr variant constructor. Returns empty dict until implemented.
+"""] [let elems]
+  # TODO: [builtin-wrap-in-let elems]
+  []]
+
+let-decl-elems: [fn@[return: Unknown  doc: """
+Extract the bindings sequence from a LetDecl AST node.
+
+Inverse of wrap-in-let. Returns the list of binding expressions from
+a [let ...] declaration node.
+
+Example:
+  [let-decl-elems [LetDecl bindings: [x y z]]]  => [x y z]
+
+Note: TODO — requires builtin-let-decl-elems or field accessor. Returns empty list until implemented.
+"""] [let decl]
+  # TODO: [builtin-let-decl-elems decl]
+  []]
+
+first-or: [fn@[return: a  doc: """
+Return the first element of a sequence, or a default value if empty.
+
+Safe alternative to first that doesn't error on empty sequences.
+
+Example:
+  [first-or [1 2 3] 99]  => 1
+  [first-or [] 99]       => 99
+
+Note: Works with both Dict and Seq. For Dict, returns first value by insertion order.
+"""] [let xs default]
+  [match [empty? xs]
+    [case true  default]
+    [case false [first xs]]]]
+
+macro-error: [fn@[return: Never  doc: """
+Signal a compile-time macro expansion error.
+
+Terminates macro expansion with a MacroError at the given span,
+reporting the message to the user. Used by macro bodies for validation
+and structured error reporting.
+
+Example:
+  [macro-error [span-of bad-arg] "expected a literal value"]
+
+Note: TODO — requires builtin-macro-error. Calls error until implemented.
+"""] [let span message@String]
+  # TODO: [builtin-macro-error span message]
+  [error message]]
 
 ]

@@ -14,7 +14,7 @@
 # or Value::Seq in the transformer output — which this test does not
 # produce (primitives contain no ThunkId).
 
-[defmacro const-true [args]
+[macro const-true [let arg]
   # Returns an AST dict for the literal `true`.
   # The dict itself (Value::Dict with ThunkIds) is traversed by
   # deep_materialize at the output boundary.

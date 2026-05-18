@@ -10,7 +10,7 @@
 # is already functional.
 
 # Test case: A macro that intentionally errors during expansion
-[defmacro will-error [args]
+[macro will-error [let arg]
   [/ 1 0]]  # Division by zero in transformer body
 
 # This produces an error with macro provenance context

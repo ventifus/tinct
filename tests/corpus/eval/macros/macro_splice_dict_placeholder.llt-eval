@@ -1,6 +1,7 @@
 # Task 2: Splice in dict context — implemented.
 # See macro_splice_dict.llt-eval for the real splice test.
 # This test keeps a simple splice sanity check.
+# Note: Using defmacro because variadic [let ...args] not yet supported in macro params.
 [defmacro const-value [args]
   [quote 42]]
 
