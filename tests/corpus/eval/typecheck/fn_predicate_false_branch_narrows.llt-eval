@@ -2,9 +2,9 @@
 # the false branch of [if [fn? x] ...] correctly narrows x to a non-function type.
 # At runtime, Int is never a function, so fn? returns false and the false branch is taken.
 #
-# NOTE: This test verifies runtime behavior. Once types_are_disjoint includes Function vs
-# primitive disjointness (fn-narrowing-followup Task 2), the type checker will also know
-# that Int ∩ Function = ∅, enabling more precise false-branch narrowing.
+# NOTE: This test verifies runtime behavior. types_are_disjoint now includes Function vs
+# primitive disjointness (fn-narrowing-followup Task 2), so the type checker knows that
+# Int ∩ Function = ∅, enabling precise false-branch narrowing via Negation(AnyFn).
 #
 # Test 1: Int is never a function — false branch is taken
 # Test 2: String is never a function — false branch is taken
