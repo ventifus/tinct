@@ -21,17 +21,19 @@
 # Collect all .llt paths under a directory prefix (relative to %root).
 # Returns a positional dict of path strings like "stdlib/strings.llt".
 scan-dir: [fn@Dict [prefix@String acc@Dict]
-  [entries: [collect [list-dir %root prefix]]]
-  [reduce
-    [fn@Dict [files@Dict entry@Dict]
-      [full: [str prefix "/" entry.name]]
-      [if [= entry.type "dir"]
-        [scan-dir full files]
-        [if [ends-with? entry.name ".llt"]
-          [append files full]
-          files]]]
-    acc
-    entries]]
+  [call [fn@Dict [entries]
+    [reduce
+      [fn@Dict [files entry]
+        [call [fn@Dict [full@String]
+          [builtin-if [= entry.type "dir"]
+            [scan-dir full files]
+            [builtin-if [ends-with? entry.name ".llt"]
+              [append files full]
+              files]]]
+          [str prefix "/" entry.name]]]
+      acc
+      entries]]
+    [collect [list-dir %root prefix]]]]
 
 llt-files: [sorted [scan-dir "stdlib" []]]
 
@@ -41,14 +43,16 @@ llt-files: [sorted [scan-dir "stdlib" []]]
 # Call with depth=1, i=1 (already stepped past the opening '[').
 # Returns -1 if unmatched or s is exhausted.
 find-close: [fn@Int [s@String depth@Int i@Int]
-  [c: [str-slice s i [trunc [+ i 1]]]]
-  [if [>= i [length s]]
-    -1
-    [if [= c "["]
-      [find-close s [trunc [+ depth 1]] [trunc [+ i 1]]]
-      [if [= c "]"]
-        [if [= depth 1] i [find-close s [trunc [- depth 1]] [trunc [+ i 1]]]]
-        [find-close s depth [trunc [+ i 1]]]]]]]
+  [call [fn@Int [i1@Int c@String]
+    [builtin-if [>= i [length s]]
+      -1
+      [builtin-if [= c "["]
+        [find-close s [+ depth 1] i1]
+        [builtin-if [= c "]"]
+          [builtin-if [= depth 1] i [find-close s [- depth 1] i1]]
+          [find-close s depth i1]]]]]
+    [+ i 1]
+    [str-slice s i [+ i 1]]]]
 
 # ── String Helpers ────────────────────────────────────────────────────────────
 
@@ -58,12 +62,10 @@ before-first: [fn@String [needle@String s@String]
 
 # Text after the first occurrence of needle (returns "" if absent).
 after-first: [fn@String [needle@String s@String]
-  [parts: [split needle s]]
-  [if [= [length parts] 1]
+  [idx: [str-index-of needle s]]
+  [if [= idx -1]
     ""
-    [call [fn@String []
-      [rest: [slice parts 1 [length parts]]]
-      [join needle rest]]]]]
+    [str-slice s [+ idx [str-length needle]] [str-length s]]]]
 
 # ── Doc Entry Parsing ─────────────────────────────────────────────────────────
 
@@ -150,11 +152,12 @@ sig-from-old-line: [fn@String [line@String]
         [str "fn@" ret " [" params "]"]]]]]]
 
 extract-return-old: [fn@String [s@String]
-  [t: [trim s]]
-  [close: [find-close t 1 1]]
-  [if [starts-with? t "["]
-    [if [= close -1] t [str-slice t 0 [trunc [+ close 1]]]]
-    [before-first " [" t]]]
+  [call [fn@String [t@String close@Int]
+    [if [starts-with? t "["]
+      [if [= close -1] t [str-slice t 0 [+ close 1]]]
+      [before-first " [" t]]]
+    [trim s]
+    [find-close [trim s] 1 1]]]
 
 extract-params-old: [fn@String [s@String ret@String]
   [after-ret: [trim [str-slice s [length ret] [length s]]]]

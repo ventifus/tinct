@@ -142,11 +142,11 @@ Fixes type system soundness gaps identified during the 17th specialist panel rev
 
 `just docgen` produces 5 non-fatal type errors. These prevent `--strict` mode from being used.
 
-- [ ] T003 at line 26: `scan-dir` reduce callback — `[]` vs `[] | _` union mismatch (`scripts/docgen.llt:26`)
-- [ ] T003 at line 25: reduce init value typed as `[]` but reduce expects `Seq` (`scripts/docgen.llt:25`)
-- [ ] T003 at line 43: `find-close` recursive return — `Int` vs `Int | _` union (`scripts/docgen.llt:43`)
-- [ ] T003 at line 65: `slice parts` — `[]` vs `Seq[String]` mismatch (`scripts/docgen.llt:65`)
-- [ ] T003 at line 156: `trunc [+ close 1]` — `Number` vs fresh var inference gap (`scripts/docgen.llt:156`)
+- [x] T003 at line 26: `scan-dir` reduce callback — fixed with `builtin-if` and `@Dict` return annotation (`scripts/docgen.llt`)
+- [x] T003 at line 25: reduce init value — fixed by removing over-constrained param annotations (`scripts/docgen.llt`)
+- [x] T003 at line 43: `find-close` recursive return — fixed with `fn@Int` return annotation and `builtin-if` (`scripts/docgen.llt`)
+- [x] T003 at line 65: `slice parts` — replaced with `str-index-of`+`str-slice` approach (`scripts/docgen.llt`)
+- [x] T003 at line 156: `trunc [+ close 1]` — fixed with type-annotated helper lambda (`scripts/docgen.llt`)
 
 ### panel-17-perf-tests: Performance fixes and missing stdlib tests from 17th panel review
 
