@@ -4376,7 +4376,6 @@ fn check_call(
 /// For simplified implementation:
 /// - Intersection with scrutinee type: if annotation present, use annotation; else use scrutinee
 /// - Structural test patterns (name: Constructor) are recognized but not fully implemented yet
-#[allow(dead_code)]
 fn typecheck_case_arm(
     pattern: &Spanned<Expr>,
     body: &Spanned<Expr>,

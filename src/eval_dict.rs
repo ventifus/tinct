@@ -14,7 +14,6 @@ use crate::ast::{Entry, Expr, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
-#[allow(unused_imports)]
 use super::{eagerly_register_constructors, eval, materialize, EvalContext};
 
 pub(crate) fn eval_dict(

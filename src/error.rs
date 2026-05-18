@@ -2032,55 +2032,6 @@ mod tests {
         assert_eq!(err.stack[1].span, frame2_span);
     }
 
-    /// Helper to count ErrorKind variants via exhaustive match.
-    /// This function MUST be updated when ErrorKind variants change —
-    /// the compiler will force an update via exhaustive match requirement.
-    #[allow(dead_code)]
-    fn error_kind_variant_count() -> usize {
-        // Exhaustive match forces update when variants change
-        let _check = |kind: &ErrorKind| match kind {
-            ErrorKind::KeyNotFound { .. } => {}
-            ErrorKind::UndefinedVariable { .. } => {}
-            ErrorKind::TypeMismatch { .. } => {}
-            ErrorKind::TypeAssertFailed { .. } => {}
-            ErrorKind::MacroError { .. } => {}
-            ErrorKind::ArityMismatch { .. } => {}
-            ErrorKind::MissingRequiredParam { .. } => {}
-            ErrorKind::NamedArgConflict { .. } => {}
-            ErrorKind::UnknownNamedArg { .. } => {}
-            ErrorKind::NamedArgRejected { .. } => {}
-            ErrorKind::DuplicateKey { .. } => {}
-            ErrorKind::DivisionByZero { .. } => {}
-            ErrorKind::IntegerOverflow { .. } => {}
-            ErrorKind::FloatNotFinite { .. } => {}
-            ErrorKind::EmptyCollection { .. } => {}
-            ErrorKind::ValueNotSerializable { .. } => {}
-            ErrorKind::FloatOutOfRange { .. } => {}
-            ErrorKind::DepthExceeded { .. } => {}
-            ErrorKind::JsonDepthExceeded { .. } => {}
-            ErrorKind::IncludeForbidden => {}
-            ErrorKind::ResourceLimitExceeded { .. } => {}
-            ErrorKind::IncludeNotAvailable => {}
-            ErrorKind::IncludeIoError { .. } => {}
-            ErrorKind::IncludeCycle { .. } => {}
-            ErrorKind::IncludeParseFailed { .. } => {}
-            ErrorKind::IncludeFileTooLarge { .. } => {}
-            ErrorKind::IncludeHashMismatch { .. } => {}
-            ErrorKind::IncludeHashRequired { .. } => {}
-            ErrorKind::IncludePathNotAllowed { .. } => {}
-            ErrorKind::ParseConversion { .. } => {}
-            ErrorKind::JsonParse { .. } => {}
-            ErrorKind::JsonRange => {}
-            ErrorKind::UriParseError { .. } => {}
-            ErrorKind::CircularDependency { .. } => {}
-            ErrorKind::UserError { .. } => {}
-            ErrorKind::Unimplemented { .. } => {}
-            ErrorKind::SchemaViolation { .. } => {}
-            ErrorKind::Internal { .. } => {}
-        };
-        37
-    }
-
     #[test]
     fn test_is_catchable() {
         // DepthExceeded and ResourceLimitExceeded are NOT catchable

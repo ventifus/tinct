@@ -1465,31 +1465,6 @@ pub(crate) fn eval_recursive(
     }
 }
 
-/// Extract a canonical type name from an instance_type Expr for runtime dispatch.
-/// Maps instance type expressions to the runtime type names returned by Value::type_name().
-///
-/// Examples:
-/// - `Int` → "Int"
-/// - `Float` → "Float"
-/// - `String` → "String" (note: Expr name is "String", Value::type_name() is "String")
-/// - `Result` → "Result"
-/// - `[name: Str age: Int]` → "Dict" (structural types dispatch as their runtime tag)
-///
-/// For user-defined types (variants, nominal types), this returns the constructor name.
-/// For structural types (record literals), this returns the Value tag ("Dict").
-#[allow(dead_code)]
-fn extract_instance_type_name(expr: &Expr) -> String {
-    match expr {
-        // Simple type name: Int, Float, String, Bool, Result, Seq, etc.
-        Expr::VarRef { name, .. } => name.clone(),
-        // Structural record type: [name: Str age: Int] → "Dict"
-        Expr::Dict { .. } => "Dict".to_string(),
-        // Fallback: use Debug representation for complex types
-        // This handles TypeApp and other complex type expressions
-        _ => format!("{:?}", expr),
-    }
-}
-
 /// Intern a runtime class name string as a `&'static str`.
 /// Known typeclass names return a compile-time literal (zero allocation).
 /// Unknown names are leaked — bounded by the number of distinct class declarations

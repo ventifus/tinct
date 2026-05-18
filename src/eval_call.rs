@@ -38,15 +38,6 @@ pub(crate) fn func_label(expr: &Expr) -> Option<Rc<str>> {
     }
 }
 
-#[allow(dead_code)] // Used for detailed error diagnostics in future CEK migration
-pub(crate) fn func_path(expr: &Expr) -> String {
-    match expr {
-        Expr::VarRef { name, .. } => format!("{name}"),
-        Expr::DotAccess { expr: inner, field } => format!("{}.{field}", func_path(&inner.node)),
-        _ => "<anonymous>".to_string(),
-    }
-}
-
 /// Evaluate a call expression: return a PendingCall thunk that defers function dispatch.
 ///
 /// Now returns a PendingCall thunk; function dispatch is deferred to the PendingCallDispatch

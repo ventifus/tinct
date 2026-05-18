@@ -538,23 +538,14 @@ pub(crate) use crate::builtins_seq_gen::{
 // Sequence transform builtins: map, filter, take, drop.
 // Implementations live in builtins_seq_xform.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
-// The step helpers (filter_dict_step, filter_seq_step, drop_seq_step) are only
-// used in test code via `use super::*`, not in production code in this file, so
-// suppress the unused-import lint for this block.
-#[allow(unused_imports)]
-pub(crate) use crate::builtins_seq_xform::{
-    builtin_drop, builtin_drop_seq_step, builtin_filter, builtin_filter_dict_step,
-    builtin_filter_seq_step, builtin_map, builtin_take,
-};
+pub(crate) use crate::builtins_seq_xform::{builtin_drop, builtin_filter, builtin_map, builtin_take};
+// Step helper is only used in tests via `use super::*`
+#[cfg(test)]
+pub(crate) use crate::builtins_seq_xform::builtin_drop_seq_step;
 // Sequence reduction builtins: reduce, join, concat.
 // Implementations live in builtins_seq_reduce.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
-// The step helpers (reduce_seq_step, concat_seq_step) are only used via test
-// `use super::*`, not directly in this file, so suppress the unused-import lint.
-#[allow(unused_imports)]
-pub(crate) use crate::builtins_seq_reduce::{
-    builtin_concat, builtin_concat_seq_step, builtin_join, builtin_reduce,
-};
+pub(crate) use crate::builtins_seq_reduce::{builtin_concat, builtin_join, builtin_reduce};
 
 // Date-time builtins: timestamps, durations, clock capabilities, timezones
 pub(crate) use crate::builtins_datetime::{

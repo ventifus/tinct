@@ -14,8 +14,6 @@
 pub use crate::type_class::*;
 pub use crate::type_def::*;
 pub use crate::type_infer::*;
-#[allow(unused_imports)]
-pub use crate::type_normalize::*;
 
 // Existing submodules (keep as-is — they use `super::*` internally)
 #[path = "type_env.rs"]

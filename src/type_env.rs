@@ -15,39 +15,13 @@ use super::*;
 /// because `generalize()` only generalizes variables where `levels[var] > enclosing_level`
 /// and absent variables default to 0. In contrast, `InferState::fresh_var()` always
 /// registers at `state.level`, and `instantiate_at_level()` registers at the current
-/// level for proper participation in generalization.
-///
-/// This function is test-only; production code uses `instantiate_at_level()`.
-/// Returns both the instantiated type and the renaming substitution that was applied.
-/// The substitution is unused by current callers but kept for testing/debugging purposes
-/// (allows inspection of which type/row vars were renamed to which fresh vars).
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn instantiate(ty: &Type, counter: &mut u32) -> (Type, Substitution) {
-    let mut type_vars = HashSet::new();
-    let mut row_vars = HashSet::new(); // always empty under BAS
-    ty.collect_all_vars(&mut type_vars, &mut row_vars);
-
-    let renaming = Substitution::new();
-    for var in type_vars {
-        let fresh = format!("_t{counter}");
-        *counter += 1;
-        renaming
-            .type_map
-            .borrow_mut()
-            .insert(var, Type::TypeVar(fresh, 0));
-    }
-
-    (renaming.apply(ty), renaming)
-}
-
 /// Instantiate a type by creating fresh type variables at the current level.
 /// Used for CALL-POLY: when calling a polymorphic function, instantiate its type
 /// at the current level to enable proper generalization (Kiselyov 2013).
 ///
-/// Unlike `instantiate()`, this function registers the fresh variables in `state.levels`
-/// so they participate in level-based generalization. Without this, fresh variables
-/// default to level 0 and are permanently excluded from generalization by [U-VAR-LEVEL].
+/// This function registers fresh variables in `state.levels` so they participate in
+/// level-based generalization. Without this, fresh variables would default to level 0
+/// and be permanently excluded from generalization by [U-VAR-LEVEL].
 ///
 /// **Design note:** This function intentionally freshens ALL type variables in the input type,
 /// not just quantified ones (unlike `instantiate_scheme`). This is correct for CALL-POLY because
