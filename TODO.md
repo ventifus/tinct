@@ -205,6 +205,16 @@ Fixes type system soundness gaps identified during the 17th specialist panel rev
 - [x] `test_narrowing_fn_predicate` tightened — verifies result field exists and any-function type structure (`src/typecheck.rs:11176-11199`)
 - [x] Added `test_false_branch_fn_predicate_negation` — verifies Negation(Function{variadic:true}) in false branch env (`src/typecheck.rs:12290-12318`)
 
+### docgen-type-errors: Fix 5 type errors in scripts/docgen.llt
+
+`just docgen` produces 5 non-fatal type errors. These prevent `--strict` mode from being used.
+
+- [ ] T003 at line 26: `scan-dir` reduce callback — `[]` vs `[] | _` union mismatch (`scripts/docgen.llt:26`)
+- [ ] T003 at line 25: reduce init value typed as `[]` but reduce expects `Seq` (`scripts/docgen.llt:25`)
+- [ ] T003 at line 43: `find-close` recursive return — `Int` vs `Int | _` union (`scripts/docgen.llt:43`)
+- [ ] T003 at line 65: `slice parts` — `[]` vs `Seq[String]` mismatch (`scripts/docgen.llt:65`)
+- [ ] T003 at line 156: `trunc [+ close 1]` — `Number` vs fresh var inference gap (`scripts/docgen.llt:156`)
+
 ### panel-17-perf-tests: Performance fixes and missing stdlib tests from 17th panel review
 
 Addresses typecheck allocation hot-spots identified in the 17th panel review, adds corpus tests for untested stdlib functions, cleans up dead test files, and fixes the instance-consistency check deferred from chr-prelude. See `doc/06-type-inference.md §Dict Inference` and `doc/11-stdlib.md`.
