@@ -35,15 +35,6 @@ impl Default for TypeVarBounds {
     }
 }
 
-/// Provenance for a subtyping constraint — tracks why the constraint was generated.
-/// Used for error messages when bounds are unsatisfiable.
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Scaffolding for algebraic subtyping — wired in a future sprint
-pub struct ConstraintSource {
-    pub span: Span,
-    pub reason: String,
-}
-
 /// Polymorphic type scheme: ∀ type_vars. constraints => body
 /// Used for let-bound polymorphism (Damas-Milner) and type class constraints.
 #[derive(Debug, Clone, PartialEq)]
