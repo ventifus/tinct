@@ -3,7 +3,7 @@
 # Field `bad` contains an error expression but is never accessed.
 # If the guard fired eagerly (at assertion time), the test would fail.
 # If the guard fires lazily (correct), the test passes because `good` is accessed but `bad` is not.
-[@[good: Int  bad: Int] [good: 42  bad: [error "should not fire"]]]
+[@[good: Int  bad: Int] [good: 42  bad: [raise "should not fire"]]]
 ---
 %.good
 === out

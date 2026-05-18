@@ -1,4 +1,4 @@
-# try + error : catch an error raised by error builtin
-[try [fn [] [error "boom"]]]
+# try + raise : catch an error raised by raise builtin
+[try [fn [] [raise "boom"]]]
 === out
-Variant(Err, String("boom"))
+Variant(Error, String("boom"))

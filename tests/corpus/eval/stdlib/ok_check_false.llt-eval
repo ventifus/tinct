@@ -1,4 +1,4 @@
-# ok?: check if Result is Ok - false case (Err)
-[ok? [Err "failure"]]
+# ok?: check if Result is Ok - false case (Error)
+[ok? [Error "failure"]]
 === out
 Bool(false)

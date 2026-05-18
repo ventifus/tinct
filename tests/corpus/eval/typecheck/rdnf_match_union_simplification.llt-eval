@@ -1,11 +1,11 @@
 # RDNF match simplification: match arms are collected and their result types unioned.
 # Before: infer_match returned Unknown for all match expressions.
 # After: returns normalize_union(arm_types) |> simplify_type — precise and deduplicated.
-# Both arms of [match result [Ok v] v [Err _] 0] are type-checked without error.
+# Both arms of [match result [Ok v] v [Error _] 0] are type-checked without error.
 # The eval output verifies runtime correctness: Ok arm executes and returns payload.
 [result: [try [fn [] 42]]
  value: [match result
    [Ok v]:  v
-   [Err _]: 0]]
+   [Error _]: 0]]
 === out
 Dict({"result": Variant(Ok, Int(42)), "value": Int(42)})

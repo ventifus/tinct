@@ -1,4 +1,4 @@
-# result-map: pass Err through unchanged
-[result-map [fn [x] [* x 3]] [Err "error"]]
+# result-map: pass Error through unchanged
+[result-map [fn [x] [* x 3]] [Error "error"]]
 === out
-Variant(Err, String("error"))
+Variant(Error, String("error"))

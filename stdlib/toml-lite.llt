@@ -201,7 +201,7 @@ toml-append-array-table-impl: [fn@Dict [root@Dict path]
 [
 
 # Parse a TOML-lite document into a nested dict structure.
-# Returns: [Ok dict] or [Err message]
+# Returns: [Ok dict] or [Error message]
 parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn [text@String]
     [try [fn [] [parse-toml-lines-impl
         [collect

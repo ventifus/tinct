@@ -1,5 +1,5 @@
 # Lazy evaluation: accessing one dict entry does not force other entries
-[x: 1  y: [error "unused"]]
+[x: 1  y: [raise "unused"]]
 ---
 %.x
 === out

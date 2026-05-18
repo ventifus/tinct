@@ -1,4 +1,4 @@
-# result-or: use default when Err
-[result-or 99 [Err "bad"]]
+# result-or: use default when Error
+[result-or 99 [Error "bad"]]
 === out
 Int(99)

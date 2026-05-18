@@ -1626,21 +1626,21 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "error".to_string(),
+            "raise".to_string(),
             Type::Function {
                 params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Never),
                 variadic: false,
             },
         );
-        // try: takes 1 arg — a zero-argument function. Returns Ok(v) or Err(String).
+        // try: takes 1 arg — a zero-argument function. Returns Ok(v) or Error(String).
         // Runtime (builtins_meta.rs:builtin_try) enforces exactly 1 arg.
         //
         // Return type is Top rather than a structural union `{ok:T}|{err:Str}` because:
-        // 1. The runtime now returns nominal Value::Variant { tag: "Ok"/"Err" }, not a struct dict.
+        // 1. The runtime now returns nominal Value::Variant { tag: "Ok"/"Error" }, not a struct dict.
         // 2. A structural union would cause T004 "non-exhaustive match" when user code matches
-        //    on constructor patterns `[Ok v]` / `[Err msg]` — the coverage checker would see
-        //    DictKey("ok")/DictKey("err") in the sig but Variant("Ok")/Variant("Err") in arms.
+        //    on constructor patterns `[Ok v]` / `[Error msg]` — the coverage checker would see
+        //    DictKey("ok")/DictKey("err") in the sig but Variant("Ok")/Variant("Error") in arms.
         // 3. Top avoids triggering exhaustiveness checking (Type::Union guard in infer_match).
         //
         // See builtin-type-audit sprint: try return type (TODO.md)

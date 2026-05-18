@@ -3,7 +3,7 @@
 [map [fn [x] [+ x 100]]
   [map [fn [y] [+ y 10]]
     [map [fn [z] [+ z 1]]
-      [a: 1  b: [error "map chain should not force"]]]]]
+      [a: 1  b: [raise "map chain should not force"]]]]]
 ---
 %.a
 === out

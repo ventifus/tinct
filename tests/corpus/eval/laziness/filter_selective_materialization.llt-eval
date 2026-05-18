@@ -3,6 +3,6 @@
 [collect [take 1
     [filter
      [fn [x] [< x 10]]
-     [seq 5 [seq [error "should not evaluate"] []]]]]]
+     [seq 5 [seq [raise "should not evaluate"] []]]]]]
 === out
 Dict({0: Int(5)})

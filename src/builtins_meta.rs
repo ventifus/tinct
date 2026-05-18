@@ -81,17 +81,17 @@ pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(forced, call_span)
 }
 
-/// `error`: takes 1 arg (String message), always raises.
+/// `raise`: takes 1 arg (String message), always raises.
 /// Inherently materializing: constructs concrete error value.
-pub(crate) fn builtin_error(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("error", args, named, &ctx, call_span)?;
-    let msg = require_string("error", val, args[0].span)?;
+    let val = crate::builtins::expect_one_arg("raise", args, named, &ctx, call_span)?;
+    let msg = require_string("raise", val, args[0].span)?;
     Err(EvalError::user_error(msg.to_string(), call_span).into())
 }
 
@@ -178,11 +178,11 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
                 _ => {}
             }
-            // Error: return Value::Variant { tag: "Err", payload: Some(message) }
+            // Error: return Value::Variant { tag: "Error", payload: Some(message) }
             let msg_thunk_id = ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span)?);
             ok_val(
                 Value::Variant {
-                    tag: "Err".to_string(),
+                    tag: "Error".to_string(),
                     payload: Some(msg_thunk_id),
                 },
                 call_span,
