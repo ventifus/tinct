@@ -531,7 +531,7 @@ The `%` prefix on injected cap names makes them visually distinct from user-defi
 
 **`--no-libdir`** — Suppresses `%libdir`. Programs that attempt `[include %libdir "io.llt"]` receive an undefined variable error. The embedded stdlib (prelude) is always available via builtins; `--no-libdir` only affects `[include %libdir ...]` calls. Rarely needed — libdir is safe language infrastructure.
 
-**`--cap-fs NAME=PATH`** — Inject an additional named `DirCap`. Creates a directory capability for `PATH` and binds it as `%NAME` in the root environment. Repeatable; each flag adds one cap. Example:
+**`--cap-fs NAME=PATH[:MODE]`** — Inject an additional named `DirCap`. Creates a directory capability for `PATH` and binds it as `%NAME` in the root environment. Repeatable; each flag adds one cap. Example:
 
 ```bash
 # %data is a DirCap for /var/data; %out is a DirCap for /tmp/output
@@ -539,6 +539,81 @@ tinct run --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
 ```
 
 Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program can call `[open %data "config.json" "r"]` but cannot open files outside `/var/data` via `%data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
+
+**DirCap permission flags.** `DirCap` carries a set of orthogonal permission flags that restrict what operations the cap authorizes. The optional `:MODE` suffix on `--cap-fs` controls which flags are granted:
+
+| Flag | What it enables |
+|------|----------------|
+| `Readable` | Open files for reading (`open`, `slurp`, `lines`) |
+| `Statable` | Read file metadata — name, type, size, mtime — via `stat`-style queries; does not allow reading file content |
+| `Listable` | Enumerate directory entries via `list-dir`; implies `Statable` |
+| `Writable` | Write and create files: `open "w"`, `write`, `write-atomic` |
+| `Appendable` | Open files in append mode; no overwrite, no delete |
+| `Deletable` | Remove files and directories: `delete-file` |
+| `Renameable` | Rename or move files within the tree: `rename-file` |
+
+Flags are purely additive. **Shorthand mode letters** compose by union — each letter grants a bundle of flags:
+
+| Letter | Flags granted | Rationale |
+|--------|--------------|-----------|
+| `r` | `Readable Listable Statable` | Reading implies being able to enumerate and inspect metadata |
+| `w` | `Writable Appendable Deletable Renameable` | All mutation authority |
+| `a` | `Appendable` | Strict append-only; no overwrite, read, or enumeration |
+| `s` | `Statable` | Metadata queries only — no content reads, no listing |
+| `l` | `Listable Statable` | Directory traversal — enumerate entries and metadata; no file reads |
+
+Letters compose by union: `rw` = `r` ∪ `w` = all seven flags. No mode defaults to full access (`:rw`), matching the behavior of the flag without a `:MODE` suffix.
+
+```bash
+--cap-fs root=.:r          # read files, list dirs, stat metadata
+--cap-fs out=./build:w     # write/create/delete/rename — no reads
+--cap-fs log=/var/log:a    # append-only log directory
+--cap-fs src=./src:l       # walk tree and inspect metadata; no file reads
+--cap-fs cache=.:rw        # full read-write (explicit; same as no suffix)
+```
+
+**Extended capability list.** When the shorthand letter bundles are too coarse, specify a tinct-style whitespace-separated list of flag names directly:
+
+```bash
+--cap-fs data='./data:[Readable Statable]'      # read content + stat; no listing
+--cap-fs scratch='./tmp:[Writable Appendable]'  # write and append; no delete or rename
+--cap-fs marker='./deploy:[Statable]'           # stat-only; existence and freshness checks
+```
+
+The extended form is detected by the mode starting with `[`. Flag names are case-sensitive (capitalize the first letter). Unknown names are a startup error.
+
+**Type annotations.** The type of a `DirCap` value in LLT source reflects its permission set via a row-polymorphic capability list:
+
+```tinct
+--- caps: [%root:  @[DirCap [Readable Listable Statable]]]
+--- caps: [%out:   @[DirCap [Writable Deletable Renameable]]]
+--- caps: [%log:   @[DirCap [Appendable]]]
+--- caps: [%data:  @[DirCap [Readable Statable]]]
+```
+
+The `...` row tail (same as in record types) expresses "at least these flags, plus possibly others":
+
+```tinct
+open     [cap@[DirCap [Readable ...]]  path@String "r"] → Handle@[Readable ...]
+list-dir [cap@[DirCap [Listable ...]]  path@String]     → [Seq Dict]
+write    [cap@[DirCap [Writable ...]]  path@String content@String]
+```
+
+A caller passing `[DirCap [Readable Listable Writable]]` to `write` satisfies `[DirCap [Writable ...]]` because `Writable` is present and `...` absorbs the remaining flags. Without the tail, `[DirCap [Writable]]` would be an exact type that rejects caps holding additional flags.
+
+**`%pwd` default permissions.** `%pwd` is injected with all seven flags — full authority over the working directory, matching the previous all-or-nothing behavior but now tracked in the type system as `[DirCap [Readable Listable Statable Writable Appendable Deletable Renameable]]`.
+
+**In-script attenuation.** A script can further restrict a `DirCap` before passing it to untrusted helpers using `narrow` with an explicit flag list:
+
+```tinct
+# Received %dir with full permissions; pass read-only to helper
+[helper [narrow %dir Readable Listable Statable]]
+
+# Pass write-only to output function
+[write-output [narrow %dir Writable]]
+```
+
+`narrow` with flags not present in the source cap is a runtime error ("cannot amplify capability"). `narrow` with a subdirectory path restricts the path root without changing which flags are held — both attenuation axes can be combined.
 
 **`--cap-net NAME=ENTRY`** — Inject a network capability as `%NAME` in the root environment. `ENTRY` accepts a connector dict or protocol specifier.
 
