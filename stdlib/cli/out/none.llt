@@ -1,0 +1,4 @@
+# Output: none — forces the value (collects Seq if needed) and emits nothing.
+# Used for side-effect-only pipelines: tinct run -o none script.llt
+[if [seq? %] [collect %] %]
+[]
