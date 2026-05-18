@@ -58,6 +58,7 @@ scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
 
 ### `sequential-strict`: Make Sequential bindings strict + raise depth limit
 
+**Whatif:** `let-binding`
 Fixes the `sequential-lazy` and partially fixes `depth-limit-toml` Known Bugs.
 See Known Bugs section for root cause analysis and panel review findings.
 
@@ -4375,6 +4376,7 @@ Generalize `Cont::BuiltinForceArg` to iterate all `Seq`/`Spine` positions using 
 
 ### error-context: Error Context & Suggestions
 
+**Whatif:** `circular-dep-error-paths`
 Richer error context for debugging.
 
 - [x] Add available keys to `key_not_found` errors for "did you mean?" suggestions (use `strsim` crate for edit-distance matching) (completed in error-context sprint — strsim Jaro-Winkler > 0.8 threshold, available_keys field on KeyNotFound, fallback to listing up to 5 keys)
@@ -5002,6 +5004,7 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 
 ### let-binding
 
+**Whatif:** `let-binding`
 - [x] Parser: fn body accepts expression sequence until closing ]
 - [x] Expr::Sequential variant + evaluator: intermediate dicts extend scope sequentially
 - [x] Type checker: Sequential inference with intermediate Record field extension
@@ -5606,6 +5609,7 @@ Audit findings from 2026-05-11. Focus: public-facing functions only. Internal he
 
 ### constraint-annotations: fn@[...] metadata dict with return:, constraint:, doc:
 
+**Whatif:** `constraint-annotations`
 Accepted 2026-05-11. See `doc/whatif/constraint-annotations.md`. Lands before HKT — uses existing hardcoded constraint infrastructure.
 
 - [x] Add `doc: Option<String>` field to `TypeScheme` in `src/types.rs`; default to `None` in `TypeScheme::mono()` and all `generalize()` construction sites; update `TypeScheme` `Display` to NOT include `doc` (LSP hover handles it separately)
@@ -5857,6 +5861,7 @@ Gaps identified in Cycle #246 analysis. None require design work — these are c
 
 ### seq-lazy-bindings: Sequential let-binding values should be lazy thunks
 
+**Whatif:** `let-binding`
 `Expr::Sequential` in `[fn ...]` bodies (and wherever else `eval.rs` processes intermediate dict expressions) forces each named binding's value to WHNF before inserting it into the child scope (`eval.rs:687-690`). Only the **key** needs to be known for scope-chain construction — the value should remain a lazy thunk, consistent with every other binding in the language. The current "strict let\*" behavior means a dead binding `[x: [error "boom"]] 42` fails instead of evaluating to `42`, contradicting LLT's laziness model. `doc/08-evaluation.md:899` incorrectly states this is "inherent" to scope chain construction. **Spec chapters:** `doc/08-evaluation.md §Strictness Exceptions §4 SEQ-SCOPE`, `doc/08-evaluation.md §Laziness Design` table row 997.
 
 - [x] In `src/eval.rs` `Expr::Sequential` arm (lines 683-693): replace the `materialize` + `Thunk::new_materialized` block with a direct insert of `val_thunk`; the dict structure (keys) is already known from the `materialize` at line 652-653 — no additional forcing of values is needed (`src/eval.rs`)
@@ -5876,6 +5881,7 @@ Three concrete issues surfaced during the `just docgen` refactor.
 
 ### multi-body-positions: Fix match arm syntax to keyed form + multi-body support
 
+**Whatif:** `let-binding`
 **Settled design:** Match arms use `pattern: body` keyed syntax — pattern is the KEY, body is the VALUE. Confirmed in `doc/whatif/completed/pattern-matching.md` (`n@Int: [+ n 1]`) and `doc/whatif/completed/error-patterns.md`. The current parser uses a wrong space-separated pattern-detection approach from an incorrectly implemented sprint.
 
 Grammar: `match_form = { keyword_match ~ value ~ (pattern ~ ":" ~ value)+ }`. **Spec chapters:** `doc/02-syntax.md §3.3.4`, `doc/14-patterns.md`.
@@ -7103,6 +7109,7 @@ Replaces `Unknown` signatures with proper polymorphic `TypeScheme`s using `Type:
 
 ### constraint-annotations: fn@[return: T constraint: [a: Comparable] doc: "..."]
 
+**Whatif:** `constraint-annotations`
 All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] constraint_annotation_basic.llt-eval — Comparable constraint attached to TypeVar
 - [x] constraint_annotation_unknown_class.llt-eval (type_errors/) — error on unknown class
@@ -7584,3 +7591,182 @@ Annotates public stdlib functions that had missing or Unknown type signatures, b
 - [x] **encoding.llt**: already annotated — all public functions have correct types (`stdlib/encoding.llt`)
 - [x] **numeric.llt**: fixed typo `fn@Str` → `fn@String` (`stdlib/numeric.llt`)
 - [x] Re-run LSP hover audit and add corpus tests — moved to `panel-17-perf-tests`
+
+### cli-seq-drain-cleanup: Remove implicit top-level Seq drain; add none.llt output program
+
+**Spec chapters:** `src/main.rs §run_eval`, `stdlib/cli/out/`
+
+The implicit drain in `main.rs:1878-1933` was added during `access-pipeline-phase2` to drive emit side-effects in generator pipelines. It became vestigial when `remove-emitted-flag` retired the `emitted` flag and the `-o outprogram` model made output explicit. The drain should now be driven by the output program, not the CLI unconditionally.
+
+Migration: emit-based programs without `-o` should use `-o none` (forces Seq, discards result); programs wanting JSON output should use `| collect` before `-o json`. `raw.llt` already handles Seq correctly.
+
+- [x] Remove the Seq drain block from `run_eval` in `src/main.rs:1878-1933` (`src/main.rs`)
+- [x] Add `stdlib/cli/out/none.llt` — forces the value (collects Seq if needed) and emits nothing; handles the "side-effect only" use case that the implicit drain served: `[if [seq? %] [collect %] %]` (`stdlib/cli/out/none.llt`)
+- [x] Fix `stdlib/cli/out/json-pretty.llt` — `json-value` falls through to `[true "null"]` for Seq; add `[[seq? val] [error "cannot serialize Seq to JSON — use | collect for JSON array output"]]` arm matching `json.llt` (`stdlib/cli/out/json-pretty.llt`)
+- [x] Audit `stdlib/cli/out/yaml.llt`, `toml.llt`, `csv.llt`, `env.llt`, `llt.llt` for silent Seq→null fallthrough; add explicit Seq error arms in each where missing (`stdlib/cli/out/`)
+- [x] Update CLI tests: rename `seq_at_top_level_is_drained` → `seq_at_top_level_no_output` (no drain, no output without -o); add `seq_with_none_formatter_drains_emit` (emit fires with `-o none`); update `seq_at_top_level_with_emit_runs_to_completion` to use `-o none` (`tests/cli_tests.rs`)
+- [x] Update `doc/12-tooling.md` or `doc/09-documents.md`: document that generator pipelines ending in a Seq require either `| collect` (for structured output) or `-o none` (for side-effect-only emit pipelines) (`doc/`)
+
+### mptc-runtime-dispatch: Fix MPTC instance registry and eliminate silent arithmetic fallback
+
+**Whatif:** `advanced-typeclasses`
+**Spec chapters:** `doc/whatif/completed/advanced-typeclasses.md §Runtime Dispatch via ClassEnv Lookup`
+
+The `typeclass-runtime-dispatch` DONE.md sprint was marked complete prematurely. Three bugs in the runtime dispatch path mean user-defined arithmetic instances (e.g. `[+ decimal1 decimal2]`) never actually dispatch — they silently fall through to the Rust arithmetic path which doesn't know about user types. Built-in Int/Float arithmetic works only because the Rust fallback covers it, masking all three bugs:
+
+1. `instance_registry` key is `(&'static str, String)` — single type; MPTC needs multiple determining-position types
+2. Registration uses `format!("arm_{}", arm_idx)` stub — keys never match any runtime type name
+3. `try_dispatch_method` looks for `"add"/"sub"/"mul"/"div"` but prelude instances declare `"+"/"-"/"*"/"/"` as dict keys
+
+The silent Rust fallback must be removed for arithmetic classes so bugs surface as errors. The `=` and `<` operators keep their Rust fallback until their instance coverage is complete (tracked separately).
+
+**Depends on:** `chr-gaps` (DONE — FD machinery complete; Gap 3 fixed InstanceEnv type-checker side; this sprint fixes the parallel runtime instance_registry)
+
+- [x] Add `determines: Vec<(Vec<usize>, Vec<usize>)>` field to `RuntimeClassDecl` in `src/eval.rs:181`; populate it by changing `determines: _` to `determines` in `Expr::ClassDecl` evaluation at `src/eval.rs:1293` and storing it in the `RuntimeClassDecl` construction at line 1324 (`src/eval.rs`)
+- [x] Change `instance_registry` key type from `HashMap<(&'static str, String), Rc<Thunk>>` to `HashMap<(&'static str, Vec<String>), Rc<Thunk>>` in `src/eval.rs:173`; update all 3 `HashMap::new()` construction sites (lines ~274, 312, 359) and the `instance_registry.insert(...)` call at line 1407 (`src/eval.rs`)
+- [x] Fix instance arm registration (replaces chr-gaps Post-Gap-1): change `_pattern_expr` to `pattern_expr` at `src/eval.rs:1360`; look up the class's `determines` FD from `class_registry`; walk `pattern_expr` params (a `LetDecl` with annotated params) to extract the annotation string at each determining position index; build `Vec<String>` key (e.g. `["Int", "Float"]` for `[let a@Int b@Float c@Float]` with FD `[0,1]→[2]`); for single-param classes with no FD, use `vec![type_name_from_param_0]` (`src/eval.rs:1360-1410`)
+- [x] Update `try_dispatch_method` in `src/builtins_math.rs:28`: add `num_determining: usize` parameter; materialize `args[0..num_determining]`, collect `.type_name()` for each into `Vec<String>`; look up by `(&'static str, Vec<String>)` key; **remove the `return None` fallback path when class is registered but type not found** — instead return `Some(Err(...))` with a clear error "no [ClassName] instance for type(s) [T1, T2]" (`src/builtins_math.rs`)
+- [x] Fix method names at call sites in `src/builtins_math.rs`: `"add"→"+"` (line 172), `"sub"→"-"` (line 201), `"mul"→"*"` (line 230), `"div"→"/"` (line 259) (`src/builtins_math.rs`)
+- [x] Update all `try_dispatch_method` call sites with `num_determining`: Addable/Subtractable/Multipliable/Divisible → 2; Equatable/Comparable → 1 (`src/builtins_math.rs`)
+- [x] Update Showable inline dispatch in `src/builtins_string.rs` lines 51-89: change `(&'static str, String)` lookup to `(&'static str, Vec<String>)` lookup; build `vec![type_name]` for lookup; keep Rust fallback for Showable (instance coverage not yet complete) (`src/builtins_string.rs`)
+- [x] Remove the `// Fall through to existing Rust dispatch` paths for `+`, `-`, `*`, `/` in `src/builtins_math.rs` — replace with `Err(EvalError::no_instance(class_name, &[type_name], call_span))` when dispatch returns no match; add `ErrorKind::NoInstance { class: String, types: Vec<String> }` to `src/error.rs` (`src/builtins_math.rs`, `src/error.rs`)
+- [x] Corpus test: `tests/corpus/eval/stdlib/mptc_user_dispatch.llt-eval` — define a nominal type `Celsius` wrapping `Float`, declare `[instance Addable [let a@Celsius b@Celsius c@Celsius]: [+: [fn [x y] [Celsius [+ x.0 y.0]]]]]`, verify `[+ [Celsius 20.0] [Celsius 5.0]]` → `Variant(Celsius, Float(25.0))` and NOT a Rust arithmetic result (`tests/corpus/eval/stdlib/`)
+- [x] Corpus test: `tests/corpus/eval/errors/mptc_no_instance.llt-eval` — `[+ "hello" "world"]` with no StringAddable instance → error containing "no Addable instance" (`tests/corpus/eval/errors/`)
+- [x] Verify all existing arithmetic corpus tests still pass — Int/Float arithmetic routes through prelude Addable instances (not Rust fallback) and produces identical results (`tests/corpus/`)
+
+### include-pwd-bug: Fix `builtin_include` overriding `%pwd` per included file
+
+`builtins_meta.rs:1445-1454` overrides `%pwd` in each included file's scope to point to the included file's own directory cap ("so that `[include %pwd "sibling.llt"]` resolves relative to the included file's directory"). This is incorrect — `%pwd` must be the host's working directory (wherever `tinct run` was invoked), constant throughout the process. The per-file injection violates this invariant and breaks content-addressed include caching (same source at different paths would need different `%pwd` values). Fix: remove the `%pwd` injection block at `builtins_meta.rs:1447-1454`; included files should inherit `%pwd` from the parent eval context unchanged.
+
+- [x] Remove the `%pwd` injection at `src/builtins_meta.rs:1447-1454`
+- [x] Verify no stdlib files rely on per-file `%pwd` (they should all use `%libdir`)
+- [x] Verify `just test` passes
+
+### recursive-type-alias-placeholder: Return proper recursive type instead of Unknown
+
+**Whatif:** `algebraic-data-types`
+**Spec chapters:** `doc/whatif/completed/algebraic-data-types.md §Phase 4`, `src/typecheck_annot.rs`
+
+When a recursive type alias self-references during expansion (e.g. `Tree a` inside `Tree`'s body), `typecheck_annot.rs:1660` returns `Type::Unknown` as a placeholder. This means fields typed as `[Tree a]` lose their type after the first level — tree traversal functions infer `Unknown` for the nested children rather than the recursive type. The equi-recursive depth guard infrastructure is already correct (`typecheck_annot.rs:1858`); only the placeholder value needs improving.
+
+- [x] At `src/typecheck_annot.rs:1660` ("Recursive reference detected — return Unknown as a placeholder"): instead of `Type::Unknown`, return the alias's type scheme instantiated fresh (i.e. return the same type that would be returned at depth 0, capped by the guard) — this gives the recursive position the correct type signature without infinite unfolding (`src/typecheck_annot.rs:1660`)
+- [x] Corpus test: `tests/corpus/eval/typecheck/recursive_adt_fields.llt-eval` — `Tree: [union Leaf [Node a [Tree a] [Tree a]]]`; `depth-1: [fn@Tree [let t] [match t [Leaf]: Leaf  [Node a l r]: l]]`; verify `depth-1` infers return type `Tree` not `Unknown` (`tests/corpus/eval/typecheck/`)
+- [x] Verify existing recursive alias tests still pass (no stack overflow) (`tests/`)
+
+### chr-gaps: Three critical CHR implementation gaps found in full audit
+
+Full audit (2026-05-17) found gaps preventing user-defined FD classes from working end-to-end.
+**Implementation order: Gap 2 → Gap 1 → Gap 3 → Gap 4** (Gap 2 is a one-liner that unblocks 1 and 3).
+
+**Gap 2 (CRITICAL — implement first) — FD fundep indices lost at constraint creation**
+
+`typecheck_annot.rs:703` hardcodes `fundeps = vec![]` for all user-defined classes. `ClassDecl.determines`
+is correctly populated during class registration and is accessible via `state.class_env`. This is a one-line fix.
+
+- [x] Replace line 703 in `src/typecheck_annot.rs` — change `let fundeps = vec![];` to `let fundeps = state.class_env.get(class_name).map(|decl| decl.determines.clone()).unwrap_or_default();` — `ClassDecl.determines: Vec<(Vec<usize>, Vec<usize>)>` matches the `Constraint::Class.fundeps` field type exactly; no struct changes needed (`src/typecheck_annot.rs:703`)
+- [x] Tests: `tests/corpus/eval/typecheck/fd_user_defined_propagates.llt-eval` — define a function annotated `[fn@c [$Merge a b c] [a@Dict b@Dict]]` where `Merge` has `determines: [[[a b] c]]`; verify type checker infers `c = Dict` without explicit annotation (`=== out` section shows `Fn@Dict [Dict Dict]`) (`tests/corpus/eval/typecheck/`)
+
+**Gap 1 (CRITICAL — implement second) — Type-stage resolver evaluation stubbed**
+
+`NormCtxt` has no access to the tinct evaluator at normalization time. The correct fix is to add
+`type_stage_env: Option<Rc<RefCell<Environment>>>` to `NormCtxt` (populated from `imports::build_type_stage_env()`)
+and a free function `evaluate_resolver` that calls the resolver thunk via a minimal EvalContext.
+
+- [x] Add `pub type_stage_env: Option<Rc<RefCell<Environment>>>` field to `NormCtxt` struct; populate it in `NormCtxt::new()` by calling `imports::build_type_stage_env()` (already exists but `#[allow(dead_code)]`; remove that attr) (`src/type_normalize.rs`, `src/imports.rs`)
+- [x] Add free function `evaluate_resolver(fn_name: &str, args: &[Type], env: &Rc<RefCell<Environment>>) -> Option<Type>` in `src/type_normalize.rs`: look up `fn_name` thunk in env; construct a minimal `EvalContext::new_empty(PathBuf::default(), Rc::clone(env), false)`; convert each `Type` arg to a type-dict thunk via `type_to_dict_thunk(ty)` (inverse of the existing `resolve_type_dict`); call `eval::invoke_function`; materialize; call `resolve_type_dict` on result → `Type` (`src/type_normalize.rs`)
+- [x] Replace the cache-miss stub at `src/type_normalize.rs:145-150` with: if `ctx.type_stage_env` is `Some(env)`, call `evaluate_resolver(fn_name, &normalized_args, env)`; on `Some(resolved)` insert into `ctx.resolver_cache` and return; on `None` return stuck `TypeStageApp` as before (`src/type_normalize.rs:145-150`)
+- [x] Replace the `continue` stub at `src/type_unify.rs:520-525`: when `class_decl.resolver.is_some()` and all determining positions are ground, call `normalize(Type::TypeStageApp { fn_name: resolver.clone(), args: det_ground_types }, &state.subst, &mut norm_ctx)` and use the result as the determined type; construct `norm_ctx` from `NormCtxt::new()` (which now carries `type_stage_env`) (`src/type_unify.rs:520-525`)
+- [x] Tests: `tests/corpus/eval/typecheck/fd_arithmetic_resolves.llt-eval` — `[fn@[$Add a b c] [a@Int b@Float]] 1 2.0` should infer return type `Float`; currently blocked (comment in TODO confirms FD tests blocked); `tests/corpus/eval/typecheck/fd_user_merge.llt-eval` — user-defined `Merge` class with `--- stage: type` resolver function, `[instance Merge [Dict Dict Dict] ...]`, call site; expect `c = Dict` resolved via resolver (`tests/corpus/eval/typecheck/`)
+
+**Gap 3 (PARTIAL — implement third) — MPTC instance lookup API missing for user-defined classes**
+
+`InstanceEnv.instances` uses `(class_name, single_type_string)` keys. For user-defined MPTCs, the key
+must be `(class_name, Vec<String>)` covering all determining type positions.
+
+- [x] Change `InstanceEnv.instances` key from `(String, String)` to `(String, Vec<String>)` in `src/type_class.rs`; update `insert()` to build key as `(class_name, determining_type_strings)` where `determining_type_strings` is the vec of string-formatted types at `ClassDecl.determines` positions; update `get()` for compatibility (`src/type_class.rs`)
+- [x] Add `InstanceEnv::lookup_mptc(&self, class: &str, determining_types: &[Type]) -> Option<&InstanceDecl>`: build key as `(class.to_string(), determining_types.iter().map(type_to_string_key).collect())`; delegate to `self.instances.get(&key)` (`src/type_class.rs`)
+- [x] Replace the `_ => Err(...)` general path at `src/type_unify.rs:641-653` with a call to `state.instance_env.lookup_mptc(class, &det_ground_types)`; on `Some(inst)` extract the determined type from the instance arm and return it; on `None` return the existing error (`src/type_unify.rs:641-653`)
+- [x] Tests: `tests/corpus/eval/typecheck/mptc_user_lookup.llt-eval` — define `Concat` class with `[determines: [[[a b] c]] ...]` and `[instance Concat [[Str Str] Str] concat: [fn@Str [x@Str y@Str] [builtin-join "" [x y]]]]`; call `[concat "hello" " world"]`; expect `=== out` `"hello world"` with inferred type `Str` (`tests/corpus/eval/typecheck/`)
+
+**Gap 4 (MINOR — implement independently) — resolver_injective has no parser support**
+
+`ClassDecl.resolver_injective` exists (`type_class.rs:98`), hardcoded `false` everywhere, never read.
+
+- [x] In the class structural-metadata bracket parser (`src/parser.rs` — second positional bracket of `[class [...] [...] ...]`), add handling for key `injective:` alongside existing `determines:` and `resolver:`; when present with value `true`, set flag in parsed metadata (`src/parser.rs`)
+- [x] At `src/typecheck.rs:2424` (ClassDecl construction): read `resolver_injective` from parsed metadata and pass to `ClassDecl` (`src/typecheck.rs:2424`)
+- [x] Tests: `tests/corpus/eval/typecheck/resolver_injective_flag.llt-eval` — define a class with `injective: true`; verify it parses without error and `just test` passes; semantic effect is a no-op stub for now (`tests/corpus/eval/typecheck/`)
+
+**Post-Gap-1 follow-up — wiring eval to extract type tag from pattern_expr**
+
+- [x] At `src/eval.rs:1385`: extract the canonical type tag from `pattern_expr` and pass it to the boundary guard elaboration path (`src/eval.rs:1385`)
+
+**Post-Gap-4 follow-up — class declaration formatter**
+
+`src/formatter.rs:525` is a TODO to emit the structural metadata bracket (`[determines: [...] resolver: ...]`) when formatting a class declaration that has functional dependency or resolver fields. Currently silently omitted, causing round-trip loss.
+
+- [x] At `src/formatter.rs:525`: emit the class structural-metadata bracket when `determines` or `resolver` fields are non-empty; use the same bracket syntax the parser accepts (`src/formatter.rs:525`)
+
+### type-warning-channel: Emit typecheck diagnostics to LSP and CLI
+
+The type-warning infrastructure is wired (InferState collects diagnostics, EvalContext has a channel slot) but emission is stubbed at both ends. Two call sites in `src/main.rs` and one in `src/lsp/document.rs` collect diagnostics then drop them.
+
+- [x] In `src/lsp/document.rs:135`: convert collected `Vec<TypeError>` diagnostics to LSP `Diagnostic` structs and publish via `publishDiagnostics` notification; use existing span-to-range conversion helpers already present in the file (`src/lsp/document.rs:135`)
+- [x] In `src/main.rs:1727`: emit collected diagnostics to stderr using `format_type_error`; apply the same severity mapping used for hard errors (`src/main.rs:1727`)
+- [x] In `src/main.rs:1965`: same as above for the second call site (`src/main.rs:1965`)
+- [x] Tests: corpus test with a type warning (e.g., `@Unknown` annotation) verifies warning appears in CLI output; LSP test verifies `publishDiagnostics` fires for a file with a type warning (`tests/corpus/`, `tests/lsp_corpus_tests.rs`)
+
+### typecheck-gaps: Small typecheck correctness fixes
+
+(Moved to DONE.md directly — content recorded in health-review commits 9e245e5. Items subsumed into `error-nominal` sprint for `raise`/`Never` typing.)
+
+### io-phase2: `--libdir-path`, `source_file` attribution, and SPKI extraction
+
+Three unrelated I/O and infrastructure gaps that have no sprint home.
+
+- [x] Add `--libdir-path PATH` CLI flag at `src/main.rs:1197`: override the stdlib directory for custom installations where `stdlib/` is not co-located with the binary; fall back to the current sibling-of-binary detection when flag is absent; wire through to `build_prelude_env()` via `EvalConfig` (`src/main.rs:1197`, `src/imports.rs`)
+- [x] Wire `source_file` through `EvalContext` at `src/eval.rs:1044`: the child `EvalContext` constructed for builtin call environments sets `source_file: None`, losing the originating file path for error attribution; propagate from the parent context (`src/eval.rs:1044`)
+- [x] Implement SPKI extraction in `builtin_tls_peer_cert` at `src/builtins_io.rs:3166`: properly parse the X.509 DER bytes to extract the SubjectPublicKeyInfo field; the `rustls` or `x509-parser` crate already in the dependency tree provides DER parsing (`src/builtins_io.rs:3166`)
+- [x] Note: QUIC datagram send/recv (`src/builtins_io.rs:4122`) requires async send/recv not available in the synchronous builtin model; tracked in `doc/whatif/async-eval.md`; no implementation sprint until async-eval is accepted and lands
+
+### panel-19-followup: Performance and security improvements from 19th review
+
+- [x] Add unit tests for `compute_sccs()` in typecheck_dict.rs — cover empty, two-node cycle, linear chain, diamond DAG; Tarjan algorithm is complex enough that corpus-only coverage is insufficient for lowlink propagation and root detection paths (`src/typecheck_dict.rs`)
+- [x] Add unit test for `compact_levels()` — verify unified TypeVar names are removed from levels HashMap after compact_levels() call; silent perf regression risk with no crash signal (`src/type_infer.rs:376-380`)
+- [x] Add unit test modules for builtins_math.rs and builtins_string.rs — cover MAX_SAFE_INT boundary (9007199254740992), try_dispatch_method fast-path, MAX_SPLIT_PARTS guard (`src/builtins_math.rs`, `src/builtins_string.rs`)
+- [x] Bump EVAL_LAZINESS_MIN from 37 to 40 and add 3 laziness proof tests (`tests/corpus_tests.rs`)
+- [x] SCC merge incremental optimization — current full re-merge is O(N×S); add snapshot tracking to only re-process entries whose value changed between SCC iterations (mitigation for O(N²) prelude startup cost) (`src/typecheck_dict.rs:516-542`)
+- [x] `intern_class_name` Box::leak — replace `Box::leak` fallback for user-defined class names with a thread-local intern table leaking each unique name only once, or change `instance_registry` key from `(&'static str, String)` to `(String, String)` to eliminate Box::leak entirely (`src/eval.rs:1480`)
+- [x] `values_eq_impl` depth parameter — add explicit `depth: usize` guard to make the implicit MAX_EVAL_DEPTH bound explicit and future-proof (`src/builtins_math.rs:378`)
+- [x] `instance_registry` lookup String allocation — change key from `(&'static str, String)` to `(&'static str, &'static str)` to eliminate `.to_string()` allocation per dispatch lookup (`src/builtins_math.rs:55`, `src/builtins_string.rs:62`)
+
+### doc-consistency: Fill content gaps and fix feature-doc stale language
+
+Doc consistency audit (2026-05-18). Principle: whatifs are the primary historical artifact (combined with git history). Main docs (`doc/*.md`) are the authoritative, atemporal reference — no temporal or hedging language, no references to whatifs, no "previously"/"planned"/"future" framing. Feature docs (`doc/feature/`) are optional deep-dive specs that may cross-reference whatifs as design history.
+
+**Immediate fixes already applied (2026-05-18):**
+- `doc/16-architecture.md:521` — removed "LLT has no network builtins" (replaced with NetCap description)
+- `doc/11a-builtins.md:735` — renamed "Future Async Builtins" → "Async Builtins"; updated framing
+- `doc/09-documents.md:299,794` — removed "Previously such bindings were silently ignored" and "Previously known defect (resolved)"
+- `doc/07-type-extensions.md:655,792` — removed migration-instruction language ("is replaced by," "become")
+- `doc/10-errors.md:436,729,937,945` — removed "currently," "future renderers," "backward compat during migration"
+- `doc/06-type-inference.md:914` — fixed reference `doc/whatif/chr-unification.md` → `doc/feature/chr-unification.md`
+
+- [x] Add type-stage resolver syntax to `doc/06-type-inference.md`: show how to write a resolver in a `--- stage: type ---` section; `[class [...] [determines: [...] resolver: fn-name]]` form with a worked example; source: `doc/feature/chr-unification.md §Type-Stage Resolvers` (`doc/06-type-inference.md`)
+- [x] Add BAS intersection and negation annotation syntax to `doc/05-type-annotations.md`: `@[[all A B]]` for intersection, `@[[without A]]` for negation; currently absent from the annotation chapter (`doc/05-type-annotations.md`)
+- [x] Add stdlib typeclass hierarchy section to `doc/11-stdlib.md`: `Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`, `Mappable`, `Appendable` with method signatures; source: `doc/feature/hkt-monads.md §Typeclass Hierarchy` (`doc/11-stdlib.md`)
+- [x] Add `[do]` desugaring section to `doc/06-type-inference.md`: `[do [bind x: expr] body]` → `[>>= expr [fn [let x] body]]`, monad inference from return annotation, `>>=`/`>>` method lookup; source: `doc/feature/hkt-monads.md §do Desugaring` (`doc/06-type-inference.md`)
+- [x] Add NetCap allowlist behavior to `doc/11a-builtins.md`: DNS pinning, allowlist precedence, IPv4-mapped IPv6 handling; `doc/feature/io.md:342` explicitly flags this as undocumented (`doc/11a-builtins.md`)
+- [x] `doc/feature/io.md:575-579,710` — remove "Phase 2 (future):" annotations for `Type::DirCap`, `Type::NetCap`, `Type::Handle`; these are implemented; rewrite as current fact (`doc/feature/io.md`)
+- [x] `doc/whatif/completed/constraint-annotations.md` → verified `doc/05-type-annotations.md` covers `fn@[return: T constraint: [a: Comparable] doc: "..."]` dict syntax (lines 199, 214, 291, 353-381 cover all syntax forms) (`doc/05-type-annotations.md`)
+- [x] `doc/whatif/completed/builtin-privacy.md` → verify `doc/11a-builtins.md` covers `builtin-*` alias env-layer isolation and T009 warning; add if missing (`doc/11a-builtins.md`)
+- [x] `doc/whatif/completed/multi-line-strings.md` → verify `doc/02-syntax.md` covers `"""..."""` triple-quoted strings, `unindent`, and `i"""..."""` interpolation; add if missing (`doc/02-syntax.md`)
+- [x] `doc/whatif/completed/dir-cap-permissions.md` → verify `doc/11a-builtins.md` and `doc/12-tooling.md` cover `DirPerms` flags, `--cap-fs name=path:mode` letter bundles, and `[DirCap [Readable ...]]` type annotation; add if missing (`doc/11a-builtins.md`, `doc/12-tooling.md`)
+
+### hkt-monads-followup: Remaining items from /review-whatif hkt-monads
+
+**Whatif:** `hkt-monads`
+**Spec chapters:** `doc/whatif/completed/hkt-monads.md`, `src/error.rs`, `doc/10-errors.md`
+
+- [x] Assign `E091` to `ErrorKind::KindMismatch` in `src/error.rs` (or equivalent variant for kind-mismatch errors); add E091 to all three tables in `doc/10-errors.md` (variant catalog, codes table, categories table) (`src/error.rs`, `doc/10-errors.md`)
+- [x] Add corpus test `tests/corpus/eval/stdlib/hkt_monad_maybe_do.llt-eval`: explicit `[do MonadMaybe [x: [Some 42]] [Some [+ x 1]]]` — expect `Variant(Some, Int(43))` (`tests/corpus/eval/stdlib/`)
+- [x] Add corpus test `tests/corpus/eval/stdlib/hkt_monad_result_do.llt-eval`: explicit `[do MonadResult [x: [ok: 1]] [ok: [+ x 1]]]` — expect `Dict([ok: Int(2)])` (`tests/corpus/eval/stdlib/`)
