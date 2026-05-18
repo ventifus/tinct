@@ -18,7 +18,7 @@
 [
 
 # Ensure pattern is a string (extracts .pattern from compiled dict, or passes through)
-re-ensure-pattern: [fn@String [pattern]
+re-ensure-pattern: [fn@String [pattern@Unknown]
     [if [= [type-of pattern] "String"]
         pattern
         [if [has? pattern "pattern"]
@@ -87,23 +87,23 @@ re-compile@[doc: "Compile a pattern (currently a no-op, just returns the pattern
     [pattern: pattern]]
 
 # Test if string contains pattern anywhere
-re-match@[doc: "Test if string contains pattern anywhere"]: [fn@Bool [pattern haystack@String]
+re-match@[doc: "Test if string contains pattern anywhere"]: [fn@Bool [pattern@Unknown haystack@String]
     [re-match-impl [re-ensure-pattern pattern] haystack 0 [length haystack]]]
 
 # Find first match (returns [match: String start: Int end: Int] or [])
-re-find@[doc: "Find first match"]: [fn@Dict [pattern haystack@String]
+re-find@[doc: "Find first match"]: [fn@Dict [pattern@Unknown haystack@String]
     [re-find-impl [re-ensure-pattern pattern] haystack 0 [length haystack]]]
 
 # Find all matches (returns dict of match result dicts)
-re-findall@[doc: "Find all matches (returns dict for simplicity)"]: [fn@Dict [pattern haystack@String]
+re-findall@[doc: "Find all matches (returns dict for simplicity)"]: [fn@Dict [pattern@Unknown haystack@String]
     [re-findall-impl [re-ensure-pattern pattern] haystack 0 [length haystack] []]]
 
 # Replace all matches with replacement string
-re-replace@[doc: "Replace all matches"]: [fn@String [pattern replacement@String haystack@String]
+re-replace@[doc: "Replace all matches"]: [fn@String [pattern@Unknown replacement@String haystack@String]
     [replace [re-ensure-pattern pattern] replacement haystack]]
 
 # Split on pattern
-re-split@[doc: "Split on pattern"]: [fn@Dict [pattern haystack@String]
+re-split@[doc: "Split on pattern"]: [fn@Dict [pattern@Unknown haystack@String]
     [split [re-ensure-pattern pattern] haystack]]
 
 # Escape replacement string (escape backslashes)

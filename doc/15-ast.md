@@ -170,7 +170,7 @@ struct Entry {
 /// A named argument in a call expression
 struct NamedArg {
     name: String,  // Always a bare identifier. `$key: val` syntax is rejected in call forms (only dict entries accept $-prefixed keys; see §Named Argument Key Normalization below).
-    value: Spanned<Expr>,
+    value: Rc<Spanned<Expr>>,
 }
 ```
 
@@ -188,6 +188,7 @@ struct Param {
 enum Annotation {
     Simple(String),               // x@Number — shorthand
     PropertyDict(Vec<Spanned<Entry>>),  // x@[type: Number  default: 30]
+    Annotated(String, Box<Annotation>),  // Seq@Int — chained annotation
 }
 ```
 
@@ -218,7 +219,7 @@ enum Annotation {
 | `Quote(expr)` | `[quote expr]` | Quote special form — prevents evaluation of expr |
 | `Unquote(expr)` | `[unquote expr]` | Unquote inside quote — evaluates expr and splices result into quoted AST |
 | `UnquoteSplice(expr)` | `[unquote-splice expr]` | Unquote-splice inside quote — evaluates expr (must be list) and splices each element into enclosing list |
-| `DefMacro { name, transformer }` | `[defmacro name fn]` | Macro definition — registers compile-time transformer function |
+| `DefMacro { name, params, body }` | `[defmacro name [params] body...]` | Macro definition — registers compile-time transformer function |
 | `Match { scrutinee, arms }` | `[match val pat1: body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
 | `ClassDecl { name, params, superclasses, methods }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters and method signatures |
 | `InstanceDecl { class_name, instance_type, methods }` | `[instance [Name Type] methods...]` | Type class instance with method implementations |

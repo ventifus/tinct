@@ -1,6 +1,6 @@
 //! Dict type inference with multi-pass binding and generalization.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{infer_expr, resolve_type_expr, TypeMap};
@@ -139,14 +139,14 @@ fn compute_sccs(entries: &[Spanned<Entry>], key_entries: &[(Option<String>, bool
 /// Sequential/Pipe chains (which are unbounded by the parser's MAX_PARSE_DEPTH).
 /// This mirrors the iterative Tarjan's algorithm above.
 fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usize>) -> Vec<usize> {
-    let mut deps = HashSet::new();
+    let mut deps: Vec<usize> = Vec::new();
     let mut worklist: Vec<&Spanned<Expr>> = vec![expr];
 
     while let Some(current) = worklist.pop() {
         match &current.node {
             Expr::VarRef { name, .. } => {
                 if let Some(&idx) = name_to_idx.get(name) {
-                    deps.insert(idx);
+                    deps.push(idx);
                 }
             }
             Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
@@ -224,7 +224,7 @@ fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usiz
         }
     }
 
-    deps.into_iter().collect()
+    deps
 }
 
 pub(crate) fn infer_dict(
@@ -260,7 +260,7 @@ pub(crate) fn infer_dict(
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
                     for p in params {
                         let fresh = format!("_t{}", state.name_counter);
-                        state.name_counter += 1;
+                        state.name_counter = state.name_counter.saturating_add(1);
                         state.levels.insert(fresh.clone(), state.level);
                         alias_ann_map.insert(p.clone(), fresh.clone());
                     }

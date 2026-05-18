@@ -496,12 +496,16 @@ impl Type {
                 let sup_is_any_function = sup_p.is_empty() && *pv;
 
                 if sub_is_any_function && sup_is_any_function {
-                    // Reflexivity: any-function <: any-function. Return true directly.
-                    // Cannot delegate to is_subtype(sub_r, sup_r) because Unknown is not
-                    // a subtype of Unknown under is_subtype (it hits a false-returning guard
-                    // before the a==b reflexivity check). The canonical any-function type
-                    // has ret:Unknown by definition, so two any-functions are always equal.
-                    return true;
+                    // Reflexivity: any-function <: any-function.
+                    // Both have params:[] and variadic:true, so only return type matters.
+                    // Special case: if both are Unknown, return true (Unknown is not reflexive
+                    // in is_subtype due to early guard, but the canonical any-function type
+                    // has ret:Unknown). Otherwise, check return type subtyping.
+                    match (&**sub_r, &**sup_r) {
+                        (Type::Unknown, Type::Unknown) => return true,
+                        _ if sub_r == sup_r => return true,
+                        _ => return Type::is_subtype(sub_r, sup_r),
+                    }
                 }
 
                 if sup_is_any_function && !sub_p.is_empty() {
@@ -791,7 +795,9 @@ impl Type {
             }
             // Top is consistent with everything (τ ~ Top for all τ)
             (Type::Top, _) | (_, Type::Top) => true,
-            // Never is consistent with everything (like Unknown, for gradual typing)
+            // Never is vacuously consistent with everything — Never is uninhabited, so no
+            // runtime value can violate the consistency relation. This is not AGT gradual
+            // consistency; it is vacuous truth.
             (Type::Never, _) | (_, Type::Never) => true,
             // TypeVar consistency: SOUND reflexivity check only.
             // Two TypeVars are consistent if they have the same name (same variable).
@@ -799,6 +805,11 @@ impl Type {
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             // Negation: structurally consistent
             (Type::Negation(t1), Type::Negation(t2)) => Type::is_consistent(t1, t2),
+            // Negation vs concrete type: consistent if the types are disjoint.
+            // If A is disjoint from B, then A ~ ~B (A is consistent with "not B").
+            (Type::Negation(inner), other) | (other, Type::Negation(inner)) => {
+                Type::types_are_disjoint(other, inner)
+            }
             // TypeStageApp is consistent with everything (pending computation)
             (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => true,
             // Capability types, Proxy: consistent only if equal (handled by a == b above)

@@ -211,7 +211,7 @@ The `unindent` stdlib function is the mechanism behind `"""..."""` and is indepe
 **Interpolated strings.** The `i"..."` and `i"""..."""` prefixes embed variable references directly:
 
 ```tinct
-i"Hello $name"                    # Desugars to: [str "Hello " name]
+i"Hello $name"                    # Desugars to: [tmpl "Hello $name"]
 i"Price: $$$amount"               # $$ escapes to literal $ → "Price: $42"
 i"""
   Dear $name,
@@ -219,7 +219,7 @@ i"""
   """                             # Interpolation + indentation stripping
 ```
 
-Variable names stop at common punctuation (`,`, `.`, `!`, `?`) in addition to whitespace and delimiters. Interpolated strings desugar to `[str ...]` calls at parse time.
+Variable names stop at common punctuation (`,`, `.`, `!`, `?`) in addition to whitespace and delimiters. Interpolated strings desugar to `[tmpl ...]` calls at parse time, where the template string encodes interpolations with `$name` placeholders (e.g., `i"Hello $name"` → `[tmpl "Hello $name"]`).
 
 ### Numbers
 
@@ -374,6 +374,11 @@ Only constructs that affect **binding structure** or **dict construction** are s
 | `call` | Triggers function application |
 | `fn` | Introduces parameter bindings, creates a new scope |
 | `type` | Compile-time type declaration |
+| `let` | Binding declaration list — introduces names in fn params, case, class, and instance contexts |
+| `case` | Match arm with explicit pattern scoping (inside `[match ...]`) |
+| `class` | Type class declaration |
+| `instance` | Type class instance implementation |
+| `pattern` | Instance arm pattern declaration |
 | `match` | Pattern matching with arm bindings |
 | `quote` | Captures AST as data without evaluating |
 | `unquote` | Splices values into quoted templates |
@@ -1053,7 +1058,7 @@ The parser determines how to interpret a `[]` by examining its first entry:
 
 **Newline before colon breaks Priority 4.** `[name\n: val]` is not a keyed entry — the colon lookahead only checks horizontal whitespace (spaces and tabs).
 
-**Horizontal-only lookahead:** The parser's `peek_next_horizontal` skips horizontal whitespace (spaces and tabs), semicolons, and comments, but stops at newlines. `Token::Semicolon` and `Token::Comment(_)` are skipped; `Token::Newline` immediately stops the lookahead.
+**Horizontal-only lookahead:** The parser's `peek_next_horizontal` skips horizontal whitespace (spaces and tabs) and `Token::Comment(_)` tokens, but stops immediately at both `Token::Newline` and `Token::Semicolon` — neither is skipped. So `[call\n: x]` and `[call;: x]` both parse as call forms, not dict entries.
 
 **Why parser-level:** The distinction between calls and data must be unambiguous before evaluation. The head-position rule classifies brackets at parse time, before any thunks are created.
 
