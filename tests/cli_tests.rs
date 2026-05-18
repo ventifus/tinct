@@ -2939,6 +2939,72 @@ fn literate_weave_verify_fail_when_expected_does_not_match_actual() {
 }
 
 // ---------------------------------------------------------------------------
+// Type warning channel: TypeDiagnostic emission to stderr
+// ---------------------------------------------------------------------------
+
+/// Verify that an explicit `@Unknown` annotation (T011) produces a diagnostic
+/// on stderr in non-strict mode.  The program must still evaluate successfully
+/// (type diagnostics are advisory and never block eval).
+///
+/// Regression test for the type-warning-channel sprint: the diagnostic
+/// infrastructure was wired but emission was stubbed with TODO comments.
+#[test]
+fn type_warning_explicit_unknown_emitted_on_stderr() {
+    // [f: [fn@Unknown [x] x]] produces a T011 "explicit @Unknown annotation"
+    // diagnostic from scan_type_quality.
+    let (path, _dir) = write_temp_llt(
+        "type_warn_explicit_unknown",
+        "[f: [fn@Unknown [x] x]]",
+    );
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    // Eval must succeed (T011 is advisory, not fatal).
+    assert!(
+        output.status.success(),
+        "expected success (T011 is advisory); stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The T011 diagnostic must appear on stderr.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("T011") || stderr.contains("explicit @Unknown"),
+        "expected T011 or 'explicit @Unknown' on stderr for @Unknown annotation; got: {stderr}"
+    );
+
+    // stdout must still be valid JSON (warning does not corrupt output).
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let _json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON despite warning");
+}
+
+/// Verify that `@Unknown` annotation diagnostic does NOT appear when there is
+/// no `@Unknown` annotation — i.e., the channel is not noisy for clean code.
+#[test]
+fn type_warning_not_emitted_for_clean_code() {
+    let (path, _dir) = write_temp_llt("type_warn_clean", "[x: 42]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success for clean code; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("T010") && !stderr.contains("T011"),
+        "expected no type diagnostics for clean code; stderr: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Seq-at-top-level handling (access-pipeline Phase 2)
 // ---------------------------------------------------------------------------
 

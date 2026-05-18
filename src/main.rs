@@ -1722,7 +1722,7 @@ fn run_eval(
                 tinct::build_prelude_env()
             }
         };
-        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
+        let (type_errors, _type_map, _doc_map, _scheme_map, type_diagnostics, infer_state, _final_env) =
             tinct::typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
                 &ast.node, type_env, false, // disable scheme_map (not needed for eval)
                 false, // not in prelude load
@@ -1746,7 +1746,17 @@ fn run_eval(
                 );
             }
         }
-        // TODO: Process diagnostics here (type-warning-channel infrastructure only, no emission yet)
+        // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
+        // These are advisory and never block evaluation, even in --strict mode.
+        if !type_diagnostics.is_empty() {
+            let diag_file_name = match stage {
+                PipelineStage::File(fp) => fp.as_str(),
+                PipelineStage::Expr(_) => "<expr>",
+            };
+            for d in &type_diagnostics {
+                eprintln!("{}", format_type_diagnostic(d, &source, diag_file_name));
+            }
+        }
 
         // Open base_dir as a cap-std Dir
         let base_dir =
@@ -1967,7 +1977,7 @@ fn run_fmt(
         tinct::resolve::resolve_file(&ast.node);
 
         let env = tinct::build_prelude_env();
-        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
+        let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
             tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
 
         if !type_errors.is_empty() {
@@ -1977,7 +1987,12 @@ fn run_fmt(
                 .collect();
             return Err(error_msgs.join("\n"));
         }
-        // TODO: Process diagnostics here (type-warning-channel infrastructure only, no emission yet)
+
+        // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
+        // These are advisory warnings and do not block formatting even in --strict mode.
+        for d in &fmt_diagnostics {
+            eprintln!("{}", format_type_diagnostic(d, &source, file_path));
+        }
     }
 
     // Resolve the formatter script from %libdir/cli/fmt/<name>.llt.

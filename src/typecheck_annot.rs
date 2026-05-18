@@ -1115,6 +1115,35 @@ pub(crate) fn resolve_annotation(
                         }
                     }
                 }
+                "Tuple" => {
+                    // @Tuple@[T0 T1 T2] → closed record {0: T0, 1: T1, 2: T2}
+                    // Parameterized form: takes positional entries as element types.
+                    match inner.as_ref() {
+                        Annotation::PropertyDict(entries) => {
+                            let mut fields = HashMap::new();
+                            for (idx, entry) in entries.iter().enumerate() {
+                                let elem_ty = resolve_type_expr(
+                                    &entry.node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                fields.insert(idx.to_string(), elem_ty);
+                            }
+                            Ok(Type::Record(Row { fields }))
+                        }
+                        _ => {
+                            // Single-type form: @Tuple@Int → {0: Int}
+                            let elem_ty = resolve_annotation(
+                                inner, env, span, state, ann_mapping, row_ann_mapping,
+                            )?;
+                            let mut fields = HashMap::new();
+                            fields.insert("0".to_string(), elem_ty);
+                            Ok(Type::Record(Row { fields }))
+                        }
+                    }
+                }
                 _ => {
                     // Unknown parameterized type — could be a type alias or error
                     Err(TypeError::new(
@@ -1613,6 +1642,7 @@ pub(crate) fn resolve_type_name_with_guard(
                 | "Dict"
                 | "Map"
                 | "Record"
+                | "Tuple"
                 | "Fn"
                 | "Never"
                 | "Top"
@@ -1719,6 +1749,12 @@ pub(crate) fn resolve_type_name(
         }
         "Record" => {
             // Bare @Record → open record (empty fields)
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+            }))
+        }
+        "Tuple" => {
+            // Bare @Tuple → empty closed record (zero-element tuple = Null)
             Ok(Type::Record(Row {
                 fields: HashMap::new(),
             }))
@@ -2353,6 +2389,18 @@ pub(crate) fn resolve_type_expr(
             // Check BEFORE parameterized alias lookup so built-in constructors have priority.
             if let Expr::VarRef { name, .. } = &func.node {
                 match name.as_str() {
+                    "Tuple" => {
+                        // [Tuple T0 T1 T2 ...] → closed record {0: T0, 1: T1, 2: T2, ...}
+                        // Encodes tuple types as closed records with integer-string field names.
+                        // args[0..] are the element types (func is "Tuple", args are the types).
+                        let mut fields = HashMap::new();
+                        for (idx, arg) in args.iter().enumerate() {
+                            let elem_ty =
+                                resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                            fields.insert(idx.to_string(), elem_ty);
+                        }
+                        return Ok(Type::Record(Row { fields }));
+                    }
                     "Seq" => {
                         if args.len() == 1 {
                             let elem_ty = resolve_type_expr(
@@ -2486,6 +2534,25 @@ pub(crate) fn resolve_type_dict(
                             } else {
                                 return Err(TypeError::new("Seq requires 1 type argument", span));
                             }
+                        }
+                        "Tuple" => {
+                            // [Tuple T0 T1 T2 ...] → closed record {0: T0, 1: T1, 2: T2, ...}
+                            // Encodes tuple types as closed records with integer-string field names.
+                            // Matches the evaluation model: tuples are dicts with integer keys.
+                            // Zero-element tuple → empty closed record (Null type).
+                            // entries[0] is the "Tuple" keyword; entries[1..] are the element types.
+                            let mut fields = HashMap::new();
+                            for (idx, entry) in entries[1..].iter().enumerate() {
+                                let elem_ty = resolve_type_expr(
+                                    &entry.node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                fields.insert(idx.to_string(), elem_ty);
+                            }
+                            return Ok(Type::Record(Row { fields }));
                         }
                         "Map" => {
                             if entries.len() == 3 {
