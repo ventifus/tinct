@@ -355,7 +355,7 @@ pub(crate) use crate::builtins_io::{
     builtin_write_atomic, builtin_write_handle,
 };
 
-// Type/eval/meta builtins: type-of, eval, include, error, try, apply, validate.
+// Type/eval/meta builtins: type-of, deep-materialize, include, error, try, apply, validate.
 // Implementations live in builtins_meta.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 #[cfg(test)]
@@ -1205,8 +1205,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
         // Evaluation control
-        builtin!("eval", builtin_eval, [Strictness::Seq]),
-        builtin!("force", builtin_force, [Strictness::Seq]),
+        builtin!("deep-materialize", builtin_eval, [Strictness::Seq]),
+        builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("error", builtin_error, [Strictness::Seq]),
         builtin!("try", builtin_try, [Strictness::Id]),
         builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
@@ -1594,10 +1594,10 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "if");
             insert(&env, "error");
             insert(&env, "try");
-            insert(&env, "force");
+            insert(&env, "materialize");
             insert(&env, "until");
             // Evaluation control
-            insert(&env, "eval");
+            insert(&env, "deep-materialize");
             insert(&env, "apply");
             insert(&env, "eval-ast");
             insert(&env, "gensym");
@@ -6547,8 +6547,8 @@ mod tests {
         assert!(names.contains(&"to-int"), "missing to-int");
         assert!(names.contains(&"to-float"), "missing to-float");
         // Evaluation control
-        assert!(names.contains(&"eval"), "missing eval");
-        assert!(names.contains(&"force"), "missing force");
+        assert!(names.contains(&"deep-materialize"), "missing deep-materialize");
+        assert!(names.contains(&"materialize"), "missing materialize");
         assert!(names.contains(&"error"), "missing error");
         assert!(names.contains(&"try"), "missing try");
         assert!(names.contains(&"apply"), "missing apply");

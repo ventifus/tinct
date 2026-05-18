@@ -1608,9 +1608,9 @@ impl TypeEnv {
 
         // Evaluation control
         env.insert(
-            "eval".to_string(),
+            "deep-materialize".to_string(),
             Type::Function {
-                // Genuinely unknown: eval accepts any thunk/expression and returns an
+                // Genuinely unknown: deep-materialize accepts any thunk/expression and returns an
                 // arbitrary value whose type is not knowable at compile time.
                 params: vec![(None, Type::Unknown)],
                 ret: Box::new(Type::Unknown),
@@ -1618,7 +1618,7 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "force".to_string(),
+            "materialize".to_string(),
             Type::Function {
                 params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Top),

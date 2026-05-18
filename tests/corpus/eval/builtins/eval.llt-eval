@@ -1,4 +1,0 @@
-# eval : deep-force all thunks
-[eval [x: [+ 1 2]]]
-=== out
-Dict({"x": Int(3)})

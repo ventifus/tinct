@@ -4,7 +4,7 @@
 //! JSON conversion, file inclusion, and schema validation.
 //!
 //! **Evaluation control:**
-//! - `eval`: Deep-materialize a value recursively
+//! - `deep-materialize`: Deep-materialize a value recursively
 //! - `error`: Raise a user error with a custom message
 //! - `try`: Catch errors from a zero-arg function
 //! - `apply`: Spread dict values as function args
@@ -50,7 +50,7 @@ use crate::eval::materialize;
 use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
-/// `eval`: takes 1 arg, deep-forces all thunks recursively.
+/// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
 pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -60,16 +60,16 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("eval", args, named, &ctx, call_span)?;
+    let val = crate::builtins::expect_one_arg("deep-materialize", args, named, &ctx, call_span)?;
     let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
     ok_val(deep, call_span)
 }
 
-/// `force`: takes 1 arg, forces it to WHNF and returns it.
+/// `materialize`: takes 1 arg, forces it to WHNF and returns it.
 ///
-/// Gives users explicit control over evaluation order. Equivalent to `$eval` for
+/// Gives users explicit control over evaluation order. Equivalent to `$deep-materialize` for
 /// flat values, but only forces to weak head normal form (WHNF) — dicts remain
-/// dicts with unforced entries, not deep-forced. Use `$eval` for deep forcing.
+/// dicts with unforced entries, not deep-forced. Use `$deep-materialize` for deep forcing.
 pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -77,7 +77,7 @@ pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
-    let forced = crate::builtins::expect_one_arg("force", args, named, &ctx, call_span)?;
+    let forced = crate::builtins::expect_one_arg("materialize", args, named, &ctx, call_span)?;
     ok_val(forced, call_span)
 }
 

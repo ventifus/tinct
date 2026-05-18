@@ -1,5 +1,5 @@
 # Comprehensive control flow operations
-# Tests: if, try, eval, force, apply, emit
+# Tests: if, try, deep-materialize, materialize, apply, emit
 
 [
   # if conditionals
@@ -10,9 +10,9 @@
   try_success: [try [fn [] 42]]
   try_error: [try [fn [] [error "caught"]]]
 
-  # eval and force
-  eval_deep: [eval [x: [+ 1 2]]]
-  force_whnf: [force [+ 1 2]]
+  # deep-materialize and materialize
+  eval_deep: [deep-materialize [x: [+ 1 2]]]
+  force_whnf: [materialize [+ 1 2]]
 
   # apply
   f: [fn [x y] [+ x y]]

@@ -558,7 +558,7 @@ impl ErrorKind {
                 | "round"
                 | "to-int"
                 | "to-float"
-                | "eval"
+                | "deep-materialize"
                 | "error"
                 | "try"
                 | "apply"
