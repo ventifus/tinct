@@ -3974,3 +3974,77 @@ fn libdir_path_affects_formatter_resolution() {
         stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// tinct lint — type-check without eval
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lint_clean_file_exits_zero() {
+    // A file with no type errors or warnings should exit 0
+    let llt_content = "[x: 42]";
+    let (path, _dir) = write_temp_llt("lint_clean", llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["lint", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 for clean file, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // No output on success
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "", "expected no stdout on clean lint");
+}
+
+#[test]
+fn lint_type_error_exits_one() {
+    // A file with a type error (non-exhaustive match) should exit 1
+    let llt_content = r#"[match [@[Int String] 42]
+    Int: "int"]"#;
+    let (path, _dir) = write_temp_llt("lint_type_error", llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["lint", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected exit 1 for file with type error, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("non-exhaustive") || stderr.contains("error[T"),
+        "expected type error message in stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn lint_no_eval() {
+    // A file with an emit call should lint cleanly (no eval happens)
+    // The emit is never executed, so there's no stdout output
+    let llt_content = r#"[
+  x: 42
+  _: [emit "hello"]
+]"#;
+    let (path, _dir) = write_temp_llt("lint_no_eval", llt_content);
+    let output = Command::new(tinct_bin())
+        .args(["lint", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 for file with emit (no eval), stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "",
+        "expected no stdout from lint (emit not executed)"
+    );
+}

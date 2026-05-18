@@ -220,6 +220,32 @@ enum Commands {
         /// Error code to explain (e.g. E001, E010, E070).
         code: String,
     },
+    /// Type-check an LLT file without evaluating.
+    ///
+    /// Runs parse → desugar → macro-expand → typecheck pipeline.
+    /// Exits with code 1 if any type errors or warnings are found.
+    /// Exits with code 0 on clean file.
+    Lint {
+        /// File to lint
+        file: String,
+
+        /// Disable all filesystem access (default for lint).
+        /// Use --cap-fs to allow specific directories for include resolution.
+        #[arg(long, default_value_t = true)]
+        no_fs: bool,
+
+        /// Inject a named DirCap into the root environment (may be repeated).
+        /// Format: NAME=PATH — binds %NAME to a DirCap for PATH.
+        /// Example: --cap-fs data=/var/data injects %data as a DirCap for /var/data.
+        #[arg(long, value_name = "NAME=PATH")]
+        cap_fs: Vec<String>,
+
+        /// Inject a named NetCap into the root environment (may be repeated).
+        /// Format: NAME=ENTRY — binds %NAME to a NetCap.
+        /// Multiple uses of the same NAME accumulate into one NetCap allowlist.
+        #[arg(long, value_name = "NAME=ENTRY")]
+        cap_net: Vec<String>,
+    },
     /// Extract and evaluate tinct code blocks embedded in a Markdown file.
     ///
     /// Treats each ```tinct or ```llt fenced code block as a pipeline stage.
@@ -381,6 +407,7 @@ fn main() {
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
         Commands::Describe { json, file } => run_describe(&file, json),
         Commands::Explain { code } => run_explain(&code),
+        Commands::Lint { file, no_fs, cap_fs, cap_net } => run_lint(&file, no_fs, &cap_fs, &cap_net),
         Commands::Literate {
             mode,
             file,
@@ -1991,6 +2018,86 @@ fn run_fmt(
 
     print!("{formatted}");
     Ok(())
+}
+
+/// Type-check a file without evaluating.
+/// Exit 0 on clean, exit 1 on any warnings or errors.
+fn run_lint(
+    file_path: &str,
+    _no_fs: bool,
+    _cap_fs: &[String],
+    _cap_net: &[String],
+) -> Result<(), String> {
+    let source = read_source(file_path)?;
+
+    // Parse the file
+    let ast = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+
+    // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
+    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    let mut ast = expand_result.file;
+
+    tinct::desugar::desugar_file(&mut ast.node);
+    tinct::resolve::resolve_file(&ast.node);
+
+    // Type check with prelude environment
+    let env = tinct::build_prelude_env();
+    let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+        tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
+
+    // Collect all errors and warnings
+    let mut all_messages = Vec::new();
+
+    for e in &type_errors {
+        all_messages.push(tinct::format_type_error(e, &source, file_path));
+    }
+
+    for d in &diagnostics {
+        all_messages.push(format_type_diagnostic(d, &source, file_path));
+    }
+
+    if !all_messages.is_empty() {
+        // Print all errors/warnings to stderr
+        eprintln!("{}", all_messages.join("\n"));
+        return Err(format!("lint failed with {} issue(s)", all_messages.len()));
+    }
+
+    // Clean file — exit 0 (no output)
+    Ok(())
+}
+
+/// Format a TypeDiagnostic with source context for display.
+/// Similar to format_type_error but handles the diagnostic level (info/warn/err).
+fn format_type_diagnostic(
+    diag: &tinct::TypeDiagnostic,
+    source: &str,
+    file_name: &str,
+) -> String {
+    use tinct::DiagnosticLevel;
+
+    let level_str = match diag.level {
+        DiagnosticLevel::Info => "info",
+        DiagnosticLevel::Warn => "warning",
+        DiagnosticLevel::Err => "error",
+    };
+
+    let code = diag.code;
+    let line = diag.span.start.line;
+    let col = diag.span.start.column;
+
+    // Header: level[Txxx]: message
+    let mut out = format!("{level_str}[{code}]: {}\n", diag.message);
+
+    // Location: --> file:line:col
+    out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
+
+    // Snippet: source context with caret
+    if let Some(snippet) = tinct::render_span_snippet(source, diag.span) {
+        out.push_str("  |\n");
+        out.push_str(&snippet);
+    }
+
+    out
 }
 
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
