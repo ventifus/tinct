@@ -128,16 +128,33 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 
 Agent panel review concluded `Type::Variant(String)` is the wrong approach — `Tcp` and `Udp` would share one type and be indistinguishable. The correct approach is the already-accepted nominal variants machinery. **Spec chapters:** `doc/whatif/completed/nominal-variants.md`.
 
-- [ ] Add `[union Transport [Tcp] [Udp] [Quic] [Unix]]` declaration to `stdlib/prelude.llt` — constructors register automatically in TypeEnv via prelude loading (`stdlib/prelude.llt`)
-- [ ] Remove the four manual `Type::Unknown` registrations for `Tcp`/`Udp`/`Quic`/`Unix` from `src/type_env.rs` — prelude loading now handles them (`src/type_env.rs`)
-- [ ] Update `connect` builtin type signature: transport parameter `Unknown` → `Transport` nominal variant type (`src/type_env.rs`)
-- [ ] Verify runtime dispatch in `connect` still works — eval code already matches on `Value::Variant { tag }` string; no changes needed if tag names match (`src/builtins_io.rs`)
-- [ ] Corpus tests: typed Transport usage — passing `Tcp` to `connect` type-checks; passing `42` or `"tcp"` produces a type error (`tests/corpus/eval/typecheck/`)
+- [x] Add `[union Transport [Tcp] [Udp] [Quic] [Unix]]` declaration to `stdlib/prelude.llt` — constructors register automatically in TypeEnv via prelude loading (`stdlib/prelude.llt`)
+- [x] Remove the four manual `Type::Unknown` registrations for `Tcp`/`Udp`/`Quic`/`Unix` from `src/type_env.rs` — prelude loading now handles them (`src/type_env.rs`)
+- [x] Update `connect` builtin type signature: transport parameter `Unknown` → `Transport` nominal variant type (`src/type_env.rs`)
+- [x] Verify runtime dispatch in `connect` still works — eval code already matches on `Value::Variant { tag }` string; no changes needed if tag names match (`src/builtins_io.rs`)
+- [x] Corpus tests: typed Transport usage — passing `Tcp` to `connect` type-checks; passing `42` or `"tcp"` produces a type error (`tests/corpus/eval/typecheck/`)
 
 ---
 
-- [ ] Implement HKT (`Type::App`) to express `map`/`filter`/`reduce`/`each` precisely — see `chr-unification` sprint for the type-application machinery
-- [ ] After above: add `from-json` option for schema-directed typed parse returning a specific Record type
+- [x] HKT types for map/filter/reduce/each — see `hkt-map-filter-types` sprint below
+- [ ] Fix `json_to_value` null bug: JSON `null` currently maps to `Value::Dict(IndexMap::new())` (empty dict — wrong, loses information). Should map to `Value::Null`. Breaking change for untyped `from-json` callers that rely on null-as-empty-dict, but the current behaviour is a bug. Required prerequisite for schema-directed from-json nullable fields (`src/builtins_io.rs`)
+- [ ] After null fix: add `from-json @Schema` schema-directed typed parse — see `doc/whatif/schema-directed-from-json.md` (proposal complete)
+
+### hkt-map-filter-types: Precise TypeSchemes for map/filter/reduce/each/each-key/each-kv
+
+Replace `Unknown` signatures with proper polymorphic TypeSchemes using the accepted HKT
+machinery (`Type::Operator`, `Type::App`, `Mappable` class). Use `Type::Operator("f")`
+in scheme bodies — `instantiate_at_level` detects this and registers the fresh name as
+`Kind::Operator` in `kind_env`. No `operator_vars` field needed on `TypeScheme`.
+
+- [ ] `map`: `∀f a b. Mappable f ⇒ (a → b) → App(f,a) → App(f,b)` — use `Type::Operator("f")` in body (`src/type_env.rs`)
+- [ ] `filter`: `∀a. (a → Bool) → Seq a → Seq a` — Seq-specific for now (`src/type_env.rs`)
+- [ ] Research Mappable-polymorphic `filter`: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a` — define `Filterable` class (separate from `Mappable`, or `Mappable` instances that support filtering?); Haskell's `Data.Witherable` is the precedent; write proposal to `doc/whatif/filterable.md`
+- [ ] `reduce`: `∀a b. (b → a → b) → b → Seq a → b` — Seq-specific, no HKT needed (`src/type_env.rs`)
+- [ ] `each`: `∀a b. (a → b) → Seq a → Null` — `b` is fresh and unreferenced; callback return discarded (`src/type_env.rs`)
+- [ ] `each-key`: `∀b. (Str → b) → Dict → Null` — tinct dict keys are always `Str` (`src/type_env.rs`)
+- [ ] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records; note `∀a b. (Str → a → b) → Map@[Str:a] → Null` for homogeneous maps (`src/type_env.rs`)
+- [ ] Corpus test updates: 20-40 tests gain `=== warn` sections where map/filter/reduce now infer concrete types and flag mismatches that were previously silent (`tests/corpus/`)
 
 ---
 
@@ -426,6 +443,24 @@ markdown file being processed from accidentally reading or writing local files.
   subcommand; wire to the same cap-grant machinery as `tinct run` (`src/main.rs`)
 - [x] Document in `doc/12-tooling.md` §Literate Mode: all flags, fixed-clock semantics,
   `--no-pwd` always-on, and `--errors-in-doc` use case (`doc/12-tooling.md`)
+
+### literate-weave-fix: Fix `just doc` in-place mode and error/warning embedding
+
+`tinct literate weave --strict -i` currently spews output to stdout instead of writing back to the source file. The `-i`/`--in-place` flag was wired in the `literate-flags` sprint but the actual in-place write logic has a bug. Additionally, errors and warnings should be embedded in the source doc (written into `=== error`/`=== warn` sections in the code blocks) rather than only appearing on stderr.
+
+- [ ] Fix `-i`/`--in-place` mode in `run_literate_weave` to actually write back to the source file — currently writes to stdout; check `write_file_atomic` call path and ensure the weaved output replaces the source file (`src/main.rs`)
+- [ ] Ensure type warnings (`=== warn`) and eval errors (`=== error`) are embedded in the source doc code blocks when weaving with `-i` — not just the `=== out` section; the weaver should update all `===` sections with actual results (`src/main.rs`)
+- [ ] Verify `just doc` produces clean in-place updates with no stdout output; run `just doc` and confirm `git diff` shows the updated doc files, not that output was printed to terminal (`justfile`, `doc/*.md`)
+
+### docgen-update: Update docgen.llt, generate docs, review and iterate for accuracy
+
+Update `stdlib/docgen.llt` (the tinct-native documentation generator) and run it against all stdlib modules. Review the generated output for accuracy, fix any discrepancies in docgen or in the source doc strings, and iterate until the generated docs accurately reflect the current API.
+
+- [ ] Read `stdlib/docgen.llt` and understand the current doc generation approach; identify what's stale or missing given recent changes (unified-bindings, CHR type classes, literate mode, prelude migration) (`stdlib/docgen.llt`)
+- [ ] Update `docgen.llt` to handle new constructs: `[fn [let params] body]` syntax, `[class ...]` / `[instance ...]` declarations, triple-quoted `"""..."""` doc strings, `fn@[return: T doc: "..."]` metadata format (`stdlib/docgen.llt`)
+- [ ] Run docgen against all stdlib modules and capture output; commit generated docs as `doc/generated/` or update in-place as `doc/*.md` if that's the target format (`stdlib/docgen.llt`, `doc/`)
+- [ ] Review generated output for accuracy: do function signatures match actual behavior? Are examples correct? Do doc strings accurately describe current semantics? Fix discrepancies in source doc strings or in docgen logic (`stdlib/prelude.llt`, `stdlib/docgen.llt`)
+- [ ] Iterate: re-run docgen after fixes until all generated docs are accurate; add `just docgen` recipe to automate this (`justfile`)
 
 ---
 
