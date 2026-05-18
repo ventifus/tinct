@@ -2021,10 +2021,12 @@ impl TypeEnv {
                     (None, Type::Top), // NetCap or DirCap (UnixStream/UnixDatagram)
                     // Transport variant: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp
                     // Constructors are typed via prelude [type [Tcp] [Udp] ...] declaration.
-                    // Still Unknown here because Type::Variant union not yet implemented.
-                    (None, Type::Unknown), // Transport variant
-                    (None, Type::Str),     // host
-                    (None, Type::Int),     // port
+                    // Top instead of Unknown: any value is accepted structurally (callers pass a
+                    // Transport variant), but Unknown would silently bypass boundary guards.
+                    // TODO(unknown-elimination): narrow to Transport union once variant type exists.
+                    (None, Type::Top), // Transport variant
+                    (None, Type::Str), // host
+                    (None, Type::Int), // port
                 ],
                 // Genuinely unknown: return is Handle or DatagramHandle depending on transport.
                 // TODO(unknown-elimination): union Handle|DatagramHandle once variant type exists.
@@ -2522,7 +2524,7 @@ impl TypeEnv {
             "map".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Top), // callback: any function
+                    (None, Type::Top),     // callback: any function
                     (None, Type::Unknown), // collection: Dict or Seq, can't express yet
                 ],
                 ret: Box::new(Type::Unknown), // returns same shape as input
@@ -2548,7 +2550,10 @@ impl TypeEnv {
                                 variadic: false,
                             },
                         ),
-                        (Some("xs".to_string()), Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                        (
+                            Some("xs".to_string()),
+                            Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0))),
+                        ),
                     ],
                     ret: Box::new(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
                     variadic: false,
@@ -2599,7 +2604,10 @@ impl TypeEnv {
                             },
                         ),
                         (Some("init".to_string()), Type::TypeVar("b".to_string(), 0)),
-                        (Some("xs".to_string()), Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                        (
+                            Some("xs".to_string()),
+                            Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0))),
+                        ),
                     ],
                     ret: Box::new(Type::TypeVar("b".to_string(), 0)),
                     variadic: false,
@@ -3180,18 +3188,23 @@ impl TypeEnv {
         // each-key: Dict → Seq (Int | Str) (keys)
         // each-kv: Dict a → Seq [key: Int | Str, value: a] (key-value pairs)
 
-        // each: ∀a. Record → Seq a
+        // each: Record → Seq Top
+        // Dict values are heterogeneous, so the honest return type is Seq Top.
+        // Previously ∀a. Record → Seq a with phantom `a` (no occurrence in params),
+        // which allowed any element type to be inferred without checking.
         env.insert_scheme(
             "each".to_string(),
             TypeScheme {
-                type_vars: vec!["a".to_string()],
+                type_vars: vec![],
                 constraints: vec![],
                 body: Type::Function {
                     params: vec![(
                         Some("xs".to_string()),
-                        Type::Record(Row { fields: HashMap::new() }), // Dict (open record)
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }), // Dict (open record)
                     )],
-                    ret: Box::new(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                    ret: Box::new(Type::Seq(Box::new(Type::Top))),
                     variadic: false,
                 },
                 label_vars: vec![],
@@ -3209,7 +3222,9 @@ impl TypeEnv {
                 body: Type::Function {
                     params: vec![(
                         Some("xs".to_string()),
-                        Type::Record(Row { fields: HashMap::new() }), // Dict (open record)
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }), // Dict (open record)
                     )],
                     ret: Box::new(Type::Seq(Box::new(Type::normalize_union(vec![
                         Type::Int,
@@ -3223,16 +3238,20 @@ impl TypeEnv {
             },
         );
 
-        // each-kv: ∀a. Record → Seq [key: Int | Str, value: a]
+        // each-kv: Record → Seq [key: Int | Str, value: Top]
+        // Dict values are heterogeneous, so the value field is Top.
+        // Previously ∀a. Record → Seq [key: Int | Str, value: a] with phantom `a`.
         env.insert_scheme(
             "each-kv".to_string(),
             TypeScheme {
-                type_vars: vec!["a".to_string()],
+                type_vars: vec![],
                 constraints: vec![],
                 body: Type::Function {
                     params: vec![(
                         Some("xs".to_string()),
-                        Type::Record(Row { fields: HashMap::new() }), // Dict (open record)
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }), // Dict (open record)
                     )],
                     ret: Box::new(Type::Seq(Box::new({
                         let mut kv_fields = HashMap::new();
@@ -3240,7 +3259,7 @@ impl TypeEnv {
                             "key".to_string(),
                             Type::normalize_union(vec![Type::Int, Type::Str]),
                         );
-                        kv_fields.insert("value".to_string(), Type::TypeVar("a".to_string(), 0));
+                        kv_fields.insert("value".to_string(), Type::Top);
                         Type::Record(Row { fields: kv_fields })
                     }))),
                     variadic: false,

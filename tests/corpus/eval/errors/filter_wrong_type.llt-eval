@@ -2,3 +2,5 @@
 [filter [fn [x] true] 42]
 === error
 [E010] filter: expected Dict or Seq, got Int
+=== warn
+with 42

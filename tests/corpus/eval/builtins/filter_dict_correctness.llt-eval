@@ -7,3 +7,5 @@
 [collect [filter [fn [x] [> x 2]] [a: 1 b: 2 c: 3 d: 4 e: 5]]]
 === out
 Dict({0: Int(3), 1: Int(4), 2: Int(5)})
+=== warn
+with [a: 1 b: 2 c: 3 d: 4 e: 5]
