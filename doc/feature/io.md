@@ -569,15 +569,10 @@ I/O builtins documented with Mycroft (1981) strictness annotations in
 
 ### Type System Integration
 
-Phase 1 (current): all I/O builtins infer as returning `Any`. The type checker
-does not distinguish cap types from other values.
-
-Phase 2 (future): `Type::DirCap`, `Type::NetCap`, `Type::Handle` as distinct
-types. `open` infers as `Fn@Handle [DirCap Str Str]`. Passing a `Handle` where
-a `DirCap` is expected becomes a type error.
-
-Phase 3 (future, no commitment): if type classes arrive, `IO` becomes an
-enforced effect type.
+`Type::DirCap`, `Type::NetCap`, and `Type::Handle` are distinct types in the
+type system. `open` is typed as `Fn@Handle [DirCap Str Str]`. Passing a
+`Handle` where a `DirCap` is expected is a type error. Annotations use these
+names directly: `cap@DirCap`, `nc@NetCap`, `fh@Handle`.
 
 ## Implementation
 
@@ -706,8 +701,9 @@ runtime-injected values by name.
 
 ### Type Checker (`src/typecheck.rs`)
 
-All cap/handle types infer as `Any` in the current implementation. Distinct
-`Type::DirCap`, `Type::NetCap`, `Type::Handle` are a future addition.
+Cap and handle types are distinct: `Type::DirCap`, `Type::NetCap`,
+`Type::Handle`. The type checker enforces capability type separation —
+passing a `Handle` where a `DirCap` is expected produces a type error.
 
 ## References
 
