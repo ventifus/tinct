@@ -1,0 +1,6 @@
+# Test: inferred [do] form — first arg is a dict binding, not a monad var ref → error.
+# The [do] macro detects the inferred form and emits a helpful error. The user
+# must supply an explicit monad argument (e.g., [do result ...]).
+[do [x: [Ok 1]] [Ok x]]
+=== error
+[E080] inferred [do] not yet supported

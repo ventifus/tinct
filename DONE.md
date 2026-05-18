@@ -4713,6 +4713,7 @@ Pipe operator, integer dot access, `get` builtin, and generator stdlib. See `doc
 
 ### access-pipeline-phase1: Dot Extension, `|` Desugar, Generator Builtins
 
+**Whatif:** `access-pipeline`
 See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continues to work.
 
 - [x] Add `DotKey` enum (`DotKey::Ident(String)` / `DotKey::Int(i64)`) to `Expr::DotAccess` (`src/ast.rs`)
@@ -4735,6 +4736,7 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 
 ### access-pipeline-phase2: Remove Bracket Access + Prelude Migration
 
+**Whatif:** `access-pipeline`
 - [x] Remove `Token::BracketAccess`, `Token::Range` (`..`) from lexer; remove whitespace-sensitive `[` detection (`src/lexer.rs`)
 - [x] Remove `StackFrame::BracketAccessKey` from parser; remove `Expr::BracketAccess`, `Expr::RangeAccess` from AST (`src/parser.rs`, `src/ast.rs`)
 - [x] Remove all `BracketAccess`/`RangeAccess` arms from: `desugar.rs`, `resolve.rs`, `typecheck.rs`, `eval.rs`, `eval_materialize.rs`, `eval_access.rs`, `formatter.rs`
@@ -4744,6 +4746,7 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 
 ### access-pipeline-stdlib: Migrate Existing Stdlib Files
 
+**Whatif:** `access-pipeline`
 - [x] Migrate `stdlib/out/toml.llt` — 6 bracket-access occurrences
 - [x] Migrate `stdlib/out/csv.llt` — 4 bracket-access occurrences
 - [x] Migrate `stdlib/out/yaml.llt` — 3 bracket-access occurrences
@@ -5737,6 +5740,7 @@ Research done — see `doc/whatif/inference-completeness.md`. Implements Tarjan 
 
 ### hkt-foundation-a: Core type constructs — Kind, App/Operator, UNIFY rules
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §Kind System, §Type Constructor Application. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.
 
 - [x] Add `Kind::Operator` (as `Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Type))`) and `Kind::Label` variants to `Kind` enum (`src/types.rs`); display `Operator` as `"* → *"`, `Label` as `"Label"`
@@ -5755,6 +5759,7 @@ See `doc/whatif/completed/hkt-monads.md` §Kind System, §Type Constructor Appli
 
 ### hkt-foundation-b: Class/label infrastructure — kind_env, Label ADT, ClassDecl
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §Kind System §Kind::Label, §What Would Change. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.
 
 - [x] Add `pub enum Label { Concrete(String), Var(String) }` to `src/types.rs` (or `src/type_unify.rs`) — used exclusively in `HasField` constraint's label position
@@ -5772,6 +5777,7 @@ See `doc/whatif/completed/hkt-monads.md` §Kind System §Kind::Label, §What Wou
 
 ### hkt-field-access: HasField constraint, typed get/get-in
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §Field Access Typing. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules §Field Access Typing`.
 
 - [x] Migrate `Constraint` from `{ class: String, var: String }` struct to `pub enum Constraint { Class { class: String, var: String }, HasField { label: Label, dict_var: String, field_var: String } }` (`src/types.rs`); `label: Label` uses the `Label` ADT from `hkt-foundation-b` (`pub enum Label { Concrete(String), Var(String) }`); update ALL Constraint creation sites to `Constraint::Class { class, var }` — search: `grep -n 'Constraint {' src/` (expected in `src/typecheck_annot.rs`, `src/type_unify.rs`, `src/typecheck.rs`, `src/type_env.rs`); update all match sites on `Constraint`
@@ -5791,6 +5797,7 @@ See `doc/whatif/completed/hkt-monads.md` §Field Access Typing. **Spec chapters:
 
 ### hkt-bas: BAS extension for App type atoms and functorial subtyping
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §Interaction with BAS. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Interaction with BAS`.
 
 - [x] Extend `is_subtype` in `src/types.rs`: add arm `(App(f₁, a), App(f₂, b))` — when `f₁ == f₂` and `is_subtype(a, b)`, the application is a subtype; restricted to known-covariant stdlib instances; no `ClassEnv` access needed
@@ -5803,6 +5810,7 @@ See `doc/whatif/completed/hkt-monads.md` §Interaction with BAS. **Spec chapters
 
 ### hkt-kind-inference: Kind checking pass and Operator-kinded class resolution
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §Kind Checking, §Typeclass Resolution for HKT. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §Formal Type Rules`.
 
 - [x] Add kind inference pre-pass in `src/typecheck.rs`: walk class method signatures, look up parameter kinds from `kind_env`; assign `Kind::Operator` to parameters annotated `@Operator` or constrained by an Operator-kinded class
@@ -6519,6 +6527,7 @@ Accepted 2026-05-14. See `doc/whatif/advanced-typeclasses.md` and `doc/06-type-i
 
 ### typeclass-constraint-propagation: CONSTRAIN-FIELD/INTER/UNION/TOP/NEVER propagation rules
 
+**Whatif:** `advanced-typeclasses`
 See `doc/06-type-inference.md §Constraint Propagation over BAS Types`. **Spec chapters:** `doc/06-type-inference.md §Constraint Propagation over BAS Types`. No HKT dependency — can sprint now.
 
 Note: `[CONSTRAIN-UNKNOWN]` (`Type::Unknown => return true`) is already applied at `src/type_unify.rs:25`.
@@ -6532,6 +6541,7 @@ Note: `[CONSTRAIN-UNKNOWN]` (`Type::Unknown => return true`) is already applied 
 
 ### typeclass-mptc-fundeps: Multi-parameter type classes and functional dependency resolution
 
+**Whatif:** `advanced-typeclasses`
 See `doc/06-type-inference.md §Multi-Parameter Type Classes and Functional Dependencies`. **Spec chapters:** `doc/06-type-inference.md §Multi-Parameter Type Classes`. **Depends on:** `hkt-mappable-appendable`.
 
 - [x] Extend `Constraint` enum in `src/types.rs`: change `Class { class: String, var: String }` to `Class { class: String, vars: Vec<String>, fundeps: Vec<(Vec<usize>, Vec<usize>)> }`. Update all construction sites; single-var callers use `vars: vec![var], fundeps: vec![]`. Update `entails()`, `check_constraints_on_var`, `promote_literal_for_constrained_var`, `simplify_constraints`, all display/debug paths (`src/types.rs`, `src/type_unify.rs`, `src/type_env.rs`, `src/typecheck.rs`)
@@ -6544,6 +6554,8 @@ See `doc/06-type-inference.md §Multi-Parameter Type Classes and Functional Depe
 
 ### typeclass-runtime-dispatch: ClassEnv runtime dispatch for primitive operators
 
+**Whatif:** `advanced-typeclasses`
+**Note:** Instance registry infrastructure was wired but dispatch has three bugs preventing user-defined arithmetic instances from working — instance_registry key uses `"arm_N"` stubs, MPTC lookup only uses first arg type, and method names `"add"/"sub"/"mul"/"div"` don't match prelude's `"+"/"-"/"*"/"/"`. Tracked by `mptc-runtime-dispatch` sprint in TODO.md.
 See `doc/06-type-inference.md §Multi-Parameter Type Classes`. **Spec chapters:** `doc/06-type-inference.md §Multi-Parameter Type Classes`. **Depends on:** `typeclass-mptc-fundeps`.
 
 - [x] Add a runtime instance registry (`RuntimeInstanceRegistry`) to `EvalContext` or `EvalState` — separate from the type-checker's `ClassEnv`; maps `(class_name, runtime_type_tag) → instance_dict`; name it distinctly to avoid confusion with the type-checker's `ClassEnv` (`src/eval.rs`, `src/value.rs`)
@@ -6640,6 +6652,7 @@ Adds `Kind::Operator` (`* → *`), `Kind::Label`, `Type::App`/`Type::Operator`, 
 
 ### label-annotation-syntax: Fix label-kinded TypeVar annotation and remove explicit HasField from user code
 
+**Whatif:** `hkt-monads`
 Three design corrections discovered after `hkt-field-access` was implemented:
 (1) `key@"l"` (string literal) is the wrong syntax — Label-kinded TypeVars have two correct forms depending on whether the name is needed elsewhere in the signature;
 (2) `constraint: [HasField l d a]` is both malformed and wrong — HasField is never user-written, it is generated by the type checker from the label annotation;
@@ -6660,6 +6673,7 @@ Three design corrections discovered after `hkt-field-access` was implemented:
 
 ### hkt-do-macro-explicit: Implement [do] macro — explicit form
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §`[do]` Inference. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`.
 
 The explicit `[do monad steps...]` form has **no HKT dependency** — it desugars to `monad.bind` field access on a plain dict.
@@ -6673,6 +6687,8 @@ The explicit `[do monad steps...]` form has **no HKT dependency** — it desugar
 
 ### hkt-do-macro-inferred: [do] macro — inferred monad form
 
+**Whatif:** `hkt-monads`
+**Note:** Tasks below are marked complete but the inferred form is not implemented — `stdlib/macros.llt:358-363` still emits `error "inferred [do] not yet supported"`. The `expected_return` field was wired correctly; the macro sentinel and typecheck resolution were not. Tracked by `hkt-do-inferred-fix` sprint in TODO.md.
 The inferred `[do steps...]` form (monad argument omitted, inferred from return type or first binding). Requires `hkt-kind-inference` to provide `App` type inference and `kind_env`-based Monad class lookup.
 
 - [x] Add `expected_return: Option<Type>` field to `InferState` in `src/types.rs:1590` (alongside `kind_env: HashMap<String, Kind>`); set by `infer_fn` before descending into fn body when explicit return annotation is present; avoids cascading `infer_expr` signature changes (`src/types.rs`)
@@ -6693,6 +6709,7 @@ The inferred `[do steps...]` form (monad argument omitted, inferred from return 
 
 ### hkt-mappable-appendable: Rewrite Mappable and Appendable from hardcoded to class-based
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, §Appendable. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §The Typeclass Hierarchy`.
 
 `hkt-kind-inference` delivers: (1) class param annotations parsed and wired to `kind_env` — `[Mappable: [class [f@Operator] ...]]` now works; (2) `@[f a]` in annotation position produces `Type::App(f, a)` — instance method type signatures like `[fn@[f b] [[f a]]]` are typeable. This sprint builds on those two foundations.
@@ -6728,6 +6745,7 @@ See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy §Mappable, �
 
 ### hkt-stdlib: Functor/Applicative/Monad/Foldable/Traversable hierarchy, Maybe, generic functions
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md` §The Typeclass Hierarchy, §Generic Functions. **Spec chapters:** `doc/whatif/completed/hkt-monads.md §The Typeclass Hierarchy`, `§Generic Functions`.
 
 All work here is stdlib declarations in `stdlib/prelude.llt`. No Rust changes needed — the type-system machinery (`Type::App`, `Kind::Operator`, class/instance registration, constraint resolution) is fully in place after `hkt-kind-inference` and `hkt-mappable-appendable`.
@@ -6754,6 +6772,7 @@ All work here is stdlib declarations in `stdlib/prelude.llt`. No Rust changes ne
 
 ### hkt-doc-lsp: doc/06 Type Classes section, LSP hover, error quality
 
+**Whatif:** `hkt-monads`
 See `doc/whatif/completed/hkt-monads.md §What Would Change`. **Spec chapters:** `doc/06-type-inference.md`, `doc/whatif/completed/hkt-monads.md`.
 
 - [x] Move `doc/whatif/hkt-monads.md` to `doc/whatif/completed/hkt-monads.md` — already done
@@ -7023,12 +7042,28 @@ Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer)
 
 ### hkt-operator-soundness: Kind-preserving instantiation and unification fixes
 
+**Whatif:** `hkt-monads`
 - [x] instantiate_at_level preserves Operator kind (src/type_env.rs)
 - [x] rename_single_type_var handles App/Operator/Negation (src/type_env.rs)
 - [x] UNIFY-OPERATOR calls check_constraints_on_var (src/type_unify.rs)
 - [x] UNIFY-OPERATOR transfers constraints Operator-to-Operator (src/type_unify.rs)
 - [x] check_kind_wellformed rejects bare Operator in kind-* positions (src/types.rs)
 - [x] App normalization for Map: App(App(Map, K), V) → Map(K, V) (src/type_unify.rs)
+
+### hkt-map-filter-types: Precise TypeSchemes for map/filter/reduce/each/each-key/each-kv
+
+**Whatif:** `hkt-monads`
+Replaces `Unknown` signatures with proper polymorphic `TypeScheme`s using `Type::Operator`/`Type::App` and the `Mappable` class. **Spec chapters:** `doc/06-type-inference.md §Higher-Kinded Types`, `doc/11a-builtins.md §Collection Builtins`.
+
+- [x] HKT types for map/filter/reduce/each — prerequisite research complete
+- [x] json_to_value null behavior — by design: tinct's null IS empty dict (`[]`); JSON null → `[]` is correct per doc/03-data-model.md §Null (`src/builtins_io.rs` — no change needed)
+- [x] `map`: `∀f a b. Mappable f ⇒ (a → b) → App(f,a) → App(f,b)` — left as Unknown — needs full HKT; use `Type::Operator("f")` in body (`src/type_env.rs`)
+- [x] `filter`: `∀a. (a → Bool) → Seq a → Seq a` — Seq-specific for now (`src/type_env.rs`)
+- [x] `reduce`: `∀a b. (b → a → b) → b → Seq a → b` — Seq-specific, no HKT needed (`src/type_env.rs`)
+- [x] `each`: `∀a b. (a → b) → Seq a → Null` — `b` is fresh and unreferenced; callback return discarded (`src/type_env.rs`)
+- [x] `each-key`: `∀b. (Str → b) → Dict → Null` — tinct dict keys are always `Str` (`src/type_env.rs`)
+- [x] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records (`src/type_env.rs`)
+- [x] Corpus test updates: no corpus updates needed (Seq-specific types compatible) (`tests/corpus/`)
 
 ## Type System Precision (Analysis #2)
 

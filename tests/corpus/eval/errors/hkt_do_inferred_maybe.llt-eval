@@ -1,0 +1,5 @@
+# Test: inferred [do] with Maybe monad — monad should be inferred from [Some 42]
+# in the first binding step. Not yet implemented; emits a helpful error.
+[do [x: [Some 42]] [Some [+ x 1]]]
+=== error
+[E080] inferred [do] not yet supported

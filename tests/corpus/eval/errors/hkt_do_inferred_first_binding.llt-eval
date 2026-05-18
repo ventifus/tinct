@@ -1,0 +1,5 @@
+# Test: inferred [do] with binding step as first arg — monad should be inferred from
+# the type of [Ok 1] (Result monad). Not yet implemented; emits a helpful error.
+[do [x: [Ok 1]] x]
+=== error
+[E080] inferred [do] not yet supported

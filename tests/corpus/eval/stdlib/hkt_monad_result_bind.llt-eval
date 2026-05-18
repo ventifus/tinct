@@ -1,0 +1,7 @@
+# Test: MonadResult.bind — bind an Ok value through a transformation.
+# MonadResult is not yet defined in the stdlib (pending hkt-stdlib implementation).
+# This test documents the expected behavior once MonadResult is available.
+# Current behavior: E099 cannot evaluate error node (MonadResult undefined).
+[MonadResult.bind [Ok 1] [fn [x] [Ok [+ x 1]]]]
+=== error
+[E099] cannot evaluate error node

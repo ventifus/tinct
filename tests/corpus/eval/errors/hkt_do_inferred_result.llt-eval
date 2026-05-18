@@ -1,0 +1,6 @@
+# Test: inferred [do] from return annotation — [fn@[Ok Int] [] [do [x: [Ok 42]] [Ok x]]].
+# The inferred [do] form is not yet implemented; the macro emits a helpful error
+# directing the user to add an explicit monad argument.
+[fn@[Ok Int] [] [do [x: [Ok 42]] [Ok x]]]
+=== error
+[E080] inferred [do] not yet supported

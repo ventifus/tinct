@@ -105,16 +105,16 @@ impl Default for ThunkArena {
 
 /// Arena for environment allocation. Stores `FlatEnv` indexed by `EnvId`.
 ///
-/// Phase 3 (arena-eval): `EnvArena` and `FlatEnv` are scaffolding for the flat environment
-/// model. They are constructed in `EvalContext` but not yet populated or queried by the
-/// production evaluator (which still uses the chain-based `Environment`).
-#[allow(dead_code)] // Phase 3 (arena-eval): struct fields and methods not yet used by production evaluator
+/// Phase 3 (arena-eval): `EnvArena` and `FlatEnv` provide flat environment infrastructure.
+/// `alloc_root` and `fill_letrec_slot` are called by `eval_dict` to populate FlatEnv slots
+/// for dict scopes. `get` and display-vector lookup are scaffolding for the full O(1)
+/// VarRef dispatch path, which is deferred until `take_unevaluated` propagates `env_id`.
 #[derive(Debug)]
 pub(crate) struct EnvArena {
     envs: Vec<FlatEnv>,
 }
 
-#[allow(dead_code)] // Phase 3 (arena-eval): methods not yet called by production evaluator
+#[allow(dead_code)] // alloc_child, get_mut, alloc_letrec_group not yet called (scaffolding for Phase 3)
 impl EnvArena {
     /// Create a new empty environment arena.
     pub fn new() -> Self {
@@ -223,7 +223,7 @@ impl Default for EnvArena {
 /// **Display vector:** Prepopulated at creation with the `EnvId` of every ancestor
 /// scope from level 0 to current level. This enables true O(1) access via
 /// `display[level].slots[slot]` without walking the parent chain.
-#[allow(dead_code)] // Phase 3 (arena-eval): fields and methods not yet used by production evaluator
+#[allow(dead_code)] // get_by_name, insert_overflow, parent() not yet called (scaffolding for Phase 3 full dispatch)
 #[derive(Debug)]
 pub(crate) struct FlatEnv {
     /// Static keys indexed by compile-time slot number from the resolver.
@@ -239,7 +239,7 @@ pub(crate) struct FlatEnv {
     pub(crate) display: Vec<EnvId>,
 }
 
-#[allow(dead_code)] // Phase 3 (arena-eval): methods not yet called by production evaluator
+#[allow(dead_code)] // get_slot, get_by_name, insert_overflow, parent() not yet called by force loop (Phase 3)
 impl FlatEnv {
     /// Get a thunk by slot index (static key, assigned by the resolver).
     ///

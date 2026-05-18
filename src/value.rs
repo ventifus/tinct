@@ -1275,6 +1275,44 @@ impl Environment {
     pub fn insert(&mut self, name: String, thunk: Rc<Thunk>) {
         self.bindings.insert(name, thunk);
     }
+
+    /// O(1) slot-based lookup with level-based parent chain walking.
+    ///
+    /// For `level = 0`: looks up `slot` directly in the current environment's
+    /// `bindings` IndexMap using `get_index` — no name hash, no string comparison.
+    ///
+    /// For `level > 0`: walks `level` steps up the parent chain, then does the
+    /// slot lookup. Each step costs one `Rc::clone` + `RefCell::borrow`, so the
+    /// total cost is O(level). This is still faster than name-based lookup for
+    /// deep environments because we skip the string hash at each level.
+    ///
+    /// Returns `None` if the level or slot is out of bounds (indicates a resolver
+    /// bug; the fallback to name-based lookup should handle it).
+    pub fn get_by_slot(&self, level: u32, slot: u32) -> Option<Rc<Thunk>> {
+        if level == 0 {
+            // Fast path: O(1) index into the current scope's bindings
+            return self
+                .bindings
+                .get_index(slot as usize)
+                .map(|(_, thunk)| Rc::clone(thunk));
+        }
+        // Walk `level` steps up the parent chain, then do slot lookup
+        let mut steps_remaining = level;
+        let mut current = self.parent.as_ref().map(Rc::clone);
+        while let Some(env_rc) = current {
+            steps_remaining -= 1;
+            if steps_remaining == 0 {
+                let env = env_rc.borrow();
+                return env
+                    .bindings
+                    .get_index(slot as usize)
+                    .map(|(_, thunk)| Rc::clone(thunk));
+            }
+            let next = env_rc.borrow().parent.as_ref().map(Rc::clone);
+            current = next;
+        }
+        None
+    }
 }
 
 impl Default for Environment {

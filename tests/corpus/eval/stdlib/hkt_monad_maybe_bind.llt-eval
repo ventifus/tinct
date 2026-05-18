@@ -1,0 +1,7 @@
+# Test: MonadMaybe.bind — bind a Some value through a transformation.
+# MonadMaybe is not yet defined in the stdlib (pending hkt-stdlib implementation).
+# This test documents the expected behavior once MonadMaybe is available.
+# Current behavior: E099 cannot evaluate error node (MonadMaybe undefined).
+[MonadMaybe.bind [Some 42] [fn [x] [Some [+ x 1]]]]
+=== error
+[E099] cannot evaluate error node
