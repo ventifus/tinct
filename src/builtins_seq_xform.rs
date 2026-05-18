@@ -144,12 +144,14 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
 
     match xs {
-        Value::Dict(ref map) => {
+        Value::Dict(_) => {
             // Dict path: iterate entries by key order, building a Seq of values
-            // that pass the predicate
-            if map.is_empty() {
-                return ok_val(Value::Dict(IndexMap::new()), call_span);
-            }
+            // that pass the predicate.
+            // Note: do NOT early-return for empty dicts here. Let filter_dict_step
+            // handle the zero-entry case via its loop termination so that empty
+            // dicts go through the same PendingBuiltin code path as non-empty dicts.
+            // This keeps the return type consistent (always a PendingBuiltin that
+            // eventually resolves to the nil-sentinel or a Seq).
 
             // args[1] is already Materialized after the materialize() call above,
             // so re-use the existing thunk directly. This avoids cloning the entire

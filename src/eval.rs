@@ -157,9 +157,11 @@ pub struct EvalState {
     /// Runtime class registry: class_name -> (params, superclasses, method_defaults)
     /// Stores default method implementations for filling in instance dictionaries.
     pub class_registry: HashMap<String, RuntimeClassDecl>,
-    /// Runtime instance registry: (class_name, type_string) -> instance_dict
+    /// Runtime instance registry: (class_name, type_tag) -> instance_dict
     /// Stores materialized method dictionaries for each instance.
-    /// class_name is `&'static str` to avoid allocation on every dispatch lookup.
+    /// class_name is interned via `intern_class_name` (&'static str); type_tag is a
+    /// plain String (from Value::type_name() or arm placeholder) to avoid unbounded
+    /// Box::leak calls in REPL/LSP sessions.
     pub instance_registry: HashMap<(&'static str, String), Rc<Thunk>>,
     /// O(1) set of class names that have at least one registered instance.
     /// Updated in sync with `instance_registry`. Used by builtins (e.g. `+`, `str`)

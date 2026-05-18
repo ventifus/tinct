@@ -504,7 +504,10 @@ pub(crate) fn infer_dict(
 
         // Merge state.subst into local subst after each SCC (incremental — only new/changed entries)
         {
-            // Collect only entries that weren't merged in previous SCC iterations
+            // Collect only entries that weren't merged in previous SCC iterations.
+            // Robinson's occurs check ensures each TypeVar is bound at most once, so a
+            // previously-merged key's value in state.subst is immutable — re-merging it
+            // would be a no-op.
             let state_type_entries: Vec<(String, Type)> = {
                 let state_map = state.subst.type_map.borrow();
                 state_map
