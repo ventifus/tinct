@@ -1,6 +1,6 @@
 # What If: Type::Variant for Transport and Protocol Constants
 
-**State:** Proposal
+**State:** Superseded — the correct approach is to declare `[union Transport [Tcp] [Udp] [Quic] [Unix]]` using the existing nominal variants machinery, not to add a new `Type::Variant`. See `transport-typing` sprint in TODO.md.
 
 What would it take to add a `Type::Variant` to tinct's type system to precisely type Transport protocol constants and other nominal variant values?
 

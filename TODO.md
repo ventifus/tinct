@@ -116,14 +116,26 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 - `map`/`filter`/`reduce` seq/init params: HKT required.
 - `builtin-join` seq param: `stringify()` accepts any element type.
 - `builtin-concat` return: merge shape not inferrable statically.
-- Transport variant constants (`Tcp`, `Udp`, etc.): requires `Type::Variant`.
-- `connect` transport param: requires `Type::Variant` for dispatch.
+- Transport variant constants (`Tcp`, `Udp`, etc.): resolved via nominal variants — see `transport-typing` sprint.
+- `connect` transport param: resolved via nominal variants — see `transport-typing` sprint.
 - `Map` unparameterized constructor: `Unknown` K/V until user supplies type args.
 
 **Tasks:**
-- [ ] Implement `Type::Variant` and replace Transport constant `Unknown` registrations (`src/type_env.rs`, `src/types.rs`)
+- [x] Transport typing — resolved via `transport-typing` sprint (nominal variants, not `Type::Variant`)
 - [x] Add closed-Record return type for `revocable`, `icmp-ping`, `recv-datagram`, `stat`, `timestamp-parts`, `timestamp-in-tz`, `timestamp-in-tz`, `tls-peer-cert`, `http-request` (`src/type_env.rs`)
 - [x] Add precise `Seq({...})` return for `list-dir` — `Seq({name: Str, kind: Str, size: Int})` (`src/type_env.rs`)
+### transport-typing: Type Transport constants via nominal variants
+
+Agent panel review concluded `Type::Variant(String)` is the wrong approach — `Tcp` and `Udp` would share one type and be indistinguishable. The correct approach is the already-accepted nominal variants machinery. **Spec chapters:** `doc/whatif/completed/nominal-variants.md`.
+
+- [ ] Add `[union Transport [Tcp] [Udp] [Quic] [Unix]]` declaration to `stdlib/prelude.llt` — constructors register automatically in TypeEnv via prelude loading (`stdlib/prelude.llt`)
+- [ ] Remove the four manual `Type::Unknown` registrations for `Tcp`/`Udp`/`Quic`/`Unix` from `src/type_env.rs` — prelude loading now handles them (`src/type_env.rs`)
+- [ ] Update `connect` builtin type signature: transport parameter `Unknown` → `Transport` nominal variant type (`src/type_env.rs`)
+- [ ] Verify runtime dispatch in `connect` still works — eval code already matches on `Value::Variant { tag }` string; no changes needed if tag names match (`src/builtins_io.rs`)
+- [ ] Corpus tests: typed Transport usage — passing `Tcp` to `connect` type-checks; passing `42` or `"tcp"` produces a type error (`tests/corpus/eval/typecheck/`)
+
+---
+
 - [ ] Implement HKT (`Type::App`) to express `map`/`filter`/`reduce`/`each` precisely — see `chr-unification` sprint for the type-application machinery
 - [ ] After above: add `from-json` option for schema-directed typed parse returning a specific Record type
 
