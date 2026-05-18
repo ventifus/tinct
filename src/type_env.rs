@@ -2023,7 +2023,10 @@ impl TypeEnv {
                     // Constructors are typed via prelude [type [Tcp] [Udp] ...] declaration.
                     // Top instead of Unknown: any value is accepted structurally (callers pass a
                     // Transport variant), but Unknown would silently bypass boundary guards.
-                    // TODO(unknown-elimination): narrow to Transport union once variant type exists.
+                    // Transport type is narrowed via prelude nominal variants (Tcp, Udp, etc.)
+                    // registered at runtime; the type parameter uses Top to accept them
+                    // structurally; narrowing to a specific Union type is possible once
+                    // Type::Variant or a union of runtime-registered types is expressible statically.
                     (None, Type::Top), // Transport variant
                     (None, Type::Str), // host
                     (None, Type::Int), // port
