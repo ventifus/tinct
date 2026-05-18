@@ -809,11 +809,29 @@ pub(crate) fn resolve_fn_metadata(
         if let Some(key_expr) = &entry.node.key {
             if let Expr::Str(key_name) = &key_expr.node {
                 if key_name == "doc" {
-                    match &entry.node.value.node {
-                        Expr::Str(s) => {
-                            doc_string = Some(s.clone());
+                    // Accept both plain strings and unindent(...) calls (from triple-quoted strings).
+                    // Triple-quoted strings `"""..."""` are desugared by the parser to
+                    // `Call { func: VarRef("unindent"), args: [Str(s)] }`.
+                    let extracted = match &entry.node.value.node {
+                        Expr::Str(s) => Some(s.clone()),
+                        Expr::Call { func, args, .. } => {
+                            if matches!(&func.node, Expr::VarRef { name, .. } if name == "unindent") {
+                                args.iter().find_map(|arg| {
+                                    if let Expr::Str(s) = &arg.node {
+                                        Some(s.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            } else {
+                                None
+                            }
                         }
-                        _ => {
+                        _ => None,
+                    };
+                    match extracted {
+                        Some(s) => doc_string = Some(s),
+                        None => {
                             return Err(TypeError::new(
                                 "doc: value must be a string literal",
                                 entry.node.value.span,
