@@ -312,12 +312,12 @@ Sort with custom comparator
 fn@Dict [let cmp@Fn xs@Dict]
 ```
 
-### `sorted@[doc`
+### `sorted`
 
-
+Sort collection in ascending order
 
 ```tinct
-fn@Dict [xs]
+fn@[return: Dict constraint: [a: Comparable]] [let xs]
 ```
 
 ### `sorted-by`
@@ -1168,20 +1168,20 @@ Appendable instance for Seq: append-one = concat, empty = empty seq
 fn@Bool
 ```
 
-### `<@[doc`
+### `<`
 
-
+Less than
 
 ```tinct
-fn@Bool [x@a y@a]
+fn@[return: Bool constraint: [a: Comparable]] [let x@a y@a]
 ```
 
-### `=@[doc`
+### `=`
 
-
+Equality
 
 ```tinct
-fn@Bool [x@a y@a]
+fn@[return: Bool constraint: [a: Equatable]] [let x@a y@a]
 ```
 
 ### `+`

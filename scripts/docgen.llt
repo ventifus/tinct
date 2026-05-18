@@ -69,13 +69,16 @@ after-first: [fn@String [needle@String s@String]
 
 # Parse NEW fn@[return: T doc: "..."] pattern (single-line only).
 # Returns [name: String sig: String doc: String] or [].
+# Skips OLD-style name@[doc: "..."] lines even when they also contain fn@[.
 parse-new-fn: [fn@Dict [line@String]
   [if [not [str-contains? line "fn@["]]
     []
-    [if [not [str-contains? line "doc:"]]
+    [if [str-contains? line "@[doc:"]
       []
-      [call [fn@Dict []
-        [key-part: [trim [before-first ":" line]]]
+      [if [not [str-contains? line "doc:"]]
+        []
+        [call [fn@Dict []
+          [key-part: [trim [before-first ":" line]]]
         [after-fn: [after-first "fn@[" line]]
         [return-type: [extract-return-from-metadata after-fn]]
         [params: [extract-params-from-line line]]
@@ -83,7 +86,7 @@ parse-new-fn: [fn@Dict [line@String]
         [sig-text: [if [= params ""]
                 [str "fn@" return-type]
                 [str "fn@" return-type " [" params "]"]]]
-        [name: key-part doc: doc-text sig: sig-text]]]]]]
+        [name: key-part doc: doc-text sig: sig-text]]]]]]]
 
 # Extract return type from fn@[return: T ...] metadata.
 extract-return-from-metadata: [fn@String [metadata@String]
