@@ -99,7 +99,7 @@ pub fn eval_document(
                     ));
                 }
 
-                return Err(EvalError::new(message, caps_ann.span).into());
+                return Err(EvalError::internal(message, caps_ann.span).into());
             }
         }
     }

@@ -1655,7 +1655,7 @@ fn run_eval(
         };
 
         // Parse
-        let ast = parse(&source).map_err(|e| {
+        let ast = parse(&source).map(|o| o.file).map_err(|e| {
             if strict {
                 // In strict mode, use rich diagnostic formatting
                 let file_name = match stage {
@@ -1956,7 +1956,7 @@ fn run_fmt(
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let ast = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+        let ast = parse(&source).map(|o| o.file).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
         // See also: src/lib.rs (typecheck_source pipeline)
@@ -2037,7 +2037,7 @@ fn run_lint(
     let source = read_source(file_path)?;
 
     // Parse the file
-    let ast = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+    let ast = parse(&source).map(|o| o.file).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
     let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
@@ -2291,7 +2291,7 @@ fn run_literate_eval(
     cap_net: &[String],
 ) -> Result<(), String> {
     // Parse the tangled source.
-    let ast = parse(tangled).map_err(|e| {
+    let ast = parse(tangled).map(|o| o.file).map_err(|e| {
         if strict {
             tinct::format_parse_error(&e, tangled, markdown_path)
         } else {
@@ -2855,7 +2855,7 @@ fn run_literate_weave(
     for (i, block_with_exp) in blocks_with_exp.iter().enumerate() {
         let code = &block_with_exp.code;
 
-        let parse_result = parse(code);
+        let parse_result = parse(code).map(|o| o.file);
         let ast = match parse_result {
             Ok(a) => a,
             Err(e) => {
@@ -3192,20 +3192,8 @@ fn run_literate_weave(
         i += 1;
     }
 
-    // If no_substitute is false, perform inline marker substitution.
-    // Note: With === sections, inline marker substitution is deprecated.
-    // The old HTML comment format (<!-- tinct-result: ... -->) is no longer emitted.
-    // We keep this for backward compatibility with old markdown files that still have
-    // inline markers, but it won't interact with the new === section format.
-    if !no_substitute {
-        output = substitute_inline_markers(
-            &output,
-            &block_outputs,
-            &base_eval_ctx,
-            &env,
-            &base_dir_path,
-        )?;
-    }
+    // Note: no_substitute is ignored. All docs use === out sections now.
+    let _ = no_substitute; // silence unused warning
 
     // Write output
     if in_place {
@@ -3227,155 +3215,6 @@ fn run_literate_weave(
 ///
 /// Note: With === sections, this is only used for backward compatibility with old markdown files.
 /// The new format does not emit HTML comments.
-fn substitute_inline_markers(
-    output: &str,
-    block_outputs: &[BlockOutput],
-    base_eval_ctx: &EvalContext,
-    env: &Rc<std::cell::RefCell<tinct::Environment>>,
-    base_dir_path: &std::path::PathBuf,
-) -> Result<String, String> {
-    use regex::Regex;
-
-    // Pattern to match <!-- tinct-result: EXPR --> or <!-- tinct-result -->
-    // Capture group 1: optional expression content
-    let marker_re = Regex::new(r"<!--\s*tinct-result:\s*([^>]*?)\s*-->").expect("invalid regex");
-
-    let mut result = String::with_capacity(output.len());
-    let mut last_pos = 0;
-
-    // Now perform substitution on inline markers
-    for cap in marker_re.captures_iter(output) {
-        let full_match = cap.get(0).unwrap();
-        let expr_opt = cap.get(1).map(|m| m.as_str().trim());
-
-        // Append everything before this marker
-        result.push_str(&output[last_pos..full_match.start()]);
-
-        // Determine most_recent_result by checking position in output
-        // For inline markers, we use the most recent successful block output
-        let marker_pos = full_match.start();
-        let mut temp_block_idx = 0;
-        let mut temp_in_block = false;
-        let mut most_recent_result: Option<&str> = None;
-        for line in output[..marker_pos].lines() {
-            let trimmed = line.trim();
-            if trimmed == "```tinct" || trimmed == "```llt" {
-                temp_in_block = true;
-            } else if temp_in_block && trimmed == "```" {
-                temp_in_block = false;
-                if temp_block_idx < block_outputs.len() {
-                    if let Some(ref out) = block_outputs[temp_block_idx].out {
-                        most_recent_result = Some(out.as_str());
-                    }
-                    temp_block_idx += 1;
-                }
-            }
-        }
-
-        // This is an inline marker - substitute it
-        let substitution = if let Some(expr) = expr_opt {
-            if expr.is_empty() {
-                // Empty expression: use most recent result
-                if let Some(recent) = most_recent_result {
-                    recent.to_string()
-                } else {
-                    // No block evaluated yet - leave marker as-is
-                    full_match.as_str().to_string()
-                }
-            } else {
-                // Evaluate the expression with % bound to the most recent result
-                evaluate_marker_expression(
-                    expr,
-                    most_recent_result,
-                    base_eval_ctx,
-                    env,
-                    base_dir_path,
-                )?
-            }
-        } else {
-            // No expression: use most recent result
-            if let Some(recent) = most_recent_result {
-                recent.to_string()
-            } else {
-                // No block evaluated yet - leave marker as-is
-                full_match.as_str().to_string()
-            }
-        };
-
-        result.push_str(&substitution);
-
-        last_pos = full_match.end();
-    }
-
-    // Append remaining content
-    result.push_str(&output[last_pos..]);
-
-    Ok(result)
-}
-
-/// Evaluate an inline marker expression with the most recent block result as %.
-fn evaluate_marker_expression(
-    expr: &str,
-    most_recent_json: Option<&str>,
-    base_eval_ctx: &EvalContext,
-    env: &Rc<std::cell::RefCell<tinct::Environment>>,
-    base_dir_path: &std::path::PathBuf,
-) -> Result<String, String> {
-    // Parse the expression
-    let ast = parse(expr).map_err(|e| format!("parse error in inline marker: {e}"))?;
-
-    // Convert the most recent JSON result back to a Thunk for %
-    let pipeline_input = if let Some(json_str) = most_recent_json {
-        if json_str == "(emit)" {
-            // Special case: (emit) is not valid JSON, treat as null
-            None
-        } else {
-            let json_val: serde_json::Value = serde_json::from_str(json_str)
-                .map_err(|e| format!("JSON parse error in recent result: {e}"))?;
-            // Create a temporary eval context for json_to_value
-            // We can't clone base_eval_ctx, so we need to create a new one
-            let temp_dir =
-                cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
-                    .map_err(|e| format!("cannot open base directory: {e}"))?;
-            let temp_ctx =
-                base_eval_ctx.with_base_dir_and_path(temp_dir, Some(base_dir_path.clone()));
-            let temp_ctx_rc = Rc::new(temp_ctx);
-
-            let thunk = tinct::json_to_value(&json_val, 0, Span::origin(), &temp_ctx_rc)
-                .map_err(|e| format!("error converting JSON to value: {e}"))?;
-            Some(thunk)
-        }
-    } else {
-        None
-    };
-
-    // Expand, desugar, resolve, typecheck
-    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
-    let mut ast = expand_result.file;
-    tinct::desugar::desugar_file(&mut ast.node);
-    tinct::resolve::resolve_file(&ast.node);
-    let (_type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
-
-    // Create a per-expression eval context
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
-
-    // Evaluate
-    let eval_ctx_rc = Rc::new(eval_ctx);
-    let thunk = eval_file_with_input(&ast.node, Rc::clone(env), &eval_ctx_rc, pipeline_input)
-        .map_err(|e| format!("error evaluating inline marker: {e}"))?;
-
-    let val = materialize(&thunk, None, &eval_ctx_rc)
-        .map_err(|e| format!("error materializing inline marker: {e}"))?;
-
-    // Convert to JSON and return as string (emit is additive)
-    let json = value_to_json(&val, &eval_ctx_rc)
-        .map_err(|e| format!("error serializing inline marker result: {e}"))?;
-    serde_json::to_string(&json)
-        .map_err(|e| format!("JSON serialization error in inline marker: {e}"))
-}
-
 /// Schema keys recognized by the `describe` subcommand heuristic.
 /// A dict is considered a "schema dict" if any of its values is a dict containing
 /// at least one of these keys. This mirrors the constraint keys supported by `$validate`.
@@ -3419,7 +3258,7 @@ fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
 
 fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let source = read_source(file_path)?;
-    let ast = parse(&source).map_err(|e| format!("{e}"))?;
+    let ast = parse(&source).map(|o| o.file).map_err(|e| format!("{e}"))?;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
     let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;

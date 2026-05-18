@@ -27,7 +27,7 @@ pub(crate) fn builtin_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     if let Some(named_map) = named {
         if !named_map.is_empty() {
-            return Err(EvalError::new(
+            return Err(EvalError::internal(
                 "bytes does not accept named arguments".to_string(),
                 call_span,
             )
@@ -84,7 +84,7 @@ pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 
     if let Some(named_map) = named {
         if !named_map.is_empty() {
-            return Err(EvalError::new(
+            return Err(EvalError::internal(
                 "bytes-find does not accept named arguments".to_string(),
                 call_span,
             )
@@ -93,7 +93,7 @@ pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     }
 
     if args.len() != 2 {
-        return Err(EvalError::new(
+        return Err(EvalError::internal(
             format!(
                 "bytes-find requires exactly 2 arguments, got {}",
                 args.len()
@@ -187,7 +187,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         bytes.push(n as u8);
                     }
                     Value::Int(n) => {
-                        return Err(EvalError::new(
+                        return Err(EvalError::internal(
                             format!("bytes-of: integer {n} out of range 0-255"),
                             call_span,
                         )
@@ -239,7 +239,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         bytes.push(n as u8);
                     }
                     Value::Int(n) => {
-                        return Err(EvalError::new(
+                        return Err(EvalError::internal(
                             format!("bytes-of: integer {n} out of range 0-255"),
                             call_span,
                         )
@@ -291,7 +291,7 @@ pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
 
     if let Some(named_map) = named {
         if !named_map.is_empty() {
-            return Err(EvalError::new(
+            return Err(EvalError::internal(
                 "bytes-equal? does not accept named arguments".to_string(),
                 call_span,
             )
@@ -300,7 +300,7 @@ pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
     }
 
     if args.len() != 2 {
-        return Err(EvalError::new(
+        return Err(EvalError::internal(
             format!(
                 "bytes-equal? requires exactly 2 arguments, got {}",
                 args.len()
@@ -365,7 +365,7 @@ pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     if let Some(named_map) = named {
         if !named_map.is_empty() {
-            return Err(EvalError::new(
+            return Err(EvalError::internal(
                 "ct-equal? does not accept named arguments".to_string(),
                 call_span,
             )
@@ -374,7 +374,7 @@ pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     if args.len() != 2 {
-        return Err(EvalError::new(
+        return Err(EvalError::internal(
             format!("ct-equal? requires exactly 2 arguments, got {}", args.len()),
             call_span,
         )

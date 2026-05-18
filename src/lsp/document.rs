@@ -9,7 +9,7 @@ use lsp_types::Uri;
 use crate::ast::{File, Spanned};
 use crate::builtins::create_stdlib_env_with_arena;
 use crate::error::EvalError;
-use crate::parser::{parse2, ParseError};
+use crate::parser::{parse, ParseError};
 use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, SchemeMap, TypeMap};
 use crate::types::TypeError;
 use crate::value::Environment;
@@ -55,8 +55,8 @@ impl DocumentState {
         eval_ctx: &Rc<crate::eval::EvalContext>,
         base_dir: Option<&std::path::Path>,
     ) -> Self {
-        // Use parse2() to capture both the AST and any recovered parse errors.
-        let parse_result = parse2(&text);
+        // Use parse() to capture both the AST and any recovered parse errors.
+        let parse_result = parse(&text);
         let mut parse_errors = Vec::new();
         let mut ast: Result<Spanned<File>, ParseError> = match parse_result {
             Ok(output) => {
@@ -606,7 +606,7 @@ impl DocumentStore {
             stdlib_env,
             base_eval_ctx,
             include_graph: HashMap::new(),
-            prelude_ast,
+            prelude_ast: prelude_ast.map(|o| o.file),
         }
     }
 

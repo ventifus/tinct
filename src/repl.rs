@@ -22,7 +22,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{create_stdlib_env_with_arena, MAX_FILE_SIZE};
 use crate::eval::{deep_materialize, eval_file_with_input, materialize};
-use crate::parser::parse2;
+use crate::parser::parse;
 use crate::typecheck::{DocMap, TypeMap};
 use crate::value::{Environment, Key, Thunk, Value};
 use crate::value_to_display_string;
@@ -182,7 +182,7 @@ impl ReplSession {
             ));
         }
 
-        let parse_output = parse2(input).map_err(|e| format!("{e}"))?;
+        let parse_output = parse(input).map_err(|e| format!("{e}"))?;
 
         // Display all recovered parse errors (non-fatal errors inside bracket forms)
         if !parse_output.errors.is_empty() {
@@ -987,7 +987,7 @@ mod tests {
         // Establish a binding.
         session.eval_input("[x: 100]").unwrap();
 
-        // Submit a syntax error (unclosed bracket — parse2 returns Err for unbalanced input).
+        // Submit a syntax error (unclosed bracket — parse returns Err for unbalanced input).
         // The session should return Err, but state must be preserved.
         let err = session.eval_input("[broken syntax !!!@#$");
         // May or may not be a parse error depending on recovery — just ensure session survives.

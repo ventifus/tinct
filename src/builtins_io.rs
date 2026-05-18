@@ -191,78 +191,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let path = require_string("open", path_val, args[1].span)?;
 
-    // Check if third arg is a String (legacy mode) or Variant (new mode)
-    let third_arg_val = materialize(&args[2], Some(&call_span), &ctx)?;
-
-    // Legacy string mode check
-    if matches!(third_arg_val, Value::String { .. }) {
-        // BACKWARD COMPATIBILITY PATH: 3-arg string mode
-        if args.len() != 3 {
-            return Err(EvalError::user_error(
-                "open: string mode requires exactly 3 arguments (dir, path, mode)".to_string(),
-                call_span,
-            )
-            .into());
-        }
-
-        let mode = require_string("open", third_arg_val, args[2].span)?;
-
-        // Check permissions based on mode
-        match mode.as_str() {
-            "r" => check_perm(perms, "Readable", perms.readable, "open", call_span)?,
-            "w" => check_perm(perms, "Writable", perms.writable, "open", call_span)?,
-            "a" => check_perm(perms, "Appendable", perms.appendable, "open", call_span)?,
-            _ => {}
-        }
-
-        // Open the file based on mode
-        use std::io::BufReader;
-        let handle: Box<dyn std::io::BufRead> = match mode.as_str() {
-            "r" => {
-                let file = dir.open(&path).map_err(|e| {
-                    EvalError::user_error(
-                        format!("open: failed to open file '{}': {}", path, e),
-                        call_span,
-                    )
-                })?;
-                Box::new(BufReader::new(file))
-            }
-            "w" | "a" => {
-                return Err(EvalError::user_error(
-                    "open: write and append modes not yet implemented (Phase 1 is read-only)"
-                        .to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            _ => {
-                return Err(EvalError::user_error(
-                    format!("open: invalid mode '{}' (expected 'r', 'w', or 'a')", mode),
-                    call_span,
-                )
-                .into());
-            }
-        };
-
-        // Default caps for read-only handle (legacy mode)
-        let mut caps = HashMap::new();
-        caps.insert("Readable".to_string(), Value::Bool(true));
-        caps.insert("Text".to_string(), Value::Bool(true));
-
-        return ok_val(
-            Value::Handle {
-                caps,
-                inner: Rc::new(std::cell::RefCell::new(handle)),
-                write_inner: None,
-                seek_inner: None,
-                raw_tcp: None,
-                creation_span: call_span,
-            },
-            call_span,
-        );
-    }
-
-    // NEW VARIANT FLAGS PATH: parse flags from args[2..]
+    // Parse flags from args[2..]
     let mut caps = HashMap::new();
     let mut has_readable = false;
     let mut has_writable = false;
@@ -3751,7 +3680,7 @@ mod tests {
         // Denied host (different hostname, same port) → Err
         let result = check_net_cap_allowlist(&entries, "evil.example.com", Some(443), span);
         assert!(result.is_err(), "evil.example.com:443 should be denied");
-        let msg = result.unwrap_err().message().to_string();
+        let msg = result.unwrap_err().kind.to_string().to_string();
         assert!(
             msg.contains("denied"),
             "error should mention 'denied', got: {msg}"

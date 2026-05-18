@@ -89,7 +89,7 @@ use std::rc::Rc;
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 /// Parser entry points and error type.
-pub use parser::{format_parse_error, parse, parse2, parse_expression, ParseError, ParseOutput};
+pub use parser::{format_parse_error, parse, parse_expression, ParseError, ParseOutput};
 
 /// Evaluation functions.
 pub use eval::{eval_file, eval_file_with_input, materialize, EvalConfig, EvalContext, EvalState};
@@ -156,7 +156,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
     // See also: src/main.rs:234-240 (run_eval pipeline)
     // Expand macros (pre-desugar AST transformation).
-    let expand_result = expand::expand_macros(file, no_fs).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(file.file, no_fs).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -288,7 +288,7 @@ pub fn eval_source_with_cap_net(
 
     // Use the standard config path, then inject caps after env creation
     let file = parse(input).map_err(|e| format!("{e}"))?;
-    let expand_result = expand::expand_macros(file, no_fs).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(file.file, no_fs).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -410,7 +410,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
     // Expand macros (pre-desugar AST transformation).
-    let expand_result = expand::expand_macros(file, false).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(file.file, false).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
@@ -444,7 +444,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
 pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
-    let expand_result = expand::expand_macros(file, false).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(file.file, false).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
@@ -750,7 +750,7 @@ impl ValueVisitor for JsonVisitor {
     fn visit_timestamp(&self, nanos: i64) -> Result<serde_json::Value, Box<error::EvalError>> {
         // Convert nanoseconds to jiff::Timestamp and format as RFC 3339
         let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-            error::EvalError::new(format!("invalid timestamp value: {e}"), ast::Span::origin())
+            error::EvalError::internal(format!("invalid timestamp value: {e}"), ast::Span::origin())
         })?;
         Ok(serde_json::Value::String(ts.to_string()))
     }
@@ -779,7 +779,7 @@ impl ValueVisitor for JsonVisitor {
         // 256 levels of nesting is generous for any real config file.
         const MAX_JSON_OUTPUT_DEPTH: usize = 256;
         if depth > MAX_JSON_OUTPUT_DEPTH {
-            Some(Err(error::EvalError::new(
+            Some(Err(error::EvalError::internal(
                 format!("maximum JSON output depth ({MAX_JSON_OUTPUT_DEPTH}) exceeded"),
                 ast::Span::origin(),
             )
@@ -980,16 +980,16 @@ pub fn format_with_json_llt(
 
     // Parse json.llt (it's a single dict expression — one document).
     let mut ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
-    desugar::desugar_file(&mut ast.node);
-    resolve::resolve_file(&ast.node);
-    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&ast.node);
+    desugar::desugar_file(&mut ast.file.node);
+    resolve::resolve_file(&ast.file.node);
+    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&ast.file.node);
 
     // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
     // from the result_thunk are resolvable when the json functions access dict entries.
     // The initial `%` = result_thunk; json.llt's `[emit [json %]]` is a lazy dict
     // entry (auto-index 0) that is never forced here.
     let module_thunk = eval::eval_file_with_input(
-        &ast.node,
+        &ast.file.node,
         Rc::clone(&env),
         eval_ctx,
         Some(Rc::clone(&result_thunk)),
@@ -1747,7 +1747,7 @@ mod tests {
     fn typecheck_source_resolves_prelude_map() {
         let input = "[call $map [fn [x] x] [1 2 3]]";
         let file = parse(input).expect("parse failed");
-        let expand_result = expand::expand_macros(file, false).expect("macro expansion failed");
+        let expand_result = expand::expand_macros(file.file, false).expect("macro expansion failed");
         let mut file = expand_result.file;
         desugar::desugar_file(&mut file.node);
         resolve::resolve_file(&file.node);

@@ -657,7 +657,7 @@ fn parse_annotation(
             let sub_source = &input[byte_start..byte_end];
 
             // Re-parse the sub-string as a standalone expression.
-            let sub_output = match parse2(sub_source) {
+            let sub_output = match parse(sub_source) {
                 Ok(output) => output,
                 Err(e) => {
                     let err = ParseError {
@@ -965,7 +965,7 @@ enum CallArg {
 /// `errors` contains parse errors that were recovered from during parsing. These are
 /// errors that occurred inside bracket forms; the parser substituted an `Expr::Error`
 /// node and continued. Fatal errors (lexer failure, unclosed brackets at top level)
-/// still cause `parse2()` to return `Err(...)`.
+/// still cause `parse()` to return `Err(...)`.
 ///
 /// The evaluator and type checker consume only `file`; the formatter uses all three fields.
 ///
@@ -1259,7 +1259,7 @@ fn recover_from_failed_open(
 /// `Expr::Error` node and skipping to the matching `]`. Recovered errors are collected
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
-pub fn parse2(input: &str) -> Result<ParseOutput, ParseError> {
+pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     // Tokenize the input via the lexer
     let tokens = lexer::tokenize(input).map_err(|e| ParseError {
         message: e.message,
@@ -5532,29 +5532,16 @@ fn push_value(
     }
 }
 
-/// Parse tinct source text and return the AST.
+/// Parse tinct source text and return the AST with comment metadata.
 ///
-/// This is a compatibility wrapper around `parse2()` that extracts just the AST file,
-/// discarding comment information. Most pipeline entry points (eval_source, typecheck_source,
-/// REPL, LSP) use this function.
-///
-/// This function returns `Err` if the input has any parse errors — both fatal errors
-/// (lexer failure, unclosed brackets) and recoverable errors (errors inside bracket forms).
-/// The first error encountered is returned. This maintains the pre-recovery behavior.
-///
-/// For multi-error reporting, use `parse2()` or `parse_with_recovery()` directly and
-/// access `ParseOutput.errors`. The formatter uses `parse2()` for comment preservation.
-pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
-    let output = parse2(input)?;
-    // Surface any recovered errors as a failure: the `parse()` API promises
-    // "no errors means valid input". Callers that want partial ASTs with error nodes
-    // should use `parse2()` or `parse_with_recovery()` instead.
-    if let Some(first_err) = output.errors.into_iter().next() {
-        return Err(first_err);
-    }
-    Ok(output.file)
-}
-
+/// This is the main entry point for Phase 2c-1 (complete feature set). The parser handles:
+/// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `Identifier`, `EscapedRef`
+/// - Dicts: `[]`, `[42]`, `[a: 1 b: 2]`, keyed and auto-indexed entries
+/// - Call forms: `[call $f arg1 arg2 name: val]`
+/// - Fn forms: `[fn [x y@Int ...rest] body]`, `[fn@Type [params] body]` with full param parsing
+/// - Type-alias: `[type expr]`
+/// - Type-assert: `[@Annotation expr]`
+/// - Dot access chains: `$a.b.c`, `$a.0` (identifier and integer keys)
 /// Parse a single tinct expression.
 ///
 /// This is a convenience wrapper that parses the input and returns the first expression
@@ -5562,7 +5549,7 @@ pub fn parse(input: &str) -> Result<Spanned<File>, ParseError> {
 ///
 /// Primarily used for testing and corpus validation where single-expression inputs are common.
 pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
-    let file = parse(input)?;
+    let file = parse(input)?.file;
 
     if file.node.documents.is_empty() {
         return Err(ParseError {
@@ -5585,7 +5572,7 @@ pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
 /// Parse tinct source text with error recovery.
 ///
 /// This function ALWAYS succeeds (returns a `ParseOutput`), even when there are parse errors.
-/// Unlike `parse()` and `parse2()` (which return `Err` on fatal errors like lexer failure
+/// Unlike `parse()` and `parse()` (which return `Err` on fatal errors like lexer failure
 /// or unclosed brackets at top level), this function converts all fatal errors into
 /// `ParseOutput.errors` and returns a synthetic AST.
 ///
@@ -5597,7 +5584,7 @@ pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
 /// Use this function when you want to report ALL parse errors at once (e.g. in an LSP
 /// diagnostic pass or a batch linting tool) and always need an AST, even if it's empty.
 pub fn parse_with_recovery(input: &str) -> ParseOutput {
-    match parse2(input) {
+    match parse(input) {
         Ok(output) => output,
         Err(fatal_error) => {
             // Fatal error (lexer failure, unclosed brackets, etc.)
@@ -5658,13 +5645,13 @@ mod tests {
 
     /// Helper: parse successfully and return the first expression from the first document.
     fn parse_expr(input: &str) -> Spanned<Expr> {
-        let output = parse2(input).expect("parse failed");
+        let output = parse(input).expect("parse failed");
         (*output.file.node.documents[0].node.expressions[0]).clone()
     }
 
     #[test]
     fn test_empty_dict() {
-        let output = parse2("[]").expect("parse failed");
+        let output = parse("[]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(doc.expressions.len(), 1);
         match &doc.expressions[0].node {
@@ -5677,7 +5664,7 @@ mod tests {
 
     #[test]
     fn test_dict_one_value() {
-        let output = parse2("[42]").expect("parse failed");
+        let output = parse("[42]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(doc.expressions.len(), 1);
         match &doc.expressions[0].node {
@@ -5692,7 +5679,7 @@ mod tests {
 
     #[test]
     fn test_keyed_entry() {
-        let output = parse2("[a: 1 b: 2]").expect("parse failed");
+        let output = parse("[a: 1 b: 2]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Dict(entries) => {
@@ -5718,7 +5705,7 @@ mod tests {
 
     #[test]
     fn test_call_simple() {
-        let output = parse2("[call $f 1 2]").expect("parse failed");
+        let output = parse("[call $f 1 2]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Call {
@@ -5742,7 +5729,7 @@ mod tests {
 
     #[test]
     fn test_call_named_args() {
-        let output = parse2("[call $f x: 1]").expect("parse failed");
+        let output = parse("[call $f x: 1]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Call {
@@ -5766,7 +5753,7 @@ mod tests {
 
     #[test]
     fn test_fn_simple() {
-        let output = parse2("[fn 42]").expect("parse failed");
+        let output = parse("[fn 42]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -5786,7 +5773,7 @@ mod tests {
 
     #[test]
     fn test_type_alias() {
-        let output = parse2("[type 42]").expect("parse failed");
+        let output = parse("[type 42]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::TypeAlias { params, body } => {
@@ -5846,7 +5833,7 @@ mod tests {
             input.push(']');
         }
 
-        let result = parse2(&input);
+        let result = parse(&input);
         assert!(
             result.is_ok(),
             "parsing {DEPTH} levels of nesting should succeed (limit is {MAX_PARSE_DEPTH}), got: {:?}",
@@ -5881,7 +5868,7 @@ mod tests {
 
     #[test]
     fn test_type_assert_simple() {
-        let output = parse2("[@Number 42]").expect("parse failed");
+        let output = parse("[@Number 42]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::TypeAssert {
@@ -5901,7 +5888,7 @@ mod tests {
     fn test_bracket_access_removed_parses_as_two_expressions() {
         // $a[0] — BracketAccess syntax removed. Now parses as two separate expressions:
         // VarRef("a") and Dict([Int(0)]). The `[` is always OpenBracket.
-        let output = parse2("$a[0]").expect("parse failed");
+        let output = parse("$a[0]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(doc.expressions.len(), 2);
         match &doc.expressions[0].node {
@@ -5919,14 +5906,14 @@ mod tests {
 
     // --- Error path tests ---
     //
-    // Errors inside bracket forms are now recovered from: parse2() returns Ok with
+    // Errors inside bracket forms are now recovered from: parse() returns Ok with
     // ParseOutput.errors non-empty rather than returning Err. Tests use `output.errors`.
     // Only top-level / structural errors (unmatched ], unclosed [, DocSeparator inside
-    // brackets) remain as parse2() returning Err.
+    // brackets) remain as parse() returning Err.
 
     #[test]
     fn test_call_empty() {
-        let output = parse2("[call]").expect("recovery should succeed");
+        let output = parse("[call]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for empty call form"
@@ -5941,7 +5928,7 @@ mod tests {
     #[test]
     fn test_call_func_as_named_arg() {
         // [call f: $x] — first arg is Named("f", ...) which is forbidden as func
-        let output = parse2("[call f: $x]").expect("recovery should succeed");
+        let output = parse("[call f: $x]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for named-arg func"
@@ -5956,7 +5943,7 @@ mod tests {
     #[test]
     fn test_dict_pending_key_no_value() {
         // [a:] — key with no value before closing bracket
-        let output = parse2("[a:]").expect("recovery should succeed");
+        let output = parse("[a:]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for key without value"
@@ -5971,7 +5958,7 @@ mod tests {
     #[test]
     fn test_call_pending_named_arg_no_value() {
         // [call $f x:] — named arg x with no value before closing bracket
-        let output = parse2("[call $f x:]").expect("recovery should succeed");
+        let output = parse("[call $f x:]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for named arg without value"
@@ -5985,7 +5972,7 @@ mod tests {
 
     #[test]
     fn test_type_alias_empty() {
-        let output = parse2("[type]").expect("recovery should succeed");
+        let output = parse("[type]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for empty type-alias"
@@ -6019,7 +6006,7 @@ mod tests {
     #[test]
     fn test_type_assert_no_expr() {
         // [@Number] — annotation parsed, but no expression
-        let output = parse2("[@Number]").expect("recovery should succeed");
+        let output = parse("[@Number]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for type-assert without expression"
@@ -6037,7 +6024,7 @@ mod tests {
     fn test_colon_outside_dict_call() {
         // [fn :] — "fn" not followed by colon directly → Fn form.
         // Then ":" in Fn frame → "`:` can only appear in dict, call, class, instance, or match forms" (recovered).
-        let output = parse2("[fn :]").expect("recovery should succeed");
+        let output = parse("[fn :]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon in fn form"
@@ -6052,7 +6039,7 @@ mod tests {
             output.errors[0].message
         );
         // Also test the true "colon outside dict/call" case: colon in a TypeAlias frame
-        let output2 = parse2("[type x :]").expect("recovery should succeed");
+        let output2 = parse("[type x :]").expect("recovery should succeed");
         assert!(
             !output2.errors.is_empty(),
             "expected recovered error for colon in type-alias form"
@@ -6069,7 +6056,7 @@ mod tests {
     #[test]
     fn test_colon_without_key_in_dict() {
         // [:] — colon with no preceding key in a dict
-        let output = parse2("[:]").expect("recovery should succeed");
+        let output = parse("[:]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon without key"
@@ -6084,7 +6071,7 @@ mod tests {
     #[test]
     fn test_fn_multiple_bodies() {
         // [fn 1 2] — two body expressions in an fn form (Sequential wrapping)
-        let output = parse2("[fn 1 2]").expect("parse should succeed");
+        let output = parse("[fn 1 2]").expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "multi-expression fn bodies should parse successfully via Sequential, got errors: {:?}",
@@ -6108,7 +6095,7 @@ mod tests {
     #[test]
     fn test_type_alias_multiple_exprs() {
         // [type 1 2] — multi-entry type-alias form (union declaration)
-        let output = parse2("[type 1 2]").expect("parse should succeed");
+        let output = parse("[type 1 2]").expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "multi-entry [type T1 T2 ...] should parse without errors, got: {:?}",
@@ -6141,7 +6128,7 @@ mod tests {
     #[test]
     fn test_type_assert_multiple_exprs() {
         // [@Number 1 2] — two expressions in a type-assert form
-        let output = parse2("[@Number 1 2]").expect("recovery should succeed");
+        let output = parse("[@Number 1 2]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for multiple type-assert expressions"
@@ -6158,7 +6145,7 @@ mod tests {
     #[test]
     fn test_fn_empty() {
         // [fn] — fn with no body
-        let output = parse2("[fn]").expect("recovery should succeed");
+        let output = parse("[fn]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for empty fn form"
@@ -6177,7 +6164,7 @@ mod tests {
     #[test]
     fn test_keyword_as_dict_key() {
         // [call: 1] — "call" followed by colon → dict, not a call form (Fix 2)
-        let output = parse2("[call: 1]").expect("parse failed");
+        let output = parse("[call: 1]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Dict(entries) => {
@@ -6196,7 +6183,7 @@ mod tests {
     #[test]
     fn test_all_keywords_as_dict_keys() {
         // [call: 1 fn: 2 type: 3] — all three keywords as dict keys
-        let output = parse2("[call: 1 fn: 2 type: 3]").expect("parse failed");
+        let output = parse("[call: 1 fn: 2 type: 3]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Dict(entries) => {
@@ -6223,7 +6210,7 @@ mod tests {
     #[test]
     fn test_whitespace_in_form_classification() {
         // "[ call $f]" — leading whitespace before keyword; peek skips it → still a Call form
-        let output = parse2("[ call $f]").expect("parse failed");
+        let output = parse("[ call $f]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Call {
@@ -6246,7 +6233,7 @@ mod tests {
     #[test]
     fn test_keyed_entry_with_bracket_value() {
         // [a: [1]] — dict with keyed entry whose value is a nested dict (Fix 1)
-        let output = parse2("[a: [1]]").expect("parse failed");
+        let output = parse("[a: [1]]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Dict(entries) => {
@@ -6272,7 +6259,7 @@ mod tests {
     #[test]
     fn test_call_named_arg_bracket_value() {
         // [call $f x: [1]] — call with named arg whose value is a nested dict (Fix 1)
-        let output = parse2("[call $f x: [1]]").expect("parse failed");
+        let output = parse("[call $f x: [1]]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Call {
@@ -6303,7 +6290,7 @@ mod tests {
     #[test]
     fn test_call_only_named_args() {
         // [call $f x: 1 y: 2] — call with func and two named args, no positional
-        let output = parse2("[call $f x: 1 y: 2]").expect("parse failed");
+        let output = parse("[call $f x: 1 y: 2]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Call {
@@ -6329,7 +6316,7 @@ mod tests {
 
     #[test]
     fn test_unmatched_closing_bracket() {
-        let err = parse2("]").unwrap_err();
+        let err = parse("]").unwrap_err();
         assert!(
             err.message.contains("unmatched closing bracket"),
             "expected 'unmatched closing bracket' error, got: {}",
@@ -6339,7 +6326,7 @@ mod tests {
 
     #[test]
     fn test_unclosed_bracket() {
-        let err = parse2("[").unwrap_err();
+        let err = parse("[").unwrap_err();
         assert!(
             err.message.contains("unclosed bracket"),
             "expected 'unclosed bracket' error, got: {}",
@@ -6350,7 +6337,7 @@ mod tests {
     #[test]
     fn test_call_colon_without_key() {
         // [call $f :] — colon inside Call frame with pending_key=None (no preceding identifier)
-        let output = parse2("[call $f :]").expect("recovery should succeed");
+        let output = parse("[call $f :]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon without name in call frame"
@@ -6365,7 +6352,7 @@ mod tests {
     #[test]
     fn test_annotation_invalid_token() {
         // [@123] — parse_annotation receives Int(123) after @, not Identifier or OpenBracket
-        let output = parse2("[@123]").expect("recovery should succeed");
+        let output = parse("[@123]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for invalid annotation token"
@@ -6382,7 +6369,7 @@ mod tests {
     #[test]
     fn test_mixed_keyed_and_auto_indexed() {
         // [a: 1 2 b: 3] — keyed, auto-indexed, keyed entries
-        let output = parse2("[a: 1 2 b: 3]").expect("parse failed");
+        let output = parse("[a: 1 2 b: 3]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Dict(entries) => {
@@ -6429,7 +6416,7 @@ mod tests {
 
     #[test]
     fn test_fn_params_simple() {
-        let output = parse2("[fn [x y] $x]").expect("parse failed");
+        let output = parse("[fn [x y] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6455,7 +6442,7 @@ mod tests {
 
     #[test]
     fn test_fn_params_annotated() {
-        let output = parse2("[fn [x@Int] $x]").expect("parse failed");
+        let output = parse("[fn [x@Int] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -6474,7 +6461,7 @@ mod tests {
 
     #[test]
     fn test_fn_return_annotation() {
-        let output = parse2("[fn@Number [x] $x]").expect("parse failed");
+        let output = parse("[fn@Number [x] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6494,7 +6481,7 @@ mod tests {
 
     #[test]
     fn test_fn_variadic() {
-        let output = parse2("[fn [...args] $args]").expect("parse failed");
+        let output = parse("[fn [...args] $args]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -6509,7 +6496,7 @@ mod tests {
 
     #[test]
     fn test_dot_access_simple() {
-        let output = parse2("$a.b").expect("parse failed");
+        let output = parse("$a.b").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::DotAccess { expr, field } => {
@@ -6525,7 +6512,7 @@ mod tests {
 
     #[test]
     fn test_dot_access_chain() {
-        let output = parse2("$a.b.c").expect("parse failed");
+        let output = parse("$a.b.c").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::DotAccess {
@@ -6554,7 +6541,7 @@ mod tests {
     #[test]
     fn test_dot_access_inside_call() {
         // [call $fn $a.b]
-        let output = parse2("[call $fn $a.b]").expect("parse failed");
+        let output = parse("[call $fn $a.b]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Call {
@@ -6587,7 +6574,7 @@ mod tests {
     #[test]
     fn test_dot_access_inside_dict() {
         // [x: $y.z]
-        let output = parse2("[x: $y.z]").expect("parse failed");
+        let output = parse("[x: $y.z]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Dict(entries) => {
@@ -6614,7 +6601,7 @@ mod tests {
 
     #[test]
     fn test_doc_separator() {
-        let output = parse2("[a: 1]\n---\n[b: 2]").expect("parse failed");
+        let output = parse("[a: 1]\n---\n[b: 2]").expect("parse failed");
         assert_eq!(output.file.node.documents.len(), 2);
 
         // First document
@@ -6648,7 +6635,7 @@ mod tests {
 
     #[test]
     fn test_comment_leading() {
-        let output = parse2("# comment\n[a: 1]").expect("parse failed");
+        let output = parse("# comment\n[a: 1]").expect("parse failed");
         assert!(!output.leading_comments.is_empty());
         // Comments are attached by offset of next significant token
         // We just verify that we have at least one comment collected
@@ -6697,7 +6684,7 @@ mod tests {
         // `1..5` lexes as Int(1), Dot, Dot, Int(5). The first Dot triggers dot-access on Int(1)
         // but the next token is another Dot (not an identifier) → parse error at top level.
         // At top level (stack empty), the parser returns Err rather than recovering.
-        let err = parse2("1..5").unwrap_err();
+        let err = parse("1..5").unwrap_err();
         assert!(
             err.message.contains("expected field name") || err.message.contains("found Dot"),
             "expected a dot-access parse error, got: {}",
@@ -6708,7 +6695,7 @@ mod tests {
     #[test]
     fn test_doc_separator_inside_bracket() {
         // --- inside a bracket expression
-        let err = parse2("[---]").unwrap_err();
+        let err = parse("[---]").unwrap_err();
         assert!(
             err.message
                 .contains("document separator cannot appear inside"),
@@ -6723,7 +6710,7 @@ mod tests {
     fn test_whitespace_allows_dot_access() {
         // "$a .b" has whitespace before dot; dot access is not whitespace-sensitive (unlike '['),
         // so this parses as a single DotAccess expression (same as "$a.b").
-        let output = parse2("$a .b").expect("parse failed");
+        let output = parse("$a .b").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(
             doc.expressions.len(),
@@ -6746,7 +6733,7 @@ mod tests {
     #[test]
     fn test_bracket_parses_as_separate_dict() {
         // "$a [0]" parses as two separate expressions: VarRef and Dict([Int(0)])
-        let output = parse2("$a [0]").expect("parse failed");
+        let output = parse("$a [0]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(
             doc.expressions.len(),
@@ -6770,7 +6757,7 @@ mod tests {
     #[test]
     fn test_fn_params_mixed() {
         // [fn [x y@Int ...rest] $x] — simple + annotated + variadic
-        let output = parse2("[fn [x y@Int ...rest] $x]").expect("parse failed");
+        let output = parse("[fn [x y@Int ...rest] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, body, .. } => {
@@ -6801,7 +6788,7 @@ mod tests {
     #[test]
     fn test_fn_both_annotations() {
         // [fn@Number [x@Int] $x] — return annotation + annotated param
-        let output = parse2("[fn@Number [x@Int] $x]").expect("parse failed");
+        let output = parse("[fn@Number [x@Int] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6836,7 +6823,7 @@ mod tests {
     fn test_dot_access_on_dict_literal() {
         // "[x: 1].x" — dot access immediately after closing bracket (no whitespace)
         // The lexer emits Dot (access operator) after ']' since CloseBracket is in access context.
-        let output = parse2("[x: 1].x").expect("parse failed");
+        let output = parse("[x: 1].x").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         assert_eq!(
             doc.expressions.len(),
@@ -6864,7 +6851,7 @@ mod tests {
     #[test]
     fn test_comment_trailing() {
         // "[a: 1] # trailing comment" — comment on same line as dict → trailing
-        let output = parse2("[a: 1] # trailing comment").expect("parse failed");
+        let output = parse("[a: 1] # trailing comment").expect("parse failed");
         assert!(
             !output.trailing_comments.is_empty(),
             "expected at least one trailing comment"
@@ -6883,7 +6870,7 @@ mod tests {
     #[test]
     fn test_multiple_doc_separators() {
         // Three documents separated by two ---
-        let output = parse2("[a: 1]\n---\n[b: 2]\n---\n[c: 3]").expect("parse failed");
+        let output = parse("[a: 1]\n---\n[b: 2]\n---\n[c: 3]").expect("parse failed");
         assert_eq!(
             output.file.node.documents.len(),
             3,
@@ -6937,7 +6924,7 @@ mod tests {
     #[test]
     fn test_fn_empty_params() {
         // [fn [] 42] — fn with explicit empty param list, body Int(42)
-        let output = parse2("[fn [] 42]").expect("parse failed");
+        let output = parse("[fn [] 42]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6961,7 +6948,7 @@ mod tests {
         // "[fn [x@Int] $x]"
         //  0123456789...
         //  offset 5 = 'x', offset 6 = '@', offset 7..9 = "Int"
-        let output = parse2("[fn [x@Int] $x]").expect("parse failed");
+        let output = parse("[fn [x@Int] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -6984,7 +6971,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_key() {
-        let output = parse2("[a: 1  a: 2]").expect("recovery should succeed");
+        let output = parse("[a: 1  a: 2]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for duplicate key"
@@ -7004,7 +6991,7 @@ mod tests {
     #[test]
     fn test_empty_document_explicit() {
         // --- is the LLT document separator
-        let output = parse2("---\n[a: 1]").expect("parse failed");
+        let output = parse("---\n[a: 1]").expect("parse failed");
         assert_eq!(output.file.node.documents.len(), 2);
         assert_eq!(output.file.node.documents[0].node.expressions.len(), 0);
         assert_eq!(output.file.node.documents[1].node.expressions.len(), 1);
@@ -7027,7 +7014,7 @@ mod tests {
 
     #[test]
     fn test_comment_collection() {
-        let output = parse2("# my comment\n[a: 1]").expect("parse failed");
+        let output = parse("# my comment\n[a: 1]").expect("parse failed");
         assert!(
             !output.leading_comments.is_empty(),
             "expected leading_comments to be non-empty"
@@ -7049,7 +7036,7 @@ mod tests {
     fn test_bracket_form_span_line_column() {
         // Dict on line 4 (after 3 comment lines)
         let input = "# Line 1\n# Line 2\n# Line 3\n[x: 10\n y: 20]";
-        let output = parse2(input).expect("parse failed");
+        let output = parse(input).expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         let dict_expr = &doc.expressions[0];
 
@@ -7062,7 +7049,7 @@ mod tests {
 
         // Also test a nested bracket form
         let input2 = "# Line 1\n[outer: [inner: 1]]";
-        let output2 = parse2(input2).expect("parse failed");
+        let output2 = parse(input2).expect("parse failed");
         let doc2 = &output2.file.node.documents[0].node;
         match &doc2.expressions[0].node {
             Expr::Dict(entries) => {
@@ -7098,7 +7085,7 @@ mod tests {
     fn test_bracket_form_span_variants() {
         // Call form on line 3
         let input_call = "# Line 1\n# Line 2\n[call $f 1]";
-        let output = parse2(input_call).expect("parse failed");
+        let output = parse(input_call).expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         let call_expr = &doc.expressions[0];
         match &call_expr.node {
@@ -7110,7 +7097,7 @@ mod tests {
 
         // Fn form on line 3
         let input_fn = "# Line 1\n# Line 2\n[fn [x] $x]";
-        let output = parse2(input_fn).expect("parse failed");
+        let output = parse(input_fn).expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         let fn_expr = &doc.expressions[0];
         match &fn_expr.node {
@@ -7122,7 +7109,7 @@ mod tests {
 
         // TypeAlias form on line 3
         let input_type = "# Line 1\n# Line 2\n[type Int]";
-        let output = parse2(input_type).expect("parse failed");
+        let output = parse(input_type).expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         let type_expr = &doc.expressions[0];
         match &type_expr.node {
@@ -7137,7 +7124,7 @@ mod tests {
 
         // TypeAssert form on line 3
         let input_assert = "# Line 1\n# Line 2\n[@Int 42]";
-        let output = parse2(input_assert).expect("parse failed");
+        let output = parse(input_assert).expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         let assert_expr = &doc.expressions[0];
         match &assert_expr.node {
@@ -7155,7 +7142,7 @@ mod tests {
     fn test_call_newline_colon_not_dict() {
         // [call\n: x] — newline before colon should not create dict with "call" key
         // Instead, it's a call form with zero args followed by unexpected colon (recovered)
-        let output = parse2("[call\n: x]").expect("recovery should succeed");
+        let output = parse("[call\n: x]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
             "expected recovered error for colon without name in call form"
@@ -7169,12 +7156,12 @@ mod tests {
 
     // --- Error recovery tests (Items 2-5 of parser-error-recovery sprint) ---
 
-    /// A single error inside brackets is recovered from: parse2() returns Ok, the
+    /// A single error inside brackets is recovered from: parse() returns Ok, the
     /// document contains an Expr::Error node, and ParseOutput.errors has one entry.
     #[test]
     fn test_recovery_single_error_inside_brackets() {
         // [a:] — key without value; recovered with Expr::Error node
-        let output = parse2("[a:]").expect("recovery should succeed");
+        let output = parse("[a:]").expect("recovery should succeed");
         assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
         assert!(
             output.errors[0].message.contains("key without value"),
@@ -7195,12 +7182,12 @@ mod tests {
         );
     }
 
-    /// Multiple errors are all collected: parse2() returns Ok with multiple entries in
+    /// Multiple errors are all collected: parse() returns Ok with multiple entries in
     /// ParseOutput.errors, and the document contains multiple Expr::Error nodes.
     #[test]
     fn test_recovery_multiple_errors() {
         // Two consecutive broken bracket forms at document level
-        let output = parse2("[a:] [b:]").expect("recovery should succeed");
+        let output = parse("[a:] [b:]").expect("recovery should succeed");
         assert_eq!(
             output.errors.len(),
             2,
@@ -7229,7 +7216,7 @@ mod tests {
     #[test]
     fn test_recovery_error_in_nested_brackets() {
         // [outer: [inner:]] — inner bracket has key without value; outer should still parse
-        let output = parse2("[outer: [inner:]]").expect("recovery should succeed");
+        let output = parse("[outer: [inner:]]").expect("recovery should succeed");
         assert_eq!(output.errors.len(), 1, "expected 1 recovered error");
         assert!(
             output.errors[0].message.contains("key without value"),
@@ -7306,7 +7293,7 @@ mod tests {
     fn test_recovery_partial_dict_preservation() {
         // [a: 1  a: 2] — has one valid entry (a: 1) before the duplicate key error
         // Should recover with a partial dict containing the valid entry plus an error entry
-        let output = parse2("[a: 1  a: 2]").expect("recovery should succeed");
+        let output = parse("[a: 1  a: 2]").expect("recovery should succeed");
         assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
         assert!(
             output.errors[0].message.contains("duplicate key"),
@@ -7544,7 +7531,7 @@ mod tests {
     /// Unterminated ${...} produces a lex error (propagated as ParseError).
     #[test]
     fn test_desugar_interpolated_string_expr_unclosed() {
-        let result = parse2(r#"i"foo ${bar""#);
+        let result = parse(r#"i"foo ${bar""#);
         assert!(result.is_err(), "expected parse error for unclosed ${{}}");
         let err = result.unwrap_err();
         assert!(
@@ -7855,7 +7842,7 @@ mod tests {
     #[test]
     fn test_fn_params_letdecl_simple() {
         // Test [fn [let x y] body] — LetDecl as parameter list
-        let output = parse2("[fn [let x y] [+ $x $y]]").expect("parse failed");
+        let output = parse("[fn [let x y] [+ $x $y]]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -7882,7 +7869,7 @@ mod tests {
     #[test]
     fn test_fn_params_letdecl_annotated() {
         // Test [fn [let x@Int y] body] — LetDecl with annotations
-        let output = parse2("[fn [let x@Int y] [+ $x $y]]").expect("parse failed");
+        let output = parse("[fn [let x@Int y] [+ $x $y]]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -7905,7 +7892,7 @@ mod tests {
     #[test]
     fn test_fn_params_letdecl_mixed() {
         // Test [fn [let x@Int y@String z] body]
-        let output = parse2("[fn [let x@Int y@String z] $x]").expect("parse failed");
+        let output = parse("[fn [let x@Int y@String z] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -7924,7 +7911,7 @@ mod tests {
     #[test]
     fn test_fn_params_letdecl_with_placeholder() {
         // Test [fn [let x ... y] body] — placeholder in parameter list
-        let output = parse2("[fn [let x ... y] $x]").expect("parse failed");
+        let output = parse("[fn [let x ... y] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -7940,7 +7927,7 @@ mod tests {
     #[test]
     fn test_class_params_letdecl() {
         // Test [class [let Equatable a] ...] — LetDecl as class header
-        let output = parse2("[class [let Equatable a] eq: [fn [x y] Bool]]").expect("parse failed");
+        let output = parse("[class [let Equatable a] eq: [fn [x y] Bool]]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::ClassDecl { name, params, .. } => {
@@ -7955,7 +7942,7 @@ mod tests {
     #[test]
     fn test_class_params_letdecl_multiple() {
         // Test [class [let Ord a b] ...] — LetDecl with multiple params
-        let output = parse2("[class [let Ord a b] compare: [fn [x y] Int]]").expect("parse failed");
+        let output = parse("[class [let Ord a b] compare: [fn [x y] Int]]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::ClassDecl { name, params, .. } => {
