@@ -16,3 +16,11 @@ Check if a timestamp is within a range
 (value)
 ```
 
+### `format-date`
+
+Format a timestamp as YYYY-MM-DD HH:MM:SS
+
+```tinct
+fn@String [t@Timestamp]
+```
+
