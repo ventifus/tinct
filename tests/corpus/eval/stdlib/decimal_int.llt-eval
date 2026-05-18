@@ -1,0 +1,4 @@
+# decimal: convert int to arbitrary-precision decimal
+[decimal 123]
+=== out
+Decimal(123)

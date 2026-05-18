@@ -1,0 +1,4 @@
+# sorted: sort strings in lexicographic order
+[sorted ["zebra" "apple" "mango" "banana"]]
+=== out
+Dict({0: String("apple"), 1: String("banana"), 2: String("mango"), 3: String("zebra")})

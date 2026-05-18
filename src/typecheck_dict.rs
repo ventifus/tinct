@@ -290,12 +290,18 @@ pub(crate) fn infer_dict(
 
     let mut dict_env = dict_env;
 
-    // Initialize global substitution and field types accumulator
+    // Initialize global substitution and field types accumulator.
+    // Start with empty local substitution and incrementally merge state.subst entries per SCC.
+    // Eliminates O(n) upfront clone of state.subst.type_map (cycle-31 major item).
     let mut subst = Substitution {
-        type_map: std::cell::RefCell::new(state.subst.type_map.borrow().clone()),
+        type_map: std::cell::RefCell::new(HashMap::new()),
     };
     let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
+
+    // Track which state.subst entries have been merged to enable incremental sync.
+    // Only merge entries that were added/modified since the last SCC iteration.
+    let mut merged_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Track inner_schemes for nested dict values (DOT-POLY support)
     let mut entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>> = HashMap::new();
@@ -341,13 +347,33 @@ pub(crate) fn infer_dict(
     // Tarjan's algorithm produces SCCs in reverse topological order, so we process them as-is
     for scc in sccs.into_iter() {
         // Pass 1_i: Bind this SCC's entries to fresh TypeVars at level state.level
-        let mut fresh_vars: HashMap<String, Type> = HashMap::new();
+        // Optimize common singleton case with Option instead of HashMap allocation
+        enum FreshVars {
+            Singleton(String, Type),
+            Multiple(HashMap<String, Type>),
+        }
+        let mut fresh_vars_storage = None;
+
         for &idx in &scc.indices {
             let (ref key_name, is_alias) = key_entries[idx];
             if !is_alias {
                 if let Some(ref name) = key_name {
                     let fresh_var = state.fresh_type_var();
-                    fresh_vars.insert(name.clone(), fresh_var.clone());
+                    match &mut fresh_vars_storage {
+                        None => {
+                            fresh_vars_storage =
+                                Some(FreshVars::Singleton(name.clone(), fresh_var.clone()));
+                        }
+                        Some(FreshVars::Singleton(first_name, first_var)) => {
+                            let mut map = HashMap::new();
+                            map.insert(first_name.clone(), first_var.clone());
+                            map.insert(name.clone(), fresh_var.clone());
+                            fresh_vars_storage = Some(FreshVars::Multiple(map));
+                        }
+                        Some(FreshVars::Multiple(map)) => {
+                            map.insert(name.clone(), fresh_var.clone());
+                        }
+                    }
                     dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
                 }
             }
@@ -434,7 +460,13 @@ pub(crate) fn infer_dict(
                 match value_ty {
                     Ok(value_ty) => {
                         // Get the bound TypeVar from Pass 1_i
-                        if let Some(bound_var) = fresh_vars.get(name.as_str()) {
+                        let bound_var_opt = match &fresh_vars_storage {
+                            Some(FreshVars::Singleton(n, ty)) if n == name.as_str() => Some(ty),
+                            Some(FreshVars::Multiple(map)) => map.get(name.as_str()),
+                            _ => None,
+                        };
+
+                        if let Some(bound_var) = bound_var_opt {
                             // Unify the inferred type with the bound var
                             if let Err(e) = unify(
                                 bound_var,
@@ -470,16 +502,20 @@ pub(crate) fn infer_dict(
             }
         }
 
-        // Merge state.subst into local subst after each SCC
+        // Merge state.subst into local subst after each SCC (incremental — only new/changed entries)
         {
-            let state_type_entries: Vec<(String, Type)> = state
-                .subst
-                .type_map
-                .borrow()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            // Collect only entries that weren't merged in previous SCC iterations
+            let state_type_entries: Vec<(String, Type)> = {
+                let state_map = state.subst.type_map.borrow();
+                state_map
+                    .iter()
+                    .filter(|(k, _)| !merged_keys.contains(*k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            };
+
             for (k, v) in state_type_entries {
+                merged_keys.insert(k.clone());
                 let applied_v = subst.apply(&v);
                 let existing_opt = subst.type_map.borrow().get(&k).cloned();
                 match existing_opt {

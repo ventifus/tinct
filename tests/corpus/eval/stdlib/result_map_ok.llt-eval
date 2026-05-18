@@ -1,0 +1,4 @@
+# result-map: transform Ok value
+[result-map [fn [x] [* x 3]] [Ok 14]]
+=== out
+Variant(Ok, Int(42))

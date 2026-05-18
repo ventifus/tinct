@@ -1,0 +1,4 @@
+# err?: check if Result is Err - false case (Ok)
+[err? [Ok 123]]
+=== out
+Bool(false)

@@ -1,0 +1,4 @@
+# sorted: empty collection returns empty dict
+[sorted []]
+=== out
+Dict({})

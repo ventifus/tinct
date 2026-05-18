@@ -1,0 +1,4 @@
+# llt-repr: convert sequence to LLT display representation
+[llt-repr [1 2 3]]
+=== out
+String("Dict({0: Int(1), 1: Int(2), 2: Int(3)})")
