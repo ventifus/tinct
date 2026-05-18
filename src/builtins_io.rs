@@ -98,8 +98,8 @@ fn check_perm(
     Ok(())
 }
 
-/// `emit`: Write a string to stdout and suppress JSON output.
-/// Takes a String argument, writes it to stdout, sets ctx.emitted flag, returns null (empty dict).
+/// `emit`: Write a string to stdout.
+/// Takes a String argument, writes it to stdout, returns null (empty dict).
 pub(crate) fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -115,9 +115,6 @@ pub(crate) fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     std::io::stdout()
         .write_all(s.as_bytes())
         .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span))?;
-
-    // Set emitted flag to suppress JSON output
-    ctx.emitted.set(true);
 
     // Return null (empty dict)
     ok_val(Value::Dict(IndexMap::new()), call_span)

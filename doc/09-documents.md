@@ -73,7 +73,7 @@ tinct run data.llt filter.llt
 
 **Interaction with `emit`:**
 
-When any file in the pipeline calls `emit`, the string is written directly to stdout and the default JSON output is suppressed. This enables text-based formatters:
+When any file in the pipeline calls `emit`, the string is written directly to stdout. The final expression is still serialized to the output format (unless no `-o` flag is given). This makes `emit` purely additive — useful for logging, debugging, or producing side-channel text output alongside the main result:
 
 ```tinct
 # to-yaml.llt (simplified example)
@@ -81,12 +81,15 @@ When any file in the pipeline calls `emit`, the string is written directly to st
 ```
 
 ```bash
-tinct run data.llt to-yaml.llt
-# Output:
+tinct run data.llt to-yaml.llt -o json
+# Output to stdout:
 # users:
 #   - Alice
 #   - Bob
+# {"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}
 ```
+
+Without the `-o` flag, only emit output appears (no JSON serialization).
 
 **Pipeline semantics:**
 
@@ -94,7 +97,7 @@ tinct run data.llt to-yaml.llt
 - The first file receives `%` from stdin JSON if piped, or empty dict `[]` otherwise
 - Files share the same include cache — if both files include the same library, it's evaluated only once
 - Each file's `$include` calls resolve relative to that file's directory
-- The final file's output is JSON-serialized unless `emit` was called
+- The final file's output is JSON-serialized if the `-o` flag was given (default: `-o json`)
 
 ## Within a Document: Scope Chains
 
@@ -956,7 +959,7 @@ If the Markdown file contains no tinct blocks, `weave` outputs the file unchange
 
 ### Interaction with `emit`
 
-Literate mode composes with the `emit` builtin. If a code block calls `emit`, the string is written to stdout and the default JSON serialization is suppressed for that block. In `weave` mode, an `emit`-calling block is annotated with `<!-- tinct-result: (emit) -->` to indicate that its result was emitted rather than serialized.
+Literate mode composes with the `emit` builtin. If a code block calls `emit`, the string is written to stdout and the final expression is still serialized to JSON as the block's result. The `emit` output appears in stdout alongside the JSON annotation in the weaved output.
 
 ### Base Directory
 

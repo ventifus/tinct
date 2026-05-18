@@ -193,8 +193,6 @@ pub struct EvalContext {
     /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
     #[allow(dead_code)]
     pub(crate) env_arena: Rc<RefCell<EnvArena>>,
-    /// Set to true when `emit` builtin is called. Signals CLI to suppress JSON output.
-    pub emitted: std::cell::Cell<bool>,
     /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
     pub env_allowed: Option<HashSet<String>>,
@@ -253,7 +251,6 @@ impl EvalContext {
             })),
             thunk_arena: Rc::new(RefCell::new(ThunkArena::new())),
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
-            emitted: std::cell::Cell::new(false),
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(Vec::new()),
@@ -289,7 +286,6 @@ impl EvalContext {
             })),
             thunk_arena,
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
-            emitted: std::cell::Cell::new(false),
             env_allowed,
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(Vec::new()),
@@ -333,7 +329,6 @@ impl EvalContext {
             })),
             thunk_arena: shared_arena,
             env_arena: Rc::new(RefCell::new(EnvArena::new())),
-            emitted: std::cell::Cell::new(false),
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(Vec::new()),
@@ -363,7 +358,6 @@ impl EvalContext {
             state: Rc::clone(&self.state),
             thunk_arena: Rc::clone(&self.thunk_arena),
             env_arena: Rc::clone(&self.env_arena),
-            emitted: std::cell::Cell::new(false),
             env_allowed: self.env_allowed.clone(),
             blame_map: RefCell::new(self.blame_map.borrow().clone()),
             boundary_guards: RefCell::new(self.boundary_guards.borrow().clone()),
