@@ -1,4 +1,0 @@
-# mod: negative dividend
-[mod -7 3]
-=== out
-Int(-1)

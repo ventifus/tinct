@@ -1,4 +1,0 @@
-# all? - some elements match
-[all? [fn [x] [> x 5]] [1 3 7 2]]
-=== out
-Bool(false)

@@ -1,4 +1,0 @@
-# and: both true
-[and true true]
-=== out
-Bool(true)

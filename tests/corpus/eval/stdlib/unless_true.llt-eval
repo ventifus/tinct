@@ -1,4 +1,0 @@
-# unless: returns empty dict when predicate is true
-[unless true 42]
-=== out
-Dict({})

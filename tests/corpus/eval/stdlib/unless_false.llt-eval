@@ -1,4 +1,0 @@
-# unless: returns body when predicate is false
-[unless false 42]
-=== out
-Int(42)

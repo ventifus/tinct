@@ -1,4 +1,0 @@
-# when: returns empty dict when predicate is false
-[when false 42]
-=== out
-Dict({})

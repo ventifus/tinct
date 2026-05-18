@@ -1,4 +1,0 @@
-# from-entries with empty list
-[from-entries []]
-=== out
-Dict({})

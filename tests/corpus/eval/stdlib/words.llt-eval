@@ -1,4 +1,0 @@
-# words: split a string into words (returns Seq since filter now returns Seq)
-[words "hello world"]
-=== out
-Seq(String("hello"), ...)

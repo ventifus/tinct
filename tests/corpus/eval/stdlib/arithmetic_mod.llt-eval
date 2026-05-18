@@ -1,4 +1,0 @@
-# mod: remainder
-[mod 10 3]
-=== out
-Int(1)

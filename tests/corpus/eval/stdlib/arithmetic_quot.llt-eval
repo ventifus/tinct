@@ -1,4 +1,0 @@
-# quot: integer quotient (truncates toward zero)
-[quot 10 3]
-=== out
-Int(3)

@@ -1,4 +1,0 @@
-# >: not greater
-[> 3 5]
-=== out
-Bool(false)

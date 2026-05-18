@@ -1,4 +1,0 @@
-# with-entries: transform each entry of a dict
-[with-entries [a: 1  b: 2  c: 3] [fn [e] [key: e.key  value: [* e.value 10]]]]
-=== out
-Dict({"a": Int(10), "b": Int(20), "c": Int(30)})

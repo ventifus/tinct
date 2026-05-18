@@ -1,4 +1,0 @@
-# not false returns true
-[not false]
-=== out
-Bool(true)

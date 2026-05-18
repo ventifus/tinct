@@ -1,3 +1,0 @@
-[float? "not a float"]
-=== out
-Bool(false)

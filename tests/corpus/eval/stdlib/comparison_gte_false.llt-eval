@@ -1,4 +1,0 @@
-# >=: less than
-[>= 3 5]
-=== out
-Bool(false)

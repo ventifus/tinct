@@ -1,4 +1,0 @@
-# trunc: truncate negative float toward zero
-[trunc -2.9]
-=== out
-Int(-2)

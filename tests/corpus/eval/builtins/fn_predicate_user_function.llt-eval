@@ -1,3 +1,0 @@
-[fn? [fn [x] $x]]
-=== out
-Bool(true)

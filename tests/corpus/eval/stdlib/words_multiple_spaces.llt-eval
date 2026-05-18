@@ -1,4 +1,0 @@
-# words: multiple spaces between words are collapsed (shows first element only)
-[words "hello    world"]
-=== out
-Seq(String("hello"), ...)

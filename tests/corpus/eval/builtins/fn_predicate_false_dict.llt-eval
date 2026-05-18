@@ -1,3 +1,0 @@
-[fn? [a: 1]]
-=== out
-Bool(false)

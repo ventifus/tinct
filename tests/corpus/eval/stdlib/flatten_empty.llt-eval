@@ -1,4 +1,0 @@
-# flatten on empty dict returns empty dict
-[flatten []]
-=== out
-Dict({})

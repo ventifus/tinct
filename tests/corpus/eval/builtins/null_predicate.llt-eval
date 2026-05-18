@@ -1,0 +1,11 @@
+[
+  null_empty_dict: [null? []]
+  null_false_non_empty_dict: [null? [a: 1]]
+  null_false_list: [null? [1 2]]
+  null_false_int: [null? 42]
+  null_false_string: [null? "not null"]
+  null_merged_empty: [null? [merge [] []]]
+  null_false_seq: [null? [range 0 5]]
+]
+=== out
+Dict({"null_empty_dict": Bool(true), "null_false_non_empty_dict": Bool(false), "null_false_list": Bool(false), "null_false_int": Bool(false), "null_false_string": Bool(false), "null_merged_empty": Bool(true), "null_false_seq": Bool(false)})

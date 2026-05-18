@@ -106,20 +106,20 @@ Reduces the corpus file count by 30–40% by merging single-feature tests into c
 
 An audit (2026-05-17) identified ~95 files across `eval/builtins/` and `eval/stdlib/` reducible to ~18 composite files with no coverage loss. Verify actual filenames before merging — groups below are by category; use `ls` to confirm exact names.
 
-- [ ] **Type predicates builtins**: Merge all `int_predicate_*.llt-eval`, `str_predicate_*.llt-eval`, `float_predicate_*.llt-eval`, `bool_predicate_*.llt-eval` into `type_predicates_scalar.llt-eval`; `dict_predicate_*.llt-eval` into `type_predicate_dict.llt-eval` (`tests/corpus/eval/builtins/`)
-- [ ] **Null/fn? predicates**: Merge all `null_predicate_*.llt-eval` into `null_predicate.llt-eval`; `fn_predicate_*.llt-eval` into `fn_predicate.llt-eval` (`tests/corpus/eval/builtins/`)
-- [ ] **Basic arithmetic**: Merge single-case `add.llt-eval`, `sub.llt-eval`, `mul.llt-eval` into `arithmetic_basic.llt-eval` (`tests/corpus/eval/builtins/`)
-- [ ] **Comparison operators**: Merge `comparison_gt*.llt-eval`, `comparison_gte*.llt-eval`, `comparison_lte*.llt-eval` into `comparison_operators.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **Logical operators**: Merge `logic_and_*.llt-eval`, `logic_or_*.llt-eval`, `logic_not_*.llt-eval` into `logical_operators.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **Numeric rounding**: Merge `numeric_ceil*.llt-eval` and `numeric_trunc*.llt-eval` into `numeric_rounding.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **Arithmetic division**: Merge `arithmetic_mod*.llt-eval` and `arithmetic_quot*.llt-eval` into `arithmetic_division.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **any? / all?**: Merge all `any*.llt-eval` and `all*.llt-eval` into `higher_order_predicates.llt-eval` (10 files → 1) (`tests/corpus/eval/stdlib/`)
-- [ ] **Type predicates stdlib**: Merge `type_int*.llt-eval`, `type_str.llt-eval`, `type_float.llt-eval`, `type_bool.llt-eval`, `type_dict.llt-eval` into `stdlib_type_predicates.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **Conditional flow**: Merge `when_*.llt-eval` and `unless_*.llt-eval` into `conditional_control_flow.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **words / flatten**: Merge all `words_*.llt-eval` and `flatten*.llt-eval` into `string_and_seq_split.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **Dict entry ops**: Merge `from_entries*.llt-eval` and `with_entries*.llt-eval` into `dict_entry_operations.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] **Sequence head/tail/first/last**: Merge `list_first*.llt-eval`, `list_last*.llt-eval`, `seq_head.llt-eval`, `seq_tail.llt-eval` into `sequence_access.llt-eval` (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
-- [ ] Verify `just test` passes after all merges; confirm no error tests were merged (`tests/`)
+- [x] **Type predicates builtins**: 13 files → `type_predicates_scalar.llt-eval`; 6 files → `type_predicate_dict.llt-eval` (`tests/corpus/eval/builtins/`)
+- [x] **Null/fn? predicates**: 7 files → `null_predicate.llt-eval`; 6 files → `fn_predicate.llt-eval` (`tests/corpus/eval/builtins/`)
+- [x] **Basic arithmetic**: 3 files → `arithmetic_basic.llt-eval` (`tests/corpus/eval/builtins/`)
+- [x] **Comparison operators**: 8 files → `comparison_operators.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **Logical operators**: 6 files → `logical_operators.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **Numeric rounding**: 6 files → `numeric_rounding.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **Arithmetic division**: 6 files → `arithmetic_division.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **any? / all?**: 10 files → `higher_order_predicates.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **Type predicates stdlib**: 6 files → `stdlib_type_predicates.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **Conditional flow**: 4 files → `conditional_control_flow.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **words / flatten**: 9 files → `string_and_seq_split.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **Dict entry ops**: 5 files → `dict_entry_operations.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] **Sequence head/tail/first/last**: 2+3 files → `sequence_access.llt-eval` + `list_access.llt-eval` (`tests/corpus/eval/builtins/`, `tests/corpus/eval/stdlib/`)
+- [x] Verified: `just test-corpus` passes — 40 tests, 0 failures, no error tests merged
 
 ---
 

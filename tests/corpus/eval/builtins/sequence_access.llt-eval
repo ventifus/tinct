@@ -1,0 +1,6 @@
+[
+  seq_head: [head [seq 42 []]]
+  seq_tail: [head [tail [seq 1 [seq 2 []]]]]
+]
+=== out
+Dict({"seq_head": Int(42), "seq_tail": Int(2)})

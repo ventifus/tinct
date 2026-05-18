@@ -1,0 +1,10 @@
+[
+  dict_true: [dict? [a: 1 b: 2]]
+  dict_false_int: [dict? 42]
+  dict_false_string: [dict? "not a dict"]
+  dict_list_shaped: [dict? [1 2 3]]
+  dict_empty: [dict? []]
+  dict_overlay: [dict? [merge [a: 1] [b: 2]]]
+]
+=== out
+Dict({"dict_true": Bool(true), "dict_false_int": Bool(false), "dict_false_string": Bool(false), "dict_list_shaped": Bool(true), "dict_empty": Bool(true), "dict_overlay": Bool(true)})
