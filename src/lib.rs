@@ -34,8 +34,6 @@ pub mod parser;
 pub mod resolve;
 #[cfg(test)]
 pub(crate) mod test_util;
-#[allow(dead_code)]
-pub(crate) mod type_dict;
 pub mod typecheck;
 // Type system modules (top-level for circular dependency avoidance)
 pub(crate) mod type_class;
@@ -1088,42 +1086,6 @@ mod tests {
     /// Helper: wrap a Value in a materialized thunk.
     fn thunk(val: Value) -> Rc<Thunk> {
         Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 1)))
-    }
-
-    /// Build a materialized dict thunk with entries allocated into `ctx`'s arena.
-    #[allow(dead_code)]
-    fn thunk_dict(map: IndexMap<Key, Rc<Thunk>>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
-        let mut id_map: IndexMap<Key, value::ThunkId> = IndexMap::with_capacity(map.len());
-        for (k, v) in map {
-            id_map.insert(k, ctx.alloc_thunk(v));
-        }
-        Rc::new(Thunk::new_materialized(
-            Value::Dict(id_map),
-            test_span(1, 1, 1, 1),
-        ))
-    }
-
-    /// Build a materialized Seq thunk with head and tail allocated into `ctx`'s arena.
-    #[allow(dead_code)]
-    fn seq_thunk(head: Rc<Thunk>, tail: Rc<Thunk>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(
-            Value::Seq {
-                head: ctx.alloc_thunk(head),
-                tail: ctx.alloc_thunk(tail),
-            },
-            test_span(1, 1, 1, 1),
-        ))
-    }
-
-    /// Build a Proxy thunk with the handler allocated into `ctx`'s arena.
-    #[allow(dead_code)]
-    fn proxy_thunk(handler: Rc<Thunk>, ctx: &Rc<eval::EvalContext>) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(
-            Value::Proxy {
-                handler: ctx.alloc_thunk(handler),
-            },
-            test_span(1, 1, 1, 1),
-        ))
     }
 
     /// Build a `Value::Dict` with entries allocated into `ctx`'s arena.
