@@ -321,7 +321,6 @@ pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
 /// Returns None if:
 /// - We are currently building the type-stage env (recursion guard)
 /// - Type-stage env creation fails (graceful degradation)
-#[allow(dead_code)] // TODO: Enable when type-stage eval is fully wired
 pub fn build_type_stage_env() -> Option<Rc<RefCell<crate::value::Environment>>> {
     // Check recursion guard first (before cache check, to avoid borrow conflicts)
     let is_building = BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow());
