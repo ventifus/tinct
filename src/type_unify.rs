@@ -278,6 +278,15 @@ fn check_constraints_on_var(
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
+    // Reset depth counter at the start of each fresh call to check_constraints_on_var.
+    // The counter is meant to prevent recursive descent through the cycle:
+    //   check_constraints_on_var → resolve_instance → unify → check_constraints_on_var
+    // Without this reset, depth accumulated across sibling constraints in the for loop
+    // below would cause the second constraint (in a program with many constraints) to
+    // falsely hit the limit even though there is no recursion — it just follows the
+    // first constraint's counter increment/decrement.
+    state.instance_resolution_depth = 0;
+
     // Collect only the constraints that apply to var_name (immutable scan first).
     // This avoids cloning the entire Vec<Constraint> — we clone only the constraints
     // that match, which is typically 0–2 per variable binding even in constraint-heavy
@@ -1387,6 +1396,7 @@ pub fn check_bounds_satisfiable(state: &InferState, span: Span) -> Result<(), Ty
                         ),
                         span,
                         notes: Vec::new(),
+                        code: None,
                     });
                 }
             }
@@ -1486,6 +1496,7 @@ pub fn constrain(
                     ),
                     span,
                     notes: Vec::new(),
+                    code: None,
                 });
             }
             if sub_params.len() != sup_params.len() {
@@ -1498,6 +1509,7 @@ pub fn constrain(
                     ),
                     span,
                     notes: Vec::new(),
+                    code: None,
                 });
             }
 
@@ -1540,6 +1552,7 @@ pub fn constrain(
                             ),
                             span,
                             notes: Vec::new(),
+                            code: None,
                         });
                     }
                 }
@@ -1565,6 +1578,7 @@ pub fn constrain(
                 ),
                 span,
                 notes: Vec::new(),
+                code: None,
             })
         }
 
@@ -1592,6 +1606,7 @@ pub fn constrain(
                 ),
                 span,
                 notes: Vec::new(),
+                code: None,
             })
         }
 
@@ -1611,6 +1626,7 @@ pub fn constrain(
             ),
             span,
             notes: Vec::new(),
+            code: None,
         }),
     }
 }

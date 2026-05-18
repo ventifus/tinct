@@ -3217,6 +3217,9 @@ pub struct TypeError {
     pub span: Span,
     /// Extra `= note:` lines attached at the error-generation site (e.g. "caused by" context).
     pub notes: Vec<String>,
+    /// Explicit stable error code, e.g. `"T014"`. When `Some`, overrides the message-pattern
+    /// dispatch in `code()`. Use `with_code()` to attach a code at the construction site.
+    pub code: Option<String>,
 }
 
 impl TypeError {
@@ -3225,7 +3228,16 @@ impl TypeError {
             message: message.into(),
             span,
             notes: Vec::new(),
+            code: None,
         }
+    }
+
+    /// Builder method: attach an explicit error code and return `self`.
+    ///
+    /// The explicit code takes priority over the message-pattern dispatch in `code()`.
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
     }
 
     pub fn type_mismatch(expected: &Type, got: &Type, span: Span) -> Self {
@@ -3260,16 +3272,24 @@ impl TypeError {
         )
     }
 
-    /// Returns the stable type error code for this error, based on message classification.
+    /// Returns the stable type error code for this error.
     ///
-    /// Codes are parallel to the runtime E0xx codes:
+    /// If an explicit code was attached via `with_code()`, it is returned directly.
+    /// Otherwise the code is derived from the error message:
+    ///
     /// - T001: arity mismatch (wrong number of arguments at call site)
     /// - T002: undefined variable or undefined type
     /// - T003: cannot unify / type mismatch / field not found / not a function / not a record
     /// - T004: type assert failure (annotation-site mismatch)
+    /// - T014: overlapping CHR instance patterns (disjointness violation)
+    /// - T015: CHR instance consistency violation (FD disagreement between arms)
+    /// - T016: CHR instance coverage violation (determined var absent from determining positions)
     /// - T091: kind mismatch (expected `* → *`, got concrete type, etc.)
     /// - T000: other type errors not covered above
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> &str {
+        if let Some(ref explicit) = self.code {
+            return explicit.as_str();
+        }
         let msg = &self.message;
         if msg.starts_with("arity mismatch") {
             "T001"
@@ -3284,6 +3304,12 @@ impl TypeError {
             "T003"
         } else if msg.contains("type assert") || msg.starts_with("non-exhaustive match") {
             "T004"
+        } else if msg.starts_with("overlapping instance patterns") {
+            "T014"
+        } else if msg.starts_with("consistency violation") {
+            "T015"
+        } else if msg.starts_with("coverage violation") {
+            "T016"
         } else if msg.starts_with("kind mismatch") {
             "T091"
         } else {

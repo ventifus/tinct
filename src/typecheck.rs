@@ -2388,7 +2388,8 @@ fn infer_expr(
                                 span_j.start.line
                             ),
                             *span_j,
-                        );
+                        )
+                        .with_code("T014");
                         return Err(vec![error]);
                     }
                 }
@@ -2425,7 +2426,8 @@ fn infer_expr(
                                                 class_name, param_name, det_name
                                             ),
                                             *span,
-                                        )]);
+                                        )
+                                        .with_code("T016")]);
                                     }
                                 }
                             }
@@ -2470,7 +2472,8 @@ fn infer_expr(
                                             span_j.start.line
                                         ),
                                         *span_j,
-                                    );
+                                    )
+                                    .with_code("T015");
                                     return Err(vec![error]);
                                 }
                             }
@@ -3941,29 +3944,26 @@ fn check_call(
                             // Mark param as consumed (Task 1: Robinson idempotency)
                             consumed_params.insert(param_idx);
 
-                            // Boundary guard tracking (mirrors positional args at lines ~3850-3866):
-                            // if the named arg's inferred type is Unknown and the parameter expects a
-                            // concrete type, record the span for gradual typing boundary guard insertion.
-                            if is_concrete_type(param_ty) {
-                                if let Ok(arg_ty) = infer_expr(&na.node.value, env, state, type_map)
-                                {
-                                    let resolved_arg_ty = if state.subst.is_empty() {
-                                        arg_ty.clone()
-                                    } else {
-                                        state.subst.apply(&arg_ty)
-                                    };
-                                    if matches!(resolved_arg_ty, Type::Unknown) {
-                                        state
-                                            .boundary_guards
-                                            .insert(na.node.value.span, param_ty.clone());
-                                    }
-                                }
-                            }
-
-                            // Infer the named arg type and unify against the param type
-                            // Fix 2: accumulate errors instead of using `?` to short-circuit
+                            // Infer the named arg type and unify against the param type.
+                            // Boundary guard tracking: after inferring the arg type, if it is
+                            // Unknown and the parameter expects a concrete type, record the span
+                            // for gradual typing boundary guard insertion. This avoids a redundant
+                            // pre-call infer_expr that would mutate state before the actual check.
                             match infer_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
+                                    // Boundary guard check (post-inference, single-pass)
+                                    if is_concrete_type(param_ty) {
+                                        let resolved_arg_ty = if state.subst.is_empty() {
+                                            arg_ty.clone()
+                                        } else {
+                                            state.subst.apply(&arg_ty)
+                                        };
+                                        if matches!(resolved_arg_ty, Type::Unknown) {
+                                            state
+                                                .boundary_guards
+                                                .insert(na.node.value.span, param_ty.clone());
+                                        }
+                                    }
                                     let mut subst = std::mem::take(&mut state.subst);
                                     let result =
                                         unify(&arg_ty, param_ty, &mut subst, state, na.span);
@@ -4121,29 +4121,47 @@ fn check_call(
                             // Mark param as consumed
                             consumed_params.insert(param_idx);
 
-                            // Boundary guard tracking: if the named arg's inferred type is Unknown
-                            // and the parameter expects a concrete type, record the span.
-                            if is_concrete_type(param_ty) {
-                                if let Ok(arg_ty) = infer_expr(&na.node.value, env, state, type_map)
-                                {
-                                    let resolved_arg_ty = if state.subst.is_empty() {
-                                        arg_ty.clone()
-                                    } else {
-                                        state.subst.apply(&arg_ty)
-                                    };
-                                    if matches!(resolved_arg_ty, Type::Unknown) {
-                                        state
-                                            .boundary_guards
-                                            .insert(na.node.value.span, param_ty.clone());
+                            // Check named arg: infer arg type once, then record boundary guard
+                            // if arg is Unknown and param expects a concrete type, then unify.
+                            // This avoids a redundant pre-call infer_expr that would mutate
+                            // state before the actual bidirectional check (the prior pattern of
+                            // calling infer_expr twice — once for guard, once via check_expr —
+                            // left stale type vars from the first call affecting the second).
+                            match infer_expr(&na.node.value, env, state, type_map) {
+                                Ok(arg_ty) => {
+                                    // Boundary guard check (post-inference, single-pass)
+                                    if is_concrete_type(param_ty) {
+                                        let resolved_arg_ty = if state.subst.is_empty() {
+                                            arg_ty.clone()
+                                        } else {
+                                            state.subst.apply(&arg_ty)
+                                        };
+                                        if matches!(resolved_arg_ty, Type::Unknown) {
+                                            state
+                                                .boundary_guards
+                                                .insert(na.node.value.span, param_ty.clone());
+                                        }
+                                    }
+                                    // Unify the inferred type against the expected param type
+                                    let mut subst = std::mem::take(&mut state.subst);
+                                    let result =
+                                        unify(&arg_ty, param_ty, &mut subst, state, na.span);
+                                    state.subst = subst;
+                                    if let Err(errs) = result {
+                                        arg_errors.get_or_insert_with(Vec::new).push(
+                                            TypeError::new(
+                                                format!(
+                                                    "named argument '{}' type mismatch: {}",
+                                                    arg_name, errs.message
+                                                ),
+                                                na.span,
+                                            ),
+                                        );
                                     }
                                 }
-                            }
-
-                            // Check named arg via check_expr (unified path)
-                            if let Err(mut errs) =
-                                check_expr(&na.node.value, param_ty, env, state, type_map)
-                            {
-                                arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                                Err(mut errs) => {
+                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                                }
                             }
                         }
                         None => {
