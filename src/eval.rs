@@ -209,10 +209,10 @@ pub struct EvalContext {
     /// to share the parent's arena, preventing ThunkId index-out-of-bounds panics.
     #[allow(dead_code)]
     pub(crate) thunk_arena: Rc<RefCell<ThunkArena>>,
-    /// Environment arena registry. Phase 2: not actively used (chain-based environments remain).
-    /// Reserved for Phase 3 flat environment migration.
+    /// Environment arena registry. Phase 3: populated by `eval_dict` (alloc_root +
+    /// fill_letrec_slot per dict scope). Full O(1) dispatch deferred until `take_unevaluated`
+    /// propagates `env_id` through the force loop.
     /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
-    #[allow(dead_code)]
     pub(crate) env_arena: Rc<RefCell<EnvArena>>,
     /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
@@ -692,9 +692,18 @@ pub(crate) fn eval_recursive(
         Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
         Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
         Expr::VarRef { name, resolved, .. } => {
-            let _ = resolved; // Suppress unused warning; cache is populated for future use.
-
-            let found = env.borrow().get(name);
+            // O(1) fast path: use resolved (level, slot) pair if available.
+            // `Some(Some((level, slot)))` means the resolver found coordinates.
+            // `Some(None)` means the resolver ran but couldn't assign coordinates
+            //   (stdlib/builtin lookups) — fall back to name-based chain walk.
+            // `None` means the resolver hasn't run yet — fall back to name-based.
+            let found = if let Some(Some((level, slot))) = &*resolved.borrow() {
+                // Slot-based lookup: O(1) for level=0 (same-scope sibling references),
+                // O(level) parent walks for outer scopes. Avoids string hashing entirely.
+                env.borrow().get_by_slot(*level, *slot)
+            } else {
+                env.borrow().get(name)
+            };
             match found {
                 Some(thunk) => Ok(thunk),
                 None => Err(EvalError::undefined_variable(name.clone(), expr.span).into()),

@@ -54,6 +54,23 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 ## Tooling
 
+### cli-seq-drain-cleanup: Remove implicit top-level Seq drain; add none.llt output program
+
+**Spec chapters:** `src/main.rs §run_eval`, `stdlib/cli/out/`
+
+The implicit drain in `main.rs:1878-1933` was added during `access-pipeline-phase2` to drive emit side-effects in generator pipelines. It became vestigial when `remove-emitted-flag` retired the `emitted` flag and the `-o outprogram` model made output explicit. The drain should now be driven by the output program, not the CLI unconditionally.
+
+Migration: emit-based programs without `-o` should use `-o none` (forces Seq, discards result); programs wanting JSON output should use `| collect` before `-o json`. `raw.llt` already handles Seq correctly.
+
+- [ ] Remove the Seq drain block from `run_eval` in `src/main.rs:1878-1933` (`src/main.rs`)
+- [ ] Add `stdlib/cli/out/none.llt` — forces the value (collects Seq if needed) and emits nothing; handles the "side-effect only" use case that the implicit drain served: `[if [seq? %] [collect %] %]` (`stdlib/cli/out/none.llt`)
+- [ ] Fix `stdlib/cli/out/json-pretty.llt` — `json-value` falls through to `[true "null"]` for Seq; add `[[seq? val] [error "cannot serialize Seq to JSON — use | collect for JSON array output"]]` arm matching `json.llt` (`stdlib/cli/out/json-pretty.llt`)
+- [ ] Audit `stdlib/cli/out/yaml.llt`, `toml.llt`, `csv.llt`, `env.llt`, `llt.llt` for silent Seq→null fallthrough; add explicit Seq error arms in each where missing (`stdlib/cli/out/`)
+- [ ] Update CLI tests: rename `seq_at_top_level_is_drained` → `seq_at_top_level_no_output` (no drain, no output without -o); add `seq_with_none_formatter_drains_emit` (emit fires with `-o none`); update `seq_at_top_level_with_emit_runs_to_completion` to use `-o none` (`tests/cli_tests.rs`)
+- [ ] Update `doc/12-tooling.md` or `doc/09-documents.md`: document that generator pipelines ending in a Seq require either `| collect` (for structured output) or `-o none` (for side-effect-only emit pipelines) (`doc/`)
+
+---
+
 ### fmt-tinct-only: Remove Rust formatter, make tinct scripts the sole fmt backend
 
 `tinct fmt` currently has two backends: Rust-native (`format_source` / `format_source_compact` in `src/formatter.rs`) and tinct-hosted (`format_source_tinct`, gated behind `--tinct-fmt`). The Rust backend should be deleted; the tinct scripts are the only formatter going forward. `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` move to `stdlib/cli/fmt/` alongside `cli/in/` and `cli/out/`. A new `-o <name>` flag selects which `cli/fmt/<name>.llt` script to use (default: `pretty`). The Rust-formatter-specific flags (`--oneline`, `--nospaces`, `--minimize`, `--tinct-fmt`) are removed.
@@ -140,6 +157,37 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 
 ---
 
+## Advanced Typeclasses
+
+### mptc-runtime-dispatch: Fix MPTC instance registry and eliminate silent arithmetic fallback
+
+**Whatif:** `advanced-typeclasses`
+**Spec chapters:** `doc/whatif/completed/advanced-typeclasses.md §Runtime Dispatch via ClassEnv Lookup`
+
+The `typeclass-runtime-dispatch` DONE.md sprint was marked complete prematurely. Three bugs in the runtime dispatch path mean user-defined arithmetic instances (e.g. `[+ decimal1 decimal2]`) never actually dispatch — they silently fall through to the Rust arithmetic path which doesn't know about user types. Built-in Int/Float arithmetic works only because the Rust fallback covers it, masking all three bugs:
+
+1. `instance_registry` key is `(&'static str, String)` — single type; MPTC needs multiple determining-position types
+2. Registration uses `format!("arm_{}", arm_idx)` stub — keys never match any runtime type name
+3. `try_dispatch_method` looks for `"add"/"sub"/"mul"/"div"` but prelude instances declare `"+"/"-"/"*"/"/"` as dict keys
+
+The silent Rust fallback must be removed for arithmetic classes so bugs surface as errors. The `=` and `<` operators keep their Rust fallback until their instance coverage is complete (tracked separately).
+
+**Depends on:** `chr-gaps` (DONE — FD machinery complete; Gap 3 fixed InstanceEnv type-checker side; this sprint fixes the parallel runtime instance_registry)
+
+- [ ] Add `determines: Vec<(Vec<usize>, Vec<usize>)>` field to `RuntimeClassDecl` in `src/eval.rs:181`; populate it by changing `determines: _` to `determines` in `Expr::ClassDecl` evaluation at `src/eval.rs:1293` and storing it in the `RuntimeClassDecl` construction at line 1324 (`src/eval.rs`)
+- [ ] Change `instance_registry` key type from `HashMap<(&'static str, String), Rc<Thunk>>` to `HashMap<(&'static str, Vec<String>), Rc<Thunk>>` in `src/eval.rs:173`; update all 3 `HashMap::new()` construction sites (lines ~274, 312, 359) and the `instance_registry.insert(...)` call at line 1407 (`src/eval.rs`)
+- [ ] Fix instance arm registration (replaces chr-gaps Post-Gap-1): change `_pattern_expr` to `pattern_expr` at `src/eval.rs:1360`; look up the class's `determines` FD from `class_registry`; walk `pattern_expr` params (a `LetDecl` with annotated params) to extract the annotation string at each determining position index; build `Vec<String>` key (e.g. `["Int", "Float"]` for `[let a@Int b@Float c@Float]` with FD `[0,1]→[2]`); for single-param classes with no FD, use `vec![type_name_from_param_0]` (`src/eval.rs:1360-1410`)
+- [ ] Update `try_dispatch_method` in `src/builtins_math.rs:28`: add `num_determining: usize` parameter; materialize `args[0..num_determining]`, collect `.type_name()` for each into `Vec<String>`; look up by `(&'static str, Vec<String>)` key; **remove the `return None` fallback path when class is registered but type not found** — instead return `Some(Err(...))` with a clear error "no [ClassName] instance for type(s) [T1, T2]" (`src/builtins_math.rs`)
+- [ ] Fix method names at call sites in `src/builtins_math.rs`: `"add"→"+"` (line 172), `"sub"→"-"` (line 201), `"mul"→"*"` (line 230), `"div"→"/"` (line 259) (`src/builtins_math.rs`)
+- [ ] Update all `try_dispatch_method` call sites with `num_determining`: Addable/Subtractable/Multipliable/Divisible → 2; Equatable/Comparable → 1 (`src/builtins_math.rs`)
+- [ ] Update Showable inline dispatch in `src/builtins_string.rs` lines 51-89: change `(&'static str, String)` lookup to `(&'static str, Vec<String>)` lookup; build `vec![type_name]` for lookup; keep Rust fallback for Showable (instance coverage not yet complete) (`src/builtins_string.rs`)
+- [ ] Remove the `// Fall through to existing Rust dispatch` paths for `+`, `-`, `*`, `/` in `src/builtins_math.rs` — replace with `Err(EvalError::no_instance(class_name, &[type_name], call_span))` when dispatch returns no match; add `ErrorKind::NoInstance { class: String, types: Vec<String> }` to `src/error.rs` (`src/builtins_math.rs`, `src/error.rs`)
+- [ ] Corpus test: `tests/corpus/eval/stdlib/mptc_user_dispatch.llt-eval` — define a nominal type `Celsius` wrapping `Float`, declare `[instance Addable [let a@Celsius b@Celsius c@Celsius]: [+: [fn [x y] [Celsius [+ x.0 y.0]]]]]`, verify `[+ [Celsius 20.0] [Celsius 5.0]]` → `Variant(Celsius, Float(25.0))` and NOT a Rust arithmetic result (`tests/corpus/eval/stdlib/`)
+- [ ] Corpus test: `tests/corpus/eval/errors/mptc_no_instance.llt-eval` — `[+ "hello" "world"]` with no StringAddable instance → error containing "no Addable instance" (`tests/corpus/eval/errors/`)
+- [ ] Verify all existing arithmetic corpus tests still pass — Int/Float arithmetic routes through prelude Addable instances (not Rust fallback) and produces identical results (`tests/corpus/`)
+
+---
+
 ## CHR Unification
 
 `chr-unification` accepted 2026-05-16 (commits 0886ef1, 7d15c36). See `doc/whatif/chr-unification.md` and `doc/feature/chr-unification.md`. Implementation order: chr-module-split → chr-normalization → chr-class-instance → chr-prelude.
@@ -210,15 +258,44 @@ must be `(class_name, Vec<String>)` covering all determining type positions.
 
 **Post-Gap-1 follow-up — wiring eval to extract type tag from pattern_expr**
 
-Once resolver evaluation (Gap 1) is working, boundary guards at CALL-MONO/CALL-POLY sites need the resolved type to construct the guard thunk.
-
-- [ ] At `src/eval.rs:1385`: extract the canonical type tag from `pattern_expr` and pass it to the boundary guard elaboration path; the comment says "chr-prelude sprint" — do this immediately after Gap 1 resolver eval lands (`src/eval.rs:1385`)
+- [x] At `src/eval.rs:1385`: extract the canonical type tag from `pattern_expr` and pass it to the boundary guard elaboration path (`src/eval.rs:1385`)
 
 **Post-Gap-4 follow-up — class declaration formatter**
 
 `src/formatter.rs:525` is a TODO to emit the structural metadata bracket (`[determines: [...] resolver: ...]`) when formatting a class declaration that has functional dependency or resolver fields. Currently silently omitted, causing round-trip loss.
 
 - [ ] At `src/formatter.rs:525`: emit the class structural-metadata bracket when `determines` or `resolver` fields are non-empty; use the same bracket syntax the parser accepts (`src/formatter.rs:525`)
+
+---
+
+## Higher-Kinded Types
+
+### hkt-monads-followup: Remaining items from /review-whatif hkt-monads
+
+**Whatif:** `hkt-monads`
+**Spec chapters:** `doc/whatif/completed/hkt-monads.md`, `src/error.rs`, `doc/10-errors.md`
+
+DONE.md edits and sprint move applied directly (2026-05-18). Remaining items:
+
+- [ ] Assign `E091` to `ErrorKind::KindMismatch` in `src/error.rs` (or equivalent variant for kind-mismatch errors); add E091 to all three tables in `doc/10-errors.md` (variant catalog, codes table, categories table) (`src/error.rs`, `doc/10-errors.md`)
+- [ ] Add corpus test `tests/corpus/eval/stdlib/hkt_monad_maybe_do.llt-eval`: explicit `[do MonadMaybe [x: [Some 42]] [Some [+ x 1]]]` — expect `Variant(Some, Int(43))` (`tests/corpus/eval/stdlib/`)
+- [ ] Add corpus test `tests/corpus/eval/stdlib/hkt_monad_result_do.llt-eval`: explicit `[do MonadResult [x: [ok: 1]] [ok: [+ x 1]]]` — expect `Dict([ok: Int(2)])` (`tests/corpus/eval/stdlib/`)
+
+### hkt-do-inferred-fix: Implement inferred [do] monad form (divergence fix)
+
+**Whatif:** `hkt-monads`
+**Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`
+
+DONE.md `hkt-do-macro-inferred` has all tasks `[x]` but the inferred form is not implemented. `stdlib/macros.llt:358-363` currently emits `error "inferred [do] not yet supported"` and the `%do-infer` sentinel does not exist anywhere in `src/`. The `expected_return: Option<Type>` field was correctly added to `InferState` (`src/type_infer.rs:151`). This sprint completes the implementation.
+
+- [ ] In `stdlib/macros.llt` `do` macro: replace the inferred-form error branch (currently at line 358-363) with emission of `[do %do-infer steps...]` — emit a `VarRef("%do-infer")` as the monad AST node passed to `do-fold`; the runtime never sees this sentinel — the type checker substitutes it before eval (`stdlib/macros.llt`)
+- [ ] In `src/typecheck.rs` `infer_expr` for `Expr::Call` matching `[do %do-infer ...]`: detect when monad arg is `VarRef("%do-infer")`; resolve monad via rule 1: `state.expected_return` unified against `App(m, _)` for a registered Monad class; if rule 1 fails, rule 2: first binding RHS type `App(m, a)` for a known Monad instance; if both fail, emit `TypeError` "cannot infer monad — add explicit monad argument or annotate return type" (`src/typecheck.rs`)
+- [ ] Substitute resolved monad name into the desugared `[monad.bind ...]` chain before returning from typecheck — the evaluator must see a concrete monad dict name, not `%do-infer` (`src/typecheck.rs`)
+- [ ] Corpus test: `tests/corpus/eval/stdlib/hkt_do_inferred_result.llt-eval` — `fetch-result: [fn@[ok: Int err: Str] [] [do [x: [ok: 42]] [ok: x]]]` — expect inferred monad = MonadResult, output `Dict([ok: Int(42)])` (`tests/corpus/eval/stdlib/`)
+- [ ] Corpus test: `tests/corpus/eval/stdlib/hkt_do_inferred_first_binding.llt-eval` — `[do [x: [ok: 1]] [ok: [+ x 1]]]` without return annotation — infer from first binding `App(Result, Int)` (`tests/corpus/eval/stdlib/`)
+- [ ] Corpus test: `tests/corpus/eval/errors/hkt_do_inferred_unresolvable.llt-eval` — `[do [x: 42] x]` where `42` is `Int` not a monadic value — expect `TypeError` "cannot infer monad" (`tests/corpus/eval/errors/`)
+- [ ] Corpus test: `tests/corpus/eval/stdlib/hkt_do_inferred_maybe.llt-eval` — `lookup: [fn@[or [Some Int] [None]] [] [do [x: [Some 42]] [Some [+ x 1]]]]` — expect inferred monad = MonadMaybe (`tests/corpus/eval/stdlib/`)
+- [ ] Update `doc/06-type-inference.md §[do] Inference` to remove any implementation-status notes about inferred form being unavailable (`doc/06-type-inference.md`)
 
 ---
 
@@ -250,6 +327,24 @@ Note: `builtin-*` aliases remain available to prelude via `[include %rust "core"
 ---
 
 ## Codebase Health
+
+### include-pwd-bug: Fix `builtin_include` overriding `%pwd` per included file
+
+`builtins_meta.rs:1445-1454` overrides `%pwd` in each included file's scope to point to the included file's own directory cap ("so that `[include %pwd "sibling.llt"]` resolves relative to the included file's directory"). This is incorrect — `%pwd` must be the host's working directory (wherever `tinct run` was invoked), constant throughout the process. The per-file injection violates this invariant and breaks content-addressed include caching (same source at different paths would need different `%pwd` values). Fix: remove the `%pwd` injection block at `builtins_meta.rs:1447-1454`; included files should inherit `%pwd` from the parent eval context unchanged.
+
+- [ ] Remove the `%pwd` injection at `src/builtins_meta.rs:1447-1454`
+- [ ] Verify no stdlib files rely on per-file `%pwd` (they should all use `%libdir`)
+- [ ] Verify `just test` passes
+
+### materialize-rename: Rename `eval`→`deep-materialize` and `force`→`materialize`
+
+Both builtins are kept and renamed to accurate names that reflect what they do. The Rust `deep_materialize` function already exists with the right name; the user-callable tinct builtins should match. `materialize` (WHNF) is the common case with the shorter name; `deep-materialize` is the thorough variant. Both remain available to user code — making Rust materialization primitives accessible for novel uses.
+
+- [ ] Rename `builtin_eval` (`src/builtins_meta.rs:56`) and its registration in `standard_builtins` from `"eval"` to `"deep-materialize"`
+- [ ] Rename `builtin_force` and its registration from `"force"` to `"materialize"`
+- [ ] Update prelude.llt if either is re-exported under the old name
+- [ ] Update the 2 corpus test files that reference `eval` directly (`tests/corpus/eval/builtins/eval.llt-eval`, `control_flow.llt-eval`)
+- [ ] Verify `just test` passes
 
 ### error-nominal: Rename Err→Error, err?→error?, error→raise; lean on nominal Result type
 
@@ -388,10 +483,10 @@ Three type system correctness gaps found in the 2026-05-18 audit with no existin
 
 **Tuple type** (`src/typecheck.rs:2619`): tinct has no tuple type; the type checker stubs tuple entries as `Type::Unknown`. The correct encoding per BAS is a closed record: `(Int, Str)` → `{0: Int, 1: Str}`. This matches the evaluation model (tuples are dicts with integer keys).
 
-- [ ] Type `error` builtin as returning `Never` instead of `Type::Error`: change `"error" => Ok(Type::Error)` to `"error" => Ok(Type::Never)` in `src/type_dict.rs:776`; verify `Type::Never` is already in the union-simplification rules (`src/type_def.rs:1308`) so `String | Never = String`; re-verify formatter functions type correctly after the fix
-- [ ] Allow monomorphic recursion in `check_dict_entry_recursive`: if the recursive self-reference is at a consistent type (all uses unify to the same concrete type), allow it; block only if the call tries to instantiate the same binding at multiple incompatible types — implement using the existing SCC binding-group machinery (`src/typecheck.rs:1951`)
-- [ ] Encode tuple type as closed record in `resolve_type_tuple`: replace `Type::Unknown` stub with `Type::Record(Row { fields: {0: T0, 1: T1, ...}, tail: RowTail::Closed })` where field names are the string forms of the integer positions; no new `Type::Tuple` variant needed (`src/typecheck.rs:2619`)
-- [ ] Tests: `error` return type is `Never`; match with `_: [error ...]` catch-all infers concrete return type from other arms; monomorphic recursive function typechecks clean; tuple annotation resolves to closed record (`tests/corpus/eval/typecheck/`)
+- [x] Type `error`/`raise` builtin as returning `Never` instead of `Type::Error`: `raise` in `src/type_env.rs` already returns `Type::Never`; `normalize_union` drops Never members so `String | Never = String`; corpus test added at `tests/corpus/eval/typecheck/raise_returns_never.llt-eval`
+- [x] Allow monomorphic recursion in recursive call detection (formerly `check_dict_entry_recursive`): replaced hard rejection with speculative allowance — resolves TypeVar against `state.subst`; if resolved to Function, infer args and return resolved ret type; if still TypeVar, infer args for side-effects and return fresh TypeVar; `src/typecheck.rs:1969-2043`; corpus test `tests/corpus/eval/typecheck/monomorphic_recursion.llt-eval`
+- [x] Encode tuple type as closed record via new `[Tuple T0 T1 ...]` annotation syntax: added `"Tuple"` arm to `resolve_type_dict`, `resolve_type_expr` implied-call, `resolve_annotation` Annotated arm, and `resolve_type_name`; produces `Type::Record(Row { fields: {"0": T0, "1": T1, ...} })`; `src/typecheck_annot.rs`; corpus test `tests/corpus/eval/typecheck/tuple_annotation_closed_record.llt-eval`
+- [x] Tests: `raise` corpus test verifies Never union absorption; monomorphic recursion test verifies no type error on unannotated recursive function; tuple annotation test verifies closed record output
 
 ### io-phase2: `--libdir-path`, `source_file` attribution, and SPKI extraction
 
@@ -445,23 +540,6 @@ First-pass audit complete (2026-05-16). The following categories of Unknown rema
 - [x] Add closed-Record return type for `revocable`, `icmp-ping`, `recv-datagram`, `stat`, `timestamp-parts`, `timestamp-in-tz`, `timestamp-in-tz`, `tls-peer-cert`, `http-request` (`src/type_env.rs`)
 - [x] Add precise `Seq({...})` return for `list-dir` — `Seq({name: Str, kind: Str, size: Int})` (`src/type_env.rs`)
 
----
-
-### hkt-map-filter-types: Precise TypeSchemes for map/filter/reduce/each/each-key/each-kv
-
-Replaces `Unknown` signatures with proper polymorphic `TypeScheme`s using `Type::Operator`/`Type::App` and the `Mappable` class; proposes `Filterable` for collection-polymorphic `filter`. See `doc/06-type-inference.md §Higher-Kinded Types` and `doc/11a-builtins.md §Collection Builtins`.
-
-**Spec chapters:** `doc/06-type-inference.md §Higher-Kinded Types`, `doc/11a-builtins.md §Collection Builtins`
-
-- [x] HKT types for map/filter/reduce/each — prerequisite research complete
-- [x] json_to_value null behavior — by design: tinct's null IS empty dict (`[]`); JSON null → `[]` is correct per doc/03-data-model.md §Null; from-json @Schema will use the null-as-empty-dict model when implemented (`src/builtins_io.rs` — no change needed)
-- [x] `map`: `∀f a b. Mappable f ⇒ (a → b) → App(f,a) → App(f,b)` — left as Unknown — needs full HKT; use `Type::Operator("f")` in body (`src/type_env.rs`)
-- [x] `filter`: `∀a. (a → Bool) → Seq a → Seq a` — Seq-specific for now (`src/type_env.rs`)
-- [x] `reduce`: `∀a b. (b → a → b) → b → Seq a → b` — Seq-specific, no HKT needed (`src/type_env.rs`)
-- [x] `each`: `∀a b. (a → b) → Seq a → Null` — `b` is fresh and unreferenced; callback return discarded (`src/type_env.rs`)
-- [x] `each-key`: `∀b. (Str → b) → Dict → Null` — tinct dict keys are always `Str` (`src/type_env.rs`)
-- [x] `each-kv`: `∀b. (Str → Unknown → b) → Dict → Null` — value type `Unknown` for heterogeneous records; note `∀a b. (Str → a → b) → Map@[Str:a] → Null` for homogeneous maps (`src/type_env.rs`)
-- [x] Corpus test updates: no corpus updates needed (Seq-specific types compatible) (`tests/corpus/`)
 ## 18th Panel Review Fix-Later Items
 
 ### panel-18-followup: Minor completeness and invariant documentation from 18th review
