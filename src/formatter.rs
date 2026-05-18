@@ -690,7 +690,14 @@ impl<'a> Formatter<'a> {
                     n.to_string().len()
                 }
             }
-            Expr::Float(f) => f.to_string().len(),
+            Expr::Float(f) => {
+                let s = f.to_string();
+                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                    s.len() + 2 // appended ".0"
+                } else {
+                    s.len()
+                }
+            }
             Expr::Bool(b) => {
                 if *b {
                     4
@@ -947,7 +954,14 @@ impl<'a> Formatter<'a> {
             Pattern::Pin(name) => 1 + name.len(), // $name
             Pattern::Literal(lit) => match lit {
                 LiteralPattern::Int(n) => n.to_string().len(),
-                LiteralPattern::Float(f) => f.to_string().len(),
+                LiteralPattern::Float(f) => {
+                    let s = f.to_string();
+                    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                        s.len() + 2 // appended ".0"
+                    } else {
+                        s.len()
+                    }
+                }
                 LiteralPattern::Bool(b) => b.to_string().len(),
                 LiteralPattern::Str(s) => 2 + s.len(), // "string" (approximate, doesn't account for escapes)
             },
@@ -1261,7 +1275,13 @@ impl<'a> Formatter<'a> {
             }
             Pattern::Literal(lit) => match lit {
                 LiteralPattern::Int(n) => self.output.push_str(&n.to_string()),
-                LiteralPattern::Float(f) => self.output.push_str(&f.to_string()),
+                LiteralPattern::Float(f) => {
+                    let s = f.to_string();
+                    self.output.push_str(&s);
+                    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                        self.output.push_str(".0");
+                    }
+                }
                 LiteralPattern::Bool(b) => self.output.push_str(&b.to_string()),
                 LiteralPattern::Str(s) => {
                     self.output.push('"');
