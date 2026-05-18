@@ -28,8 +28,8 @@
   Null:    [kind: "record"  fields: []]
   Seq:     [fn [let elem]     [kind: "seq"          elem: elem]]
   Map:     [fn [let key val]  [kind: "map"          key: key  value: val]]
-  union:   [fn [let ...types] [kind: "union"        members: types]]
-  all:     [fn [let ...types] [kind: "intersection" members: types]]
+  union:   [fn [let types] [kind: "union"        members: types]]
+  all:     [fn [let types] [kind: "intersection" members: types]]
   without: [fn [let t]        [kind: "negation"     inner: t]]
 
   # ============================================================================
@@ -39,7 +39,7 @@
   # These resolvers compute result types for arithmetic operations with
   # functional dependencies (a, b) → c. They run at type-check time, not runtime.
 
-  AddResult: [fn [let ...args]
+  AddResult: [fn [let args]
     [if [= [[builtin-get 0 args] [builtin-get 1 args]]
            [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
         [kind: "named" name: "Int"]
@@ -54,7 +54,7 @@
                     [kind: "named" name: "Float"]
                     [kind: "named" name: "Unknown"]]]]]]
 
-  SubResult: [fn [let ...args]
+  SubResult: [fn [let args]
     [if [= [[builtin-get 0 args] [builtin-get 1 args]]
            [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
         [kind: "named" name: "Int"]
@@ -69,7 +69,7 @@
                     [kind: "named" name: "Float"]
                     [kind: "named" name: "Unknown"]]]]]]
 
-  MulResult: [fn [let ...args]
+  MulResult: [fn [let args]
     [if [= [[builtin-get 0 args] [builtin-get 1 args]]
            [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
         [kind: "named" name: "Int"]
@@ -84,7 +84,7 @@
                     [kind: "named" name: "Float"]
                     [kind: "named" name: "Unknown"]]]]]]
 
-  DivResult: [fn [let ...args]
+  DivResult: [fn [let args]
     [if [= [[builtin-get 0 args] [builtin-get 1 args]]
            [[kind: "named" name: "Int"]   [kind: "named" name: "Int"]]]
         [kind: "named" name: "Int"]
@@ -1259,7 +1259,7 @@ Example: [-> 5 [+ _ 1] [* _ 2]] => 12
 Example: [-> [1 2 3] [map [+ _ 1]] [filter [> _ 2]]] => Seq(3, 4)
 
 Note: Threads initial value x through each function in sequence. Each function receives the result of the previous step. Pipeline flows left-to-right.
-"""] [let x ...stages] [builtin-reduce [fn [let acc f] [f acc]] x stages]]
+"""] [let x stages] [builtin-reduce [fn [let acc f] [f acc]] x stages]]
 
 # ============================================================================
 # Type Predicates
@@ -1693,22 +1693,21 @@ Div@[doc: "Type class for division with FD (a, b) → c"]:
 Equatable@[doc: "Type class for types that support equality comparison"]:
   [class [let Equatable a]]
 
-# NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
-# EquatableInt@[doc: "Equatable instance for Int"]:
-#   [instance [Equatable Int]
-#     eq: [fn [a b] [builtin-eq a b]]]
-#
-# EquatableFloat@[doc: "Equatable instance for Float"]:
-#   [instance [Equatable Float]
-#     eq: [fn [a b] [builtin-eq a b]]]
-#
-# EquatableStr@[doc: "Equatable instance for Str"]:
-#   [instance [Equatable String]
-#     eq: [fn [a b] [builtin-eq a b]]]
-#
-# EquatableBool@[doc: "Equatable instance for Bool"]:
-#   [instance [Equatable Bool]
-#     eq: [fn [a b] [builtin-eq a b]]]
+EquatableInt@[doc: "Equatable instance for Int"]:
+  [instance Equatable
+    [let a@Int]: [eq: [fn [a b] [builtin-eq a b]]]]
+
+EquatableFloat@[doc: "Equatable instance for Float"]:
+  [instance Equatable
+    [let a@Float]: [eq: [fn [a b] [builtin-eq a b]]]]
+
+EquatableStr@[doc: "Equatable instance for Str"]:
+  [instance Equatable
+    [let a@String]: [eq: [fn [a b] [builtin-eq a b]]]]
+
+EquatableBool@[doc: "Equatable instance for Bool"]:
+  [instance Equatable
+    [let a@Bool]: [eq: [fn [a b] [builtin-eq a b]]]]
 
 # ============================================================================
 # Type Class Declarations: Comparable
@@ -1718,18 +1717,17 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 Comparable@[doc: "Type class for types that support ordering"]:
   [class [let Comparable a]]
 
-# NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
-# ComparableInt@[doc: "Comparable instance for Int"]:
-#   [instance [Comparable Int]
-#     cmp: [fn [a b] [builtin-lt a b]]]
-#
-# ComparableFloat@[doc: "Comparable instance for Float"]:
-#   [instance [Comparable Float]
-#     cmp: [fn [a b] [builtin-lt a b]]]
-#
-# ComparableStr@[doc: "Comparable instance for Str"]:
-#   [instance [Comparable String]
-#     cmp: [fn [a b] [builtin-lt a b]]]
+ComparableInt@[doc: "Comparable instance for Int"]:
+  [instance Comparable
+    [let a@Int]: [lt: [fn [a b] [builtin-lt a b]]]]
+
+ComparableFloat@[doc: "Comparable instance for Float"]:
+  [instance Comparable
+    [let a@Float]: [lt: [fn [a b] [builtin-lt a b]]]]
+
+ComparableStr@[doc: "Comparable instance for Str"]:
+  [instance Comparable
+    [let a@String]: [lt: [fn [a b] [builtin-lt a b]]]]
 
 # ============================================================================
 # Type Class Declarations: Showable
@@ -1739,22 +1737,21 @@ Comparable@[doc: "Type class for types that support ordering"]:
 Showable@[doc: "Type class for types that can be converted to strings"]:
   [class [let Showable a]]
 
-# NOTE: Primitive type instances commented out - primitives use Rust fallback dispatch
-# ShowableInt@[doc: "Showable instance for Int"]:
-#   [instance [Showable Int]
-#     show: str]
-#
-# ShowableFloat@[doc: "Showable instance for Float"]:
-#   [instance [Showable Float]
-#     show: str]
-#
-# ShowableStr@[doc: "Showable instance for Str"]:
-#   [instance [Showable String]
-#     show: str]
-#
-# ShowableBool@[doc: "Showable instance for Bool"]:
-#   [instance [Showable Bool]
-#     show: str]
+ShowableInt@[doc: "Showable instance for Int"]:
+  [instance Showable
+    [let a@Int]: [str: str]]
+
+ShowableFloat@[doc: "Showable instance for Float"]:
+  [instance Showable
+    [let a@Float]: [str: str]]
+
+ShowableStr@[doc: "Showable instance for Str"]:
+  [instance Showable
+    [let a@String]: [str: str]]
+
+ShowableBool@[doc: "Showable instance for Bool"]:
+  [instance Showable
+    [let a@Bool]: [str: str]]
 
 # ============================================================================
 # Type Class Declarations: Mappable
@@ -1986,7 +1983,7 @@ Example: [collect [range 0 3]] => [0 1 2]
 Example: [take 3 [range 5]] => Seq(5, 6, 7, ...)
 
 Note: 1-arg form produces infinite sequence; 2-arg form is half-open [start, end). Lazy evaluation allows infinite ranges.
-"""] [let start@Int ...rest]
+"""] [let start@Int rest]
     [builtin-if [seq? rest]
         [builtin-range start [builtin-head rest]]
         [builtin-range start]]]
