@@ -2,3 +2,6 @@
 [< false true]
 === out
 Bool(true)
+=== warn
+type Bool does not satisfy constraint Comparable at 1:1-1:15
+type Bool does not satisfy constraint Comparable at 1:1-1:15

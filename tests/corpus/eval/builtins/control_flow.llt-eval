@@ -24,4 +24,4 @@
 === out
 Dict({"if_true": Int(1), "if_false": Int(2), "try_success": Variant(Ok, Int(42)), "try_error": Variant(Err, String("caught")), "eval_deep": Dict({"x": Int(3)}), "force_whnf": Int(3), "f": Function(x, y), "apply_result": Int(7), "emit_null": Dict({})})
 === warn
-cannot unify Fn@⊤ [⊤] with Fn@Number
+cannot unify Fn@⊤ [⊤] with Fn@_t18 [x: _ y: _] at 18:24-18:25

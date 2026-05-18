@@ -2,3 +2,5 @@
 [default_val: 42  handler: [fn [field  val@[default: default_val]] val]  p: [proxy handler]  result: p.test_field]
 === out
 Dict({"default_val": Int(42), "handler": Function(field, val), "p": Proxy, "result": Int(42)})
+=== warn
+cannot unify Fn@⊤ [String] with Fn@[default: _t4] [field: _ val: [default: _t4]] at 1:84-1:91

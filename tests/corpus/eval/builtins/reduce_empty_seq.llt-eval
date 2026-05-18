@@ -2,3 +2,5 @@
 [reduce [fn [acc x] [+ acc x]] 42 []]
 === out
 Int(42)
+=== warn
+cannot unify Seq[_] with [] at 1:35-1:37
