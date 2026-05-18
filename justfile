@@ -42,11 +42,14 @@ build-release:
 # Run all tests: lib tests (single-threaded to prevent parallel 128MB-thread exhaustion)
 # followed by corpus integration tests, CLI integration tests, and LSP corpus tests, in separate containers.
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
-test:
+test: build-release
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
+    for f in stdlib/**/*.llt stdlib/*.llt; do \
+        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --no-fs "$f" || exit 1; \
+    done
 
 # Run tests with output (NOTE: LSP corpus tests require `just test-lsp` — they need --features lsp)
 test-verbose:
