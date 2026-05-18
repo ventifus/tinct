@@ -518,11 +518,23 @@ fn improve_functional_dependency_inner(
             )?
         } else if let Some(class_decl) = state.class_env.get(class) {
             // Not an arithmetic class — check for resolver
-            if class_decl.resolver.is_some() {
-                // STUB: Resolver evaluation will be implemented in chr-prelude sprint.
-                // For now, we can't improve via resolver, so skip this FD.
-                // The deferred_equalities mechanism handles this gracefully.
-                continue;
+            if let Some(ref resolver_name) = class_decl.resolver.clone() {
+                // Resolver-based path: construct a TypeStageApp and normalize it.
+                // Normalization calls evaluate_resolver() which invokes the type-stage function.
+                let det_arg_types: Vec<Type> = det_types.iter().map(|(_, _, ty)| ty.clone()).collect();
+                let stage_app = Type::TypeStageApp {
+                    fn_name: resolver_name.clone(),
+                    args: det_arg_types,
+                };
+                let mut norm_ctx = crate::type_normalize::NormCtxt::new();
+                let resolved = crate::type_normalize::normalize(&stage_app, subst, &mut norm_ctx);
+
+                // If normalization returned a stuck TypeStageApp, we can't improve yet.
+                // Defer: the deferred_equalities mechanism will retry when more types are ground.
+                if matches!(resolved, Type::TypeStageApp { .. }) {
+                    continue;
+                }
+                resolved
             } else {
                 // No hardcoded instance and no resolver — this is an error
                 return Err(TypeError::new(

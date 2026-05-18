@@ -3,12 +3,17 @@
 //! This module contains normalization logic for union/intersection types
 //! and Display implementations for the Type enum.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::LazyLock;
+
+use indexmap::IndexMap;
 
 use crate::type_def::Type;
 use crate::types::Substitution;
+use crate::value::{Environment, Key, Thunk, Value};
 
 /// Static resolver cache for arithmetic type functions.
 /// Pre-populated with the 16 arithmetic type resolver results:
@@ -70,11 +75,21 @@ pub struct NormCtxt {
     /// Pre-populated with arithmetic resolver results (Add/Sub/Mul/Div).
     /// Key is (resolver function name, arg types), value is the resolved type.
     pub resolver_cache: HashMap<(String, Vec<Type>), Type>,
+    /// Type-stage evaluation environment for user-defined resolver functions.
+    ///
+    /// Contains bindings from `--- stage: type` sections of prelude.llt.
+    /// When set, `normalize()` will call user-defined resolver functions to
+    /// reduce `TypeStageApp` nodes that are not in the static resolver cache.
+    ///
+    /// `None` during bootstrap (when the type-stage env is being built) or
+    /// when type-stage env creation fails.
+    pub type_stage_env: Option<Rc<RefCell<Environment>>>,
 }
 
 impl NormCtxt {
     /// Create an empty normalization context with default limits.
     /// The arithmetic resolver cache is shared across all instances via the static ARITHMETIC_RESOLVER_CACHE.
+    /// Populates `type_stage_env` from the cached type-stage environment (built once per thread).
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
@@ -82,6 +97,7 @@ impl NormCtxt {
             max_depth: 64,
             call_stack: Vec::new(),
             resolver_cache: ARITHMETIC_RESOLVER_CACHE.clone(),
+            type_stage_env: crate::imports::build_type_stage_env(),
         }
     }
 }
@@ -92,8 +108,12 @@ impl NormCtxt {
 /// 1. Apply current substitution to resolve bound TypeVars
 /// 2. If the type is TypeStageApp { fn_name, args }:
 ///    - Normalize each arg recursively
-///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction via resolver
-///    - For now, resolver lookup is a no-op (actual resolver eval comes in chr-prelude sprint)
+///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction:
+///      a. Check static `resolver_cache` (pre-populated with arithmetic results)
+///      b. If cache miss and `type_stage_env` is set, call `evaluate_resolver()` to
+///         invoke the user-defined type-stage function from the prelude
+///      c. If evaluation fails (fn not found, runtime error, unknown kind), return
+///         stuck TypeStageApp — caller can retry later via deferred_equalities
 ///    - If depth exceeded or cycle detected, return stuck TypeStageApp
 /// 3. Cache the result (only for ground types)
 ///
@@ -141,9 +161,21 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
                 let result = if let Some(resolved_type) = ctx.resolver_cache.get(&cache_key) {
                     // Cache hit: return the resolved type directly
                     resolved_type.clone()
+                } else if let Some(env) = ctx.type_stage_env.clone() {
+                    // Cache miss — try evaluating user-defined resolver from type-stage env
+                    if let Some(resolved) = evaluate_resolver(fn_name, &normalized_args, &env) {
+                        // Insert into resolver_cache so subsequent calls are fast
+                        ctx.resolver_cache.insert(cache_key, resolved.clone());
+                        resolved
+                    } else {
+                        // Resolver evaluation failed — return stuck TypeStageApp
+                        Type::TypeStageApp {
+                            fn_name: fn_name.clone(),
+                            args: normalized_args,
+                        }
+                    }
                 } else {
-                    // Cache miss: return stuck TypeStageApp
-                    // (Future work: evaluate user-defined resolvers from prelude)
+                    // No type-stage env available — return stuck TypeStageApp
                     Type::TypeStageApp {
                         fn_name: fn_name.clone(),
                         args: normalized_args,
@@ -174,6 +206,237 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
 }
 
 // normalize_union and normalize_intersection moved to impl Type in type_def.rs
+
+/// Helper: allocate a string value as a materialized thunk in `ctx`.
+fn alloc_str(s: &str, ctx: &Rc<crate::eval::EvalContext>) -> crate::arena::ThunkId {
+    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), crate::ast::Span::origin())))
+}
+
+/// Convert a `Type` to its type-dict `Value` representation.
+///
+/// Each type is represented as a dict with a `kind:` key, following the schema
+/// in `doc/feature/chr-unification.md §Type-Stage Resolvers`:
+///
+/// | Type      | Dict                                      |
+/// |-----------|-------------------------------------------|
+/// | `Int`     | `[kind: "named" name: "Int"]`             |
+/// | `Float`   | `[kind: "named" name: "Float"]`           |
+/// | `Str`     | `[kind: "named" name: "Str"]`             |
+/// | `Bool`    | `[kind: "named" name: "Bool"]`            |
+/// | `Number`  | `[kind: "named" name: "Number"]`          |
+/// | `Unknown` | `[kind: "named" name: "Unknown"]`         |
+/// | `Seq T`   | `[kind: "seq" element: <type-dict>]`      |
+/// | `Map K V` | `[kind: "map" key: <K> value: <V>]`       |
+///
+/// Returns `None` if the type cannot be represented as a type-dict (e.g., TypeVar, Error).
+pub(crate) fn type_to_dict(ty: &Type, ctx: &Rc<crate::eval::EvalContext>) -> Option<Value> {
+    let origin = crate::ast::Span::origin();
+
+    match ty {
+        // Named scalar types
+        Type::Int | Type::IntLiteral(_) => {
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("named", ctx));
+            dict.insert(Key::String("name".into()), alloc_str("Int", ctx));
+            Some(Value::Dict(dict))
+        }
+        Type::Float => {
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("named", ctx));
+            dict.insert(Key::String("name".into()), alloc_str("Float", ctx));
+            Some(Value::Dict(dict))
+        }
+        Type::Str | Type::StringLiteral(_) => {
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("named", ctx));
+            dict.insert(Key::String("name".into()), alloc_str("Str", ctx));
+            Some(Value::Dict(dict))
+        }
+        Type::Bool => {
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("named", ctx));
+            dict.insert(Key::String("name".into()), alloc_str("Bool", ctx));
+            Some(Value::Dict(dict))
+        }
+        Type::Number => {
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("named", ctx));
+            dict.insert(Key::String("name".into()), alloc_str("Number", ctx));
+            Some(Value::Dict(dict))
+        }
+        Type::Unknown => {
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("named", ctx));
+            dict.insert(Key::String("name".into()), alloc_str("Unknown", ctx));
+            Some(Value::Dict(dict))
+        }
+        Type::Top => {
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("named", ctx));
+            dict.insert(Key::String("name".into()), alloc_str("Top", ctx));
+            Some(Value::Dict(dict))
+        }
+        Type::Seq(elem) => {
+            let elem_dict = type_to_dict(elem, ctx)?;
+            let elem_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(elem_dict, origin)));
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("seq", ctx));
+            dict.insert(Key::String("element".into()), elem_id);
+            Some(Value::Dict(dict))
+        }
+        Type::Map(k, v) => {
+            let k_dict = type_to_dict(k, ctx)?;
+            let v_dict = type_to_dict(v, ctx)?;
+            let k_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(k_dict, origin)));
+            let v_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(v_dict, origin)));
+            let mut dict = IndexMap::new();
+            dict.insert(Key::String("kind".into()), alloc_str("map", ctx));
+            dict.insert(Key::String("key".into()), k_id);
+            dict.insert(Key::String("value".into()), v_id);
+            Some(Value::Dict(dict))
+        }
+        // TypeVar, Error, Function, Record, etc. — not representable as type-dicts
+        _ => None,
+    }
+}
+
+/// Helper: create a `Value::String` from a static string slice.
+fn string_val(s: &str) -> Value {
+    let src: Rc<str> = Rc::from(s);
+    let len = src.len();
+    Value::String {
+        source: src,
+        start: 0,
+        end: len,
+    }
+}
+
+/// Convert a type-dict `Value` back to a `Type`.
+///
+/// Inverse of `type_to_dict`. Handles the `kind:` schema from
+/// `doc/feature/chr-unification.md §Type-Stage Resolvers`.
+///
+/// Returns `None` if the dict cannot be converted (unknown kind, missing fields, wrong shape).
+pub(crate) fn dict_to_type(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> Option<Type> {
+    let dict = match val {
+        Value::Dict(d) => d,
+        _ => return None,
+    };
+
+    // Get kind field
+    let kind_id = dict.get(&Key::String("kind".into()))?;
+    let kind_thunk = ctx.get_thunk(*kind_id);
+    let kind_val = crate::eval::materialize(&kind_thunk, None, ctx).ok()?;
+    let kind = match kind_val.as_str() {
+        Some(s) => s.to_string(),
+        None => return None,
+    };
+
+    match kind.as_str() {
+        "named" => {
+            let name_id = dict.get(&Key::String("name".into()))?;
+            let name_thunk = ctx.get_thunk(*name_id);
+            let name_val = crate::eval::materialize(&name_thunk, None, ctx).ok()?;
+            let name = name_val.as_str()?.to_string();
+            match name.as_str() {
+                "Int" => Some(Type::Int),
+                "Float" => Some(Type::Float),
+                "Str" | "String" => Some(Type::Str),
+                "Bool" => Some(Type::Bool),
+                "Number" => Some(Type::Number),
+                "Unknown" | "_" => Some(Type::Unknown),
+                "Top" => Some(Type::Top),
+                _ => None, // Unknown named type — can't represent
+            }
+        }
+        "seq" => {
+            let elem_id = dict.get(&Key::String("element".into()))?;
+            let elem_thunk = ctx.get_thunk(*elem_id);
+            let elem_val = crate::eval::materialize(&elem_thunk, None, ctx).ok()?;
+            let elem_ty = dict_to_type(&elem_val, ctx)?;
+            Some(Type::Seq(Box::new(elem_ty)))
+        }
+        "map" => {
+            let k_id = dict.get(&Key::String("key".into()))?;
+            let v_id = dict.get(&Key::String("value".into()))?;
+            let k_val = crate::eval::materialize(&ctx.get_thunk(*k_id), None, ctx).ok()?;
+            let v_val = crate::eval::materialize(&ctx.get_thunk(*v_id), None, ctx).ok()?;
+            let k_ty = dict_to_type(&k_val, ctx)?;
+            let v_ty = dict_to_type(&v_val, ctx)?;
+            Some(Type::Map(Box::new(k_ty), Box::new(v_ty)))
+        }
+        _ => None, // Unknown kind — can't convert
+    }
+}
+
+/// Evaluate a user-defined type-stage resolver function.
+///
+/// Looks up `fn_name` in the type-stage environment, calls it with the given
+/// `Type` arguments (converted to type-dict values), and converts the result
+/// back to a `Type`.
+///
+/// Returns `None` if any step fails:
+/// - Resolver not found in env
+/// - Argument type cannot be represented as a type-dict
+/// - Runtime error during evaluation
+/// - Result cannot be converted back to a `Type`
+pub(crate) fn evaluate_resolver(
+    fn_name: &str,
+    args: &[Type],
+    env: &Rc<RefCell<Environment>>,
+) -> Option<Type> {
+    // Look up the resolver function thunk
+    let fn_thunk = env.borrow().get(fn_name)?;
+
+    // Create a minimal EvalContext for type-stage evaluation.
+    // We use new_empty() to avoid inheriting stale stdlib ThunkId caches — the
+    // type-stage env was built with its own bootstrap EvalContext and ThunkArena.
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
+    let ctx = crate::eval::EvalContext::new_empty(base_dir, Rc::clone(env), false);
+
+    // Materialize the function value
+    let fn_val = crate::eval::materialize(&fn_thunk, None, &ctx).ok()?;
+
+    // Convert each Type arg to a type-dict Value
+    let arg_thunks: Vec<Rc<Thunk>> = args
+        .iter()
+        .map(|ty| {
+            let dict_val = type_to_dict(ty, &ctx)?;
+            Some(Rc::new(Thunk::new_materialized(dict_val, crate::ast::Span::origin())))
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    // Dispatch to the function
+    let result_thunk = match fn_val {
+        Value::Function {
+            ref params,
+            ref body,
+            env: ref closure_env,
+            ..
+        } => {
+            let call_ctx = crate::eval_call::CallContext {
+                params,
+                body,
+                closure_env,
+                positional: &arg_thunks,
+                named: None,
+                default_env: closure_env,
+                call_span: crate::ast::Span::origin(),
+                origin: None,
+                ctx: &ctx,
+            };
+            crate::eval_call::invoke_function(&call_ctx).ok()?
+        }
+        // Builtin resolvers are not expected — all resolvers are LLT-defined functions.
+        _ => return None,
+    };
+
+    // Force evaluation (materialize the lazy result)
+    let result_val = crate::eval::materialize(&result_thunk, None, &ctx).ok()?;
+
+    // Convert result dict back to Type
+    dict_to_type(&result_val, &ctx)
+}
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
