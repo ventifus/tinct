@@ -311,7 +311,13 @@ impl<'a> Formatter<'a> {
     fn format_expr(&mut self, expr: &Spanned<Expr>, _in_bracket: bool) {
         match &expr.node {
             Expr::Int(n) => self.output.push_str(&n.to_string()),
-            Expr::Float(f) => self.output.push_str(&f.to_string()),
+            Expr::Float(f) => {
+                let s = f.to_string();
+                self.output.push_str(&s);
+                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                    self.output.push_str(".0");
+                }
+            }
             Expr::Bool(b) => self.output.push_str(if *b { "true" } else { "false" }),
             Expr::Str(s) => {
                 // Source-sniff: check if the original token was a quoted string or a
