@@ -170,15 +170,15 @@ After this change, `emit` is purely additive: calling it one or more times write
 to stdout AND the final expression is still serialized. This makes `emit` usable as the
 logging/print primitive and unblocks `stdlib/log.llt`.
 
-- [ ] Remove `emitted: Cell<bool>` from `EvalContext` (`src/eval.rs`, `src/lib.rs`)
-- [ ] Remove all `eval_ctx.emitted.get()` / `emitted.set(true)` sites; update
+- [x] Remove `emitted: Cell<bool>` from `EvalContext` (`src/eval.rs`, `src/lib.rs`)
+- [x] Remove all `eval_ctx.emitted.get()` / `emitted.set(true)` sites; update
   `run_eval`, `run_literate_eval`, `run_literate_weave` accordingly (`src/main.rs`)
-- [ ] Preserve Seq drain: always drain a Seq final value to completion (remove the
+- [x] Preserve Seq drain: always drain a Seq final value to completion (remove the
   `emitted.get()` gate, make drain unconditional) (`src/main.rs`)
-- [ ] Update `doc/09-documents.md` §Interaction with `emit` — remove language about
+- [x] Update `doc/09-documents.md` §Interaction with `emit` — remove language about
   JSON suppression (`doc/09-documents.md`)
-- [ ] Update corpus tests that rely on emit-suppression behaviour (`tests/corpus/`)
-- [ ] Verify `just test` passes (`tests/`)
+- [x] Update corpus tests that rely on emit-suppression behaviour (`tests/corpus/`)
+- [x] Verify `just test` passes (`tests/`)
 
 ---
 

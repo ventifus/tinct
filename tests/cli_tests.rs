@@ -2115,7 +2115,7 @@ fn emit_basic() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // emit suppresses JSON output, so stdout should just be "hello world\n"
+    // Without -o flag, no JSON output (emit-only mode), so stdout is just "hello world\n"
     assert_eq!(stdout, "hello world\n");
 }
 
@@ -2382,7 +2382,7 @@ fn multi_file_pipeline() {
 
 #[test]
 fn multi_file_pipeline_with_emit() {
-    // Test multi-file pipeline with emit (text output instead of JSON)
+    // Test multi-file pipeline with emit (text output only, no -o flag)
     let dir = TempDir::new("multi_file_emit");
 
     let data_path = dir.path().join("data.llt");
@@ -2408,7 +2408,7 @@ fn multi_file_pipeline_with_emit() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // emit writes to stdout directly without JSON serialization
+    // Without -o flag, only emit output appears
     assert_eq!(stdout, "Hello, Alice!");
 }
 
@@ -2891,9 +2891,9 @@ fn literate_missing_file_is_error() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn seq_at_top_level_without_emit_is_error() {
-    // A program that returns a bare Seq (without calling emit or collect)
-    // should produce a clear error message guiding the user to use collect or emit.
+fn seq_at_top_level_is_drained() {
+    // A program that returns a bare Seq is always drained (forces all elements).
+    // Without -o flag, no JSON output is produced (emit-only mode).
     // [call $seq 1 []] is the simplest Seq value: Seq(1, []).
     let (path, _dir) = write_temp_llt("seq_top_no_emit", "[call $seq 1 []]");
     let output = Command::new(tinct_bin())
@@ -2902,28 +2902,19 @@ fn seq_at_top_level_without_emit_is_error() {
         .expect("failed to run tinct");
 
     assert!(
-        !output.status.success(),
-        "expected non-zero exit for top-level Seq without emit"
+        output.status.success(),
+        "expected success for top-level Seq drain; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "expected exit code 1 for top-level Seq error"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("top-level Seq"),
-        "expected top-level Seq error message, got: {stderr}"
-    );
-    assert!(
-        stderr.contains("collect") || stderr.contains("emit"),
-        "expected guidance about collect or emit in error message, got: {stderr}"
-    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Without -o flag and without emit calls, no output
+    assert_eq!(stdout, "");
 }
 
 #[test]
-fn seq_at_top_level_from_range_without_emit_is_error() {
-    // [call $range 0 5] returns a Seq. Without collect it should produce the guidance error.
+fn seq_at_top_level_from_range_is_drained() {
+    // [call $range 0 5] returns a Seq. It is always drained, forcing all elements.
+    // Without -o flag, no JSON output.
     let (path, _dir) = write_temp_llt("seq_range_no_emit", "[call $range 0 5]");
     let output = Command::new(tinct_bin())
         .args(["run", path.to_str().unwrap()])
@@ -2931,32 +2922,31 @@ fn seq_at_top_level_from_range_without_emit_is_error() {
         .expect("failed to run tinct");
 
     assert!(
-        !output.status.success(),
-        "expected non-zero exit for top-level range Seq without emit"
+        output.status.success(),
+        "expected success for top-level range Seq drain; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("top-level Seq"),
-        "expected top-level Seq error message, got: {stderr}"
-    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Without -o flag and without emit calls, no output
+    assert_eq!(stdout, "");
 }
 
 #[test]
 fn seq_at_top_level_with_emit_runs_to_completion() {
     // A generator pipeline that uses emit for text output and returns a Seq.
     // The program calls emit in two ways:
-    //   1. A header line emitted during initial scope-chain evaluation (sets emitted=true).
+    //   1. A header line emitted during initial scope-chain evaluation.
     //   2. Per-element emit calls inside the generator function body.
     //
     // Scope chain:
-    //   - First expression: [_: [emit "start\n"]] — emits "start\n", sets emitted=true.
+    //   - First expression: [_: [emit "start\n"]] — emits "start\n".
     //   - Second expression: [map [fn [n] [emit [str n "\n"]]] [range 0 3]] — returns Seq.
     //
-    // The CLI sees emitted=true + top-level Seq → drains the Seq, forcing each head.
+    // The CLI sees top-level Seq → always drains the Seq, forcing each head.
     // Forcing each head calls the map function which calls emit for 0, 1, 2.
     // Total output: "start\n0\n1\n2\n"
     // First expression: plain emit call (not inside a dict value), so it fires
-    // during scope-chain intermediate materialization and sets emitted=true.
+    // during scope-chain intermediate materialization.
     // Second expression: the generator Seq.
     let source = "[call $emit \"start\\n\"]\n[call $map [fn [n] [call $emit [call $str $n \"\\n\"]]] [call $range 0 3]]";
     let (path, _dir) = write_temp_llt("seq_emit_generator", source);
@@ -2967,7 +2957,7 @@ fn seq_at_top_level_with_emit_runs_to_completion() {
 
     assert!(
         output.status.success(),
-        "expected success when Seq is drained via emit; stderr: {}",
+        "expected success when Seq is drained; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);

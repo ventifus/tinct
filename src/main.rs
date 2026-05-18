@@ -1835,18 +1835,14 @@ fn run_eval(
 
     // Handle top-level Seq value.
     //
-    // A Seq at the top level has two valid interpretations depending on whether
-    // emit was called:
+    // A Seq at the top level is always drained by forcing each element's tail to
+    // completion. This drives any emit side-effects inside generator elements and
+    // prevents silent no-output scenarios. Element values themselves are discarded.
     //
-    // 1. emitted=true (generator + emit pattern): drain the Seq by forcing each
-    //    element's tail to completion. This drives any emit side-effects inside
-    //    the generator elements. Element values themselves are discarded.
-    //
-    // 2. emitted=false (bare Seq with no text output): this is almost certainly
-    //    a mistake — the user forgot to collect or emit. Return a clear error
-    //    rather than silently failing to produce output.
+    // After draining, the final expression is still serialized to JSON (unless -o
+    // was used to specify a different formatter).
     if matches!(val, tinct::Value::Seq { .. }) {
-        if eval_ctx.emitted.get() {
+        {
             // Drive the Seq to completion so all emit calls inside generator elements fire.
             // We force each head (which triggers emit side-effects) then advance to the tail.
             // This mirrors builtin_collect's spine traversal but discards the collected values.
@@ -1898,28 +1894,16 @@ fn run_eval(
                     }
                 }
             }
-        } else {
-            return Err(
-                "top-level Seq — use '| collect' for JSON array output or 'emit' for text output"
-                    .to_string(),
-            );
         }
-        // Cancel any pending alarm before returning
-        #[cfg(unix)]
-        if timeout.is_some() {
-            unsafe {
-                libc::alarm(0);
-            }
-        }
-        return Ok(());
+        // After draining the Seq, we still continue to serialize the final value
     }
 
-    // Serialize and output (skip if emit was called, or if no -o flag was specified)
-    // When no -o flag is given, the output is emit-only (no JSON serialization).
+    // Serialize and output
+    // When no -o flag is given, no JSON output is produced (emit-only mode).
     // The -o flag appends an output formatter to the pipeline, so we never reach this point
     // with output.is_some(). This block only runs when there was NO -o flag.
-    if !eval_ctx.emitted.get() && output.is_none() {
-        // No emit was called and no -o flag was given.
+    if output.is_none() {
+        // No -o flag was given.
         // Emit-only mode: print nothing (the user should use emit or -o).
         // This is the default behavior when no output format is specified.
     }
@@ -2457,38 +2441,34 @@ fn run_literate_eval(
         msg
     })?;
 
-    // Respect emit: if any emit call fired during eval, suppress JSON output.
-    if !eval_ctx.emitted.get() {
-        // Use the same format_with_json_llt → fallback pattern as run_eval for consistent
-        // null semantics ([] → JSON null, not {}).
-        let json_llt_path = find_libdir_path().map(|p| p.join("cli").join("out").join("json.llt"));
+    // Always serialize to JSON (emit is purely additive)
+    // Use the same format_with_json_llt → fallback pattern as run_eval for consistent
+    // null semantics ([] → JSON null, not {}).
+    let json_llt_path = find_libdir_path().map(|p| p.join("cli").join("out").join("json.llt"));
 
-        let output = if let Some(ref json_llt_path) = json_llt_path {
-            match format_with_json_llt(Rc::clone(&thunk), &eval_ctx, Rc::clone(&env), json_llt_path)
-            {
-                Ok(Some(compact_json)) => {
-                    let parsed: serde_json::Value =
-                        serde_json::from_str(&compact_json).map_err(|e| {
-                            format!("json.llt produced invalid JSON: {e}\noutput: {compact_json}")
-                        })?;
-                    serde_json::to_string_pretty(&parsed)
-                        .map_err(|e| format!("JSON pretty-print error: {e}"))?
-                }
-                Ok(None) => {
-                    let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
-                    serde_json::to_string_pretty(&json)
-                        .map_err(|e| format!("JSON serialization error: {e}"))?
-                }
-                Err(e) => return Err(e),
+    let output = if let Some(ref json_llt_path) = json_llt_path {
+        match format_with_json_llt(Rc::clone(&thunk), &eval_ctx, Rc::clone(&env), json_llt_path) {
+            Ok(Some(compact_json)) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&compact_json).map_err(|e| {
+                        format!("json.llt produced invalid JSON: {e}\noutput: {compact_json}")
+                    })?;
+                serde_json::to_string_pretty(&parsed)
+                    .map_err(|e| format!("JSON pretty-print error: {e}"))?
             }
-        } else {
-            let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
-            serde_json::to_string_pretty(&json)
-                .map_err(|e| format!("JSON serialization error: {e}"))?
-        };
+            Ok(None) => {
+                let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
+                serde_json::to_string_pretty(&json)
+                    .map_err(|e| format!("JSON serialization error: {e}"))?
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
+        serde_json::to_string_pretty(&json).map_err(|e| format!("JSON serialization error: {e}"))?
+    };
 
-        println!("{output}");
-    }
+    println!("{output}");
 
     Ok(())
 }
@@ -2864,15 +2844,11 @@ fn run_literate_weave(
             }
         };
 
-        let output_str = if eval_ctx.emitted.get() {
-            // Block called emit — note this in the output section.
-            "(emit)".to_string()
-        } else {
-            let json = value_to_json(&val, &eval_ctx)
-                .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
-            serde_json::to_string(&json)
-                .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?
-        };
+        // Always serialize the result to JSON (emit is additive)
+        let json = value_to_json(&val, &eval_ctx)
+            .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
+        let output_str = serde_json::to_string(&json)
+            .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?;
 
         block_outputs.push(BlockOutput {
             out: Some(output_str),
@@ -3189,15 +3165,11 @@ fn evaluate_marker_expression(
     let val = materialize(&thunk, None, &eval_ctx_rc)
         .map_err(|e| format!("error materializing inline marker: {e}"))?;
 
-    // Convert to JSON and return as string
-    if eval_ctx_rc.emitted.get() {
-        Ok("(emit)".to_string())
-    } else {
-        let json = value_to_json(&val, &eval_ctx_rc)
-            .map_err(|e| format!("error serializing inline marker result: {e}"))?;
-        serde_json::to_string(&json)
-            .map_err(|e| format!("JSON serialization error in inline marker: {e}"))
-    }
+    // Convert to JSON and return as string (emit is additive)
+    let json = value_to_json(&val, &eval_ctx_rc)
+        .map_err(|e| format!("error serializing inline marker result: {e}"))?;
+    serde_json::to_string(&json)
+        .map_err(|e| format!("JSON serialization error in inline marker: {e}"))
 }
 
 /// Schema keys recognized by the `describe` subcommand heuristic.
