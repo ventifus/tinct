@@ -790,7 +790,8 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     // All file I/O for this document goes through this Dir so RESOLVE_BENEATH
     // confines reads to the document's own directory.
     // AMBIENT-OK: LSP is opened by the editor which chose the document path.
-    let parent_dir = cap_std::fs::Dir::open_ambient_dir(parent_dir_path, cap_std::ambient_authority()).ok()?;
+    let parent_dir =
+        cap_std::fs::Dir::open_ambient_dir(parent_dir_path, cap_std::ambient_authority()).ok()?;
 
     // Derive the filename relative to the parent directory.
     let file_name = path.file_name()?;

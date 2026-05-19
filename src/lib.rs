@@ -126,7 +126,7 @@ pub use error::{
 pub use types::{format_type_error, TypeError};
 
 /// Formatter: canonical source reformatter.
-pub use formatter::{format_source, format_source_tinct};
+pub use formatter::{format_source, format_source_tinct, format_source_tinct_with_dir};
 
 #[cfg(feature = "repl")]
 pub use repl::run_repl;

@@ -1663,13 +1663,14 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Macro expansion runs first so that DefMacro nodes are registered and macro calls
     // are expanded before the underscore desugar pass and evaluation.
     // This matches the pipeline in main.rs, lib.rs, and LSP.
-    let expand_result = crate::expand::expand_macros(file, ctx.config.no_fs, &*dir_cap).map_err(|e| {
-        EvalError::include_parse_failed(
-            file_path_str.clone(),
-            format!("macro expansion error: {}", e),
-            call_span,
-        )
-    })?;
+    let expand_result =
+        crate::expand::expand_macros(file, ctx.config.no_fs, &*dir_cap).map_err(|e| {
+            EvalError::include_parse_failed(
+                file_path_str.clone(),
+                format!("macro expansion error: {}", e),
+                call_span,
+            )
+        })?;
     let mut file = expand_result.file;
     // Note: expand_result.provenance is discarded here. Included files' macro provenance
     // is not threaded back to the includer's provenance map. This is a known limitation.
@@ -1738,20 +1739,17 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         };
         let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
         child.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        // Inject %libdir: resolve from the binary's location, same as main.rs.
-        if let Some(libdir_path) = crate::find_libdir_path() {
-            if let Ok(libdir_dir) =
-                cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority())
-            {
-                let libdir_val = Value::DirCap {
-                    dir: Rc::new(libdir_dir),
-                    perms: crate::value::DirPerms::full(),
-                };
-                let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
-                child
-                    .borrow_mut()
-                    .insert("%libdir".to_string(), libdir_thunk);
-            }
+        // Inject %libdir: reuse the already-open Dir from EvalContext (set by main.rs/repl.rs
+        // at the capability initialization boundary). Avoids calling open_ambient_dir here.
+        if let Some(libdir_rc) = ctx.libdir_dir.borrow().clone() {
+            let libdir_val = Value::DirCap {
+                dir: libdir_rc,
+                perms: crate::value::DirPerms::full(),
+            };
+            let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
+            child
+                .borrow_mut()
+                .insert("%libdir".to_string(), libdir_thunk);
         }
         child
     };

@@ -2085,8 +2085,18 @@ pub(crate) fn create_stdlib_env_with_arena() -> Result<
             d
         );
     }
+    // Open CWD once at the public entry point; the private helper receives it as a parameter
+    // so that open_ambient_dir is confined to this function (the bootstrap boundary for the
+    // stdlib loading context).
+    let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| {
+            Box::new(crate::error::EvalError::internal(
+                format!("cannot open bootstrap base_dir: {e}"),
+                Span::origin(),
+            ))
+        })?;
     STDLIB_ENV_DEPTH.set(d + 1);
-    let result = create_stdlib_env_inner();
+    let result = create_stdlib_env_inner(bootstrap_base_dir);
     STDLIB_ENV_DEPTH.set(d);
     // Cache the arena so subsequent EvalContext::new() calls can inherit stdlib ThunkIds.
     if let Ok((_, ref arena)) = result {
@@ -2095,7 +2105,9 @@ pub(crate) fn create_stdlib_env_with_arena() -> Result<
     result
 }
 
-fn create_stdlib_env_inner() -> Result<
+fn create_stdlib_env_inner(
+    bootstrap_base_dir: cap_std::fs::Dir,
+) -> Result<
     (
         Rc<RefCell<Environment>>,
         Rc<RefCell<crate::arena::ThunkArena>>,
@@ -2113,13 +2125,8 @@ fn create_stdlib_env_inner() -> Result<
     // The bootstrap_ctx uses bootstrap_env as its stdlib_env, which means:
     //   - `include` resolves to the builtin_include function
     //   - `%rust` resolves to Value::RustRegistry for [include %rust "..."] calls
-    let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| {
-            Box::new(crate::error::EvalError::internal(
-                format!("cannot open bootstrap base_dir: {e}"),
-                Span::origin(),
-            ))
-        })?;
+    // bootstrap_base_dir was opened by the caller (create_stdlib_env_with_arena) to confine
+    // open_ambient_dir to the public entry point.
     // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're BUILDING the stdlib here,
     // so we need a fresh arena, not one seeded with stale cache contents.
     let bootstrap_ctx =
@@ -2165,6 +2172,17 @@ fn create_stdlib_env_inner() -> Result<
 ///
 /// Returns the type-stage environment wrapped in `Rc<RefCell<Environment>>`.
 pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
+    // Open CWD at the public entry point to confine open_ambient_dir to this function.
+    // The bootstrap context uses only embedded source (include_str!); the dir is required
+    // by EvalContext::new_empty but is never accessed for filesystem reads during stdlib loading.
+    let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| {
+            Box::new(crate::error::EvalError::internal(
+                format!("cannot open type-stage bootstrap base_dir: {e}"),
+                Span::origin(),
+            ))
+        })?;
+
     // Parse the prelude source
     let prelude_source = include_str!("../stdlib/prelude.llt");
     let mut file = crate::parser::parse(prelude_source)
@@ -2183,14 +2201,7 @@ pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::er
     // Create minimal bootstrap env: include + %rust
     let bootstrap_env = create_bootstrap_env();
 
-    // Create a bootstrap EvalContext
-    let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| {
-            Box::new(crate::error::EvalError::internal(
-                format!("cannot open type-stage bootstrap base_dir: {e}"),
-                Span::origin(),
-            ))
-        })?;
+    // Create a bootstrap EvalContext. bootstrap_base_dir was opened above.
     let bootstrap_ctx =
         crate::eval::EvalContext::new_empty(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
 
@@ -6615,7 +6626,7 @@ mod tests {
         // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
         // are now in standard_builtins and accessible only via %rust "meta" module.
         assert_eq!(
-            count, 185,
+            count, 190,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6836,10 +6847,22 @@ mod tests {
         assert!(names.contains(&"icmp-ping"), "missing icmp-ping");
         assert!(names.contains(&"send-datagram"), "missing send-datagram");
         assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
+        // Decomposed include primitives (include-decomp-primitives sprint)
+        assert!(names.contains(&"blake3"), "missing blake3");
+        assert!(names.contains(&"cap-identity"), "missing cap-identity");
+        assert!(names.contains(&"load"), "missing load");
+        assert!(
+            names.contains(&"include-cache-get"),
+            "missing include-cache-get"
+        );
+        assert!(
+            names.contains(&"include-cache-put"),
+            "missing include-cache-put"
+        );
         assert_eq!(
             names.len(),
-            185,
-            "expected 185 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)",
+            190,
+            "expected 190 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects; 5 new include-decomp primitives: blake3, cap-identity, load, include-cache-get, include-cache-put)",
             names.len()
         );
     }
