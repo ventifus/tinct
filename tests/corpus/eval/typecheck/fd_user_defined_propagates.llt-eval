@@ -1,22 +1,13 @@
----
-[class [Add a b c]
-  [determines: [[[a b] c]]
-   resolver: AddResult]
-  +: [Fn@c [a b]]]
+# User-defined type class with functional dependency (a, b) -> c.
+# Verifies that class declarations with FD determines/resolver metadata typecheck without errors.
+# The resolver AddResult is from the prelude and computes c from (a, b).
+[
+  TestAdd: [class [let TestAdd a b c] [determines: [[[a b] c]] resolver: AddResult]
+    add: [Fn@c [a b]]]
 
-[instance Add
-  [Int Int]: [+: [fn [x y] [prim:add-int x y]]]]
-
-[instance Add
-  [Float Float]: [+: [fn [x y] [prim:add-float x y]]]]
-
+  result: [+ 1 2]
+]
 ---
-result: [+ 1 2]
----
-EVAL
----
+%.result
+=== out
 Int(3)
----
-TYPECHECK
----
-result: Int

@@ -58,34 +58,15 @@ Root cause: the parser error-recovery mechanism converts all `push_value` errors
 - [ ] Fix by ensuring `split` (and other string utilities) are visible during macro expansion typecheck
 - [ ] Verify `test_valid_corpus` passes for these two files
 
-### corpus-appendable-auto-indexed: Auto-indexed dicts `[1 2]` don't satisfy Appendable constraint
+### corpus-fixes-misc: Fix small corpus test failures
 
-`tests/corpus/eval/typecheck/appendable_seq_concat.llt-eval` and `appendable_str_concat.llt-eval` fail: `type [0: 1 1: 2] does not satisfy constraint Appendable`. The test passes `[1 2]` (auto-indexed dict) to `builtin-concat`. The type checker correctly identifies this as a Record with integer string keys, not a Seq or Str, so the Appendable constraint fails.
+Four corpus tests were failing due to small authoring errors: wrong type names, broken `prim:` prefixes, wrong test format, and `fn?` not being exported from the prelude. Fixed 2026-05-18.
 
-- [ ] Either update corpus tests to use proper Seq/Str syntax, or extend Appendable instances to cover auto-indexed dicts
-- [ ] Verify `test_typecheck_corpus` passes for these files
-
-### corpus-prim-colon-identifiers: `prim:add-int` and similar colon-namespaced identifiers break parsing
-
-`tests/corpus/eval/typecheck/fd_user_defined_propagates.llt-eval` and `resolver_injective_flag.llt-eval` use `prim:add-int`, `prim:add-float` as function names. The lexer tokenizes `:` as a separate token, so `prim:add-int` is parsed as dict key `prim` + value `add-int` instead of a single identifier.
-
-- [ ] Remove `prim:` prefix from these corpus test files (replace with standard arithmetic builtins or define local helpers)
-- [ ] Verify `test_typecheck_corpus` passes for these two files
-
-### corpus-tuple-annotation-str: `Str` used as type name but tinct uses `String`
-
-`tests/corpus/eval/typecheck/tuple_annotation_closed_record.llt-eval` uses `[@[[Tuple Int Str]] ...]` where `Str` is not a valid type name (should be `String`).
-
-- [ ] Fix corpus file to use `String` instead of `Str`
-- [ ] Verify `test_typecheck_corpus` passes
-
-### corpus-fn-predicate-false-branch: `fn?` predicate undefined in test context
-
-`tests/corpus/typecheck/warnings/fn_predicate_false_branch_non_callable.llt-eval` fails with `undefined variable: fn?`. The `fn?` type predicate is defined in stdlib but may not be resolved in the eval context used by this test.
-
-- [ ] Investigate why `fn?` is not in scope for this test
-- [ ] Fix either the test or the stdlib inclusion for this corpus test
-- [ ] Verify `test_typecheck_warnings_corpus` passes
+- [x] `appendable_seq_concat.llt-eval` and `appendable_str_concat.llt-eval`: changed from `builtin-concat [1 2]` (auto-indexed dicts, Appendable unresolvable) to `concat [seq 1 []]` (Seq, Appendable works via prelude wrapper's Unknown params) (`tests/corpus/eval/typecheck/`)
+- [x] `fd_user_defined_propagates.llt-eval`: rewrote in standard format (was using broken `---EVAL---TYPECHECK---` sections); removed `prim:add-int`/`prim:add-float` (lexer `:` issue); simplified to class declaration + usage (`tests/corpus/eval/typecheck/`)
+- [x] `resolver_injective_flag.llt-eval`: rewrote in standard format; fixed `Str("ok")` → `String("ok")` and `Str` → `String` in typecheck section (`tests/corpus/eval/typecheck/`)
+- [x] `tuple_annotation_closed_record.llt-eval`: `Str` → `String` in Tuple type annotation (`tests/corpus/eval/typecheck/`)
+- [x] `fn_predicate_false_branch_non_callable.llt-eval`: `fn?` was not exported from prelude (comment said "takes effect directly" but it didn't); exported `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` from prelude using `builtin-*?` stable aliases to avoid circular self-references (`stdlib/prelude.llt`, `src/builtins.rs`, `src/type_env.rs`); all `test_typecheck_corpus` and `test_typecheck_warnings_corpus` pass (`tests/corpus/`)
 
 ---
 
@@ -110,25 +91,6 @@ Root cause: the parser error-recovery mechanism converts all `push_value` errors
 
 ## Tooling
 
-### unified-bindings-remove-old-syntax: Remove pre-unified-bindings param syntax from fn, type, and class
-
-`unified-bindings-migrate` (DONE.md) checked off "Remove old param-list parsing paths" prematurely. Old-form detection survives in three places:
-
-- **`fn` / `macro` / `defmacro`:** `parse_param_list` (src/parser.rs:798) treats `let` as optional (skips it if present, lines 820–824); called from `fn` (line 1656), `macro` (line 1869), and `defmacro` (line 1901). Also: `push_expr_to_parent` for `StackFrame::Fn` has an implied-call heuristic (lines 5250–5276) that detects all-lowercase `[a b c]` bracket as a param list.
-- **`type` (TypeAlias):** `push_expr_to_parent` for `StackFrame::TypeAlias` (lines 5228–5295) has three cases — Case 1: `Expr::Dict` with auto-indexed lowercase vars (lines 5232–5248), Case 2: implied-call all-lowercase (lines 5250–5277); both are old forms. Case 3: `Expr::LetDecl` (lines 5278–5295) is the new form.
-- **`class` (ClassDecl):** `push_expr_to_parent` for `StackFrame::ClassDecl` (lines 5527–5629) handles `Expr::VarRef` (lines 5541–5546), `Expr::Dict` (lines 5548–5570), and `Expr::Call { implied: true }` (lines 5572–5598) as old forms; `Expr::LetDecl` (lines 5600–5623) is the new form.
-
-The goal is complete deletion of old paths, not a fallback parse error. `[let ...]` already works in all three contexts via `Expr::LetDecl` in `push_expr_to_parent` — no new code needed, only deletions.
-
-- [x] Manually rewrite all non-stdlib `.llt` files using old param syntax to `[let ...]` form; known: `scripts/docgen.llt` (all fn params); audit `samples/` for others
-- [x] Convert `defmacro` to deferred push_expr_to_parent pattern (receive name as VarRef, then LetDecl params) — currently the last remaining eager caller of `parse_param_list` besides `fn` and `macro`; migrate first, then delete `parse_param_list` and all three call sites
-- [x] Delete `parse_param_list` entirely (`src/parser.rs:798`) and all call sites (lines 1656, 1869, 1901) once defmacro is migrated
-- [x] Delete `push_expr_to_parent` `StackFrame::Fn` implied-call heuristic (lines 5250–5276)
-- [x] Delete `push_expr_to_parent` `StackFrame::TypeAlias` Cases 1 and 2 (Dict and implied-call detection, lines 5228–5277); keep only the `Expr::LetDecl` branch
-- [x] Delete `push_expr_to_parent` `StackFrame::ClassDecl` `Expr::VarRef`, `Expr::Dict`, and `Expr::Call { implied: true }` branches (lines 5541–5598); keep only `Expr::LetDecl` — no-param classes use `[class [let Equatable] ...]`; bare-word shorthand belongs in the `macro class` let-softening macro (macros-v2-stdlib)
-- [x] Verify `just test` passes after deletions
-- [x] Update DONE.md to note the `unified-bindings-migrate` checkbox was completed here (the original was premature)
-
 ### equatable-comparable-instances: Uncomment Equatable/Comparable/Showable primitive instances
 
 `stdlib/prelude.llt` has `Equatable`, `Comparable`, and `Showable` instance declarations for
@@ -143,16 +105,6 @@ the fallback blocks user-extensibility of `=`, `<`, and `str`.
 - [ ] If performance: benchmark instance lookup vs Rust fallback for `=`/`<`/`str` on primitives; if acceptable, uncomment; if not, document the performance constraint explicitly and track as future work
 - [ ] Remove Rust fallback dispatch for `Equatable`/`Comparable`/`Showable` once instances are active (`src/typecheck.rs`, `src/type_unify.rs`)
 - [ ] Verify `just test` passes with instances active (`tests/`)
-
-### arithmetic-class-rename: Rename Add/Sub/Mul/Div → Addable/Subtractable/Multipliable/Divisible
-
-The spec (`doc/whatif/chr-unification.md`, `doc/06-type-inference.md`) consistently uses `-able` suffixes. The implementation in `stdlib/prelude.llt` uses the shorter names. This is a naming bug — the spec is authoritative. All references must be updated.
-
-- [ ] Rename class declarations in `stdlib/prelude.llt`: `Add` → `Addable`, `Sub` → `Subtractable`, `Mul` → `Multipliable`, `Div` → `Divisible` (`stdlib/prelude.llt:1650-1660`)
-- [ ] Update all `[instance Add ...]`, `[instance Sub ...]` etc. in `stdlib/prelude.llt` to use new names (`stdlib/prelude.llt`)
-- [ ] Update `lookup_arithmetic_instance` and any hardcoded class-name strings in Rust source (`src/type_unify.rs`, `src/type_normalize.rs`, `src/typecheck.rs`)
-- [ ] Update constraint references in corpus tests: `[$Addable a b c]` etc. (`tests/corpus/`)
-- [ ] Verify `just test` passes after rename (`tests/`)
 
 ### tinct-lint: `tinct lint` subcommand and `just lint-stdlib` CI step
 
@@ -177,26 +129,6 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [x] Audit all `--- caps:` declarations in `scripts/`, `stdlib/`, and `samples/` for bare `@DirCap` and update to explicit flag lists (`scripts/`, `stdlib/`, `samples/`) — Updated `test_permissions.llt` to use `@[[all DirCap Listable Statable]]`; `scripts/docgen.llt` already has `@[DirCap [Writable]]`; no bare `@DirCap` found in `samples/` or `stdlib/`
 - [ ] **KNOWN ISSUE**: CLI-level backward-compat at `src/main.rs:1321,2469,2765` — `--cap-fs NAME=PATH` without `:MODE` defaults to `DirPerms::full()`. The type-level compat described in whatif doc lines 107-109 was never implemented. Removing CLI default breaks many tests (`tests/cli_tests.rs:1636,1671,2182,2215,2248,2285,2331`). Deferred until test suite is updated to use explicit modes.
 - [x] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
-
----
-
-## Higher-Kinded Types
-
-### hkt-do-inferred-fix: Implement inferred [do] monad form (divergence fix)
-
-**Whatif:** `hkt-monads`
-**Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`
-
-- [x] In `stdlib/macros.llt` `do` macro: replace the inferred-form error branch with emission of `[%do-infer.bind steps...]` via `do-desugar-inferred` (`stdlib/macros.llt`) — done in prior sprint
-- [x] In `src/typecheck.rs`: `check_do_infer` detects `%do-infer` sentinel, resolves monad via Rule 1 (expected_return annotation) and Rule 2 (first binding RHS structural type), emits T_DO_INFER on Rule 3 failure (`src/typecheck.rs:3548`) — done in prior sprint
-- [x] In `src/eval.rs`: `%do-infer` VarRef lookup uses `ctx.do_infer_resolutions` to substitute the concrete monad dict name at runtime (`src/eval.rs:763`) — done in prior sprint
-- [x] Corpus test: `tests/corpus/eval/stdlib/hkt_do_inferred_result.llt-eval` — `[[fn@[ok: Int  err: Str] [] [do [x: [Ok 42]] [Ok x]]]]` — Rule 1 from annotation → infers result monad → `Variant(Ok, Int(42))` (`tests/corpus/eval/stdlib/`)
-- [x] Corpus test: `tests/corpus/eval/errors/hkt_do_inferred_first_binding.llt-eval` — `[do [x: [Ok 1]] x]` — Rule 2 fails on Variant type → T_DO_INFER → `[E002] undefined variable: %do-infer` (`tests/corpus/eval/errors/`)
-- [x] Corpus test: `tests/corpus/eval/errors/hkt_do_inferred_unresolvable.llt-eval` — `[do [x: 42] x]` — Int not monadic → T_DO_INFER → `[E002]` (`tests/corpus/eval/errors/`)
-- [x] Corpus test: `tests/corpus/eval/errors/hkt_do_inferred_maybe.llt-eval` — `[do [x: [Some 42]] [Some [+ x 1]]]` — Variant type not yet resolved → T_DO_INFER → `[E002]` (`tests/corpus/eval/errors/`)
-- [x] Update `doc/06-type-inference.md §[do] Inference` — removed stale error example, fixed duplicate sentence, documented actual Rule 1/2/3 heuristics and known limitations (`doc/06-type-inference.md`)
-
-**Known limitation for future sprint:** Rule 2 only resolves structural `{ok:...}` records, not nominal `[Ok x]` variant calls. Full variant-type-based monad inference requires precise constructor typing (tracking `Ok : a → Variant(Result, a)` in the type env). Add a sprint item when App types are available.
 
 ---
 

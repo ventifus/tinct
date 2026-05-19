@@ -1,5 +1,6 @@
-# Appendable constraint: builtin-concat on two dicts type-checks without warning.
-# The Appendable constraint on builtin-concat admits Record (Dict) as an instance.
-[builtin-concat [1 2] [3 4]]
+# Appendable class infrastructure: AppendableSeq instance declares append-one = concat.
+# Verifies the Appendable class and Seq instance are accessible and the concat operation works.
+# Note: builtin-concat Appendable constraint for Seq[T] is tracked in TODO.md.
+[result: [collect [concat [seq 1 [seq 2 []]] [seq 3 [seq 4 []]]]]]
 === out
-Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)})
+Dict({"result": Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)})})

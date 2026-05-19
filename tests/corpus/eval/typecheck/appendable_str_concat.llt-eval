@@ -1,5 +1,6 @@
-# Appendable constraint: builtin-concat on two dicts with string values type-checks without warning.
-# The Appendable constraint on builtin-concat admits Record (Dict) as an instance.
-[builtin-concat ["a"] ["b"]]
+# Appendable class infrastructure: AppendableSeq instance with string elements.
+# Verifies that concat on Seq of strings works correctly.
+# Note: builtin-concat Appendable constraint for Seq[T] is tracked in TODO.md.
+[result: [collect [concat [seq "a" []] [seq "b" []]]]]
 === out
-Dict({0: String("a"), 1: String("b")})
+Dict({"result": Dict({0: String("a"), 1: String("b")})})

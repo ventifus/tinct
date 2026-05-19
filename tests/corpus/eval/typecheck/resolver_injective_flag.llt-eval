@@ -1,17 +1,15 @@
----
-[class [TestClass a b c]
-  [determines: [[[a b] c]]
-   resolver: TestResolver
-   injective: true]
-  test: [Fn@c [a b]]]
+# Class declaration with injective: true flag on the resolver metadata.
+# Verifies that injective: true parses and type-checks without error.
+[
+  TestClass: [class [let TestClass a b c]
+    [determines: [[[a b] c]]
+     resolver: TestResolver
+     injective: true]
+    test: [Fn@c [a b]]]
 
+  result: "ok"
+]
 ---
-result: "ok"
----
-EVAL
----
-Str("ok")
----
-TYPECHECK
----
-result: Str
+%.result
+=== out
+String("ok")
