@@ -1635,6 +1635,8 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             alias_from_public(&env, "builtin-div", "/");
             alias_from_public(&env, "builtin-if", "if");
             alias_from_public(&env, "builtin-raise", "raise");
+            alias_from_public(&env, "builtin-deep-materialize", "deep-materialize");
+            alias_from_public(&env, "builtin-materialize", "materialize");
             // Type predicate aliases — stable names so prelude can export them without
             // creating circular self-references (fn?: fn? would be circular in letrec).
             alias_from_public(&env, "builtin-int?", "int?");
@@ -3407,7 +3409,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_primitive_int() {
+    fn deep_materialize_primitive_int() {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
@@ -3418,7 +3420,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_primitive_string() {
+    fn deep_materialize_primitive_string() {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
@@ -3429,7 +3431,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_primitive_float() {
+    fn deep_materialize_primitive_float() {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
@@ -3440,7 +3442,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_primitive_bool() {
+    fn deep_materialize_primitive_bool() {
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
@@ -3451,7 +3453,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_empty_dict() {
+    fn deep_materialize_empty_dict() {
         let dict = Value::Dict(IndexMap::new());
         let result = mat(builtin_eval(BuiltinArgs {
             args: &[thunk(dict)],
@@ -3466,7 +3468,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_flat_dict() {
+    fn deep_materialize_flat_dict() {
         let ctx = test_ctx();
         let dict = thunk_dict(
             {
@@ -3496,7 +3498,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_nested_dict() {
+    fn deep_materialize_nested_dict() {
         // Build [x: [y: 42]]
         let ctx = test_ctx();
         let inner_dict = thunk_dict(
@@ -3538,8 +3540,8 @@ mod tests {
     }
 
     #[test]
-    fn eval_with_unevaluated_thunk() {
-        // Create an unevaluated thunk wrapping a literal -- eval should force it
+    fn deep_materialize_with_unevaluated_thunk() {
+        // Create an unevaluated thunk wrapping a literal -- deep-materialize should force it
         let ctx = test_ctx();
         let expr = Rc::new(Spanned::new(Expr::Int(99), test_span(1, 1, 1, 5)));
         let env = Rc::new(RefCell::new(Environment::new()));
@@ -3575,7 +3577,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_arity_error() {
+    fn deep_materialize_arity_error() {
         let err = builtin_eval(BuiltinArgs {
             args: &[],
             named: no_named(),
@@ -6153,7 +6155,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_rejects_named_args() {
+    fn deep_materialize_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
         let err = builtin_eval(BuiltinArgs {
