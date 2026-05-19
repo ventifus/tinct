@@ -1275,10 +1275,20 @@ Note: Threads initial value x through each function in sequence. Each function r
 # Type Predicates
 # ============================================================================
 
-# int?, float?, str?, bool?, null?, dict?, fn?, seq? are Rust-native builtins.
-# They are NOT defined here — the native builtins take effect directly.
-# See src/builtins.rs for implementations. Each materializes its argument and
-# checks the Value variant. fn? returns true for both Function and Builtin.
+# Rust-native type predicate builtins — re-exported here so they are available
+# in user scope. Each materializes its argument and checks the Value variant.
+# fn? returns true for both Function and Builtin values.
+# Uses builtin-* aliases (stable names from [include %rust "core"]) to avoid
+# circular self-references in letrec dicts.
+# See src/builtins.rs for implementations.
+int?@[doc: "Check if value is Int"]: builtin-int?
+float?@[doc: "Check if value is Float"]: builtin-float?
+str?@[doc: "Check if value is String"]: builtin-str?
+bool?@[doc: "Check if value is Bool"]: builtin-bool?
+null?@[doc: "Check if value is null (empty dict [])"]: builtin-null?
+dict?@[doc: "Check if value is Dict"]: builtin-dict?
+fn?@[doc: "Check if value is a function (Function or Builtin)"]: builtin-fn?
+seq?@[doc: "Check if value is a Seq"]: builtin-seq?
 
 # num?: true if the argument is numeric (Int or Float).
 # Implemented in LLT as the disjunction of int? and float?.

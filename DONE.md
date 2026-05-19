@@ -643,6 +643,53 @@ Already lazy — no work needed. Kept for completeness.
 
 ## Tooling
 
+### unified-bindings-remove-old-syntax: Remove pre-unified-bindings param syntax from fn, type, and class
+
+`unified-bindings-migrate` (completed earlier) checked off "Remove old param-list parsing paths" prematurely. Old-form detection was removed here.
+
+- [x] Manually rewrite all non-stdlib `.llt` files using old param syntax to `[let ...]` form; known: `scripts/docgen.llt` (all fn params); audit `samples/` for others
+- [x] Convert `defmacro` to deferred push_expr_to_parent pattern (receive name as VarRef, then LetDecl params)
+- [x] Delete `parse_param_list` entirely (`src/parser.rs`) and all call sites
+- [x] Delete `push_expr_to_parent` `StackFrame::Fn` implied-call heuristic
+- [x] Delete `push_expr_to_parent` `StackFrame::TypeAlias` Cases 1 and 2 (Dict and implied-call detection)
+- [x] Delete `push_expr_to_parent` `StackFrame::ClassDecl` `Expr::VarRef`, `Expr::Dict`, and `Expr::Call { implied: true }` branches
+- [x] Verify `just test` passes after deletions
+- [x] Update DONE.md to note the `unified-bindings-migrate` checkbox was completed here
+
+### arithmetic-class-rename: Rename Add/Sub/Mul/Div → Addable/Subtractable/Multipliable/Divisible
+
+The spec consistently uses `-able` suffixes. The implementation was updated to match. Verified 2026-05-18 that `stdlib/prelude.llt`, `src/type_env.rs`, `src/builtins_math.rs`, and all corpus tests already use `Addable`, `Subtractable`, `Multipliable`, `Divisible`.
+
+- [x] Rename class declarations in `stdlib/prelude.llt`: `Add` → `Addable`, `Sub` → `Subtractable`, `Mul` → `Multipliable`, `Div` → `Divisible`
+- [x] Update all instance declarations in `stdlib/prelude.llt` to use new names
+- [x] Update constraint references in Rust source (`src/type_env.rs`, `src/builtins_math.rs`)
+- [x] Update constraint references in corpus tests (already use `Addable` throughout)
+- [x] Verify `just test` passes after rename
+
+### hkt-do-inferred-fix: Implement inferred [do] monad form (divergence fix)
+
+**Whatif:** `hkt-monads`
+**Spec chapters:** `doc/whatif/completed/hkt-monads.md §[do] Inference`
+
+- [x] In `stdlib/macros.llt` `do` macro: replace the inferred-form error branch with emission of `[%do-infer.bind steps...]` via `do-desugar-inferred`
+- [x] In `src/typecheck.rs`: `check_do_infer` detects `%do-infer` sentinel, resolves monad via Rule 1 (expected_return annotation) and Rule 2 (first binding RHS structural type), emits T_DO_INFER on Rule 3 failure
+- [x] In `src/eval.rs`: `%do-infer` VarRef lookup uses `ctx.do_infer_resolutions` to substitute the concrete monad dict name at runtime
+- [x] Corpus test: `tests/corpus/eval/stdlib/hkt_do_inferred_result.llt-eval`
+- [x] Corpus test: `tests/corpus/eval/errors/hkt_do_inferred_first_binding.llt-eval`
+- [x] Corpus test: `tests/corpus/eval/errors/hkt_do_inferred_unresolvable.llt-eval`
+- [x] Corpus test: `tests/corpus/eval/errors/hkt_do_inferred_maybe.llt-eval`
+- [x] Update `doc/06-type-inference.md §[do] Inference`
+
+**Known limitation:** Rule 2 only resolves structural `{ok:...}` records, not nominal `[Ok x]` variant calls. Full variant-type-based monad inference requires precise constructor typing.
+
+### corpus-fixes-misc: Fix small corpus test failures (2026-05-18)
+
+- [x] `appendable_seq_concat.llt-eval` and `appendable_str_concat.llt-eval`: changed from `builtin-concat [1 2]` to `concat [seq 1 []]` (Appendable constraint resolves via prelude wrapper's Unknown params)
+- [x] `fd_user_defined_propagates.llt-eval`: rewrote in standard format; removed `prim:add-int`/`prim:add-float`
+- [x] `resolver_injective_flag.llt-eval`: rewrote in standard format; fixed `Str` → `String`
+- [x] `tuple_annotation_closed_record.llt-eval`: `Str` → `String` in Tuple type annotation
+- [x] `fn_predicate_false_branch_non_callable.llt-eval`: exported `fn?`, `int?`, `str?`, `bool?`, `null?`, `dict?`, `float?`, `seq?` from prelude using `builtin-*?` stable aliases; added `builtin-*?` aliases to `src/builtins.rs` "core" module and to `src/type_env.rs`
+
 Execution order: REPL → LSP → tree-sitter. One commit per item.
 
 ### repl: REPL (`tinct repl`)

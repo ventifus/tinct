@@ -1635,6 +1635,16 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             alias_from_public(&env, "builtin-div", "/");
             alias_from_public(&env, "builtin-if", "if");
             alias_from_public(&env, "builtin-raise", "raise");
+            // Type predicate aliases — stable names so prelude can export them without
+            // creating circular self-references (fn?: fn? would be circular in letrec).
+            alias_from_public(&env, "builtin-int?", "int?");
+            alias_from_public(&env, "builtin-float?", "float?");
+            alias_from_public(&env, "builtin-str?", "str?");
+            alias_from_public(&env, "builtin-bool?", "bool?");
+            alias_from_public(&env, "builtin-null?", "null?");
+            alias_from_public(&env, "builtin-dict?", "dict?");
+            alias_from_public(&env, "builtin-fn?", "fn?");
+            alias_from_public(&env, "builtin-seq?", "seq?");
         }
         "string" => {
             insert(&env, "str");
