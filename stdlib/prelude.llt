@@ -737,6 +737,16 @@ Note: Returns default when any intermediate key is missing. Inherently materiali
             [get-in-or [get path.0 xs] [builtin-rest path] default]
             default]]]
 
+pick: [fn@[return: Dict  doc: """
+Return a sub-dict containing only the specified keys.
+
+Example: [pick [a: 1  b: 2  c: 3] ["a" "c"]] => [a: 1  c: 3]
+
+Note: Key order follows insertion order of xs, not the order of keys.
+Pipeline: data | [pick keys: ["k1" "k2"]]
+"""] [let xs@Dict keys@Dict]
+  [collect-kv [filter [fn [let kv] [contains? keys kv.key]] [each-kv xs]]]]
+
 # Check if a collection is empty.
 # Seq values are never empty (always have a head), so return false immediately.
 # Inherently materializing: depends on length which counts all entries.
@@ -1662,28 +1672,28 @@ Divisible@[doc: "Type class for division with FD (a, b) → c"]:
 # Arithmetic instances for Int/Float combinations
 
 [instance Addable
-  [let a@Int   b@Int   c@Int  ]: [+: [fn@Int   [let x@Int   y@Int  ] [builtin-add x y]]]
-  [let a@Int   b@Float c@Float]: [+: [fn@Float [let x@Int   y@Float] [builtin-add x y]]]
-  [let a@Float b@Int   c@Float]: [+: [fn@Float [let x@Float y@Int  ] [builtin-add x y]]]
-  [let a@Float b@Float c@Float]: [+: [fn@Float [let x@Float y@Float] [builtin-add x y]]]]
+  [let a@Int   b@Int   c]: [+: [fn@Int   [let x@Int   y@Int  ] [builtin-add x y]]]
+  [let a@Int   b@Float c]: [+: [fn@Float [let x@Int   y@Float] [builtin-add x y]]]
+  [let a@Float b@Int   c]: [+: [fn@Float [let x@Float y@Int  ] [builtin-add x y]]]
+  [let a@Float b@Float c]: [+: [fn@Float [let x@Float y@Float] [builtin-add x y]]]]
 
 [instance Subtractable
-  [let a@Int   b@Int   c@Int  ]: [-: [fn@Int   [let x@Int   y@Int  ] [builtin-sub x y]]]
-  [let a@Int   b@Float c@Float]: [-: [fn@Float [let x@Int   y@Float] [builtin-sub x y]]]
-  [let a@Float b@Int   c@Float]: [-: [fn@Float [let x@Float y@Int  ] [builtin-sub x y]]]
-  [let a@Float b@Float c@Float]: [-: [fn@Float [let x@Float y@Float] [builtin-sub x y]]]]
+  [let a@Int   b@Int   c]: [-: [fn@Int   [let x@Int   y@Int  ] [builtin-sub x y]]]
+  [let a@Int   b@Float c]: [-: [fn@Float [let x@Int   y@Float] [builtin-sub x y]]]
+  [let a@Float b@Int   c]: [-: [fn@Float [let x@Float y@Int  ] [builtin-sub x y]]]
+  [let a@Float b@Float c]: [-: [fn@Float [let x@Float y@Float] [builtin-sub x y]]]]
 
 [instance Multipliable
-  [let a@Int   b@Int   c@Int  ]: [*: [fn@Int   [let x@Int   y@Int  ] [builtin-mul x y]]]
-  [let a@Int   b@Float c@Float]: [*: [fn@Float [let x@Int   y@Float] [builtin-mul x y]]]
-  [let a@Float b@Int   c@Float]: [*: [fn@Float [let x@Float y@Int  ] [builtin-mul x y]]]
-  [let a@Float b@Float c@Float]: [*: [fn@Float [let x@Float y@Float] [builtin-mul x y]]]]
+  [let a@Int   b@Int   c]: [*: [fn@Int   [let x@Int   y@Int  ] [builtin-mul x y]]]
+  [let a@Int   b@Float c]: [*: [fn@Float [let x@Int   y@Float] [builtin-mul x y]]]
+  [let a@Float b@Int   c]: [*: [fn@Float [let x@Float y@Int  ] [builtin-mul x y]]]
+  [let a@Float b@Float c]: [*: [fn@Float [let x@Float y@Float] [builtin-mul x y]]]]
 
 [instance Divisible
-  [let a@Int   b@Int   c@Int  ]: [/: [fn@Int   [let x@Int   y@Int  ] [builtin-div x y]]]
-  [let a@Int   b@Float c@Float]: [/: [fn@Float [let x@Int   y@Float] [builtin-div x y]]]
-  [let a@Float b@Int   c@Float]: [/: [fn@Float [let x@Float y@Int  ] [builtin-div x y]]]
-  [let a@Float b@Float c@Float]: [/: [fn@Float [let x@Float y@Float] [builtin-div x y]]]]
+  [let a@Int   b@Int   c]: [/: [fn@Int   [let x@Int   y@Int  ] [builtin-div x y]]]
+  [let a@Int   b@Float c]: [/: [fn@Float [let x@Int   y@Float] [builtin-div x y]]]
+  [let a@Float b@Int   c]: [/: [fn@Float [let x@Float y@Int  ] [builtin-div x y]]]
+  [let a@Float b@Float c]: [/: [fn@Float [let x@Float y@Float] [builtin-div x y]]]]
 
 # ============================================================================
 # Type Class Declarations: Equatable
