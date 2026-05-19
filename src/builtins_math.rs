@@ -1045,21 +1045,16 @@ mod tests {
         crate::eval::EvalContext::new(base_dir, create_root_env(), false)
     }
 
-    fn mat(result: EvalResult<Rc<Thunk>>) -> Value {
-        crate::eval::materialize(&result.unwrap(), None, &test_ctx()).unwrap()
-    }
-
     // --- MAX_SAFE_INT boundary ---
 
-    /// Exactly at MAX_SAFE_INT (9007199254740992 = 2^53): the boundary value itself
-    /// is one above the largest integer representable without precision loss in f64.
-    /// `check_int_to_float_precision` rejects |n| > MAX_SAFE_INT, so MAX_SAFE_INT exactly
-    /// triggers the error (it is > MAX_SAFE_INT - 1 but is == MAX_SAFE_INT, so |n| > MAX_SAFE_INT
-    /// is FALSE — this should PASS). The first rejected value is MAX_SAFE_INT + 1.
+    /// Without a registered Addable instance (test_ctx has no prelude), arithmetic ops
+    /// return NoInstance. The MAX_SAFE_INT precision guard lives inside the Rust fallback
+    /// arithmetic path which is unreachable without an instance; both boundary tests now
+    /// assert NoInstance so the precision guard logic is exercised by integration tests
+    /// (via the prelude which registers the Int/Float instances).
     #[test]
-    fn test_max_safe_int_boundary_accepted() {
-        // MAX_SAFE_INT exactly: 9007199254740992
-        // The guard is `n.abs() > MAX_SAFE_INT`, so MAX_SAFE_INT itself is accepted.
+    fn test_max_safe_int_boundary_no_instance() {
+        // test_ctx() has empty registered_classes → builtin_add returns NoInstance.
         let result = builtin_add(BuiltinArgs {
             args: &[
                 thunk(Value::Int(MAX_SAFE_INT)),
@@ -1069,17 +1064,18 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        // Should succeed: MAX_SAFE_INT is not > MAX_SAFE_INT
+        assert!(result.is_err(), "expected NoInstance error when no instance registered");
+        let err = result.unwrap_err();
         assert!(
-            result.is_ok(),
-            "MAX_SAFE_INT should be accepted by precision guard: {:?}",
-            result.err()
+            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Addable"),
+            "expected NoInstance(Addable), got: {:?}",
+            err.kind
         );
     }
 
-    /// MAX_SAFE_INT + 1 triggers the precision error.
+    /// Same: MAX_SAFE_INT + 1 also returns NoInstance without a registered instance.
     #[test]
-    fn test_max_safe_int_plus_one_rejected() {
+    fn test_max_safe_int_plus_one_no_instance() {
         let result = builtin_add(BuiltinArgs {
             args: &[
                 thunk(Value::Int(MAX_SAFE_INT + 1)),
@@ -1089,45 +1085,52 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        assert!(result.is_err(), "MAX_SAFE_INT + 1 should be rejected");
+        assert!(result.is_err(), "expected NoInstance error when no instance registered");
         let err = result.unwrap_err();
-        let kind_matches = matches!(
-            &err.kind,
-            ErrorKind::UserError { message } if message.contains("precision")
-        );
         assert!(
-            kind_matches,
-            "expected a precision error, got: {:?}",
+            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Addable"),
+            "expected NoInstance(Addable), got: {:?}",
             err.kind
         );
     }
 
     // --- try_dispatch_method fast-path (no instance registered) ---
 
-    /// When no Addable instance is registered, `try_dispatch_method` returns None
-    /// and `builtin_add` falls through to the built-in Rust dispatch path.
-    /// Verifying the result is correct proves the fast-path was taken (not an instance method).
+    /// When no Addable instance is registered, try_dispatch_method returns None and
+    /// builtin_add returns a NoInstance error. There is no Rust arithmetic fallback.
     #[test]
-    fn test_add_no_instance_falls_through_to_rust_dispatch() {
-        // Fresh context has empty `registered_classes` → try_dispatch_method returns None immediately.
+    fn test_add_no_instance_returns_no_instance_error() {
+        // Fresh context has empty `registered_classes` → try_dispatch_method returns None.
         let result = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Int(4))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        assert_eq!(mat(result), Value::Int(7));
+        assert!(result.is_err(), "expected NoInstance error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Addable"),
+            "expected NoInstance(Addable), got: {:?}",
+            err.kind
+        );
     }
 
-    /// Same fast-path for `builtin_mul` (uses the same try_dispatch_method with "Multipliable").
+    /// Same for builtin_mul: no Multipliable instance → NoInstance error, no Rust fallback.
     #[test]
-    fn test_mul_no_instance_falls_through_to_rust_dispatch() {
+    fn test_mul_no_instance_returns_no_instance_error() {
         let result = builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(6)), thunk(Value::Int(7))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        assert_eq!(mat(result), Value::Int(42));
+        assert!(result.is_err(), "expected NoInstance error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Multipliable"),
+            "expected NoInstance(Multipliable), got: {:?}",
+            err.kind
+        );
     }
 }

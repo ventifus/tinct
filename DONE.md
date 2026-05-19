@@ -2629,6 +2629,7 @@ Research questions:
 
 ### `error-patterns`: Research consistent error handling conventions for tinct stdlib
 
+**Whatif:** `error-patterns`
 There is currently no consistent convention for how functions signal failure. Observed patterns in the wild:
 
 - **`try`/`match` Result dicts**: `[try [fn [] ...]]` → `{ok: val}` or `{err: msg}`, caller dispatches with `match`. Used in `versions.llt`, `has?-impl` in prelude.
@@ -2674,6 +2675,7 @@ See `doc/whatif/boolean-algebraic-subtyping.md` and `doc/07-type-extensions.md �
 
 ### `result-nominal`: Nominal Result Type and Stdlib Retrofit
 
+**Whatif:** `error-patterns`
 See `doc/whatif/error-patterns.md` and `doc/07-type-extensions.md §Nominal Result Type`. **Spec chapters:** `doc/07-type-extensions.md §Nominal Result Type`.
 
 - [x] Update `builtin_try` to return nominal `Value::Variant { tag: "Ok"/"Err" }` (`src/builtins_meta.rs`)
@@ -5393,6 +5395,8 @@ Accepted from `doc/whatif/lib-supplemental.md` (2026-05-07).
 
 ### `handle-caps`: Capability-Typed Handles & Streaming I/O
 
+**Whatif:** `dir-cap-permissions`
+
 **Spec chapters:** `doc/whatif/lib-supplemental.md` §Streaming File I/O. **Depends on:** `string-view`.
 
 - [x] Decide `Handle` capability representation — `HashMap<String, Value>`: cap name → associated data. Boolean caps (Readable, Writable, etc.) → `Value::Null`; protocol caps (Tls, Quic, user-defined) → `Value::Dict` carrying handshake/session metadata. User-extensible: any Connector can attach arbitrary data to custom cap names. `tls-peer-cert h` reads `handle.caps.get("Tls")` directly, no special-casing needed.
@@ -5503,6 +5507,7 @@ Only `stdlib/prelude.llt` should be loaded at startup. `stdlib/strings.llt`, `st
 
 ### `cap-remove-ambient`: Remove `dir-cap` and `net-cap` user-callable builtins
 
+**Whatif:** `dir-cap-permissions`
 Every cap must narrow an existing cap. `dir-cap` and `net-cap` create authority from ambient — they are removed entirely. All filesystem caps come from `pwd` (injected CWD), `libdir` (injected stdlib dir), or `--cap-fs NAME=PATH` CLI flags. All network caps come from `--cap-net NAME=ENTRY` CLI flags. See Known Bug `cap-ambient`.
 
 - [x] Remove `builtin_dir_cap` registration from `standard_builtins()` and delete its implementation (`src/builtins.rs`, `src/builtins_io.rs`)
@@ -5933,6 +5938,7 @@ See `src/main.rs` clock cap injection blocks (~line 1192).
 
 ### cap-simplify: Remove --allow-path/--allow-host; auto-trigger Landlock from --cap-fs
 
+**Whatif:** `dir-cap-permissions`
 `include` requires a DirCap (cap-std RESOLVE_BENEATH already confines it); `--allow-path` is a
 redundant application-level re-check. `--allow-host` duplicates `--cap-net` allowlist enforcement.
 Landlock should activate automatically whenever `--cap-fs` entries are present.
@@ -7039,6 +7045,7 @@ The output side is already correct (`deep_materialize` at `expand.rs:886`). Only
 
 ### misc-gaps: Miscellaneous small gaps across the codebase
 
+**Whatif:** `dir-cap-permissions`
 Accepted 2026-05-11. See `doc/whatif/multi-line-strings.md` (triple-quote lexer). Genuine deferred items from the `http-sessions` and `connector-tls` sprints. Two correctness/quality gaps in the evaluator noted in source comments. Extends `--cap-fs` and `--cap-file` with fine-grained read/write/list permissions.
 
 - [x] Add `TripleQuotedString(String)` and `TripleInterpolatedString(Vec<InterpolatedPart>)` token types to `src/lexer.rs`: detect `"""` at the start of a string context, consume content until the closing `"""`, emit accordingly; then in `src/parser.rs` desugar `TripleQuotedString(s)` → `[unindent s]` and `TripleInterpolatedString(parts)` → `[unindent i"..."]` directly in the parser (not as a stdlib macro, since macros cannot intercept token patterns) (`src/lexer.rs`, `src/parser.rs`)

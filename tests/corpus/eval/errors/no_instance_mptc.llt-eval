@@ -1,0 +1,3 @@
+[+ "hello" "world"]
+=== error
+[E013] no instance for Addable (String, String)

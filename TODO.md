@@ -117,6 +117,61 @@ DONE.md `hkt-do-macro-inferred` has all tasks `[x]` but the inferred form is not
 
 ## Primitive Privacy
 
+### include-decomp-primitives: Add eight new Rust primitives and delete include infrastructure
+
+**Whatif:** `include-decomposition`
+**Spec chapters:** `doc/whatif/include-decomposition.md §Rust Primitives`, `§What Would Change`
+**Depends on:** `builtin-privacy-complete`, `materialize-rename`
+
+- [ ] Register `load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` in `standard_builtins()` (`src/builtins.rs`, `src/builtins_meta.rs`)
+- [ ] Implement `load`: parse source `String` to file AST dict (same format as `ast_to_dict`); `name:` named arg provides provenance hint (`src/builtins_meta.rs`)
+- [ ] Implement `expand`: run macro expansion on a file AST dict, return expanded dict (`src/expand.rs`, `src/builtins_meta.rs`)
+- [ ] Implement `eval`: evaluate `[ExprAST]` in runtime stage env (prelude env + `%:` + `env:` merge); returns thunk; sequential let\* scoping from `eval_document` internalized (`src/eval.rs`, `src/builtins_meta.rs`)
+- [ ] Implement `eval-types`: evaluate `[ExprAST]` in `type_stage_env`; no `%` input; called by type checker for `--- stage: type` documents (`src/builtins_meta.rs`, `src/type_normalize.rs`)
+- [ ] Implement `blake3`: compute blake3 hash of a `String` (`src/builtins_meta.rs`)
+- [ ] Implement `cap-identity`: return `"dev:ino"` string from `fstat` on the DirCap's O_DIRECTORY fd (`src/builtins_meta.rs`)
+- [ ] Implement `include-cache-get`/`include-cache-put`: read/write `EvalState::include_cache: HashMap<String, IncludeCacheEntry>`; cache keyed by `blake3(cap-identity + "|" + source)` (`src/eval.rs`, `src/builtins_meta.rs`)
+- [ ] Add `EvalState::include_cache: HashMap<String, IncludeCacheEntry>` replacing the old inode-keyed cache; add Rust enum `enum IncludeCacheEntry { Missing, Pending, Cached(Rc<Thunk>) }` (`src/eval.rs`)
+- [ ] Delete `builtin_include` entirely (`src/builtins_meta.rs`) — all 350+ lines
+- [ ] Delete `EvalState::include_guard: HashSet<(u64, u64)>` and old `EvalState::include_cache` (`src/eval.rs`)
+- [ ] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`)
+- [ ] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`)
+- [ ] Delete `eval_file_with_input`, `eval_document`, `run_eval` from `src/eval_pipeline.rs`; delete file entirely once empty
+- [ ] Delete `materialize` call on accumulator in `builtin_reduce` (`src/builtins_seq_reduce.rs:80-81`) — pass thunk directly as next acc
+- [ ] Delete shadow guard from `expand` (`src/expand.rs:174`)
+- [ ] Add `document_to_dict` emission of `stage: [Runtime] | [Type]` nominal variant (`src/ast_dict.rs`)
+- [ ] Update `src/main.rs` to call tinct `cli-pipeline` function directly after prelude loads; construct `files_thunk` as positional Dict from `Vec<String>` file paths; pass `%pwd` DirCap as third argument
+- [ ] Tests: corpus tests for `load`, `expand`, `eval`, `blake3`, `cap-identity`, `include-cache-*` (`tests/corpus/eval/builtins/`)
+- [ ] Verify `just test` passes
+
+### include-decomp-prelude: Add pipeline functions to prelude.llt
+
+**Whatif:** `include-decomposition`
+**Spec chapters:** `doc/whatif/include-decomposition.md §Tinct Implementation`
+**Depends on:** `include-decomp-primitives`
+
+- [ ] Change `%rust` from `Value::RustRegistry` to a flat `Value::Dict` of all Rust primitives; seed at startup (`src/builtins.rs`, `src/value.rs`)
+- [ ] Rewrite prelude.llt opening: replace `[include %rust "core"]` etc. with single `%rust` expression that scope-promotes all primitives (`stdlib/prelude.llt`)
+- [ ] Add `eval-document-runtime` to prelude public dict (`stdlib/prelude.llt`)
+- [ ] Add `eval-document-pipeline` to prelude public dict (`stdlib/prelude.llt`)
+- [ ] Add `eval-file` to prelude public dict (`stdlib/prelude.llt`)
+- [ ] Add `include-cache-success`, `include-cache-failure`, `include-evaluate-and-cache` to prelude private dict (`stdlib/prelude.llt`)
+- [ ] Add `include` to prelude public dict (replaces `builtin_include` as the user-facing include function) (`stdlib/prelude.llt`)
+- [ ] Add `cli-pipeline` to prelude public dict (`stdlib/prelude.llt`)
+- [ ] Verify `IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]` is in prelude type namespace (`stdlib/prelude.llt`)
+- [ ] Update formatter and docgen to use `load` directly instead of internal `ast_to_dict` (`stdlib/formatter/`, `scripts/docgen.llt`)
+- [ ] Tests: corpus test verifying `[include %include-dir "sibling.llt"]` works within a multi-file include chain (`tests/corpus/eval/`)
+- [ ] Tests: corpus test for circular include detection via `[Pending]` cache state (`tests/corpus/eval/errors/`)
+- [ ] Tests: corpus test for `cli-pipeline` threading `%` across files (`tests/corpus/eval/`)
+- [ ] Verify `just test` passes and `just docgen` runs successfully
+
+### include-decomposition-review: Post-implementation review
+
+**Whatif:** `include-decomposition`
+**Depends on:** `include-decomp-prelude`
+
+- [ ] Run `/review-whatif include-decomposition` — verify all sprints complete, implementation matches spec, `doc/08-evaluation.md` and `doc/09-documents.md` updated to describe self-hosted pipeline in present tense, no stubs or de-scoped features
+
 ### builtin-privacy-complete: Activate the builtin-privacy isolation switch
 
 **Whatif:** `builtin-privacy`
@@ -143,6 +198,73 @@ Note: `builtin-*` aliases remain available to prelude via `[include %rust "core"
 ---
 
 ## Codebase Health
+
+### cap-std-pervasive: Replace ambient std::fs calls and constrain open_ambient_dir usage
+
+**Security audit 2026-05-18** found 5 `std::fs` violations in production code paths (bypassing cap_std), and several `open_ambient_dir` usages in LSP code that open `/`, `/tmp`, `/var/tmp` as fallbacks — defeating the RESOLVE_BENEATH confinement model. The LSP `no_fs=true` guard prevents eval-time `$include` execution but not the filesystem reads that use the ambient Dir itself.
+
+**`open_ambient_dir` policy:** `open_ambient_dir` is a security boundary — it acquires ambient OS authority. Every production call site must:
+1. Be in the CLI bootstrap (pre-capability initialization — `src/main.rs` only), OR
+2. Open a specific operator-controlled path (libdir, user-specified `--cap-fs` paths, script's own directory), AND
+3. Have a comment: `// AMBIENT-OK: <reason>` explaining why ambient authority is justified here.
+
+Test code (`#[cfg(test)]`) is exempt from this policy.
+
+**Fix 1 (HIGH) — Remove `/` and `/tmp` fallbacks from LSP `open_ambient_dir` chains**
+
+`src/lsp/document.rs:561-593` opens `.`, then `temp_dir`, then `/`, then `/tmp`, then `/var/tmp` as a fallback chain. Opening `/` as `base_dir` makes RESOLVE_BENEATH a no-op — everything on the filesystem is reachable. Fix: if `.` and the document's own directory fail, return an LSP error response rather than falling back to root.
+
+- [ ] In `src/lsp/document.rs` `DocumentState::new()` (lines 561-593): remove the `/`, `/tmp`, `/var/tmp` fallback chain; if `Dir::open_ambient_dir(".")` fails, log the error and return `Err(...)` from `DocumentState::new()`; callers in `server.rs` already handle `Err` by returning an error LSP response (`src/lsp/document.rs:561-593`, `src/lsp/server.rs`)
+- [ ] In `src/lsp/document.rs` `evaluate_document()` (lines 633-670): same pattern — remove `/` fallback; if document's dir and `.` both fail, fall back to `base_eval_ctx.config.base_dir.open_dir(".")` only (already attempted at line 638); if that fails, return `Err(...)` instead of opening root (`src/lsp/document.rs:633-670`)
+
+**Fix 2 (MEDIUM) — Replace `std::fs` with cap_std in `imports.rs` `resolve_includes()`**
+
+`src/imports.rs:701,710` use `std::fs::metadata` and `std::fs::read_to_string` after a software `starts_with` guard. Replace with cap_std I/O so RESOLVE_BENEATH enforces confinement at the kernel level instead of a path string check.
+
+- [ ] Add `base_cap_dir: Option<&cap_std::fs::Dir>` parameter to `resolve_includes()` in `src/imports.rs`; when `Some(dir)`, use `dir.metadata(relative_path)?` and `dir.open(relative_path)?` → `read_to_string()` instead of the `std::fs` calls at lines 701 and 710; derive `relative_path` as `normalized.strip_prefix(base_dir).unwrap_or(&normalized)` (`src/imports.rs:680-720`)
+- [ ] Update all callers of `resolve_includes()` to pass the appropriate `cap_std::fs::Dir` reference (from `EvalContext.config.base_dir`) (`src/imports.rs`, `src/lib.rs`, `src/main.rs`)
+
+**Fix 3 (MEDIUM) — Replace `std::fs` with cap_std in LSP `index_file()` and `load_doc_from_uri()`**
+
+- [ ] `src/lsp/document.rs:407` — `index_file()` reads files at `$include`-derived URIs using `std::fs::read_to_string`; pass a `cap_std::fs::Dir` confined to the document's parent directory and use `dir.open(filename)?.read_to_string()` with relative path only; reject absolute paths with an LSP diagnostic ("absolute $include path not permitted") (`src/lsp/document.rs:400-415`)
+- [ ] `src/lsp/document.rs:802,812` — `load_doc_from_uri()` uses `std::fs::metadata` and `std::fs::read_to_string`; accept a `cap_std::fs::Dir` scoped to the workspace root and use cap_std I/O; reject URIs that resolve outside the workspace with a log warning and empty result (`src/lsp/document.rs:795-820`)
+
+**Fix 4 (CRITICAL) — `--no-fs` does not suppress `%pwd`, `%libdir`, or `--cap-fs` injection**
+
+The `--no-fs` flag is documented as disabling all filesystem access, but the skeptic-verified audit found three gaps where DirCap values are injected into user scope regardless:
+
+- `src/main.rs:1123`: `%pwd` injection is gated on `!no_pwd` only — `--no-fs` alone does not suppress it. User code with `[open %pwd "file.txt" Readable]` can read any file in CWD even with `--no-fs`.
+- `src/main.rs:1196`: `%libdir` injection is gated on `!no_libdir` only — user code can `[write %libdir "injected.llt" "evil"]` corrupting the stdlib.
+- `src/main.rs:1224`: The `--cap-fs` injection loop has NO `no_fs` guard at all — operator-specified caps are injected unconditionally.
+
+- [ ] `src/main.rs:1123` — change `if !no_pwd {` to `if !no_pwd && !no_fs {` for `%pwd` injection (`src/main.rs:1123`)
+- [ ] `src/main.rs:1196` — change `if !no_libdir {` and the matching libdir path resolution to `if !no_libdir && !no_fs {` for `%libdir` injection (`src/main.rs:1196`)
+- [ ] `src/main.rs:1224` — wrap the entire `--cap-fs` injection block in `if !no_fs { ... }` (`src/main.rs:1224-1337`)
+- [ ] Add corpus/CLI tests: `tinct run --no-fs` → `%pwd` is undefined; `tinct run --no-fs --cap-fs d=.` → `%d` is undefined; confirm `$include` is also blocked (`tests/corpus/`, `tests/cli_tests.rs`)
+
+**Fix 5 — `expand.rs:363` opens CWD ambiently on every user eval pipeline**
+
+Skeptic verified: `expand_macros` is called for ALL user code, not just prelude loading. Every eval pipeline invocation opens CWD ambiently via `open_ambient_dir(".")`. The user's `base_dir` (from the CLI-opened DirCap) should be passed through to `expand_macros` instead of re-opening CWD each time.
+
+- [ ] Add `base_dir: &cap_std::fs::Dir` parameter to `expand_macros()` in `src/expand.rs`; replace `open_ambient_dir(".")` at line 363 with `base_dir.open_dir(".")?` to clone the already-open Dir handle rather than re-acquiring ambient authority (`src/expand.rs:341-370`)
+- [ ] Update all callers of `expand_macros` in `src/main.rs`, `src/lib.rs`, `src/lsp/document.rs` to pass their existing `base_dir` rather than letting `expand_macros` open its own (`src/main.rs`, `src/lib.rs`, `src/lsp/document.rs`)
+
+**Fix 6 — `load_doc_from_uri()` base_dir is CWD, not the document's directory**
+
+Skeptic verified: `src/lsp/document.rs:816` opens `.` as the eval context base_dir even though the document being loaded lives at `path.parent()`. The base_dir mismatch means `$include` within that document would resolve against CWD, not the document's actual location.
+
+- [ ] In `load_doc_from_uri()`, derive `base_dir` from `path.parent()` rather than `"."`: `cap_std::fs::Dir::open_ambient_dir(path.parent().unwrap_or(Path::new(".")), ...)` (`src/lsp/document.rs:816`)
+
+**Fix 7 — Eliminate open_ambient_dir from all files except src/main.rs and src/repl.rs**
+
+Comments are easy to abuse — structural enforcement is the correct approach. After fixes 1-6, every remaining `open_ambient_dir` call outside the two bootstrap files (`src/main.rs`, `src/repl.rs`) should be replaced with a `&cap_std::fs::Dir` parameter passed down from the bootstrap. The goal: `open_ambient_dir` is only callable in the files that own the capability initialization boundary.
+
+- [ ] `src/builtins_meta.rs:1449` — replace `open_ambient_dir(&libdir_path)` with a `libdir: &cap_std::fs::Dir` parameter threaded from the caller; the libdir Dir is already open in `src/main.rs:1205` and `src/lib.rs:239` — pass it down (`src/builtins_meta.rs`, `src/main.rs`, `src/lib.rs`)
+- [ ] `src/builtins.rs:2084,2153` — same: replace `open_ambient_dir(".")` in `create_stdlib_env_inner()` and `create_type_stage_env()` with a `base_dir: &cap_std::fs::Dir` parameter; callers already hold this dir (`src/builtins.rs`)
+- [ ] `src/formatter.rs:50` — replace `open_ambient_dir(&base_dir_path)` with a `base_dir: &cap_std::fs::Dir` parameter; the formatter is always called from the CLI which already has the dir open (`src/formatter.rs`)
+- [ ] `src/lib.rs:223,239,250,328,343` — `lib.rs` is a public API boundary so it must open dirs; these are acceptable BUT the opens should be done once and stored in a struct rather than reopened per call; design a `TinctRuntime` struct that holds the opened dirs and expose the eval functions as methods (`src/lib.rs`) — this is a refactor, treat as a follow-up
+- [ ] Add CI check: `rg 'open_ambient_dir' src/ --glob '!src/main.rs' --glob '!src/repl.rs'` exits non-zero if any match is found outside test code; add this to the justfile or CI configuration; test-only calls inside `#[cfg(test)]` are exempt (add `--passthrough '#\[cfg\(test\)\]'` or similar filter) (`justfile` or `.github/`)
+- [ ] Confirm `just test` passes after all changes (`tests/`)
 
 ### materialize-rename: Rename `eval`→`deep-materialize` and `force`→`materialize`
 

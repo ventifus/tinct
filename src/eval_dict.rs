@@ -23,7 +23,6 @@ use super::{eagerly_register_constructors, eval, materialize, EvalContext};
 /// to pre-size the FlatEnv slot vector for O(1) VarRef lookup.
 ///
 /// Matches the static key logic in `resolve.rs::Resolver::walk_expr` (Dict arm).
-#[allow(dead_code)]
 fn count_static_keys(entries: &[Spanned<Entry>]) -> usize {
     entries
         .iter()

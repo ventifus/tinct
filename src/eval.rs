@@ -187,14 +187,30 @@ pub struct RuntimeClassDecl {
     /// Default method implementations: method_name -> thunk
     /// These are wrapped as thunks to preserve laziness.
     pub method_defaults: IndexMap<String, Rc<Thunk>>,
+    /// Number of determining-position type parameters for MPTC dispatch.
+    /// For single-param classes (Equatable, Comparable): 1.
+    /// For arithmetic classes (Addable a b c with FD (a,b)→c): 2.
+    /// Used to truncate instance_registry keys so they match try_dispatch_method lookups.
+    pub num_determining: usize,
 }
 
 /// Extract type names from an instance pattern for MPTC dispatch.
-/// For `[instance Addable [x@Int y@Float] ...]`, returns `vec!["Int", "Float"]`.
+/// For `[instance Addable [x@Int y@Float z@Int] ...]` with num_determining=2,
+/// returns only `vec!["Int", "Float"]` (the determining-position tags).
+///
+/// The `num_determining` parameter is the number of determining-position type
+/// parameters for this class (from `RuntimeClassDecl::num_determining`). Only
+/// the first `num_determining` annotated bindings are included in the key so
+/// that `instance_registry` keys match the keys built by `try_dispatch_method`.
 /// Falls back to empty vec if pattern is malformed (will cause dispatch to fail).
-fn extract_instance_type_tags(pattern_expr: &Spanned<Expr>) -> Vec<String> {
-    match &pattern_expr.node {
-        Expr::PatternDecl { bindings } => bindings
+///
+/// Handles both `PatternDecl` (from `[pattern ...]` syntax) and `LetDecl` (from
+/// `[let ...]` syntax). The prelude uses `[let a@Int b@Int c]` for arithmetic
+/// instances, where the third bare binding (the determined param) is skipped by
+/// `filter_map` and only the first `num_determining` annotated positions are kept.
+fn extract_instance_type_tags(pattern_expr: &Spanned<Expr>, num_determining: usize) -> Vec<String> {
+    let extract_tags = |bindings: &[Spanned<Expr>]| {
+        bindings
             .iter()
             .filter_map(|binding| match &binding.node {
                 Expr::Annotated { annotation, .. } => match &annotation.node {
@@ -205,10 +221,16 @@ fn extract_instance_type_tags(pattern_expr: &Spanned<Expr>) -> Vec<String> {
                     }
                     Annotation::PropertyDict(_) => None, // Skip property dict annotations
                 },
-                _ => None, // Skip bare VarRef bindings (no type info)
+                _ => None, // Skip bare VarRef bindings (no type info, e.g. the determined param)
             })
-            .collect(),
-        _ => Vec::new(), // Malformed pattern
+            .take(num_determining)
+            .collect()
+    };
+    match &pattern_expr.node {
+        Expr::PatternDecl { bindings } => extract_tags(bindings),
+        // LetDecl is the form used by prelude arithmetic instances: [let a@Int b@Int c]
+        Expr::LetDecl { bindings } => extract_tags(bindings),
+        _ => Vec::new(), // Malformed pattern — dispatch will miss
     }
 }
 
@@ -252,6 +274,13 @@ pub struct EvalContext {
     /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
     /// Populated by typecheck_file via set_boundary_guards(), consumed during eval().
     pub boundary_guards: RefCell<HashMap<Span, Type>>,
+    /// Monad resolutions for inferred [do] forms: %do-infer VarRef span → monad variable name.
+    /// The type checker records the resolved monad name here (keyed by the span of the
+    /// `%do-infer` VarRef in the desugared bind chain). At eval time, when `VarRef("%do-infer")`
+    /// is evaluated, the evaluator looks up this map by span and returns the monad dict value.
+    /// Parallel to boundary_guards: type-checker-to-evaluator communication via span-keyed side channel.
+    /// Populated by typecheck_file via set_do_infer_resolutions(), consumed during eval().
+    pub do_infer_resolutions: RefCell<HashMap<Span, String>>,
 }
 
 impl EvalContext {
@@ -301,6 +330,7 @@ impl EvalContext {
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(HashMap::new()),
+            do_infer_resolutions: RefCell::new(HashMap::new()),
         })
     }
 
@@ -339,6 +369,7 @@ impl EvalContext {
             env_allowed,
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(HashMap::new()),
+            do_infer_resolutions: RefCell::new(HashMap::new()),
         })
     }
 
@@ -386,6 +417,7 @@ impl EvalContext {
             env_allowed: None,
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(HashMap::new()),
+            do_infer_resolutions: RefCell::new(HashMap::new()),
         })
     }
 
@@ -417,6 +449,7 @@ impl EvalContext {
             env_allowed: self.env_allowed.clone(),
             blame_map: RefCell::new(self.blame_map.borrow().clone()),
             boundary_guards: RefCell::new(self.boundary_guards.borrow().clone()),
+            do_infer_resolutions: RefCell::new(self.do_infer_resolutions.borrow().clone()),
         })
     }
 
@@ -456,6 +489,14 @@ impl EvalContext {
     /// Called after type checking to wire gradual typing runtime checks.
     pub fn set_boundary_guards(&self, guards: HashMap<Span, Type>) {
         *self.boundary_guards.borrow_mut() = guards;
+    }
+
+    /// Set do-infer resolutions from type inference.
+    /// Called after type checking to wire inferred [do] monad resolution to the evaluator.
+    /// The map keys are the spans of `%do-infer` VarRef nodes; values are the monad dict
+    /// variable names (e.g., "result") resolved by the type checker.
+    pub fn set_do_infer_resolutions(&self, resolutions: HashMap<Span, String>) {
+        *self.do_infer_resolutions.borrow_mut() = resolutions;
     }
 }
 
@@ -714,6 +755,26 @@ pub(crate) fn eval_recursive(
         Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
         Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
         Expr::VarRef { name, resolved, .. } => {
+            // Special case: `%do-infer` sentinel — inferred [do] form monad resolution.
+            // The `do` macro emits `[%do-infer.bind ...]` when no explicit monad is given.
+            // The type checker resolved the monad name and stored it in do_infer_resolutions
+            // keyed by this VarRef's span. At runtime, substitute the sentinel with the
+            // actual monad dict looked up from the environment by its resolved name.
+            if name == "%do-infer" {
+                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(&expr.span).cloned() {
+                    let found = env.borrow().get(&monad_name);
+                    return match found {
+                        Some(thunk) => Ok(thunk),
+                        None => Err(EvalError::undefined_variable(
+                            format!("%do-infer → {monad_name}"),
+                            expr.span,
+                        ).into()),
+                    };
+                }
+                // Fallthrough: no resolution recorded (type checker didn't run or failed).
+                // Fall through to normal lookup so the error message is "undefined variable: %do-infer".
+            }
+
             // O(1) fast path: use resolved (level, slot) pair if available.
             // `Some(Some((level, slot)))` means the resolver found coordinates.
             // `Some(None)` means the resolver ran but couldn't assign coordinates
@@ -1321,7 +1382,7 @@ pub(crate) fn eval_recursive(
             params,
             superclasses,
             methods,
-            determines: _,
+            determines,
             resolver: _,
             resolver_injective: _,
         } => {
@@ -1351,11 +1412,33 @@ pub(crate) fn eval_recursive(
                 }
             }
 
+            // Compute num_determining from the first functional dependency's LHS,
+            // or default to 1 for single-param classes without explicit FDs.
+            // FD format: each element of `determines` is [[lhs_params] rhs_param].
+            // num_determining = length of lhs_params in the first FD.
+            let num_determining = if let Some(fd_expr) = determines.first() {
+                // FD is a 2-element list: [[a b] c] — first element is the determining set.
+                match &fd_expr.node {
+                    Expr::Dict(entries) if entries.len() >= 1 => {
+                        // Try to read the first entry's value as a list (array-like dict).
+                        // Dict form: {0: [a b], 1: c} — entry 0 has the determining set.
+                        match &entries[0].node.value.node {
+                            Expr::Dict(inner) => inner.len(),
+                            _ => 1,
+                        }
+                    }
+                    _ => 1,
+                }
+            } else {
+                1
+            };
+
             // Store class declaration in runtime registry
             let class_decl = RuntimeClassDecl {
                 params: params.clone(),
                 superclasses: superclasses.clone(),
                 method_defaults,
+                num_determining,
             };
 
             ctx.state
@@ -1383,12 +1466,20 @@ pub(crate) fn eval_recursive(
                 )));
             }
 
-            // Look up the class declaration to get default method implementations.
+            // Look up the class declaration to get default method implementations
+            // and the number of determining-position type parameters for dispatch.
             let class_decl = ctx.state.borrow().class_registry.get(class_name).cloned();
+
+            // num_determining governs how many type tags go into instance_registry keys.
+            // Must match try_dispatch_method's key-building logic exactly.
+            let num_determining = class_decl
+                .as_ref()
+                .map(|d| d.num_determining)
+                .unwrap_or(1);
 
             let mut last_arm_thunk: Option<Rc<Thunk>> = None;
 
-            for (_pattern_expr, methods) in arms.iter() {
+            for (pattern_expr, methods) in arms.iter() {
                 // Start with class-level defaults for each arm independently.
                 let mut method_dict = if let Some(ref decl) = class_decl {
                     decl.method_defaults.clone()
@@ -1431,8 +1522,9 @@ pub(crate) fn eval_recursive(
                 ));
 
                 // Register this arm in the runtime registry.
-                // Extract type names from pattern_expr annotations for MPTC dispatch.
-                let type_tags = extract_instance_type_tags(&_pattern_expr);
+                // Extract the first num_determining type tags from the pattern so the
+                // key matches what try_dispatch_method builds (determined params excluded).
+                let type_tags = extract_instance_type_tags(&pattern_expr, num_determining);
                 {
                     let mut state = ctx.state.borrow_mut();
                     state.instance_registry.insert(

@@ -5,4 +5,4 @@
 ---
 [Ok 42]
 === warn
-undefined variable: result at 1:5-1:11
+undefined variable: result

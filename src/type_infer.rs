@@ -158,6 +158,12 @@ pub struct InferState {
     /// When true, instance method body inference is skipped (optimization — method types
     /// are unused during prelude loading as they are #[allow(dead_code)] in InstanceDecl).
     pub in_prelude_load: bool,
+    /// Monad resolutions for inferred [do] forms: call-site span → resolved monad variable name.
+    /// When the type checker resolves `%do-infer` to a concrete monad (e.g., "result"), it records
+    /// the mapping here keyed by the outer Call expression's span. The eval pipeline reads this
+    /// map (via EvalContext) to look up `%do-infer` at runtime and return the correct monad dict.
+    /// Parallel to boundary_guards: type-checker-to-evaluator communication via span-keyed side channel.
+    pub do_infer_resolutions: HashMap<Span, String>,
 }
 
 impl InferState {
@@ -322,6 +328,7 @@ impl InferState {
             fd_depth: 0,
             instance_resolution_depth: 0,
             in_prelude_load: false,
+            do_infer_resolutions: HashMap::new(),
         }
     }
 
