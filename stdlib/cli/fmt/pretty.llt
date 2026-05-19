@@ -84,32 +84,32 @@ format-pattern-dict: [fn@[return: String  doc: """Format a dict pattern: [key: p
 
 # ---- Inline (single-line) rendering for width measurement ----
 
-render-inline: [fn@[return: String  doc: """Render a node assuming single-line (no indentation)."""] [let node@Dict]
-  [match [get "type" node]
-    "literal":        [format-literal node]
-    "var":            [get "name" node]
-    "dot-access":     [str [render-inline [get "target" node]] "." [if [int? [get "field" node]] [str [get "field" node]] [get "field" node]]]
-    "pipe":           [str [render-inline [get "lhs" node]] " | " [render-inline [get "rhs" node]]]
-    "sequential":     [join-strings "; " [map-list render-inline [get "exprs" node]]]
-    "dict":           [render-dict-inline node]
-    "call":           [render-call-inline node]
-    "fn":             [render-fn-inline node]
-    "type-alias":     [str "`" [render-inline [get "expr" node]]]
-    "type-assert":    [str [render-inline [get "expr" node]] "@" [format-annotation [get "annotation" node]]]
-    "annotated":      [str "@" [get "name" node] " " [format-annotation [get "annotation" node]]]
-    "rest":           [if [empty? [get "name" node]] "..." [str "..." [get "name" node]]]
-    "quote":          [str "[quote " [render-inline [get "expr" node]] "]"]
-    "unquote":        [str "[unquote " [render-inline [get "expr" node]] "]"]
-    "unquote-splice": [str "[unquote-splice " [render-inline [get "expr" node]] "]"]
-    "defmacro":       [str "[defmacro " [get "name" node] " " [render-inline [get "body" node]] "]"]
-    "match":          [str "[match " [render-inline [get "scrutinee" node]] [render-match-arms [get "arms" node]] "]"]
-    "class":          [format-class node]
-    "instance":       [format-instance node]
-    "type-app":       [str "@[" [render-inline [get "func" node]] " " [render-inline [get "arg" node]] "]"]
-    "error":          "<error>"
-    _:                [error [str "unknown node type: " [get "type" node]]]]]
+render-inline: [fn@[return: String  doc: """Render a node assuming single-line (no indentation)."""] [let node]
+  [match [tag-of node]
+    "Literal":        [format-literal node]
+    "VarRef":         [get "name" node]
+    "DotAccess":      [str [render-inline [get "target" node]] "." [if [int? [get "field" node]] [str [get "field" node]] [get "field" node]]]
+    "Pipe":           [str [render-inline [get "lhs" node]] " | " [render-inline [get "rhs" node]]]
+    "Sequential":     [join-strings "; " [map-list render-inline [get "exprs" node]]]
+    "Dict":           [render-dict-inline node]
+    "Call":           [render-call-inline node]
+    "Fn":             [render-fn-inline node]
+    "TypeAlias":      [str "`" [render-inline [get "expr" node]]]
+    "TypeAssert":     [str [render-inline [get "expr" node]] "@" [format-annotation [get "annotation" node]]]
+    "Annotated":      [str "@" [get "name" node] " " [format-annotation [get "annotation" node]]]
+    "Rest":           [if [empty? [get "name" node]] "..." [str "..." [get "name" node]]]
+    "Quote":          [str "[quote " [render-inline [get "expr" node]] "]"]
+    "Unquote":        [str "[unquote " [render-inline [get "expr" node]] "]"]
+    "UnquoteSplice":  [str "[unquote-splice " [render-inline [get "expr" node]] "]"]
+    "DefMacro":       [str "[defmacro " [get "name" node] " " [render-inline [get "body" node]] "]"]
+    "Match":          [str "[match " [render-inline [get "scrutinee" node]] [render-match-arms [get "arms" node]] "]"]
+    "ClassDecl":      [format-class node]
+    "InstanceDecl":   [format-instance node]
+    "TypeApp":        [str "@[" [render-inline [get "func" node]] " " [render-inline [get "arg" node]] "]"]
+    "AstError":       "<error>"
+    _:                [error [str "unknown node type: " [tag-of node]]]]]
 
-render-dict-inline: [fn@[return: String  doc: """Render a dict node single-line."""] [let node@Dict]
+render-dict-inline: [fn@[return: String  doc: """Render a dict node single-line."""] [let node]
   [if [empty? [get "entries" node]]
     "[]"
     [str "["
@@ -119,7 +119,7 @@ render-dict-inline: [fn@[return: String  doc: """Render a dict node single-line.
           [get "entries" node]]]
       "]"]]]
 
-render-call-inline: [fn@[return: String  doc: """Render a call node single-line."""] [let node@Dict]
+render-call-inline: [fn@[return: String  doc: """Render a call node single-line."""] [let node]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
@@ -132,7 +132,7 @@ render-call-inline: [fn@[return: String  doc: """Render a call node single-line.
       ""]
     "]"]]
 
-render-fn-inline: [fn@[return: String  doc: """Render a fn node single-line."""] [let node@Dict]
+render-fn-inline: [fn@[return: String  doc: """Render a fn node single-line."""] [let node]
   [str
     "[fn"
     [if [not [empty? [get "return-ann" node]]]
@@ -166,7 +166,7 @@ render-match-arms-impl: [fn@[return: String] [let arms@Dict i@Int acc@String]
 
 # ---- Layout decision ----
 
-fits-inline?: [fn@[return: Bool  doc: """Check if a dict node fits on one line (within max-width and max-entries)."""] [let node@Dict indent@Int]
+fits-inline?: [fn@[return: Bool  doc: """Check if a dict node fits on one line (within max-width and max-entries)."""] [let node indent@Int]
   [and
     [<= [length [get "entries" node]] max-entries]
     [<= [+ indent [str-length [render-dict-inline node]]] max-width]]]
@@ -184,32 +184,32 @@ emit-trailing-comment: [fn@[return: String  doc: """Render a trailing comment.""
 
 # ---- Node formatters (with indentation) ----
 
-format-node: [fn@[return: String  doc: """Main dispatch: format any AST node with indentation."""] [let node@Dict indent@Int]
-  [match [get "type" node]
-    "literal":        [format-literal node]
-    "var":            [get "name" node]
-    "dot-access":     [format-dot-access node]
-    "pipe":           [format-pipe node]
-    "sequential":     [format-sequential node indent]
-    "dict":           [format-dict node indent]
-    "call":           [format-call node indent]
-    "fn":             [format-fn node indent]
-    "type-alias":     [format-type-alias node]
-    "type-assert":    [format-type-assert node]
-    "annotated":      [format-annotated node]
-    "rest":           [format-rest node]
-    "quote":          [format-quote node indent]
-    "unquote":        [format-unquote node indent]
-    "unquote-splice": [format-unquote-splice node indent]
-    "defmacro":       [format-defmacro node indent]
-    "match":          [format-match node indent]
-    "class":          [format-class node]
-    "instance":       [format-instance node]
-    "type-app":       [format-type-app node]
-    "error":          "<error>"
-    _:                [error [str "unknown node type: " [get "type" node]]]]]
+format-node: [fn@[return: String  doc: """Main dispatch: format any AST node with indentation."""] [let node indent@Int]
+  [match [tag-of node]
+    "Literal":        [format-literal node]
+    "VarRef":         [get "name" node]
+    "DotAccess":      [format-dot-access node]
+    "Pipe":           [format-pipe node]
+    "Sequential":     [format-sequential node indent]
+    "Dict":           [format-dict node indent]
+    "Call":           [format-call node indent]
+    "Fn":             [format-fn node indent]
+    "TypeAlias":      [format-type-alias node]
+    "TypeAssert":     [format-type-assert node]
+    "Annotated":      [format-annotated node]
+    "Rest":           [format-rest node]
+    "Quote":          [format-quote node indent]
+    "Unquote":        [format-unquote node indent]
+    "UnquoteSplice":  [format-unquote-splice node indent]
+    "DefMacro":       [format-defmacro node indent]
+    "Match":          [format-match node indent]
+    "ClassDecl":      [format-class node]
+    "InstanceDecl":   [format-instance node]
+    "TypeApp":        [format-type-app node]
+    "AstError":       "<error>"
+    _:                [error [str "unknown node type: " [tag-of node]]]]]
 
-format-literal: [fn@[return: String  doc: """Format a literal node (int, float, bool, str)."""] [let node@Dict]
+format-literal: [fn@[return: String  doc: """Format a literal node (int, float, bool, str)."""] [let node]
   [match [get "kind" node]
     "int":   [str [get "value" node]]
     "float": [str [get "value" node]]
@@ -219,7 +219,7 @@ format-literal: [fn@[return: String  doc: """Format a literal node (int, float, 
                [str "\"" [get "value" node] "\""]]
     _:       [error [str "unknown literal kind: " [get "kind" node]]]]]
 
-format-dot-access: [fn@[return: String  doc: """Format dot access: target.field"""] [let node@Dict]
+format-dot-access: [fn@[return: String  doc: """Format dot access: target.field"""] [let node]
   [str
     [format-node [get "target" node] 0]
     "."
@@ -227,17 +227,17 @@ format-dot-access: [fn@[return: String  doc: """Format dot access: target.field"
       [str [get "field" node]]
       [get "field" node]]]]
 
-format-pipe: [fn@[return: String  doc: """Format pipe: lhs | rhs"""] [let node@Dict]
+format-pipe: [fn@[return: String  doc: """Format pipe: lhs | rhs"""] [let node]
   [str
     [format-node [get "lhs" node] 0]
     " | "
     [format-node [get "rhs" node] 0]]]
 
-format-sequential: [fn@[return: String  doc: """Format sequential expressions separated by double newlines."""] [let node@Dict indent@Int]
+format-sequential: [fn@[return: String  doc: """Format sequential expressions separated by double newlines."""] [let node indent@Int]
   [join-strings "\n\n"
     [map-list [fn [let e] [format-node e indent]] [get "exprs" node]]]]
 
-format-dict: [fn@[return: String  doc: """Format dict: inline if small enough, block otherwise."""] [let node@Dict indent@Int]
+format-dict: [fn@[return: String  doc: """Format dict: inline if small enough, block otherwise."""] [let node indent@Int]
   [if [empty? [get "entries" node]]
     "[]"
     [if [fits-inline? node indent]
@@ -280,7 +280,7 @@ format-entry-block: [fn@[return: String  doc: """Format a single entry in block 
       [emit-trailing-comment [get "trailing-comment" entry]]
       ""]]]
 
-format-call: [fn@[return: String  doc: """Format call: [fn args...] or [call fn args...]"""] [let node@Dict indent@Int]
+format-call: [fn@[return: String  doc: """Format call: [fn args...] or [call fn args...]"""] [let node indent@Int]
   [str
     "["
     [if [not [get "implied" node]] "call " ""]
@@ -301,7 +301,7 @@ format-named-arg: [fn@[return: String  doc: """Format a named argument: name: va
     ": "
     [format-node [get "value" na] 0]]]
 
-format-fn: [fn@[return: String  doc: """Format function: [fn[@RetAnn] [let params] body]"""] [let node@Dict indent@Int]
+format-fn: [fn@[return: String  doc: """Format function: [fn[@RetAnn] [let params] body]"""] [let node indent@Int]
   [str
     "[fn"
     [if [not [empty? [get "return-ann" node]]]
@@ -339,40 +339,40 @@ format-annotation-value: [fn@[return: String  doc: """Format an annotation value
       [str v]
       [format-node v 0]]]]
 
-format-type-alias: [fn@[return: String  doc: """Format type alias: `expr"""] [let node@Dict]
+format-type-alias: [fn@[return: String  doc: """Format type alias: `expr"""] [let node]
   [str "`" [format-node [get "expr" node] 0]]]
 
-format-type-assert: [fn@[return: String  doc: """Format type assert: expr@Ann"""] [let node@Dict]
+format-type-assert: [fn@[return: String  doc: """Format type assert: expr@Ann"""] [let node]
   [str
     [format-node [get "expr" node] 0]
     "@"
     [format-annotation [get "annotation" node]]]]
 
-format-annotated: [fn@[return: String  doc: """Format annotated: @Name ann"""] [let node@Dict]
+format-annotated: [fn@[return: String  doc: """Format annotated: @Name ann"""] [let node]
   [str
     "@"
     [get "name" node]
     " "
     [format-annotation [get "annotation" node]]]]
 
-format-rest: [fn@[return: String  doc: """Format rest: ... or ...name"""] [let node@Dict]
+format-rest: [fn@[return: String  doc: """Format rest: ... or ...name"""] [let node]
   [if [empty? [get "name" node]]
     "..."
     [str "..." [get "name" node]]]]
 
-format-quote: [fn@[return: String  doc: """Format quote: [quote expr]"""] [let node@Dict indent@Int]
+format-quote: [fn@[return: String  doc: """Format quote: [quote expr]"""] [let node indent@Int]
   [str "[quote " [format-node [get "expr" node] indent] "]"]]
 
-format-unquote: [fn@[return: String  doc: """Format unquote: [unquote expr]"""] [let node@Dict indent@Int]
+format-unquote: [fn@[return: String  doc: """Format unquote: [unquote expr]"""] [let node indent@Int]
   [str "[unquote " [format-node [get "expr" node] indent] "]"]]
 
-format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unquote-splice expr]"""] [let node@Dict indent@Int]
+format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unquote-splice expr]"""] [let node indent@Int]
   [str "[unquote-splice " [format-node [get "expr" node] indent] "]"]]
 
-format-defmacro: [fn@[return: String  doc: """Format defmacro: [defmacro name transformer]"""] [let node@Dict indent@Int]
+format-defmacro: [fn@[return: String  doc: """Format defmacro: [defmacro name transformer]"""] [let node indent@Int]
   [str "[defmacro " [get "name" node] " " [format-node [get "body" node] indent] "]"]]
 
-format-match: [fn@[return: String  doc: """Format match with one arm per line."""] [let node@Dict indent@Int]
+format-match: [fn@[return: String  doc: """Format match with one arm per line."""] [let node indent@Int]
   [str
     "[match "
     [format-node [get "scrutinee" node] indent]
@@ -396,7 +396,7 @@ format-match-arms-impl: [fn@[return: String] [let arms@Dict indent@Int i@Int acc
         ": "
         [format-node [get "body" [get i arms]] [+ indent indent-size]]]]]]
 
-format-class: [fn@[return: String  doc: """Format class declaration."""] [let node@Dict]
+format-class: [fn@[return: String  doc: """Format class declaration."""] [let node]
   [str
     "[class [let "
     [get "name" node]
@@ -426,15 +426,16 @@ format-class: [fn@[return: String  doc: """Format class declaration."""] [let no
       ""]
     "]"]]
 
-format-instance: [fn@[return: String  doc: """Format instance declaration."""] [let node@Dict]
+format-instance: [fn@[return: String  doc: """Format instance declaration. Emits class name and arms count; full arm formatting is a TODO."""] [let node]
   [str
     "[instance "
     [get "class" node]
-    " "
-    [format-node [get "instance_type" node] 0]
+    [if [> [length [get "arms" node]] 0]
+      [str " <" [str [length [get "arms" node]]] " arm(s)>"]
+      ""]
     "]"]]
 
-format-type-app: [fn@[return: String  doc: """Format type application: @[func arg]"""] [let node@Dict]
+format-type-app: [fn@[return: String  doc: """Format type application: @[func arg]"""] [let node]
   [str "@[" [format-node [get "func" node] 0] " " [format-node [get "arg" node] 0] "]"]]
 
 # ---- Document & File formatters ----

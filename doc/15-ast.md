@@ -427,7 +427,7 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which desugars to `[g [
 
 ### Conventions
 
-- **`type:` string discriminator** on every node — `[type: "call" ...]`, `[type: "var" ...]`
+- **`Value::Variant` tag on Expr nodes** — `Variant("Call", {fn: ..., args: ...})`, `Variant("VarRef", {name: "x", span: ...})`. Tags are PascalCase. Structural nodes (Entry, Annotation, Pattern, Document, File) remain plain dicts with a `type:` string discriminator
 - **`[]` for absent optionals** — never omit the key (except comment fields, which are absent when empty)
 - **`span:` on every node** — `[start: [line: 1 col: 5 offset: 4] end: [line: 1 col: 12 offset: 11]]`. "Every node" means every `Spanned<T>` wrapper, not every sub-element; `DotKey` has no independent span
 - **`schema-version: 1`** on the root `File` node — bump on breaking changes
@@ -446,7 +446,7 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which desugars to `[g [
 ### dict_to_ast
 
 `dict_to_ast(v: &Value) -> Result<Expr, AstError>` validates and reconstructs an `Expr`:
-- `type:` must be a known string
+- Accepts both `Value::Variant` (new format from `ast_to_dict`) and legacy plain dicts with a `type:` string discriminator (backward compat)
 - Required fields must be present and of the correct shape
 - `span:` is optional — absent nodes get a synthetic zero span
 - Unknown fields are ignored (forward-compatible)

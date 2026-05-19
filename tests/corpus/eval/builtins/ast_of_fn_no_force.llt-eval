@@ -1,7 +1,7 @@
-# ast-of on fn expression returns AST dict without forcing the body
+# ast-of on fn expression returns AST Variant without forcing the body
 # The error inside the fn should NOT be triggered
-[get "type" [ast-of [fn [] [raise "should not run"]]]]
+[tag-of [ast-of [fn [] [raise "should not run"]]]]
 === out
-String("fn")
+String("Fn")
 === warn
-undefined variable: ast-of at 2:14-2:20
+undefined variable: ast-of

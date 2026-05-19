@@ -1430,11 +1430,49 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 }
                             }
                         }
+                        Value::Variant { tag: _, payload } => {
+                            // Variant auto-unpacking: dot-access on a variant accesses the payload.
+                            // If payload is None, report an error.
+                            // If payload is Some(thunk_id), materialize the payload and retry the access.
+                            match payload {
+                                Some(payload_id) => {
+                                    let payload_thunk = ctx.get_thunk(payload_id);
+                                    // Materialize the payload, then re-push a DotAccessForce continuation
+                                    // to access the field from the materialized payload value.
+                                    stack.push(Cont::DotAccessForce(Box::new(
+                                        DotAccessForceData {
+                                            field,
+                                            access_span,
+                                            target_def_span,
+                                            outer_mat_span,
+                                            ctx: Rc::clone(&ctx),
+                                        },
+                                    )));
+                                    Action::Materialize {
+                                        thunk: payload_thunk,
+                                        mat_span: Some(access_span),
+                                    }
+                                }
+                                None => {
+                                    // Unit variant has no payload — cannot access fields.
+                                    let mut err = EvalError::internal(
+                                        format!(
+                                            "cannot access field .{} on unit variant (no payload)",
+                                            field_str
+                                        ),
+                                        target_def_span,
+                                    )
+                                    .with_materialization_span(access_span);
+                                    err.push_frame(format!("accessing .{field_str}"), access_span);
+                                    Action::Continue(Err(err.into()))
+                                }
+                            }
+                        }
                         other => {
                             // Type mismatch: report definition site and access site.
                             let mut err = EvalError::type_mismatch_ctx(
                                 "dot access".to_string(),
-                                "Dict or Proxy",
+                                "Dict, Proxy, or Variant",
                                 other.type_name(),
                                 target_def_span,
                             )

@@ -9,12 +9,6 @@ use crate::ast::Span;
 
 use super::*;
 
-/// Instantiate a type by creating fresh type variables at level 0.
-/// Call-site vars are created at level 0 and intentionally NOT registered in
-/// `InferState.levels`. This means they are treated as level 0 = never generalize,
-/// because `generalize()` only generalizes variables where `levels[var] > enclosing_level`
-/// and absent variables default to 0. In contrast, `InferState::fresh_var()` always
-/// registers at `state.level`, and `instantiate_at_level()` registers at the current
 /// Instantiate a type by creating fresh type variables at the current level.
 /// Used for CALL-POLY: when calling a polymorphic function, instantiate its type
 /// at the current level to enable proper generalization (Kiselyov 2013).

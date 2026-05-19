@@ -2,13 +2,13 @@
 
 **State:** Proposal
 
-**Depends on:** `async-eval.md` — requires `eval`/`materialize` to be `async fn`, `Arc`-based thunks, and the multi-thread Tokio runtime to be complete before distributed work is possible.
+**Depends on:** [`runtime-v2.md`](runtime-v2.md) — requires `eval`/`materialize` to be `async fn`, `Arc`-based thunks, `CoreExpr` as the serializable evaluator-internal representation, and the multi-thread Tokio runtime to be complete before distributed work is possible.
 
 What would it take to evaluate tinct programs across a cluster of machines — transparently, with content-addressed caching so that identical computations never run twice?
 
 ## Current State
 
-As of `async-eval.md`, tinct evaluation spans a single machine: async I/O, cooperative concurrency, multi-core parallel dict evaluation, `par`/`par-map`, `task`/`await`/`channel`. The remaining gap is scale: a large dataset that exceeds a single machine's memory or throughput cannot be processed in one tinct process.
+As of `runtime-v2.md`, tinct evaluation spans a single machine: native AST value types (`AstExpr`, `AstDoc`, `AstFile`), async I/O, cooperative concurrency, multi-core parallel dict evaluation via `JoinSet` fanout, `par`/`par-map`, `task`/`await`/`channel`/`select`. The remaining gap is scale: a large dataset that exceeds a single machine's memory or throughput cannot be processed in one tinct process.
 
 ### What's Missing
 
@@ -19,7 +19,7 @@ As of `async-eval.md`, tinct evaluation spans a single machine: async I/O, coope
 
 ## Why Distributed Evaluation Matters for tinct
 
-tinct's thunk graph is an implicit parallel execution plan. Every thunk with no data dependency on another is, by definition, safe to evaluate anywhere — on any core, on any machine. The `Arc`-based `OnceLock` thunk model (from `async-eval.md`) already makes this safe within a process. Distributed evaluation extends the same model across process boundaries.
+tinct's thunk graph is an implicit parallel execution plan. Every thunk with no data dependency on another is, by definition, safe to evaluate anywhere — on any core, on any machine. The `Arc`-based `OnceLock` thunk model (from `runtime-v2.md`) already makes this safe within a process. Distributed evaluation extends the same model across process boundaries.
 
 Concretely:
 
@@ -38,7 +38,8 @@ The design distinguishes two layers:
 **Semantic core** — what the language specifies:
 - A `Cluster` is an opaque environment in which computations can be scheduled.
 - `remote-task` submits a thunk to that environment and returns a `Task@T`.
-- `Ref@T` is a content-addressed value that the cluster's transport layer resolves on demand.
+- `GlobalThunkRef` is a cross-node pointer to a live thunk; free variables in a distributed task's environment may be `GlobalThunkRef` entries resolved lazily by the DSM layer — inputs need not be computed before the dependent task is submitted.
+- `Ref@T` is a content-addressed value resolved on demand by the transport layer; large results are promoted automatically from `GlobalThunkRef` to `Ref@T` on completion.
 - A thunk evaluates exactly once; independent thunks have no ordering constraint; dependent thunks wait. These semantics are identical whether evaluation runs on one core, many cores, or many machines.
 
 **Implementation** — what a specific cluster provides:
@@ -53,11 +54,75 @@ A program written against `Cluster`/`remote-task`/`Ref` works without modificati
 
 ### The Distributable Thunk
 
-A thunk is **distributable** if:
-1. Its expression references no capability values (`DirCap`, `NetCap`, `Handle`, `Channel`, etc.).
-2. Every free variable in its environment is a fully materialized concrete value — no live thunks, no capability references.
+A thunk is **distributable** if its `CoreExpr` body references no I/O capability values (`DirCap`, `NetCap`, `Handle`, `Channel`, etc.).
 
-The serialized form of a distributable thunk is the thunk itself, encoded in the tinct-native wire format (see below). There is no translation step and no intermediate representation: the thunk *is* the task message. The worker receives it, evaluates it in a fresh `EvalContext`, and returns the result — also in the wire format.
+Free variables in the environment need not be materialized. A free variable bound to a live thunk is serialized as a `GlobalThunkRef` — a globally addressable pointer into the owning node's thunk arena. The worker resolves `GlobalThunkRef` entries lazily via the DSM layer when evaluation demands them. Concrete values flow inline in the wire format; live thunks flow as references.
+
+The serialized form of a distributable thunk encodes two parts: (1) the `CoreExpr` body — encoded as a Dict via `core_expr_to_wire`; and (2) the environment — a flat Dict mapping variable coordinates or free-variable name strings to either concrete wire values or `GlobalThunkRef` entries (tag `0x0E`). The worker deserializes these, reconstructs a `FlatEnv` with `UnevaluatedState::Remote` thunks in place of `GlobalThunkRef` entries, and evaluates the `CoreExpr` in a fresh `EvalContext`.
+
+### GlobalThunkRef: Distributed Shared Thunks
+
+`GlobalThunkRef` is a globally unique, cross-node pointer to a live thunk on a specific node. It enables submitting a dependent task before its inputs are computed — promise pipelining across the cluster.
+
+```rust
+pub struct GlobalThunkRef {
+    pub node:  NodeId,        // UUID of the owning node
+    pub thunk: LocalThunkId,  // ThunkId within that node's ThunkArena
+}
+```
+
+`GlobalThunkRef` is ephemeral within a program run. A `LocalThunkId` is an index into the owning node's `ThunkArena`; it carries no meaning across node restarts or between program runs. Cross-run caching is `Ref@T`'s role.
+
+#### Demand-Fetch Protocol
+
+When a worker needs the value of a `GlobalThunkRef(B, T)`, `src/dsm.rs` executes:
+
+1. **Check local DSM cache.** `DsmCache: HashMap<GlobalThunkRef, DsmEntry>` where `DsmEntry` is `Pending(Vec<Waker>)` (in-flight) or `Ready(Result<Value, Arc<EvalError>>)` (resolved). If ready, return immediately — lock-free after initialization.
+
+2. **Register as waiter or first requester.** Lock the cache entry. If `Pending`, push waker and suspend. If absent, insert `Pending([self_waker])` and proceed to step 3.
+
+3. **Send demand request.** Send `DemandRequest { origin_node, thunk_ref, probe_chain: vec![self_thunk_id] }` to node B via the cluster transport. The `probe_chain` piggybacks the CMH cycle-detection probe (see §Distributed Cycle Detection).
+
+4. **Owning node B** forces thunk T: `materialize(T).await`. On completion:
+   - **Small result** (≤ `INLINE_THRESHOLD`, default 64 KiB): encode in wire format, send `DemandResponse { thunk_ref, payload: Inline(bytes) }`.
+   - **Large result** (> `INLINE_THRESHOLD`): store as `Ref@T` in the content-addressed cache (automatic promotion), send `DemandResponse { thunk_ref, payload: Promoted(content_hash) }`.
+
+   Node B also forwards the probe chain if it is itself suspended on a `GlobalThunkRef` (see §Distributed Cycle Detection).
+
+5. **Requesting node A** receives `DemandResponse`, stores the result in its local DSM cache, wakes all waiters. If the payload is `Promoted`, the caller resolves `Ref@T` via the transport layer's resolution tiers (see §Ref@T).
+
+#### OnceLock Coherence
+
+Tinct thunks evaluate exactly once. DSM coherence is write-once: no invalidation, no versioning, no memory barriers across writes. Once a `DemandResponse` is received, the result is cached permanently in the DSM cache. Any subsequent demand for the same ref is served locally. For large promoted results, RDMA one-sided reads allow a node to DMA the bytes directly from the owning node's memory after the `OnceLock` is set — the owning node's CPU is not involved in the transfer.
+
+#### Promise Pipelining
+
+A dependent task can be submitted before its inputs complete:
+
+```tinct
+# A and B submitted immediately — B does not wait for A to finish
+a: [remote-task cluster [fn [let] [phase-1 input]]]
+b: [remote-task cluster [fn [let] [phase-2 a]]]   # 'a' serialized as GlobalThunkRef
+result: [await b]
+```
+
+Worker B runs immediately on its assigned node. When it demands `a`, it sends a `DemandRequest` to A's owning node and suspends. A's result flows directly to B — the coordinator is not involved in the data transfer. For pipeline-shaped computations this eliminates one coordinator round-trip per stage.
+
+`dist-map` pipelines automatically: the combiner step is submitted as soon as any shard's `GlobalThunkRef` exists, and wakes incrementally as shards complete.
+
+#### GlobalThunkRef Lifecycle
+
+```
+Created (thunk submitted via remote-task)
+  → Pending  (owning node computing; waiters suspended)
+    → Inline  (result small; sent directly in DemandResponse)
+    → Promoted (result large; stored as Ref@T; content hash sent)
+  → Dead     (owning node failed — all waiters receive EvalError::node_failed)
+```
+
+If the owning node fails before computing T, the coordinator detects this via Raft heartbeat and broadcasts `NodeFailed { node_id }`. `src/dsm.rs` on each node wakes all waiters for that node's refs with `EvalError::node_failed`. There is no automatic re-dispatch of a failed `GlobalThunkRef` — the original `remote-task` call fails, and re-submission is the caller's responsibility. Because the serialized thunk body is still held at the call site, re-dispatch requires only a new `remote-task` call.
+
+---
 
 ### `remote-task`
 
@@ -95,13 +160,21 @@ The wire format is a binary encoding of tinct's value space — not a translatio
 | `0x05` | List (u32 count + elements) |
 | `0x06` | Dict (u32 count + (String, Value) pairs) |
 | `0x07` | Error (ErrorKind tag + String message + [StackFrame]) |
-| `0x08` | Thunk (Expr encoded as tinct dict + Env encoded as Dict) |
+| `0x08` | Thunk (CoreExpr encoded as Dict + flat Env encoded as Dict) |
 | `0x09` | Closure (same as Thunk; distinguished for type-checking) |
 | `0x0A` | Ref (32-byte content hash + type tag) |
+| `0x0B` | AstExpr (`SurfaceNode` encoded as Dict — via `ast_to_dict_expr`) |
+| `0x0C` | AstDoc (`SurfaceDoc` encoded as Dict) |
+| `0x0D` | AstFile (`SurfaceFile` encoded as Dict) |
+| `0x0E` | GlobalThunkRef (u32 node-id-string length + UTF-8 node-id bytes + u64 thunk-id) |
 
-`Thunk` is the central tag for distributed evaluation: `remote-task` serializes the closure as a `Thunk` and sends it. The worker deserializes a `Thunk`, evaluates it, and returns any other tag as the result. The format is the execution protocol.
+`Thunk` (tag `0x08`) is the central tag for distributed evaluation. Its environment Dict may contain both concrete wire values and `GlobalThunkRef` entries (tag `0x0E`); concrete values flow inline, live thunks flow as cross-node references resolved lazily by the DSM layer.
 
-`Expr` encodes via `ast_to_dict` (already implemented in `ast-dict-core`), wrapped in a `Dict` value — so AST serialization reuses the existing machinery rather than defining a separate encoding.
+The `Thunk` body is `CoreExpr` (de Bruijn coordinates, no `SurfaceExpr`) — encoded by `core_expr_to_wire` / `core_expr_from_wire` in `src/serialize.rs`. This is distinct from `ast_to_dict_expr` (retained in `runtime-v2` for `deep-materialize` and JSON output, incompatible with `CoreExpr`'s coordinate space). The `dict_to_ast` deleted in `runtime-v2` has no wire-format equivalent; `src/serialize.rs` provides its own `wire_to_surface_node` decoder.
+
+`AstExpr`, `AstDoc`, `AstFile` tags (`0x0B`–`0x0D`) allow AST values to round-trip across the cluster — e.g. when a macro transformer runs as a distributed task and returns an `AstExpr` result. Encoding reuses `ast_to_dict_expr` (retained in `runtime-v2`).
+
+`GlobalThunkRef` (tag `0x0E`) is only valid within the current program run on the current cluster. It must never appear in persistent storage, content-addressed caches, or cross-run messages.
 
 The format makes no distinction between "task message" and "value": every message in the worker protocol is a tinct dict encoded in this format. The Raft log entries (see Coordinator Group below) are tinct dicts. Cluster state is introspectable using the language's own builtins.
 
@@ -119,15 +192,47 @@ input-ref: [cluster-store cluster huge-dict]
 result: [remote-task cluster [fn [let] [process input-ref]]]
 ```
 
-The transport layer's resolution strategy is implementation-defined:
-- Check the local thunk cache (fastest — value already computed on this node).
-- Pull from the current leader's cache.
-- Pull from whichever node last computed the value (peer-to-peer, if the cluster tracks this).
-- Read from a mounted shared filesystem or any other configured store.
+**Resolution tiers** (in order of cost):
 
-The language specifies only the contract: given a hash, produce a value or fail. Programs are written against `Ref@T`; they do not know or care how resolution works.
+1. **Local DSM cache** — if this node already has the result (received via `DemandResponse`), return immediately.
+2. **Local Ref cache** — `DashMap<[u8; 32], Arc<Value>>` on this node, keyed by content hash. Populated from prior computations.
+3. **RDMA one-sided read** (hardware-conditional) — if the cluster transport supports RDMA and the owning node has the value in a registered memory region, issue an RDMA READ directly into the local buffer. Zero kernel copies, owning-node CPU not involved. Falls back to tier 4 if unavailable.
+4. **Peer pull via QUIC** — send a `RefRequest { hash }` to the node holding the value (known from the coordinator's cache index). Owning node sends `RefResponse { hash, bytes }`.
+5. **Configured external store** — pluggable backend (mounted filesystem, S3-compatible API, etc.). Slowest; survives full cluster restart.
 
-**Type system interaction:** The type checker distinguishes `Ref@T` from `T`. A `Ref@Int` cannot be used as an `Int` without resolution. In practice the evaluator resolves `Ref` transparently when forcing a thunk that contains one — analogous to how it forces a nested thunk. Whether `Ref@T` and `T` unify in the type checker or require explicit `[deref ref]` is an open question; the simpler path (transparent forcing, type checker treats them as equivalent) is preferable unless explicit control proves necessary.
+The language specifies only the contract: given a hash, produce a value or fail. Programs are written against `Ref@T`; they do not know or care which tier resolves the ref.
+
+**Type system decision:** `Ref@T` unifies transparently with `T` in the type checker. The evaluator resolves `Ref` when forcing a thunk that contains one — exactly as it forces a nested thunk. User code never writes `[deref ref]`; the type checker treats `Ref@T` and `T` as equivalent in unification. `cluster-store cluster v@T` returns `Ref@T`; anywhere `T` is expected, `Ref@T` is accepted. The distinction exists in the wire format and runtime (for routing and caching), not in the language's type lattice.
+
+---
+
+### Distributed Cycle Detection
+
+Cross-node cycles in the thunk demand graph are programmer errors — circular data dependencies that would also produce `EvalError::circular_dependency` locally (e.g., `[x: x]`). The distributed case extends the local cycle detection to the multi-node scenario. Because each thunk waits on at most one `GlobalThunkRef` at a time, the wait-for graph (WFG) is a **functional graph** — at most one outgoing wait edge per node. Cycles are simple directed loops, not AND/OR combinations.
+
+#### Chandy-Misra-Haas Probe Algorithm
+
+Detection uses the CMH AND-model probe algorithm (Chandy & Misra, 1983). Probes piggyback on `DemandRequest` messages — no extra message type required.
+
+**Protocol:**
+
+1. When node A suspends on `GlobalThunkRef(B, T)`, it appends `(A, self_thunk_id)` to the probe chain and sends `DemandRequest { thunk_ref: (B, T), probe_chain: [(A, a_thunk_id)] }` to B.
+
+2. Node B, on receiving the demand, checks: is it itself suspended on a `GlobalThunkRef(C, T2)`?
+   - **No** (B is computing or complete): B does not forward the probe. The chain terminates — no cycle.
+   - **Yes**: B appends `(B, b_thunk_id)` to the chain and forwards `DemandRequest { thunk_ref: (C, T2), probe_chain: [..., (B, b_thunk_id)] }` to C.
+
+3. If any node in the chain receives a probe whose chain already contains itself (O(n) scan, bounded by cluster size), a cycle is detected. That node returns `EvalError::circular_dependency` with the full cycle listed in the error message. The error propagates back through the chain, waking all waiters with the same error.
+
+**Correctness:** The probe travels along wait edges. If a cycle exists, the probe returns to its origin. If no cycle exists, the probe terminates at a non-blocked node. The chain accumulates in the `DemandRequest` message — no additional round-trips, no coordinator involvement.
+
+**Optimization — path doubling (Kshemkalyani & Singhal, 1994):** For long wait chains, path doubling detects cycles in O(log n) probe rounds instead of O(n). Each node tracks its last-seen probe position; on receiving a probe it has seen before, it doubles its forward pointer. Worthwhile for clusters with deep dependency chains (>100 nodes deep). Implemented in `src/dsm.rs` as a configurable option (`--cycle-detect [linear|doubling]`, default `linear`).
+
+#### Integration with Local Cycle Detection
+
+Within a single node, cycle detection already runs via the task-local `HashSet<*const Thunk>` in the async evaluator. `UnevaluatedState::Remote` thunks (backed by `GlobalThunkRef`) are included in this set — a task that demands a `GlobalThunkRef` it is already waiting on (within the same Tokio task's call chain) is caught locally before a `DemandRequest` is sent.
+
+The two detectors compose cleanly: local detection catches intra-task cycles at zero cost; CMH probes catch inter-node cycles with one extra message field per demand request.
 
 ---
 
@@ -220,7 +325,13 @@ Three models, selected per call:
 [remote-task cluster worker-fn  caps: [DirCap "/shared/input" r]]
 ```
 
-**Proxied (future):** Capability-requiring operations at the worker are forwarded back to the originating node as sub-requests. The worker has no direct resource access; the originator exercises all I/O on its behalf. Requires a bidirectional RPC sub-protocol within the task channel.
+**Proxied:** Capability-requiring operations at the worker are forwarded back to the originating node as sub-requests. The worker has no direct resource access; the originator exercises all I/O on its behalf via a bidirectional RPC sub-protocol within the task's QUIC stream.
+
+```tinct
+[remote-task cluster worker-fn  caps: [DirCap "/shared/output" w]  proxy: true]
+```
+
+With `proxy: true`, the worker receives a `ProxiedCap` handle instead of a real capability. When the worker calls a builtin that requires the cap (e.g., `write-file`), the builtin serializes the operation as a `ProxyRequest { cap_id, op, args }` and sends it back to the coordinator over a side channel embedded in the task's QUIC stream. The coordinator forwards to the originating node, which executes the I/O and returns a `ProxyResponse`. The worker blocks on the round-trip for each proxied operation. This is slower than delegated caps but allows workers without local resource access to perform I/O on behalf of the originator.
 
 ---
 
@@ -518,18 +629,18 @@ result: [if [> load.utilization 0.9]
 ```tinct
 # stdlib/dist.llt
 dist-map: [fn [let cluster f seq]
-  [n:       cluster.worker-count]
+  [n:       [pool-load cluster].workers]
   [shards:  [partition n seq]]
   [tasks:   [map [fn [let s] [remote-task cluster [fn [let] [map f s]]]] shards]]
   [results: [await-all tasks]]
   [flatten results]]
 ```
 
-`dist-filter` and `dist-reduce` follow the same pattern. `dist-reduce` with an associative combinator uses tree reduction: workers reduce local shards; the leader combines partial results. These live in `stdlib/dist.llt`.
+`dist-filter` and `dist-reduce` follow the same pattern. `dist-reduce` with an associative combinator uses tree reduction: workers reduce local shards; the coordinator combines partial results. These live in `stdlib/dist.llt`, alongside `partition` (split seq into n roughly-equal shards — distinct from `seq.llt`'s predicate-based `partition`).
 
-The current implementation uses static sharding (`partition` by `cluster.worker-count`). A phase-2 improvement replaces this with dynamic load balancing: the coordinator maintains a work queue; workers pull shards as capacity becomes available (pmap-style). Static equal-partition fails badly when shard costs are heterogeneous — one slow shard serializes the entire `dist-map`.
+**Dynamic load balancing.** Static equal-partition (`partition` by worker count) fails badly when shard costs are heterogeneous — one slow shard serializes the entire `dist-map`. `dist-map` therefore uses a work-stealing scheduler by default: the coordinator maintains a shard queue; workers pull from it as they become free (pmap-style). `partition n seq` is used only when `--static-sharding` is set explicitly. The worker count (`[pool-load cluster].workers`) sets the initial parallelism budget; the actual number of shards submitted is `max(n, shard-count)` where `shard-count` is user-configurable (default: `4 × workers`, giving 4× over-decomposition for load balance).
 
-**Phase-2: promise pipelining.** When the result of `remote-task A` is the sole input to `remote-task B`, the coordinator can schedule both on the same worker with direct value passing, eliminating one coordinator round-trip. This is E language's promise pipelining applied to tinct's task graph. Worthwhile for pipeline-shaped computations where intermediate results are large.
+**Promise pipelining** (built-in via `GlobalThunkRef`). The combiner step of `dist-map` is submitted as a `remote-task` immediately — its input `results` is a Seq of `GlobalThunkRef` entries, not a materialized Seq. The combiner wakes incrementally as shards complete. For pipeline-shaped computations (output of one `dist-map` fed into another), the second stage's tasks receive `GlobalThunkRef` entries from the first stage and pipeline automatically — no coordinator involvement in the data transfer between stages.
 
 ### Automatic Distribution
 
@@ -557,8 +668,9 @@ Criteria: the entry is unevaluated, the expression is pure (no capability refere
 | Dict entries | `JoinSet` fanout | One Tokio task per entry |
 | Explicit tasks | `task` / `par` | One Tokio spawn |
 | Multi-core | Multi-thread Tokio | OS thread pool |
-| Multi-node | `remote-task` / `dist-map` | One node per shard |
-| Federated (future) | Cross-cluster coordinators | One cluster per region |
+| Cross-node live | `GlobalThunkRef` DSM demand-fetch | One network request per demanded ref |
+| Multi-node pure | `remote-task` / `dist-map` | One worker node per shard |
+| Federated | Cross-cluster coordinator bridges | One cluster per region |
 
 Semantics are identical at every level: a thunk evaluates exactly once; independent thunks have no ordering constraint; dependent thunks wait.
 
@@ -596,24 +708,62 @@ Semantics are identical at every level: a thunk evaluates exactly once; independ
 | `pool-list` | `Cluster → [Seq ProgramHandle]` | List all active program namespaces in the pool. |
 | `pool-drain` | `Cluster → ProgramHandle → Task@Null` | Signal no new work; wait for in-flight thunks to complete. |
 | `pool-stop` | `Cluster → ProgramHandle → Null` | Cancel in-flight work and remove the namespace immediately. |
-| `distributable?` | `any → Bool` | True if value contains no capabilities and no live thunks. |
+| `distributable?` | `any → Bool` | True if value contains no capabilities; live thunks are allowed (they become `GlobalThunkRef` entries). |
+| `dsm-stats` | `Cluster → Dict` | DSM cache stats for this node: `{cached, pending, demand-sent, demand-recv, promoted}`. |
 
-`dist-map`, `dist-filter`, `dist-reduce`, `partition` live in `stdlib/dist.llt`.
+`dist-map`, `dist-filter`, `dist-reduce`, `partition` live in `stdlib/dist.llt`. `partition n seq` (split into n equal shards) lives in `stdlib/dist.llt` not `stdlib/seq.llt`, to distinguish it from `seq.llt`'s predicate-based partition.
 
 ### New Types
 
 - `Type::Cluster` — opaque pool handle.
-- `Type::Ref(Box<Type>)` — content-addressed reference; `Ref@T` in source syntax.
+- `Type::Ref(Box<Type>)` — content-addressed reference; `Ref@T` in source syntax. Unifies transparently with `T` in the type checker; distinct only in the wire format and at runtime.
 - `Type::NodeRef` — opaque reference to a pool node; has known fields `id`, `addr`, `cores`, `load`, `caps` (row type, so the type checker allows dot access).
 - `Type::ProgramHandle` — opaque handle to a submitted program namespace.
 
-`remote-task cluster fn@[Fn@T []]` infers `Task@T` from the closure return type. `cluster-store cluster v@T` infers `Ref@T`. `distributable?` is `any → Bool` (runtime check; static purity analysis is future work).
+`GlobalThunkRef` is not a user-visible type. It exists only in the wire format (tag `0x0E`) and in `UnevaluatedState::Remote` inside the evaluator. Tinct code never names or inspects `GlobalThunkRef` directly — free variables in distributed tasks are transparent references resolved by the DSM layer.
+
+`remote-task cluster fn@[Fn@T []]` infers `Task@T`. `cluster-store cluster v@T` infers `Ref@T`. `distributable?` is `any → Bool` (runtime check; the capability check walks the `CoreExpr` tree at `remote-task` submission time).
 
 ### Serialization (`src/serialize.rs` — new)
 
-Tinct-native binary encoding: tag byte dispatch over the value enum, varint integers, length-prefixed strings and collections. `encode(value: &Value) -> Bytes` and `decode(bytes: &[u8]) -> Result<Value, DecodeError>`. AST encoding reuses `ast_to_dict`/`dict_to_ast` — AST values are `Dict` in the wire format. No JSON path for distributed tasks.
+Tinct-native binary encoding: tag byte dispatch over the value enum, varint integers, length-prefixed strings and collections. `encode(value: &Value) -> Bytes` and `decode(bytes: &[u8]) -> Result<Value, DecodeError>`. No JSON path for distributed tasks.
 
-**Estimated:** ~400 lines.
+Four encoding paths:
+- **Primitive values** (`Null`, `Bool`, `Int`, `Float`, `String`, `List`, `Dict`, `Error`, `Ref`) — direct encoding.
+- **Thunk/Closure** (`0x08`/`0x09`) — `CoreExpr` encoded by `core_expr_to_wire`; `core_expr_from_wire` decodes on the worker. Environment Dict entries use concrete wire values or `GlobalThunkRef` (tag `0x0E`).
+- **GlobalThunkRef** (`0x0E`) — u32 node-id-string length + UTF-8 bytes + u64 thunk-id. Valid only within a live program run; must not be persisted.
+- **AST values** (`0x0B`–`0x0D`) — encoded via `ast_to_dict_expr` (retained from `runtime-v2`); decoded via a new `wire_to_surface_node` (expression-level, distinct from the deleted file-level `dict_to_ast`).
+
+**Estimated:** ~550 lines.
+
+### DSM Layer (`src/dsm.rs` — new)
+
+`DsmClient` manages the `GlobalThunkRef` demand-fetch protocol for a single node.
+
+```rust
+pub struct DsmClient {
+    cache:     DashMap<GlobalThunkRef, DsmEntry>,
+    transport: Arc<ClusterTransport>,
+    self_id:   NodeId,
+}
+
+enum DsmEntry {
+    Pending(Vec<Waker>),
+    Ready(Result<Value, Arc<EvalError>>),
+}
+```
+
+**Public interface:**
+- `async fn demand(thunk_ref: GlobalThunkRef, self_thunk_id: LocalThunkId) -> Result<Value, Arc<EvalError>>` — demand-fetch with CMH probe. Returns immediately if the result is already cached.
+- `fn notify_ready(thunk_ref: GlobalThunkRef, result: Result<Value, Arc<EvalError>>)` — called by the transport when a `DemandResponse` arrives; wakes all waiters.
+- `fn notify_node_failed(node_id: NodeId)` — called by the coordinator on heartbeat failure; wakes all waiters for that node's refs with `EvalError::node_failed`.
+- `fn probe_forward(request: DemandRequest)` — called by the transport on demand request receipt; if this node is itself blocked on a `GlobalThunkRef`, forward the probe chain; otherwise force the thunk and respond.
+
+The CMH probe chain is carried in `DemandRequest.probe_chain: SmallVec<[GlobalThunkRef; 8]>`. The 8-element stack allocation covers the common case of short chains without heap allocation.
+
+**RDMA integration:** If `ClusterTransport` has RDMA capability, `DsmClient::demand` uses RDMA one-sided READ (via `async-rdma`) for large results after receiving a `Promoted(content_hash)` response — the node's memory region address is included in the response for RDMA-capable peers.
+
+**Estimated:** ~450 lines.
 
 ### Distributed Cache (`src/dist_cache.rs` — new)
 
@@ -641,20 +791,21 @@ New subcommand: `tinct pool`. Flags: `--role [coordinator|worker]`, `--seeds <ad
 
 ### Dependencies (`Cargo.toml`)
 
-- `dashmap` — concurrent hashmap for the result cache.
-- `sha2` — SHA-256 for cache keys.
-- `uuid` — task IDs in the worker protocol.
-- `quinn` — already present; QUIC transport for cluster communication.
+- `dashmap` — concurrent hashmap for the result cache and DSM cache.
+- `sha2` — SHA-256 for content-addressed cache keys.
+- `uuid` — task IDs and node IDs in the worker protocol.
+- `quinn` — already present; QUIC transport for cluster communication and DSM demand-fetch.
 - `openraft` (or similar) — Raft consensus for the coordinator group.
+- `async-rdma` — optional; RDMA kernel-bypass transport for large `Ref@T` resolution on InfiniBand/RoCE clusters. Falls back to QUIC peer-pull (tier 4) when unavailable.
+- `smallvec` — zero-allocation CMH probe chains for short dependency depth (≤8 nodes).
 
 ---
 
 ## Prerequisites
 
-- **`async-eval.md`** — mandatory. `Arc`-based thunks, async `eval`/`materialize`, multi-thread Tokio runtime, `task`/`await`/`channel`/`context` all required before distribution makes sense.
-- **`ast_to_dict` / `dict_to_ast`** — required for thunk serialization. Already implemented (`ast-dict-core` sprint).
-- **QUIC / `Http3Session`** — already implemented; used as one possible cluster transport.
-- **`runtime-reflection.md`** — `ast-of` provides function-body-to-dict for serializing closures.
+- **`runtime-v2.md`** — mandatory (all three parts complete). Requires: `SurfaceExpr`/`CoreExpr` AST split; native `AstExpr`/`AstDoc`/`AstFile` value types (`0x0B`–`0x0D` wire tags); `Arc`-based `OnceLock` thunks; async `eval`/`materialize`; multi-thread Tokio runtime; `task`/`await`/`channel`/`context`/`ast-of` primitives. `include-decomp-*` is a transitive prerequisite (required by `runtime-v2`).
+- **`ast_to_dict_expr`** — retained from `runtime-v2`; used by `src/serialize.rs` for `AstExpr`/`AstDoc`/`AstFile` wire encoding (`0x0B`–`0x0D`). The deleted `dict_to_ast` has no wire-format equivalent; `src/serialize.rs` provides its own `wire_to_surface_node` and `core_expr_from_wire` decoders.
+- **QUIC** — already present (`quinn`); one possible cluster transport.
 - **`error-patterns.md`** — `remote-task` returns `Task@(Ok@T | Err@String)`.
 
 ---
@@ -668,6 +819,9 @@ New subcommand: `tinct pool`. Flags: `--role [coordinator|worker]`, `--seeds <ad
 - Armstrong, J. (2003). "Making Reliable Distributed Systems in the Presence of Software Errors." PhD thesis, KTH. — Erlang's share-nothing process model; tinct's pure-only distributed tasks apply the same isolation.
 - Ongaro, D. & Ousterhout, J. (2014). "In Search of an Understandable Consensus Algorithm." *USENIX ATC '14*. — Raft; the implementation basis for the coordinator group's leader election and log replication.
 - Weil, S.A. et al. (2006). "Ceph: A Scalable, High-Performance Distributed File System." *OSDI '06*. — Homogeneous node model where every storage node participates in cluster decisions; tinct's pool (every node runs both worker and coordinator) follows the same architecture.
-- Miller, M.S., Tribble, E.D. & Shapiro, J. (2005). "Concurrency Among Strangers." *TGC '05*. — E language's promise pipelining and vat/event-loop model; basis for phase-2 pipelining optimization and tinct's capability delegation design.
-- Epstein, J., Black, A.P. & Peyton Jones, S. (2011). "Towards Haskell in the Cloud." *Haskell Symposium '11*. — Cloud Haskell's `Closure` type and `Static` pointer mechanism; confirms force-before-send requirement and the instability of arbitrary closure APIs in practice.
-- See `dist-eval-survey.md` in this directory. — Eight-language survey (Unison, Erlang/OTP, Cloud Haskell, Oz/Mozart, E, Chapel, Futhark, Julia) confirming: distributable-thunk condition, thunk-as-task-message, content-addressed caching as novel contribution, dynamic load balancing as phase-2, promise pipelining as phase-2.
+- Miller, M.S., Tribble, E.D. & Shapiro, J. (2005). "Concurrency Among Strangers." *TGC '05*. — E language's promise pipelining and vat/event-loop model; direct basis for `GlobalThunkRef` demand-fetch and tinct's capability delegation design.
+- Epstein, J., Black, A.P. & Peyton Jones, S. (2011). "Towards Haskell in the Cloud." *Haskell Symposium '11*. — Cloud Haskell's `Closure` type and `Static` pointer mechanism; the force-before-send requirement motivates the `GlobalThunkRef` model as the looser alternative.
+- Chandy, M.M. & Misra, J. (1983). "Distributed deadlock detection." *ACM TOPLAS 5(1)*. — CMH probe algorithm; direct basis for §Distributed Cycle Detection.
+- Kshemkalyani, A.D. & Singhal, M. (1994). "Efficient detection and resolution of generalized distributed deadlocks." *IEEE TSE 20(1)*. — Path-doubling optimization for O(log n) probe rounds in functional-graph WFGs.
+- Knapp, E. (1987). "Deadlock detection in distributed databases." *ACM Computing Surveys 19(4)*. — Comprehensive survey of AND/OR WFG models; confirms tinct's functional-graph (max out-degree 1) as the simplest tractable case.
+- See `dist-eval-survey.md` in this directory. — Eight-language survey (Unison, Erlang/OTP, Cloud Haskell, Oz/Mozart, E, Chapel, Futhark, Julia) confirming: distributable-thunk condition, thunk-as-task-message, content-addressed caching, promise pipelining, and dynamic load balancing.
