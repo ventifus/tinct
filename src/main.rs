@@ -1125,7 +1125,7 @@ fn run_eval(
     // to resolve relative to the evaluated file, which is the most natural behavior.
     // --no-pwd enforcement: when the flag is set, `%pwd` is NOT injected, so
     // any reference to `%pwd` in the program will fail with "undefined variable".
-    if !no_pwd {
+    if !no_pwd && !no_fs {
         use tinct::Value;
         // Determine %pwd: file's parent dir if a file is given, otherwise cwd.
         // Use canonicalize() so symlinks are resolved; fall back to cwd if the
@@ -1198,12 +1198,12 @@ fn run_eval(
     // Phase 1: resolve %libdir from the binary's location, --libdir-path override, or a well-known relative path.
     // If resolution fails, %libdir is not injected (stdlib is embedded at compile time anyway).
     // The resolved path is also saved for the JSON output path (format_with_json_llt).
-    let resolved_libdir_path: Option<std::path::PathBuf> = if !no_libdir {
+    let resolved_libdir_path: Option<std::path::PathBuf> = if !no_libdir && !no_fs {
         resolve_libdir_path(libdir_path.as_deref())
     } else {
         None
     };
-    if !no_libdir {
+    if !no_libdir && !no_fs {
         use tinct::Value;
         if let Some(ref path) = resolved_libdir_path {
             if let Ok(libdir_std) =
@@ -1226,7 +1226,9 @@ fn run_eval(
     // Inject --cap-fs NAME=PATH[:MODE] entries into the root environment as `%NAME`.
     // The `%` prefix makes injected caps visually distinct from user-defined variables.
     // MODE syntax: r/w/a/s/l letters or [Cap1 Cap2 ...] extended form.
-    {
+    // --no-fs suppresses all cap-fs injection: operator-specified caps are not available
+    // to user code when filesystem access is globally disabled.
+    if !no_fs {
         use tinct::{DirPerms, Value};
         for cap_fs_entry in &cap_fs {
             let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {

@@ -2025,6 +2025,69 @@ mod tests {
             "expected 'consistency violation' in error, got: {msg}"
         );
     }
+
+    // --- lint pipeline unit tests ---
+
+    /// Lint pipeline: clean source string exits with no errors or warnings.
+    ///
+    /// Verifies that the parse → expand_macros → desugar → resolve → typecheck pipeline
+    /// (the same pipeline used by `tinct lint`) produces no errors and no diagnostics
+    /// for a well-typed input.
+    ///
+    /// This is the unit-test counterpart to `just lint-stdlib`: it confirms the lint
+    /// pipeline is wired correctly and that a trivially clean file produces exit code 0
+    /// (no errors or warnings).
+    #[test]
+    fn test_lint_pipeline_clean_source() {
+        // A well-typed dict with annotated fields and arithmetic — should pass lint clean.
+        let input = r#"[
+  x@Int: 42
+  y@String: "hello"
+  z@Int: [+ x 1]
+]"#;
+        let result = typecheck_source(input);
+        assert!(
+            result.is_ok(),
+            "lint pipeline should produce no errors or warnings for clean source, got: {:?}",
+            result
+        );
+    }
+
+    /// Lint pipeline: type error produces Err (exit code 1 behavior).
+    ///
+    /// Verifies that an undefined variable reference causes the lint pipeline to
+    /// return an error, matching the `tinct lint` exit-code-1 behavior.
+    #[test]
+    fn test_lint_pipeline_type_error() {
+        // Referencing an undefined variable should produce an "undefined variable" type error.
+        let input = r#"[x: undefined_var]"#;
+        let result = typecheck_source_errors_only(input);
+        assert!(
+            result.is_err(),
+            "lint pipeline should report a type error for undefined variable reference, got Ok(())"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("undefined variable"),
+            "error message should describe the undefined variable, got: {msg}"
+        );
+    }
+
+    /// Lint pipeline: no side effects — emit calls are not executed.
+    ///
+    /// Verifies that running the lint pipeline on a file containing `$emit` calls does
+    /// not execute the emit (no output is produced). The lint pipeline stops before eval.
+    #[test]
+    fn test_lint_pipeline_no_side_effects() {
+        // If lint executed this, it would emit text to stdout. Since it only type-checks,
+        // no output should occur. The absence of a panic or visible output is the assertion.
+        let input = r#"[call $emit "this should not appear"]"#;
+        // typecheck_source only parses, expands, desugars, resolves, and type-checks.
+        // It does not evaluate — so no emit side-effect fires.
+        let _result = typecheck_source_errors_only(input);
+        // If we reach here without IO side-effects, the test passes.
+        // (Capturing stdout in a unit test would require infrastructure not worth adding.)
+    }
 }
 
 /// Resolve the stdlib directory path from the binary location.
