@@ -46,68 +46,10 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } = ctx_arg;
     reject_named("str", named, call_span)?;
 
-    // Runtime typeclass dispatch: check for Showable instance.
-    // Only materialize args[0] if at least one Showable instance is registered;
-    // otherwise we would force a lazy thunk solely to check a registry key.
-    // For multi-arg str, only check the first arg for an instance.
-    let has_showable =
-        !args.is_empty() && ctx.state.borrow().registered_classes.contains("Showable");
-    if has_showable {
-        let val = materialize(&args[0], Some(&call_span), &ctx)?;
-        let type_tags = vec![val.type_name().to_string()];
-        if let Some(instance_thunk) = ctx
-            .state
-            .borrow()
-            .instance_registry
-            .get(&("Showable", type_tags))
-            .cloned()
-        {
-            // Get the instance dict
-            let instance_val = materialize(&instance_thunk, Some(&call_span), &ctx)?;
-            if let Value::Dict(methods_map) = instance_val {
-                // Look up the "str" method
-                if let Some(str_method_id) = methods_map.get(&Key::String("str".to_string())) {
-                    let str_method_thunk = ctx.get_thunk(*str_method_id);
-                    // Materialize the method to get the function/builtin
-                    let str_method_val = materialize(&str_method_thunk, Some(&call_span), &ctx)?;
-                    // Dispatch based on value type
-                    match str_method_val {
-                        Value::Function {
-                            params,
-                            body,
-                            env: closure_env,
-                            ..
-                        } => {
-                            return invoke_function(&CallContext {
-                                params: &params,
-                                body: &body,
-                                closure_env: &closure_env,
-                                positional: args,
-                                named: None,
-                                default_env: &closure_env,
-                                call_span,
-                                origin: Some(Rc::from("Showable.str")),
-                                ctx: &ctx,
-                            });
-                        }
-                        Value::Builtin(def) => {
-                            return (def.func)(BuiltinArgs {
-                                args,
-                                named,
-                                call_span,
-                                ctx: Rc::clone(&ctx),
-                            });
-                        }
-                        _ => {
-                            // Method is not callable - fall through to default impl
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Fall through to existing Rust dispatch
+    // Pure primitive: no typeclass dispatch. Showable instances in stdlib/prelude.llt
+    // are type-checker annotations only (same pattern as Addable/builtin-add for arithmetic).
+    // Dispatch was removed because ShowableInt.str uses `str: str` (the builtin itself),
+    // causing infinite recursion when dispatched back into builtin_str.
     // Estimate capacity: average string ~20 bytes, typical config keys ~10 bytes.
     // Conservative underestimate better than zero capacity.
     let estimated_capacity = args.len() * 10;
@@ -713,16 +655,14 @@ mod tests {
         );
     }
 
-    // --- try_dispatch_method fast-path (no Showable instance registered) ---
+    // --- builtin_str: pure primitive (no Showable dispatch) ---
 
-    /// When no Showable instance is registered, `builtin_str` falls through to
-    /// the built-in stringify path. The result is the decimal representation of
-    /// the integer, proving the fast-path was taken (not an instance method).
+    /// `builtin_str` is a pure primitive: no typeclass dispatch.
+    /// The result is the decimal representation of the integer.
     #[test]
     fn test_str_no_showable_instance_falls_through() {
         let span = call_span();
         let ctx = test_ctx();
-        // registered_classes is empty in a fresh context → Showable fast-path not taken.
         let int_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
         let result = builtin_str(BuiltinArgs {
             args: &[int_thunk],
