@@ -1148,6 +1148,22 @@ impl EvalError {
         }
     }
 
+    pub fn kind_mismatch(expected: &str, got: &str, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::KindMismatch {
+                expected: expected.to_string(),
+                got: got.to_string(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
     pub fn named_arg_rejected(builtin: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::NamedArgRejected { builtin },

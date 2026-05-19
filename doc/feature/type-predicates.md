@@ -59,7 +59,7 @@ is no runtime distinction between user-defined closures and builtins via
 In the current type system, all predicates have type `Any → Bool`. When
 bidirectional typing is adopted, they serve as narrowing witnesses:
 the type checker recognizes `[if [int? x] ...]` and narrows `x` to
-`Int` in the true branch (see `doc/whatif/narrowing.md` Pattern 2). This
+`Int` in the true branch (see `doc/06-type-inference.md §Type Narrowing`). This
 requires no changes to the predicates themselves — only to the type
 checker's condition analysis.
 
@@ -105,10 +105,9 @@ list?: [fn [xs]
 
 - doc/01-introduction.md §Principle 1: Dicts Are Fundamental — "A list is equivalent
   to a dict with integer keys." Motivates the absence of `list?`.
-- doc/whatif/pattern-matching.md §Phase 1 — type predicates as the
-  first step toward pattern matching.
-- doc/whatif/narrowing.md — type predicates as narrowing condition patterns
-  for path-sensitive type refinement.
+- doc/14-patterns.md — type predicates integrate with pattern matching.
+- doc/06-type-inference.md §Type Narrowing — type predicates as narrowing
+  condition patterns for path-sensitive type refinement.
 - Tobin-Hochstadt, S. & Felleisen, M. (2010). "Logical types for untyped
   languages." In *ICFP '10*, pp. 117–128. ACM.
   — Occurrence typing: type predicates as the primitive for flow-sensitive

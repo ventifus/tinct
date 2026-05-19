@@ -4735,38 +4735,8 @@ fn expr_to_pattern_with_guard(
         Expr::Str(s) => (Pattern::Literal(LiteralPattern::Str(s)), None),
         Expr::Dict(entries) => {
             // Dict pattern: [key1: pat1  key2: pat2] or [key: pat ...]
-            // Check for `seq` keyword for seq patterns: [seq h t]
-            // Seq pattern has 3 auto-indexed entries: "seq" (bare word), h, t
-            if entries.len() == 3 {
-                if let Some(first_entry) = entries.first() {
-                    // Check if first entry is auto-indexed and is VarRef("seq")
-                    if first_entry.node.key.is_none() {
-                        if let Expr::VarRef { ref name, .. } = first_entry.node.value.node {
-                            if name == "seq" {
-                                // This is a seq pattern: [seq h t]
-                                if let Some(second_entry) = entries.get(1) {
-                                    if let Some(third_entry) = entries.get(2) {
-                                        let head_pat =
-                                            expr_to_pattern((*second_entry.node.value).clone())?;
-                                        let tail_pat =
-                                            expr_to_pattern((*third_entry.node.value).clone())?;
-                                        return Ok((
-                                            Spanned::new(
-                                                Pattern::Seq {
-                                                    head: Box::new(head_pat),
-                                                    tail: Box::new(tail_pat),
-                                                },
-                                                span,
-                                            ),
-                                            None,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // Note: [seq h t] always parses as an implied Call (never a Dict), so seq patterns
+            // are handled exclusively in the Call branch below via ("seq", 2) arm.
 
             // Regular dict pattern
             let mut fields = Vec::new();

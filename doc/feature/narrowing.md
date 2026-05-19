@@ -41,8 +41,7 @@ refined bindings for variables mentioned in `cond`.
 
 Without union types, the result type uses the LUB (least upper bound) of
 `τ₁` and `τ₂`. With the current type lattice, this is often `Any` or the
-shared base type. With union types (see `doc/whatif/union-types.md`), the
-result is `τ₁ | τ₂`.
+shared base type. With union types, the result is `τ₁ | τ₂`.
 
 ### Narrowing Patterns
 
@@ -177,7 +176,7 @@ The current implementation narrows `if` only.
 
 1. **No false-branch narrowing.** The false branch gets the original unrefined
    environment. False-branch narrowing (`x : ~Int` after `[int? x]` fails) is out
-   of scope — see `doc/whatif/boolean-algebraic-subtyping.md`.
+   of scope — see `doc/feature/boolean-algebraic-subtyping.md`.
 
 2. **Only `if`.** `cond`, `when`, `unless`, and user-defined
    conditional patterns are not narrowed. Explicit TypeAssert is the
