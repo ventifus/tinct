@@ -1,0 +1,4 @@
+# blake3 : compute blake3 hash of a string, returns 64-char lowercase hex
+[blake3 "hello"]
+=== out
+String("ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f")

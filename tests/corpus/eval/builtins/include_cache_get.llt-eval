@@ -1,0 +1,4 @@
+# include-cache-get : returns [Missing] for a key not in the cache
+[include-cache-get "missing-key"]
+=== out
+Variant(Missing, Null)

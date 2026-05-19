@@ -205,11 +205,11 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [ ] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`) — **SKIPPED**: `builtin_include` uses `RustRegistry` for `[include %rust "..."]`; cannot delete without replacing include pipeline
 - [ ] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`) — **SKIPPED**: depends on include pipeline replacement
 - [ ] Delete `eval_file_with_input`, `eval_document`, `run_eval` from `src/eval_pipeline.rs`; delete file entirely once empty — **SKIPPED**: used throughout lib.rs public API and builtins.rs; cannot delete without major refactoring
-- [ ] Delete `materialize` call on accumulator in `builtin_reduce` (`src/builtins_seq_reduce.rs:80-81`) — pass thunk directly as next acc
-- [ ] Delete shadow guard from `expand` (`src/expand.rs:174`)
+- [x] Delete `materialize` call on accumulator in `builtin_reduce` (`src/builtins_seq_reduce.rs:80-81`) — pass thunk directly as next acc
+- [x] Delete shadow guard from `expand` (`src/expand.rs:174`)
 - [ ] Add `document_to_dict` emission of `stage: [Runtime] | [Type]` nominal variant (`src/ast_dict.rs`)
 - [ ] Update `src/main.rs` to call tinct `cli-pipeline` function directly after prelude loads; construct `files_thunk` as positional Dict from `Vec<String>` file paths; pass `%pwd` DirCap as third argument
-- [ ] Tests: corpus tests for `load`, `blake3`, `cap-identity`, `include-cache-*` (`tests/corpus/eval/builtins/`) — `expand`, `eval` tests deferred with their implementations
+- [x] Tests: corpus tests for `blake3`, `include-cache-get` added (`tests/corpus/eval/builtins/`); `cap-identity` skipped (requires real filesystem/DirCap); `load` tests deferred with `expand`/`eval`
 - [x] Verify `just test-lib` passes
 
 ### include-decomp-prelude: Add pipeline functions to prelude.llt

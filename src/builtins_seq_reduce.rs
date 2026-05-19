@@ -5,7 +5,7 @@
 //! collection to dispatch on Dict vs Seq, then produce lazy or inherently-eager
 //! results depending on the operation.
 //!
-//! - `reduce`: eagerly iterative (materializes each accumulator step to avoid O(N) Rust stack depth)
+//! - `reduce`: Dict path builds lazy PendingCall chain (accumulator passed as thunk); Seq path materializes each step eagerly (same rationale: O(N) Rust stack depth)
 //! - `join`: inherently eager (must stringify all elements)
 //! - `concat`: lazy for Seq (PendingBuiltin step chain), eager for Dict (full merge)
 //!
@@ -26,10 +26,10 @@ use crate::eval::materialize;
 use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
 /// `reduce`: Fold a function over a Dict or Seq.
-/// Inherently materializing: accumulator pattern requires sequential evaluation.
 ///
-/// - For Dict: build a chain of PendingCall thunks, one per value
-/// - For Seq: use recursive helper to build lazy chain
+/// - For Dict: build a chain of PendingCall thunks (acc stays as thunk, not materialized per step).
+///   The final accumulator is returned as a thunk; the caller forces it on demand.
+/// - For Seq: eagerly materialized per step (avoids O(N) Rust stack depth from lazy chain forcing).
 ///
 /// Args: (f, init, xs)
 pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -60,10 +60,10 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     };
     match xs {
         Value::Dict(ref map) => {
-            // Eagerly iterate: materialize each f(acc, elem) step before the next.
-            // A lazy PendingCall chain would build O(N) nested thunks that, when
-            // forced, recurse N levels deep in the Rust call stack — overflowing for
-            // large collections (e.g. reducing over thousands of lines of text).
+            // Eagerly iterate the dict, but pass each step thunk directly as the next
+            // accumulator without materializing it. The caller decides when to force
+            // the final accumulator. Individual step thunks are PendingCall and will be
+            // forced lazily by the materializer when the result is actually needed.
             let mut acc = init_thunk;
             for (_key, value_thunk_id) in map.iter() {
                 let value_thunk = ctx.get_thunk(*value_thunk_id);
@@ -77,8 +77,7 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     Some(Rc::from("reduce")),
                     Rc::clone(&ctx),
                 ));
-                let step_val = materialize(&step_thunk, Some(&call_span), &ctx)?;
-                acc = Rc::new(Thunk::new_materialized(step_val, call_span));
+                acc = step_thunk;
             }
             Ok(acc)
         }
