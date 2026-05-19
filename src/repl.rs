@@ -928,7 +928,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
     fn test_session_depth_exhaustion() {
         // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
         let result = std::thread::Builder::new()

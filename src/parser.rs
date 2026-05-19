@@ -4176,6 +4176,20 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             i += 1;
                             continue;
                         }
+                        Some(StackFrame::Match {
+                            ref mut pending_pattern_expr,
+                            ..
+                        }) => {
+                            // Pattern keyword in match: store as VarRef in pending_pattern_expr
+                            // (F-10: was missing, causing let/case before `:` in match to fall
+                            // through to the `_ =>` VarRef push instead of setting the pattern)
+                            let pattern_expr =
+                                Spanned::new(Expr::var_ref(keyword_str.to_string()), span);
+                            *pending_pattern_expr = Some(pattern_expr);
+                            last_significant_span = Some(span);
+                            i += 1;
+                            continue;
+                        }
                         _ => {
                             // Not in a key-accepting context; treat as VarRef
                             let expr = Spanned::new(Expr::var_ref(keyword_str.to_string()), span);

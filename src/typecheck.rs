@@ -13840,6 +13840,6 @@ mod tests {
         out.push_str(&format!("  eval: {:?}\n  warn: {:?}\n", result3, tc3));
         out.push_str(&format!("=== case4 ([Some 42] maybe) ===\n"));
         out.push_str(&format!("  eval: {:?}\n  warn: {:?}\n", result4, tc4));
-        std::fs::write("/workspace/do_infer_diagnostics.txt", &out).ok();
+        eprintln!("{}", out);
     }
 }

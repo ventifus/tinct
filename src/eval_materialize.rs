@@ -197,7 +197,6 @@ pub(crate) struct PendingCallDispatchData {
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct GuardedValidateData {
     pub(crate) thunk: Rc<Thunk>,
-    pub(crate) inner: Rc<Thunk>,
     pub(crate) expected: Type,
     pub(crate) field_path: Box<Vec<String>>,
     pub(crate) guard_span: Span,
@@ -698,7 +697,6 @@ pub(crate) fn force_step(
         };
         stack.push(Cont::GuardedValidate(Box::new(GuardedValidateData {
             thunk: Rc::clone(thunk),
-            inner: Rc::clone(&inner),
             expected: expected.clone(),
             field_path: Box::new(field_path),
             guard_span,
@@ -1013,7 +1011,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
         Cont::GuardedValidate(data) => {
             let GuardedValidateData {
                 thunk,
-                inner,
                 expected,
                 mut field_path,
                 guard_span,
@@ -1121,9 +1118,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
-                            // Add secondary span if different from definition span
-                            if inner.span != inner_span {
-                                err = err.with_secondary_span(inner.span, "value produced here");
+                            // Add secondary span if inner value was produced at a different
+                            // location than the assertion site (guard_span).
+                            if inner_span != guard_span {
+                                err = err.with_secondary_span(inner_span, "value produced here");
                             }
                             // Attach blame label if present (gradual typing boundary)
                             if let Some(ref label) = blame_label {
@@ -1170,9 +1168,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
-                            // Add secondary span if different from definition span
-                            if inner.span != inner_span {
-                                err = err.with_secondary_span(inner.span, "value produced here");
+                            // Add secondary span if inner value was produced at a different
+                            // location than the assertion site (guard_span).
+                            if inner_span != guard_span {
+                                err = err.with_secondary_span(inner_span, "value produced here");
                             }
                             // Attach blame label if present (gradual typing boundary)
                             if let Some(ref label) = blame_label {
@@ -2181,9 +2180,7 @@ mod tests {
         );
     }
 
-    // Test fails - needs investigation of test setup (test_ctx/test_env helpers may not properly initialize EvalState)
     #[test]
-    #[ignore]
     fn test_guarded_type_assertion_failure_has_secondary_span() {
         // Test that when a Guarded type assertion fails, the error includes
         // a secondary_span pointing to where the value was produced (if different
@@ -2238,9 +2235,7 @@ mod tests {
         );
     }
 
-    // Test fails - needs investigation of test setup (test_ctx/test_env helpers may not properly initialize EvalState)
     #[test]
-    #[ignore]
     fn test_guarded_secondary_span_suppressed_when_same_as_definition() {
         // Test that when the value production site is the same as the assertion site,
         // secondary_span is NOT set (would be redundant).
