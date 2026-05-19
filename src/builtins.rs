@@ -278,6 +278,27 @@ pub(crate) fn require_dict(
     match value {
         Value::Dict(map) => Ok(map),
         Value::Overlay(l, r) => flatten_overlay(&l, &r, name, ctx, call_span),
+        Value::Variant { payload, .. } => {
+            // Auto-unpack variant payload — consistent with DotAccess behavior
+            match payload {
+                Some(payload_id) => {
+                    let payload_thunk = ctx.get_thunk(payload_id);
+                    let payload_val =
+                        crate::eval::materialize(&payload_thunk, Some(&call_span), ctx)?;
+                    // Recursively try to extract dict from payload
+                    require_dict(name, payload_val, def_span, ctx, call_span)
+                }
+                None => {
+                    let err = EvalError::type_mismatch_ctx(
+                        name.to_string(),
+                        "Dict",
+                        "unit variant (no payload)",
+                        def_span,
+                    );
+                    Err(err.into())
+                }
+            }
+        }
         other => {
             let err =
                 EvalError::type_mismatch_ctx(name.to_string(), "Dict", other.type_name(), def_span);
@@ -1882,6 +1903,10 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
                     }
                 };
             alias_from_public(&env, "builtin-macro-injects", "macro-injects");
+            // Meta primitive aliases — prelude wrappers use these stable names
+            alias_from_public(&env, "builtin-tag-of", "tag-of");
+            alias_from_public(&env, "builtin-variant", "variant");
+            alias_from_public(&env, "builtin-llt-repr", "llt-repr");
         }
         "type-core" => {
             // Core primitives needed for type system implementation

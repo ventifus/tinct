@@ -21,21 +21,19 @@
 # Expr type — the central expression type
 # Matches the Rust Expr enum in src/ast.rs
 [type Expr
-  # Literals
-  [Int        value: Int]
-  [Float      value: Float]
-  [Bool       value: Bool]
-  [Str        value: Stringing]
+  # Literals — all literal types share the Literal constructor
+  # kind: "int"|"float"|"bool"|"str"  value: the literal value  bare: true if unquoted
+  [Literal    kind: String  value: Unknown  bare: Bool]
 
   # Variables and references
   [VarRef     name: String]
-  [DotAccess  expr: Expr  field: Unknown]  # field is DotKey (Str or Int)
+  [DotAccess  target: Expr  field: Unknown]  # field is DotKey (Str or Int)
   [Pipe       lhs: Expr  rhs: Expr]
 
   # Collections and calls
   [Sequential exprs: [Seq Expr]]
   [Dict       entries: [Seq Entry]]
-  [Call       func: Expr  args: [Seq Expr]]  # simplified: ignores named_args, implied flag
+  [Call       fn: Expr  args: [Seq Expr]  named-args: [Seq Unknown]  implied: Bool]
 
   # Functions and types
   [Fn         params: [Seq Unknown]  body: Expr]  # params is Vec<Spanned<Param>> — opaque from LLT
@@ -52,7 +50,7 @@
   # Macros and quoting
   [Quote          expr: Expr]
   [Unquote        expr: Expr]
-  [UnquoteSplice  expr: [Seq Expr]]
+  [UnquoteSplice  expr: Expr]
   [DefMacro       name: String  params: [Seq Unknown]  body: Expr]  # params is Vec<Spanned<Param>>
   [MacroDecl      name: String  params: Expr  body: Expr]
   [Splice         forms: [Seq Expr]]
@@ -104,23 +102,18 @@ Examples (when implemented):
 #
 # For reconstructing existing identifiers from extracted name fields.
 # Distinct from gensym (which generates fresh unforgeable names).
-#
-# NOTE: This is a placeholder implementation until Expr variant constructors
-# are available (macros-v2 design §ast_to_dict migration).
 ident: [fn@[return: Unknown  doc: """
 Construct a VarRef AST node from a string name.
 
 Used in macro bodies to create identifier nodes from computed or
 extracted name strings. For generating fresh names, use gensym instead.
 
-TODO: Implement once Expr variant constructors are available.
-Currently returns a dict with type field.
+Example:
+  [ident "counter"]  => {type: "var", name: "counter"}
 
-Example (when implemented):
-  [ident "counter"]  => VarRef(name: "counter")
+Note: returns legacy dict form (not Variant) until deep-materialize-variant sprint
+makes it safe to return [variant "VarRef" [name: name]].
 """] [let name@String]
-  # TODO: [VarRef name: name] once variant constructors exist
-  # For now, return old-style AST dict
-  [type: "var-ref"  name: name]]
+  [type: "var"  name: name]]
 
 ]

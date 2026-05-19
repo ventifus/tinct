@@ -640,18 +640,24 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
         }
         crate::value::ThunkState::Unevaluated { expr, .. } => {
-            // Thunk contains an unevaluated expression — convert AST to dict WITHOUT evaluating
+            // Thunk contains an unevaluated expression — convert AST to variant WITHOUT evaluating
             let opts = crate::ast_dict::AstToDictOpts::default();
             let ast_thunk = crate::ast_dict::ast_to_dict_expr(expr, &opts, &ctx)?;
-            // The ast_to_dict_expr returns a thunk containing a dict, but we need
-            // to extract the dict. Since ast_to_dict_expr creates a Materialized thunk,
-            // this is safe (no evaluation happens).
+            // The ast_to_dict_expr now returns a Variant(tag, Dict), so just return the whole thing
             match ast_thunk.try_get_materialized() {
-                Some(Value::Dict(d)) => d,
+                Some(Value::Variant { .. }) => {
+                    // Return the variant directly (ast-of now returns Variant, not Dict)
+                    return Ok(ast_thunk);
+                }
+                Some(Value::Dict(_)) => {
+                    // Legacy path: if somehow we get a dict, return it
+                    return Ok(ast_thunk);
+                }
                 _ => {
-                    // This shouldn't happen — ast_to_dict_expr always returns Materialized(Dict)
+                    // This shouldn't happen — ast_to_dict_expr always returns Materialized(Variant)
                     return Err(EvalError::internal(
-                        "ast_to_dict_expr did not return a materialized dict".to_string(),
+                        "ast_to_dict_expr did not return a materialized variant or dict"
+                            .to_string(),
                         call_span,
                     )
                     .into());
@@ -815,7 +821,11 @@ pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 }
 
-/// `variant`: Create a unit variant with the given tag.
+/// `variant`: Create a variant with the given tag and optional payload.
+///
+/// Forms:
+/// - `[variant "Tag"]` — unit variant (no payload)
+/// - `[variant "Tag" payload]` — variant with payload (stored as ThunkId)
 pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -823,27 +833,65 @@ pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
-    let tag_val = crate::builtins::expect_one_arg("variant", args, named, &ctx, call_span)?;
-    match tag_val {
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => {
-            let tag = &source[start..end];
-            ok_val(
-                Value::Variant {
-                    tag: tag.to_string(),
-                    payload: None,
-                },
-                call_span,
-            )
+    crate::builtins::reject_named("variant", named, call_span)?;
+
+    match args.len() {
+        1 => {
+            // Unit variant: [variant "Tag"]
+            let tag_thunk = &args[0];
+            let tag_val = crate::eval::materialize(tag_thunk, Some(&call_span), &ctx)?;
+            match tag_val {
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => {
+                    let tag = &source[start..end];
+                    ok_val(
+                        Value::Variant {
+                            tag: tag.to_string(),
+                            payload: None,
+                        },
+                        call_span,
+                    )
+                }
+                _ => Err(Box::new(EvalError::type_mismatch(
+                    "String",
+                    tag_val.type_name(),
+                    call_span,
+                ))),
+            }
         }
-        _ => Err(Box::new(EvalError::type_mismatch(
-            "String",
-            tag_val.type_name(),
-            call_span,
-        ))),
+        2 => {
+            // Variant with payload: [variant "Tag" payload]
+            let tag_thunk = &args[0];
+            let payload_thunk = &args[1];
+            let tag_val = crate::eval::materialize(tag_thunk, Some(&call_span), &ctx)?;
+            match tag_val {
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => {
+                    let tag = &source[start..end];
+                    // Store the payload as a ThunkId (lazy, won't be forced until accessed)
+                    let payload_id = ctx.alloc_thunk(Rc::clone(payload_thunk));
+                    ok_val(
+                        Value::Variant {
+                            tag: tag.to_string(),
+                            payload: Some(payload_id),
+                        },
+                        call_span,
+                    )
+                }
+                _ => Err(Box::new(EvalError::type_mismatch(
+                    "String",
+                    tag_val.type_name(),
+                    call_span,
+                ))),
+            }
+        }
+        n => Err(Box::new(EvalError::arity_mismatch(2, n, call_span))),
     }
 }
 

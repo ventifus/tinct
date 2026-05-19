@@ -1762,6 +1762,16 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Rc<EvalContext>) -> EvalResult
             Expr::Str(source[*start..*end].to_string()),
             span,
         )),
+        Value::Variant { .. } => {
+            // Variant form of an AST node — use dict_to_ast directly
+            crate::ast_dict::dict_to_ast(value, ctx).map_err(|err| {
+                EvalError::internal(
+                    format!("unquote result Variant is not a valid AST: {}", err),
+                    span,
+                )
+                .into()
+            })
+        }
         Value::Dict(dict) => {
             // Check if this is an AST dict (has a "type" field)
             if dict.contains_key(&Key::String("type".to_string())) {

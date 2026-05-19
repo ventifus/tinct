@@ -4,7 +4,7 @@
 
 **Supersedes:**
 - [`ast-value-types.md`](ast-value-types.md) — fully absorbed
-- [`async-eval.md`](async-eval.md) — fully absorbed
+- [`async-eval.md`](async-eval.md) — core async runtime absorbed here; serve/connect layers and networking content extracted to [`lib-net-v3.md`](lib-net-v3.md)
 
 **Refines:** [`include-decomposition.md`](include-decomposition.md) — replaces the serialized-Dict representation for `load`/`expand`/`eval` with native AST value types; the self-hosted pipeline structure is unchanged.
 
@@ -40,13 +40,15 @@ Every builtin that performs I/O calls `block_on` from `src/async_rt.rs` — a th
 
 Three interlocking changes, implemented as one coherent rewrite:
 
-1. **AST Redesign** — split `Expr` into `SurfaceExpr` (immutable, `Send + Sync`, no `RefCell`, exposed to tinct) and `CoreExpr` (de Bruijn indices as plain fields, evaluator-internal only). Move compile-time-only declaration forms out of the expression enum. Assign stable `NodeId` to every node; move typechecker annotations into side tables.
+1. **AST Redesign** — split `Expr` into `SurfaceExpression` (immutable, `Send + Sync`, no `RefCell`, exposed to tinct) and `CoreExpr` (de Bruijn indices as plain fields, evaluator-internal only). Move compile-time-only declaration forms out of the expression enum. Assign stable `NodeId` to every node; move typechecker annotations into side tables.
 
-2. **Native AST Value Types** — `Value::AstFile(Arc<SurfaceFile>)`, `Value::AstDoc(Arc<SurfaceDoc>)`, `Value::AstExpr(Arc<Spanned<SurfaceExpr>>)`. Declare `AstExpr`, `AstDoc`, `AstFile` as nominal types in prelude; tinct code pattern-matches on `AstExpr` variants with static typing. `load` returns `AstFile`. `expand` takes and returns `AstFile`. `eval` takes `[Seq AstExpr]`. `dict_to_file` is never written. `dict_to_ast` is deleted.
+2. **Native AST Value Types** — `Value::Program(Arc<SurfaceProgram>)`, `Value::Document(Arc<SurfaceDocument>)`, `Value::Expression(Arc<SurfaceNode>)`. Declare `Expression`, `Document`, `Program` as nominal types in prelude; tinct code pattern-matches on `Expression` variants with static typing and lazy field binding. `load` returns `Program`. `expand` takes and returns `Program`. `eval` takes `[Seq Expression]`. `dict_to_file` is never written. `dict_to_ast` is deleted.
 
 3. **Async Runtime** — `eval` and `materialize` become `async fn`. `Rc<T>` → `Arc<T>` throughout; `RefCell<T>` → `RwLock<T>` or `Mutex<T>`; `ThunkState` replaced by an `OnceLock`-based pair. Multi-thread Tokio with work-stealing distributes independent thunks across all cores. `task`/`await`/`channel`/`select` primitives. These are one refactor: every file is touched for the `async fn` contagion anyway; the `Rc`→`Arc` migration is mechanical on top.
 
-These three parts are inseparable. The `Rc`→`Arc` migration (Part 3) requires all `Value`s to be `Send`; `Value::AstExpr` wrapping a type with `RefCell` fields is not `Send` — so AST redesign (Part 1) is a prerequisite. The native value types (Part 2) must use `Arc` to be compatible with the parallel runtime; doing them with `Rc` first and migrating later opens the same files twice. The thunk's internal `UnevaluatedState::Expr` stores `CoreExpr` (Part 1), not raw `Expr`. All three parts form one coherent implementation sprint.
+These three parts are inseparable. The `Rc`→`Arc` migration (Part 3) requires all `Value`s to be `Send`; `Value::Expression` wrapping a type with `RefCell` fields is not `Send` — so AST redesign (Part 1) is a prerequisite. The native value types (Part 2) must use `Arc` to be compatible with the parallel runtime; doing them with `Rc` first and migrating later opens the same files twice. The thunk's internal `UnevaluatedState::Expr` stores `CoreExpr` (Part 1), not raw `Expr`. All three parts form one coherent implementation sprint.
+
+**Designed for future distribution.** The design choices here — `Arc`-based thunks, `OnceLock` "evaluate exactly once" semantics, `CoreExpr` as a pure data tree satisfying the serializability invariant, and the capability model that already identifies I/O-free computations — create the conditions under which distributing evaluation across machines becomes tractable.
 
 ---
 
@@ -56,41 +58,61 @@ These three parts are inseparable. The `Rc`→`Arc` migration (Part 3) requires 
 
 The current `Expr` enum serves every phase of the pipeline — parser, macro expander, resolver, typechecker, evaluator — with RefCell fields mutated in place by different passes. The redesign splits this into two clean types with a lowering pass between them.
 
-**`SurfaceExpr`** — what the parser produces and what tinct code sees:
+**The `Surface*` family** (`SurfaceExpression`, `SurfaceDocument`, `SurfaceProgram`, `SurfaceDeclaration`, `SurfaceNode`) exists for one purpose: to be the immutable, `Send + Sync`, pointer-stable Rust representation that backs the tinct-visible nominal types (`Expression`, `Document`, `Program`, `Declaration`). These types are what `load` and `expand` produce, what `Value::Program`/`Value::Document`/`Value::Expression` wrap, and what tinct metaprogramming code operates on via match dispatch and field access. They contain no `RefCell`, no interior mutation, and no evaluator-specific data. They are the source-of-truth representation for tooling (formatters, linters, docgen, macros).
+
+**The `Core*` family** (`CoreExpr`) exists for one purpose: to be the evaluator's private, optimised, already-resolved internal representation. It embeds de Bruijn coordinates as plain fields, is never exposed to tinct code, and can change freely without affecting the tinct API.
+
+**`SurfaceExpression`** — what the parser produces and what tinct code sees:
 - Immutable; no `RefCell` fields
 - `Arc`-wrapped at every recursive position
-- Every node has a stable `NodeId` assigned at parse time
+- Node identity derived from `Arc` pointer — stable for the Arc's lifetime, no counter required
 - Represents the user-visible structure: names, annotations, source forms
-- Maps 1:1 to the tinct `AstExpr` type declaration
-- Wrapped in `Value::AstExpr` — the representation tinct metaprogramming operates on
+- Maps 1:1 to the tinct `Expression` type declaration
+- Wrapped in `Value::Expression` — the representation tinct metaprogramming operates on
 
 **`CoreExpr`** — what the evaluator operates on:
 - De Bruijn coordinates as plain `u32` fields (no `RefCell`, no `Option`)
-- Produced by the lowering pass from `SurfaceExpr`
+- Produced by the lowering pass from `SurfaceExpression`
 - Stored inside `UnevaluatedState::Expr` in each thunk
 - Never exposed to tinct code
 - Can be optimized freely (e.g., unboxed closures, direct field access) without affecting the tinct API
 
 ### Node Identity
 
-Every `SurfaceExpr` node carries `id: NodeId` — a `u32` assigned sequentially at parse time and stable across the node's lifetime. `NodeId` enables side tables indexed by node identity without pointer aliasing:
+`SurfaceNode` is the dedicated wrapper for expression nodes — it replaces `Spanned<SurfaceExpression>` everywhere expressions appear. `Spanned<T>` remains unchanged for non-expression types (params, entries, annotations, match arms).
 
 ```rust
-pub struct NodeId(u32);
-
-// In the resolver:
-pub struct ResolutionTable(HashMap<NodeId, (u32, u32)>);   // level, slot
-
-// In the typechecker:
-pub struct TypeAnnotationTable(HashMap<NodeId, Type>);      // resolved_type for TypeAssert
+pub struct SurfaceNode {
+    pub expr: SurfaceExpression,
+    pub span: Span,
+    // No id field — identity is the Arc pointer itself
+}
 ```
 
-`ResolutionTable` replaces `VarRef.resolved: RefCell<...>`. `TypeAnnotationTable` replaces `TypeAssert.resolved_type: RefCell<...>`. Both are produced by their respective passes and threaded through the pipeline as explicit data rather than being mutated into the AST.
-
-### `SurfaceExpr`
+`NodeId` is derived from `Arc<SurfaceNode>` pointer identity — never stored in any node, never assigned by a counter:
 
 ```rust
-pub enum SurfaceExpr {
+pub struct NodeId(usize);  // raw pointer value
+
+fn node_id(arc: &Arc<SurfaceNode>) -> NodeId {
+    NodeId(Arc::as_ptr(arc) as usize)
+}
+
+// Produced by the resolver pass — replaces VarRef.resolved: RefCell<...>
+pub struct ResolutionTable(HashMap<NodeId, (u32, u32)>);    // level, slot
+
+// Produced by the typechecker — replaces TypeAssert.resolved_type: RefCell<...>
+pub struct TypeAnnotationTable(HashMap<NodeId, Type>);
+```
+
+`Arc` allocation guarantees unique addresses for all live objects — no global counter, no thread coordination. Works for synthetic nodes from macro expansion. A `NodeId` is valid only while its `Arc<SurfaceNode>` is alive; tables are always paired with the `SurfaceProgram` that keeps all nodes alive.
+
+**ResolutionTable caching:** `IncludeCacheEntry::Cached` stores three things together: the result thunk, the `Arc<ResolutionTable>`, and the `Arc<TypeAnnotationTable>`. The include cache keeps `Arc<SurfaceProgram>` alive, so a cached file's nodes have stable pointers for the process lifetime — the same pointer-derived `NodeId`s apply on every access. Both tables are immutable once produced; re-running either pass on a cache hit is pure waste. The `TypeAnnotationTable` may be evicted after all thunks for a file complete lowering (since `resolved_type` is then embedded in `CoreExpr`), while `ResolutionTable` must be retained for the lifetime of the cached file (needed whenever a new `Surface` thunk for that file is created).
+
+### `SurfaceExpression`
+
+```rust
+pub enum SurfaceExpression {
     // Literals
     Int(i64),
     Float(f64),
@@ -102,37 +124,39 @@ pub enum SurfaceExpr {
     VarRef { name: String, escaped: bool },
 
     // Access
-    DotAccess { expr: Arc<Spanned<SurfaceExpr>>, field: DotKey },
-    Pipe       { lhs: Arc<Spanned<SurfaceExpr>>, rhs: Arc<Spanned<SurfaceExpr>> },
+    DotAccess { expr: Arc<SurfaceNode>, field: DotKey },
+    // Pipe is surface-only — the lowering pass rewrites it to Call before evaluation.
+    // Kept in SurfaceExpression (and Expression) so formatters and metaprogramming tools
+    // can distinguish pipe-form from explicit call-form in user source.
+    Pipe       { lhs: Arc<SurfaceNode>, rhs: Arc<SurfaceNode> },
 
     // Sequential let* scoping (multi-expr fn bodies, match arm bodies)
-    Sequential(Vec<Arc<Spanned<SurfaceExpr>>>),
+    Sequential(Vec<Arc<SurfaceNode>>),
 
     // Dict/list literal — entry key is None for auto-indexed (positional) entries
     Dict(Vec<Spanned<SurfaceEntry>>),
 
     // Function call — implied: true = [f x y], false = [call f x y]
     Call {
-        func: Arc<Spanned<SurfaceExpr>>,
-        args: Vec<Arc<Spanned<SurfaceExpr>>>,
+        func: Arc<SurfaceNode>,
+        args: Vec<Arc<SurfaceNode>>,
         named_args: Vec<Spanned<SurfaceNamedArg>>,
         implied: bool,
     },
 
     // Function definition — desugared: true = synthesised by $_ desugaring
-    // return_ann and resolved_type both live in SurfaceExpr, not side tables,
-    // because return_ann is surface-level user input (not a pass result)
+    // return_ann is surface-level user input, not a pass result — lives here, not in a side table
     Fn {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<SurfaceParam>>,
-        body: Arc<Spanned<SurfaceExpr>>,
+        body: Arc<SurfaceNode>,
         desugared: bool,
     },
 
-    // Type assertion — no resolved_type field; lives in TypeAnnotationTable
+    // Type assertion — no resolved_type field; lives in TypeAnnotationTable keyed by NodeId
     TypeAssert {
         annotation: Spanned<Annotation>,
-        expr: Arc<Spanned<SurfaceExpr>>,
+        expr: Arc<SurfaceNode>,
     },
 
     // Annotated bare word, e.g. Fn@Number
@@ -143,20 +167,24 @@ pub enum SurfaceExpr {
 
     // Pattern matching
     Match {
-        scrutinee: Arc<Spanned<SurfaceExpr>>,
+        scrutinee: Arc<SurfaceNode>,
         arms: Vec<SurfaceMatchArm>,
     },
 
     // Quasiquoting
-    Quote(Arc<Spanned<SurfaceExpr>>),
-    Unquote(Arc<Spanned<SurfaceExpr>>),
-    UnquoteSplice(Arc<Spanned<SurfaceExpr>>),
+    Quote(Arc<SurfaceNode>),
+    Unquote(Arc<SurfaceNode>),
+    UnquoteSplice(Arc<SurfaceNode>),
 
-    // Binding and pattern forms (used in fn params, match arms, instance arms)
-    PatternDecl { bindings: Vec<Spanned<SurfaceExpr>> },
-    LetDecl     { bindings: Vec<Spanned<SurfaceExpr>> },
-    CaseArm     { pattern: Arc<Spanned<SurfaceExpr>>, body: Arc<Spanned<SurfaceExpr>> },
-    TypeApp     { func: Arc<Spanned<SurfaceExpr>>, arg: Arc<Spanned<SurfaceExpr>> },
+    // Binding and pattern forms. Structurally valid only in specific host positions:
+    // PatternDecl — inside InstanceDecl.arms[n].0 only
+    // CaseArm — inside Match.arms only
+    // LetDecl — inside Fn.params, ClassDecl, TypeAlias params, and CaseArm patterns
+    // The lowering pass raises an error if these appear in other expression positions.
+    PatternDecl { bindings: Vec<Arc<SurfaceNode>> },
+    LetDecl     { bindings: Vec<Arc<SurfaceNode>> },
+    CaseArm     { pattern: Arc<SurfaceNode>, body: Arc<SurfaceNode> },
+    TypeApp     { func: Arc<SurfaceNode>, arg: Arc<SurfaceNode> },
 
     // Placeholder `...` — evaluates to error when forced
     Placeholder,
@@ -166,44 +194,33 @@ pub enum SurfaceExpr {
 }
 ```
 
-Every `Spanned<SurfaceExpr>` also carries `id: NodeId`. In practice `Spanned` is extended:
-
-```rust
-pub struct Spanned<T> {
-    pub node: T,
-    pub span: Span,
-    pub id: NodeId,  // NEW — stable across clone, assigned at parse time
-}
-```
-
 ### Declaration Separation
 
-Compile-time-only forms — `TypeAlias`, `ClassDecl`, `InstanceDecl`, `DefMacro`, `MacroDecl`, `SyntaxClass`, `Splice` — are removed from `SurfaceExpr` and placed in a `SurfaceDecl` enum. They cannot produce runtime values and their presence in the expression enum forces every evaluator match arm to handle them (typically with `unreachable!()`).
+Compile-time-only forms — `TypeAlias`, `ClassDecl`, `InstanceDecl`, `DefMacro`, `MacroDecl`, `SyntaxClass`, `Splice` — are removed from `SurfaceExpression` and placed in a `SurfaceDeclaration` enum. They cannot produce runtime values and their presence in the expression enum forces every evaluator match arm to handle them (typically with `unreachable!()`).
 
 ```rust
-pub enum SurfaceDecl {
-    TypeAlias  { params: Vec<String>, body: Arc<Spanned<SurfaceExpr>> },
+pub enum SurfaceDeclaration {
+    TypeAlias  { params: Vec<String>, body: Arc<SurfaceNode> },
     ClassDecl  { name: String, params: Vec<String>, superclasses: Vec<(String, String)>,
-                 methods: Vec<Spanned<SurfaceEntry>>, determines: Vec<Spanned<SurfaceExpr>>,
-                 resolver: Option<Arc<Spanned<SurfaceExpr>>>, resolver_injective: bool },
-    InstanceDecl { class_name: String, arms: Vec<(Spanned<SurfaceExpr>, Vec<Spanned<SurfaceEntry>>)> },
-    DefMacro   { name: String, params: Arc<Spanned<SurfaceExpr>>, body: Arc<Spanned<SurfaceExpr>> },
-    MacroDecl  { name: String, params: Arc<Spanned<SurfaceExpr>>, body: Arc<Spanned<SurfaceExpr>> },
-    SyntaxClass { name: String, pattern: Arc<Spanned<SurfaceExpr>>, message: Option<String> },
-    Splice     (Vec<Spanned<SurfaceExpr>>),
+                 methods: Vec<Spanned<SurfaceEntry>>, determines: Vec<Arc<SurfaceNode>>,
+                 resolver: Option<Arc<SurfaceNode>>, resolver_injective: bool },
+    InstanceDecl { class_name: String, arms: Vec<(Arc<SurfaceNode>, Vec<Spanned<SurfaceEntry>>)> },
+    DefMacro   { name: String, params: Arc<SurfaceNode>, body: Arc<SurfaceNode> },
+    MacroDecl  { name: String, params: Arc<SurfaceNode>, body: Arc<SurfaceNode> },
+    SyntaxClass { name: String, pattern: Arc<SurfaceNode>, message: Option<String> },
+    Splice     (Vec<Arc<SurfaceNode>>),
 }
 ```
 
-`SurfaceDoc` expresses this split via `SurfaceItem`:
+`SurfaceDocument` expresses this split via `SurfaceItem`:
 
 ```rust
 pub enum SurfaceItem {
-    Expr(Spanned<SurfaceExpr>),
-    Decl(Spanned<SurfaceDecl>),
+    Expr(Arc<SurfaceNode>),
+    Decl(Spanned<SurfaceDeclaration>),
 }
 
-pub struct SurfaceDoc {
-    pub id: NodeId,
+pub struct SurfaceDocument {
     pub stage: Option<Stage>,
     pub name: Option<String>,
     pub items: Vec<SurfaceItem>,
@@ -212,8 +229,8 @@ pub struct SurfaceDoc {
     pub caps: Option<Spanned<Vec<(String, Annotation)>>>,
 }
 
-pub struct SurfaceFile {
-    pub documents: Vec<Spanned<SurfaceDoc>>,
+pub struct SurfaceProgram {
+    pub documents: Vec<Spanned<SurfaceDocument>>,
 }
 ```
 
@@ -233,15 +250,22 @@ pub enum CoreExpr {
     FreeVar(String),   // include-introduced bindings, unresolvable statically
 
     DotAccess { expr: Arc<Spanned<CoreExpr>>, field: DotKey },
-    Pipe       { lhs: Arc<Spanned<CoreExpr>>,  rhs: Arc<Spanned<CoreExpr>> },
+    // No Pipe variant — the lowering pass rewrites SurfaceExpression::Pipe { lhs, rhs }
+    // to CoreExpr::Call { func: rhs, args: [lhs], implied: true } before evaluation.
+    // Pipe is syntactic sugar; Sequential is semantic (multi-expression let* scoping).
     Sequential(Vec<Arc<Spanned<CoreExpr>>>),
     Dict(Vec<Spanned<CoreEntry>>),
     Call { func: Arc<Spanned<CoreExpr>>, args: Vec<Arc<Spanned<CoreExpr>>>,
            named_args: Vec<Spanned<CoreNamedArg>>, implied: bool },
     Fn   { return_ann: Option<Spanned<Annotation>>, params: Vec<Spanned<CoreParam>>,
            body: Arc<Spanned<CoreExpr>>, desugared: bool },
+    // Statically type-checked TypeAssert — resolved_type set from TypeAnnotationTable during lowering
     TypeAssert { annotation: Spanned<Annotation>, expr: Arc<Spanned<CoreExpr>>,
-                 resolved_type: Option<Type> },  // set during lowering from TypeAnnotationTable
+                 resolved_type: Type },
+    // TypeAssert for nodes absent from TypeAnnotationTable (macro-synthesized, bypassed typechecking)
+    // Falls back to default: if present, raises error otherwise. resolved_type: None is not valid.
+    RuntimeTypeCheck { annotation: Spanned<Annotation>, expr: Arc<Spanned<CoreExpr>>,
+                       default: Option<Arc<Spanned<CoreExpr>>> },
     Annotated  { name: String, annotation: Spanned<Annotation> },
     Rest(Option<String>),
     Match { scrutinee: Arc<Spanned<CoreExpr>>, arms: Vec<CoreMatchArm> },
@@ -257,9 +281,26 @@ pub enum CoreExpr {
 }
 ```
 
-The lowering pass `lower(surface: &Spanned<SurfaceExpr>, res: &ResolutionTable, types: &TypeAnnotationTable) -> Spanned<CoreExpr>` is called once per expression when the `eval` builtin receives `[Seq AstExpr]`. The result is stored in the thunk's `UnevaluatedState::Expr`. The lowering pass is fast (one tree walk) and its output is cached in the thunk — subsequent materializations find the thunk already resolved.
+**The lowering pass** `lower(node: &Arc<SurfaceNode>, res: &ResolutionTable, types: &TypeAnnotationTable) -> Spanned<CoreExpr>` converts a single expression. It is called **per-thunk** — when a thunk containing a `SurfaceNode` is first forced via the `OnceLock` protocol, it lowers at that moment. Desugaring is part of lowering — `desugar.rs` is deleted; its one responsibility (`Pipe` → `Call`) is handled here:
 
-`CoreExpr` is never exposed to tinct code. It lives only in thunks.
+- `SurfaceExpression::Pipe { lhs, rhs }` → `CoreExpr::Call { func: lower(rhs), args: [lower(lhs)], implied: true }` — pipe is syntactic sugar, eliminated before evaluation
+- `SurfaceExpression::Sequential` → `CoreExpr::Sequential` — kept; it carries real let\* semantics for multi-expression fn bodies Lowering is a pure function of `(SurfaceNode, ResolutionTable, TypeAnnotationTable)`; it commutes with evaluation order. Lowering cost is only paid for expressions that are actually evaluated — dead code is never lowered.
+
+**Phase-ordering invariant:** Both `ResolutionTable` and `TypeAnnotationTable` must be fully populated before any thunk is forced. This is enforced by phase ordering: `expand` → resolution → typecheck → evaluation. Macro expansion and `include` must not synthesize new `SurfaceNode` expressions after typechecking. The tables are immutable once produced; the lowering pass reads but never writes them.
+
+**TypeAssert lowering:** The lowering pass checks `type_table.get(&node_id(&arc))`:
+- **Present** → `CoreExpr::TypeAssert { resolved_type: *ty }` — statically verified
+- **Absent** (macro-synthesized, bypassed typechecking) → `CoreExpr::RuntimeTypeCheck { annotation, default }` — dynamic check, falls back to `default:` if present, raises error otherwise
+
+`resolved_type: Option<Type>` does not exist in `CoreExpr` — the two cases are always distinct variants. `None` is not a valid runtime state.
+
+**`CoreExpr::RuntimeTypeCheck` evaluation protocol:** (1) `expr` is forced — this is a materialization point. (2) The materialized value is checked against `annotation` using the same structural validation as the existing `TypeAssert` guard path. (3) If the check passes: return the materialized value. (4) If the check fails and `default` is present: return `default` as an unevaluated thunk (laziness preserved). (5) If the check fails and no `default`: raise `EvalError`. (6) The result (value or error) is cached in the thunk's `OnceLock` — permanently failed thunks do not retry.
+
+Lowering errors (malformed AST, impossible variant combinations) surface lazily when the thunk is forced — consistent with tinct's lazy semantics generally.
+
+`CoreExpr` is never exposed to tinct code. It lives only in thunks. Unlike `SurfaceExpression` which uses the dedicated `SurfaceNode` wrapper, `CoreExpr` recursive positions use `Arc<Spanned<CoreExpr>>` directly — no `CoreNode` type, since `CoreExpr` has no need for pointer-derived identity (it is never matched via `NodeId`).
+
+**Serializability invariant:** Every field in `CoreExpr` is a primitive, `String`, `u32`, `Box<Type>`, `Vec<T>`, or `Arc<Spanned<CoreExpr>>` — no opaque Rust handles, no `Arc<dyn ...>`, no trait objects. This makes `CoreExpr` a pure data tree, serializable by a simple recursive function. Any new `CoreExpr` variant must maintain this invariant.
 
 ---
 
@@ -268,12 +309,12 @@ The lowering pass `lower(surface: &Spanned<SurfaceExpr>, res: &ResolutionTable, 
 ### New Value Variants
 
 ```rust
-Value::AstFile(Arc<SurfaceFile>)
-Value::AstDoc(Arc<SurfaceDoc>)
-Value::AstExpr(Arc<Spanned<SurfaceExpr>>)
+Value::Program(Arc<SurfaceProgram>)
+Value::Document(Arc<SurfaceDocument>)
+Value::Expression(Arc<SurfaceNode>)
 ```
 
-`Arc` throughout — these variants are `Send + Sync`, compatible with the async parallel runtime from Part 3. No `Value::AstSpan` — spans remain plain Dicts (infrequently accessed, allocation cost is fine).
+`Arc` throughout — these variants are `Send + Sync`, compatible with the async parallel runtime from Part 3. No `Value::Span` — spans remain plain Dicts (infrequently accessed, allocation cost is fine). `dict?` returns `false` for all three; they are nominal types, not plain Dicts. Code guarding access should use `type-of` or `match`.
 
 ### Tinct Type Declarations
 
@@ -282,151 +323,169 @@ Added to prelude — the primitive signatures of `load`, `expand`, `eval`, `eval
 #### Supporting Types
 
 ```tinct
-AstSpan: [type [AstSpan
+Span: [type [Span
   file:       String
   start-line: Int
   start-col:  Int
   end-line:   Int
   end-col:    Int]]
 
-AstDotKey: [type [Ident String] [Index Int]]
+DotKey: [type [Ident String] [Index Int]]
 
-AstParam: [type [AstParam
+Parameter: [type [Parameter
   name:       String
-  annotation: AstAnnotation
+  annotation: Annotation
   variadic:   Bool
-  span:       AstSpan]]
+  span:       Span]]
 
-AstNamedArg: [type [AstNamedArg
+NamedArg: [type [NamedArg
   name:  String
-  value: AstExpr
-  span:  AstSpan]]
+  value: Expression
+  span:  Span]]
 
-AstEntry: [type [AstEntry
-  key:   AstExpr   # [] when auto-indexed
-  value: AstExpr
-  span:  AstSpan]]
+Entry: [type [Entry
+  key:   Expression   # [] when auto-indexed
+  value: Expression
+  span:  Span]]
 
-AstMatchArm: [type [AstMatchArm
-  pattern: AstPattern
-  guard:   AstExpr    # [] when no guard
-  body:    AstExpr
-  span:    AstSpan]]
+MatchArm: [type [MatchArm
+  pattern: Pattern
+  guard:   Expression    # [] when no guard
+  body:    Expression
+  span:    Span]]
 
-AstAnnotation: [type
+Annotation: [type
   [Simple       value: String]
-  [PropertyDict entries: [Seq AstAnnotationEntry]]
-  [Annotated    name: String  inner: AstAnnotation]]
+  [PropertyDict entries: [Seq AnnotationEntry]]
+  [Annotated    name: String  inner: Annotation]]
 
-AstAnnotationEntry: [type [AstAnnotationEntry
+AnnotationEntry: [type [AnnotationEntry
   key:   String
-  value: AstAnnotation]]
+  value: Annotation]]
 ```
 
-`AstPattern` maps the `Pattern` enum (`Wildcard`, `Variable`, `Literal`, `TypeTag`, `Pin`, `Dict`, `Seq`, `Constructor`, `Or`); its full declaration is deferred to the implementation sprint — the same approach applies.
+`Pattern` maps the `Pattern` enum (`Wildcard`, `Variable`, `Literal`, `TypeTag`, `Pin`, `Dict`, `Seq`, `Constructor`, `Or`); its full declaration is deferred to the implementation sprint — the same approach applies.
 
-#### `AstExpr`
+**Known limitation — recursive type precision:** `Expression` is self-referential (e.g., `[Call fn: Expression args: [Seq Expression] ...]`). The current type system handles recursive aliases via a recursion guard that substitutes a fresh `TypeVar` at the recursive position rather than a proper mu-type. Type inference on nested AST operations (e.g., accessing `node.fn.name` through two levels of `Expression`) degrades to `TypeVar`-based reasoning rather than full structural reasoning. This is a known limitation of the current HM implementation; equi-recursive alias expansion (mu-variable encoding) is tracked separately as a future type system improvement.
 
-Variants map 1:1 to `SurfaceExpr` members. Internal implementation fields are not exposed. Formatter-relevant flags (`escaped`, `implied`, `desugared`) are exposed.
+#### `Expression`
+
+Variants map 1:1 to `SurfaceExpression` members. Internal implementation fields are not exposed. Formatter-relevant flags (`escaped`, `implied`, `desugared`) are exposed.
 
 ```tinct
-AstExpr: [type
+Expression: [type
   # Literals
-  [IntLiteral   value: Int    span: AstSpan]
-  [FloatLiteral value: Float  span: AstSpan]
-  [BoolLiteral  value: Bool   span: AstSpan]
-  [StrLiteral   value: String span: AstSpan]
+  [IntLiteral   value: Int    span: Span]
+  [FloatLiteral value: Float  span: Span]
+  [BoolLiteral  value: Bool   span: Span]
+  [StrLiteral   value: String span: Span]
 
   # Variables — escaped: true = $name (pin in patterns), false = bare name (bind)
-  [Var  name: String  escaped: Bool  span: AstSpan]
+  [Var  name: String  escaped: Bool  span: Span]
 
   # Access
-  [DotAccess  target: AstExpr  field: AstDotKey  span: AstSpan]
+  [DotAccess  target: Expression  field: DotKey  span: Span]
 
   # Pipe operator (desugar-only)
-  [Pipe  lhs: AstExpr  rhs: AstExpr  span: AstSpan]
+  [Pipe  lhs: Expression  rhs: Expression  span: Span]
 
   # Sequential let* scoping (multi-expr fn bodies, match arm bodies)
-  [Sequential  exprs: [Seq AstExpr]  span: AstSpan]
+  [Sequential  exprs: [Seq Expression]  span: Span]
 
   # Dict/list literal — key: [] for auto-indexed entries
-  [Dict  entries: [Seq AstEntry]  span: AstSpan]
+  [Dict  entries: [Seq Entry]  span: Span]
 
   # Function call — implied: true = [f x y], false = [call f x y]
-  [Call  fn: AstExpr  args: [Seq AstExpr]  named: [Seq AstNamedArg]  implied: Bool  span: AstSpan]
+  [Call  fn: Expression  args: [Seq Expression]  named: [Seq NamedArg]  implied: Bool  span: Span]
 
   # Function definition — desugared: true = synthesised by $_ desugaring
-  [Fn  params: [Seq AstParam]  body: AstExpr  return-ann: AstAnnotation  desugared: Bool  span: AstSpan]
+  [Fn  params: [Seq Parameter]  body: Expression  return-ann: Annotation  desugared: Bool  span: Span]
 
   # Type assertion — no resolved-type field (typechecker internal, lives in CoreExpr)
-  [TypeAssert  annotation: AstAnnotation  expr: AstExpr  span: AstSpan]
+  [TypeAssert  annotation: Annotation  expr: Expression  span: Span]
 
   # Annotated bare word, e.g. Fn@Number
-  [Annotated  name: String  annotation: AstAnnotation  span: AstSpan]
+  [Annotated  name: String  annotation: Annotation  span: Span]
 
   # Row variable / open record marker: ... or ...rest. name: [] when unnamed.
-  [Rest  name: String  span: AstSpan]
+  [Rest  name: String  span: Span]
 
   # Pattern matching
-  [Match  scrutinee: AstExpr  arms: [Seq AstMatchArm]  span: AstSpan]
+  [Match  scrutinee: Expression  arms: [Seq MatchArm]  span: Span]
 
   # Quasiquoting
-  [Quote         expr: AstExpr  span: AstSpan]
-  [Unquote       expr: AstExpr  span: AstSpan]
-  [UnquoteSplice expr: AstExpr  span: AstSpan]
+  [Quote         expr: Expression  span: Span]
+  [Unquote       expr: Expression  span: Span]
+  [UnquoteSplice expr: Expression  span: Span]
 
   # Higher-kinded type application in annotation positions
-  [TypeApp  fn: AstExpr  arg: AstExpr  span: AstSpan]
+  [TypeApp  fn: Expression  arg: Expression  span: Span]
 
   # Binding and pattern forms (used inside fn params, match arms, instance arms)
-  [PatternDecl  bindings: [Seq AstExpr]          span: AstSpan]
-  [LetDecl      bindings: [Seq AstExpr]          span: AstSpan]
-  [CaseArm      pattern: AstExpr  body: AstExpr  span: AstSpan]
+  [PatternDecl  bindings: [Seq Expression]          span: Span]
+  [LetDecl      bindings: [Seq Expression]          span: Span]
+  [CaseArm      pattern: Expression  body: Expression  span: Span]
 
   # Placeholder `...` — evaluates to error when forced
-  [Placeholder  span: AstSpan]
+  [Placeholder  span: Span]
 
   # Parse error node — span covers the unparseable region
-  [Error  span: AstSpan]]
+  [Error  span: Span]]
 ```
 
-Compile-time-only declaration forms (`TypeAlias`, `ClassDecl`, `InstanceDecl`, `DefMacro`, `MacroDecl`, `SyntaxClass`, `Splice`) are NOT in `AstExpr`. They appear in `SurfaceDoc.items` as `SurfaceItem::Decl` nodes. Tinct code iterating `doc.expressions` sees only value-producing expressions; type-system and macro declarations are accessible via a separate `doc.declarations` field.
+Compile-time-only declaration forms (`TypeAlias`, `ClassDecl`, `InstanceDecl`, `DefMacro`, `MacroDecl`, `SyntaxClass`, `Splice`) are NOT in `Expression`. They appear in `SurfaceDocument.items` as `SurfaceItem::Decl` nodes. Tinct code iterating `doc.expressions` sees only value-producing expressions; type-system and macro declarations are accessible via a separate `doc.declarations` field.
 
-#### `AstDoc` and `AstFile`
+#### `Document` and `Program`
 
 ```tinct
-DocName: [type [Named String] [Unnamed]]
+DocumentName: [type [Named String] [Unnamed]]
 
-AstDoc: [type [AstDoc
+Document: [type [Document
   stage:        [type [Runtime] [Type]]
-  name:         DocName
-  expressions:  [Seq AstExpr]    # value-producing expressions only
-  declarations: [Seq AstDecl]    # compile-time-only forms
-  output-type:  AstAnnotation    # [] when absent
-  expects:      AstAnnotation]]  # [] when absent
+  name:         DocumentName
+  expressions:  [Seq Expression]    # value-producing expressions only
+  declarations: [Seq Declaration]    # compile-time-only forms
+  output-type:  Annotation    # [] when absent
+  expects:      Annotation]]  # [] when absent
 
-AstFile: [type [AstFile
-  documents: [Seq AstDoc]]]
+Program: [type [Program
+  documents: [Seq Document]]]
 
-AstDecl: [type
-  [TypeAlias   params: [Seq String]  body: AstExpr]
+Declaration: [type
+  [TypeAlias   params: [Seq String]  body: Expression]
   [ClassDecl   name: String  params: [Seq String]  ...]
-  [InstanceDecl class-name: String   arms: [Seq AstExpr]]
-  [DefMacro    name: String  params: AstExpr  body: AstExpr]
-  [MacroDecl   name: String  params: AstExpr  body: AstExpr]
-  [SyntaxClass name: String  pattern: AstExpr  message: String]
-  [Splice      forms: [Seq AstExpr]]]
+  [InstanceDecl class-name: String   arms: [Seq [AstInstanceArm pattern: Expression methods: [Seq Entry]]]]
+  [DefMacro    name: String  params: Expression  body: Expression]
+  [MacroDecl   name: String  params: Expression  body: Expression]
+  [SyntaxClass name: String  pattern: Expression  message: String]
+  [Splice      forms: [Seq Expression]]]
 ```
 
-### Match Dispatch for `Value::AstExpr`
+### Match Dispatch for `Value::Expression`
 
-`Value::AstExpr` participates in `match` using the same protocol as `Value::Variant`. When the `match` builtin encounters `Value::AstExpr(e)`, it calls `surface_expr_match_view(e) -> (&'static str, Value::Dict)` to extract the variant tag and a shallow payload dict of the immediate fields. Match arm binding proceeds exactly as for `Value::Variant { tag, payload }`.
+Match arm bindings on `Value::Expression` are **lazy** — consistent with tinct's overall evaluation model where materialization is on-demand. When the `match` builtin encounters `Value::Expression(node)`:
 
-The payload dict is materialized per arm — one small allocation containing only the immediate fields of the matched node. Recursive children remain `Value::AstExpr` until accessed.
+1. `surface_expr_tag(&node.expr) -> &'static str` — extract the variant tag (e.g. `"Var"`, `"Call"`). O(1), no allocation.
+2. If the tag matches a pattern arm, create one `UnevaluatedState::AstNodeField` thunk per **pattern-bound** variable:
 
-`Value::AstDoc` and `Value::AstFile` follow the same protocol via `surface_doc_match_view` and `surface_file_match_view`.
+```rust
+UnevaluatedState::AstNodeField {
+    node:  Arc<SurfaceNode>,
+    field: &'static str,   // "name", "args", "span", etc.
+}
+```
 
-### Field Access on `Value::AstExpr`
+3. Each thunk evaluates lazily by calling `surface_node_get_field(&node, field)` when demanded in the arm body. Unused bindings are never *evaluated* — their `Arc<Thunk>` wrapper is allocated at dispatch time, but `surface_node_get_field` is never called for them. The benefit is for expensive field computations: `args: [Seq Expression]` on a `Call` node is never constructed if the arm body doesn't use `args`.
+
+This is especially significant for heavy fields: `args: [Seq Expression]` in a `[Call ...]` arm or `entries: [Seq Entry]` in a `[Dict ...]` arm are never constructed if the arm body doesn't use them.
+
+`Value::Document` and `Value::Program` follow the same protocol with their respective field extractors. `Value::Variant` match is already lazy (payload Dict contains ThunkIds); no change there.
+
+**Performance notes:** For each pattern-bound variable, one `Arc<Thunk>` with `AstNodeField` state is allocated at match dispatch regardless of use — the laziness is in evaluation, not allocation. The OnceLock Mutex lock (~5–10ns uncontested) is paid on first force of each field; for cheap leaf fields (`Bool`, `String` flags) this overhead may exceed the field extraction cost. If profiling shows this is a hotspot in AST-traversal workloads, consider a `try_lock` fast path for `AstNodeField` evaluation or a dedicated `OnceLock<Value>` that bypasses the full thunk machinery for this variant.
+
+`[deep-materialize ast-expr]` is a **no-op** — it returns the `Value::Expression` unchanged, like `Value::Handle` or `Value::DirCap`. `Expression` is a nominal opaque type; materializing its internals into a tree would allocate O(n) values for the full subtree, and can be triggered accidentally by any builtin that calls `deep-materialize` on a value containing an `Expression`. Inspection is done via `match` and field access; serialization to JSON is done by writing a tinct traversal function using match dispatch. JSON output of a program that returns an `Expression` value produces the opaque type marker, not the expanded tree.
+
+### Field Access on `Value::Expression`
 
 Direct field access (`node.name`, `[get "span" node]`) is supported via the same field dispatcher used to build the match payload. The type checker warns that field access on a union type may not be valid for all variants — accurate, and better than the `Any` return type the Dict schema provided. Code requiring typed access should use `match`.
 
@@ -434,11 +493,11 @@ Direct field access (`node.name`, `[get "span" node]`) is supported via the same
 
 ```tinct
 # After include-decomp                              # After runtime-v2
-load@[Fn [source@String  name: @String] Dict]       load@[Fn [source@String  name: @String] AstFile]
-expand@[Fn [ast@Dict] Dict]                         expand@[Fn [ast@AstFile] AstFile]
-eval@[Fn [exprs@Dict  %: @Any  env: @Dict] Any]     eval@[Fn [exprs@[Seq AstExpr]  %: @Any  env: @Dict] Any]
-eval-types@[Fn [exprs@Dict] Any]                    eval-types@[Fn [exprs@[Seq AstExpr]] Any]
-ast-of@[Fn [expr@Any] Dict]                         ast-of@[Fn [expr@Any] AstExpr]
+load@[Fn [source@String  name: @String] Dict]       load@[Fn [source@String  name: @String] Program]
+expand@[Fn [ast@Dict] Dict]                         expand@[Fn [ast@Program] Program]
+eval@[Fn [exprs@Dict  %: @Any  env: @Dict] Any]     eval@[Fn [exprs@[Seq Expression]  %: @Any  env: @Dict] Any]
+eval-types@[Fn [exprs@Dict] Any]                    eval-types@[Fn [exprs@[Seq Expression]] Any]
+ast-of@[Fn [expr@Any] Dict]                         ast-of@[Fn [expr@Any] Expression]
 ```
 
 ### Updated Include-Decomp Tinct Code
@@ -446,9 +505,9 @@ ast-of@[Fn [expr@Any] Dict]                         ast-of@[Fn [expr@Any] AstExp
 Structure unchanged; type annotations and the `doc.name` field access update:
 
 ```tinct
-eval-document-runtime: [fn@[return: Dict] [let state doc@AstDoc include-dir]
+eval-document-runtime: [fn@[return: Dict] [let state doc@Document include-dir]
   [result: [eval
-    doc.expressions          # [Seq AstExpr] — passed directly to eval builtin
+    doc.expressions          # [Seq Expression] — passed directly to eval builtin
     %:   state.prev
     env: [merge
            [if [dict? state.prev] state.prev []]
@@ -459,32 +518,31 @@ eval-document-runtime: [fn@[return: Dict] [let state doc@AstDoc include-dir]
             [merge state.named [[str "%" [match doc.name [Named n]: n]]: result]]
             state.named]]]
 
-eval-document-pipeline: [fn@[return: Any] [let initial docs@[Seq AstDoc] include-dir]
+eval-document-pipeline: [fn@[return: Any] [let initial docs@[Seq Document] include-dir]
   [get "prev"
     [reduce
-      [fn@[return: Dict] [let state doc@AstDoc]
+      [fn@[return: Dict] [let state doc@Document]
         [match doc.stage
           Runtime: [eval-document-runtime state doc include-dir]
           Type:    state]]
       [prev: initial  named: []]
       docs]]]
 
-eval-file: [fn@[return: Any] [let ast@AstFile initial include-dir]
+eval-file: [fn@[return: Any] [let ast@Program initial include-dir]
   [eval-document-pipeline initial ast.documents include-dir]]
 ```
 
-`doc.name` becomes `DocName` (`[Named String] | Unnamed`) rather than `String | []` — making the optional-name pattern explicit and type-safe.
+`doc.name` becomes `DocumentName` (`[Named String] | Unnamed`) rather than `String | []` — making the optional-name pattern explicit and type-safe.
 
 ### Quasiquoting and `eval-ast`
 
-`[quote expr]` returns `Value::AstExpr` (was `Value::Dict`). `eval-ast` is deleted — replaced by `[eval [seq some-ast-expr] %: [] env: []]`.
+`[quote expr]` returns `Value::Expression` (was `Value::Dict`). `eval-ast` is deleted — replaced by `[eval [seq some-ast-expr] %: [] env: []]`.
 
 ### `ast_to_dict_expr` / `dict_to_ast` Fate
 
 - **`dict_to_ast`** — deleted entirely; no longer called anywhere
 - **`dict_to_file`** — never written; this proposal supersedes that item
-- **`ast_to_dict_expr`** — retained for `deep-materialize` and JSON output only
-- **`deep-materialize` on `Value::AstExpr`** — produces `Value::Variant` tree (`[Var name: "x" span: {...}]`), not string-keyed Dict. JSON output: `{"Var": {"name": "x", "span": {...}}}`. Breaking change to external AST JSON consumers — acceptable with no released users.
+- **`ast_to_dict_expr`** — retained internally; called by `surface_node_get_field` to produce `Value::Variant` field values for `deep-materialize` and JSON output. Not a registered builtin.
 
 ---
 
@@ -523,9 +581,9 @@ These are one refactor, not two. Every file is touched for the `async fn` contag
 | `Rc<RefCell<ThunkState>>` | `OnceLock` pair — see below | |
 | `Rc<EvalConfig>` | `Arc<EvalConfig>` | Already immutable; trivial |
 | `Rc<RefCell<EvalState>>` | `Arc<Mutex<EvalState>>` | Include cache; infrequent access |
-| `Rc<SurfaceFile/Doc/Expr>` | `Arc<SurfaceFile/Doc/Expr>` | New variants — Arc from day one |
+| `Rc<SurfaceProgram/Doc/Expr>` | `Arc<SurfaceProgram/Doc/Expr>` | New variants — Arc from day one |
 
-`Arc` clone costs ~10–50ns vs ~1ns for `Rc`. Thunk evaluation costs microseconds to milliseconds. The overhead is negligible.
+`Arc` clone costs ~10–50ns vs ~1ns for `Rc`. Thunk evaluation costs microseconds to milliseconds — the overhead is negligible for thunk-forcing workloads. For traversal-heavy workloads (formatters, linters walking large AST trees) that create many `AstNodeField` thunks without forcing them, Arc clone frequency is higher; profile before declaring negligible in those cases.
 
 ### The `OnceLock` Thunk
 
@@ -541,14 +599,33 @@ pub struct Thunk {
 }
 
 enum UnevaluatedState {
+    // Pre-lowering: holds a SurfaceNode to be lowered to CoreExpr on first force.
+    // Created by the `eval` builtin for each expression in [Seq Expression]. The captured
+    // env is constructed by eval (stdlib_env + env: entries + %: binding) — this is the
+    // closure environment. The expression sees only this env when forced, regardless of
+    // the caller's ambient environment. Capability safety follows directly from closure
+    // semantics: %pwd and other capabilities are absent from stdlib_env and only
+    // reachable if the caller explicitly forwards them via env:.
+    Surface {
+        node:  Arc<SurfaceNode>,
+        res:   Arc<ResolutionTable>,
+        types: Arc<TypeAnnotationTable>,
+        env:   Arc<Environment>,
+        ctx:   Arc<EvalContext>,
+    },
+    // Post-lowering: holds a CoreExpr ready for evaluation. Created by the evaluator
+    // during CoreExpr reduction, and by the forcing protocol when a Surface thunk is
+    // first forced (lower SurfaceNode → CoreExpr, then evaluate).
     Expr    { expr: Spanned<CoreExpr>, env: Arc<Environment>, ctx: Arc<EvalContext> },
     Builtin { func: BuiltinFn, args: Vec<Arc<Thunk>>, named: IndexMap<String, Arc<Thunk>>,
               depth: usize, call_span: Span, ctx: Arc<EvalContext> },
     Call    { func: Arc<Thunk>, args: Vec<Arc<Thunk>>, call_span: Span, ctx: Arc<EvalContext> },
+    // Created by match dispatch on Value::Expression — evaluates a single field lazily
+    AstNodeField { node: Arc<SurfaceNode>, field: &'static str },
 }
 ```
 
-Note `Spanned<CoreExpr>` — not `Spanned<Expr>` or `Spanned<SurfaceExpr>`. The lowering pass runs when the `eval` builtin receives `[Seq AstExpr]`; it converts each `SurfaceExpr` to `CoreExpr` and wraps the result in a thunk's `UnevaluatedState::Expr`. Thunks created directly by the evaluator during evaluation of `CoreExpr` also store `CoreExpr`.
+`Surface` is the pre-lowering state. On first force, the protocol calls `lower(node, res, types)` → `CoreExpr`, then continues as if the thunk held `Expr`. Thunks created by the evaluator during `CoreExpr` reduction always start as `Expr` — `Surface` is only produced by the `eval` builtin for externally-provided `Expression` nodes. `AstNodeField` thunks evaluate via `surface_node_get_field` with no lowering step.
 
 **Forcing protocol:**
 
@@ -565,7 +642,15 @@ materialize(thunk):
 
 Every thunk evaluates exactly once regardless of how many tasks demand it simultaneously. The hot path is fully lock-free.
 
-**Cycle detection:** each async task maintains a task-local `HashSet<*const Thunk>` of thunks on its own evaluation stack. Demanding a thunk in this set is a cycle (same task). Seeing `None` in `unevaluated` while the result isn't set means another task is evaluating — wait via `OnceCell`. `EvalError` is now `Arc<EvalError>` (was `Box`) for cheap cross-thread clone.
+**Cycle detection — hybrid model:** Two layers handle the two distinct cycle classes.
+
+*Intra-task cycles (fast path):* each async task maintains a task-local `HashSet<*const Thunk>` of thunks currently on its own evaluation stack. Demanding a thunk already in this set is an immediate cycle error — same task, no cross-thread coordination, zero overhead on the common path.
+
+*Cross-task cycles (slow path):* two tasks can mutually block on each other's thunks without either appearing in the other's task-local set — both enter `result.get_or_init().await` and suspend forever. A process-global wait-for graph detects this. Before entering the await path, a task records itself in `WAIT_FOR: ConcurrentHashMap<TaskId, *const Thunk>` (which thunk it is blocked on). A DFS over this graph from the current task detects cycles in O(blocked tasks). On detection: raise `EvalError::Cycle` on the waiting task with the thunk's span; the blocked chain unwinds.
+
+The wait-for graph is **process-local and never distributed.** Cross-node deadlock cycles are structurally impossible: `remote-task` requires fully materialized environments (the distributable thunk constraint from [`dist-eval.md`](dist-eval.md)) — a remote thunk cannot capture a reference to an in-flight local `Task` handle. The distributable constraint eliminates cross-process cycles at the type level; the process-local graph covers everything that remains. `cluster-local` workers run in the same process and are covered by the same graph.
+
+`EvalError` is now `Arc<EvalError>` (was `Box`) for cheap cross-thread clone.
 
 ### When `task` Starts
 
@@ -654,47 +739,6 @@ changes: [watch-channel dir-cap "/etc/config"]
 
 All event sources follow the same pattern: spawn a background task that writes to a channel; the channel is the user-visible value; `ChannelInner` holds an `AbortHandle` and calls `abort()` in `Drop` — cleanup is automatic when all channel references are dropped.
 
-### Serve and Connect Layers
-
-Transport primitives produce connections; protocol layers transform them. Two generic factories in `stdlib/serve.llt` cover all server-side protocol layers:
-
-```tinct
-# 1:1 — each incoming connection is transformed into one outgoing connection
-make-serve-layer: [fn [let accept-fn]
-  [fn [let conn-ch config]
-    [out: [channel 100]]
-    [task [loop [fn [let]
-      [match [recv conn-ch]
-        [case [let raw: Ok]  [send out [accept-fn raw config]]]
-        [case [let _: Err]   null]]]]]
-    out]]
-
-# 1:N — each incoming connection produces multiple items
-make-multiplex-serve: [fn [let conn-fn]
-  [fn [let conn-ch]
-    [out: [channel 1000]]
-    [task [loop [fn [let]
-      [match [recv conn-ch]
-        [case [let conn: Ok]  [task [conn-fn conn out]]]
-        [case [let _: Err]    null]]]]]
-    out]]
-```
-
-Concrete serve layers are instances:
-
-```tinct
-# Connection-promotion (1:1)
-tls-serve:   [make-serve-layer tls-accept]      # Handle   → TlsHandle
-h2-serve:    [make-serve-layer h2-accept]       # Handle   → H2Conn
-h3-serve:    [make-serve-layer h3-accept]       # QuicConn → H3Conn
-ws-serve:    [make-serve-layer ws-accept]       # Handle   → WsConn
-
-# Message-extraction (1:N)
-http1-serve:     [make-multiplex-serve http1-conn]   # Handle → RawRequest*
-http2-requests:  [make-multiplex-serve http2-req-conn]
-http3-requests:  [make-multiplex-serve http3-req-conn]
-```
-
 ### Cancellation and Contexts
 
 Every blocking operation needs a bound. A `Context` is a first-class tinct value backed by `tokio_util::sync::CancellationToken`. The runtime creates a root context for every program run.
@@ -748,6 +792,7 @@ results@[Seq Int]:  [await-all [task [+ 1 2]] [task [* 3 4]]]
 
 `Type::Task(Box<Type>)`, `Type::Channel(Box<Type>)`, `Type::Context` (opaque) — all new. `task` infers the inner type from the body expression. `await` unifies `Task@?T` → `?T`. Pattern is identical to existing parameterized types (`Seq@T`).
 
+
 ---
 
 ## Stdlib Module Map
@@ -755,29 +800,28 @@ results@[Seq Int]:  [await-all [task [+ 1 2]] [task [* 3 4]]]
 ```
 stdlib/
   prelude.llt       — map, filter, reduce, result combinators; trimmed core
-                      AstExpr/AstDoc/AstFile/AstParam/AstEntry/... type declarations
+                      Expression/Document/Program/Parameter/Entry/... type declarations
   strings.llt       — trim, pad-left/right, starts-with?, ends-with?, str-contains?, str-replace,
                       str-split-lines, words, unwords
   seq.llt           — zip-with, enumerate, chunk, partition, group-by, sort-by, uniq-by,
                       flat-map, scan, window, interleave
+                      # partition n seq: split into n roughly-equal parts (distinct from
+                      # chunk which splits into chunks of size k)
   path.llt          — path-join, path-dirname, path-basename, path-ext, path-normalize
   result.llt        — and-then, map-ok, map-err, unwrap-or, unwrap, ok?, err?, collect-results
   cap.llt           — narrow, readable?, writable?, with-temp
 
-  net.llt           — Port type, parse-url, url-encode/decode, form-encode/decode, resolve-host
-  http1.llt         — HTTP/1.1 framing in pure tinct on top of Handle
-  http3.llt         — thin wrapper around h3-request Rust builtin
-  serve.llt         — make-serve-layer, make-multiplex-serve; concrete serve/connect layers
-  http.llt          — http-channel (unified TCP+QUIC); fetch; router, middleware
-
   async.llt         — exit, graceful-exit, finally, loop-select, retry
+                      cancel: [fn [c@CancelHandle] [c.cancel]]   # convenience wrapper
   datetime.llt      — Timestamp, Duration, formatting/parsing
   regex.llt         — Thompson NFA regex engine
   toml.llt          — complete TOML 1.0 parser
   sql.llt           — lazy SQL data sources
 ```
 
-The `AstExpr` and supporting type declarations live in `prelude.llt` (not a separate module) because `eval`, `load`, `expand` reference them in primitive signatures.
+Network modules (`net.llt`, `http1.llt`, `http3.llt`, `serve.llt`, `http.llt`) are specified in [`lib-net-v3.md`](lib-net-v3.md) — they depend on this proposal's async foundation but are not part of the runtime itself.
+
+The `Expression` and supporting type declarations live in `prelude.llt` (not a separate module) because `eval`, `load`, `expand` reference them in primitive signatures.
 
 ---
 
@@ -785,27 +829,28 @@ The `AstExpr` and supporting type declarations live in `prelude.llt` (not a sepa
 
 ### Add to `src/ast.rs`
 
-- `NodeId(u32)` — stable node identity assigned at parse time
-- `SurfaceExpr` enum — immutable, `Arc`-recursive, no `RefCell`
-- `SurfaceDecl` enum — compile-time-only declaration forms
-- `SurfaceItem` enum — `Expr | Decl` for doc items
-- `SurfaceDoc`, `SurfaceFile` structs — clean, no `RefCell`, `caps:` retained
-- `CoreExpr` enum — de Bruijn as plain fields, evaluator-only
+- `SurfaceNode` struct — `{ expr: SurfaceExpression, span: Span }` — dedicated expression-node wrapper
+- `NodeId(usize)` — pointer-derived identity; `fn node_id(arc: &Arc<SurfaceNode>) -> NodeId { NodeId(Arc::as_ptr(arc) as usize) }`; never stored in any node
+- `SurfaceExpression` enum — immutable, `Arc<SurfaceNode>`-recursive, no `RefCell`
+- `SurfaceDeclaration` enum — compile-time-only declaration forms
+- `SurfaceItem` enum — `Expr(Arc<SurfaceNode>) | Decl(Spanned<SurfaceDeclaration>)` for doc items
+- `SurfaceDocument`, `SurfaceProgram` structs — clean, no `RefCell`, no `id` field, `caps:` retained
+- `CoreExpr` enum — de Bruijn as plain fields, evaluator-only, includes `RuntimeTypeCheck` variant
 - `ResolutionTable(HashMap<NodeId, (u32, u32)>)` — replaces `VarRef.resolved: RefCell<...>`
 - `TypeAnnotationTable(HashMap<NodeId, Type>)` — replaces `TypeAssert.resolved_type: RefCell<...>`
-- Lowering pass `lower(surface, res, types) -> CoreExpr` in `src/lower.rs`
+- Lowering pass `lower(node: &Arc<SurfaceNode>, res: &ResolutionTable, types: &TypeAnnotationTable) -> Spanned<CoreExpr>` in `src/lower.rs`
 
 ### Delete from `src/ast.rs`
 
-- `Expr` enum — replaced by `SurfaceExpr` + `CoreExpr`
-- `Document` struct — replaced by `SurfaceDoc`
-- `File` struct — replaced by `SurfaceFile`
+- `Expr` enum — replaced by `SurfaceExpression` + `CoreExpr`
+- `Document` struct — replaced by `SurfaceDocument`
+- `File` struct — replaced by `SurfaceProgram`
 
 ### Add to `src/value.rs`
 
-- `Value::AstFile(Arc<SurfaceFile>)`
-- `Value::AstDoc(Arc<SurfaceDoc>)`
-- `Value::AstExpr(Arc<Spanned<SurfaceExpr>>)`
+- `Value::Program(Arc<SurfaceProgram>)`
+- `Value::Document(Arc<SurfaceDocument>)`
+- `Value::Expression(Arc<SurfaceNode>)`
 - `Value::Task(Arc<Mutex<TaskState>>)`
 - `Value::Channel(Arc<ChannelInner>)`
 - `Value::Context(tokio_util::sync::CancellationToken)`
@@ -817,45 +862,46 @@ The `AstExpr` and supporting type declarations live in `prelude.llt` (not a sepa
 
 ### Change `src/ast_dict.rs`
 
-- **Add** `surface_expr_match_view(expr: &Spanned<SurfaceExpr>) -> (&'static str, Value)` — variant tag + shallow payload Dict; called by match evaluator
-- **Add** `surface_expr_get_field(expr: &Spanned<SurfaceExpr>, field: &str, ctx: &Arc<EvalContext>) -> Option<Value>` — called by dot-access and `get`
-- **Add** analogues for `SurfaceDoc` and `SurfaceFile`
+- **Add** `surface_expr_tag(expr: &SurfaceExpression) -> &'static str` — O(1) tag extraction; called by match evaluator for `Value::Expression`
+- **Add** `surface_node_get_field(node: &Arc<SurfaceNode>, field: &str) -> Value` — field extraction for `AstNodeField` thunk evaluation and dot-access; calls `ast_to_dict_expr` internally for complex fields
+- **Add** analogues `surface_doc_tag`, `surface_doc_get_field`, `surface_file_get_field` for `Value::Document` and `Value::Program`
 - **Delete** `dict_to_ast` — removed entirely
-- **Retain** `ast_to_dict_expr` — used only by `deep-materialize` and JSON output (now operates on `SurfaceExpr`)
+- **Retain** `ast_to_dict_expr` — used only by `deep-materialize` and JSON output (now operates on `SurfaceExpression`)
 
 ### Change `src/eval.rs`
 
 - All functions become `async fn`
 - `eval` pattern-matches on `CoreExpr` (not `Expr`); all arms updated
 - `eval_dict` fans out independent entries via `tokio::task::JoinSet` — automatic parallel evaluation
-- **Add** `Value::AstExpr`, `Value::AstDoc`, `Value::AstFile` arms to match evaluator, dot-access evaluator, `get`, `has?`, `dict?`, `type-of`, `deep-materialize`, JSON serializer
+- **Add** `Value::Expression`, `Value::Document`, `Value::Program` arms to: match evaluator (calls `surface_expr_tag`, creates `AstNodeField` thunks per pattern-bound variable), dot-access evaluator (calls `surface_node_get_field`), `get`, `has?`, `deep-materialize` (no-op — returns value unchanged, like Handle/DirCap), JSON serializer (opaque type marker, not expanded tree), `type-of` (returns `"Expression"` / `"Document"` / `"Program"`), `dict?` (returns `false` — nominal types, not plain Dicts)
 - `materialize` uses the `OnceLock` forcing protocol
 - `EvalContext` gains `cancel: CancellationToken` field
 
 ### Change `src/builtins_meta.rs`
 
-- `load`: parse → `SurfaceFile` → wrap in `Value::AstFile`; `ast_to_dict` call deleted
-- `expand`: unwrap `AstFile` → `&SurfaceFile`; call `expand()`; wrap result. No round-trip.
-- `eval`: iterate `[Seq AstExpr]`; unwrap each `Value::AstExpr` → `Arc<Spanned<SurfaceExpr>>`; lower to `CoreExpr`; wrap in thunk; return
+- `load`: parse → `SurfaceProgram` → wrap in `Value::Program`; `ast_to_dict` call deleted
+- `expand`: unwrap `Program` → `&SurfaceProgram`; call `expand()`; wrap result. No round-trip.
+- `eval`: iterate `[Seq Expression]`; unwrap each `Value::Expression` → `Arc<SurfaceNode>`; lower to `CoreExpr` per-thunk (lowering deferred to first force); return lazy thunks. Env chain: `ctx.config.stdlib_env` as root → child env with `env:` entries injected → child env with `"$"` bound to the `%:` thunk. **Capability safety:** eval'd expressions run in the closure captured at thunk-creation time — the `Surface` thunk's `env` field. This env is `stdlib_env + env: entries + %: binding`. Capabilities like `%pwd` are not in `stdlib_env` (they are injected by the CLI above stdlib_env) and are only accessible if the caller explicitly forwards them via `env:`. Capability safety follows from tinct's closure semantics: a function sees the environment where it was defined, not where it was invoked. No special capability-stripping is needed — the `Surface` thunk mechanically enforces the boundary.
 - `eval-types`: same as `eval` but uses `ctx.config.type_stage_env`
-- `ast-of`: return `Value::AstExpr` wrapping argument thunk's `SurfaceExpr` (was `ast_to_dict_expr`)
+- `ast-of`: receives argument thunk without forcing (`Strictness::Id`); returns `Value::Expression` wrapping the thunk's `SurfaceExpression`. For already-materialized Rust-backed values (`Value::Builtin`, `Value::Task`, `Value::Channel`, `Value::Context`) that have no source AST, returns `Value::Expression` wrapping `SurfaceExpression::Placeholder` — the tinct `...` form. This keeps the return type uniform and preserves round-trip validity; transformation code encountering a `Placeholder` knows the original was a Rust-backed value with no inspectable source.
 - **Delete** `builtin_eval_ast` — replaced by `eval` on a single-element seq
 
 ### Change `src/expand.rs`
 
-- Operates on `SurfaceExpr`/`SurfaceFile` instead of `Expr`/`File`
-- `ast_expr_match_view` and `dict_to_ast` replace the existing Dict round-trip
+- Operates on `SurfaceExpression`/`SurfaceProgram` instead of `Expr`/`File`
+- `surface_expr_tag` and `surface_node_get_field` replace the old `dict_to_ast` round-trip; no payload Dict is materialized during match dispatch
 - The shadow guard was already deleted in `include-decomp-primitives`
+- `SurfaceDeclaration::Splice` encountered in `SurfaceDocument.items` (produced by a macro returning a Splice) must be flattened inline into `SurfaceItem::Expr` entries; there is no persistent `SurfaceItem::Splice` form — Splice is a macro-expansion artifact only
 
 ### Change `src/resolve.rs`
 
 - Resolver produces `ResolutionTable` instead of mutating `VarRef.resolved` in place
-- Returns `(SurfaceFile, ResolutionTable)` — the surface AST is unchanged by resolution
+- Returns `(SurfaceProgram, ResolutionTable)` — the surface AST is unchanged by resolution
 
 ### Change `src/typecheck.rs`
 
 - `TypeAnnotationTable` produced alongside type inference; no mutation of `TypeAssert.resolved_type`
-- `AstExpr`, `AstDoc`, `AstFile` are declared types in prelude; resolved normally via type declaration
+- `Expression`, `Document`, `Program` are declared types in prelude; resolved normally via type declaration
 - **Add** `Type::Task(Box<Type>)`, `Type::Channel(Box<Type>)`, `Type::Context` — inference rules for async primitives
 
 ### Change `src/builtins.rs`
@@ -865,48 +911,125 @@ The `AstExpr` and supporting type declarations live in `prelude.llt` (not a sepa
 - I/O builtins replace `block_on(fut)` with `fut.await`
 - **Add** new async primitive builtins (see table below)
 
+### New Types
+
+Three types are opaque and Rust-backed — `Context` (wraps `tokio_util::sync::CancellationToken`), `Task@T` (spawned computation handle), and `Channel@T` (bounded async queue). They are registered by the runtime as primitive types; there is no tinct declaration for them.
+
+`Signal` is a genuine tinct sum type — its variants are user-visible names, not implementation details:
+
+```tinct
+Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGUSR1] [SIGUSR2] [SIGPIPE] [SIGALRM]]
+```
+
+Three structural types are named so that signatures stay readable:
+
+```tinct
+# Zero-argument side-effecting function — runs for effect, returns nothing.
+# Named after Moggi/Haskell's Action/IO distinction; avoids collision with
+# the evaluator's own "thunk" concept.
+Action: [Fn [] Null]
+
+# Return value of with-cancel
+CancelHandle: [type [CancelHandle
+  child-ctx: Context
+  cancel:    Action]]
+
+# One source entry for select-once — a channel paired with its handler function.
+# t: element type of the channel; r: return type of the handler.
+SelectSource: [type [t r] [SelectSource
+  ch:      [Channel t]
+  handler: [Fn [t] r]]]
+```
+
 ### New Builtins
 
 | Builtin | Signature | Description |
 |---------|-----------|-------------|
-| `context` | `→ Context` | Current evaluation's cancellation context |
-| `with-cancel` | `Context → [Context Fn]` | Child context + cancel function |
-| `with-timeout` | `Context → Duration → Context` | Auto-cancels after duration |
-| `with-deadline` | `Context → Timestamp → Context` | Auto-cancels at absolute time |
-| `cancelled?` | `Context → Bool` | True if context cancelled |
-| `with-context` | `Context → Fn → T` | Evaluates fn under given context |
-| `timeout` | `Duration → Task@T → Result@T` | Awaits task with deadline |
-| `cancel-root` | `→ Null` | Cancel root token — signals all tasks to stop |
-| `drain` | `→ Null` | Await until all in-flight tasks finish |
-| `exit-now` | `Int → Null` | `process::exit` immediately |
-| `task` | `expr → Task@T` | Spawn evaluation of expr |
-| `await` | `Task@T → T` | Suspend until task completes |
-| `await-all` | `[Seq Task@T] → [Seq T]` | Await all; results in submission order |
-| `await-any` | `[Seq Task@T] → T` | Return first completed; abort rest |
-| `channel` | `Int → Channel@T` | Bounded channel; capacity ≥ 1 |
-| `send` | `Channel@T → T → Null` | Send; suspend if buffer full |
-| `recv` | `Channel@T → T` | Receive; suspend until available |
-| `select-once` | `[Seq [Channel@T Fn]] → R` | Wait for first ready channel |
-| `par` | `expr → T` | Spawn on thread pool immediately |
-| `par-map` | `Fn → [Seq A] → [Seq B]` | Parallel map; results in order |
-| `par-filter` | `Fn → [Seq A] → [Seq A]` | Parallel filter |
-| `signal-channel` | `[Seq Signal] → Channel@Signal` | OS signal delivery channel |
-| `timer-channel` | `ClockCap → Duration → Channel@Timestamp` | Periodic timer channel |
-| `watch-channel` | `DirCap → Str → Channel@Null` | Filesystem watch channel |
-| `tcp-listen` | `NetCap → Int → Channel@Handle` | Incoming TCP connections |
-| `quic-listen` | `NetCap → Int → Channel@QuicConn` | Incoming QUIC connections |
+| `context` | `[Fn [] Context]` | Current evaluation's cancellation context |
+| `with-cancel` | `[Fn [ctx@Context] CancelHandle]` | Child context + cancel function |
+| `with-timeout` | `[Fn [ctx@Context  ms@Int] Context]` | Auto-cancels after duration |
+| `with-deadline` | `[Fn [ctx@Context  ts@Timestamp] Context]` | Auto-cancels at absolute time |
+| `cancelled?` | `[Fn [ctx@Context] Bool]` | True if context cancelled |
+| `with-context` | `[Fn [ctx@Context  f@[Fn [] t]] t]` | Evaluates thunk under given context |
+| `timeout` | `[Fn [dur@Duration  task@[Task t]] [Result t]]` | Awaits task with deadline |
+| `cancel-task` | `[Fn [t@[Task t]] Null]` | Cancel a specific task; abort handle inside Task |
+| `cancel-root` | `Action` | Cancel root token — signals all tasks to stop |
+| `drain` | `Action` | Await until all in-flight tasks finish |
+| `exit-now` | `[Fn [code@Int] Null]` | `process::exit` immediately |
+| `task` | `[Fn [expr@Any] [Task t]]` | Spawn evaluation of expr |
+| `await` | `[Fn [task@[Task t]] t]` | Suspend until task completes |
+| `await-all` | `[Fn [tasks@[Seq [Task t]]] [Seq t]]` | Await all; results in submission order |
+| `await-any` | `[Fn [tasks@[Seq [Task t]]] t]` | Return first completed; abort rest |
+| `channel` | `[Fn [capacity@Int] [Channel t]]` | Bounded channel; capacity ≥ 1 |
+| `send` | `[Fn [ch@[Channel t]  val@t] Null]` | Send; suspend if buffer full |
+| `recv` | `[Fn [ch@[Channel t]] t]` | Receive; suspend until available |
+| `select-once` | `[Fn [sources@[Seq [SelectSource t r]]] r]` | Wait for first ready channel |
+| `par` | `[Fn [expr@Any] t]` | Spawn on thread pool immediately |
+| `par-map` | `[Fn [f@[Fn [a] b]  seq@[Seq a]] [Seq b]]` | Parallel map; results in order |
+| `par-filter` | `[Fn [f@[Fn [a] Bool]  seq@[Seq a]] [Seq a]]` | Parallel filter |
+| `signal-channel` | `[Fn [signals@[Seq Signal]] [Channel Signal]]` | OS signal delivery channel |
+| `timer-channel` | `[Fn [clock@ClockCap  interval@Duration] [Channel Timestamp]]` | Periodic timer channel |
+| `watch-channel` | `[Fn [cap@DirCap  path@String] [Channel Null]]` | Filesystem watch channel |
+
+The signatures in this table use lowercase single-letter names (`t`, `r`, `a`, `b`) as type variables — these are descriptive for human readers. In tinct source, the stdlib implementations carry no explicit type annotations; let-generalization at the definition site produces the correct polymorphic schemes. Functions close over the environment where they are defined, not where they are invoked — type variables are scoped to the definition, exactly as values are.
+
+All builtins in this table are Rust primitives **except** `await-all`, `par-map`, and `par-filter`, which are tinct stdlib (`stdlib/async.llt`). Their implementations carry no explicit type annotations — inference handles polymorphism:
+
+```tinct
+# Fail-fast: routes results through a shared channel so completion order
+# doesn't matter. First error cancels remaining tasks via shared CancelHandle.
+# Results returned in submission order on full success.
+await-all: [fn [tasks]
+  [n:          [length [collect tasks]]]
+  [cancel-h:   [with-cancel [context]]]
+  [results-ch: [channel n]]
+  [map-with-index [fn [i t]
+    [with-context cancel-h.child-ctx [task [fn []
+      [match [try [fn [] [await t]]]
+        [Ok v]:   [send results-ch [Ok [i v]]]
+        [Error e]: [cancel cancel-h]
+                  [send results-ch [Error e]]]]]]]
+  tasks]
+  [recv-all results-ch n []]]
+
+recv-all: [fn [ch remaining acc]
+  [if [= remaining 0]
+    [map [fn [p] p[1]] [sort-by [fn [p] p[0]] acc]]
+    [match [recv ch]
+      [Error e]:  [raise e]
+      [Ok [i v]]: [recv-all ch [- remaining 1] [cons [i v] acc]]]]]
+
+# collect forces the lazy map to spawn ALL tasks before any await blocks,
+# ensuring true parallel execution.
+par-map: [fn [f seq]
+  [map await [collect [map [fn [x] [task [fn [] [f x]]]] seq]]]]
+
+par-filter: [fn [f seq]
+  [pairs: [collect [map [fn [x] [[x] [task [fn [] [f x]]]]] seq]]]
+  [filter-map [fn [pair] [if [await pair[1]] pair[0] null]] pairs]]
+
+# timeout cannot be expressed in tinct without a task→channel bridge —
+# select-once takes Channel, not Task. Implemented in Rust via tokio::time::timeout.
+```
 
 ### Change `src/parser.rs`
 
-- Parser produces `SurfaceExpr` / `SurfaceDoc` / `SurfaceFile` instead of `Expr` / `Document` / `File`
-- Assigns `NodeId` to every node at parse time from a per-parse counter
-- `SurfaceDecl` nodes parsed separately from `SurfaceExpr` within document items
+- Parser produces `SurfaceExpression` / `SurfaceDocument` / `SurfaceProgram` instead of `Expr` / `Document` / `File`
+- No NodeId assignment — node identity is derived from `Arc::as_ptr()` by callers that need it
+- `SurfaceDeclaration` nodes parsed separately from `SurfaceExpression` within document items
 
 ### Change `src/async_rt.rs`
 
 - `run_program(fut)` — multi-thread runtime, work-stealing. Replaces `block_on`.
 - `spawn_task(fut)` — `tokio::spawn` with `Arc`-based `TaskHandle`
 - Thread-local `current_thread` runtime and `block_on` bridge removed
+
+### Change `src/lsp/`
+
+- Analysis functions become `async fn`
+- LSP protocol handlers retain `block_on` at the outermost call site only during the async migration — not inside builtins, only at the LSP→analysis boundary
+- Once the LSP event loop is itself async (tower-lsp or equivalent), `block_on` is removed entirely
+- Add `Value::Expression`, `Value::Document`, `Value::Program` handling to any LSP code that inspects values
 
 ### Change test suite (`tests/`, `src/**/*_test.rs`)
 
@@ -916,38 +1039,73 @@ The `AstExpr` and supporting type declarations live in `prelude.llt` (not a sepa
 
 ### Prelude tinct code
 
-- `AstExpr`/`AstDoc`/`AstFile`/`AstParam`/`AstEntry`/`AstMatchArm`/`AstAnnotation`/`AstDecl`/`DocName` type declarations added
+- `Expression`/`Document`/`Program`/`Parameter`/`Entry`/`MatchArm`/`Annotation`/`Declaration`/`DocumentName` type declarations added
+- `Context`, `Task`, `Channel`, `Signal`, `Action`, `CancelHandle`, `SelectSource` type declarations added
 - `eval-document-pipeline`, `eval-file`, `eval-document-runtime`, `include` updated per §Updated Include-Decomp Tinct Code
 - `async.llt` added: `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`
 
-### Delete
+### Delete — Complete Dead-Code Inventory
 
-- `Expr`, `Document`, `File` from `src/ast.rs` — replaced by Surface/Core variants
-- `dict_to_ast` from `src/ast_dict.rs` — removed entirely
-- `dict_to_file` — never written
-- `builtin_eval_ast` / `eval-ast` primitive — removed
-- `eval_pipeline.rs` — `eval_file_with_input`, `eval_document`, `run_eval` all superseded (was deferred from include-decomp, deleted here)
-- String-keyed `type:` Dict schema as AST output format
+A cleanup pass at the end of the sprint must verify every item below is gone. Nothing in this list should remain active.
 
----
+**`src/ast.rs`**
+- `Expr` enum — replaced by `SurfaceExpression` + `CoreExpr`
+- `Document` struct — replaced by `SurfaceDocument`
+- `File` struct — replaced by `SurfaceProgram`
+- `VarRef.resolved: RefCell<...>` — replaced by `ResolutionTable`
+- `TypeAssert.resolved_type: RefCell<Option<Type>>` — replaced by `TypeAnnotationTable` + distinct `CoreExpr` variants
 
-## Open Questions
+**`src/ast_dict.rs`**
+- `dict_to_ast` — removed entirely (no remaining callers)
+- `dict_to_file` — never written; confirm it was never accidentally added
+- `ast_to_dict` (file-level function) — removed; `load` now wraps `SurfaceProgram` directly
+- `document_to_dict` — removed alongside `ast_to_dict`
+- String-keyed `type:` Dict schema as the output format — superseded by `Value::Variant` trees
 
-**Q1 — `SurfaceExpr` NodeId in `Spanned<T>`:** Adding `id: NodeId` to `Spanned` is pervasive. Alternative: a separate `NodeIdMap` built during parsing that maps pointer identity to NodeId without touching `Spanned`. The pointer approach avoids the struct change but requires careful lifetime management. Lean toward adding `id` to `Spanned` — cleaner, no aliasing concerns.
+**`src/desugar.rs`** — deleted; `Pipe` → `Call` rewriting moves into the lowering pass in `src/lower.rs`
 
-**Q2 — Match payload allocation:** `surface_expr_match_view` materializes a shallow payload Dict per arm. Alternative: teach the match binder to destructure `Value::AstExpr` fields directly, avoiding that allocation. Defer; start with payload Dict, profile later.
+**`src/eval_pipeline.rs`** — entire file deleted
+- `eval_file_with_input`
+- `eval_document` (the let\* loop is extracted into `src/lower.rs` or inline in the evaluator)
+- `eval_file`
+- `run_eval`
 
-**Q3 — `AstPattern` type declaration:** The `Pattern` enum (`Wildcard`, `Variable`, `Literal`, `TypeTag`, `Pin`, `Dict`, `Seq`, `Constructor`, `Or`) needs a full `AstPattern` tinct type declaration. Deferred to implementation sprint.
+**`src/builtins_meta.rs`**
+- `builtin_eval_ast` — replaced by `eval` on a single-element seq
+- `builtin_include` — deleted in `include-decomp-eval-primitives` (prerequisite); confirm gone
 
-**Q4 — Lowering pass location:** Should lowering (`SurfaceExpr → CoreExpr`) happen inside the `eval` builtin (at call time), or as a separate phase that runs after `expand` and before `eval`? Inside `eval` is lazier — only expressions that get evaluated are lowered. A separate phase is more predictable. Lean toward inside `eval` to preserve the lazy model.
+**`src/builtins.rs`**
+- `eval-ast` registration in `standard_builtins()`
+- `builtin_include` registration — from prerequisite sprint; confirm gone
+- `rust_module()` dispatcher — from prerequisite sprint; confirm gone
+- `builtin-*` alias registrations — from prerequisite sprint; confirm gone
 
-**Q5 — `deep-materialize` output format:** `Value::Variant` tree (nominal, type-checkable) or Dict with `type:` string keys (old schema)? `Value::Variant` is correct — the Dict schema is superseded.
+**`src/value.rs`**
+- `ThunkState` enum — replaced by `(Mutex<Option<UnevaluatedState>>, OnceCell<...>)` pair
+- `Value::RustRegistry` — from prerequisite sprint; confirm gone
+- All `Rc<T>` value types — replaced by `Arc<T>`; scan for any remaining `use std::rc::Rc` imports
 
-**Q6 — `ResolutionTable` threading:** The resolver produces a `ResolutionTable`. The `eval` builtin receives `[Seq AstExpr]` from tinct code — how does it get the corresponding `ResolutionTable`? Option A: run resolution lazily inside the `lower` call when needed (resolution is deterministic and cheap to re-run). Option B: cache the `ResolutionTable` alongside the `AstFile` value. Lean toward A — avoid caching complexity; resolution is O(n) in expression count and fast.
+**`src/eval.rs` / `src/eval_materialize.rs`**
+- All `Rc<Thunk>` / `Rc<RefCell<Environment>>` usage — replaced by `Arc`
+- `InProgress` / `PendingBuiltin` / `PendingCall` thunk states — replaced by `OnceLock` pair
 
-**Q7 — `block_on` bridge for LSP:** LSP protocol handlers require synchronous callbacks in some implementations. Retain `block_on` at the LSP layer boundary only during the async migration; remove once the LSP event loop is fully async.
+**`src/eval_state.rs` or `src/eval.rs`**
+- `EvalState::include_guard: HashSet<(u64, u64)>` — from prerequisite sprint; confirm gone
+- `EvalState::include_cache` (old inode-keyed cache) — from prerequisite sprint; confirm gone
 
-**Q8 — `dict?` on `Value::AstExpr`:** Returns `false` — these are nominal types, not plain Dicts. Code using `dict?` to gate AST access should use `type-of` or match instead.
+**`src/async_rt.rs`**
+- Thread-local `current_thread` Tokio runtime — replaced by `run_program()`
+- `block_on` bridge function — replaced by `.await`; confirm no remaining call sites except LSP boundary
+
+**`src/main.rs`**
+- `run_eval()` Rust call — replaced by tinct `cli-pipeline` (from prerequisite sprint); confirm gone
+
+**Error types**
+- `Box<EvalError>` at cross-thread boundaries — replaced by `Arc<EvalError>`; scan for remaining `Box<EvalError>` in async contexts
+
+**Tinct stdlib**
+- `[include %rust "..."]` patterns in `stdlib/prelude.llt` — from prerequisite sprint; confirm gone
+- Any `dict?` guards around AST node access — `dict?` returns `false` for AST types; any such guard is dead code
 
 ---
 
@@ -962,7 +1120,7 @@ The `AstExpr` and supporting type declarations live in `prelude.llt` (not a sepa
 ## References
 
 - Abelson, H. & Sussman, G.J. (1996). *Structure and Interpretation of Computer Programs*, 2nd ed. MIT Press. §4.1 "The Metacircular Evaluator." — homoiconic representation of code as data.
-- Pombrio, J. & Krishnamurthi, S. (2014). "Hygienic Resugaring of Call-by-Value Evaluation Sequences." *ICFP 2014*. — origin tracking for desugared nodes (`Fn.desugared`, `SurfaceExpr` vs `CoreExpr` split motivation).
+- Pombrio, J. & Krishnamurthi, S. (2014). "Hygienic Resugaring of Call-by-Value Evaluation Sequences." *ICFP 2014*. — origin tracking for desugared nodes (`Fn.desugared`, `SurfaceExpression` vs `CoreExpr` split motivation).
 - Marlow, S. et al. (2009). "Runtime Support for Multicore Haskell." *ICFP '09*. — `par`/`seq` sparks and the GHC scheduler; the implicit-parallelism model for automatic parallel dict evaluation.
 - Syme, D., Petricek, T. & Lomov, D. (2011). "The F# Asynchronous Programming Model." *PADL '11*. — Async workflows as first-class values; `task { }` computation expressions directly analogous to tinct's `[task ...]` builtin.
 - Leijen, D., Schulte, W. & Burckhardt, S. (2009). "The Design of a Task Parallel Library." *OOPSLA '09*. — Structured task concurrency; `await-all`/`await-any` semantics.

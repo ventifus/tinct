@@ -1,7 +1,7 @@
 //! AST-to-dict serialization for quasiquoting, macros, and formatter.
 //!
-//! Converts AST nodes to tinct `Value::Dict` matching the canonical schema
-//! defined in `doc/whatif/ast-schema.md`.
+//! Converts AST nodes to tinct `Value::Variant` (Expr nodes) or `Value::Dict`
+//! (structural nodes) matching the canonical schema in `doc/feature/ast-schema.md`.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -233,15 +233,12 @@ fn expr_to_thunk_id(
 ) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::new();
 
+    // Track which Variant tag to use for this Expr type
+    let variant_tag: &str;
+
     match expr {
         Expr::Int(n) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("literal"),
-                    span,
-                ))),
-            );
+            variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("int"), span))),
@@ -253,13 +250,8 @@ fn expr_to_thunk_id(
         }
 
         Expr::Float(f) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("literal"),
-                    span,
-                ))),
-            );
+            variant_tag = "Literal";
+
             dict.insert(
                 Key::String("kind".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("float"), span))),
@@ -271,13 +263,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Bool(b) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("literal"),
-                    span,
-                ))),
-            );
+            variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("bool"), span))),
@@ -289,13 +275,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Str(s) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("literal"),
-                    span,
-                ))),
-            );
+            variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("str"), span))),
@@ -324,10 +304,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::VarRef { name, .. } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("var"), span))),
-            );
+            variant_tag = "VarRef";
             dict.insert(
                 Key::String("name".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
@@ -338,13 +315,7 @@ fn expr_to_thunk_id(
             expr: target,
             field,
         } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("dot-access"),
-                    span,
-                ))),
-            );
+            variant_tag = "DotAccess";
             dict.insert(
                 Key::String("target".into()),
                 expr_to_thunk_id(&target.node, target.span, opts, ctx)?,
@@ -368,10 +339,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Pipe { lhs, rhs } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("pipe"), span))),
-            );
+            variant_tag = "Pipe";
             dict.insert(
                 Key::String("lhs".into()),
                 expr_to_thunk_id(&lhs.node, lhs.span, opts, ctx)?,
@@ -383,14 +351,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Sequential(exprs) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("sequential"),
-                    span,
-                ))),
-            );
-
+            variant_tag = "Sequential";
             let expr_ids = exprs
                 .iter()
                 .map(|e| expr_to_thunk_id(&e.node, e.span, opts, ctx))
@@ -403,11 +364,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Dict(entries) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("dict"), span))),
-            );
-
+            variant_tag = "Dict";
             let entry_ids = entries
                 .iter()
                 .map(|e| entry_to_thunk_id(&e.node, e.span, opts, ctx))
@@ -425,10 +382,7 @@ fn expr_to_thunk_id(
             named_args,
             implied,
         } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("call"), span))),
-            );
+            variant_tag = "Call";
             dict.insert(
                 Key::String("fn".into()),
                 expr_to_thunk_id(&func.node, func.span, opts, ctx)?,
@@ -470,11 +424,7 @@ fn expr_to_thunk_id(
             body,
             desugared,
         } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("fn"), span))),
-            );
-
+            variant_tag = "Fn";
             // params: list of param dicts
             let param_ids = params
                 .iter()
@@ -512,13 +462,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::TypeAlias { params, body } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("type-alias"),
-                    span,
-                ))),
-            );
+            variant_tag = "TypeAlias";
             if !params.is_empty() {
                 // Store params as a dict with integer keys (like other lists)
                 let params_thunk_ids: Vec<ThunkId> = params
@@ -541,13 +485,7 @@ fn expr_to_thunk_id(
             expr: inner,
             ..
         } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("type-assert"),
-                    span,
-                ))),
-            );
+            variant_tag = "TypeAssert";
             dict.insert(
                 Key::String("annotation".into()),
                 annotation_to_thunk_id(&annotation.node, span, ctx)?,
@@ -559,13 +497,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Annotated { name, annotation } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("annotated"),
-                    span,
-                ))),
-            );
+            variant_tag = "Annotated";
             dict.insert(
                 Key::String("name".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
@@ -577,10 +509,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Rest(name_opt) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("rest"), span))),
-            );
+            variant_tag = "Rest";
             dict.insert(
                 Key::String("name".into()),
                 match name_opt {
@@ -596,10 +525,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Quote(inner) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("quote"), span))),
-            );
+            variant_tag = "Quote";
             dict.insert(
                 Key::String("expr".into()),
                 expr_to_thunk_id(&inner.node, inner.span, opts, ctx)?,
@@ -607,13 +533,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Unquote(inner) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("unquote"),
-                    span,
-                ))),
-            );
+            variant_tag = "Unquote";
             dict.insert(
                 Key::String("expr".into()),
                 expr_to_thunk_id(&inner.node, inner.span, opts, ctx)?,
@@ -621,13 +541,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::UnquoteSplice(inner) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("unquote-splice"),
-                    span,
-                ))),
-            );
+            variant_tag = "UnquoteSplice";
             dict.insert(
                 Key::String("expr".into()),
                 expr_to_thunk_id(&inner.node, inner.span, opts, ctx)?,
@@ -635,13 +549,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::DefMacro { name, params, body } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("defmacro"),
-                    span,
-                ))),
-            );
+            variant_tag = "DefMacro";
             dict.insert(
                 Key::String("name".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
@@ -658,13 +566,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::MacroDecl { name, params, body } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("macro-decl"),
-                    span,
-                ))),
-            );
+            variant_tag = "MacroDecl";
             dict.insert(
                 Key::String("name".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
@@ -680,10 +582,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Splice(forms) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("splice"), span))),
-            );
+            variant_tag = "Splice";
             let mut form_list = Vec::new();
             for form in forms {
                 form_list.push(expr_to_thunk_id(&form.node, form.span, opts, ctx)?);
@@ -708,13 +607,7 @@ fn expr_to_thunk_id(
             pattern,
             message,
         } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("syntax-class"),
-                    span,
-                ))),
-            );
+            variant_tag = "SyntaxClass";
             dict.insert(
                 Key::String("name".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
@@ -732,10 +625,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::Match { scrutinee, arms } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("match"), span))),
-            );
+            variant_tag = "Match";
             dict.insert(
                 Key::String("scrutinee".into()),
                 expr_to_thunk_id(&scrutinee.node, scrutinee.span, opts, ctx)?,
@@ -789,10 +679,7 @@ fn expr_to_thunk_id(
             resolver,
             resolver_injective,
         } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("class"), span))),
-            );
+            variant_tag = "ClassDecl";
             dict.insert(
                 Key::String("name".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
@@ -881,13 +768,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::InstanceDecl { class_name, arms } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("instance"),
-                    span,
-                ))),
-            );
+            variant_tag = "InstanceDecl";
             dict.insert(
                 Key::String("class".into()),
                 ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
@@ -953,13 +834,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::PatternDecl { bindings } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("pattern"),
-                    span,
-                ))),
-            );
+            variant_tag = "PatternDecl";
             // Serialize bindings as a list
             let bindings_dict: IndexMap<Key, ThunkId> = bindings
                 .iter()
@@ -981,10 +856,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::LetDecl { bindings } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("let"), span))),
-            );
+            variant_tag = "LetDecl";
             // Serialize bindings as a list
             let bindings_dict: IndexMap<Key, ThunkId> = bindings
                 .iter()
@@ -1006,10 +878,7 @@ fn expr_to_thunk_id(
         }
 
         Expr::CaseArm { pattern, body } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("case"), span))),
-            );
+            variant_tag = "CaseArm";
             dict.insert(
                 Key::String("pattern".into()),
                 expr_to_thunk_id(&pattern.node, pattern.span, opts, ctx)?,
@@ -1021,23 +890,11 @@ fn expr_to_thunk_id(
         }
 
         Expr::Placeholder => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("placeholder"),
-                    span,
-                ))),
-            );
+            variant_tag = "Placeholder";
         }
 
         Expr::TypeApp { func, arg } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("type-app"),
-                    span,
-                ))),
-            );
+            variant_tag = "TypeApp";
             dict.insert(
                 Key::String("func".into()),
                 expr_to_thunk_id(&func.node, func.span, opts, ctx)?,
@@ -1049,20 +906,22 @@ fn expr_to_thunk_id(
         }
 
         Expr::Error(error_span) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                    string_val("error"),
-                    *error_span,
-                ))),
-            );
+            variant_tag = "AstError";
             // Use the error's own span, not the outer span
             dict.insert(
                 Key::String("span".into()),
                 span_to_thunk_id(*error_span, ctx)?,
             );
-            return Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            // Wrap in variant and return early
+            let payload_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
                 Value::Dict(dict),
+                *error_span,
+            )));
+            return Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                Value::Variant {
+                    tag: variant_tag.to_string(),
+                    payload: Some(payload_id),
+                },
                 *error_span,
             ))));
         }
@@ -1071,7 +930,15 @@ fn expr_to_thunk_id(
     // Add span to every node (unless it's Error which handles its own span)
     dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
 
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    // Wrap the dict in a Variant with the tag determined by the Expr variant
+    let payload_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span)));
+    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        Value::Variant {
+            tag: variant_tag.to_string(),
+            payload: Some(payload_id),
+        },
+        span,
+    ))))
 }
 
 /// Convert a pattern to a ThunkId containing a dict representation.
@@ -1590,24 +1457,60 @@ pub fn dict_to_ast(
     val: &Value,
     ctx: &Rc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Expr>, AstError> {
-    let dict = match val {
-        Value::Dict(d) => d,
-        _ => {
-            return Err(AstError {
-                message: "expected Dict".into(),
+    // Accept both Variant (new form) and Dict (legacy form)
+    // Strategy: for Variant, recursively call dict_to_ast on the payload
+    match val {
+        // NEW: Variant form
+        Value::Variant { tag, payload } => {
+            let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
+                message: format!("Expr variant {} has no payload", tag),
                 field_path: vec![],
-            })
+            })?;
+            let payload_val = ctx
+                .get_thunk(*payload_thunk)
+                .try_get_materialized()
+                .ok_or_else(|| AstError {
+                    message: "variant payload is not materialized".into(),
+                    field_path: vec![],
+                })?;
+            let dict = match payload_val {
+                Value::Dict(d) => d,
+                _ => {
+                    return Err(AstError {
+                        message: format!(
+                            "Expr variant payload must be Dict, got {}",
+                            payload_val.type_name()
+                        ),
+                        field_path: vec![],
+                    })
+                }
+            };
+            // Continue processing with the dict and tag
+            dict_to_ast_from_dict(&dict, tag.clone(), ctx)
         }
-    };
+        // LEGACY: Dict with type: field (backward compat)
+        Value::Dict(d) => {
+            let type_str = get_string_field(d, "type", &[], ctx)?;
+            dict_to_ast_from_dict(d, type_str, ctx)
+        }
+        _ => Err(AstError {
+            message: "expected Variant or Dict".into(),
+            field_path: vec![],
+        }),
+    }
+}
 
-    // Extract the type discriminator
-    let type_str = get_string_field(dict, "type", &[], ctx)?;
-
+// Helper function that does the actual conversion given a dict and type string
+fn dict_to_ast_from_dict(
+    dict: &IndexMap<Key, ThunkId>,
+    type_str: String,
+    ctx: &Rc<crate::eval::EvalContext>,
+) -> Result<Spanned<Expr>, AstError> {
     // Extract span (optional — if absent, use synthetic origin span)
-    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+    let span = extract_span(&dict, ctx).unwrap_or_else(Span::origin);
 
     let expr = match type_str.as_str() {
-        "literal" => {
+        "literal" | "Literal" => {
             let kind = get_string_field(dict, "kind", &["type"], ctx)?;
             match kind.as_str() {
                 "int" => {
@@ -1635,7 +1538,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "var" => {
+        "var" | "VarRef" => {
             let name = get_string_field(dict, "name", &["type"], ctx)?;
             Expr::VarRef {
                 name,
@@ -1644,7 +1547,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "dot-access" => {
+        "dot-access" | "DotAccess" => {
             let target_val = get_dict_field(dict, "target", &["type"], ctx)?;
             let target = Box::new(dict_to_ast(&target_val, ctx)?);
 
@@ -1670,7 +1573,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "pipe" => {
+        "pipe" | "Pipe" => {
             let lhs_val = get_dict_field(dict, "lhs", &["type"], ctx)?;
             let rhs_val = get_dict_field(dict, "rhs", &["type"], ctx)?;
             Expr::Pipe {
@@ -1679,7 +1582,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "sequential" => {
+        "sequential" | "Sequential" => {
             let exprs_val = get_dict_field(dict, "exprs", &["type"], ctx)?;
             let exprs_list = extract_list(&exprs_val, &["exprs"], ctx)?;
             let mut exprs = Vec::new();
@@ -1690,8 +1593,8 @@ pub fn dict_to_ast(
             Expr::Sequential(exprs)
         }
 
-        "dict" => {
-            let entries_val = get_dict_field(dict, "entries", &["type"], ctx)?;
+        "dict" | "Dict" => {
+            let entries_val = get_dict_field(&dict, "entries", &["type"], ctx)?;
             let entries_list = extract_list(&entries_val, &["entries"], ctx)?;
             let mut entries = Vec::new();
             for (i, entry_val) in entries_list.into_iter().enumerate() {
@@ -1702,7 +1605,7 @@ pub fn dict_to_ast(
             Expr::Dict(entries)
         }
 
-        "call" => {
+        "call" | "Call" => {
             let fn_val = get_dict_field(dict, "fn", &["type"], ctx)?;
             let func = Box::new(dict_to_ast(&fn_val, ctx)?);
 
@@ -1733,7 +1636,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "fn" => {
+        "fn" | "Fn" => {
             let params_val = get_dict_field(dict, "params", &["type"], ctx)?;
             let params_list = extract_list(&params_val, &["params"], ctx)?;
             let mut params = Vec::new();
@@ -1763,7 +1666,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "type-alias" => {
+        "type-alias" | "TypeAlias" => {
             let params = match get_optional_dict_field(dict, "params", ctx)? {
                 Some(params_val) => {
                     match params_val {
@@ -1829,7 +1732,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "type-assert" => {
+        "type-assert" | "TypeAssert" => {
             let annotation_val = get_dict_field(dict, "annotation", &["type"], ctx)?;
             let annotation = dict_to_annotation(&annotation_val, &["annotation"], ctx)?;
 
@@ -1843,7 +1746,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "annotated" => {
+        "annotated" | "Annotated" => {
             let name = get_string_field(dict, "name", &["type"], ctx)?;
             let annotation_val = get_dict_field(dict, "annotation", &["type"], ctx)?;
             let annotation = dict_to_annotation(&annotation_val, &["annotation"], ctx)?;
@@ -1851,7 +1754,7 @@ pub fn dict_to_ast(
             Expr::Annotated { name, annotation }
         }
 
-        "rest" => {
+        "rest" | "Rest" => {
             let name_val = get_field(dict, "name", &["type"], ctx)?;
             let name_opt = match name_val {
                 Value::String {
@@ -1870,22 +1773,22 @@ pub fn dict_to_ast(
             Expr::Rest(name_opt)
         }
 
-        "quote" => {
+        "quote" | "Quote" => {
             let expr_val = get_dict_field(dict, "expr", &["type"], ctx)?;
             Expr::Quote(Box::new(dict_to_ast(&expr_val, ctx)?))
         }
 
-        "unquote" => {
+        "unquote" | "Unquote" => {
             let expr_val = get_dict_field(dict, "expr", &["type"], ctx)?;
             Expr::Unquote(Box::new(dict_to_ast(&expr_val, ctx)?))
         }
 
-        "unquote-splice" => {
+        "unquote-splice" | "UnquoteSplice" => {
             let expr_val = get_dict_field(dict, "expr", &["type"], ctx)?;
             Expr::UnquoteSplice(Box::new(dict_to_ast(&expr_val, ctx)?))
         }
 
-        "defmacro" => {
+        "defmacro" | "DefMacro" => {
             let name = get_string_field(dict, "name", &["type"], ctx)?;
             let params_val = get_dict_field(dict, "params", &["type"], ctx)?;
             let body_val = get_dict_field(dict, "body", &["type"], ctx)?;
@@ -1897,7 +1800,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "macro-decl" => {
+        "macro-decl" | "MacroDecl" => {
             let name = get_string_field(dict, "name", &["type"], ctx)?;
             let params_val = get_dict_field(dict, "params", &["type"], ctx)?;
             let body_val = get_dict_field(dict, "body", &["type"], ctx)?;
@@ -1908,7 +1811,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "splice" => {
+        "splice" | "Splice" => {
             let forms_val = get_dict_field(dict, "forms", &["type"], ctx)?;
             let forms_list = extract_list(&forms_val, &["forms"], ctx)?;
             let mut forms = Vec::new();
@@ -1918,23 +1821,28 @@ pub fn dict_to_ast(
             Expr::Splice(forms)
         }
 
-        "syntax-class" => {
+        "syntax-class" | "SyntaxClass" => {
             let name = get_string_field(dict, "name", &["type"], ctx)?;
             let pattern_val = get_dict_field(dict, "pattern", &["type"], ctx)?;
-            let message_val = get_field(dict, "message", &["type"], ctx)?;
-            let message = match message_val {
-                Value::String {
-                    ref source,
-                    start,
-                    end,
-                } => Some(source[start..end].to_string()),
-                Value::Dict(d) if d.is_empty() => None,
-                _ => {
-                    return Err(AstError {
-                        message: "message must be String or empty Dict".into(),
-                        field_path: vec!["message".into()],
-                    })
+            // message is optional — emitter omits the key when None
+            let message = if dict.contains_key(&Key::String("message".into())) {
+                let message_val = get_field(dict, "message", &["type"], ctx)?;
+                match message_val {
+                    Value::String {
+                        ref source,
+                        start,
+                        end,
+                    } => Some(source[start..end].to_string()),
+                    Value::Dict(d) if d.is_empty() => None,
+                    _ => {
+                        return Err(AstError {
+                            message: "message must be String or empty Dict".into(),
+                            field_path: vec!["message".into()],
+                        })
+                    }
                 }
+            } else {
+                None
             };
             Expr::SyntaxClass {
                 name,
@@ -1943,7 +1851,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "type-app" => {
+        "type-app" | "TypeApp" => {
             let func_val = get_dict_field(dict, "func", &["type"], ctx)?;
             let arg_val = get_dict_field(dict, "arg", &["type"], ctx)?;
             Expr::TypeApp {
@@ -1952,7 +1860,7 @@ pub fn dict_to_ast(
             }
         }
 
-        "let" => {
+        "let" | "LetDecl" => {
             let bindings_val = get_dict_field(dict, "bindings", &["type"], ctx)?;
             let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
             let mut bindings = Vec::new();
@@ -1963,7 +1871,7 @@ pub fn dict_to_ast(
             Expr::LetDecl { bindings }
         }
 
-        "case" => {
+        "case" | "CaseArm" => {
             let pattern_val = get_dict_field(dict, "pattern", &["type"], ctx)?;
             let body_val = get_dict_field(dict, "body", &["type"], ctx)?;
             Expr::CaseArm {
@@ -1972,9 +1880,9 @@ pub fn dict_to_ast(
             }
         }
 
-        "placeholder" => Expr::Placeholder,
+        "placeholder" | "Placeholder" => Expr::Placeholder,
 
-        "error" => {
+        "error" | "AstError" => {
             // Error nodes preserve their span
             let error_span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
             Expr::Error(error_span)
@@ -2087,9 +1995,9 @@ fn get_dict_field(
 ) -> Result<Value, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
-        Value::Dict(_) => Ok(val),
+        Value::Dict(_) | Value::Variant { .. } => Ok(val),
         _ => Err(AstError {
-            message: format!("field '{}' must be Dict", key),
+            message: format!("field '{}' must be Dict or Variant", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
     }
@@ -2365,6 +2273,27 @@ mod tests {
         crate::eval::EvalContext::new(base_dir, env, false)
     }
 
+    /// Peel a `Value::Variant` to its payload dict.
+    /// Panics with a helpful message if the value is not a Variant with a Dict payload.
+    fn peel_variant(
+        val: Value,
+        ctx: &Rc<crate::eval::EvalContext>,
+    ) -> (String, IndexMap<Key, ThunkId>) {
+        match val {
+            Value::Variant {
+                tag,
+                payload: Some(payload_id),
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                match payload_thunk.try_get_materialized() {
+                    Some(Value::Dict(map)) => (tag, map),
+                    other => panic!("expected Dict payload for Variant, got {:?}", other),
+                }
+            }
+            other => panic!("expected Variant, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_ast_to_dict_int() {
         let expr = sp(Expr::Int(42));
@@ -2372,28 +2301,21 @@ mod tests {
         let ctx = test_ctx();
         let thunk = ast_to_dict_expr(&expr, &opts, &ctx).unwrap();
 
-        match thunk.try_get_materialized() {
-            Some(Value::Dict(map)) => {
-                // Check type field
-                let type_id = map.get(&Key::String("type".into())).unwrap();
-                let type_thunk = ctx.get_thunk(*type_id);
-                assert_eq!(
-                    type_thunk.try_get_materialized(),
-                    Some(string_val("literal"))
-                );
+        let outer = thunk
+            .try_get_materialized()
+            .expect("thunk not materialized");
+        let (tag, map) = peel_variant(outer, &ctx);
+        assert_eq!(tag, "Literal");
 
-                // Check kind field
-                let kind_id = map.get(&Key::String("kind".into())).unwrap();
-                let kind_thunk = ctx.get_thunk(*kind_id);
-                assert_eq!(kind_thunk.try_get_materialized(), Some(string_val("int")));
+        // Check kind field
+        let kind_id = map.get(&Key::String("kind".into())).unwrap();
+        let kind_thunk = ctx.get_thunk(*kind_id);
+        assert_eq!(kind_thunk.try_get_materialized(), Some(string_val("int")));
 
-                // Check value field
-                let value_id = map.get(&Key::String("value".into())).unwrap();
-                let value_thunk = ctx.get_thunk(*value_id);
-                assert_eq!(value_thunk.try_get_materialized(), Some(Value::Int(42)));
-            }
-            _ => panic!("expected Dict"),
-        }
+        // Check value field
+        let value_id = map.get(&Key::String("value".into())).unwrap();
+        let value_thunk = ctx.get_thunk(*value_id);
+        assert_eq!(value_thunk.try_get_materialized(), Some(Value::Int(42)));
     }
 
     #[test]
@@ -2403,18 +2325,15 @@ mod tests {
         let ctx = test_ctx();
         let thunk = ast_to_dict_expr(&expr, &opts, &ctx).unwrap();
 
-        match thunk.try_get_materialized() {
-            Some(Value::Dict(map)) => {
-                let type_id = map.get(&Key::String("type".into())).unwrap();
-                let type_thunk = ctx.get_thunk(*type_id);
-                assert_eq!(type_thunk.try_get_materialized(), Some(string_val("var")));
+        let outer = thunk
+            .try_get_materialized()
+            .expect("thunk not materialized");
+        let (tag, map) = peel_variant(outer, &ctx);
+        assert_eq!(tag, "VarRef");
 
-                let name_id = map.get(&Key::String("name".into())).unwrap();
-                let name_thunk = ctx.get_thunk(*name_id);
-                assert_eq!(name_thunk.try_get_materialized(), Some(string_val("x")));
-            }
-            _ => panic!("expected Dict"),
-        }
+        let name_id = map.get(&Key::String("name".into())).unwrap();
+        let name_thunk = ctx.get_thunk(*name_id);
+        assert_eq!(name_thunk.try_get_materialized(), Some(string_val("x")));
     }
 
     #[test]
@@ -2480,59 +2399,51 @@ mod tests {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
-                                        match expr_thunk.try_get_materialized() {
-                                            Some(Value::Dict(dict_node)) => {
-                                                // Get the entries list
-                                                let entries_id = dict_node
-                                                    .get(&Key::String("entries".into()))
-                                                    .unwrap();
-                                                let entries_thunk = ctx.get_thunk(*entries_id);
-                                                match entries_thunk.try_get_materialized() {
-                                                    Some(Value::Dict(entries_list)) => {
-                                                        let entry_id =
-                                                            entries_list.get(&Key::Int(0)).unwrap();
-                                                        let entry_thunk = ctx.get_thunk(*entry_id);
-                                                        match entry_thunk.try_get_materialized() {
-                                                            Some(Value::Dict(entry_dict)) => {
-                                                                // Get the key expression
-                                                                let key_id = entry_dict
-                                                                    .get(&Key::String("key".into()))
-                                                                    .unwrap();
-                                                                let key_thunk =
-                                                                    ctx.get_thunk(*key_id);
-                                                                match key_thunk
-                                                                    .try_get_materialized()
-                                                                {
-                                                                    Some(Value::Dict(key_dict)) => {
-                                                                        // Check bare: true
-                                                                        let bare_id = key_dict
-                                                                            .get(&Key::String(
-                                                                                "bare".into(),
-                                                                            ))
-                                                                            .expect(
-                                                                                "bare field missing",
-                                                                            );
-                                                                        let bare_thunk =
-                                                                            ctx.get_thunk(*bare_id);
-                                                                        assert_eq!(
-                                                                            bare_thunk
-                                                                                .try_get_materialized(),
-                                                                            Some(Value::Bool(true)),
-                                                                            "bare should be true for bare word 'foo'"
-                                                                        );
-                                                                    }
-                                                                    _ => panic!(
-                                                                        "expected Dict for key"
-                                                                    ),
-                                                                }
-                                                            }
-                                                            _ => panic!("expected Dict for entry"),
+                                        let expr_val = expr_thunk
+                                            .try_get_materialized()
+                                            .expect("expr not materialized");
+                                        let (_tag, dict_node) = peel_variant(expr_val, &ctx);
+                                        {
+                                            // Get the entries list
+                                            let entries_id = dict_node
+                                                .get(&Key::String("entries".into()))
+                                                .unwrap();
+                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                            match entries_thunk.try_get_materialized() {
+                                                Some(Value::Dict(entries_list)) => {
+                                                    let entry_id =
+                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                    match entry_thunk.try_get_materialized() {
+                                                        Some(Value::Dict(entry_dict)) => {
+                                                            // Get the key expression
+                                                            let key_id = entry_dict
+                                                                .get(&Key::String("key".into()))
+                                                                .unwrap();
+                                                            let key_thunk = ctx.get_thunk(*key_id);
+                                                            let key_val = key_thunk
+                                                                .try_get_materialized()
+                                                                .expect("key not materialized");
+                                                            let (_key_tag, key_dict) =
+                                                                peel_variant(key_val, &ctx);
+                                                            // Check bare: true
+                                                            let bare_id = key_dict
+                                                                .get(&Key::String("bare".into()))
+                                                                .expect("bare field missing");
+                                                            let bare_thunk =
+                                                                ctx.get_thunk(*bare_id);
+                                                            assert_eq!(
+                                                                bare_thunk
+                                                                    .try_get_materialized(),
+                                                                Some(Value::Bool(true)),
+                                                                "bare should be true for bare word 'foo'"
+                                                            );
                                                         }
+                                                        _ => panic!("expected Dict for entry"),
                                                     }
-                                                    _ => panic!("expected Dict for entries list"),
                                                 }
+                                                _ => panic!("expected Dict for entries list"),
                                             }
-                                            _ => panic!("expected Dict for dict node"),
                                         }
                                     }
                                     _ => panic!("expected Dict for exprs list"),
@@ -2581,56 +2492,48 @@ mod tests {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
-                                        match expr_thunk.try_get_materialized() {
-                                            Some(Value::Dict(dict_node)) => {
-                                                let entries_id = dict_node
-                                                    .get(&Key::String("entries".into()))
-                                                    .unwrap();
-                                                let entries_thunk = ctx.get_thunk(*entries_id);
-                                                match entries_thunk.try_get_materialized() {
-                                                    Some(Value::Dict(entries_list)) => {
-                                                        let entry_id =
-                                                            entries_list.get(&Key::Int(0)).unwrap();
-                                                        let entry_thunk = ctx.get_thunk(*entry_id);
-                                                        match entry_thunk.try_get_materialized() {
-                                                            Some(Value::Dict(entry_dict)) => {
-                                                                let key_id = entry_dict
-                                                                    .get(&Key::String("key".into()))
-                                                                    .unwrap();
-                                                                let key_thunk =
-                                                                    ctx.get_thunk(*key_id);
-                                                                match key_thunk
-                                                                    .try_get_materialized()
-                                                                {
-                                                                    Some(Value::Dict(key_dict)) => {
-                                                                        let bare_id = key_dict
-                                                                            .get(&Key::String(
-                                                                                "bare".into(),
-                                                                            ))
-                                                                            .expect(
-                                                                                "bare field missing",
-                                                                            );
-                                                                        let bare_thunk =
-                                                                            ctx.get_thunk(*bare_id);
-                                                                        assert_eq!(
-                                                                            bare_thunk
-                                                                                .try_get_materialized(),
-                                                                            Some(Value::Bool(false)),
-                                                                            "bare should be false for quoted string \"foo\""
-                                                                        );
-                                                                    }
-                                                                    _ => panic!(
-                                                                        "expected Dict for key"
-                                                                    ),
-                                                                }
-                                                            }
-                                                            _ => panic!("expected Dict for entry"),
+                                        let expr_val = expr_thunk
+                                            .try_get_materialized()
+                                            .expect("expr not materialized");
+                                        let (_tag, dict_node) = peel_variant(expr_val, &ctx);
+                                        {
+                                            let entries_id = dict_node
+                                                .get(&Key::String("entries".into()))
+                                                .unwrap();
+                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                            match entries_thunk.try_get_materialized() {
+                                                Some(Value::Dict(entries_list)) => {
+                                                    let entry_id =
+                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                    match entry_thunk.try_get_materialized() {
+                                                        Some(Value::Dict(entry_dict)) => {
+                                                            let key_id = entry_dict
+                                                                .get(&Key::String("key".into()))
+                                                                .unwrap();
+                                                            let key_thunk = ctx.get_thunk(*key_id);
+                                                            let key_val = key_thunk
+                                                                .try_get_materialized()
+                                                                .expect("key not materialized");
+                                                            let (_key_tag, key_dict) =
+                                                                peel_variant(key_val, &ctx);
+                                                            let bare_id = key_dict
+                                                                .get(&Key::String("bare".into()))
+                                                                .expect("bare field missing");
+                                                            let bare_thunk =
+                                                                ctx.get_thunk(*bare_id);
+                                                            assert_eq!(
+                                                                bare_thunk
+                                                                    .try_get_materialized(),
+                                                                Some(Value::Bool(false)),
+                                                                "bare should be false for quoted string \"foo\""
+                                                            );
                                                         }
+                                                        _ => panic!("expected Dict for entry"),
                                                     }
-                                                    _ => panic!("expected Dict for entries list"),
                                                 }
+                                                _ => panic!("expected Dict for entries list"),
                                             }
-                                            _ => panic!("expected Dict for dict node"),
                                         }
                                     }
                                     _ => panic!("expected Dict for exprs list"),
@@ -2684,58 +2587,59 @@ mod tests {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
-                                        match expr_thunk.try_get_materialized() {
-                                            Some(Value::Dict(dict_node)) => {
-                                                let entries_id = dict_node
-                                                    .get(&Key::String("entries".into()))
-                                                    .unwrap();
-                                                let entries_thunk = ctx.get_thunk(*entries_id);
-                                                match entries_thunk.try_get_materialized() {
-                                                    Some(Value::Dict(entries_list)) => {
-                                                        let entry_id =
-                                                            entries_list.get(&Key::Int(0)).unwrap();
-                                                        let entry_thunk = ctx.get_thunk(*entry_id);
-                                                        match entry_thunk.try_get_materialized() {
-                                                            Some(Value::Dict(entry_dict)) => {
-                                                                // Check for leading-comments field
-                                                                let comments_id = entry_dict
-                                                                    .get(&Key::String(
-                                                                        "leading-comments".into(),
-                                                                    ))
-                                                                    .expect("leading-comments field missing");
-                                                                let comments_thunk =
-                                                                    ctx.get_thunk(*comments_id);
-                                                                match comments_thunk
-                                                                    .try_get_materialized()
-                                                                {
-                                                                    Some(Value::Dict(
-                                                                        comments_list,
-                                                                    )) => {
-                                                                        let comment_id =
-                                                                            comments_list
-                                                                                .get(&Key::Int(0))
-                                                                                .expect("comment 0 missing");
-                                                                        let comment_thunk =
-                                                                            ctx.get_thunk(*comment_id);
-                                                                        assert_eq!(
-                                                                            comment_thunk
-                                                                                .try_get_materialized(),
-                                                                            Some(string_val(" comment")),
-                                                                            "leading comment should be ' comment'"
-                                                                        );
-                                                                    }
-                                                                    _ => panic!(
-                                                                        "expected Dict for comments list"
-                                                                    ),
+                                        let expr_val = expr_thunk
+                                            .try_get_materialized()
+                                            .expect("expr not materialized");
+                                        let (_tag, dict_node) = peel_variant(expr_val, &ctx);
+                                        {
+                                            let entries_id = dict_node
+                                                .get(&Key::String("entries".into()))
+                                                .unwrap();
+                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                            match entries_thunk.try_get_materialized() {
+                                                Some(Value::Dict(entries_list)) => {
+                                                    let entry_id =
+                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                    match entry_thunk.try_get_materialized() {
+                                                        Some(Value::Dict(entry_dict)) => {
+                                                            // Check for leading-comments field
+                                                            let comments_id = entry_dict
+                                                                .get(&Key::String(
+                                                                    "leading-comments".into(),
+                                                                ))
+                                                                .expect("leading-comments field missing");
+                                                            let comments_thunk =
+                                                                ctx.get_thunk(*comments_id);
+                                                            match comments_thunk
+                                                                .try_get_materialized()
+                                                            {
+                                                                Some(Value::Dict(
+                                                                    comments_list,
+                                                                )) => {
+                                                                    let comment_id =
+                                                                        comments_list
+                                                                            .get(&Key::Int(0))
+                                                                            .expect("comment 0 missing");
+                                                                    let comment_thunk =
+                                                                        ctx.get_thunk(*comment_id);
+                                                                    assert_eq!(
+                                                                        comment_thunk
+                                                                            .try_get_materialized(),
+                                                                        Some(string_val(" comment")),
+                                                                        "leading comment should be ' comment'"
+                                                                    );
                                                                 }
+                                                                _ => panic!(
+                                                                    "expected Dict for comments list"
+                                                                ),
                                                             }
-                                                            _ => panic!("expected Dict for entry"),
                                                         }
+                                                        _ => panic!("expected Dict for entry"),
                                                     }
-                                                    _ => panic!("expected Dict for entries list"),
                                                 }
+                                                _ => panic!("expected Dict for entries list"),
                                             }
-                                            _ => panic!("expected Dict for dict node"),
                                         }
                                     }
                                     _ => panic!("expected Dict for exprs list"),
@@ -2798,41 +2702,44 @@ mod tests {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
-                                        match expr_thunk.try_get_materialized() {
-                                            Some(Value::Dict(dict_node)) => {
-                                                let entries_id = dict_node
-                                                    .get(&Key::String("entries".into()))
-                                                    .unwrap();
-                                                let entries_thunk = ctx.get_thunk(*entries_id);
-                                                match entries_thunk.try_get_materialized() {
-                                                    Some(Value::Dict(entries_list)) => {
-                                                        let entry_id =
-                                                            entries_list.get(&Key::Int(1)).unwrap();
-                                                        let entry_thunk = ctx.get_thunk(*entry_id);
-                                                        match entry_thunk.try_get_materialized() {
-                                                            Some(Value::Dict(entry_dict)) => {
-                                                                // Check blank-before: true
-                                                                let blank_id = entry_dict
-                                                                    .get(&Key::String(
-                                                                        "blank-before".into(),
-                                                                    ))
-                                                                    .expect("blank-before field missing");
-                                                                let blank_thunk =
-                                                                    ctx.get_thunk(*blank_id);
-                                                                assert_eq!(
-                                                                    blank_thunk
-                                                                        .try_get_materialized(),
-                                                                    Some(Value::Bool(true)),
-                                                                    "blank-before should be true for second entry"
+                                        let expr_val = expr_thunk
+                                            .try_get_materialized()
+                                            .expect("expr not materialized");
+                                        let (_tag, dict_node) = peel_variant(expr_val, &ctx);
+                                        {
+                                            let entries_id = dict_node
+                                                .get(&Key::String("entries".into()))
+                                                .unwrap();
+                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                            match entries_thunk.try_get_materialized() {
+                                                Some(Value::Dict(entries_list)) => {
+                                                    let entry_id =
+                                                        entries_list.get(&Key::Int(1)).unwrap();
+                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                    match entry_thunk.try_get_materialized() {
+                                                        Some(Value::Dict(entry_dict)) => {
+                                                            // Check blank-before: true
+                                                            let blank_id = entry_dict
+                                                                .get(&Key::String(
+                                                                    "blank-before".into(),
+                                                                ))
+                                                                .expect(
+                                                                    "blank-before field missing",
                                                                 );
-                                                            }
-                                                            _ => panic!("expected Dict for entry"),
+                                                            let blank_thunk =
+                                                                ctx.get_thunk(*blank_id);
+                                                            assert_eq!(
+                                                                blank_thunk
+                                                                    .try_get_materialized(),
+                                                                Some(Value::Bool(true)),
+                                                                "blank-before should be true for second entry"
+                                                            );
                                                         }
+                                                        _ => panic!("expected Dict for entry"),
                                                     }
-                                                    _ => panic!("expected Dict for entries list"),
                                                 }
+                                                _ => panic!("expected Dict for entries list"),
                                             }
-                                            _ => panic!("expected Dict for dict node"),
                                         }
                                     }
                                     _ => panic!("expected Dict for exprs list"),
@@ -2881,81 +2788,75 @@ mod tests {
                                     Some(Value::Dict(exprs_list)) => {
                                         let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
-                                        match expr_thunk.try_get_materialized() {
-                                            Some(Value::Dict(dict_node)) => {
-                                                let entries_id = dict_node
-                                                    .get(&Key::String("entries".into()))
-                                                    .unwrap();
-                                                let entries_thunk = ctx.get_thunk(*entries_id);
-                                                match entries_thunk.try_get_materialized() {
-                                                    Some(Value::Dict(entries_list)) => {
-                                                        let entry_id =
-                                                            entries_list.get(&Key::Int(0)).unwrap();
-                                                        let entry_thunk = ctx.get_thunk(*entry_id);
-                                                        match entry_thunk.try_get_materialized() {
-                                                            Some(Value::Dict(entry_dict)) => {
-                                                                let key_id = entry_dict
-                                                                    .get(&Key::String("key".into()))
-                                                                    .unwrap();
-                                                                let key_thunk =
-                                                                    ctx.get_thunk(*key_id);
-                                                                match key_thunk
-                                                                    .try_get_materialized()
-                                                                {
-                                                                    Some(Value::Dict(key_dict)) => {
-                                                                        let bare_id = key_dict
-                                                                            .get(&Key::String(
-                                                                                "bare".into(),
-                                                                            ))
-                                                                            .expect(
-                                                                                "bare field missing",
-                                                                            );
-                                                                        let bare_thunk =
-                                                                            ctx.get_thunk(*bare_id);
-                                                                        assert_eq!(
-                                                                            bare_thunk
-                                                                                .try_get_materialized(),
-                                                                            Some(Value::Bool(false)),
-                                                                            "bare should be false when source is None"
-                                                                        );
-                                                                    }
-                                                                    _ => panic!(
-                                                                        "expected Dict for key"
-                                                                    ),
-                                                                }
+                                        let expr_val = expr_thunk
+                                            .try_get_materialized()
+                                            .expect("expr not materialized");
+                                        let (_tag, dict_node) = peel_variant(expr_val, &ctx);
+                                        {
+                                            let entries_id = dict_node
+                                                .get(&Key::String("entries".into()))
+                                                .unwrap();
+                                            let entries_thunk = ctx.get_thunk(*entries_id);
+                                            match entries_thunk.try_get_materialized() {
+                                                Some(Value::Dict(entries_list)) => {
+                                                    let entry_id =
+                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_thunk = ctx.get_thunk(*entry_id);
+                                                    match entry_thunk.try_get_materialized() {
+                                                        Some(Value::Dict(entry_dict)) => {
+                                                            let key_id = entry_dict
+                                                                .get(&Key::String("key".into()))
+                                                                .unwrap();
+                                                            let key_thunk = ctx.get_thunk(*key_id);
+                                                            let key_val = key_thunk
+                                                                .try_get_materialized()
+                                                                .expect("key not materialized");
+                                                            let (_key_tag, key_dict) =
+                                                                peel_variant(key_val, &ctx);
+                                                            let bare_id = key_dict
+                                                                .get(&Key::String("bare".into()))
+                                                                .expect("bare field missing");
+                                                            let bare_thunk =
+                                                                ctx.get_thunk(*bare_id);
+                                                            assert_eq!(
+                                                                bare_thunk
+                                                                    .try_get_materialized(),
+                                                                Some(Value::Bool(false)),
+                                                                "bare should be false when source is None"
+                                                            );
 
-                                                                // Check that blank-before is still present (always included)
-                                                                let blank_id = entry_dict
+                                                            // Check that blank-before is still present (always included)
+                                                            let blank_id = entry_dict
+                                                                .get(&Key::String(
+                                                                    "blank-before".into(),
+                                                                ))
+                                                                .expect(
+                                                                    "blank-before field missing",
+                                                                );
+                                                            let blank_thunk =
+                                                                ctx.get_thunk(*blank_id);
+                                                            assert_eq!(
+                                                                blank_thunk
+                                                                    .try_get_materialized(),
+                                                                Some(Value::Bool(false)),
+                                                                "blank-before should be false when comments is None"
+                                                            );
+
+                                                            // Check that leading-comments is absent
+                                                            assert!(
+                                                                entry_dict
                                                                     .get(&Key::String(
-                                                                        "blank-before".into(),
+                                                                        "leading-comments".into()
                                                                     ))
-                                                                    .expect("blank-before field missing");
-                                                                let blank_thunk =
-                                                                    ctx.get_thunk(*blank_id);
-                                                                assert_eq!(
-                                                                    blank_thunk
-                                                                        .try_get_materialized(),
-                                                                    Some(Value::Bool(false)),
-                                                                    "blank-before should be false when comments is None"
-                                                                );
-
-                                                                // Check that leading-comments is absent
-                                                                assert!(
-                                                                    entry_dict
-                                                                        .get(&Key::String(
-                                                                            "leading-comments".into()
-                                                                        ))
-                                                                        .is_none(),
-                                                                    "leading-comments should be absent when comments is None"
-                                                                );
-                                                            }
-                                                            _ => panic!("expected Dict for entry"),
+                                                                    .is_none(),
+                                                                "leading-comments should be absent when comments is None"
+                                                            );
                                                         }
+                                                        _ => panic!("expected Dict for entry"),
                                                     }
-                                                    _ => panic!("expected Dict for entries list"),
                                                 }
+                                                _ => panic!("expected Dict for entries list"),
                                             }
-                                            _ => panic!("expected Dict for dict node"),
                                         }
                                     }
                                     _ => panic!("expected Dict for exprs list"),

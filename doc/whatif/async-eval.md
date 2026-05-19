@@ -1,6 +1,8 @@
 # What If: Async and Parallel Evaluator for tinct
 
-**State:** Superseded — 2026-05-19 — absorbed into [`runtime-v2.md`](runtime-v2.md)
+**State:** Superseded — 2026-05-19
+- Core async runtime (eval async, Rc→Arc, OnceLock thunk, task/await/channel/select, par, event sources, context/cancellation) → [`runtime-v2.md`](runtime-v2.md)
+- Serve/connect layer design, networking primitives, DNS and ICMP worked examples, stdlib networking modules → [`lib-net-v3.md`](lib-net-v3.md)
 
 What would it take to make tinct's evaluator fully non-blocking and parallel — enabling cooperative concurrency, multi-core evaluation, first-class async primitives, and event-driven programs in a single implementation pass?
 
