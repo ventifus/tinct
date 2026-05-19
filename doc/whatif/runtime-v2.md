@@ -481,9 +481,11 @@ This is especially significant for heavy fields: `args: [Seq Expression]` in a `
 
 `Value::Document` and `Value::Program` follow the same protocol with their respective field extractors. `Value::Variant` match is already lazy (payload Dict contains ThunkIds); no change there.
 
-**Performance notes:** For each pattern-bound variable, one `Arc<Thunk>` with `AstNodeField` state is allocated at match dispatch regardless of use — the laziness is in evaluation, not allocation. The OnceLock Mutex lock (~5–10ns uncontested) is paid on first force of each field; for cheap leaf fields (`Bool`, `String` flags) this overhead may exceed the field extraction cost. If profiling shows this is a hotspot in AST-traversal workloads, consider a `try_lock` fast path for `AstNodeField` evaluation or a dedicated `OnceLock<Value>` that bypasses the full thunk machinery for this variant.
+**Binding invariant:** Every variable named in the match pattern — regardless of whether the arm body uses it — must receive a binding in the arm environment. This invariant must not be violated as a performance optimisation; skipping thunk creation for "unused" or "cheap" bindings silently drops variables from scope, which is a correctness bug. The implementation has historically suffered from exactly this class of error. All N `Arc<Thunk>` wrappers are created unconditionally at dispatch.
 
-`[deep-materialize ast-expr]` is a **no-op** — it returns the `Value::Expression` unchanged, like `Value::Handle` or `Value::DirCap`. `Expression` is a nominal opaque type; materializing its internals into a tree would allocate O(n) values for the full subtree, and can be triggered accidentally by any builtin that calls `deep-materialize` on a value containing an `Expression`. Inspection is done via `match` and field access; serialization to JSON is done by writing a tinct traversal function using match dispatch. JSON output of a program that returns an `Expression` value produces the opaque type marker, not the expanded tree.
+**Performance notes:** The OnceLock Mutex lock (~5–10ns uncontested) is paid on first force of each field. If profiling shows this is a hotspot, the valid optimisation space is in the *forcing mechanism only* — e.g. a `try_lock` fast path or a dedicated `OnceLock<Value>` that bypasses the full thunk machinery — never in skipping binding creation.
+
+`deep-materialize` is **deleted**. It was a no-op for `Expression`/`Document`/`Program` (opaque nominal types), and incomplete for Dict/Seq values containing them (would force the outer structure but silently skip `Expression` entries). Neither behavior is useful. Inspection is done via `match` and field access. The JSON serializer forces thunks internally as it traverses. The OnceLock protocol handles all other forcing. There is no remaining use case for an explicit force-all primitive.
 
 ### Field Access on `Value::Expression`
 
@@ -534,6 +536,40 @@ eval-file: [fn@[return: Any] [let ast@Program initial include-dir]
 
 `doc.name` becomes `DocumentName` (`[Named String] | Unnamed`) rather than `String | []` — making the optional-name pattern explicit and type-safe.
 
+### JSON Serializer Migration
+
+The Rust JSON serializer (`value_to_json` or equivalent) currently has no way to inspect `Value::Expression` internals without calling `ast_to_dict_expr` — which is deleted in this sprint. Instead, the JSON serializer for `Expression` values moves to tinct, using match dispatch the same way formatters and docgen do.
+
+The JSON codec moves to `stdlib/codecs/json.llt` — a new tinct module implementing both serialization (`to-json`) and re-exporting the Rust `from-json` primitive (JSON parsing is a text-encoding task that legitimately belongs in Rust). The full implementation handles all value types including `Expression`, `Document`, and `Program` via match dispatch:
+
+```tinct
+# Serialize an Expression to its JSON representation.
+# Uses the Variant encoding: {"Var": {"name": "x", "escaped": false, "span": ...}}
+json-expression: [fn [expr@Expression]
+  [match expr
+    [IntLiteral   value: v  span: s]: [json-variant "IntLiteral" [value: v  span: [json-span s]]]
+    [FloatLiteral value: v  span: s]: [json-variant "FloatLiteral" [value: v  span: [json-span s]]]
+    [BoolLiteral  value: v  span: s]: [json-variant "BoolLiteral" [value: v  span: [json-span s]]]
+    [StrLiteral   value: v  span: s]: [json-variant "StrLiteral" [value: v  span: [json-span s]]]
+    [Var  name: n  escaped: e  span: s]:
+      [json-variant "Var" [name: n  escaped: e  span: [json-span s]]]
+    [Call fn: f  args: a  named: na  implied: impl  span: s]:
+      [json-variant "Call" [fn: [json-expression f]
+                            args: [map json-expression a]
+                            implied: impl
+                            span: [json-span s]]]
+    # ... all other variants follow the same pattern
+    ]]
+```
+
+`json-variant` is a stdlib helper that produces `{"Tag": {fields}}`. `json-span` serializes a `Span` to its Dict form. All child `Expression` fields recurse via `json-expression`; all child `Document`/`Program` fields use analogous `json-document`/`json-program` helpers.
+
+**`from-json` direction:** `from-json` produces only structural tinct values — `Dict`, `Seq`, `String`, `Int`, `Float`, `Bool`, `[]` (null). Not every tinct type round-trips through JSON; `Expression`, `Program`, `Document`, and capability types have no JSON representation by design. Schema-directed reconstruction (JSON object → nominal type) is the caller's responsibility via [`schema-directed-from-json.md`](schema-directed-from-json.md). The `from-json` implementation moves to tinct once `str-at`/`str-slice`/`str-length` are added to `strings.llt` — a straightforward recursive descent parser over JSON text. Currently re-exported from the Rust primitive.
+
+**This eliminates the last caller of `ast_to_dict_expr`.** With it gone, `src/ast_dict.rs` has no remaining purpose and is deleted in full. No backwards compatibility — the previous `type: "var"` string-keyed Dict schema is superseded.
+
+`stdlib/cli/out/json.llt` — the CLI output formatter for `tinct run -o json` — is switched over to delegate to `codecs/json.llt` as part of this sprint's implementation. Its own serialization logic is deleted; it becomes a thin include of `codecs/json.llt` that calls `to-json`. `stdlib/cli/out/json-pretty.llt` follows the same change. The Rust CLI continues to call `to-json` on the program's output value and pretty-print the result.
+
 ### Quasiquoting and `eval-ast`
 
 `[quote expr]` returns `Value::Expression` (was `Value::Dict`). `eval-ast` is deleted — replaced by `[eval [seq some-ast-expr] %: [] env: []]`.
@@ -542,7 +578,9 @@ eval-file: [fn@[return: Any] [let ast@Program initial include-dir]
 
 - **`dict_to_ast`** — deleted entirely; no longer called anywhere
 - **`dict_to_file`** — never written; this proposal supersedes that item
-- **`ast_to_dict_expr`** — retained internally; called by `surface_node_get_field` to produce `Value::Variant` field values for `deep-materialize` and JSON output. Not a registered builtin.
+- **`ast_to_dict_expr`** — **deleted**. `surface_node_get_field` returns `Value::Expression(Arc<SurfaceNode>)` for expression-typed child fields directly, not a Dict intermediate. The tinct JSON serializer handles `Value::Expression` via match dispatch (see §JSON Serializer Migration).
+- **`ast_to_dict`** (file-level) — **deleted**. `load` wraps `SurfaceProgram` directly in `Value::Program`; no serialization step.
+- **`src/ast_dict.rs`** — **deleted entirely** once the above functions are removed. No remaining callers.
 
 ---
 
@@ -813,6 +851,9 @@ stdlib/
 
   async.llt         — exit, graceful-exit, finally, loop-select, retry
                       cancel: [fn [c@CancelHandle] [c.cancel]]   # convenience wrapper
+  codecs/
+    json.llt        — to-json (full tinct implementation via match dispatch on Expression/Document/Program)
+                      from-json (Rust primitive re-exported; produces Dict/Seq/primitive, not Expression)
   datetime.llt      — Timestamp, Duration, formatting/parsing
   regex.llt         — Thompson NFA regex engine
   toml.llt          — complete TOML 1.0 parser
@@ -863,17 +904,20 @@ The `Expression` and supporting type declarations live in `prelude.llt` (not a s
 ### Change `src/ast_dict.rs`
 
 - **Add** `surface_expr_tag(expr: &SurfaceExpression) -> &'static str` — O(1) tag extraction; called by match evaluator for `Value::Expression`
-- **Add** `surface_node_get_field(node: &Arc<SurfaceNode>, field: &str) -> Value` — field extraction for `AstNodeField` thunk evaluation and dot-access; calls `ast_to_dict_expr` internally for complex fields
+- **Add** `surface_node_get_field(node: &Arc<SurfaceNode>, field: &str) -> Value` — field extraction for `AstNodeField` thunk evaluation and dot-access; returns `Value::Expression(Arc<SurfaceNode>)` for expression-typed child fields, `Value::Str`/`Value::Bool`/`Value::Int` for primitive fields, `Value::Seq` of `Value::Expression` for sequence fields
 - **Add** analogues `surface_doc_tag`, `surface_doc_get_field`, `surface_file_get_field` for `Value::Document` and `Value::Program`
-- **Delete** `dict_to_ast` — removed entirely
-- **Retain** `ast_to_dict_expr` — used only by `deep-materialize` and JSON output (now operates on `SurfaceExpression`)
+- **Delete** `dict_to_ast` — no remaining callers
+- **Delete** `ast_to_dict_expr` — last caller was JSON output; JSON serializer migrated to tinct (see §JSON Serializer Migration)
+- **Delete** `ast_to_dict`, `document_to_dict` — `load` wraps `SurfaceProgram` directly
+- **Delete `src/ast_dict.rs` entirely** — no remaining functions
 
 ### Change `src/eval.rs`
 
 - All functions become `async fn`
 - `eval` pattern-matches on `CoreExpr` (not `Expr`); all arms updated
 - `eval_dict` fans out independent entries via `tokio::task::JoinSet` — automatic parallel evaluation
-- **Add** `Value::Expression`, `Value::Document`, `Value::Program` arms to: match evaluator (calls `surface_expr_tag`, creates `AstNodeField` thunks per pattern-bound variable), dot-access evaluator (calls `surface_node_get_field`), `get`, `has?`, `deep-materialize` (no-op — returns value unchanged, like Handle/DirCap), JSON serializer (opaque type marker, not expanded tree), `type-of` (returns `"Expression"` / `"Document"` / `"Program"`), `dict?` (returns `false` — nominal types, not plain Dicts)
+- **Add** `Value::Expression`, `Value::Document`, `Value::Program` arms to: match evaluator (calls `surface_expr_tag`, creates `AstNodeField` thunks per pattern-bound variable), dot-access evaluator (calls `surface_node_get_field`), `get`, `has?`, JSON serializer (opaque type marker), `type-of` (returns `"Expression"` / `"Document"` / `"Program"`), `dict?` (returns `false` — nominal types, not plain Dicts)
+- **Delete** `deep_materialize` from `src/eval_deep.rs` — no remaining use case; the JSON serializer forces thunks internally, OnceLock handles all other forcing
 - `materialize` uses the `OnceLock` forcing protocol
 - `EvalContext` gains `cancel: CancellationToken` field
 
@@ -1055,12 +1099,13 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 - `VarRef.resolved: RefCell<...>` — replaced by `ResolutionTable`
 - `TypeAssert.resolved_type: RefCell<Option<Type>>` — replaced by `TypeAnnotationTable` + distinct `CoreExpr` variants
 
-**`src/ast_dict.rs`**
-- `dict_to_ast` — removed entirely (no remaining callers)
+**`src/ast_dict.rs`** — **entire file deleted**
+- `dict_to_ast` — no remaining callers
 - `dict_to_file` — never written; confirm it was never accidentally added
-- `ast_to_dict` (file-level function) — removed; `load` now wraps `SurfaceProgram` directly
-- `document_to_dict` — removed alongside `ast_to_dict`
-- String-keyed `type:` Dict schema as the output format — superseded by `Value::Variant` trees
+- `ast_to_dict` (file-level) — gone; `load` wraps `SurfaceProgram` directly
+- `ast_to_dict_expr` — gone; `surface_node_get_field` returns `Value::Expression` for child fields directly; JSON serializer migrated to tinct
+- `document_to_dict` — gone alongside `ast_to_dict`
+- String-keyed `type:` Dict schema — superseded; no backwards compat
 
 **`src/desugar.rs`** — deleted; `Pipe` → `Call` rewriting moves into the lowering pass in `src/lower.rs`
 
@@ -1102,6 +1147,9 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 
 **Error types**
 - `Box<EvalError>` at cross-thread boundaries — replaced by `Arc<EvalError>`; scan for remaining `Box<EvalError>` in async contexts
+
+**Rust JSON serializer**
+- `value_to_json` (or equivalent) in `src/` — replaced by `stdlib/codecs/json.llt`; the Rust function becomes a thin shim that calls the tinct `to-json` function, then is deleted once tinct has full control
 
 **Tinct stdlib**
 - `[include %rust "..."]` patterns in `stdlib/prelude.llt` — from prerequisite sprint; confirm gone

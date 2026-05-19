@@ -8,21 +8,6 @@ See DONE.md for the full history of completed sprints.
 
 `macros-v2` accepted 2026-05-17. See `doc/whatif/macros-v2.md`. Unified `macro` form with `[let ...]` patterns, `inject:` for anaphoric binding, `splice` for multi-form output, `syntax-class` for declarative argument validation. Implementation order: macros-v2-ast → macros-v2-expand → macros-v2-inject → macros-v2-stdlib.
 
-### deep-materialize-variant: Add Value::Variant traversal to deep_materialize
-
-**Blocks:** `macros-v2-stdlib` migration of macros.llt to Variant construction.
-
-Currently `deep_materialize` in `src/eval_deep.rs` traverses `Dict` and `Seq` recursively but has no arm for `Value::Variant`. This means if a macro returns `Variant("Call", {func: Thunk(...), args: Thunk(...)})`, the thunks inside the payload are never forced before `dict_to_ast` reads them — causing failures. Until this is fixed, `macros.llt` must use legacy `{type: "call", ...}` dicts for AST construction even though `ast_to_dict` now produces Variant output.
-
-- [ ] Add `Value::Variant` arm to `deep_materialize_value` in `src/eval_deep.rs`: when materializing a Variant, recursively materialize its payload (the inner `Value`) then return a new `Variant` with the materialized payload (`src/eval_deep.rs`)
-- [ ] Update `macros.llt` helper functions to use `[variant "Tag" payload]` instead of `[type: "Tag" ...]` dicts: `do-var-node`, `do-access-node`, `do-call-1`, `do-call-2`, `do-fn-node`, `do-empty-dict-node`, `tmpl-str-node`, `tmpl-var-node`, and any other AST node builders (`stdlib/macros.llt`)
-- [ ] Update `stdlib/ast.llt:ident` to return `[variant "VarRef" [name: name]]` instead of `[type: "var" name: name]` (`stdlib/ast.llt`)
-- [ ] Verify all macro corpus tests pass after the macros.llt migration (`tests/corpus/eval/macros/`)
-- [ ] Once all macros produce Variant output, the legacy Dict path in `dict_to_ast` can be removed (optional cleanup) (`src/ast_dict.rs`)
-- [ ] Fix stale module doc comment in `src/ast_dict.rs:4` — wrong path and wrong type name (pre-existing nit found during typed-expr-constructors review) (`src/ast_dict.rs`)
-- [x] Fix `UnquoteSplice` type annotation mismatch in `stdlib/ast.llt:53` — field type doesn't match emitted schema (`stdlib/ast.llt`)
-- [x] Fix stale `Call` comment in `stdlib/ast.llt:36` — says "simplified: ignores named_args, implied flag" but is now accurate enough to remove the caveat (`stdlib/ast.llt`)
-
 ### macros-v2-stdlib: Migrate defmacro, add stdlib/ast.llt and stdlib/syntax.llt
 
 **Depends on:** `macros-v2-expand`, `typed-expr-constructors`, `deep-materialize-variant`

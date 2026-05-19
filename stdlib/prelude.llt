@@ -2176,6 +2176,10 @@ Example: [tag-of [variant "Red"]] => "Red"
 Note: Returns the tag string for a variant value. Errors on non-variant values.
 """] [let value] [builtin-tag-of value]]
 
+# Re-export builtin-variant for macro use (2-argument version: tag + payload)
+# The public 1-argument `variant` wrapper (below) is for payloadless variants.
+builtin-variant: builtin-variant
+
 variant: [fn@[return: Variant  doc: """
 Construct a tagged variant value.
 

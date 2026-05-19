@@ -5,6 +5,9 @@
 #
 # Usage: [include %libdir "ast.llt"]
 
+# Include meta builtins (builtin-variant, tag-of, etc.) for AST construction
+[include %rust "meta"]
+
 [
 
 # Entry type — dict entry (keyed or auto-indexed)
@@ -109,11 +112,8 @@ Used in macro bodies to create identifier nodes from computed or
 extracted name strings. For generating fresh names, use gensym instead.
 
 Example:
-  [ident "counter"]  => {type: "var", name: "counter"}
-
-Note: returns legacy dict form (not Variant) until deep-materialize-variant sprint
-makes it safe to return [variant "VarRef" [name: name]].
+  [ident "counter"]  => Variant("VarRef", {name: "counter"})
 """] [let name@String]
-  [type: "var"  name: name]]
+  [builtin-variant "VarRef" [name: name]]]
 
 ]

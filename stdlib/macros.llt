@@ -47,6 +47,9 @@
 #
 # ============================================================================
 
+# Include meta builtins (builtin-variant, tag-of, etc.) for AST construction
+[include %rust "meta"]
+
 # Private helpers (first dict — not exported as public bindings)
 
 [
@@ -66,13 +69,13 @@ tmpl-var-len: [fn [let s len i]
       [tmpl-var-len s len [+ i 1]]]
     i]]
 
-# Build a string literal AST dict node (legacy dict format, compatible with dict_to_ast).
+# Build a string literal AST Variant node.
 tmpl-str-node: [fn [let text]
-  [type: "literal"  kind: "str"  value: text  bare: false]]
+  [builtin-variant "Literal" [kind: "str"  value: text  bare: false]]]
 
-# Build a var reference AST dict node (legacy dict format, compatible with dict_to_ast).
+# Build a var reference AST Variant node.
 tmpl-var-node: [fn [let var-name]
-  [type: "var"  name: var-name]]
+  [builtin-variant "VarRef" [name: var-name]]]
 
 # Append an optional suffix literal to nodes (only if suffix is non-empty).
 # Returns the updated nodes list.
@@ -172,9 +175,9 @@ tmpl-expand: [fn [let template-str args]
       [nodes: []  skip: false  is-first: true]
       [split "$" template-str]]]]
 
-# Wrap the collected AST nodes in a [str ...] call AST dict (legacy dict format).
+# Wrap the collected AST nodes in a [str ...] call AST Variant.
 tmpl-emit-call: [fn [let result]
-  [type: "call"  fn: [type: "var"  name: "str"]  args: result.nodes  named-args: []  implied: true]]
+  [builtin-variant "Call" [fn: [builtin-variant "VarRef" [name: "str"]]  args: result.nodes  named-args: []  implied: true]]]
 
 ]
 
@@ -199,12 +202,12 @@ tmpl-emit-call: [fn [let result]
 
 [
 
-# Build a var-reference AST node (legacy dict format, compatible with dict_to_ast).
+# Build a var-reference AST Variant node.
 # Uses p-name (not 'name') to avoid letrec key-shadowing: [name: name] would
 # create a circular dependency where the dict's own 'name' key tries to reference itself.
 # This is the same pattern used in do-params-1 with 'p-name'.
 do-var-node: [fn [let p-name]
-  [type: "var"  name: p-name]]
+  [builtin-variant "VarRef" [name: p-name]]]
 
 # Build a single-param list (integer-keyed dict with one entry).
 # Uses p-name (not 'name') to avoid letrec key-shadowing: [name: name] would
@@ -212,15 +215,15 @@ do-var-node: [fn [let p-name]
 do-params-1: [fn [let p-name]
   [0: [name: p-name  annotation: []  variadic: false]]]
 
-# Build a fn AST node: [fn [param-name] body] (legacy dict format).
+# Build a fn AST Variant node: [fn [param-name] body].
 # Uses p-name/p-body to avoid letrec key-shadowing of 'params'/'body' keys.
 do-fn-node: [fn [let p-name p-body]
-  [type: "fn"  params: [do-params-1 p-name]  body: p-body  return-ann: []  desugared: false]]
+  [builtin-variant "Fn" [params: [do-params-1 p-name]  body: p-body  return-ann: []  desugared: false]]]
 
-# Build a dot-access AST node: target.field
+# Build a dot-access AST Variant node: target.field
 # Uses p-target/p-field to avoid letrec key-shadowing of 'target'/'field' keys.
 do-access-node: [fn [let p-target p-field]
-  [type: "dot-access"  target: p-target  field: p-field]]
+  [builtin-variant "DotAccess" [target: p-target  field: p-field]]]
 
 # Build a 1-element list (integer-keyed dict).
 do-list-1: [fn [let a]
@@ -230,17 +233,17 @@ do-list-1: [fn [let a]
 do-list-2: [fn [let a b]
   [0: a  1: b]]
 
-# Build a call AST node with exactly one positional arg.
+# Build a call AST Variant node with exactly one positional arg.
 do-call-1: [fn [let p-func arg0]
-  [type: "call"  fn: p-func  args: [do-list-1 arg0]  named-args: []  implied: true]]
+  [builtin-variant "Call" [fn: p-func  args: [do-list-1 arg0]  named-args: []  implied: true]]]
 
-# Build a call AST node with exactly two positional args.
+# Build a call AST Variant node with exactly two positional args.
 do-call-2: [fn [let func arg0 arg1]
-  [type: "call"  fn: func  args: [do-list-2 arg0 arg1]  named-args: []  implied: true]]
+  [builtin-variant "Call" [fn: func  args: [do-list-2 arg0 arg1]  named-args: []  implied: true]]]
 
-# Build an empty dict AST node (represents [] — the unit value for pure).
+# Build an empty dict AST Variant node (represents [] — the unit value for pure).
 do-empty-dict-node: [fn [let]
-  [type: "dict"  entries: []]]
+  [builtin-variant "Dict" [entries: []]]]
 
 # Check if a step AST is a binding step (a dict literal with at least one entry).
 # A binding step was written as [name: expr] in the do-block.
@@ -346,10 +349,10 @@ do: [fn [let args]
   [n: [length args]]
   [if [= n 0]
     # Error: need at least the monad argument
-    [type: "call"  fn: [type: "var"  name: "raise"]
-                   args: [0: [type: "literal"  kind: "str"  value: "do requires at least a monad argument"  bare: false]]
-                   named-args: []
-                   implied: true]
+    [builtin-variant "Call" [fn: [builtin-variant "VarRef" [name: "raise"]]
+                     args: [0: [builtin-variant "Literal" [kind: "str"  value: "do requires at least a monad argument"  bare: false]]]
+                     named-args: []
+                     implied: true]]
     # Check if args[0] is an inferred-form step (dict binding or other non-monad expression)
     # vs an explicit monad argument (var reference).
     # Explicit monad: [tag-of args[0]] == "VarRef" or "DotAccess"
@@ -371,11 +374,11 @@ do: [fn [let args]
           1
           n]]]]]
 
-# begin macro transformer: sequential expression grouping (legacy dict format)
+# begin macro transformer: sequential expression grouping
 begin: [fn [let args]
-  # [begin e1 e2 ...] → {type: "sequential", exprs: [e1, e2, ...]}
+  # [begin e1 e2 ...] → Variant("Sequential", {exprs: [e1, e2, ...]})
   [n: [length args]]
   [arglist: [reduce [fn [let acc i] [append acc [get i args]]] [] [range 0 n]]]
-  [type: "sequential"  exprs: arglist]]
+  [builtin-variant "Sequential" [exprs: arglist]]]
 
 ]

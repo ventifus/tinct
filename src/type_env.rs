@@ -1741,9 +1741,9 @@ impl TypeEnv {
         env.insert(
             "variant".to_string(),
             Type::Function {
-                params: vec![(None, Type::Str)],
+                params: vec![],
                 ret: Box::new(Type::Unknown), // Returns a Variant, but we don't have Type::Variant yet
-                variadic: false,
+                variadic: true,               // 1 arg (unit variant: tag) or 2 args (tag + payload)
             },
         );
         env.insert(

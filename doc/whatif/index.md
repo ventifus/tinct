@@ -14,6 +14,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Type::Variant for Transport Constants](type-variant.md) | **Superseded.** Use nominal variants: `[union Transport [Tcp] [Udp] [Quic] [Unix]]`. See `transport-typing` sprint in TODO.md. |
 | [Precise HKT Types for map/filter/reduce/each](hkt-map-filter-types.md) | **Superseded.** Implementation detail only; see `hkt-map-filter-types` sprint in TODO.md. |
 | [Schema-Directed from-json](schema-directed-from-json.md) | `[from-json @[host: Str port: Int] input]` — typed JSON parse returning specific Record type; boundary guard at parse site; schema doubles as documentation |
+| [Guardedness](guardedness.md) | Static detection of non-productive circular data dependencies; separates legitimate corecursion (`[cons 1 ones]`) from diverging definitions (`[x: [+ x 1]]`); assigns `Never` via BAS to rejected bindings; enables infinite lazy structures as a first-class language feature |
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
 | [Constraint Annotations and fn@[...] Metadata](completed/constraint-annotations.md) | **Accepted 2026-05-11.** Refactor `fn@[...]` as a named-key metadata dict (`return:`, `constraint:`, `doc:`); `constraint: [a: Comparable]` binding syntax for TypeVar constraints; `fn@Type` shorthand permanent |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K: V]` type split with bracket application form `@[Map [K: V]]`; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
@@ -237,6 +238,7 @@ eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 # Post typing-cluster type system research
 union-types ✓ ─── boolean-algebraic-subtyping ✓ ─── record-map-split (parameterized-dict) ✓
                                                └─── error-patterns ✓ (nominal Result)
+                                               └─── guardedness (Never propagation; requires runtime-v2)
 
 # Type annotation chain
 type-annotations-v2 (accepted, in progress) ─── unified-bindings (accepted, in progress)
