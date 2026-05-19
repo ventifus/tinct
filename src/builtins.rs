@@ -1569,7 +1569,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("gensym", builtin_gensym),
         builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!("variant", builtin_variant, [Strictness::Seq]),
+        builtin!("variant", builtin_variant), // Variadic: 1 arg (unit) or 2 args (tag + payload)
         builtin!("decimal", builtin_decimal, [Strictness::Seq]),
         builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         builtin!("proxy", builtin_proxy),

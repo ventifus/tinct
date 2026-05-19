@@ -49,7 +49,8 @@ pub fn deep_materialize(
         | Value::Bool(_)
         | Value::Bytes { .. }
         | Value::Function { .. }
-        | Value::Builtin(_) => return Ok(val.clone()),
+        | Value::Builtin(_)
+        | Value::Variant { payload: None, .. } => return Ok(val.clone()),
         _ => {}
     }
     let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
@@ -118,6 +119,13 @@ enum WorkItem {
         span: Span,
         thunk_ptr: Option<*const Thunk>,
     },
+    /// Pop one thunk from `value_stack` (the payload), assemble a
+    /// `Value::Variant`, wrap as a `Materialized` thunk, push onto `value_stack`.
+    BuildVariant {
+        tag: String,
+        span: Span,
+        thunk_ptr: Option<*const Thunk>,
+    },
 }
 
 /// Deep-force a value, using an explicit work stack to avoid Rust call-stack
@@ -137,7 +145,8 @@ fn deep_materialize_impl(
         | Value::Bool(_)
         | Value::Bytes { .. }
         | Value::Function { .. }
-        | Value::Builtin(_) => return Ok(root_val.clone()),
+        | Value::Builtin(_)
+        | Value::Variant { payload: None, .. } => return Ok(root_val.clone()),
         _ => {}
     }
 
@@ -228,6 +237,27 @@ fn deep_materialize_impl(
                 let assembled = Rc::new(Thunk::new_materialized(
                     Value::Proxy {
                         handler: handler_id,
+                    },
+                    span,
+                ));
+                if let Some(ptr) = thunk_ptr {
+                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                }
+                value_stack.push(assembled);
+            }
+            WorkItem::BuildVariant {
+                tag,
+                span,
+                thunk_ptr,
+            } => {
+                let payload_thunk = value_stack
+                    .pop()
+                    .expect("BuildVariant: missing payload on value_stack");
+                let payload_id = ctx.alloc_thunk(payload_thunk);
+                let assembled = Rc::new(Thunk::new_materialized(
+                    Value::Variant {
+                        tag,
+                        payload: Some(payload_id),
                     },
                     span,
                 ));
@@ -363,6 +393,35 @@ fn push_structural(
                 seq_depth: 0,
                 mat_span, // propagate call-site span through nested materializations
             });
+        }
+        Value::Variant { tag, payload } => {
+            if let Some(payload_id) = payload {
+                // Variant with payload: force the payload recursively
+                work_stack.push(WorkItem::BuildVariant {
+                    tag: tag.clone(),
+                    span,
+                    thunk_ptr,
+                });
+                let payload_thunk = ctx.get_thunk(*payload_id);
+                work_stack.push(WorkItem::Force {
+                    thunk: payload_thunk,
+                    seq_depth: 0, // variant payload resets seq_depth
+                    mat_span,     // propagate call-site span through nested materializations
+                });
+            } else {
+                // Variant without payload: leaf value, no children to traverse
+                let t = Rc::new(Thunk::new_materialized(
+                    Value::Variant {
+                        tag: tag.clone(),
+                        payload: None,
+                    },
+                    span,
+                ));
+                if let Some(ptr) = thunk_ptr {
+                    cache.insert(ptr, Some(Rc::clone(&t)));
+                }
+                value_stack.push(t);
+            }
         }
         // Primitives and functions: no children.
         other => {
