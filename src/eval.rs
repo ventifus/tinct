@@ -252,7 +252,6 @@ pub struct EvalContext {
     /// Thunks are allocated here but Value variants still use Rc<Thunk> directly.
     /// **Shared ownership:** Rc<RefCell<>> allows child contexts (created via with_base_dir)
     /// to share the parent's arena, preventing ThunkId index-out-of-bounds panics.
-    #[allow(dead_code)]
     pub(crate) thunk_arena: Rc<RefCell<ThunkArena>>,
     /// Environment arena registry. Phase 3: populated by `eval_dict` (alloc_root +
     /// fill_letrec_slot per dict scope). Full O(1) dispatch deferred until `take_unevaluated`

@@ -70,14 +70,10 @@ pub struct ClassDecl {
     /// Class name (e.g., "Equatable")
     pub name: String,
     /// Type parameters with their kinds (e.g., [("a", Kind::Type)])
-    #[allow(dead_code)]
-    // Written during registration, read during constraint solving (future work)
     pub params: Vec<(String, Kind)>,
     /// Superclass constraints as (class_name, Vec<param_names>) tuples.
     /// Example: ("Functor", vec!["f"]) means this class extends Functor with parameter f.
     /// Updated from Vec<(String, String)> to Vec<(String, Vec<String>)> for multi-param support.
-    #[allow(dead_code)]
-    // Written during registration, read during constraint solving (future work)
     pub superclasses: Vec<(String, Vec<String>)>,
     /// Method signatures: method_name -> type scheme
     #[allow(dead_code)]
@@ -86,13 +82,9 @@ pub struct ClassDecl {
     /// Functional dependencies: (determining_positions, determined_positions) pairs.
     /// Each pair is (Vec<usize>, Vec<usize>) indexing into `params`.
     /// Example: for Add a b c with FD (a,b) → c: determines = vec![(vec![0,1], vec![2])]
-    #[allow(dead_code)]
-    // Written during class declaration, read during FD constraint generation (chr-normalization sprint)
     pub(crate) determines: Vec<(Vec<usize>, Vec<usize>)>,
     /// Type-stage resolver function name (e.g., "AddResult" for Add class).
     /// When Some, the resolver is called at type-check time to compute determined types from determining types.
-    #[allow(dead_code)]
-    // Written during class declaration, read during FD resolution (chr-normalization sprint)
     pub(crate) resolver: Option<String>,
     /// Whether the resolver is injective (one-to-one mapping).
     /// If true, the type checker can use the resolver result to refine the determining types.
