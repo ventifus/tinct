@@ -1010,7 +1010,7 @@ mod tests {
         let env = test_env();
         let ctx = test_ctx();
         let state = DocumentState::new(
-            "[call $map [fn [x] x] [1 2 3]]".to_string(),
+            "[call $map [fn [let x] x] [1 2 3]]".to_string(),
             &env,
             &ctx,
             None, // base_dir=None still gets prelude types via imports::build_type_env

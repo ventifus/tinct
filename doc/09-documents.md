@@ -96,7 +96,7 @@ Without the `-o` flag, only emit output appears (no JSON serialization).
 - Each file evaluates with `%` initialized to the previous file's output
 - The first file receives `%` from stdin JSON if piped, or empty dict `[]` otherwise
 - Files share the same include cache — if both files include the same library, it's evaluated only once
-- Each file's `$include` calls resolve relative to that file's directory
+- Each file has `%include-dir` in scope — the DirCap for the working directory; use `[include %include-dir "sibling.llt"]` to include sibling files
 - The final file's output is JSON-serialized if the `-o` flag was given (default: `-o json`)
 
 ## Within a Document: Scope Chains
@@ -296,7 +296,7 @@ When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_d
 
 **Intermediate materialization (strict let\* semantics):** Expressions `e₁..eₙ₋₁` are materialized to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Beyond extracting the dict structure, **named (string-keyed) entry values are also shallowly materialized (one-level forcing) at binding time** — this is strict `let*` semantics. Each binding's outermost thunk is forced before the next expression sees it. Consequences:
 
-- **Dead-but-erroring bindings fail eagerly.** If a named binding computes an error, it fails at binding time even if no subsequent expression uses that name. Previously such bindings were silently ignored.
+- **Dead-but-erroring bindings fail eagerly.** If a named binding computes an error, it fails at binding time even if no subsequent expression uses that name.
 - **Shallow only, not deep.** The outer thunk is forced to produce a concrete `Value`; inner thunks (e.g., dict entry values) remain unevaluated. This is analogous to WHNF in call-by-need languages but is more precisely called shallow or one-level materialization in tinct's context. Use `[eval ...]` for deep materialization.
 - **Use `[force expr]` for explicit control.** The `$force` builtin provides shallow materialization for function bodies and other lazy contexts where auto-materialization does not apply.
 
@@ -585,13 +585,26 @@ An empty file (or one containing only whitespace/comments) is valid and produces
 
 ## Include Mechanism
 
-`include` evaluates the target file and returns its output — the last expression's value, fully materialized. The returned value is typically a dict of named functions or constants. Two usage patterns:
+`include` loads, macro-expands, and evaluates a tinct file from a `DirCap`. It returns the file's last document's last value — typically a dict of named functions or constants. `include` is a tinct function defined in prelude (not a Rust builtin); it is built on the primitives `load`, `expand`, `eval-file`, and the content-addressed include cache.
+
+**`%include-dir`:** Every included file has `%include-dir` in scope — the DirCap used to load it. This enables sub-includes without hardcoding a specific cap:
+
+```tinct
+# lib/utils.llt — uses %include-dir to include a sibling
+[include %include-dir "helpers.llt"]
+```
+
+**`%` is not propagated:** Included files start with `%` = `[]` (empty dict). They do not inherit the caller's pipeline input. Include is a module-loading operation, not a pipeline stage.
+
+**Content-addressed cache:** The include cache is keyed by `blake3(cap-identity + "|" + source)` where `cap-identity` is the directory's `(dev, ino)` filesystem identity. Identical files included via the same DirCap share one cache entry and evaluate once. Identical files at different directory paths get distinct cache entries because they may sub-include different siblings.
+
+Two usage patterns:
 
 **Namespaced** (like Python's `import module`):
 
 ```tinct
 [
-  utils: [include "lib/utils.llt"]
+  utils: [include %include-dir "lib/utils.llt"]
   result: [utils.double 21]
 ]
 ```
@@ -601,7 +614,7 @@ An empty file (or one containing only whitespace/comments) is valid and produces
 Uses the sequential-expression scope chain. The included dict becomes a scope in the parent chain:
 
 ```tinct
-[include "lib/utils.llt"]
+[include %include-dir "lib/utils.llt"]
 
 # double is visible via parent scope
 [
@@ -622,7 +635,7 @@ If the included file needs to reference local bindings, use namespaced import in
 
 ```tinct
 [
-  utils: [include "lib/utils.llt"]
+  utils: [include %include-dir "lib/utils.llt"]
   result: [utils.make-config "localhost" 5432]
 ]
 ```
@@ -643,6 +656,43 @@ Each frame reads as "`file` was included (from the enclosing context) at the giv
 
 This chain is reconstructed dynamically from the active `$include` call stack at the time the error is raised. It reflects the actual call path, not a static import graph, so conditional includes (e.g., inside `if`) only appear in the chain when they were actually evaluated.
 
+## Pipeline Primitives
+
+The document pipeline and include mechanism are built on eight user-callable Rust primitives and a set of tinct functions defined in prelude.
+
+### Rust Primitives
+
+| Primitive | Signature | Description |
+|-----------|-----------|-------------|
+| `load` | `[Fn [source@String  name: @String] Dict]` | Parse source text to a file AST dict. No IO, no evaluation. `name:` is an opaque provenance hint for error spans. |
+| `expand` | `[Fn [ast@Dict] Dict]` | Run macro expansion on a file AST dict; return the expanded dict. |
+| `eval` | `[Fn [exprs@Dict  %: @Any  env: @Dict] Any]` | Evaluate AST expression nodes in the runtime stage env (prelude env + `%` + `env:` merge). Sequential let\* scoping: each expression's result dict extends scope for subsequent expressions. |
+| `eval-types` | `[Fn [exprs@Dict] Any]` | Evaluate AST expression nodes in the type-stage env (type-level builtins only, no `%`). Used by the type checker for `--- stage: type` documents. |
+| `blake3` | `[Fn [source@String] String]` | Compute blake3 hash of a string. |
+| `cap-identity` | `[Fn [cap@DirCap] String]` | Return `"dev:ino"` from `fstat` on the DirCap's O_DIRECTORY fd — a stable filesystem identity for use in cache keys. |
+| `include-cache-get` | `[Fn [hash@String] IncludeCacheEntry]` | Look up the content-addressed include cache by hash. |
+| `include-cache-put` | `[Fn [hash@String  entry@IncludeCacheEntry] []]` | Update the include cache. |
+
+### Tinct Pipeline Functions
+
+These functions are defined in prelude and available to all tinct code:
+
+- **`eval-document-pipeline`** — evaluate a file's documents, threading `%` and named sections; injects `%include-dir` into every document's scope
+- **`eval-file`** — evaluate a parsed file AST dict with an explicit initial `%` and `include-dir`  
+- **`include`** — load, expand, and evaluate a file from a DirCap; content-addressed memoization with circular include detection
+- **`cli-pipeline`** — evaluate multiple files sequentially with `%` threading (the `tinct run` multi-file pipeline)
+
+### `%include-dir`
+
+Every document inside an included file has `%include-dir` in scope — the DirCap used to load the file. Use it for sub-includes:
+
+```tinct
+# lib/utils.llt — load a sibling from the same library directory
+[include %include-dir "helpers.llt"]
+```
+
+`%include-dir` is injected via the `env:` parameter of `eval` and always takes precedence over scope chain promotion — a `--- %include-dir@Type` section header cannot overwrite it.
+
 ## Document Pipeline and $include — Formal Specification
 
 This section formalizes the inter-file include mechanism. The intra-file document pipeline (`%` threading via `---` boundaries) and intra-document scope chains are already formalized in §Scope Chain Semantics — Formal Specification (DOC-PIPELINE and SEQ-SCOPE rules, respectively). This section covers `$include`: path resolution, cycle detection, result caching, and the eager materialization invariant.
@@ -652,19 +702,18 @@ This section formalizes the inter-file include mechanism. The intra-file documen
 The include system maintains mutable state `Σ` shared across nested include calls:
 
 ```
-Σ = ⟨guard, cache, include_chain, eval_stack, stdlib_env⟩  where
-  guard         : Set<(u64, u64)>              — file identities (dev, ino) currently being evaluated (cycle detection)
-  cache         : Map<(u64, u64), Rc<Thunk>>   — file identity → evaluated result (memoization)
-  include_chain : Vec<(String, Span)>          — stack of active $include calls (error reporting)
-  eval_stack    : Vec<(String, Span)>          — stack of thunks being evaluated (cycle path)
-  stdlib_env    : ρ                            — environment for included files (builtins + stdlib)
+Σ = ⟨cache, stdlib_env⟩  where
+  cache      : Map<String, IncludeCacheEntry>  — content-addressed cache (see key below)
+  stdlib_env : ρ                               — environment for included files (builtins + stdlib)
+
+IncludeCacheEntry = Missing | Pending | Cached(Rc<Thunk>)
 ```
 
-`base_dir` is NOT part of `Σ` — it is carried in `EvalConfig` (immutable within a context), updated per-include via `ctx.with_base_dir(dir)` which constructs a child context.
+`Missing` means not yet loaded (or failed — reset after error so retries work). `Pending` means currently being evaluated — a second include of the same file during evaluation is a circular include error. `Cached(θ)` holds the memoized result thunk.
 
-`Σ` is stored in `EvalState` (an `Rc<RefCell<EvalState>>`), accessed via `ctx.state.borrow_mut()`. It is carried through all evaluation functions via `Rc::clone` on `EvalContext`, not a thread-local. All mutations are scoped: `guard` entries are pushed before recursion and popped after (even on error). `cache` entries are append-only — once a file is cached, its result is never replaced.
+**Cache key:** `blake3(cap-identity + "|" + source_text)` where `cap-identity` is the `"dev:ino"` string obtained from `fstat` on the DirCap's O_DIRECTORY file descriptor. This is stable across renames and moves, correct under Linux mount namespaces (no path resolution — fd identity used directly). Same source under the same directory identity shares one cache entry; identical files at different directory paths get distinct entries because they may sub-include different siblings via `%include-dir`.
 
-**Cache key semantics:** The cache uses `(dev, ino)` file identity tuples (from `std::fs::metadata`) rather than canonical `PathBuf`. This makes include caching robust across symlinks and hard links — two paths pointing to the same inode will share a single cached result. On platforms where inode identity is unavailable, the behavior degrades gracefully.
+`Σ` is stored in `EvalState` (`Rc<RefCell<EvalState>>`), carried through evaluation via `Rc::clone` on `EvalContext`. Cache transitions: `Missing → Pending` (before evaluation), `Pending → Cached` (on success), `Pending → Missing` (on error, so retries work).
 
 **Threading model:** `Σ` is threaded via `Rc<RefCell<EvalState>>` inside `EvalContext` — the `EvalContext` parameter passed through all evaluation functions. The formal semantics are independent of the threading mechanism — `Σ` transitions are the same regardless of how `Σ` is carried.
 
@@ -791,7 +840,7 @@ This is consistent with Nix's `import` (which also eagerly evaluates the importe
 
 *Correspondence:* `builtins.rs` — the `cleanup()` closure removes the canonical path from the include guard and pops the include chain entry. The `materialize()` call is wrapped in a `match` statement with `cleanup()` explicitly called in both the `Ok` branch and the `Err` branch. This ensures that a failed include does not leave stale entries in the guard set (which would cause false cycle-detection errors for subsequent includes of the same file from different call sites). The guard and chain inserts are placed after all fallible `open_dir` operations, so cleanup is only required once the guard/chain have been pushed.
 
-**Previously known defect (resolved):** Earlier versions violated P3 for materialization errors — the `materialize` call used the `?` operator, which returned before cleanup ran. This has been fixed by using an explicit `match` with cleanup in both branches.
+**Cleanup safety:** The `materialize` call is wrapped in an explicit `match` with the `cleanup()` closure invoked in both the `Ok` and `Err` branches, ensuring a failed include never leaves stale entries in the guard set (which would cause false cycle-detection errors for subsequent includes of the same file from different call sites).
 
 **P4 — Include determinism (conditional):** For a fixed filesystem state, the document pipeline `eval_file(file, ρ, d)` is deterministic. When the filesystem changes between evaluations, results may differ — `$include` is the sole source of nondeterminism in tinct (see §Thunk Lifecycle — Semantic Properties, Determinism; also Semantic Commitment 2 in §Thunk Lifecycle — Semantic Commitments).
 

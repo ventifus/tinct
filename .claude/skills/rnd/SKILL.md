@@ -354,7 +354,8 @@ For each phase in the **Phased Adoption** section, create a sprint in TODO.md. T
 ```
 ### sprint-slug: Short Description
 
-See doc/[chapter].md §[Section Name]. **Spec chapters:** `doc/[chapter].md §Section`.
+**Whatif:** `whatif-name`
+**Spec chapters:** `doc/[chapter].md §Section`
 
 - [ ] Task description (`src/file.rs`, `src/other.rs`)
 - [ ] Task description (`src/file.rs:approx-line`)
@@ -362,11 +363,26 @@ See doc/[chapter].md §[Section Name]. **Spec chapters:** `doc/[chapter].md §Se
 **Depends on:** `other-slug`
 ```
 
+`**Whatif:**` is mandatory for every sprint created during acceptance. Use the bare whatif filename without extension (e.g., `chr-unification`, not `chr-unification.md`). This is the canonical link from sprint to originating design — `/review-whatif` uses it to find all sprints for a whatif, and `/sprint` uses it to load the original design context.
+
 **Sizing**: target ~25 non-nit, non-doc implementation tasks per sprint. If a phase exceeds 30 implementation tasks, split into two sprints with clear boundaries and explicit `**Depends on:**` between them. If a phase has fewer than 10 implementation tasks, combine it with an adjacent phase unless a hard dependency prevents it.
 
 **Ordering constraint**: place `**Depends on:**` between phase sprints explicitly. The `/cycle` grooming step will not merge sprints that have explicit dependency links — these phase boundaries are intentional.
 
 Place new `###` sprint headings under the relevant `##` design section in TODO.md. If no matching `##` section exists, create one. Never place sprint headings at `##` level.
+
+**After all implementation sprints, add a review sprint** — the last item under the `##` section is always a single-task sprint that runs `/review-whatif` once all implementation is complete:
+
+```
+### <whatif-name>-review: Post-implementation review
+
+**Whatif:** `<whatif-name>`
+**Depends on:** `<last-sprint-slug>`
+
+- [ ] Run `/review-whatif <whatif-name>` — verify all sprints are complete, implementation matches spec (no stubs or de-scoped features), and main docs are consistent; address any findings before closing
+```
+
+Replace `<whatif-name>` with the bare whatif name (e.g., `chr-unification`) and `<last-sprint-slug>` with the slug of the final implementation sprint. If there is only one implementation sprint, that sprint is the dependency. The review sprint is always last — it must not be added to the dependency chain of other sprints.
 
 #### 6f: Update Index
 

@@ -1,6 +1,7 @@
 # What If: Parse-Stage Macros for tinct
 
-**State:** Superseded — see `doc/whatif/macros-v2.md`
+**State:** Superseded — 2026-05-17
+**Superseded by:** [`macros-v2.md`](macros-v2.md)
 
 What would it take to let user-defined macros control how their argument positions are delivered — so the macro body itself, written in tinct, does all structural transformation work rather than toggling Rust-implemented flags?
 

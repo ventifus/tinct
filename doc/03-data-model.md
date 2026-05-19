@@ -99,7 +99,38 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |       ^
 ```
 
-The distinction is purely static. At runtime, both are the same `Value::Dict`. Most dict literals are Records unless annotated otherwise.
+The distinction is purely static. At runtime, both are the same `Value::Dict`. Most dict literals are Records unless annotated elsewhere.
+
+## Union Types and Sum Types
+
+`[type ...]` with multiple positional entries declares a **named union type** — a set of accepted dict shapes. The value must satisfy at least one of the declared variants:
+
+```tinct
+# Structural union — two record shapes
+HttpResponse: [type [ok: Str  status: Int] [err: Str  status: Int]]
+
+# Tag-only union — string literal types
+Status: [type "ok" "err" "pending"]
+
+# Mixed — payload and tag
+Event: [type
+  [click: [x: Int  y: Int]]
+  [key:   [code: Str]]
+  "resize"]
+```
+
+`Status` values are plain strings: `current: "ok"`. `HttpResponse` values are dicts: `res: [ok: "body" status: 200]`. No new runtime representation — the value is still a `Value::Dict` or `Value::String`.
+
+`[match]` on a union-typed scrutinee checks exhaustiveness — the type checker verifies that all variants are handled:
+
+```tinct
+[match res
+  [ok: body status: code]:  [emit body]
+  [err: msg status: code]:  [error msg]]
+# Type error if either arm is missing
+```
+
+**Limitation under BAS:** Single-field structural variants (`{ok: T} | {err: S}`) collapse to `Type::Top` under BAS's S-RcdTop rule. For single-field discriminated unions, use **nominal variants** (`[union [Ok a] [Err Str]]` — see [Patterns](14-patterns.md) §Nominal Variants). Multi-field structural variants (`{ok: Bool, value: T} | {err: Bool, msg: S}`) are not affected.
 
 ## Equality
 

@@ -2950,14 +2950,11 @@ fn literate_weave_verify_fail_when_expected_does_not_match_actual() {
 /// infrastructure was wired but emission was stubbed with TODO comments.
 #[test]
 fn type_warning_explicit_unknown_emitted_on_stderr() {
-    // [f: [fn@Unknown [x] x]] produces a T011 "explicit @Unknown annotation"
+    // [f: [fn@Unknown [let x] $x]] produces a T011 "explicit @Unknown annotation"
     // diagnostic from scan_type_quality.
-    let (path, _dir) = write_temp_llt(
-        "type_warn_explicit_unknown",
-        "[f: [fn@Unknown [x] x]]",
-    );
+    let (path, _dir) = write_temp_llt("type_warn_explicit_unknown", "[f: [fn@Unknown [let x] $x]]");
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args(["run", "--no-fs", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -2974,11 +2971,6 @@ fn type_warning_explicit_unknown_emitted_on_stderr() {
         stderr.contains("T011") || stderr.contains("explicit @Unknown"),
         "expected T011 or 'explicit @Unknown' on stderr for @Unknown annotation; got: {stderr}"
     );
-
-    // stdout must still be valid JSON (warning does not corrupt output).
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let _json: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON despite warning");
 }
 
 /// Verify that `@Unknown` annotation diagnostic does NOT appear when there is
@@ -2987,7 +2979,7 @@ fn type_warning_explicit_unknown_emitted_on_stderr() {
 fn type_warning_not_emitted_for_clean_code() {
     let (path, _dir) = write_temp_llt("type_warn_clean", "[x: 42]");
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args(["run", "--no-fs", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 

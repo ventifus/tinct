@@ -1,7 +1,7 @@
 # Variadic param collects excess positional args only — not named args.
 # Named args can target regular params by name; the variadic only receives positional overflow.
 # Calling with a named arg for x (no excess positional) produces an empty variadic dict.
-[f: [fn [x ...rest] rest]
+[f: [fn [let x ...rest] rest]
  result: [f x: 42]]
 === out
 Dict({"f": Function(x, rest), "result": Dict({})})

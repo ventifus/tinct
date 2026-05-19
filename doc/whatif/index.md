@@ -29,6 +29,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Runtime Reflection — Annotations as Value Metadata](completed/runtime-reflection.md) | **Accepted 2026-05-14.** `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime via `FnAnnotation`; `ast-of` Rust primitive returns the AST dict for any value; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; enables REPL `:describe`, LSP doc hover, docgen, and metaprogramming |
+| [Decomposing `include` into `load`, `expand`, and `eval`](include-decomposition.md) | **Accepted 2026-05-18.** Eight Rust primitives (`load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`); `include`, `eval-file`, `eval-document-pipeline`, `cli-pipeline` self-hosted in prelude; content-addressed cache keyed by `(dev, ino) + source`; `%include-dir` injected for sub-includes; `builtin_include` deleted |
 
 ## Internal Integrity
 
@@ -47,7 +48,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Macro-Rewrite](completed/macro-rewrite.md) | Superseded — let-binding done as `Expr::Sequential`, match as `Expr::Match`. `i"..."` migrated to `[defmacro tmpl]` (`tmpl-macro` sprint complete, see DONE.md) |
-| [Macro System v2](macros-v2.md) | `defparse-macro` + `flat-list` receive mode; `[let ...]` patterns for `defmacro` args; `declare-key-identity`; `splice`; `macro-error`/`span-of`; parser enforcement moved to type checker. Supersedes `parse-stage-macros.md`. |
+| [Macro System v2](macros-v2.md) | **Accepted 2026-05-17.** `macro` unified form with `[let ...]` patterns; `inject: name` for anaphoric binding with dict-key override; `splice` for multi-form output; `macro-error`/`span-of`; `syntax-class`; `flatten-args`; parser enforcement moved to type checker. Supersedes `parse-stage-macros.md`. |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 
 ## Concurrency and Distribution
@@ -188,7 +189,7 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
-| [Macro System v2](macros-v2.md) | When `unified-bindings` lands and a macro is needed that requires `flat-list` receive mode or `declare-key-identity` (supersedes `parse-stage-macros.md`) |
+| [Macro System v2](macros-v2.md) | **Accepted 2026-05-17** — see Syntax and Ergonomics table above |
 | [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 proptest suite implemented with zero failures (doc proof sketch done; proptest pending) |
 
 ### Additive Capability (No TODO Replacement)

@@ -2,105 +2,105 @@
 
 ### `read-file`
 
-Read an entire file as a string
+
 
 ```tinct
-(value)
+fn@
 ```
 
 ### `read-lines`
 
-Read a file as a lazy sequence of lines
+
 
 ```tinct
-(value)
+fn@
 ```
 
 ### `println`
 
-Print a string followed by a newline to stdout
+
 
 ```tinct
-fn@Any [s@String]
+fn@
 ```
 
 ### `println-val`
 
-Print any value as a string followed by a newline to stdout
+
 
 ```tinct
-fn@Any [v@Any]
+fn@
 ```
 
 ### `write-file`
 
-Write a string to a file (creates or truncates)
+
 
 ```tinct
-fn@Any [cap@DirCap path@String content@String]
+fn@
 ```
 
 ### `write-file-atomic`
 
-Atomically write a string to a file (write-to-temp + rename)
+
 
 ```tinct
-fn@Any [cap@DirCap path@String content@String]
+fn@
 ```
 
 ### `write-line`
 
-Write a line to a WriteHandle, appending a newline and flushing
+
 
 ```tinct
-(value)
+fn@
 ```
 
 ### `append-file`
 
-Append content to a file (creates if doesn't exist)
+
 
 ```tinct
-fn@Any [cap@DirCap path@String content@String]
+fn@
 ```
 
 ### `open-write`
 
-Open a file for writing (creates or truncates, returns handle)
+
 
 ```tinct
-fn@WriteHandle [cap@DirCap path@String]
+fn@
 ```
 
 ### `open-append`
 
-Open a file for appending (creates if doesn't exist, returns handle)
+
 
 ```tinct
-fn@WriteHandle [cap@DirCap path@String]
+fn@
 ```
 
 ### `write-lines`
 
-Write a sequence of lines to a WriteHandle
+
 
 ```tinct
-fn@WriteHandle [handle@WriteHandle lines@Seq]
+fn@
 ```
 
 ### `has-cap?`
 
-Check if a capability is present on a Handle or WriteHandle
+
 
 ```tinct
-fn@Bool [h cap]
+fn@
 ```
 
 ### `copy`
 
-Copy a file from src to dst
+
 
 ```tinct
-(value)
+fn@
 ```
 

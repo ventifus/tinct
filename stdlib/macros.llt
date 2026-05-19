@@ -264,14 +264,14 @@ do-is-binding: [fn [let step]
 # Check if the first arg looks like an inferred-form step rather than an explicit monad.
 # Explicit monad args are usually VarRef ("var") or DotAccess ("dot-access").
 # Inferred form: the first arg is a binding dict ("dict") or any other expression.
-# Returns true if this is the inferred form (unsupported).
+# Returns true if this is the inferred form (no explicit monad given).
+# Avoids introducing a sequential 'type' binding (which shadows nothing but is a footgun).
 do-is-inferred-form: [fn [let first-arg]
-  [type: [get "type" first-arg]]
   # Explicit monad types: "var" and "dot-access"
   # Everything else is inferred form
-  [if [= type "var"]
+  [if [= [get "type" first-arg] "var"]
     false
-    [if [= type "dot-access"]
+    [if [= [get "type" first-arg] "dot-access"]
       false
       true]]]
 
@@ -310,15 +310,16 @@ do-fold: [fn [let monad-ast steps i n]
 
 # Desugar the inferred [do] form: emit bind chain with %do-infer sentinel monad.
 # Called when args[0] is NOT a monad (it's a binding step or other expression).
-# All n args are steps; the %do-infer sentinel is prepended as the monad.
+# All n args are steps; pass them directly to do-fold starting at index 0.
 # The type checker detects %do-infer, resolves the monad, and wires it to eval.
-# Returns: [%do-infer.bind step1 [fn [name] [%do-infer.bind step2 [...]]]] or
-#          [%do-infer.bind step1 [fn [name] last-step]] for a 2-step do block.
+# Returns: [%do-infer.bind step0 [fn [name] [%do-infer.bind step1 [...]]]] or
+#          [%do-infer.bind step0 [fn [name] last-step]] for a 2-step do block.
+#
+# Simpler than building a new-args dict: args already has integer keys 0..n-1
+# for the n steps. do-fold(sentinel, args, 0, n) starts folding from step 0.
 do-desugar-inferred: [fn [let n args]
   [sentinel: [do-var-node "%do-infer"]]
-  [new-n: [+ n 1]]
-  [new-args: [reduce [fn [let acc i] [set acc [+ i 1] [get i args]]] [set [] 0 sentinel] [range 0 n]]]
-  [do-fold sentinel new-args 1 new-n]]
+  [do-fold sentinel args 0 n]]
 
 ]
 
@@ -359,7 +360,7 @@ do: [fn [let args]
   [if [= n 0]
     # Error: need at least the monad argument
     [type: "call"
-     fn: [type: "var" name: "error"]
+     fn: [type: "var" name: "raise"]
      args: [0: [type: "literal" kind: "str" value: "do requires at least a monad argument" bare: false]]
      named-args: []
      implied: true]

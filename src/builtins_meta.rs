@@ -1224,9 +1224,11 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             revoked,
         } => {
             if revoked.get() {
-                return Err(
-                    EvalError::internal("capability has been revoked".to_string(), call_span).into(),
-                );
+                return Err(EvalError::internal(
+                    "capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
             }
             (Rc::clone(inner), 1, 2)
         }
@@ -1434,15 +1436,22 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         state.include_chain.push((file_path_str.clone(), call_span));
     }
 
-    // Build an env for the included file: child of stdlib_env with %libdir injected.
-    // Included files inherit %pwd from the parent context unchanged — overriding it per
-    // included file would break relative-path semantics for the caller's own %pwd bindings.
-    // Use %libdir for stdlib-relative includes.
+    // Build an env for the included file: child of stdlib_env with %pwd and %libdir injected.
+    // %pwd points to the directory of the included file (dir_cap), enabling nested includes
+    // within the included file to use [include %pwd "relative/path"].
     let include_env = {
         use crate::value::Environment;
         let child = Rc::new(std::cell::RefCell::new(Environment::with_parent(
             Rc::clone(&stdlib_env),
         )));
+        // Inject %pwd: the directory from which the file is being loaded.
+        // This allows the included file to perform its own relative includes via [include %pwd "..."].
+        let pwd_val = Value::DirCap {
+            dir: Rc::clone(&dir_cap),
+            perms: crate::value::DirPerms::full(),
+        };
+        let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+        child.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
         // Inject %libdir: resolve from the binary's location, same as main.rs.
         if let Some(libdir_path) = crate::find_libdir_path() {
             if let Ok(libdir_dir) =

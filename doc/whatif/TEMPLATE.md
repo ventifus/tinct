@@ -1,6 +1,10 @@
 # What If: [Feature Name] for tinct
 
 **State:** Proposal
+<!-- Optional — include when this whatif supersedes an earlier one: -->
+<!-- **Replaces:** [`earlier-name.md`](earlier-name.md) — one sentence on what specifically this supersedes -->
+<!-- When superseded by another whatif: **Superseded by:** [`successor.md`](successor.md) -->
+<!-- When superseded by a sprint decision (no successor whatif): **Resolved by:** `sprint-slug` (DONE.md) -->
 
 What would it take to [add/adopt/implement feature] in tinct?
 

@@ -768,10 +768,14 @@ mod tests {
     fn test_session_stdlib_string_builtins() {
         let mut session = ReplSession::new().unwrap();
 
-        // str-to-upper-char is a Rust builtin; upper/lower are now in stdlib/strings.llt.
+        // str-to-upper-char is a private Rust builtin accessible only via [include %rust "string"]
+        // inside the prelude/strings modules — it is NOT directly available in user-facing REPL scope.
+        // Test a prelude-exported string function instead: join (wrapper over builtin-join).
         assert_eq!(
-            session.eval_input("[str-to-upper-char \"h\"]").unwrap(),
-            "String(\"H\")"
+            session
+                .eval_input("[join \", \" [\"a\" \"b\" \"c\"]]")
+                .unwrap(),
+            "String(\"a, b, c\")"
         );
     }
 
@@ -779,8 +783,10 @@ mod tests {
     fn test_session_function_definition_and_call() {
         let mut session = ReplSession::new().unwrap();
 
-        // Define a function.
-        session.eval_input("[double: [fn [x] [* x 2]]]").unwrap();
+        // Define a function (use [let ...] param form, not bare-param form).
+        session
+            .eval_input("[double: [fn [let x] [* x 2]]]")
+            .unwrap();
 
         // Call the function.
         assert_eq!(session.eval_input("[double 21]").unwrap(), "Int(42)");
@@ -971,7 +977,8 @@ mod tests {
 
         // Simulate the REPL's buffer-join behavior: lines are joined with '\n'
         // and submitted together once the brackets are balanced.
-        let multiline_input = "[add:\n  [fn [x y]\n    [+ x y]]]";
+        // Use [let ...] param form (bare param form is no longer supported).
+        let multiline_input = "[add:\n  [fn [let x y]\n    [+ x y]]]";
         session.eval_input(multiline_input).unwrap();
 
         let result = session.eval_input("[add 10 32]").unwrap();
@@ -1004,8 +1011,10 @@ mod tests {
     fn test_session_function_def_then_call_separate_steps() {
         let mut session = ReplSession::new().unwrap();
 
-        // Step 1: define a function with two parameters.
-        session.eval_input("[square: [fn [n] [* n n]]]").unwrap();
+        // Step 1: define a function (use [let ...] param form).
+        session
+            .eval_input("[square: [fn [let n] [* n n]]]")
+            .unwrap();
 
         // Step 2: call the function in a separate eval.
         let result = session.eval_input("[square 9]").unwrap();

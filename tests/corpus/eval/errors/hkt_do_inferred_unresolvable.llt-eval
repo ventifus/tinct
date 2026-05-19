@@ -1,6 +1,8 @@
-# Test: inferred [do] form — first arg is a dict binding, not a monad var ref → error.
-# The [do] macro detects the inferred form and emits a helpful error. The user
-# must supply an explicit monad argument (e.g., [do result ...]).
-[do [x: [Ok 1]] [Ok x]]
+# Test: inferred [do] where no monad can be inferred — first binding's RHS is Int (42),
+# not a monadic type. Rule 2 fails, Rule 1 fails (no annotation) → T_DO_INFER.
+# Eval: %do-infer unresolved → E002 undefined variable.
+[do [x: 42] x]
 === error
-[E080] inferred [do] not yet supported
+[E002] undefined variable: %do-infer
+=== warn
+cannot infer monad

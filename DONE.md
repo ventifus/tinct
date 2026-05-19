@@ -2752,6 +2752,7 @@ Research questions:
 
 ### `connect-v2`: Transport-generic connect, Handle refactor, tls-layer, Unix sockets
 
+**Whatif:** `lib-net-v2`
 See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle Refactor. **Spec chapters:** `doc/03-data-model.md §Network Handles`, `doc/03-data-model.md §Layers`.
 
 - [x] Add `raw_tcp` + `creation_span` fields to `Value::Handle` (`src/value.rs`)
@@ -2772,6 +2773,7 @@ See `doc/whatif/lib-net-v2.md` §Connector Protocol, §Layer Protocol, §Handle 
 
 ### `http-sessions`: QUIC, HTTP/2, HTTP/3 Sessions
 
+**Whatif:** `io`
 See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-data-model.md §Sessions`.
 
 - [x] **quinn step 1 — deps**: quinn 0.11 (rustls+ring), h3 0.0.8, h3-quinn 0.0.10, tokio 1 full (`Cargo.toml`)
@@ -2791,6 +2793,7 @@ See `doc/whatif/lib-net-v2.md` §Session Protocol. **Spec chapters:** `doc/03-da
 
 ### `stdlib-protocols`: net.llt rewrite + protocols/ subdirectory
 
+**Whatif:** `lib-net-v2`
 See `doc/whatif/lib-net-v2.md` §Protocol Library, §Stdlib Layout, §fetch. **Spec chapters:** `doc/03-data-model.md §Sessions`, `doc/11-stdlib.md`.
 
 - [x] Create `stdlib/protocols/` directory
@@ -4654,6 +4657,7 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 
 ### io-phase1: File Caps, emit, stdin, env (11/12 tasks complete)
 
+**Whatif:** `io`
 - [x] Value::DirCap, Value::Handle (BufRead), Value::RevocableDirCap variants
 - [x] EvalContext: emitted Cell<bool>, env_allowed Option<HashSet<String>>
 - [x] Builtins: emit, env, dir-cap, open, slurp, narrow, revocable, revoke-cap, lines
@@ -4674,6 +4678,7 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 
 ### io-phase2: Network Caps, stdlib/net.llt
 
+**Whatif:** `io`
 - [x] Value::NetCap + NetCapEntry enum (Hostname, HostPort, HostnameGlob)
 - [x] net-cap + connect builtins with allowlist enforcement
 - [x] --cap-net NAME=ENTRY CLI flag with accumulation
@@ -4682,6 +4687,7 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 
 ### io-phase3: Atomic Writes, Streaming Fetch, Sandbox Hardening
 
+**Whatif:** `io`
 - [x] `write` + `write-atomic` builtins (one-shot DirCap+path+content; atomic uses temp+rename)
 - [x] stdlib/io.llt: write-file, write-file-atomic wrappers
 - [x] Streaming fetch via lines over socket Handle already works (Phase 1 lines + Phase 2 connect)
@@ -4690,6 +4696,7 @@ See doc/whatif/io.md (State: Accepted — 2026-05-04).
 
 ### io-phase4: Cap Types in Type Checker
 
+**Whatif:** `io`
 - [x] Type::DirCap, Type::NetCap, Type::Handle variants added to types.rs
 - [x] 11 I/O builtin signatures updated with cap types (dir-cap→DirCap, open→Handle, etc.)
 - [x] is_subtype + unify handle cap types; value_matches_type extended for TypeAssert
@@ -5044,6 +5051,7 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 
 ### gradual-typing-split
 
+**Whatif:** `gradual-typing`
 - [x] Type::Any split into Type::Unknown (gradual ?) + Type::Top (⊤ supertype)
 - [x] is_consistent() function: symmetric, not transitive consistency relation
 - [x] is_subtype updated: τ <: Top; Unknown removed from subtype lattice
@@ -5743,6 +5751,7 @@ The type checker currently returns only `Vec<TypeError>` — all diagnostics are
 
 ### scc-inference: SCC-based binding group analysis for letrec polymorphism
 
+**Whatif:** `inference-completeness`
 Research done — see `doc/whatif/inference-completeness.md`. Implements Tarjan SCC decomposition within DICT-GEN to enable independent generalization of non-mutually-recursive bindings (fixes letrec monomorphism and nested dict let-polymorphism). See doc/whatif/inference-completeness.md §SCC Binding Group Analysis.
 
 - [x] Add Tarjan SCC computation over the dependency graph of a letrec dict's entries: for each entry, collect the set of other entries it references (by name); run Tarjan to produce topologically-sorted SCCs (`src/typecheck.rs`)
@@ -6516,6 +6525,8 @@ Accepted 2026-05-14. See `doc/whatif/inference-completeness.md` and `doc/06-type
 
 ### inference-completeness-variadic: Type variadic params as Seq(T) with call-site unification
 
+**Whatif:** `inference-completeness`
+
 See `doc/06-type-inference.md §[FN-VARIADIC] / [CALL-VARIADIC]`. **Spec chapters:** `doc/06-type-inference.md §Inference Judgments`.
 
 **IMPL STATUS (2026-05-13):** Complete. Runtime now collects variadic args as `Value::Seq` cons-list (type and runtime aligned). Prelude `range` and `->` migrated. All corpus tests pass.
@@ -6528,6 +6539,8 @@ See `doc/06-type-inference.md §[FN-VARIADIC] / [CALL-VARIADIC]`. **Spec chapter
 - [x] Tests: `[fn [...xs] xs]` callable with multiple args (`variadic_fn_callable.llt-eval`), zero-variadic-args case (`variadic_fn_zero_args.llt-eval`), mixed named+variadic params (`variadic_fn_mixed_params.llt-eval`) — all in `tests/corpus/eval/typecheck/`. Updated corpus tests to expect Seq output. `fn_kotlin_variadic_excess.llt-eval` updated. Unit test `test_call_variadic` in `src/eval.rs` updated to verify Seq cons-list structure.
 
 ### inference-completeness-nested-dict: Polymorphic dot-access via TypeScheme.inner_schemes
+
+**Whatif:** `inference-completeness`
 
 See `doc/06-type-inference.md §Nested Dict Polymorphism`. **Spec chapters:** `doc/06-type-inference.md §Nested Dict Polymorphism`.
 
@@ -7728,6 +7741,7 @@ The type-warning infrastructure is wired (InferState collects diagnostics, EvalC
 
 ### io-phase2: `--libdir-path`, `source_file` attribution, and SPKI extraction
 
+**Whatif:** `io`
 Three unrelated I/O and infrastructure gaps that have no sprint home.
 
 - [x] Add `--libdir-path PATH` CLI flag at `src/main.rs:1197`: override the stdlib directory for custom installations where `stdlib/` is not co-located with the binary; fall back to the current sibling-of-binary detection when flag is absent; wire through to `build_prelude_env()` via `EvalConfig` (`src/main.rs:1197`, `src/imports.rs`)

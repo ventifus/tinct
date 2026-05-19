@@ -1,3 +1,3 @@
-[instance Equatable [pattern [a@Int]]: ["eq": [fn [x y] [= x y]]]]
+[instance Equatable [pattern [a@Int]]: eq: [fn [x y] [= x y]]]
 === out
 [instance Equatable [pattern [a@Int]]: "eq": [fn [x y] [= x y]]]

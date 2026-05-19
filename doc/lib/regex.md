@@ -2,57 +2,57 @@
 
 ### `re-compile`
 
-Compile a pattern (currently a no-op, just returns the pattern)
+
 
 ```tinct
-fn@Dict [pattern@String]
+fn@
 ```
 
 ### `re-match`
 
-Test if string contains pattern anywhere
+
 
 ```tinct
-fn@Bool [pattern haystack@String]
+fn@
 ```
 
 ### `re-find`
 
-Find first match
+
 
 ```tinct
-fn@Dict [pattern haystack@String]
+fn@
 ```
 
 ### `re-findall`
 
-Find all matches (returns dict for simplicity)
+
 
 ```tinct
-fn@Dict [pattern haystack@String]
+fn@
 ```
 
 ### `re-replace`
 
-Replace all matches
+
 
 ```tinct
-fn@String [pattern replacement@String haystack@String]
+fn@
 ```
 
 ### `re-split`
 
-Split on pattern
+
 
 ```tinct
-fn@Dict [pattern haystack@String]
+fn@
 ```
 
 ### `re-escape-replacement`
 
-Escape replacement string
+
 
 ```tinct
-fn@String [s@String]
+fn@
 ```
 

@@ -14,7 +14,7 @@ operations first-class:
   fetches a schema from a URL, and emits YAML in one evaluation — no external
   shell wiring needed.
 - **`emit` unlocks formatters.** Without `emit`, tinct produces only JSON.
-  The formatter model in `doc/whatif/templating.md` depends entirely on `emit`.
+  The formatter model depends entirely on `emit`.
 - **`stdin` enables Unix-style composability.** `llt eval process.llt` reading
   from stdin composes naturally with grep, jq, and other Unix tools.
 - **TCP primitives enable `fetch` as library code.** With `connect` and `tls`
@@ -202,7 +202,7 @@ dropped. Revocation at the `NetCap` level is not provided.
 
 # TCP connection
 [conn:    [connect net "db.internal" 5432]]
-# TLS connections: see doc/whatif/lib-tls.md
+# TLS connections: see doc/feature/lib-tls.md
 ```
 
 ### `include` Is Always Cap-Qualified
@@ -343,8 +343,8 @@ llt eval --cap-net net=api.internal --cap-net net=10.42.0.0/16 script.llt
 
 ### TLS Configuration
 
-TLS connections are designed separately. See `doc/whatif/lib-tls.md` for the
-full proposal, including CA root selection, mutual TLS, certificate pinning, and
+TLS connections are designed separately. See `doc/feature/lib-tls.md` for the
+full specification, including CA root selection, mutual TLS, certificate pinning, and
 ALPN. The `tls` builtin and its option dict are not part of this document.
 
 ### `stdin` and `emit`
@@ -451,8 +451,7 @@ println:    [fn [s]           [emit [str s "\n"]]]
 
 ```tinct
 # stdlib/net.llt
-# Note: multi-expression fn bodies require doc/whatif/let-binding.md Phase 1
-# fetch supports HTTP only; HTTPS requires doc/whatif/lib-tls.md (tls builtin)
+# fetch supports HTTP only; HTTPS requires the tls builtin (see doc/feature/lib-tls.md)
 fetch: [fn [net-cap url]
   [parsed: [parse-url url]]
   [conn: [connect net-cap parsed.host parsed.port]]

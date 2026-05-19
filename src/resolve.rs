@@ -61,15 +61,18 @@ impl Resolver {
     /// Searches the scope stack from innermost to outermost. Returns `None` if the
     /// variable is not found in any scope (e.g., computed keys, `$include`-introduced bindings).
     ///
-    /// `level` is the absolute nesting depth of the binding's scope (0 = outermost).
+    /// `level` is the De Bruijn index of the binding's scope (0 = current/innermost scope,
+    /// 1 = one scope outward, N = N scopes outward). This matches `Environment::get_by_slot`
+    /// which also uses 0 = current env, N = N parent hops.
     /// `slot` is the index within that scope's slot vector.
     pub fn resolve(&self, name: &str) -> Option<(u32, u32)> {
         for (offset, scope) in self.scopes.iter().rev().enumerate() {
             if let Some(&slot) = scope.get(name) {
-                // level is the absolute nesting depth of the binding's scope
-                // (0 = outermost, len-1 = innermost)
-                let level =
-                    u32::try_from(self.scopes.len() - 1 - offset).expect("scope depth overflow");
+                // level is the De Bruijn index: 0 = innermost (current) scope,
+                // N = N hops toward the outermost scope.
+                // offset=0 means the variable is in the innermost scope (level 0).
+                // offset=1 means one scope outward (level 1), etc.
+                let level = u32::try_from(offset).expect("scope depth overflow");
                 return Some((level, slot));
             }
         }
@@ -477,20 +480,21 @@ mod tests {
     #[test]
     fn test_resolve_in_parent_scope() {
         let mut resolver = Resolver::new();
-        resolver.enter_scope(&["x".into()]); // level 0
-        resolver.enter_scope(&["y".into()]); // level 1
-                                             // Resolve x from inner scope - should find it in level 0
-        assert_eq!(resolver.resolve("x"), Some((0, 0)));
-        assert_eq!(resolver.resolve("y"), Some((1, 0)));
+        resolver.enter_scope(&["x".into()]); // outer scope
+        resolver.enter_scope(&["y".into()]); // inner scope
+                                             // Resolve x from inner scope - it's 1 hop outward (De Bruijn level 1)
+        assert_eq!(resolver.resolve("x"), Some((1, 0)));
+        // y is in the current (innermost) scope, so De Bruijn level 0
+        assert_eq!(resolver.resolve("y"), Some((0, 0)));
     }
 
     #[test]
     fn test_shadowing() {
         let mut resolver = Resolver::new();
-        resolver.enter_scope(&["x".into()]); // level 0, slot 0
-        resolver.enter_scope(&["x".into()]); // level 1, slot 0 (shadows outer x)
-                                             // Should resolve to the innermost x
-        assert_eq!(resolver.resolve("x"), Some((1, 0)));
+        resolver.enter_scope(&["x".into()]); // outer scope, slot 0
+        resolver.enter_scope(&["x".into()]); // inner scope, slot 0 (shadows outer x)
+                                             // Should resolve to the innermost x (De Bruijn level 0)
+        assert_eq!(resolver.resolve("x"), Some((0, 0)));
     }
 
     #[test]
@@ -498,9 +502,11 @@ mod tests {
         let mut resolver = Resolver::new();
         resolver.enter_scope(&["x".into()]);
         resolver.enter_scope(&["y".into()]);
-        assert_eq!(resolver.resolve("y"), Some((1, 0)));
+        // y is in the innermost scope, De Bruijn level 0
+        assert_eq!(resolver.resolve("y"), Some((0, 0)));
         resolver.exit_scope();
         assert_eq!(resolver.resolve("y"), None);
+        // After exit, x is now in the only (innermost) scope, De Bruijn level 0
         assert_eq!(resolver.resolve("x"), Some((0, 0)));
     }
 
@@ -524,8 +530,8 @@ mod tests {
                 match y_value {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "x");
-                        // Level 1 (level 0 is the synthetic % scope), slot 0
-                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                        // x is a sibling in the same dict scope; De Bruijn level 0 (current scope)
+                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                     }
                     other => panic!("expected VarRef for y value, got {:?}", other),
                 }
@@ -557,7 +563,7 @@ mod tests {
                         match y_value {
                             Expr::VarRef { name, resolved, .. } => {
                                 assert_eq!(name, "x");
-                                // x is in the outer dict scope (level 1; level 0 is synthetic %), slot 0
+                                // x is in the outer dict scope; De Bruijn level 1 (1 hop outward from inner dict), slot 0
                                 assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                             }
                             other => panic!("expected VarRef for y value, got {:?}", other),
@@ -587,8 +593,8 @@ mod tests {
                 match &body.node {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "x");
-                        // x is the first parameter (level 1; level 0 is synthetic % scope), slot 0
-                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                        // x is the first parameter; De Bruijn level 0 (current/innermost scope), slot 0
+                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                     }
                     other => panic!("expected VarRef for body, got {:?}", other),
                 }
@@ -662,13 +668,13 @@ mod tests {
         let dict_expr = &doc.expressions[0].node;
         match dict_expr {
             Expr::Dict(entries) => {
-                // Second entry: y: $x — value $x should resolve to x at level 1, slot 0
+                // Second entry: y: $x — value $x should resolve to x at De Bruijn level 0, slot 0
                 let y_value = &entries[1].node.value.node;
                 match y_value {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "x");
-                        // x is in the dict scope (level 1, slot 0)
-                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                        // x is a sibling in the same dict scope; De Bruijn level 0 (current scope), slot 0
+                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                     }
                     other => panic!("expected VarRef for value, got {:?}", other),
                 }
@@ -701,8 +707,8 @@ mod tests {
                                 match default_value {
                                     Expr::VarRef { name, resolved, .. } => {
                                         assert_eq!(name, "fallback");
-                                        // Level 1 (level 0 is synthetic % scope), slot 0
-                                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                                        // fallback is a sibling in the same dict scope; De Bruijn level 0
+                                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                                     }
                                     other => panic!("expected VarRef, got {:?}", other),
                                 }
@@ -741,8 +747,10 @@ mod tests {
                                 match default_value {
                                     Expr::VarRef { name, resolved, .. } => {
                                         assert_eq!(name, "default_val");
-                                        // Level 1 (level 0 is synthetic % scope), slot 0
-                                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                                        // default_val is a sibling in the dict scope;
+                                        // param annotations are walked before entering fn scope,
+                                        // so dict scope is innermost here: De Bruijn level 0
+                                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                                     }
                                     other => panic!("expected VarRef, got {:?}", other),
                                 }
@@ -820,11 +828,11 @@ mod tests {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "helper");
                         // Must resolve — not Some(None).
-                        // The exact level depends on scope stack depth:
-                        //   level 0: synthetic % scope
-                        //   level 1: injected scope-chain scope (first dict's keys)
-                        //   level 2: second dict's own scope
-                        // $helper is in the injected scope at level 1.
+                        // Scope stack when resolving $helper:
+                        //   innermost (offset 0): second dict's own scope {public}
+                        //   offset 1: injected scope from first dict {helper}
+                        //   offset 2 (outermost): synthetic % scope
+                        // $helper is at offset=1 from the innermost scope → De Bruijn level 1.
                         let coords = resolved.borrow().flatten();
                         assert!(
                             coords.is_some(),
@@ -846,7 +854,7 @@ mod tests {
         use crate::parser::parse;
 
         // First dict: a and b are siblings (letrec — both visible to each other).
-        // $b in the first dict resolves to slot 1 in level 1 (the dict's own scope).
+        // $a in b's value is in the same dict scope (De Bruijn level 0).
         let source = "[a: 1  b: $a]\n[c: $b]";
         let file = parse(source).expect("parse failed").file;
         resolve_file(&file.node);
@@ -854,7 +862,7 @@ mod tests {
         let doc = &file.node.documents[0].node;
         assert_eq!(doc.expressions.len(), 2);
 
-        // In the first dict, $a (in b's value) should resolve to (1, 0) — level 1 = dict scope.
+        // In the first dict, $a (in b's value) resolves to De Bruijn level 0 (same dict scope).
         let first_dict = &doc.expressions[0].node;
         match first_dict {
             Expr::Dict(entries) => {
@@ -862,7 +870,7 @@ mod tests {
                 match b_value {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "a");
-                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                     }
                     other => panic!("expected VarRef for b value, got {:?}", other),
                 }
@@ -870,7 +878,9 @@ mod tests {
             other => panic!("expected Dict, got {:?}", other),
         }
 
-        // In the second dict, $b should resolve to the injected scope (level 1, slot 1).
+        // In the second dict, $b resolves to the injected scope: De Bruijn level 1, slot 1.
+        // Scope stack: innermost={c:0}, offset-1={a:0,b:1} (injected), offset-2={%:0}.
+        // b is at slot 1 in the injected scope (offset=1 → level=1).
         let second_dict = &doc.expressions[1].node;
         match second_dict {
             Expr::Dict(entries) => {
@@ -903,20 +913,18 @@ mod tests {
         let third_dict = &doc.expressions[2].node;
         match third_dict {
             Expr::Dict(entries) => {
-                // c: $a — $a is in first dict's keys, injected at level 1, slot 0.
-                // After first dict: injected scope at level 1 with [a].
-                // After second dict: injected scope at level 2 with [b].
-                // Second dict's own scope is level 3; third dict's own scope is... wait.
-                // Scope stack when resolving third dict:
-                //   level 0: synthetic % scope
-                //   level 1: injected scope from first dict [a]
-                //   level 2: injected scope from second dict [b]
-                //   level 3: third dict's own scope [c, d]
+                // Scope stack when resolving the third dict:
+                //   innermost (offset 0): third dict's own scope [c, d]
+                //   offset 1: injected scope from second dict [b]
+                //   offset 2: injected scope from first dict [a]
+                //   offset 3 (outermost): synthetic % scope
+                // c: $a — $a is in offset-2 scope → De Bruijn level 2
+                // d: $b — $b is in offset-1 scope → De Bruijn level 1
                 let c_value = &entries[0].node.value.node;
                 match c_value {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "a");
-                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                        assert_eq!(resolved.borrow().flatten(), Some((2, 0)));
                     }
                     other => panic!("expected VarRef for c value, got {:?}", other),
                 }
@@ -925,7 +933,7 @@ mod tests {
                 match d_value {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "b");
-                        assert_eq!(resolved.borrow().flatten(), Some((2, 0)));
+                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                     }
                     other => panic!("expected VarRef for d value, got {:?}", other),
                 }
@@ -982,8 +990,8 @@ mod tests {
                         match &expr.node {
                             Expr::VarRef { name, resolved, .. } => {
                                 assert_eq!(name, "x");
-                                // Level 1 (level 0 is synthetic % scope), slot 0
-                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                                // x is a sibling in the dict scope; De Bruijn level 0 (current scope), slot 0
+                                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                             }
                             other => panic!("expected VarRef inside DotAccess, got {:?}", other),
                         }
@@ -1018,8 +1026,8 @@ mod tests {
                         match named_arg_value {
                             Expr::VarRef { name, resolved, .. } => {
                                 assert_eq!(name, "x");
-                                // Level 1 (level 0 is synthetic % scope), slot 0
-                                assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
+                                // x is a sibling in the dict scope; De Bruijn level 0 (current scope), slot 0
+                                assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
                             }
                             other => panic!("expected VarRef in named arg value, got {:?}", other),
                         }
@@ -1094,8 +1102,9 @@ mod tests {
                 match x_value {
                     Expr::VarRef { name, resolved, .. } => {
                         assert_eq!(name, "%");
-                        // % is in synthetic scope (level 0), dict scope is level 1
-                        assert_eq!(resolved.borrow().flatten(), Some((0, 0)));
+                        // % is in the outermost (synthetic) scope; De Bruijn level 1 from inside dict
+                        // (dict scope is offset 0/level 0, % scope is offset 1/level 1)
+                        assert_eq!(resolved.borrow().flatten(), Some((1, 0)));
                     }
                     other => panic!("expected VarRef for %, got {:?}", other),
                 }

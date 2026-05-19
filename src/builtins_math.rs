@@ -1,4 +1,5 @@
 //! Arithmetic, comparison, and control-flow builtins: `+`, `-`, `*`, `/`, `=`, `<`, `if`.
+//! `builtin-add/sub/mul/div` are pure Int/Float primitives — no typeclass dispatch. Dispatch belongs at the operator level.
 //!
 //! These builtins operate on numeric and boolean values. They are all inherently
 //! materializing because they must inspect operand values to compute results.
@@ -46,14 +47,15 @@ fn try_dispatch_method(
         return None;
     }
 
-    // Determine number of determining-position args based on class.
-    // Arithmetic ops (Addable, Subtractable, Multipliable, Divisible) have 2 determining args.
-    // Equatable, Comparable have 1 determining arg (first arg only).
-    // TODO: get this from RuntimeClassDecl.determines once that field is added.
-    let num_determining = match class_name {
-        "Addable" | "Subtractable" | "Multipliable" | "Divisible" => 2,
-        _ => 1, // Equatable, Comparable, Showable
-    };
+    // Determine number of determining-position args from the class registry.
+    // Falls back to 1 if the class is not yet registered (should not happen in practice).
+    let num_determining = ctx
+        .state
+        .borrow()
+        .class_registry
+        .get(class_name)
+        .map(|c| c.num_determining)
+        .unwrap_or(1);
 
     // Materialize determining-position args and collect type names.
     let mut type_tags = Vec::with_capacity(num_determining);
@@ -127,8 +129,9 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
     Ok(())
 }
 
-/// `+`: Addition with auto-promotion. Int + Int -> Int, any Float operand -> Float.
-/// Inherently materializing: must extract numeric values to compute sum.
+/// `builtin-add`: Pure Int/Float addition primitive. No typeclass dispatch.
+/// Dispatch for user-defined numeric types happens at the `+` operator level.
+/// Int + Int -> Int (checked), any Float operand -> Float (auto-promotion).
 pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -137,24 +140,38 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("+", named, call_span)?;
-
-    // Runtime typeclass dispatch: check for Addable instance
-    if let Some(result) = try_dispatch_method("Addable", "+", args, named, call_span, &ctx) {
-        return result;
+    if args.len() < 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // No instance found — return error (no Rust fallback for arithmetic)
-    if args.len() >= 2 {
-        let left = materialize(&args[0], Some(&call_span), &ctx)?;
-        let right = materialize(&args[1], Some(&call_span), &ctx)?;
-        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-        return Err(EvalError::no_instance("Addable", type_tags, call_span).into());
+    let left = materialize(&args[0], Some(&call_span), &ctx)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    match (&left, &right) {
+        (Value::Int(a), Value::Int(b)) => a
+            .checked_add(*b)
+            .map(|r| Rc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+            .ok_or_else(|| EvalError::integer_overflow("+".to_string(), call_span).into()),
+        (Value::Float(a), Value::Float(b)) => check_float_result(a + b, "+", call_span),
+        (Value::Int(a), Value::Float(b)) => {
+            check_int_to_float_precision(*a, args[0].span)?;
+            check_float_result((*a as f64) + b, "+", call_span)
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            check_int_to_float_precision(*b, args[1].span)?;
+            check_float_result(a + (*b as f64), "+", call_span)
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "+".to_string(),
+            "Int or Float",
+            &format!("{} and {}", left.type_name(), right.type_name()),
+            call_span,
+        )
+        .into()),
     }
-    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
-/// `-`: Subtraction with auto-promotion. Int - Int -> Int, any Float operand -> Float.
-/// Inherently materializing: must extract numeric values to compute difference.
+/// `builtin-sub`: Pure Int/Float subtraction primitive. No typeclass dispatch.
 pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -163,24 +180,38 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("-", named, call_span)?;
-
-    // Runtime typeclass dispatch: check for Subtractable instance
-    if let Some(result) = try_dispatch_method("Subtractable", "-", args, named, call_span, &ctx) {
-        return result;
+    if args.len() < 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // No instance found — return error (no Rust fallback for arithmetic)
-    if args.len() >= 2 {
-        let left = materialize(&args[0], Some(&call_span), &ctx)?;
-        let right = materialize(&args[1], Some(&call_span), &ctx)?;
-        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-        return Err(EvalError::no_instance("Subtractable", type_tags, call_span).into());
+    let left = materialize(&args[0], Some(&call_span), &ctx)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    match (&left, &right) {
+        (Value::Int(a), Value::Int(b)) => a
+            .checked_sub(*b)
+            .map(|r| Rc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+            .ok_or_else(|| EvalError::integer_overflow("-".to_string(), call_span).into()),
+        (Value::Float(a), Value::Float(b)) => check_float_result(a - b, "-", call_span),
+        (Value::Int(a), Value::Float(b)) => {
+            check_int_to_float_precision(*a, args[0].span)?;
+            check_float_result((*a as f64) - b, "-", call_span)
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            check_int_to_float_precision(*b, args[1].span)?;
+            check_float_result(a - (*b as f64), "-", call_span)
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "-".to_string(),
+            "Int or Float",
+            &format!("{} and {}", left.type_name(), right.type_name()),
+            call_span,
+        )
+        .into()),
     }
-    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
-/// `*`: Multiplication with auto-promotion. Int * Int -> Int, any Float operand -> Float.
-/// Inherently materializing: must extract numeric values to compute product.
+/// `builtin-mul`: Pure Int/Float multiplication primitive. No typeclass dispatch.
 pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -189,24 +220,39 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("*", named, call_span)?;
-
-    // Runtime typeclass dispatch: check for Multipliable instance
-    if let Some(result) = try_dispatch_method("Multipliable", "*", args, named, call_span, &ctx) {
-        return result;
+    if args.len() < 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // No instance found — return error (no Rust fallback for arithmetic)
-    if args.len() >= 2 {
-        let left = materialize(&args[0], Some(&call_span), &ctx)?;
-        let right = materialize(&args[1], Some(&call_span), &ctx)?;
-        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-        return Err(EvalError::no_instance("Multipliable", type_tags, call_span).into());
+    let left = materialize(&args[0], Some(&call_span), &ctx)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    match (&left, &right) {
+        (Value::Int(a), Value::Int(b)) => a
+            .checked_mul(*b)
+            .map(|r| Rc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+            .ok_or_else(|| EvalError::integer_overflow("*".to_string(), call_span).into()),
+        (Value::Float(a), Value::Float(b)) => check_float_result(a * b, "*", call_span),
+        (Value::Int(a), Value::Float(b)) => {
+            check_int_to_float_precision(*a, args[0].span)?;
+            check_float_result((*a as f64) * b, "*", call_span)
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            check_int_to_float_precision(*b, args[1].span)?;
+            check_float_result(a * (*b as f64), "*", call_span)
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "*".to_string(),
+            "Int or Float",
+            &format!("{} and {}", left.type_name(), right.type_name()),
+            call_span,
+        )
+        .into()),
     }
-    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
-/// `/`: Float division. ALWAYS returns Float, even for Int / Int. Division by zero produces an error.
-/// Inherently materializing: must extract numeric values to compute quotient.
+/// `builtin-div`: Pure Int/Float division primitive. No typeclass dispatch.
+/// Always returns Float (even Int / Int). Division by zero is an error.
 pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -215,20 +261,39 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ctx,
     } = ctx_arg;
     reject_named("/", named, call_span)?;
-
-    // Runtime typeclass dispatch: check for Divisible instance
-    if let Some(result) = try_dispatch_method("Divisible", "/", args, named, call_span, &ctx) {
-        return result;
+    if args.len() < 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // No instance found — return error (no Rust fallback for arithmetic)
-    if args.len() >= 2 {
-        let left = materialize(&args[0], Some(&call_span), &ctx)?;
-        let right = materialize(&args[1], Some(&call_span), &ctx)?;
-        let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-        return Err(EvalError::no_instance("Divisible", type_tags, call_span).into());
+    let left = materialize(&args[0], Some(&call_span), &ctx)?;
+    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    match (&left, &right) {
+        (Value::Int(a), Value::Int(b)) => {
+            if *b == 0 {
+                return Err(
+                    EvalError::user_error("division by zero".to_string(), call_span).into(),
+                );
+            }
+            check_float_result(*a as f64 / *b as f64, "/", call_span)
+        }
+        (Value::Float(a), Value::Float(b)) => check_float_result(a / b, "/", call_span),
+        (Value::Int(a), Value::Float(b)) => {
+            check_int_to_float_precision(*a, args[0].span)?;
+            check_float_result((*a as f64) / b, "/", call_span)
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            check_int_to_float_precision(*b, args[1].span)?;
+            check_float_result(a / (*b as f64), "/", call_span)
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "/".to_string(),
+            "Int or Float",
+            &format!("{} and {}", left.type_name(), right.type_name()),
+            call_span,
+        )
+        .into()),
     }
-    Err(EvalError::arity_mismatch(2, args.len(), call_span).into())
 }
 
 /// `=`: Equality comparison.
@@ -1047,35 +1112,27 @@ mod tests {
 
     // --- MAX_SAFE_INT boundary ---
 
-    /// Without a registered Addable instance (test_ctx has no prelude), arithmetic ops
-    /// return NoInstance. The MAX_SAFE_INT precision guard lives inside the Rust fallback
-    /// arithmetic path which is unreachable without an instance; both boundary tests now
-    /// assert NoInstance so the precision guard logic is exercised by integration tests
-    /// (via the prelude which registers the Int/Float instances).
+    /// Int(MAX_SAFE_INT) + Float(0.0): precision guard boundary — at exactly MAX_SAFE_INT
+    /// the guard passes (n.abs() > MAX_SAFE_INT is false), so conversion succeeds.
     #[test]
-    fn test_max_safe_int_boundary_no_instance() {
-        // test_ctx() has empty registered_classes → builtin_add returns NoInstance.
+    fn test_max_safe_int_boundary_ok() {
         let result = builtin_add(BuiltinArgs {
-            args: &[
-                thunk(Value::Int(MAX_SAFE_INT)),
-                thunk(Value::Float(0.0)),
-            ],
+            args: &[thunk(Value::Int(MAX_SAFE_INT)), thunk(Value::Float(0.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        assert!(result.is_err(), "expected NoInstance error when no instance registered");
-        let err = result.unwrap_err();
+        // MAX_SAFE_INT.abs() > MAX_SAFE_INT is false → precision check passes → Float result
+        let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
-            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Addable"),
-            "expected NoInstance(Addable), got: {:?}",
-            err.kind
+            matches!(t.try_get_materialized(), Some(Value::Float(_))),
+            "expected Float at MAX_SAFE_INT boundary"
         );
     }
 
-    /// Same: MAX_SAFE_INT + 1 also returns NoInstance without a registered instance.
+    /// Int(MAX_SAFE_INT + 1) + Float(0.0): exceeds precision boundary → error.
     #[test]
-    fn test_max_safe_int_plus_one_no_instance() {
+    fn test_max_safe_int_plus_one_precision_error() {
         let result = builtin_add(BuiltinArgs {
             args: &[
                 thunk(Value::Int(MAX_SAFE_INT + 1)),
@@ -1085,51 +1142,63 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        assert!(result.is_err(), "expected NoInstance error when no instance registered");
+        assert!(
+            result.is_err(),
+            "expected precision error for Int > MAX_SAFE_INT"
+        );
+        // Should NOT be a NoInstance error — the fast path handles Int/Float before dispatch
         let err = result.unwrap_err();
         assert!(
-            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Addable"),
-            "expected NoInstance(Addable), got: {:?}",
+            !matches!(&err.kind, ErrorKind::NoInstance { .. }),
+            "expected precision error, not NoInstance, got: {:?}",
             err.kind
         );
     }
 
-    // --- try_dispatch_method fast-path (no instance registered) ---
+    // --- Int/Float fast path (no prelude needed) ---
 
-    /// When no Addable instance is registered, try_dispatch_method returns None and
-    /// builtin_add returns a NoInstance error. There is no Rust arithmetic fallback.
+    /// Int + Int uses the fast path — returns Int(7) without any instance registered.
     #[test]
-    fn test_add_no_instance_returns_no_instance_error() {
-        // Fresh context has empty `registered_classes` → try_dispatch_method returns None.
+    fn test_add_int_int_fast_path() {
         let result = builtin_add(BuiltinArgs {
             args: &[thunk(Value::Int(3)), thunk(Value::Int(4))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        assert!(result.is_err(), "expected NoInstance error");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Addable"),
-            "expected NoInstance(Addable), got: {:?}",
-            err.kind
-        );
+        let t = result.expect("expected Int(7)");
+        assert_eq!(t.try_get_materialized(), Some(Value::Int(7)));
     }
 
-    /// Same for builtin_mul: no Multipliable instance → NoInstance error, no Rust fallback.
+    /// Int * Int uses the fast path — returns Int(42) without any instance registered.
     #[test]
-    fn test_mul_no_instance_returns_no_instance_error() {
+    fn test_mul_int_int_fast_path() {
         let result = builtin_mul(BuiltinArgs {
             args: &[thunk(Value::Int(6)), thunk(Value::Int(7))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        assert!(result.is_err(), "expected NoInstance error");
+        let t = result.expect("expected Int(42)");
+        assert_eq!(t.try_get_materialized(), Some(Value::Int(42)));
+    }
+
+    /// Non-numeric types (no instance registered) → NoInstance error.
+    #[test]
+    fn test_add_non_numeric_no_instance_error() {
+        use crate::value::string_val;
+        let result = builtin_add(BuiltinArgs {
+            args: &[thunk(string_val("a")), thunk(string_val("b"))],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        });
+        // builtin-add is a pure primitive — non-Int/Float gets a type mismatch
+        assert!(result.is_err(), "expected type error for String + String");
         let err = result.unwrap_err();
         assert!(
-            matches!(&err.kind, ErrorKind::NoInstance { class_name, .. } if class_name == "Multipliable"),
-            "expected NoInstance(Multipliable), got: {:?}",
+            matches!(&err.kind, ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch, got: {:?}",
             err.kind
         );
     }

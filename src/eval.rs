@@ -1,5 +1,6 @@
 //! Core evaluation module: lazy evaluation with letrec dict scoping, document
 //! pipelines, and function evaluation.
+//!
 
 pub(crate) use crate::eval_call::eval_call;
 #[cfg(test)]
@@ -761,14 +762,16 @@ pub(crate) fn eval_recursive(
             // keyed by this VarRef's span. At runtime, substitute the sentinel with the
             // actual monad dict looked up from the environment by its resolved name.
             if name == "%do-infer" {
-                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(&expr.span).cloned() {
+                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(&expr.span).cloned()
+                {
                     let found = env.borrow().get(&monad_name);
                     return match found {
                         Some(thunk) => Ok(thunk),
                         None => Err(EvalError::undefined_variable(
                             format!("%do-infer → {monad_name}"),
                             expr.span,
-                        ).into()),
+                        )
+                        .into()),
                     };
                 }
                 // Fallthrough: no resolution recorded (type checker didn't run or failed).
@@ -780,10 +783,19 @@ pub(crate) fn eval_recursive(
             // `Some(None)` means the resolver ran but couldn't assign coordinates
             //   (stdlib/builtin lookups) — fall back to name-based chain walk.
             // `None` means the resolver hasn't run yet — fall back to name-based.
+            //
+            // Level is a De Bruijn index (0 = current scope, N = N parent hops),
+            // matching `Environment::get_by_slot` semantics exactly.
             let found = if let Some(Some((level, slot))) = &*resolved.borrow() {
-                // Slot-based lookup: O(1) for level=0 (same-scope sibling references),
-                // O(level) parent walks for outer scopes. Avoids string hashing entirely.
-                env.borrow().get_by_slot(*level, *slot)
+                // De Bruijn slot-based lookup: level=0 = current scope (same-scope sibling),
+                // level=N = N parent hops. O(1) for level=0, O(level) for outer scopes.
+                // Falls back to name-based lookup if out-of-bounds (defensive).
+                let slot_result = env.borrow().get_by_slot(*level, *slot);
+                if slot_result.is_some() {
+                    slot_result
+                } else {
+                    env.borrow().get(name)
+                }
             } else {
                 env.borrow().get(name)
             };
@@ -1472,10 +1484,7 @@ pub(crate) fn eval_recursive(
 
             // num_determining governs how many type tags go into instance_registry keys.
             // Must match try_dispatch_method's key-building logic exactly.
-            let num_determining = class_decl
-                .as_ref()
-                .map(|d| d.num_determining)
-                .unwrap_or(1);
+            let num_determining = class_decl.as_ref().map(|d| d.num_determining).unwrap_or(1);
 
             let mut last_arm_thunk: Option<Rc<Thunk>> = None;
 
@@ -1668,60 +1677,6 @@ pub(crate) fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
             .collect(),
         // Single-entry: check if it's a nominal constructor
         other => is_nominal_constructor(other).into_iter().collect(),
-    }
-}
-
-/// Eagerly register nominal variant constructors from a TypeAlias body into `target_env`.
-///
-/// Called from eval_dict's pre-pass to ensure constructor thunks (e.g. `Ok`, `Err`) are
-/// already present in dict_env BEFORE the normal thunk-creation pass runs. This prevents
-/// the circular thunk dependency that arises when a re-export entry like `Ok: Ok` references
-/// the letrec name `Ok` while the TypeAlias that creates the constructor hasn't been forced yet.
-///
-/// The registered thunks are materialized (not lazy), so they can be found immediately when
-/// sibling thunks like `Ok: Ok` are forced.
-pub(crate) fn eagerly_register_constructors(
-    body: &Expr,
-    span: Span,
-    target_env: &Rc<RefCell<Environment>>,
-) {
-    let constructors = extract_nominal_constructors(body);
-    for (tag, has_payload) in constructors {
-        let constructor_value = if has_payload {
-            let constructor_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-                target_env,
-            ))));
-            constructor_env.borrow_mut().insert(
-                VARIANT_TAG_MARKER.to_string(),
-                Rc::new(Thunk::new_materialized(string_val(&tag), span)),
-            );
-            let param = Param {
-                name: "payload".to_string(),
-                annotation: None,
-                variadic: false,
-            };
-            let body_expr = Rc::new(Spanned::new(
-                Expr::VarRef {
-                    name: "payload".to_string(),
-                    escaped: false,
-                    resolved: RefCell::new(None),
-                },
-                span,
-            ));
-            Value::Function {
-                params: Rc::new(vec![param]),
-                body: body_expr,
-                env: constructor_env,
-                annotation: None,
-            }
-        } else {
-            Value::Variant {
-                tag: tag.clone(),
-                payload: None,
-            }
-        };
-        let constructor_thunk = Rc::new(Thunk::new_materialized(constructor_value, span));
-        target_env.borrow_mut().insert(tag, constructor_thunk);
     }
 }
 
@@ -3789,7 +3744,11 @@ mod tests {
             "got: {}",
             err.to_string()
         );
-        assert!(err.to_string().contains("Function"), "got: {}", err.to_string());
+        assert!(
+            err.to_string().contains("Function"),
+            "got: {}",
+            err.to_string()
+        );
     }
 
     #[test]
@@ -4503,7 +4462,11 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err.to_string().contains("expected"), "got: {}", err.to_string());
+        assert!(
+            err.to_string().contains("expected"),
+            "got: {}",
+            err.to_string()
+        );
         assert!(
             err.to_string().contains("expected Dict"),
             "got: {}",
@@ -4934,7 +4897,11 @@ mod tests {
             "got: {}",
             err.to_string()
         );
-        assert!(err.to_string().contains("got Bool"), "got: {}", err.to_string());
+        assert!(
+            err.to_string().contains("got Bool"),
+            "got: {}",
+            err.to_string()
+        );
     }
 
     #[test]
@@ -9512,7 +9479,7 @@ mod tests {
                 let source = format!(
                     r#"
 [
-    count-down: [fn [n acc]
+    count-down: [fn [let n acc]
         [if [= n 0]
             acc
             [count-down [- n 1] [+ acc 1]]]]

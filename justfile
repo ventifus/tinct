@@ -61,7 +61,7 @@ test-one TEST:
 
 # Run only lib unit tests (no integration tests)
 test-lib:
-    {{container}} run {{run_flags}} {{rust_image}} cargo test --lib
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib
 
 # Run only corpus tests (NOTE: does not include LSP corpus tests — use `just test-lsp` for those)
 test-corpus:

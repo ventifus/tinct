@@ -37,7 +37,7 @@ Dot access is the *only* access syntax, extended to handle all key types:
 
 ```tinct
 $data.name          # string key (existing)
-$data.0             # integer key (new — previously required $data[0])
+$data.0             # integer key (bracket-access syntax not supported)
 $data.0.name        # chain: integer then string
 ```
 
@@ -179,11 +179,11 @@ slicing. Both names are correct and require no changes. The removed `$a[0..2]`
 syntax is replaced by `$a | [range 0 2]` for numeric range generation or
 `[slice a 0 2]` for positional Dict slicing.
 
-**Projection and path drilling** (Phase 3 stdlib additions):
+**Projection and path drilling:**
 
 ```tinct
-[select data "name" "age"]       # sub-dict with only those keys
-$data | [path "users" 0 "name"]  # deep path: chains | for each step
+[pick data ["name" "age"]]           # sub-dict with only those keys
+$data | [get-in path: ["users" 0 "name"]]  # deep path via named arg
 ```
 
 These are stdlib functions, not new syntax.

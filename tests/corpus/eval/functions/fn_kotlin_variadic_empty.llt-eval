@@ -1,6 +1,6 @@
 # Variadic with exactly zero excess args: BIND-VARIADIC should produce empty Dict
 [
-  f: [fn [a ...rest] rest]
+  f: [fn [let a ...rest] rest]
   result: [f 42]
 ]
 === out

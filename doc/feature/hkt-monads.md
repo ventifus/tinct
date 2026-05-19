@@ -472,7 +472,7 @@ Accepted 2026-05-11. The acceptance review identified the following critical iss
 Decisions made:
 - **Appendable kind** — Option A adopted: `Appendable` keeps the hardcoded fixed-instance set; Appendable has an unsolved Str problem better addressed by multi-parameter typeclasses.
 - **Annotation disambiguation** — bracket application form `@[Seq Int]` = `App(Seq, Int)` is the canonical parameterized type annotation.
-- **Foldable method name** — `foldl` used to match tinct's left-fold `reduce`. `sequence`/`traverse` are generic over Traversable.
+- **Foldable method name** — named `fold` (not `foldl`/`foldr`): tinct sequences are finite, so the left/right distinction does not apply; `FoldableSeq.fold = reduce`. `sequence`/`traverse` are generic over Traversable.
 
 ## Implementation
 

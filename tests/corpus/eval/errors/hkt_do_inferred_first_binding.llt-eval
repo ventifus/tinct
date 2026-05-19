@@ -1,5 +1,8 @@
-# Test: inferred [do] with binding step as first arg — monad should be inferred from
-# the type of [Ok 1] (Result monad). Not yet implemented; emits a helpful error.
+# Test: inferred [do] where first binding uses a Variant constructor ([Ok 1]).
+# Rule 2 cannot resolve monad from Variant type (no App(Result,_) type yet) → T_DO_INFER.
+# Eval falls through: %do-infer has no resolution → E002 undefined variable.
 [do [x: [Ok 1]] x]
 === error
-[E080] inferred [do] not yet supported
+[E002] undefined variable: %do-infer
+=== warn
+cannot infer monad

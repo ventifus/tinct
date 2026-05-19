@@ -1,5 +1,6 @@
 # What If: Nominal Variants for tinct
 **State:** Accepted — 2026-05-05
+**Replaces:** [`type-variant.md`](../type-variant.md) — nominal variants subsume the need for a new `Type::Variant`
 
 What would it take to add nominal (constructor-based) variants to tinct, layered on
 top of the structural ADT system?

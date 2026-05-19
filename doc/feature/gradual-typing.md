@@ -13,8 +13,8 @@ Blame tracking identifies which boundary between typed and untyped code is respo
 
 ## Supersession Notes
 
-- **`Type::Any` split**: `Type::Any` was replaced by two distinct types: `Type::Unknown` (gradual typing opt-out — the `?` type, consistent with anything) and `Type::Top` (the true supertype, accepts all values within the lattice). Any section referring to `Type::Any` uses stale terminology. See [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md) (2026-05-09).
-- **Automatic boundary guards**: Runtime guards are inserted at every `Unknown → Concrete` boundary — both explicit TypeAssert sites and implicit call-argument, builtin-argument, field-access, and `---` pipeline-crossing boundaries. Full design is specified in [CHR-Unified Type Constraints](../whatif/chr-unification.md) §Automatic Boundary Guards.
+- **`Type::Any` split**: `Type::Unknown` (gradual typing opt-out — the `?` type, consistent with anything) and `Type::Top` (the true supertype, accepts all values within the lattice) are distinct types. See [boolean-algebraic-subtyping.md](boolean-algebraic-subtyping.md).
+- **Automatic boundary guards**: Runtime guards are inserted at every `Unknown → Concrete` boundary — both explicit TypeAssert sites and implicit call-argument, builtin-argument, field-access, and `---` pipeline-crossing boundaries. Full design is specified in `doc/feature/chr-unification.md` §Automatic Boundary Guards.
 
 ## Design
 
@@ -92,7 +92,7 @@ fn is_consistent(a: &Type, b: &Type) -> bool {
 
 > **Note:** The `is_consistent` implementation in `src/types.rs:531` also has `(Top, _) | (_, Top) => true` — any type is consistent with `Top`.
 
-`is_consistent` replaces `is_subtype` at every point where `Any` previously triggered silent success: CALL-ANY, DOT-OPEN, BRACKET-DYN, ACCESS-ANY.
+`is_consistent` is used instead of `is_subtype` at gradual typing boundaries: CALL-ANY, DOT-OPEN, BRACKET-DYN, ACCESS-ANY.
 
 ### Runtime Checks at Boundaries
 
