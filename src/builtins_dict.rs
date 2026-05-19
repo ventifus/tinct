@@ -231,8 +231,14 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Materialize the dict (spine only, not values)
     let dict_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let map =
-        crate::builtins::require_dict("builtin-get", dict_val, args[1].span, &ctx, call_span)?;
+    // Include the key in the context string so the error message identifies WHICH
+    // [get ...] call received the wrong type. This makes macro-expansion bugs diagnosable.
+    let key_display = match &key {
+        Key::Int(n) => format!("key {n}"),
+        Key::String(s) => format!("key \"{s}\""),
+    };
+    let context = format!("builtin-get ({key_display})");
+    let map = crate::builtins::require_dict(&context, dict_val, args[1].span, &ctx, call_span)?;
 
     // Look up the key
     match map.get(&key) {

@@ -1603,37 +1603,15 @@ impl EvalError {
     }
 }
 
-/// Suffixes that identify stdlib internal helper frames to hide from user-facing stack traces.
-/// User-facing stdlib functions like `map` and `filter` do not use these suffixes and remain
-/// visible. Filtering is suffix-based (ends_with), not substring-based (contains), so a label
-/// like "multi-step-validator" is preserved correctly.
+/// Returns `true` if the stack frame should appear in user-facing error output.
+/// Returns `false` only for synthetic origin spans (Span::origin() = offset 0, line 1, col 1)
+/// from stdlib/builtin calls — these have no meaningful source location.
 ///
-/// Phase 2 frame format: `"[name ...]"`. We extract `name` from the label and check its suffix.
-const HIDDEN_SUFFIXES: &[&str] = &["-impl", "-step", "-check", "-merge"];
-
-/// Extract the function name from a Phase 2 frame label of the form `"[name ...]"`.
-/// Returns the name portion, or the full label if it doesn't match the bracket format.
-fn frame_name(label: &str) -> &str {
-    if let Some(rest) = label.strip_prefix('[') {
-        if let Some(name) = rest.split_whitespace().next() {
-            return name;
-        }
-    }
-    label
-}
-
-/// Returns `true` if the stack frame should appear in user-facing error output:
-/// not a synthetic origin span and not a stdlib internal helper.
-/// Returns `false` for:
-/// - Synthetic origin spans (Span::origin() = offset 0, line 1, col 1; displays as "1:1-1:1")
-///   from stdlib/builtin calls
-/// - Stdlib internal helper functions (suffixes: -impl, -step, -check, -merge)
+/// NOTE: No suffix-based filtering is applied. Every frame with a real source location
+/// is shown, including stdlib internal helpers (-impl, -step, -check, -merge). This is
+/// necessary for diagnosing bugs in macro transformers and stdlib code.
 fn should_display_frame(frame: &StackFrame) -> bool {
-    if frame.span == Span::origin() {
-        return false;
-    }
-    let name = frame_name(&frame.label);
-    !HIDDEN_SUFFIXES.iter().any(|s| name.ends_with(s))
+    frame.span != Span::origin()
 }
 
 /// Infer a context-appropriate verb for the materialization span label.
@@ -3418,19 +3396,19 @@ mod tests {
     }
 
     #[test]
-    fn test_stdlib_internal_frames_filtered_from_display() {
-        // Verify that stdlib internal helper frames (with -impl, -step, -check suffixes)
-        // are NOT shown in error display output, while user-facing stdlib functions remain visible
+    fn test_stdlib_internal_frames_all_shown_in_display() {
+        // All frames with real source locations are shown — no suffix-based filtering.
+        // Formerly, -impl/-step/-check/-merge frames were hidden; now they are all visible.
         let def_span = test_span(5, 1, 5, 10);
         let mat_span = test_span(10, 1, 10, 5);
 
         let mut err = EvalError::internal("error in stdlib".to_string(), def_span)
             .with_materialization_span(mat_span);
 
-        // Add user-facing stdlib function (should be visible)
+        // Add user-facing stdlib function
         err.push_frame("[map ...]".to_string(), test_span(8, 1, 8, 10));
 
-        // Add internal helper frames (should be filtered out)
+        // Add internal helper frames — these must now also be visible
         err.push_frame("[map-impl ...]".to_string(), test_span(100, 1, 100, 10));
         err.push_frame("[remove-step ...]".to_string(), test_span(200, 1, 200, 10));
         err.push_frame("[cond-check ...]".to_string(), test_span(300, 1, 300, 10));
@@ -3440,81 +3418,75 @@ mod tests {
 
         let display = format!("{err}");
 
-        // Should contain user-facing stdlib functions
+        // All frames with real spans must appear
         assert!(display.contains("in [map ...] at 8:1-8:10"));
         assert!(display.contains("in [filter ...] at 12:1-12:15"));
-
-        // Should NOT contain internal helper frames
-        assert!(!display.contains("map-impl"));
-        assert!(!display.contains("remove-step"));
-        assert!(!display.contains("cond-check"));
-        assert!(!display.contains("100:1-100:10"));
-        assert!(!display.contains("200:1-200:10"));
-        assert!(!display.contains("300:1-300:10"));
+        assert!(display.contains("map-impl"));
+        assert!(display.contains("remove-step"));
+        assert!(display.contains("cond-check"));
+        assert!(display.contains("100:1-100:10"));
+        assert!(display.contains("200:1-200:10"));
+        assert!(display.contains("300:1-300:10"));
     }
 
     #[test]
-    fn test_stdlib_frame_filter_uses_ends_with_not_contains() {
-        // "multi-step-validator" contains "-step" but does NOT end with "-step",
-        // so it should NOT be filtered — only suffix-based filtering is correct.
+    fn test_stdlib_frame_substring_not_filtered() {
+        // All frames with real spans are visible — no suffix filtering at all.
         let def_span = test_span(1, 1, 1, 5);
         let err = EvalError::internal("test".to_string(), def_span).with_frame(
             "[multi-step-validator ...]".to_string(),
             test_span(10, 1, 10, 5),
         );
         let display = format!("{err}");
-        // Frame label contains "-step" as substring but not suffix — must appear
         assert!(
             display.contains("multi-step-validator"),
-            "frames with '-step' as a substring (not suffix) must not be filtered; got: {display}"
+            "all frames with real spans must appear; got: {display}"
         );
     }
 
     #[test]
-    fn test_should_display_frame_hidden_suffix() {
-        // A frame whose label ends with a hidden suffix (-impl, -step, -check, -merge)
-        // must not be displayed.
+    fn test_should_display_frame_all_real_spans_visible() {
+        // All frames with real spans must return true, regardless of label suffix.
         let real_span = test_span(5, 1, 5, 10);
         let impl_frame = StackFrame {
             label: "[map-impl ...]".to_string(),
             span: real_span,
         };
         assert!(
-            !should_display_frame(&impl_frame),
-            "frame with -impl suffix must return false"
+            should_display_frame(&impl_frame),
+            "frame with -impl suffix and real span must return true"
         );
         let step_frame = StackFrame {
             label: "[remove-step ...]".to_string(),
             span: real_span,
         };
         assert!(
-            !should_display_frame(&step_frame),
-            "frame with -step suffix must return false"
+            should_display_frame(&step_frame),
+            "frame with -step suffix and real span must return true"
         );
         let check_frame = StackFrame {
             label: "[validate-check ...]".to_string(),
             span: real_span,
         };
         assert!(
-            !should_display_frame(&check_frame),
-            "frame with -check suffix must return false"
+            should_display_frame(&check_frame),
+            "frame with -check suffix and real span must return true"
         );
         let merge_frame = StackFrame {
             label: "[sort-merge ...]".to_string(),
             span: real_span,
         };
         assert!(
-            !should_display_frame(&merge_frame),
-            "frame with -merge suffix must return false"
+            should_display_frame(&merge_frame),
+            "frame with -merge suffix and real span must return true"
         );
-        // A user-facing frame with the same real span must be displayed.
         let user_frame = StackFrame {
             label: "[map ...]".to_string(),
             span: real_span,
         };
         assert!(
             should_display_frame(&user_frame),
-            "user-facing frame must return true"
+            "user-facing frame with real span must return true"
         );
     }
 
@@ -3685,28 +3657,37 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_exceeded_elision_filters_hidden_frames() {
-        // Ensure elision only operates on visible frames (respects should_display_frame filter)
+    fn test_depth_exceeded_elision_filters_origin_frames() {
+        // Elision operates on visible frames (respects should_display_frame filter).
+        // Only Span::origin() frames are hidden; all other frames are visible.
         let def_span = test_span(1, 1, 1, 5);
         let visible_span = test_span(10, 1, 10, 5);
         let mut err = EvalError::depth_exceeded(256, def_span);
 
-        // Add mix of visible and hidden frames
+        // Add mix of visible and origin (hidden) frames.
+        // "[hidden-impl ...]" has a real span, so it IS visible (no suffix filtering).
+        // "[origin ...]" has Span::origin(), so it is NOT visible.
         for _ in 0..100 {
             err.push_frame("[f ...]".to_string(), visible_span);
-            err.push_frame("[hidden-impl ...]".to_string(), visible_span); // hidden suffix
-            err.push_frame("[origin ...]".to_string(), Span::origin()); // origin span
+            err.push_frame("[hidden-impl ...]".to_string(), visible_span); // real span — visible
+            err.push_frame("[origin ...]".to_string(), Span::origin()); // origin span — hidden
         }
 
         let display = format!("{err}");
 
-        // Should only count visible frames for elision (100 repetitions of "[f ...]")
+        // "[f ...]" and "[hidden-impl ...]" both appear in the repeating pattern.
+        // The period-2 pattern ([f ...], [hidden-impl ...]) repeats 100 times.
         assert!(display.contains("in [f ...] at 10:1-10:5"));
-        assert!(display.contains("[... 99 more repetitions of the above 1 frame ...]"));
+        assert!(
+            display.contains("hidden-impl"),
+            "real-span frames must appear even with -impl suffix"
+        );
 
-        // Should NOT show hidden frames
-        assert!(!display.contains("hidden-impl"));
-        assert!(!display.contains("origin"));
+        // Origin-span frames must NOT appear
+        assert!(
+            !display.contains("1:1-1:1"),
+            "origin-span frames must be hidden"
+        );
     }
 
     #[test]

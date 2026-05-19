@@ -204,8 +204,11 @@ tmpl-emit-call: [fn [let result]
 [
 
 # Build a var-reference AST node.
-do-var-node: [fn [let name]
-  [type: "var"  name: name]]
+# Uses p-name (not 'name') to avoid letrec key-shadowing: [name: name] would
+# create a circular dependency where the dict's own 'name' key tries to reference itself.
+# This is the same pattern used in do-params-1 with 'p-name'.
+do-var-node: [fn [let p-name]
+  [type: "var"  name: p-name]]
 
 # Build a single-param list (integer-keyed dict with one entry).
 # Uses p-name (not 'name') to avoid letrec key-shadowing: [name: name] would

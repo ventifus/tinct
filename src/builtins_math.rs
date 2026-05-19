@@ -20,6 +20,7 @@ use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext};
+use crate::eval_call::{invoke_function, CallContext};
 use crate::value::Key;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
@@ -42,6 +43,125 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
         .into());
     }
     Ok(())
+}
+
+/// Try to dispatch a binary operation to a typeclass instance method.
+///
+/// Looks up `(class_name, type_tags)` in the runtime instance registry. If a
+/// matching instance dict is found, extracts `method_name` from that dict and
+/// calls it with `arg_thunks` as positional arguments.
+///
+/// Returns:
+/// - `Ok(Some(thunk))` — dispatch succeeded; `thunk` is the method's result
+/// - `Ok(None)` — no instance registered for these types (caller handles fallthrough)
+/// - `Err(e)` — instance found but method call (or method materialization) failed
+///
+/// **Laziness note**: `arg_thunks` are passed as-is (already-allocated `Rc<Thunk>`)
+/// without re-materializing. The called method decides what to force.
+///
+/// **Non-recursion guarantee**: arithmetic operators call `builtin-add/mul/…` (pure
+/// primitives) which hit the Int/Float fast path and never dispatch. Equatable/Comparable
+/// instances call `builtin-eq/lt` (pure) similarly. No infinite recursion is possible.
+fn try_dispatch_method(
+    class_name: &'static str,
+    method_name: &str,
+    type_tags: Vec<String>,
+    arg_thunks: &[Rc<Thunk>],
+    ctx: &Rc<EvalContext>,
+    call_span: Span,
+) -> EvalResult<Option<Rc<Thunk>>> {
+    // Fast-path: skip registry lookup if the class has no instances at all.
+    // `registered_classes` is an O(1) HashSet updated in sync with `instance_registry`.
+    {
+        let state = ctx.state.borrow();
+        if !state.registered_classes.contains(class_name) {
+            return Ok(None);
+        }
+    }
+
+    // Look up the instance dict for this (class, type_tags) pair.
+    let instance_thunk = {
+        let state = ctx.state.borrow();
+        state
+            .instance_registry
+            .get(&(class_name, type_tags.clone()))
+            .cloned()
+    };
+
+    let instance_thunk = match instance_thunk {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    // Materialize the instance dict.
+    let instance_val = materialize(&instance_thunk, Some(&call_span), ctx)?;
+
+    // The instance dict has method names as string keys.
+    let method_key = Key::String(method_name.to_string());
+    let method_id = match &instance_val {
+        Value::Dict(map) => match map.get(&method_key) {
+            Some(id) => *id,
+            None => {
+                // Instance registered but method not present — should not happen with
+                // well-formed prelude instances. Return NoInstance to surface the gap.
+                return Err(EvalError::no_instance(class_name, type_tags, call_span).into());
+            }
+        },
+        _ => {
+            return Err(EvalError::internal(
+                format!(
+                    "instance registry entry for {} is not a Dict (got {})",
+                    class_name,
+                    instance_val.type_name()
+                ),
+                call_span,
+            )
+            .into());
+        }
+    };
+
+    // Resolve the method ThunkId to Rc<Thunk> via the arena.
+    let method_thunk = ctx.get_thunk(method_id);
+
+    // Materialize the method itself to dispatch (Function or Builtin).
+    let method_val = materialize(&method_thunk, Some(&call_span), ctx)?;
+
+    // Call the method with the original arg thunks.
+    let result_thunk = match &method_val {
+        Value::Function {
+            params,
+            body,
+            env: closure_env,
+            ..
+        } => invoke_function(&CallContext {
+            params,
+            body,
+            closure_env,
+            positional: arg_thunks,
+            named: None,
+            default_env: closure_env,
+            call_span,
+            origin: Some(Rc::from(format!("[{class_name}.{method_name} ...]"))),
+            ctx,
+        })?,
+        Value::Builtin(def) => (def.func)(BuiltinArgs {
+            args: arg_thunks,
+            named: None,
+            call_span,
+            ctx: Rc::clone(ctx),
+        })?,
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                format!("{class_name}.{method_name}"),
+                "Function or Builtin",
+                method_val.type_name(),
+                method_thunk.span,
+            )
+            .into());
+        }
+    };
+
+    Ok(Some(result_thunk))
 }
 
 /// `builtin-add`: Pure Int/Float addition primitive. No typeclass dispatch.
@@ -76,13 +196,18 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             check_int_to_float_precision(*b, args[1].span)?;
             check_float_result(a + (*b as f64), "+", call_span)
         }
-        _ => Err(EvalError::type_mismatch_ctx(
-            "+".to_string(),
-            "Int or Float",
-            &format!("{} and {}", left.type_name(), right.type_name()),
-            call_span,
-        )
-        .into()),
+        _ => {
+            // Non-Int/Float: try dispatching to an Addable instance.
+            // type_tags uses num_determining=2 (a,b)→c functional dependency.
+            let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+            if let Some(result) =
+                try_dispatch_method("Addable", "+", type_tags.clone(), args, &ctx, call_span)?
+            {
+                Ok(result)
+            } else {
+                Err(EvalError::no_instance("Addable", type_tags, call_span).into())
+            }
+        }
     }
 }
 
@@ -116,13 +241,21 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             check_int_to_float_precision(*b, args[1].span)?;
             check_float_result(a - (*b as f64), "-", call_span)
         }
-        _ => Err(EvalError::type_mismatch_ctx(
-            "-".to_string(),
-            "Int or Float",
-            &format!("{} and {}", left.type_name(), right.type_name()),
-            call_span,
-        )
-        .into()),
+        _ => {
+            let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+            if let Some(result) = try_dispatch_method(
+                "Subtractable",
+                "-",
+                type_tags.clone(),
+                args,
+                &ctx,
+                call_span,
+            )? {
+                Ok(result)
+            } else {
+                Err(EvalError::no_instance("Subtractable", type_tags, call_span).into())
+            }
+        }
     }
 }
 
@@ -156,13 +289,21 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             check_int_to_float_precision(*b, args[1].span)?;
             check_float_result(a * (*b as f64), "*", call_span)
         }
-        _ => Err(EvalError::type_mismatch_ctx(
-            "*".to_string(),
-            "Int or Float",
-            &format!("{} and {}", left.type_name(), right.type_name()),
-            call_span,
-        )
-        .into()),
+        _ => {
+            let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+            if let Some(result) = try_dispatch_method(
+                "Multipliable",
+                "*",
+                type_tags.clone(),
+                args,
+                &ctx,
+                call_span,
+            )? {
+                Ok(result)
+            } else {
+                Err(EvalError::no_instance("Multipliable", type_tags, call_span).into())
+            }
+        }
     }
 }
 
@@ -201,13 +342,16 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             check_int_to_float_precision(*b, args[1].span)?;
             check_float_result(a / (*b as f64), "/", call_span)
         }
-        _ => Err(EvalError::type_mismatch_ctx(
-            "/".to_string(),
-            "Int or Float",
-            &format!("{} and {}", left.type_name(), right.type_name()),
-            call_span,
-        )
-        .into()),
+        _ => {
+            let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
+            if let Some(result) =
+                try_dispatch_method("Divisible", "/", type_tags.clone(), args, &ctx, call_span)?
+            {
+                Ok(result)
+            } else {
+                Err(EvalError::no_instance("Divisible", type_tags, call_span).into())
+            }
+        }
     }
 }
 
@@ -228,12 +372,141 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // Pure primitive: no typeclass dispatch. Equatable instances in stdlib/prelude.llt
-    // are type-checker annotations only (same pattern as Addable/builtin-add for arithmetic).
-    // Dispatch was removed because EquatableInt.eq calls [builtin-eq a b] which aliases
-    // back to this function, causing infinite recursion.
+    // Fast paths for built-in types are handled directly. Non-Int/Float/String/Bool/Variant/Dict
+    // types fall through to Equatable instance dispatch.
+    // NOTE: Int/Float/String/Bool fast paths MUST come before dispatch. This prevents
+    // infinite recursion: EquatableInt.eq calls [builtin-eq a b] → hits (Int,Int) fast path
+    // → returns immediately without dispatch. Safe.
     let left = materialize(&args[0], Some(&call_span), &ctx)?;
     let right = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    // Helper to compute structural equality (used for Dict/Variant arms below).
+    // Inline closure captures ctx and call_span from the outer scope.
+    fn values_eq_impl(
+        left: &Value,
+        right: &Value,
+        ctx: &Rc<EvalContext>,
+        call_span: Span,
+        visited: &mut std::collections::HashSet<(usize, usize)>,
+    ) -> EvalResult<bool> {
+        use crate::builtins::require_dict;
+
+        match (left, right) {
+            (Value::Int(a), Value::Int(b)) => Ok(a == b),
+            (Value::Float(a), Value::Float(b)) => Ok(a == b),
+            (
+                Value::String {
+                    source: source_a,
+                    start: start_a,
+                    end: end_a,
+                },
+                Value::String {
+                    source: source_b,
+                    start: start_b,
+                    end: end_b,
+                },
+            ) => Ok(&source_a[*start_a..*end_a] == &source_b[*start_b..*end_b]),
+            (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
+            // Cross-type: Int/Float promotion
+            (Value::Int(a), Value::Float(b)) => {
+                check_int_to_float_precision(*a, call_span)?;
+                Ok((*a as f64) == *b)
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                check_int_to_float_precision(*b, call_span)?;
+                Ok(*a == (*b as f64))
+            }
+            // Variant: equal if tags match and payloads match (recursive comparison)
+            (
+                Value::Variant {
+                    tag: tag_a,
+                    payload: payload_a,
+                },
+                Value::Variant {
+                    tag: tag_b,
+                    payload: payload_b,
+                },
+            ) => {
+                if tag_a != tag_b {
+                    return Ok(false);
+                }
+                match (payload_a, payload_b) {
+                    (None, None) => Ok(true),
+                    (Some(p1_id), Some(p2_id)) => {
+                        let p1_thunk = ctx.get_thunk(*p1_id);
+                        let p2_thunk = ctx.get_thunk(*p2_id);
+                        let p1_val = materialize(&p1_thunk, Some(&call_span), ctx)?;
+                        let p2_val = materialize(&p2_thunk, Some(&call_span), ctx)?;
+                        // Recurse with visited set threaded through
+                        values_eq_impl(&p1_val, &p2_val, ctx, call_span, visited)
+                    }
+                    _ => Ok(false),
+                }
+            }
+            // Dict: structural equality with cycle detection
+            (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
+                // Get the dicts (flattening Overlay if necessary)
+                let left_map = require_dict("=", left.clone(), call_span, ctx, call_span)?;
+                let right_map = require_dict("=", right.clone(), call_span, ctx, call_span)?;
+
+                // Check pointer identity cycle detection
+                let left_ptr = left as *const Value as usize;
+                let right_ptr = right as *const Value as usize;
+                let pair = (left_ptr, right_ptr);
+                if visited.contains(&pair) {
+                    // Already visiting this pair - treat as equal (structural coinduction)
+                    return Ok(true);
+                }
+                visited.insert(pair);
+
+                // Compare keys (order-insensitive)
+                if left_map.len() != right_map.len() {
+                    visited.remove(&pair);
+                    return Ok(false);
+                }
+
+                // Extract and sort keys for canonical comparison
+                let mut left_keys: Vec<_> = left_map.keys().collect();
+                let mut right_keys: Vec<_> = right_map.keys().collect();
+                let key_cmp = |a: &&Key, b: &&Key| match (a, b) {
+                    (Key::Int(x), Key::Int(y)) => x.cmp(y),
+                    (Key::String(x), Key::String(y)) => x.cmp(y),
+                    (Key::Int(_), Key::String(_)) => std::cmp::Ordering::Less,
+                    (Key::String(_), Key::Int(_)) => std::cmp::Ordering::Greater,
+                };
+                left_keys.sort_by(key_cmp);
+                right_keys.sort_by(key_cmp);
+
+                if left_keys != right_keys {
+                    visited.remove(&pair);
+                    return Ok(false);
+                }
+
+                // Compare values for each key - RECURSIVELY with SAME visited set
+                for key in left_keys {
+                    let left_val_id = left_map.get(key).unwrap();
+                    let right_val_id = right_map.get(key).unwrap();
+
+                    let left_thunk = ctx.get_thunk(*left_val_id);
+                    let right_thunk = ctx.get_thunk(*right_val_id);
+
+                    let left_val = materialize(&left_thunk, Some(&call_span), ctx)?;
+                    let right_val = materialize(&right_thunk, Some(&call_span), ctx)?;
+
+                    // Recurse with visited set threaded through
+                    if !values_eq_impl(&left_val, &right_val, ctx, call_span, visited)? {
+                        visited.remove(&pair);
+                        return Ok(false);
+                    }
+                }
+
+                visited.remove(&pair);
+                Ok(true)
+            }
+            // Function, Builtin, or cross-type incompatibility
+            _ => Ok(false),
+        }
+    }
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a == b,
@@ -302,139 +575,35 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
         // Dict: structural equality (order-insensitive key comparison, recursive value comparison)
         (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
-            // Helper to compare two values with cycle detection threaded through recursion
-            fn values_eq_impl(
-                left: &Value,
-                right: &Value,
-                ctx: &Rc<EvalContext>,
-                call_span: Span,
-                visited: &mut std::collections::HashSet<(usize, usize)>,
-            ) -> EvalResult<bool> {
-                use crate::builtins::require_dict;
-
-                match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Ok(a == b),
-                    (Value::Float(a), Value::Float(b)) => Ok(a == b),
-                    (
-                        Value::String {
-                            source: source_a,
-                            start: start_a,
-                            end: end_a,
-                        },
-                        Value::String {
-                            source: source_b,
-                            start: start_b,
-                            end: end_b,
-                        },
-                    ) => Ok(&source_a[*start_a..*end_a] == &source_b[*start_b..*end_b]),
-                    (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
-                    // Cross-type: Int/Float promotion
-                    (Value::Int(a), Value::Float(b)) => {
-                        check_int_to_float_precision(*a, call_span)?;
-                        Ok((*a as f64) == *b)
-                    }
-                    (Value::Float(a), Value::Int(b)) => {
-                        check_int_to_float_precision(*b, call_span)?;
-                        Ok(*a == (*b as f64))
-                    }
-                    // Variant: equal if tags match and payloads match (recursive comparison)
-                    (
-                        Value::Variant {
-                            tag: tag_a,
-                            payload: payload_a,
-                        },
-                        Value::Variant {
-                            tag: tag_b,
-                            payload: payload_b,
-                        },
-                    ) => {
-                        if tag_a != tag_b {
-                            return Ok(false);
-                        }
-                        match (payload_a, payload_b) {
-                            (None, None) => Ok(true),
-                            (Some(p1_id), Some(p2_id)) => {
-                                let p1_thunk = ctx.get_thunk(*p1_id);
-                                let p2_thunk = ctx.get_thunk(*p2_id);
-                                let p1_val = materialize(&p1_thunk, Some(&call_span), ctx)?;
-                                let p2_val = materialize(&p2_thunk, Some(&call_span), ctx)?;
-                                // Recurse with visited set threaded through
-                                values_eq_impl(&p1_val, &p2_val, ctx, call_span, visited)
-                            }
-                            _ => Ok(false),
-                        }
-                    }
-                    // Dict: structural equality with cycle detection
-                    (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
-                        // Get the dicts (flattening Overlay if necessary)
-                        let left_map = require_dict("=", left.clone(), call_span, ctx, call_span)?;
-                        let right_map =
-                            require_dict("=", right.clone(), call_span, ctx, call_span)?;
-
-                        // Check pointer identity cycle detection
-                        let left_ptr = left as *const Value as usize;
-                        let right_ptr = right as *const Value as usize;
-                        let pair = (left_ptr, right_ptr);
-                        if visited.contains(&pair) {
-                            // Already visiting this pair - treat as equal (structural coinduction)
-                            return Ok(true);
-                        }
-                        visited.insert(pair);
-
-                        // Compare keys (order-insensitive)
-                        if left_map.len() != right_map.len() {
-                            visited.remove(&pair);
-                            return Ok(false);
-                        }
-
-                        // Extract and sort keys for canonical comparison
-                        let mut left_keys: Vec<_> = left_map.keys().collect();
-                        let mut right_keys: Vec<_> = right_map.keys().collect();
-                        let key_cmp = |a: &&Key, b: &&Key| match (a, b) {
-                            (Key::Int(x), Key::Int(y)) => x.cmp(y),
-                            (Key::String(x), Key::String(y)) => x.cmp(y),
-                            (Key::Int(_), Key::String(_)) => std::cmp::Ordering::Less,
-                            (Key::String(_), Key::Int(_)) => std::cmp::Ordering::Greater,
-                        };
-                        left_keys.sort_by(key_cmp);
-                        right_keys.sort_by(key_cmp);
-
-                        if left_keys != right_keys {
-                            visited.remove(&pair);
-                            return Ok(false);
-                        }
-
-                        // Compare values for each key - RECURSIVELY with SAME visited set
-                        for key in left_keys {
-                            let left_val_id = left_map.get(key).unwrap();
-                            let right_val_id = right_map.get(key).unwrap();
-
-                            let left_thunk = ctx.get_thunk(*left_val_id);
-                            let right_thunk = ctx.get_thunk(*right_val_id);
-
-                            let left_val = materialize(&left_thunk, Some(&call_span), ctx)?;
-                            let right_val = materialize(&right_thunk, Some(&call_span), ctx)?;
-
-                            // Recurse with visited set threaded through - this is the key fix
-                            if !values_eq_impl(&left_val, &right_val, ctx, call_span, visited)? {
-                                visited.remove(&pair);
-                                return Ok(false);
-                            }
-                        }
-
-                        visited.remove(&pair);
-                        Ok(true)
-                    }
-                    // Function, Builtin, or cross-type incompatibility
-                    _ => Ok(false),
-                }
-            }
-
             let mut visited = std::collections::HashSet::new();
             values_eq_impl(&left, &right, &ctx, call_span, &mut visited)?
         }
-        // Function, Builtin are never equal
-        _ => false,
+        // For types not handled above (e.g. user-defined opaque wrappers), try dispatching
+        // to an Equatable instance. Equatable uses num_determining=1 (single type param).
+        // If no instance is registered, fall back to `false` (preserving prior behavior).
+        _ => {
+            let type_tags = vec![left.type_name().to_string()];
+            match try_dispatch_method("Equatable", "eq", type_tags, args, &ctx, call_span)? {
+                Some(result_thunk) => {
+                    // The instance method must return a Bool.
+                    let val = materialize(&result_thunk, Some(&call_span), &ctx)?;
+                    match val {
+                        Value::Bool(b) => b,
+                        _ => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "Equatable.eq".to_string(),
+                                "Bool",
+                                val.type_name(),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    }
+                }
+                // No Equatable instance: heterogeneous/unknown types are not equal.
+                None => false,
+            }
+        }
     };
     ok_val(Value::Bool(result), call_span)
 }
@@ -456,10 +625,9 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // Pure primitive: no typeclass dispatch. Comparable instances in stdlib/prelude.llt
-    // are type-checker annotations only (same pattern as Addable/builtin-add for arithmetic).
-    // Dispatch was removed because ComparableInt.lt calls [builtin-lt a b] which aliases
-    // back to this function, causing infinite recursion.
+    // Int/Float/String/Bool fast paths are handled directly. Other types fall through
+    // to Comparable instance dispatch. ComparableInt.lt calls [builtin-lt a b] which hits
+    // the (Int,Int) fast path — no infinite recursion.
     let left = materialize(&args[0], Some(&call_span), &ctx)?;
     let right = materialize(&args[1], Some(&call_span), &ctx)?;
 
@@ -490,14 +658,37 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             check_int_to_float_precision(*b, args[1].span)?;
             *a < (*b as f64)
         }
+        // For types not handled above, try dispatching to a Comparable instance.
+        // Comparable uses num_determining=1 (single type param: the left operand's type).
+        // If no instance is registered, fall back to a type error (same as before).
         _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                "<".to_string(),
-                "Int, Float, String, or Bool (same or compatible types)",
-                &format!("{} and {}", left.type_name(), right.type_name()),
-                args[0].span,
-            )
-            .into());
+            let type_tags = vec![left.type_name().to_string()];
+            match try_dispatch_method("Comparable", "lt", type_tags, args, &ctx, call_span)? {
+                Some(result_thunk) => {
+                    let val = materialize(&result_thunk, Some(&call_span), &ctx)?;
+                    match val {
+                        Value::Bool(b) => b,
+                        _ => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "Comparable.lt".to_string(),
+                                "Bool",
+                                val.type_name(),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    }
+                }
+                None => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "<".to_string(),
+                        "Int, Float, String, or Bool (same or compatible types)",
+                        &format!("{} and {}", left.type_name(), right.type_name()),
+                        args[0].span,
+                    )
+                    .into());
+                }
+            }
         }
     };
     ok_val(Value::Bool(result), call_span)
@@ -1093,7 +1284,9 @@ mod tests {
         assert_eq!(t.try_get_materialized(), Some(Value::Int(42)));
     }
 
-    /// Non-numeric types (no instance registered) → NoInstance error.
+    /// Non-numeric types with no Addable instance → NoInstance error.
+    /// With operator-level dispatch, String+String falls through to try_dispatch_method
+    /// which finds no Addable instance (no prelude loaded in test_ctx) → NoInstance.
     #[test]
     fn test_add_non_numeric_no_instance_error() {
         use crate::value::string_val;
@@ -1103,26 +1296,29 @@ mod tests {
             call_span: call_span(),
             ctx: test_ctx(),
         });
-        // builtin-add is a pure primitive — non-Int/Float gets a type mismatch
-        assert!(result.is_err(), "expected type error for String + String");
+        // With dispatch restored: String+String → no Addable instance → NoInstance error.
+        assert!(
+            result.is_err(),
+            "expected NoInstance error for String + String"
+        );
         let err = result.unwrap_err();
         assert!(
-            matches!(&err.kind, ErrorKind::TypeMismatch { .. }),
-            "expected TypeMismatch, got: {:?}",
+            matches!(&err.kind, ErrorKind::NoInstance { .. }),
+            "expected NoInstance, got: {:?}",
             err.kind
         );
     }
 
-    // --- Equatable/Comparable/Showable: no infinite recursion with prelude loaded ---
+    // --- Equatable/Comparable: no infinite recursion with prelude loaded ---
     //
-    // These tests verify that = and < are pure primitives — they do NOT dispatch
-    // through Equatable/Comparable instances in stdlib/prelude.llt, which would cause
-    // infinite recursion (EquatableInt.eq calls [builtin-eq a b] which is = which
-    // would dispatch again). After the fix, = and < behave like builtin-add: pure
-    // Rust primitives, type-checker annotations only.
+    // These tests verify that = and < do NOT infinitely recurse when Equatable/Comparable
+    // instances are registered in stdlib/prelude.llt. The fast paths for Int/Float/String/Bool
+    // handle those types BEFORE dispatch is attempted. Prelude instances for Int call
+    // [builtin-eq a b] / [builtin-lt a b] which are aliases for = / < — but since the
+    // (Int,Int) fast path runs first, they never re-dispatch. No infinite recursion.
 
     /// [= 1 1] returns true with prelude loaded (Equatable instances registered).
-    /// This would infinite-loop before the dispatch-removal fix.
+    /// Fast path handles (Int,Int) before any dispatch attempt.
     #[test]
     fn test_eq_int_no_infinite_recursion_with_prelude() {
         let result = crate::eval_source_with_config("[= 1 1]", true);
@@ -1135,7 +1331,7 @@ mod tests {
     }
 
     /// [< 1 2] returns true with prelude loaded (Comparable instances registered).
-    /// This would infinite-loop before the dispatch-removal fix.
+    /// Fast path handles (Int,Int) before any dispatch attempt — no infinite recursion.
     #[test]
     fn test_lt_int_no_infinite_recursion_with_prelude() {
         let result = crate::eval_source_with_config("[< 1 2]", true);
@@ -1148,7 +1344,7 @@ mod tests {
     }
 
     /// [sort [3 1 2]] works with prelude loaded (sort uses < internally).
-    /// This would infinite-loop before the dispatch-removal fix.
+    /// Int fast path prevents dispatch loops.
     #[test]
     fn test_sort_no_infinite_recursion_with_prelude() {
         let result = crate::eval_source_with_config("[sort [3 1 2]]", true);

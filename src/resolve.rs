@@ -220,8 +220,32 @@ impl Resolver {
                 unreachable!("Expr::Pipe should have been eliminated by desugar before resolve");
             }
             Expr::Sequential(exprs) => {
-                for seq_expr in exprs {
+                // Model eval.rs sequential evaluation: each intermediate dict expression's
+                // string-keyed entries become scope bindings for subsequent expressions.
+                // This mirrors eval's Expr::Sequential handler (eval.rs:821-888) where
+                // each non-last dict creates a child_env with its string keys injected.
+                //
+                // Without this injection, `args` in:
+                //   [n: [length args]]   ← dict A: pushes n into child_env at slot 0
+                //   [... args ...]        ← at runtime: child_env has n@0, parent has args@0
+                // would resolve to (0,0) = n, not the intended (1,0) = args.
+                let mut injected_scopes: usize = 0;
+                for (i, seq_expr) in exprs.iter().enumerate() {
+                    let is_last = i == exprs.len() - 1;
                     self.walk_expr(seq_expr);
+                    // After each intermediate (non-last) dict expression, inject its static
+                    // keys as a new scope — exactly as walk_document does for documents.
+                    if !is_last {
+                        let keys = Self::dict_static_keys(seq_expr);
+                        if !keys.is_empty() {
+                            self.enter_scope(&keys);
+                            injected_scopes += 1;
+                        }
+                    }
+                }
+                // Pop injected scopes in reverse order.
+                for _ in 0..injected_scopes {
+                    self.exit_scope();
                 }
             }
             Expr::Call {

@@ -1733,8 +1733,12 @@ fn expand_macro_call(
         }
     };
 
-    // Materialize the result to get the AST dict
+    // Materialize the result to get the AST dict.
+    // Preserve the full inner error stack so macro expansion bugs in do-fold,
+    // tmpl helpers, etc. are diagnosable without losing the macro wrapper context.
     let result_val = eval::materialize(&result_thunk, Some(&call_span), ctx).map_err(|e| {
+        // Build E080 wrapper that names the macro and error kind, then copy all
+        // stack frames from the inner error so the full call stack is preserved.
         let mut err = EvalError::user_error(
             format!(
                 "macro '{}' expansion result failed to evaluate: {}",
@@ -1742,6 +1746,10 @@ fn expand_macro_call(
             ),
             call_span,
         );
+        // Copy inner stack frames into the wrapper so the call path is visible.
+        for frame in &e.stack {
+            err.push_frame(frame.label.clone(), frame.span);
+        }
         err.push_frame(format!("in expansion of `{}`", macro_name), call_span);
         err
     })?;
