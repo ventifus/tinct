@@ -2475,4 +2475,176 @@ mod tests {
             err.kind.to_string()
         );
     }
+
+    // ── GuardedValidate lifecycle tests ────────────────────────────────────────
+    //
+    // These three tests verify the three branches in Cont::GuardedValidate:
+    //   Branch 1 (success): inner value matches expected type → thunk Materializes
+    //   Branch 2 (failure + default): inner value fails type check AND default
+    //             expression is present → default evaluated in caller's env
+    //   Branch 3 (failure without default): inner value fails type check, no default
+    //             → error propagates and thunk caches the failure (Failed state)
+    //
+    // Each test drives the full CEK machine through `run()` so the entire
+    // force_step → push Cont::GuardedValidate → apply_cont path executes.
+
+    #[test]
+    fn test_guarded_validate_success_materializes_thunk() {
+        // Branch 1: inner value matches expected type.
+        // A Guarded thunk wrapping an Int value with an Int type expectation
+        // should succeed and leave the thunk in Materialized state.
+        use crate::eval::materialize;
+        use crate::types::Type;
+
+        let span = test_span(1, 1, 1, 10);
+        let ctx = test_ctx();
+
+        // Inner thunk: an Int value that satisfies the Int guard.
+        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+
+        let guarded = Rc::new(Thunk::new_guarded(
+            Rc::clone(&inner),
+            Type::Int,
+            vec![],
+            span,
+        ));
+
+        let result = materialize(&guarded, None, &ctx);
+        assert!(
+            result.is_ok(),
+            "Int value should pass Int guard, got: {:?}",
+            result.unwrap_err()
+        );
+        assert_eq!(result.unwrap(), Value::Int(42));
+
+        // After success, thunk must be in Materialized state (memoized).
+        let state = guarded.state();
+        assert!(
+            matches!(&*state, ThunkState::Materialized(Value::Int(42))),
+            "after successful validation, thunk should be Materialized(Int(42)), got {:?}",
+            &*state
+        );
+    }
+
+    #[test]
+    fn test_guarded_validate_failure_with_default_evaluates_default_in_caller_env() {
+        // Branch 2: inner value fails type check but a default expression is present.
+        // The default expression should be evaluated in the caller's environment,
+        // and the thunk should memoize the default result.
+        use crate::eval::materialize;
+        use crate::types::Type;
+
+        let span = test_span(1, 1, 1, 10);
+        let ctx = test_ctx();
+        let env = empty_env();
+
+        // Bind a variable in caller's env so the default expr can reference it.
+        let fallback_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
+        env.borrow_mut()
+            .insert("fallback_val".into(), fallback_thunk);
+
+        // Inner thunk: a String value — fails the Int guard.
+        let inner = Rc::new(Thunk::new_materialized(
+            crate::value::string_val("not an int"),
+            span,
+        ));
+
+        // Default expression: a variable reference to `fallback_val` in caller's env.
+        let default_expr = Rc::new(sp(Expr::VarRef {
+            name: "fallback_val".into(),
+            escaped: true,
+            resolved: std::cell::RefCell::new(None),
+        }));
+
+        let guarded = Rc::new(Thunk::new_guarded_full(
+            Rc::clone(&inner),
+            Type::Int,
+            vec![],
+            span,
+            None,
+            Some((default_expr, Rc::clone(&env))),
+        ));
+
+        // Should succeed, returning the default value (99) evaluated in caller's env.
+        let result = materialize(&guarded, None, &ctx);
+        assert!(
+            result.is_ok(),
+            "validation failure with default should succeed, got: {:?}",
+            result.unwrap_err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            Value::Int(99),
+            "default expression should yield 99 (from caller's env)"
+        );
+
+        // Thunk should be Materialized with the default value, not Failed.
+        let state = guarded.state();
+        assert!(
+            matches!(&*state, ThunkState::Materialized(Value::Int(99))),
+            "after default fallback, thunk should be Materialized(Int(99)), got {:?}",
+            &*state
+        );
+    }
+
+    #[test]
+    fn test_guarded_validate_failure_without_default_propagates_error() {
+        // Branch 3: inner value fails type check and no default is present.
+        // The error should propagate to the caller and the thunk should cache the
+        // failure (transition to Failed state) so subsequent access returns the
+        // cached error without re-running the guard.
+        use crate::eval::materialize;
+        use crate::types::Type;
+
+        let span = test_span(1, 1, 1, 10);
+        let ctx = test_ctx();
+
+        // Inner thunk: a Bool value — fails the Int guard.
+        let inner = Rc::new(Thunk::new_materialized(Value::Bool(true), span));
+
+        let guarded = Rc::new(Thunk::new_guarded(
+            Rc::clone(&inner),
+            Type::Int,
+            vec![],
+            span,
+        ));
+
+        // First materialization: guard fires, Bool ≠ Int → type assertion failure.
+        let result1 = materialize(&guarded, None, &ctx);
+        assert!(
+            result1.is_err(),
+            "Bool value should fail Int guard (no default), but got success"
+        );
+        let err1 = result1.unwrap_err();
+        assert!(
+            err1.kind.to_string().contains("type assertion failed"),
+            "error should report 'type assertion failed', got: {}",
+            err1.kind.to_string()
+        );
+
+        // After failure, thunk must be in Failed state (cacheable error).
+        {
+            let state = guarded.state();
+            assert!(
+                matches!(&*state, ThunkState::Failed(_)),
+                "after validation failure (no default) thunk should be Failed, got {:?}",
+                &*state
+            );
+        }
+
+        // Second materialization: returns cached error, does not re-run guard.
+        let result2 = materialize(&guarded, None, &ctx);
+        assert!(
+            result2.is_err(),
+            "second materialization should also fail (cached error)"
+        );
+        assert!(
+            result2
+                .unwrap_err()
+                .kind
+                .to_string()
+                .contains("type assertion failed"),
+            "cached error should still report 'type assertion failed'"
+        );
+    }
 }

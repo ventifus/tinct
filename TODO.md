@@ -157,13 +157,13 @@ correct, consistent architecture.
 
 **Spec chapters:** `doc/12-tooling.md §Lint Mode`
 
-- [ ] Add `Subcommand::Lint { file: String }` to CLI; pipeline: parse → desugar → macro-expand → typecheck; stop before eval; all type warnings AND INFO-level diagnostics are surfaced (lint mode shows everything the type checker finds, including Info-tier — explicitly-annotated `@Unknown`, over-broad annotations, deprecation notices); exit 1 on any Warning or Error, exit 0 only when all diagnostics are Info or below; report with `format_type_error`/`format_parse_error` (`src/main.rs`)
-- [ ] Lint respects capability flags: `--cap-fs`, `--cap-net` gate `include` resolution just as `tinct run` does; `--no-fs` blocks all includes; add `--no-fs` as the default for lint (no file execution, so no capability grants needed) (`src/main.rs`)
-- [ ] Add `just lint-stdlib` justfile target: run `tinct lint --no-fs` on every `stdlib/**/*.llt` file; exit 1 immediately if any file has errors; uses release binary for speed (`justfile`)
-- [ ] Wire `just lint-stdlib` into `just test` after `just lint` (Rust linter) and before `just fmt-check` (`justfile`)
-- [ ] Add `just lint-file FILE` justfile target: lint a single file; mirrors `just run-file FILE` pattern (`justfile`)
-- [ ] Document in `doc/12-tooling.md §Lint Mode`: flags, exit codes, what is and is not checked (`doc/12-tooling.md`)
-- [ ] Tests: lint on a clean stdlib file exits 0; lint on a file with a type error exits 1; lint does not execute side-effects (no `emit` output) (`tests/corpus/eval/`)
+- [x] Add `Subcommand::Lint { file: String }` to CLI; pipeline: parse → desugar → macro-expand → typecheck; stop before eval; all type warnings AND INFO-level diagnostics are surfaced (lint mode shows everything the type checker finds, including Info-tier — explicitly-annotated `@Unknown`, over-broad annotations, deprecation notices); exit 1 on any Warning or Error, exit 0 only when all diagnostics are Info or below; report with `format_type_error`/`format_parse_error` (`src/main.rs`)
+- [x] Lint respects capability flags: `--cap-fs`, `--cap-net` gate `include` resolution just as `tinct run` does; `--no-fs` blocks all includes; add `--no-fs` as the default for lint (no file execution, so no capability grants needed) (`src/main.rs`)
+- [x] Add `just lint-stdlib` justfile target: run `tinct lint --no-fs` on every `stdlib/**/*.llt` file; exit 1 immediately if any file has errors; uses release binary for speed (`justfile`)
+- [x] Wire `just lint-stdlib` into `just test` after `just lint` (Rust linter) and before `just fmt-check` (`justfile`)
+- [x] Add `just lint-file FILE` justfile target: lint a single file; mirrors `just run-file FILE` pattern (`justfile`)
+- [x] Document in `doc/12-tooling.md §Lint Mode`: flags, exit codes, what is and is not checked (`doc/12-tooling.md`)
+- [x] Tests: lint on a clean stdlib file exits 0; lint on a file with a type error exits 1; lint does not execute side-effects (no `emit` output) (`src/lib.rs`)
 
 ### dircap-drop-bare-compat: Remove backward-compat treatment of bare `@DirCap` in caps declarations
 
@@ -299,9 +299,9 @@ The `--no-fs` flag is documented as disabling all filesystem access, but the ske
 - `src/main.rs:1196`: `%libdir` injection is gated on `!no_libdir` only — user code can `[write %libdir "injected.llt" "evil"]` corrupting the stdlib.
 - `src/main.rs:1224`: The `--cap-fs` injection loop has NO `no_fs` guard at all — operator-specified caps are injected unconditionally.
 
-- [ ] `src/main.rs:1123` — change `if !no_pwd {` to `if !no_pwd && !no_fs {` for `%pwd` injection (`src/main.rs:1123`)
-- [ ] `src/main.rs:1196` — change `if !no_libdir {` and the matching libdir path resolution to `if !no_libdir && !no_fs {` for `%libdir` injection (`src/main.rs:1196`)
-- [ ] `src/main.rs:1224` — wrap the entire `--cap-fs` injection block in `if !no_fs { ... }` (`src/main.rs:1224-1337`)
+- [x] `src/main.rs:1123` — change `if !no_pwd {` to `if !no_pwd && !no_fs {` for `%pwd` injection (`src/main.rs:1123`)
+- [x] `src/main.rs:1196` — change `if !no_libdir {` and the matching libdir path resolution to `if !no_libdir && !no_fs {` for `%libdir` injection (`src/main.rs:1196`)
+- [x] `src/main.rs:1224` — wrap the entire `--cap-fs` injection block in `if !no_fs { ... }` (`src/main.rs:1224-1337`)
 - [ ] Add corpus/CLI tests: `tinct run --no-fs` → `%pwd` is undefined; `tinct run --no-fs --cap-fs d=.` → `%d` is undefined; confirm `$include` is also blocked (`tests/corpus/`, `tests/cli_tests.rs`)
 
 **Fix 5 — `expand.rs:363` opens CWD ambiently on every user eval pipeline**
@@ -448,21 +448,21 @@ Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::
 
 When any builtin receives a `Value::Overlay`, `flatten_overlay()` is called synchronously and recursively materializes the entire Overlay tree (all L/R thunks). This creates a space leak for accumulator patterns using repeated `$merge`: a dict accumulated over N steps via overlay holds all N intermediate dicts alive until any builtin access forces the flatten. This is the primary memory concern for long-running pipeline pipelines.
 
-- [ ] Track flatten_overlay as a known space leak in `doc/08-evaluation.md §Overlay Eagerness` — document that Overlay flattening is eager and recommend `collect` for accumulation patterns to avoid the leak (`doc/08-evaluation.md`)
-- [ ] Consider a lazy flatten that only materializes one level when keys/values are accessed (future sprint `overlay-lazy-flatten`) (`src/builtins.rs:190-264`, `src/value.rs`)
+- [x] Track flatten_overlay as a known space leak in `doc/08-evaluation.md §Overlay Eagerness` — document that Overlay flattening is eager and recommend `collect` for accumulation patterns to avoid the leak (`doc/08-evaluation.md`)
+- [x] Consider a lazy flatten that only materializes one level when keys/values are accessed (future sprint `overlay-lazy-flatten`) (`src/builtins.rs:190-264`, `src/value.rs`)
 
 ### health21-test-gaps: Missing corpus tests for MAX_PARSE_DEPTH and GuardedValidate lifecycle
 
 Two test coverage gaps found in health review #21:
 
-- [ ] Add corpus test for MAX_PARSE_DEPTH: a deeply-nested expression that exceeds the parser's depth limit (256) should produce a parse error, not a panic (`tests/corpus/invalid/syntax_errors/max_parse_depth_exceeded.llt-eval`)
-- [ ] Add unit tests for GuardedValidate thunk state transitions (branches 2+3): verify that validation failure + default fallback correctly transitions thunk state, that InProgress → Guarded restoration works, and that `validate_and_wrap_record` with a `default:` annotation evaluates the default in the caller's env (`src/eval_materialize.rs`, `src/typecheck.rs`)
+- [x] Add corpus test for MAX_PARSE_DEPTH: a deeply-nested expression that exceeds the parser's depth limit (256) should produce a parse error, not a panic (`tests/corpus/invalid/syntax_errors/max_parse_depth_exceeded.llt-eval`)
+- [x] Add unit tests for GuardedValidate thunk state transitions (branches 2+3): verify that validation failure + default fallback correctly transitions thunk state, that InProgress → Guarded restoration works, and that `validate_and_wrap_record` with a `default:` annotation evaluates the default in the caller's env (`src/eval_materialize.rs`, `src/typecheck.rs`)
 
 ### health21-span-data-site: validate_and_wrap_record needs data_span for nested record errors
 
 `validate_and_wrap_record` in `eval.rs`/`eval_materialize.rs` accepts only the constraint-site span. When nested record validation fails, errors point to the annotation site rather than the actual malformed data location. This makes type assertion errors on deeply-nested records confusing.
 
-- [ ] Add `data_span: Span` parameter to `validate_and_wrap_record` and thread it through GuardedValidate continuations so type mismatch errors can report both where the constraint was declared AND where the data was defined (`src/eval.rs`, `src/eval_materialize.rs`)
+- [x] Add `data_span: Span` parameter to `validate_and_wrap_record` and thread it through GuardedValidate continuations so type mismatch errors can report both where the constraint was declared AND where the data was defined (`src/eval.rs`, `src/eval_materialize.rs`)
 
 ### health21-errorkind-constructors: New ErrorKind variants lack pub fn constructors
 

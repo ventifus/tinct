@@ -7,7 +7,7 @@
 # Usage (from project root via justfile):
 #   just docgen
 
---- caps: [%docdir: @[DirCap [Writable]]]
+--- caps: [%docdir: @[[all DirCap Writable]]]
 
 [
   strings: [include %libdir "strings.llt"]
