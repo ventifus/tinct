@@ -30,6 +30,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Runtime Reflection — Annotations as Value Metadata](completed/runtime-reflection.md) | **Accepted 2026-05-14.** `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime via `FnAnnotation`; `ast-of` Rust primitive returns the AST dict for any value; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; enables REPL `:describe`, LSP doc hover, docgen, and metaprogramming |
 | [Decomposing `include` into `load`, `expand`, and `eval`](include-decomposition.md) | **Accepted 2026-05-18.** Eight Rust primitives (`load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`); `include`, `eval-file`, `eval-document-pipeline`, `cli-pipeline` self-hosted in prelude; content-addressed cache keyed by `(dev, ino) + source`; `%include-dir` injected for sub-includes; `builtin_include` deleted |
+| [Runtime v2 — AST Redesign, Native Value Types, Async Parallel Evaluation](runtime-v2.md) | **Draft 2026-05-19.** Supersedes `ast-value-types.md` and `async-eval.md`. Three-part coherent rewrite: (1) `SurfaceExpr`/`CoreExpr` split, `NodeId` side tables, `SurfaceDecl` separation; (2) `Value::AstFile`/`AstDoc`/`AstExpr` with typed match dispatch, `AstExpr` nominal type in prelude; (3) `async fn` eval, `Rc`→`Arc`, `OnceLock` thunk, parallel dict eval, `task`/`await`/`channel`/`select`, serve/connect layers |
 
 ## Internal Integrity
 

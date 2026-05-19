@@ -33,49 +33,25 @@ pub struct Row {
 }
 
 /// Kind for higher-kinded types (Jones 1993)
-/// Kinds classify types: * for proper types, (* -> *) for type constructors
+/// Kinds classify types: * for proper types, Operator for type constructors (* → *)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
     /// * — kind of proper types (Int, Str, [name: Str], etc.)
     Type,
-    /// k1 -> k2 — kind of type constructors (Seq: * -> *, Mappable: (* -> *) -> Constraint)
-    Arrow(Box<Kind>, Box<Kind>),
-    /// Operator — kind of type constructors (* → *), represents `Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Type))`
-    /// Used for type constructor variables like `m` in `Monad m`
+    /// Operator — kind of type constructors (* → *).
+    /// Used for type constructor variables like `m` in `Monad m`.
     Operator,
-    /// Label — kind of type-level string labels used for record field names
-    /// Used for label TypeVars in `HasField` constraints (e.g., `key@"k"`)
+    /// Label — kind of type-level string labels used for record field names.
+    /// Used for label TypeVars in `HasField` constraints (e.g., `key@"k"`).
     Label,
-    /// Kind variable — unification variable for kind inference
-    Var(u32),
 }
 
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Kind::Type => write!(f, "*"),
-            Kind::Arrow(k1, k2) => write!(f, "({} -> {})", k1, k2),
             Kind::Operator => write!(f, "* → *"),
             Kind::Label => write!(f, "Label"),
-            Kind::Var(id) => write!(f, "?k{}", id),
-        }
-    }
-}
-
-/// Errors that can occur during kind unification
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KindError {
-    /// Kind mismatch — attempted to unify incompatible kinds
-    Mismatch(Kind, Kind),
-    /// Infinite kind — occurs check failed (kind variable appears in its own definition)
-    InfiniteKind,
-}
-
-impl fmt::Display for KindError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            KindError::Mismatch(k1, k2) => write!(f, "Kind mismatch: {} vs {}", k1, k2),
-            KindError::InfiniteKind => write!(f, "Infinite kind"),
         }
     }
 }

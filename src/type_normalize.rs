@@ -7,56 +7,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
-use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
 use crate::type_def::Type;
 use crate::types::Substitution;
 use crate::value::{Environment, Key, Thunk, Value};
-
-/// Static resolver cache for arithmetic type functions.
-/// Pre-populated with the 16 arithmetic type resolver results:
-/// - Add/Sub/Mul: (Int, Int) -> Int, mixed Int/Float -> Float, (Float, Float) -> Float
-/// - Div: all combinations -> Float
-///
-/// This is computed once at first access and shared across all NormCtxt instances.
-static ARITHMETIC_RESOLVER_CACHE: LazyLock<HashMap<(String, Vec<Type>), Type>> =
-    LazyLock::new(|| {
-        let mut cache = HashMap::new();
-
-        // Arithmetic resolver results: Add/Sub/Mul share the same type rules, Div always returns Float
-        let ops = [
-            ("AddResult", false),
-            ("SubResult", false),
-            ("MulResult", false),
-            ("DivResult", true),
-        ];
-        let arg_combinations = [
-            (Type::Int, Type::Int),
-            (Type::Int, Type::Float),
-            (Type::Float, Type::Int),
-            (Type::Float, Type::Float),
-        ];
-
-        for (resolver_name, is_div) in &ops {
-            for (a, b) in &arg_combinations {
-                let result_type = if *is_div {
-                    Type::Float // Div always returns Float
-                } else if matches!((a, b), (Type::Int, Type::Int)) {
-                    Type::Int // Int op Int -> Int for Add/Sub/Mul
-                } else {
-                    Type::Float // Any Float involvement -> Float
-                };
-                cache.insert(
-                    (resolver_name.to_string(), vec![a.clone(), b.clone()]),
-                    result_type,
-                );
-            }
-        }
-
-        cache
-    });
 
 /// Normalization context for type expressions.
 ///
@@ -88,7 +44,6 @@ pub struct NormCtxt {
 
 impl NormCtxt {
     /// Create an empty normalization context with default limits.
-    /// The arithmetic resolver cache is shared across all instances via the static ARITHMETIC_RESOLVER_CACHE.
     /// Populates `type_stage_env` from the cached type-stage environment (built once per thread).
     pub fn new() -> Self {
         Self {
@@ -96,7 +51,7 @@ impl NormCtxt {
             depth: 0,
             max_depth: 64,
             call_stack: Vec::new(),
-            resolver_cache: ARITHMETIC_RESOLVER_CACHE.clone(),
+            resolver_cache: HashMap::new(),
             type_stage_env: crate::imports::build_type_stage_env(),
         }
     }
@@ -109,9 +64,9 @@ impl NormCtxt {
 /// 2. If the type is TypeStageApp { fn_name, args }:
 ///    - Normalize each arg recursively
 ///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction:
-///      a. Check static `resolver_cache` (pre-populated with arithmetic results)
-///      b. If cache miss and `type_stage_env` is set, call `evaluate_resolver()` to
-///         invoke the user-defined type-stage function from the prelude
+///      a. Check `resolver_cache` (memoized results from previous LLT calls this run)
+///      b. On cache miss, call `evaluate_resolver()` to invoke the type-stage function
+///         from the prelude (e.g. AddResult, DivResult) and cache the result
 ///      c. If evaluation fails (fn not found, runtime error, unknown kind), return
 ///         stuck TypeStageApp — caller can retry later via deferred_equalities
 ///    - If depth exceeded or cycle detected, return stuck TypeStageApp
@@ -856,8 +811,7 @@ mod tests {
         assert_eq!(ctx.depth, 0);
         assert_eq!(ctx.max_depth, 64);
         assert!(ctx.call_stack.is_empty());
-        // resolver_cache should be pre-populated with 16 arithmetic entries (4 ops * 4 combinations)
-        assert_eq!(ctx.resolver_cache.len(), 16);
+        assert!(ctx.resolver_cache.is_empty());
     }
 
     /// Test: cache only stores ground types
@@ -921,7 +875,7 @@ mod tests {
         assert!(!ty.has_inference_vars());
     }
 
-    /// Test: resolver_cache lookup for AddResult(Int, Int) -> Int
+    /// Test: AddResult(Int, Int) resolves to Int via LLT type-stage function
     #[test]
     fn test_resolver_cache_add_int_int() {
         let subst = empty_subst();
@@ -931,11 +885,10 @@ mod tests {
             args: vec![Type::Int, Type::Int],
         };
         let result = normalize(&ty, &subst, &mut ctx);
-        // Should resolve to Int via cache lookup
         assert_eq!(result, Type::Int);
     }
 
-    /// Test: resolver_cache lookup for AddResult(Int, Float) -> Float
+    /// Test: AddResult(Int, Float) resolves to Float via LLT type-stage function
     #[test]
     fn test_resolver_cache_add_int_float() {
         let subst = empty_subst();
@@ -945,11 +898,10 @@ mod tests {
             args: vec![Type::Int, Type::Float],
         };
         let result = normalize(&ty, &subst, &mut ctx);
-        // Should resolve to Float via cache lookup
         assert_eq!(result, Type::Float);
     }
 
-    /// Test: resolver_cache lookup for DivResult(Int, Int) -> Float
+    /// Test: DivResult(Int, Int) resolves to Float via LLT type-stage function
     #[test]
     fn test_resolver_cache_div_int_int() {
         let subst = empty_subst();
@@ -959,11 +911,10 @@ mod tests {
             args: vec![Type::Int, Type::Int],
         };
         let result = normalize(&ty, &subst, &mut ctx);
-        // Should resolve to Float via cache lookup
         assert_eq!(result, Type::Float);
     }
 
-    /// Test: resolver_cache miss for unknown resolver
+    /// Test: unknown resolver returns stuck TypeStageApp
     #[test]
     fn test_resolver_cache_miss_unknown_resolver() {
         let subst = empty_subst();

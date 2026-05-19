@@ -11,8 +11,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::Span;
 use crate::value::Thunk;
+
+#[cfg(test)]
+use crate::ast::Span;
 
 /// A handle to a thunk in the arena. Copy-cheap (4 bytes), indexes into `ThunkArena`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -72,7 +74,7 @@ impl ThunkArena {
     /// invariant: Placeholder → Unevaluated is a forward state transition.
     ///
     /// Phase 3 (arena-eval): used when the evaluator builds letrec dicts via FlatEnv.
-    #[allow(dead_code)] // Phase 3 (arena-eval): not yet called by production evaluator
+    #[cfg(test)]
     pub fn alloc_placeholder(&mut self) -> ThunkId {
         let thunk = Rc::new(Thunk::new_placeholder(Span::origin()));
         self.alloc(thunk)
@@ -91,7 +93,7 @@ impl ThunkArena {
     }
 
     /// Number of thunks currently in the arena.
-    #[allow(dead_code)] // used in arena tests; not yet called by production evaluator
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.thunks.len()
     }
@@ -144,8 +146,9 @@ impl EnvArena {
     /// Allocate a child environment with the given parent.
     ///
     /// The display vector is cloned from the parent and extended with the new environment's EnvId.
-    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production callers use alloc_root directly
-    pub fn alloc_child(&mut self, slot_count: usize, parent_id: EnvId) -> EnvId {
+    ///
+    /// Private helper used by `alloc_letrec_group` (arena-phase3 scaffolding) and tests.
+    fn alloc_child(&mut self, slot_count: usize, parent_id: EnvId) -> EnvId {
         let len = self.envs.len();
         assert!(
             len < u32::MAX as usize,
@@ -174,15 +177,25 @@ impl EnvArena {
     /// # Panics
     ///
     /// Panics if the handle is out of bounds (should never happen if all IDs come from `alloc_*`).
-    pub fn get(&self, id: EnvId) -> &FlatEnv {
+    ///
+    /// Used internally by `alloc_child` and in tests.
+    fn get(&self, id: EnvId) -> &FlatEnv {
         &self.envs[id.0 as usize]
     }
 
     /// Get a mutable reference to the environment at the given handle.
     ///
     /// Used to fill slots after allocation (letrec pattern).
-    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests and internally via fill_letrec_slot
+    #[cfg(test)]
     pub fn get_mut(&mut self, id: EnvId) -> &mut FlatEnv {
+        &mut self.envs[id.0 as usize]
+    }
+
+    /// Get a mutable reference to the environment at the given handle (production-only path).
+    ///
+    /// Used internally by `fill_letrec_slot`.
+    #[cfg(not(test))]
+    fn get_mut(&mut self, id: EnvId) -> &mut FlatEnv {
         &mut self.envs[id.0 as usize]
     }
 
@@ -193,7 +206,7 @@ impl EnvArena {
     /// after creating the corresponding thunk.
     ///
     /// The display vector is cloned from the parent and extended with the new environment's EnvId.
-    #[allow(dead_code)] // Phase 3 (arena-eval): production uses alloc_root (no parent FlatEnv yet)
+    #[allow(dead_code)] // arena-phase3 will use this: when display-vector addressing is wired, this method allocates child FlatEnvs with parent linkage
     pub fn alloc_letrec_group(&mut self, static_key_count: usize, parent_id: EnvId) -> EnvId {
         self.alloc_child(static_key_count, parent_id)
     }
@@ -230,13 +243,16 @@ pub(crate) struct FlatEnv {
     /// Static keys indexed by compile-time slot number from the resolver.
     pub(crate) slots: Vec<Option<ThunkId>>,
     /// Computed keys (resolver returned None) indexed by name.
+    #[allow(dead_code)] // arena-phase3: used for computed keys when wired into eval
     pub(crate) overflow: HashMap<String, ThunkId>,
     /// Parent environment for stdlib/builtins root chain. Most environments don't need this;
     /// user-scope lookups use `(level, slot)` pairs that resolve to the correct FlatEnv directly.
+    #[allow(dead_code)] // arena-phase3: used for fallback lookup chain
     pub(crate) parent: Option<EnvId>,
     /// Display vector: prepopulated at creation with ancestor EnvIds indexed by level.
     /// For a scope at level `k`, `display[0..k]` contains the EnvIds of all outer scopes,
     /// and `display[k]` is self. Enables O(1) variable lookup: `arena.get(display[level]).slots[slot]`.
+    #[allow(dead_code)] // arena-phase3: used for display-vector addressing
     pub(crate) display: Vec<EnvId>,
 }
 
@@ -244,13 +260,13 @@ impl FlatEnv {
     /// Get a thunk by slot index (static key, assigned by the resolver).
     ///
     /// Returns `None` if the slot is out of bounds or unfilled.
-    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production VarRef dispatch uses Environment::get_by_slot
+    #[cfg(test)]
     pub fn get_slot(&self, slot: u32) -> Option<ThunkId> {
         self.slots.get(slot as usize).and_then(|&opt| opt)
     }
 
     /// Get a thunk by name from the overflow table (computed key, name-based lookup).
-    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production computed-key lookup uses Environment::get
+    #[cfg(test)]
     pub fn get_by_name(&self, name: &str) -> Option<ThunkId> {
         self.overflow.get(name).copied()
     }
@@ -269,13 +285,13 @@ impl FlatEnv {
     }
 
     /// Insert a thunk into the overflow table (computed key).
-    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production dict construction uses Environment::insert
+    #[cfg(test)]
     pub fn insert_overflow(&mut self, name: String, id: ThunkId) {
         self.overflow.insert(name, id);
     }
 
     /// Get the parent environment ID, if any.
-    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production chain walk uses Rc<RefCell<Environment>>
+    #[cfg(test)]
     pub fn parent(&self) -> Option<EnvId> {
         self.parent
     }

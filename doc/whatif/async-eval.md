@@ -1,6 +1,6 @@
 # What If: Async and Parallel Evaluator for tinct
 
-**State:** Proposal
+**State:** Superseded — 2026-05-19 — absorbed into [`runtime-v2.md`](runtime-v2.md)
 
 What would it take to make tinct's evaluator fully non-blocking and parallel — enabling cooperative concurrency, multi-core evaluation, first-class async primitives, and event-driven programs in a single implementation pass?
 

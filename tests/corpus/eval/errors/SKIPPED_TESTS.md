@@ -34,6 +34,14 @@ The corpus test format doesn't support multi-file scenarios, and the `# no_fs` d
 
 **Additional coverage**: A unit test in `src/parser.rs` covers the same boundary programmatically.
 
+## cap-identity Builtin
+
+**File**: `cap_identity.llt-eval` (not created)
+
+**Reason**: `cap-identity` returns a `"dev:ino"` string from `fstat` on a DirCap's O_DIRECTORY fd. Exercising it requires a real DirCap, which the corpus test harness (with `# no_fs`) does not provide.
+
+**Alternative**: The builtin is registered in `standard_builtins()` and its implementation is covered indirectly by the `include-cache-get`/`include-cache-put` tests which depend on it for cache keying.
+
 ## Include errors E050, E051, E053, E054
 
 **Status**: Partially covered
