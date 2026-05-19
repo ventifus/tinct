@@ -256,7 +256,7 @@ No transition periods. No backwards compatibility. Code is deleted, not shimmed.
 
 ### Add: Eight New Rust Primitives
 
-Register `load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` in `standard_builtins()`. Add `EvalState::include_cache: HashMap<String, IncludeCacheEntry>` (content-addressed, keyed by `blake3(cap-identity + "|" + source)`). Rename `eval` → `deep-materialize` and `force` → `materialize` in `standard_builtins()` and all call sites.
+Register `load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` in `standard_builtins()`. Add `EvalState::include_cache: HashMap<String, IncludeCacheEntry>` (content-addressed, keyed by `blake3(cap-identity + "|" + source)`). Rename `eval` → `deep-materialize` and `force` → `materialize` in `standard_builtins()` and all call sites. Add `type_stage_env: Rc<RefCell<Environment>>` to `EvalConfig`; built once at startup alongside `stdlib_env` using `build_type_stage_env()` from the typechecker.
 
 ### Delete: `builtin_include` and All Include Infrastructure
 
@@ -276,13 +276,49 @@ The bootstrap path that loads prelude at startup remains as a private Rust funct
 The entire file is superseded by tinct code:
 
 - **Delete** `eval_file_with_input` — replaced by tinct `eval-file`
-- **Delete** `eval_document` — becomes `eval`'s internal implementation in Rust, not a public function
+- **Delete** `eval_document` — sequential let\* loop extracted into `eval_expressions` helper, then file deleted
 - **Delete** `run_eval` — replaced by tinct `cli-pipeline`
 - **Delete** `src/eval_pipeline.rs` entirely once all public functions are removed
 
-### Modify: `src/eval.rs` — Expose `eval` and `eval-types`
+### Modify: `src/ast_dict.rs` — Add `dict_to_file`
 
-Expose `eval` and `eval-types` as registered builtins. `eval`'s implementation is the sequential let\* scoping logic currently inside `eval_document`, internalized.
+Add `dict_to_file(val: &Value, ctx: &Rc<EvalContext>) -> Result<File, AstError>` as an internal function (not a registered builtin). It is the file-level inverse of `ast_to_dict`, used by the `expand` builtin to bridge the Dict boundary.
+
+The existing `dict_to_ast` handles individual `Expr` nodes. `dict_to_file` reconstructs the full `File` struct from the schema emitted by `ast_to_dict`:
+
+- `documents`: iterate the `documents` list; for each document dict:
+  - `expressions`: iterate the seq, call `dict_to_ast` on each entry
+  - `name`: string field or `None` if `[]`
+  - `stage`: read the nominal variant — `[Runtime]` → `Some(Stage::Runtime)`, `[Type]` → `Some(Stage::Type)`
+  - `output_type`, `expects`: annotation fields, or `None` if `[]`
+  - `caps`: always `None` — not serialized by `document_to_dict`
+- Spans: recovered from each node's `span:` dict via the existing `extract_span` helper; `Span::origin()` if absent
+
+### Modify: `src/eval.rs` — Expose `eval` and `eval-types`; Add `type_stage_env`
+
+Add `type_stage_env: Rc<RefCell<Environment>>` to `EvalConfig`. Built once at startup alongside `stdlib_env` using `build_type_stage_env()` from the typechecker. This avoids rebuilding during typecheck and eliminates the infinite-recursion hazard (building the env during typecheck triggers `typecheck_file()` → loop).
+
+Extract `eval_expressions(exprs: &[Spanned<Expr>], env: Rc<RefCell<Environment>>, ctx: &Rc<EvalContext>) -> EvalResult<Rc<Thunk>>` as a shared helper from the body of `eval_document`. This is the sequential let\* loop reused by both the `eval` builtin and the bootstrap prelude-load path.
+
+Expose `eval` and `eval-types` as registered builtins.
+
+#### `eval` — Runtime-stage evaluation
+
+Positional args: `exprs` (positional Dict of expression AST dicts — the `expressions` field from a document dict). Named args: `%:` (pipeline input bound as `$`), `env:` (extra bindings dict, defaults to `[]`).
+
+Implementation:
+1. Deserialize `exprs`: iterate in key order, call `dict_to_ast` on each entry → `Vec<Spanned<Expr>>`
+2. Build env chain: `ctx.config.stdlib_env` as root → child env with `env:` entries injected → child env with `"$"` bound to the `%:` thunk
+3. Call `eval_expressions`; return its result lazily
+4. Empty `exprs` returns an empty Dict thunk
+
+`caps:` validation is not performed — it is a static document annotation, not part of `eval`'s runtime contract.
+
+#### `eval-types` — Type-stage evaluation
+
+Positional args: `exprs` (positional Dict of expression AST dicts). No `%:` or `env:` parameters.
+
+Same deserialization and `eval_expressions` call as `eval`. Base env is `ctx.config.type_stage_env` instead of `ctx.config.stdlib_env`. Contains type-level builtins only — no IO, no caps, no runtime API.
 
 ### Modify: `src/main.rs` — `tinct run` Uses `cli-pipeline`
 
@@ -300,7 +336,13 @@ let result = invoke_function(&cli_pipeline, &[files_thunk, initial_thunk, pwd_th
 
 ### Modify: `src/expand.rs` — Expose `expand`, Delete Shadow Guard
 
-**Expose** `expand` as a user-callable builtin. **Delete** the shadow guard (`src/expand.rs:174`) entirely — the capability model is the real security boundary.
+**Expose** `expand` as a user-callable builtin via a round-trip through the Dict representation:
+1. Receive the file AST dict (the `Dict` returned by `load`)
+2. `dict_to_file(ast_dict, ctx)` → `File` — deserialize; schema errors surface as user errors with the `AstError` message
+3. `crate::expand::expand(&file, ctx)` → `File` — run macro expansion
+4. `ast_to_dict(&expanded, &AstToDictOpts::default(), ctx)` → return as Dict
+
+**Delete** the shadow guard (`src/expand.rs:174`) entirely — the capability model is the real security boundary.
 
 ### `expects:` — Static Contract Only
 
@@ -319,6 +361,7 @@ Both become direct consumers of `load`. Formatter feeds source text directly; do
 - **`builtin-privacy-complete` sprint** — removes `standard_builtins()` re-injection; `%rust` (now a flat `Value::Dict`) becomes structurally unreachable from user code via env isolation; unblocks `eval` exposure
 - **`eval`/`force` rename** — `eval` → `deep-materialize`, `force` → `materialize`; must complete before adding new `eval`
 - **Stable file AST dict schema** — `load` and `expand` require a stable `ast_to_dict` format (from `runtime-reflection` sprint); `document_to_dict` must emit `stage: [Runtime] | [Type]` as a nominal variant (not currently emitted)
+- **`dict_to_file` in `src/ast_dict.rs`** — file-level inverse of `ast_to_dict`; required by the `expand` builtin for the Dict → File round-trip. The expression-level `dict_to_ast` already exists; `dict_to_file` adds the `Document` and `File` layers above it.
 
 ## References
 

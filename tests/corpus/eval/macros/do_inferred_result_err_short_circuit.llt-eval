@@ -1,0 +1,6 @@
+# Inferred [do] with Error value — and-then short-circuits on Error
+# [do [x: [Error "fail"]] [Ok x]] → result.bind [Error "fail"] [fn [x] [Ok x]]
+# → and-then [Error "fail"] [fn [x] [Ok x]] → [Error "fail"] (short-circuit).
+[do [x: [Error "fail"]] [Ok x]]
+=== out
+Variant(Error, String("fail"))

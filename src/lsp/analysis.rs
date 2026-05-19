@@ -1022,7 +1022,8 @@ pub fn definition_at(
 /// points to the key span, while `range` covers the entire entry (key + value).
 ///
 /// Returns an empty list if the document has a parse error.
-#[allow(deprecated)] // DocumentSymbol.deprecated field is required by the LSP spec
+#[allow(deprecated)] // lsp-types requires all DocumentSymbol fields; deprecated: None is set
+                     // even though neither VS Code nor Claude Code need it (both use tags)
 pub fn document_symbols_at(doc: &DocumentState) -> Vec<DocumentSymbol> {
     let file = match &doc.ast {
         Ok(f) => f,

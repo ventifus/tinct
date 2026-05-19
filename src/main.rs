@@ -244,6 +244,10 @@ enum Commands {
         /// Multiple uses of the same NAME accumulate into one NetCap allowlist.
         #[arg(long, value_name = "NAME=ENTRY")]
         cap_net: Vec<String>,
+
+        /// Type errors are fatal (exit 1). Without --strict, type warnings are advisory.
+        #[arg(long)]
+        strict: bool,
     },
     /// Extract and evaluate tinct code blocks embedded in a Markdown file.
     ///
@@ -411,7 +415,8 @@ fn main() {
             no_fs,
             cap_fs,
             cap_net,
-        } => run_lint(&file, no_fs, &cap_fs, &cap_net),
+            strict,
+        } => run_lint(&file, no_fs, strict, &cap_fs, &cap_net),
         Commands::Literate {
             mode,
             file,
@@ -2033,6 +2038,7 @@ fn run_fmt(
 fn run_lint(
     file_path: &str,
     _no_fs: bool,
+    strict: bool,
     _cap_fs: &[String],
     _cap_net: &[String],
 ) -> Result<(), String> {
@@ -2077,13 +2083,22 @@ fn run_lint(
         all_messages.push(format_type_diagnostic(d, &source, file_path));
     }
 
+    // Type errors always fatal; diagnostics (warnings) fatal only with --strict
+    let fatal_count = if strict {
+        all_messages.len()
+    } else {
+        type_errors.len()
+    };
+
     if !all_messages.is_empty() {
-        // Print all errors/warnings to stderr
         eprintln!("{}", all_messages.join("\n"));
-        return Err(format!("lint failed with {} issue(s)", all_messages.len()));
     }
 
-    // Clean file — exit 0 (no output)
+    if fatal_count > 0 {
+        return Err(format!("lint failed with {} issue(s)", fatal_count));
+    }
+
+    // Clean — exit 0 (no output on success)
     Ok(())
 }
 

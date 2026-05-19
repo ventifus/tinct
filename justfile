@@ -71,9 +71,34 @@ test-corpus:
 test-lsp:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
 
-# Run clippy (linter)
+# Run clippy (linter) + manual review prompts for #[allow] suppressions and open_ambient_dir
 lint:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy -- -D warnings"
+    @echo ""
+    @echo "=== MANUAL REVIEW: #[allow] suppressions ==="
+    @echo "Evaluate each item below. #[allow(dead_code)] is a code smell:"
+    @echo "  - If the code IS used in tests, the compiler wouldn't warn — delete the allow."
+    @echo "  - If the code is NOT used anywhere, delete the code (not just the allow)."
+    @echo "  - If it's pending-feature scaffolding, track it in TODO.md and delete until needed."
+    @echo "  - Legitimate exceptions: clippy style suppressions (too_many_arguments, type_complexity, etc.)"
+    @fgrep -rn '#[allow' src/ || true
+    @echo ""
+    @echo "=== MANUAL REVIEW: cap-widening directory access ==="
+    @echo "Evaluate each open_ambient_dir call below. Each one acquires ambient OS authority."
+    @echo "Policy: only src/main.rs and src/repl.rs may call open_ambient_dir in production."
+    @echo "Any call outside those two files (excluding #[cfg(test)] blocks) is a violation."
+    @echo "Check: is the path operator-controlled? Is this the bootstrap boundary? Document why."
+    @fgrep -rn 'open_ambient_dir' src/ || true
+    @echo ""
+    @echo "=== STDLIB LINT ==="
+    @just lint-stdlib-strict
+
+# Run tinct lint --strict on every .llt file in stdlib/
+lint-stdlib-strict: build-release
+    for f in stdlib/**/*.llt stdlib/*.llt; do \
+        echo "  lint: $$f"; \
+        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --strict "$$f" || exit 1; \
+    done
 
 # Run clippy with auto-fixes
 lint-fix:

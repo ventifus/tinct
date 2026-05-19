@@ -1980,31 +1980,36 @@ mod tests {
         );
     }
 
-    /// Inferred `[do]` form with binding steps → runtime error because the `%do-infer`
-    /// sentinel is undefined. Type-checker monad inference would normally resolve it,
-    /// but without that, the generated `[%do-infer.bind ...]` fails at eval time.
+    /// Inferred `[do]` form with binding steps now succeeds via monad inference.
+    /// Type-checker sees `[Ok ...]` constructor calls and resolves `%do-infer` to "result"
+    /// (the Result monad instance). The generated `[result.bind ...]` chain evaluates correctly.
     ///
-    /// NOTE: The originally planned behavior was "inferred [do] not yet supported".
-    /// Current behavior: "undefined variable: %do-infer" from the generated bind chain.
+    /// Input: `[do [x: [Ok 1]] [Ok x]]`
+    /// Desugars to: `[result.bind [Ok 1] [fn [x] [Ok x]]]`
+    /// Output: `[Ok 1]` (Variant)
     #[test]
-    fn test_do_macro_inferred_form_binding_error() {
+    fn test_do_macro_inferred_form_binding() {
         let result = eval_source("[do [x: [Ok 1]] [Ok x]]");
-        assert!(result.is_err(), "expected error, got Ok: {:?}", result);
-        let err = result.unwrap_err();
-        // %do-infer sentinel is undefined at runtime (type checker didn't resolve it).
         assert!(
-            err.contains("%do-infer"),
-            "expected %do-infer undefined-variable error, got: {err}"
+            result.is_ok(),
+            "expected success after monad inference, got: {:?}",
+            result
+        );
+        let output = result.unwrap();
+        // Result should be [Ok 1] as a Variant
+        assert!(
+            output.contains("Ok"),
+            "expected Ok variant in output, got: {output}"
         );
     }
 
     /// Inferred `[do]` form with single expression step passes through as-is.
     /// `[do [Ok 1]]` desugars to `[Ok 1]` (base case of do-fold returns the single step).
     ///
-    /// NOTE: The originally planned behavior was a user-facing error. Current behavior:
-    /// single-step inferred form evaluates the expression directly.
+    /// Single-step inferred form evaluates the expression directly without needing
+    /// monad inference (no bind chain to resolve).
     #[test]
-    fn test_do_macro_inferred_form_expr_error() {
+    fn test_do_macro_inferred_form_expr() {
         // [do [Ok 1]] → inferred form, 1 step → do-fold returns [Ok 1] directly
         let result = eval_source("[do [Ok 1]]");
         assert!(

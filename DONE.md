@@ -6427,6 +6427,20 @@ The `===` sections are visible in rendered markdown — readers see code and exp
 inline, without needing HTML rendering to surface results. The `=== info` section is new
 (not in corpus tests) and captures `log`/stdout output.
 
+### do-hkt-inference: Complete HKT monad inference for inferred-form `[do ...]`
+
+The `do` macro supports an **inferred form** where the monad is not given explicitly:
+`[do [x: [Ok 1]] [Ok x]]`. The transformer desugars this using a `%do-infer` sentinel
+monad and calls `do-desugar-inferred`. At runtime, `[%do-infer.bind ...]` fails with
+"undefined variable: %do-infer" because the type checker hasn't resolved the sentinel.
+The type checker is supposed to detect `%do-infer` in the expanded AST and substitute
+the inferred monad type — this is the missing piece.
+
+- [x] Implement type-checker detection of `%do-infer` sentinel in expanded `[do]` AST; infer the monad type from the step expressions (e.g., `[Ok ...]` → `Result` monad) and substitute the resolved monad for `%do-infer` before evaluation (`src/typecheck.rs`, `src/expand.rs`)
+- [x] Update `do-desugar-inferred` in `stdlib/macros.llt` if needed once the type-checker side is implemented (no changes needed — macro already generates correct %do-infer.bind calls)
+- [x] Enable the two inferred-form unit tests once inference works: `test_do_macro_inferred_form_binding` and `test_do_macro_inferred_form_expr` in `src/lib.rs`; update expected behavior to reflect successful inference, not an error
+- [x] Add corpus tests for inferred-form `do` with `Result` monad (`tests/corpus/eval/macros/do_inferred_result_*.llt-eval`)
+
 **Weave (`--in-place`):** evaluate the code portion (everything before the first `===`
 line); update/insert `=== out`, `=== warn`, `=== info` sections with actual results.
 Replaces the previous `<!-- tinct-result: ... -->` HTML comment approach.
