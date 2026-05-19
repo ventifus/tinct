@@ -2181,10 +2181,96 @@ fn resolve_type_dict_with_guard(
         }
     }
 
-    // For all other cases (function types, parameterized aliases, record types, unions),
-    // delegate to the normal resolver. The recursion guard is only needed for the VarRef
-    // resolution within these structures, which is already handled by resolve_type_expr_with_guard
-    // when called from resolve_type_expr.
+    // Keyed record dict: `[value: Int  next: Node]` — the most common recursive alias body.
+    // When all entries are keyed (or rest `...`), resolve each field value via
+    // `resolve_type_expr_with_guard` so the recursion guard is respected for field types.
+    // This is the critical path that was previously a dead code path: the old fallthrough
+    // to `resolve_type_dict` called `resolve_type_name` (not `_with_guard`), so recursive
+    // field references like `next: Node` silently returned the Unknown Pass-1 placeholder
+    // instead of a fresh TypeVar.
+    //
+    // Positional-only forms (Fn types, [Seq T], [Map K V], [Tuple ...], parameterized aliases,
+    // unions) are not keyed, so they fall through to `resolve_type_dict` as before.
+    if !all_positional {
+        // Reuse the same logic as the tail of resolve_type_dict but route field-value
+        // resolution through resolve_type_expr_with_guard.
+        let mut fields: HashMap<String, Type> = HashMap::new();
+        for entry in entries {
+            if let Expr::Rest(_) = &entry.node.value.node {
+                // `...` rest notation: accepted for openness annotation, produces no field.
+                continue;
+            }
+            let key = match &entry.node.key {
+                Some(k) => match &k.node {
+                    Expr::Str(s) => s.clone(),
+                    _ => {
+                        return Err(TypeError::new(
+                            "type record keys must be bare words",
+                            k.span,
+                        ))
+                    }
+                },
+                None => {
+                    // Mixed keyed+positional dict — fall back to the full resolver.
+                    return resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping);
+                }
+            };
+            let ty = resolve_type_expr_with_guard(
+                &entry.node.value,
+                env,
+                state,
+                ann_mapping,
+                row_ann_mapping,
+                recursion_guard,
+                current_alias,
+                depth,
+            )?;
+            fields.insert(key, ty);
+        }
+
+        // Mirror the multi-field intersection splitting from resolve_type_dict:
+        // When two or more fields with no shared type variables are present, produce
+        // Intersection of closed single-field Records (BAS open semantics).
+        if fields.len() >= 2 {
+            let mut all_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut has_shared = false;
+            for ty in fields.values() {
+                let mut field_type_vars = std::collections::HashSet::new();
+                let mut field_row_vars = std::collections::HashSet::new();
+                ty.collect_all_vars(&mut field_type_vars, &mut field_row_vars);
+                for v in field_type_vars {
+                    if !all_seen.insert(v) {
+                        has_shared = true;
+                        break;
+                    }
+                }
+                if has_shared {
+                    break;
+                }
+            }
+            if !has_shared {
+                let members: Vec<Type> = fields
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let mut member_fields = HashMap::new();
+                        member_fields.insert(k, v);
+                        Type::Record(Row {
+                            fields: member_fields,
+                        })
+                    })
+                    .collect();
+                return Ok(Type::normalize_intersection(members));
+            }
+        }
+
+        let ty = Type::Record(Row { fields });
+        crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+        return Ok(ty);
+    }
+
+    // For remaining positional-only cases (function types, [Seq T], [Map K V], [Tuple ...],
+    // parameterized alias applications, and multi-type unions), delegate to the normal
+    // resolver which has the full dispatch logic for those forms.
     resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping)
 }
 

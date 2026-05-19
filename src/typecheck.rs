@@ -999,8 +999,13 @@ fn register_type_aliases(
                 alias_ann_map.insert(p.clone(), fresh.clone());
             }
 
-            // Create a recursion guard for this alias resolution
+            // Create a recursion guard for this alias resolution.
+            // Seed with the current alias name so that any reference to `name` encountered
+            // while resolving the body (including inside keyed record dicts like
+            // `[value: Int  next: Name]`) is treated as a recursive back-reference and
+            // returns a fresh TypeVar instead of the Unknown Pass-1 placeholder.
             let mut recursion_guard = HashSet::new();
+            recursion_guard.insert(name.clone());
 
             match resolve_type_expr_with_guard(
                 &body,
@@ -11999,10 +12004,16 @@ mod tests {
         let alias = env
             .get_type_alias("List")
             .expect("List type alias not found");
-        // `[head: Int  tail: List]` → Intersection([{head: Int, ...ρ1}, {tail: ?, ...ρ2}])
-        // where `?` (Unknown) is the placeholder for the recursive ref.
+        // `[head: Int  tail: List]` → Intersection([{head: Int}, {tail: _t0}])
+        // where `_t0` is a fresh TypeVar (the mu-variable for the recursive position).
+        // Previously this was Type::Unknown (the Pass-1 placeholder leaked through because
+        // resolve_type_dict_with_guard delegated to resolve_type_dict, bypassing the guard).
         assert_has_field(&alias.body, "head", &Type::Int);
-        assert_has_field(&alias.body, "tail", &Type::Unknown);
+        let tail_ty = type_get_field(&alias.body, "tail").expect("tail field not found");
+        assert!(
+            matches!(tail_ty, Type::TypeVar(_, _)),
+            "expected TypeVar for recursive 'tail' field, got {tail_ty}"
+        );
     }
 
     #[test]
@@ -12039,14 +12050,14 @@ mod tests {
 
     #[test]
     fn test_recursive_type_depth_limit() {
-        // Create a very deeply nested type that would exceed the depth limit
-        // if actually expanded, but should be caught by the guard
-        // Note: This test may not trigger the depth limit in the current implementation
-        // because we use Unknown as a placeholder, which prevents deep expansion
+        // Recursive type alias with a single keyed field: [next: Deep].
+        // The recursion guard fires for the `Deep` VarRef in `next: Deep`, returning a fresh
+        // TypeVar (the mu-variable) instead of expanding infinitely. The depth limit
+        // (MAX_ALIAS_DEPTH = 256) guards against pathological expansion via expand_alias_body_guarded.
         let result = check("[Deep: [type [next: Deep]]]");
         assert!(
             result.is_ok(),
-            "recursive type with Unknown placeholder should not hit depth limit: {:?}",
+            "recursive type alias should register without error: {:?}",
             result
         );
     }
