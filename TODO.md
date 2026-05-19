@@ -376,13 +376,13 @@ Follow-up audit (2026-05-18) confirmed most "scaffolding" items are genuinely de
 
 **B. Genuinely dead functions from completed sprints** — BAS infrastructure written but not wired; `bas-core` is done (DONE.md) and does not use these; delete them:
 
-- [ ] Delete `compact_bounds` at `src/type_unify.rs:1323` — no call sites in production code; BAS done without it (`src/type_unify.rs:1323`)
-- [ ] Delete `check_bounds_satisfiable` at `src/type_unify.rs:1365` — no call sites; BAS done without it (`src/type_unify.rs:1365`)
-- [ ] Delete `constrain` at `src/type_unify.rs:1412` — no call sites from production; BAS done without it; also removes the only callers of `TypeVarBounds::add_lower`/`add_upper` (`src/type_unify.rs:1412`)
-- [ ] Note: `process_deferred_equalities` at `src/type_unify.rs:2319` is NOT dead BAS scaffolding — it is chr-gaps infrastructure for TypeStageApp resolution; wire it as a call site in chr-gaps Gap 1 (resolver evaluation), then remove the `#[allow(dead_code)]` attr (`src/type_unify.rs:2319`)
-- [ ] Delete `TypeVarBounds::add_lower` and `add_upper` at `src/type_infer.rs:32-41` — only called from dead `constrain()`; if no other callers after deleting `constrain`, remove these too (`src/type_infer.rs:32-41`)
-- [ ] Delete `ConstraintSource` at `src/type_infer.rs:53-57` — defined, never constructed or referenced outside its file (`src/type_infer.rs:53-57`)
-- [ ] Delete `ClassEnv::parent`, `ClassEnv::with_parent`, `InstanceEnv::parent`, `InstanceEnv::with_parent`, `InstanceEnv::get` at `src/type_class.rs:125-211` — "Scaffolding for scoped class environments" and "Instance lookup used during dictionary construction"; no sprint planned for scoped environments (`src/type_class.rs:125-211`)
+- [x] Delete `compact_bounds` at `src/type_unify.rs:1323` — ALREADY DELETED (verified 2026-05-18)
+- [x] Delete `check_bounds_satisfiable` at `src/type_unify.rs:1365` — ALREADY DELETED (verified 2026-05-18)
+- [x] Delete `constrain` at `src/type_unify.rs:1412` — ALREADY DELETED (verified 2026-05-18)
+- [x] Note: `process_deferred_equalities` at `src/type_unify.rs:2053` is NOT dead BAS scaffolding — it is chr-gaps infrastructure for TypeStageApp resolution; has `#[allow(dead_code)]`, kept for chr-gaps Gap 1 (verified 2026-05-18)
+- [x] Delete `TypeVarBounds::add_lower` and `add_upper` at `src/type_infer.rs:32-41` — ALREADY DELETED (verified 2026-05-18)
+- [x] Delete `ConstraintSource` at `src/type_infer.rs:53-57` — ALREADY DELETED (verified 2026-05-18)
+- [x] Delete `ClassEnv::parent`, `ClassEnv::with_parent`, `InstanceEnv::parent`, `InstanceEnv::with_parent`, `InstanceEnv::get` at `src/type_class.rs:125-211` — ALREADY DELETED (verified 2026-05-18)
 
 **C. arena-phase3 scaffolding** — `FlatEnv`, `EnvArena`, `EnvId`, `ThunkArena::alloc_letrec_group`, `ThunkArena::fill_letrec_slot`, and the `env_arena` field on `EvalContext` are pre-written for the `arena-phase3` sprint and should NOT be deleted. See `arena-phase3` sprint below.
 
