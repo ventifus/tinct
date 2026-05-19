@@ -4,6 +4,28 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Operator Dispatch for User-Defined Types
+
+### operator-dispatch: Wire +/*/=/< operators to dispatch through typeclass instances
+
+With builtin-add/sub/mul/div/eq/lt as pure primitives (no dispatch), user-defined numeric/comparable types currently fail at runtime even if their typeclass instances are registered. The operator-level dispatch was removed to fix infinite recursion (instances called builtin-mul which dispatched again), but since builtin-mul is now a pure primitive, the loop is broken and dispatch can be restored at the OPERATOR level.
+
+**Architecture:**
+- `builtin-add/sub/mul/div/eq/lt` = pure Int/Float primitives (current, correct)
+- `+` (and other operators) = dispatching layer: check Addable instance for non-Int/Float, fall through to builtin-add for Int/Float
+- Instance method for Int/Int: calls `[builtin-add x y]` (pure) → no recursion
+
+**Implementation:**
+
+- [ ] Restore typeclass dispatch to Rust `+` operator (builtin_add): materialize args, check Int/Float first (fast path), then try_dispatch_method("Addable") for other types (`src/builtins_math.rs`)
+- [ ] Restore typeclass dispatch to `*`, `-`, `/` operators similarly (Multipliable, Subtractable, Divisible)
+- [ ] Restore typeclass dispatch to `=` operator (Equatable) and `<` operator (Comparable) — pure Rust fallback for unknown types, dispatch for user-defined types
+- [ ] Remove prelude's tinct operator wrappers for +/-/*/÷/=/< that just call builtin-* directly; let the Rust operators handle dispatch AND computation (`stdlib/prelude.llt`)
+- [ ] Add corpus test: define `[class [let MyNum a]]` with `[instance MyNum [let a@MyNum]: [add: [fn [let x y] ...]]]` and verify `[+ myval1 myval2]` dispatches correctly (`tests/corpus/`)
+- [ ] Verify `just test` passes
+
+---
+
 ## Pre-existing Lib Test Failures (identified 2026-05-18)
 
 ### do-macro-builtin-get: `do` macro lib tests fail with `builtin-get: expected Dict, got Int`
@@ -303,25 +325,25 @@ Both builtins are kept and renamed to accurate names that reflect what they do. 
 - [x] Verify `just test` passes
 
 
-### parser-uniformity: Fix special cases and non-uniform handling found in parser audit (2026-05-18)
+### parser-uniformity: Fix special cases and non-uniform handling found in parser audit (DONE 2026-05-18)
 
 Full audit of `src/parser.rs` identified the following issues beyond what `unified-bindings-remove-old-syntax` already tracks. All locations are in `push_expr_to_parent` unless noted otherwise.
 
 **Correctness bugs:**
-- [ ] **F-03** `StackFrame::TypeAlias` Case 3 (`Expr::LetDecl`) only accepts `Expr::VarRef` bindings — rejects `Expr::Annotated`, so `[type [let a@K b] T]` silently treats the whole LetDecl as a type expression instead of extracting params; fix: accept `Expr::VarRef | Expr::Annotated` in the all_lowercase_params check (`src/parser.rs:5279–5295`)
-- [ ] **F-13** `StackFrame::CaseDecl` CloseBracket handler uses `ok_or_else(...)?` (fatal) instead of `close_bracket_recover!` — `[case]` with missing pattern/body is an unrecoverable error that breaks LSP incremental parsing; all other frames use `close_bracket_recover!` (`src/parser.rs:2956–2963`)
-- [ ] **F-14** `StackFrame::MacroDecl` accepts any expression in the params slot without validation — `[macro foo 42 body]` silently puts `Int(42)` into params; fix: validate that the second positional is `Expr::LetDecl`, emit parse error otherwise (`src/parser.rs:5383–5386`)
+- [x] **F-03** `StackFrame::TypeAlias` Case 3 (`Expr::LetDecl`) only accepts `Expr::VarRef` bindings — rejects `Expr::Annotated`, so `[type [let a@K b] T]` silently treats the whole LetDecl as a type expression instead of extracting params; fix: accept `Expr::VarRef | Expr::Annotated` in the all_lowercase_params check — already fixed in a prior commit; both arms present at `src/parser.rs`
+- [x] **F-13** `StackFrame::CaseDecl` CloseBracket handler uses `ok_or_else(...)?` (fatal) instead of `close_bracket_recover!` — already fixed in a prior commit; CaseDecl CloseBracket uses `close_bracket_recover!` for both missing-pattern and missing-body cases
+- [x] **F-14** `StackFrame::MacroDecl` accepts any expression in the params slot without validation — already fixed in a prior commit; validates `Expr::LetDecl` and emits parse error otherwise
 
 **Content-driven heuristics to remove:**
 - [ ] **F-06** `StackFrame::InstanceDecl` silently explodes any `Expr::Dict` arriving with no `pending_key` and no `pending_arm_pattern` into per-method entries — undocumented content-driven heuristic; remove and require explicit keyed entry syntax (`src/parser.rs:5868–5886`)
 - [ ] **F-07** `SyntaxClass` is missing from the `Token::Identifier` + colon-ahead dispatch, so field names like `pattern:` fall through to `pending_key: Option<Spanned<Expr>>` (shared scratchpad); `pending_key` should store `(String, Span)` like `Call`'s version, not a full `Spanned<Expr>`; add `SyntaxClass` to the Identifier colon dispatch (`src/parser.rs:3093–3106, 5399–5472`)
 
 **Dead code:**
-- [ ] **F-01** `fn` annotation error recovery: `if !stack.is_empty() / else` both call `recover_from_failed_open` with identical arguments — `recover_from_failed_open` already handles the empty-stack case internally; remove the branch, call once unconditionally (`src/parser.rs:1617–1638`)
-- [ ] **F-09** `expr_to_pattern` Dict branch checks for `[seq h t]` as the first auto-indexed entry of a 3-element Dict — unreachable because `[seq h t]` always parses as an implied `Call`, never a `Dict`; delete the dead arm (`src/parser.rs:5006–5038`)
+- [x] **F-01** `fn` annotation error recovery: `if !stack.is_empty() / else` both call `recover_from_failed_open` with identical arguments — already fixed in a prior commit; single unconditional call to `recover_from_failed_open`
+- [x] **F-09** `expr_to_pattern` Dict branch checks for `[seq h t]` as the first auto-indexed entry of a 3-element Dict — unreachable because `[seq h t]` always parses as an implied `Call`, never a `Dict`; deleted the dead arm (`src/parser.rs`)
 
 **Minor inconsistencies:**
-- [ ] **F-04** `StackFrame::ClassDecl` `_ => Ok(())` catch-all leaves `name = None`; CloseBracket handler then emits a class with empty-string name instead of a parse error; fix: the catch-all should be a parse error (`src/parser.rs:5624–5628`)
+- [x] **F-04** `StackFrame::ClassDecl` `_ => Ok(())` catch-all leaves `name = None`; CloseBracket handler then emits a class with empty-string name instead of a parse error; already fixed in a prior commit; catch-all is now a parse error
 - [ ] **F-10** `Token::Let` / `Token::Case` handler is a near-verbatim copy of the Identifier+colon dispatch but silently omits `Match` from its colon arm, falling through to `_ => VarRef push`; the omission is undocumented; either share the logic or add an explicit error (`src/parser.rs:4393–4497`)
 
 ### compat-cleanup: Remove backwards-compatibility shims (DONE 2026-05-18)

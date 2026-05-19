@@ -4596,6 +4596,7 @@ One predicate per `Value` variant for direct type dispatch. See doc/11a-builtins
 
 ### type-predicates: Core Type Predicate Builtins
 
+**Whatif:** `type-predicates`
 Add `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?` builtins. See doc/11a-builtins.md §Type Introspection.
 
 - [x] Implement 8 predicate builtins: `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?` — each materializes arg and checks `Value` variant (`src/builtins.rs`)
@@ -4611,6 +4612,7 @@ Minor housekeeping from the type-predicates sprint panel review.
 
 ### type-predicates-nits: Post-Sprint Cleanup
 
+**Whatif:** `type-predicates`
 Small fixes deferred from the type-predicates sprint panel.
 
 - [x] Move `seq?` registration from Sequences comment block to Type Introspection comment block in `standard_builtins()` (`src/builtins.rs:1811`)
@@ -6653,6 +6655,7 @@ Accepted 2026-05-14. See `doc/whatif/runtime-reflection.md` and `doc/08-evaluati
 
 ### runtime-reflection-core: FnAnnotation, ast-of, and describe in prelude
 
+**Whatif:** `runtime-reflection`
 See `doc/08-evaluation.md §Runtime Reflection`. **Spec chapters:** `doc/08-evaluation.md §Runtime Reflection`.
 
 - [x] Define `FnAnnotation { doc, return_ann, constraints, source_file, source_span }` struct in `src/value.rs`; add `annotation: Option<Box<FnAnnotation>>` field to `Value::Function`; update all `Value::Function { params, body, env }` destructure sites (~25 sites in eval.rs, builtins.rs, eval_call.rs, etc.) to include `annotation: _` or use `..` (`src/value.rs`, `src/eval.rs`, `src/builtins.rs`, `src/eval_call.rs`)
@@ -6668,6 +6671,7 @@ See `doc/08-evaluation.md §Runtime Reflection`. **Spec chapters:** `doc/08-eval
 
 ### runtime-reflection-include: Typed include return and stdlib reorganization
 
+**Whatif:** `runtime-reflection`
 See `doc/whatif/runtime-reflection.md §include Return Type` and `§Stdlib Reorganization`. **Spec chapters:** `doc/08-evaluation.md §Runtime Reflection`. **Depends on:** `runtime-reflection-core`.
 
 - [x] Extend `resolve_includes` in `src/imports.rs` to additionally return `HashMap<Span, Vec<(String, Type)>>` mapping each include call's span to the bindings it contributed (`src/imports.rs`)
