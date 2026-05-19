@@ -122,18 +122,44 @@ fn test_invalid_corpus() {
             }
         };
 
+        // With error recovery, parse() returns Ok(ParseOutput) even when there are errors.
+        // Check that the input produces parse errors (either fatal or recovered).
         match parse(&test.input) {
-            Ok(_) => failed.push((
-                relative_path.to_path_buf(),
-                "Expected parse to fail".to_string(),
-            )),
+            Ok(output) => {
+                // Parse succeeded — check for recovered errors in output.errors
+                if output.errors.is_empty() {
+                    failed.push((
+                        relative_path.to_path_buf(),
+                        "Expected parse to produce errors, but got successful parse with no errors"
+                            .to_string(),
+                    ));
+                } else {
+                    // Recovered errors present — check if any match the expected substring
+                    let all_errors = output
+                        .errors
+                        .iter()
+                        .map(|e| format!("{}", e))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !all_errors.contains(expected_substr.as_str()) {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            format!(
+                                "Error message mismatch\n--- expected substring ---\n{}\n--- actual recovered errors ---\n{}",
+                                expected_substr, all_errors
+                            ),
+                        ));
+                    }
+                }
+            }
             Err(e) => {
+                // Fatal parse error (lexer failure, unclosed brackets, etc.)
                 let error_msg = format!("{}", e);
                 if !error_msg.contains(expected_substr.as_str()) {
                     failed.push((
                         relative_path.to_path_buf(),
                         format!(
-                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
+                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual fatal error ---\n{}",
                             expected_substr, error_msg
                         ),
                     ));
