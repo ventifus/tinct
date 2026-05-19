@@ -2374,9 +2374,9 @@ mod tests {
         assert!(result.is_err(), "Expected error for undefined variable");
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("undefined_var"),
+            err.kind.to_string().contains("undefined_var"),
             "Expected undefined variable error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
 
         // Verify the thunk transitioned to Failed state
@@ -2385,9 +2385,9 @@ mod tests {
             match &*state {
                 ThunkState::Failed(cached_err) => {
                     assert!(
-                        cached_err.message().contains("undefined_var"),
+                        cached_err.kind.to_string().contains("undefined_var"),
                         "Cached error should be undefined variable error, got: {}",
-                        cached_err.message()
+                        cached_err.kind.to_string()
                     );
                 }
                 other => panic!("Expected Failed state, got {:?}", other),
@@ -2408,9 +2408,9 @@ mod tests {
         );
         let err2 = result2.unwrap_err();
         assert!(
-            err2.message().contains("undefined_var"),
+            err2.kind.to_string().contains("undefined_var"),
             "Cached error should be returned, got: {}",
-            err2.message()
+            err2.kind.to_string()
         );
     }
 
@@ -2470,9 +2470,9 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            err.message().contains("undefined_var"),
+            err.kind.to_string().contains("undefined_var"),
             "Expected undefined variable error, got: {}",
-            err.message()
+            err.kind.to_string()
         );
     }
 }

@@ -2270,7 +2270,7 @@ mod tests {
         // Verify final state is Failed
         let state = thunk.state();
         match &*state {
-            ThunkState::Failed(e) => assert!(e.message().contains("test error")),
+            ThunkState::Failed(e) => assert!(e.kind.to_string().contains("test error")),
             other => panic!("expected Failed state, got {other:?}"),
         }
     }
