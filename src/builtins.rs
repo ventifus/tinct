@@ -1647,6 +1647,14 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             alias_from_public(&env, "builtin-dict?", "dict?");
             alias_from_public(&env, "builtin-fn?", "fn?");
             alias_from_public(&env, "builtin-seq?", "seq?");
+            // String operation aliases — stdlib/macros.llt uses these
+            alias_from_public(&env, "builtin-split", "split");
+            alias_from_public(&env, "builtin-str-slice", "str-slice");
+            alias_from_public(&env, "builtin-str", "str");
+            alias_from_public(&env, "builtin-str-length", "str-length");
+            // Collection operation aliases — stdlib/macros.llt uses these
+            alias_from_public(&env, "builtin-append", "append");
+            alias_from_public(&env, "builtin-to-int", "to-int");
         }
         "string" => {
             insert(&env, "str");
