@@ -6908,9 +6908,12 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
+        // With operator-level dispatch, Int + String falls through to try_dispatch_method
+        // which finds no Addable instance (no prelude loaded) → NoInstance error.
+        // The old TypeMismatch "expected Int or Float" is no longer the correct message.
         assert!(
-            e.kind.to_string().contains("expected Int or Float"),
-            "got: {}",
+            e.kind.to_string().contains("no instance") || e.kind.to_string().contains("Addable"),
+            "expected NoInstance error for Int + String, got: {}",
             e.kind.to_string()
         );
     }
@@ -7102,9 +7105,12 @@ mod tests {
             ctx: test_ctx(),
         })
         .unwrap_err();
+        // With operator-level dispatch, Int - String falls through to try_dispatch_method
+        // which finds no Subtractable instance (no prelude loaded) → NoInstance error.
         assert!(
-            e.kind.to_string().contains("expected Int or Float"),
-            "got: {}",
+            e.kind.to_string().contains("no instance")
+                || e.kind.to_string().contains("Subtractable"),
+            "expected NoInstance error for Int - String, got: {}",
             e.kind.to_string()
         );
     }

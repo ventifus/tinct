@@ -1,0 +1,22 @@
+# Operator-level dispatch: verify that [+ a b] dispatches through the Addable
+# instance for Dict-typed values (non-Int/Float fast path).
+#
+# This test relies on the operator dispatch mechanism added in the operator-dispatch
+# sprint: builtin_add falls through to try_dispatch_method("Addable", ...) after
+# the Int/Float fast path. Addable instance method calls [builtin-add] (pure,
+# no re-dispatch) so there is no infinite recursion.
+#
+# The instance wraps dict values with an `n:` field. [+ s1 s2] dispatches to
+# the Dict/Dict Addable arm, which adds the inner n: fields and returns a new dict.
+
+make-scale: [fn [let n] [n: n]]
+
+[instance Addable
+  [let a@Dict b@Dict c]: [+: [fn [let x y] [make-scale [+ [get x n] [get y n]]]]]]
+
+s1: [make-scale 3]
+s2: [make-scale 4]
+
+[get [+ s1 s2] n]
+=== out
+Int(7)
