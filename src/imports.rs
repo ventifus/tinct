@@ -644,6 +644,7 @@ fn resolve_includes(
     base_env: Rc<TypeEnv>,
     visited: &mut HashSet<String>,
     depth: usize,
+    base_cap_dir: Option<&cap_std::fs::Dir>,
 ) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
     if depth >= MAX_INCLUDE_DEPTH {
         // Depth limit reached: return base_env unchanged with empty binding map
@@ -703,18 +704,69 @@ fn resolve_includes(
         visited.insert(path_key);
 
         // Enforce the same 10 MB limit as the runtime $include.
-        let metadata = match std::fs::metadata(&normalized) {
-            Ok(m) => m,
-            Err(_) => continue,
+        // When a cap_std Dir is available for the %pwd base, use it (RESOLVE_BENEATH semantics);
+        // fall back to std::fs for %libdir paths or when no cap dir was provided.
+        let use_cap = cap_name.as_deref() == Some("%pwd");
+        let file_len = if use_cap {
+            if let Some(cap_dir) = base_cap_dir {
+                // Derive relative path by stripping the canonical base prefix.
+                let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
+                let relative = if let Some(ref base) = canonical_base {
+                    normalized.strip_prefix(base).unwrap_or(&normalized)
+                } else {
+                    &normalized
+                };
+                match cap_dir.metadata(relative) {
+                    Ok(m) => m.len(),
+                    Err(_) => continue,
+                }
+            } else {
+                match std::fs::metadata(&normalized) {
+                    Ok(m) => m.len(),
+                    Err(_) => continue,
+                }
+            }
+        } else {
+            match std::fs::metadata(&normalized) {
+                Ok(m) => m.len(),
+                Err(_) => continue,
+            }
         };
-        if metadata.len() > crate::builtins::MAX_FILE_SIZE {
+        if file_len > crate::builtins::MAX_FILE_SIZE {
             continue;
         }
 
-        // Read the file
-        let content = match std::fs::read_to_string(&normalized) {
-            Ok(c) => c,
-            Err(_) => continue, // Skip unreadable files
+        // Read the file — use cap_std RESOLVE_BENEATH when available for %pwd paths.
+        let content = if use_cap {
+            if let Some(cap_dir) = base_cap_dir {
+                let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
+                let relative = if let Some(ref base) = canonical_base {
+                    normalized.strip_prefix(base).unwrap_or(&normalized)
+                } else {
+                    &normalized
+                };
+                match cap_dir.open(relative) {
+                    Ok(mut f) => {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        match f.read_to_string(&mut buf) {
+                            Ok(_) => buf,
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            } else {
+                match std::fs::read_to_string(&normalized) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                }
+            }
+        } else {
+            match std::fs::read_to_string(&normalized) {
+                Ok(c) => c,
+                Err(_) => continue, // Skip unreadable files
+            }
         };
 
         // Parse the file
@@ -749,7 +801,10 @@ fn resolve_includes(
         // Store the bindings for this include call's span
         include_bindings.insert(*span, bindings);
 
-        // Recursively resolve includes from this file
+        // Recursively resolve includes from this file.
+        // For nested files, we don't pass the cap dir — they resolve against their own
+        // parent directory (a different base), so RESOLVE_BENEATH would need a new Dir
+        // scoped to that parent. Nested includes fall back to std::fs (path-checked above).
         let nested_includes = collect_include_paths(&file.node);
         let parent_dir = normalized.parent();
         let (nested_env, nested_bindings) = resolve_includes(
@@ -759,6 +814,7 @@ fn resolve_includes(
             env,
             visited,
             depth + 1,
+            None,
         );
         env = nested_env;
 
@@ -975,6 +1031,19 @@ pub fn build_type_env(
     file: &File,
     base_dir: Option<&Path>,
 ) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
+    build_type_env_with_cap(file, base_dir, None)
+}
+
+/// Like `build_type_env`, but also accepts a `cap_std::fs::Dir` for `%pwd` I/O.
+///
+/// When `base_cap_dir` is `Some`, file reads for `%pwd`-qualified includes go through
+/// the cap-std Dir (RESOLVE_BENEATH semantics) instead of plain `std::fs` calls.
+/// This provides kernel-level path confinement rather than software-only path checks.
+pub fn build_type_env_with_cap(
+    file: &File,
+    base_dir: Option<&Path>,
+    base_cap_dir: Option<&cap_std::fs::Dir>,
+) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
     let prelude_env = build_prelude_env();
 
     // Seed with always-available cap types
@@ -997,6 +1066,7 @@ pub fn build_type_env(
             env,
             &mut visited,
             0,
+            base_cap_dir,
         );
         env = new_env;
         include_bindings = bindings;
@@ -1153,6 +1223,7 @@ mod tests {
             Rc::clone(&base_env),
             &mut visited,
             0,
+            None, // no cap dir in this test
         );
 
         // Missing file: canonicalize fails → skipped → base_env returned as-is.

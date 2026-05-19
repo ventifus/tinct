@@ -84,7 +84,7 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
 
     eprintln!("tinct LSP server initialized.");
 
-    let mut store = DocumentStore::new();
+    let mut store = DocumentStore::new().map_err(|e| -> Box<dyn Error> { e.into() })?;
 
     for msg in &connection.receiver {
         match msg {
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_handle_hover_returns_value() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_handle_hover_no_document() {
-        let store = DocumentStore::new();
+        let store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///missing.llt".parse::<Uri>().unwrap();
         // If document doesn't exist, hover should return None.
         assert!(store.get(&uri).is_none());
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_diagnostics_published_on_parse_error() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
@@ -898,7 +898,7 @@ mod tests {
 
     #[test]
     fn test_diagnostics_empty_for_valid_doc() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn test_document_update_replaces_content() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         store.update_document(uri.clone(), "[x: 2]".to_string());
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_document_close_removes() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         store.remove_document(&uri);
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_rename_produces_workspace_edit() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1  y: $x]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -971,7 +971,7 @@ mod tests {
 
     #[test]
     fn test_rename_invalid_name() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1  y: $x]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_inlay_hints_emitted_for_typed_bindings() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -998,7 +998,7 @@ mod tests {
 
     #[test]
     fn test_inlay_hints_none_for_parse_error() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1010,7 +1010,7 @@ mod tests {
 
     #[test]
     fn test_document_symbols_simple() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1  y: 2]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn test_document_symbols_annotated_key() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x@Int: 42]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn test_document_symbols_empty_on_parse_error() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1043,7 +1043,7 @@ mod tests {
 
     #[test]
     fn test_document_symbols_non_dict_returns_empty() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         // A bare integer is not a dict — no symbols to extract.
         store.update_document(uri.clone(), "42".to_string());
@@ -1056,7 +1056,7 @@ mod tests {
 
     #[test]
     fn test_references_at_finds_all_refs() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         // "[x: 1  y: $x  z: $x]"
         //  0         1         2
@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn test_references_at_no_ref_at_offset() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1090,7 +1090,7 @@ mod tests {
 
     #[test]
     fn test_references_at_parse_error_returns_empty() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();

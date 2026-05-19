@@ -1,5 +1,7 @@
 # Test do macro with hardcoded simple expansion
 # Just return the first argument unchanged
 [do result [Ok 99]]
----
+=== warn
+T010
+=== out
 [Ok 99]

@@ -128,8 +128,15 @@ impl DocumentState {
             } else {
                 base_dir
             };
+            // Pass the eval context's cap_std Dir so that %pwd file reads use RESOLVE_BENEATH
+            // semantics (kernel-level path confinement) instead of plain std::fs calls.
+            let type_cap_dir = if eval_ctx.config.no_fs {
+                None
+            } else {
+                Some(&eval_ctx.config.base_dir)
+            };
             let (seeded_env, include_bindings) =
-                crate::imports::build_type_env(&file.node, type_base_dir);
+                crate::imports::build_type_env_with_cap(&file.node, type_base_dir, type_cap_dir);
             let (errs, mut map, docs, smap, tc_diagnostics) =
                 typecheck_file_with_types_and_env(&file.node, seeded_env);
             // Post-pass: inject precise Record types for [include %cap "path"] expressions.
@@ -542,7 +549,7 @@ pub struct DocumentStore {
 }
 
 impl DocumentStore {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, String> {
         // Load stdlib once. If it fails, fall back to an empty environment + empty arena
         // so the LSP can still provide parsing/type-checking diagnostics.
         let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().unwrap_or_else(|_| {
@@ -555,46 +562,17 @@ impl DocumentStore {
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
         //
-        // Fallback chain for base_dir: try "." first, then temp_dir, then "/" as last resort.
-        // This handles systemd socket activation, chroots, and containers where CWD or
-        // temp may be inaccessible.
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .or_else(|_| {
-                cap_std::fs::Dir::open_ambient_dir(
-                    std::env::temp_dir(),
-                    cap_std::ambient_authority(),
-                )
-            })
-            .or_else(|_| {
-                // Last resort: try root directory.
-                cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
-            })
-            .unwrap_or_else(|e| {
-                // All fallbacks failed. Try /tmp and /var/tmp as additional attempts.
-                eprintln!(
-                    "LSP: warning: failed to open /, trying /tmp: {}",
-                    e
-                );
-                cap_std::fs::Dir::open_ambient_dir("/tmp", cap_std::ambient_authority())
-                    .or_else(|_| {
-                        eprintln!("LSP: warning: /tmp failed, trying /var/tmp");
-                        cap_std::fs::Dir::open_ambient_dir("/var/tmp", cap_std::ambient_authority())
-                    })
-                    .unwrap_or_else(|final_err| {
-                        // Truly exhausted all options. Log error and exit gracefully
-                        // rather than panicking. The editor can restart the LSP.
-                        eprintln!(
-                            "LSP: FATAL: cannot open any base_dir (tried ., temp_dir, /, /tmp, /var/tmp): {}",
-                            final_err
-                        );
-                        eprintln!("LSP: filesystem appears inaccessible; cannot start");
-                        std::process::exit(1);
-                    })
-            });
-        // no_fs=false: the capability model (DirCap / RESOLVE_BENEATH in cap_std) provides
-        // path-traversal protection. %libdir and %pwd are injected as real DirCaps in
-        // DocumentState::new(), which limits access to the stdlib dir and document dir
-        // respectively. Bare capless includes are rejected by builtin_include (see builtins_meta.rs).
+        // AMBIENT-OK: bootstrap — acquires CWD as the initial base_dir for the LSP session.
+        // Only "." is tried; falling back to "/" or /tmp would make RESOLVE_BENEATH a no-op
+        // (everything on the filesystem would be reachable from a root Dir).
+        let base_dir = match cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()) {
+            Ok(dir) => dir,
+            Err(e) => {
+                // CWD is inaccessible. Return an error to the caller rather than opening root.
+                // The editor can retry after the LSP restarts in a valid working directory.
+                return Err(format!("LSP: cannot open CWD as base_dir: {}", e));
+            }
+        };
         let base_eval_ctx = crate::eval::EvalContext::new_sharing_arena(
             base_dir,
             Rc::clone(&stdlib_env),
@@ -611,13 +589,13 @@ impl DocumentStore {
             crate::parser::parse(prelude_source).ok()
         };
 
-        Self {
+        Ok(Self {
             docs: HashMap::new(),
             stdlib_env,
             base_eval_ctx,
             include_graph: HashMap::new(),
             prelude_ast: prelude_ast.map(|o| o.file),
-        }
+        })
     }
 
     /// Update or insert a document, re-parsing and re-analyzing the text.
@@ -628,51 +606,29 @@ impl DocumentStore {
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         // Fallback chain: try document's directory first, then ".", then base_eval_ctx's Dir.
-        // This handles cases where the document's directory becomes inaccessible mid-session
-        // (e.g., unmounted network share, deleted directory).
+        // Stops here — falling back to "/" or /tmp would make RESOLVE_BENEATH a no-op,
+        // defeating the cap-std confinement model.
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_path, cap_std::ambient_authority())
             .or_else(|_| cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()))
             .or_else(|_| {
                 // Fallback: reopen base_eval_ctx's Dir. cap_std::fs::Dir doesn't implement
                 // Clone, so we open "." relative to base_dir to get a duplicate handle.
                 self.base_eval_ctx.config.base_dir.open_dir(".")
-            })
-            .unwrap_or_else(|e| {
+            });
+        let base_dir = match base_dir {
+            Ok(dir) => dir,
+            Err(e) => {
                 // All three attempts failed (document dir, ".", and base_eval_ctx.base_dir).
-                // Log a warning and fall back to temp_dir as a last resort. The LSP will
-                // continue with degraded service rather than crashing the editor.
+                // Log a warning and skip this update — falling back to "/" or /tmp would
+                // make RESOLVE_BENEATH a no-op and defeat the confinement model.
                 eprintln!(
-                    "LSP: warning: failed to open base_dir for {}: {}; falling back to temp_dir",
+                    "LSP: warning: failed to open any base_dir for {}: {}; skipping update",
                     uri.as_str(),
                     e
                 );
-                cap_std::fs::Dir::open_ambient_dir(
-                    std::env::temp_dir(),
-                    cap_std::ambient_authority(),
-                )
-                .unwrap_or_else(|temp_err| {
-                    // Even temp_dir failed. Try "/" as absolute last resort.
-                    eprintln!(
-                        "LSP: warning: temp_dir fallback failed: {}; trying /",
-                        temp_err
-                    );
-                    cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
-                        .unwrap_or_else(|final_err| {
-                            // Everything failed. Log error and continue with a broken Dir by
-                            // re-attempting base_eval_ctx.base_dir.open_dir("."), which should
-                            // work since it succeeded in DocumentStore::new(). If it fails here,
-                            // something has changed mid-session (very rare). Log and exit.
-                            eprintln!(
-                                "LSP: CRITICAL: cannot open any base_dir for document: {}",
-                                final_err
-                            );
-                            eprintln!(
-                                "LSP: filesystem state changed mid-session; exiting to avoid crash"
-                            );
-                            std::process::exit(1);
-                        })
-                })
-            });
+                return;
+            }
+        };
         let eval_ctx = self.base_eval_ctx.with_base_dir(base_dir);
 
         // Detect .md files and use markdown extraction
@@ -780,7 +736,7 @@ impl DocumentStore {
 
 impl Default for DocumentStore {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("DocumentStore::default: failed to open CWD as base_dir")
     }
 }
 
@@ -906,7 +862,7 @@ mod tests {
 
     #[test]
     fn test_document_store_insert_get() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
@@ -917,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_document_store_update_replaces() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
@@ -929,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_document_store_remove() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
@@ -957,7 +913,7 @@ mod tests {
 
     #[test]
     fn test_document_store_multiple_docs() {
-        let mut store = DocumentStore::new();
+        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
         let url1 = "file:///a.llt".parse::<Uri>().unwrap();
         let url2 = "file:///b.llt".parse::<Uri>().unwrap();
 

@@ -121,6 +121,12 @@ Four corpus tests were failing due to small authoring errors: wrong type names, 
 - [x] Add `stdlib/syntax.llt` — macro fn/class/type let-softening stubs; opt-in via include (`stdlib/syntax.llt`)
 - [x] Add prelude helpers: span-of, wrap-in-let, let-decl-elems (stubs); first-or (implemented); macro-error (stub) (`stdlib/prelude.llt`)
 - [ ] Migrate `ast_to_dict` output from string `type:` fields to typed `Expr` variant values — blocked on typed Expr variant constructors (`src/builtins_meta.rs`, `stdlib/`)
+- [ ] Migrate `do` from `[fn [let args] ...]` (new_style=false) to `[macro do [let monad ...steps] body]` (new_style=true): rewrite body using named `monad` and `steps` bindings directly, eliminating `do-fold`'s `[get i args]` integer-key indexing into the packed args dict; requires ast_to_dict typed Expr output above (`stdlib/macros.llt`)
+- [ ] Migrate `tmpl` from `[fn [let args] ...]` to `[macro tmpl [let template ...parts] body]`: rewrite using named bindings; requires typed Expr output (`stdlib/macros.llt`)
+- [ ] Migrate `begin` from `[fn [let args] ...]` to `[macro begin [let ...exprs] [type: "sequential" exprs: exprs]]`: straightforward once variadic `[macro ...]` and typed Expr output are in place (`stdlib/macros.llt`)
+- [ ] Delete `new_style: false` code path from `expand_macro_call` in `src/expand.rs` and `register_stdlib_macros_from_env` once do/tmpl/begin are migrated; remove the `new_style` field from `MacroMetadata` entirely (`src/expand.rs`)
+- [ ] Remove `STDLIB_MACROS` constant and the old single-args-dict packing branch (`src/expand.rs`)
+- [ ] Tests: verify all do/tmpl/begin corpus tests pass with new_style=true calling convention (`tests/corpus/eval/macros/`)
 - [x] Tests: migrated macros pass; stdlib/ast.llt and stdlib/syntax.llt load cleanly (`tests/corpus/eval/macros/`)
 
 ---
@@ -261,6 +267,36 @@ Note: `builtin-*` aliases remain available to prelude via `[include %rust "core"
 
 ## Codebase Health
 
+### do-hkt-inference: Complete HKT monad inference for inferred-form `[do ...]`
+
+The `do` macro supports an **inferred form** where the monad is not given explicitly:
+`[do [x: [Ok 1]] [Ok x]]`. The transformer desugars this using a `%do-infer` sentinel
+monad and calls `do-desugar-inferred`. At runtime, `[%do-infer.bind ...]` fails with
+"undefined variable: %do-infer" because the type checker hasn't resolved the sentinel.
+The type checker is supposed to detect `%do-infer` in the expanded AST and substitute
+the inferred monad type — this is the missing piece.
+
+- [ ] Implement type-checker detection of `%do-infer` sentinel in expanded `[do]` AST; infer the monad type from the step expressions (e.g., `[Ok ...]` → `Result` monad) and substitute the resolved monad for `%do-infer` before evaluation (`src/typecheck.rs`, `src/expand.rs`)
+- [ ] Update `do-desugar-inferred` in `stdlib/macros.llt` if needed once the type-checker side is implemented
+- [ ] Enable the two inferred-form unit tests once inference works: `test_do_macro_inferred_form_binding_error` and `test_do_macro_inferred_form_expr_error` in `src/lib.rs`; update expected behavior to reflect successful inference, not an error
+- [ ] Add corpus tests for inferred-form `do` with `Result`, `Maybe`, and a custom monad (`tests/corpus/eval/macros/`)
+
+### reactivate-ignored-tests: Fix test infrastructure for ignored unit tests
+
+Two unit tests in `src/eval_materialize.rs` are `#[ignore]`d due to `test_ctx()`/
+`test_env()` helpers not properly initializing `EvalState` (missing `include_cache`,
+`include_guard`, and other fields added after the helpers were written):
+
+- `test_guarded_type_assertion_failure_has_secondary_span` (`src/eval_materialize.rs:2187`)
+- `test_guarded_secondary_span_suppressed_when_same_as_definition` (`src/eval_materialize.rs:2244`)
+
+- [ ] Update `test_ctx()` and `test_env()` in `src/eval_materialize.rs` to fully initialize `EvalState` (add `include_cache`, `include_guard`, and any other fields that default-construction doesn't populate); re-enable the two tests (`src/eval_materialize.rs`)
+- [ ] Verify the test assertions are still correct once the helpers are fixed; update expected spans/labels if needed
+
+The 8 stack-depth `#[ignore]` tests in `src/builtins.rs`, `src/eval.rs`, and `src/repl.rs` also need fixing — they test depth-limit policy and currently never run in CI (which runs debug mode, where they fail due to Rust's default stack size). Fix by wrapping each in `std::thread::Builder::new().stack_size(256 * 1024 * 1024).spawn(|| { /* body */ }).unwrap().join().unwrap()` and remove `#[ignore]`:
+
+- [ ] Wrap the 8 stack-depth tests in a 256MB stack thread; remove `#[ignore]` (`src/builtins.rs:4483`, `src/builtins.rs:9440`, `src/builtins.rs:10358`, `src/builtins.rs:10456`, `src/builtins.rs:10532`, `src/builtins.rs:10674`, `src/eval.rs:7653`, `src/repl.rs:931`)
+
 ### cap-std-pervasive: Replace ambient std::fs calls and constrain open_ambient_dir usage
 
 **Security audit 2026-05-18** found 5 `std::fs` violations in production code paths (bypassing cap_std), and several `open_ambient_dir` usages in LSP code that open `/`, `/tmp`, `/var/tmp` as fallbacks — defeating the RESOLVE_BENEATH confinement model. The LSP `no_fs=true` guard prevents eval-time `$include` execution but not the filesystem reads that use the ambient Dir itself.
@@ -276,15 +312,15 @@ Test code (`#[cfg(test)]`) is exempt from this policy.
 
 `src/lsp/document.rs:561-593` opens `.`, then `temp_dir`, then `/`, then `/tmp`, then `/var/tmp` as a fallback chain. Opening `/` as `base_dir` makes RESOLVE_BENEATH a no-op — everything on the filesystem is reachable. Fix: if `.` and the document's own directory fail, return an LSP error response rather than falling back to root.
 
-- [ ] In `src/lsp/document.rs` `DocumentState::new()` (lines 561-593): remove the `/`, `/tmp`, `/var/tmp` fallback chain; if `Dir::open_ambient_dir(".")` fails, log the error and return `Err(...)` from `DocumentState::new()`; callers in `server.rs` already handle `Err` by returning an error LSP response (`src/lsp/document.rs:561-593`, `src/lsp/server.rs`)
-- [ ] In `src/lsp/document.rs` `evaluate_document()` (lines 633-670): same pattern — remove `/` fallback; if document's dir and `.` both fail, fall back to `base_eval_ctx.config.base_dir.open_dir(".")` only (already attempted at line 638); if that fails, return `Err(...)` instead of opening root (`src/lsp/document.rs:633-670`)
+- [x] In `src/lsp/document.rs` `DocumentState::new()` (lines 561-593): remove the `/`, `/tmp`, `/var/tmp` fallback chain; if `Dir::open_ambient_dir(".")` fails, log the error and return `Err(...)` from `DocumentState::new()`; callers in `server.rs` already handle `Err` by returning an error LSP response (`src/lsp/document.rs:561-593`, `src/lsp/server.rs`)
+- [x] In `src/lsp/document.rs` `evaluate_document()` (lines 633-670): same pattern — remove `/` fallback; if document's dir and `.` both fail, fall back to `base_eval_ctx.config.base_dir.open_dir(".")` only (already attempted at line 638); if that fails, return `Err(...)` instead of opening root (`src/lsp/document.rs:633-670`)
 
 **Fix 2 (MEDIUM) — Replace `std::fs` with cap_std in `imports.rs` `resolve_includes()`**
 
 `src/imports.rs:701,710` use `std::fs::metadata` and `std::fs::read_to_string` after a software `starts_with` guard. Replace with cap_std I/O so RESOLVE_BENEATH enforces confinement at the kernel level instead of a path string check.
 
-- [ ] Add `base_cap_dir: Option<&cap_std::fs::Dir>` parameter to `resolve_includes()` in `src/imports.rs`; when `Some(dir)`, use `dir.metadata(relative_path)?` and `dir.open(relative_path)?` → `read_to_string()` instead of the `std::fs` calls at lines 701 and 710; derive `relative_path` as `normalized.strip_prefix(base_dir).unwrap_or(&normalized)` (`src/imports.rs:680-720`)
-- [ ] Update all callers of `resolve_includes()` to pass the appropriate `cap_std::fs::Dir` reference (from `EvalContext.config.base_dir`) (`src/imports.rs`, `src/lib.rs`, `src/main.rs`)
+- [x] Add `base_cap_dir: Option<&cap_std::fs::Dir>` parameter to `resolve_includes()` in `src/imports.rs`; when `Some(dir)`, use `dir.metadata(relative_path)?` and `dir.open(relative_path)?` → `read_to_string()` instead of the `std::fs` calls at lines 701 and 710; derive `relative_path` as `normalized.strip_prefix(base_dir).unwrap_or(&normalized)` (`src/imports.rs:680-720`)
+- [x] Update all callers of `resolve_includes()` to pass the appropriate `cap_std::fs::Dir` reference (from `EvalContext.config.base_dir`) (`src/imports.rs`, `src/lib.rs`, `src/main.rs`)
 
 **Fix 3 (MEDIUM) — Replace `std::fs` with cap_std in LSP `index_file()` and `load_doc_from_uri()`**
 

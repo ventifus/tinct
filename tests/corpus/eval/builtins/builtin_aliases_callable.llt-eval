@@ -2,5 +2,5 @@
 [
   a: [builtin-lt 1 2]
 ]
-=== err
-undefined variable: `builtin-lt`
+=== error
+[E002] undefined variable: builtin-lt
