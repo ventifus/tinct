@@ -155,7 +155,6 @@ impl MacroEnv {
     }
 
     /// Register a macro transformer with params pattern and inject default.
-    /// Returns an error if the name collides with a registered Rust builtin.
     fn register_macro(
         &mut self,
         name: String,
@@ -163,24 +162,8 @@ impl MacroEnv {
         params: Spanned<Expr>,
         inject_default: Option<String>,
         new_style: bool,
-        span: Span,
+        _span: Span,
     ) -> EvalResult<()> {
-        // Check if the name collides with a registered builtin
-        let builtin_names: HashSet<String> = builtins::standard_builtins()
-            .iter()
-            .map(|def| def.name.to_string())
-            .collect();
-
-        if builtin_names.contains(&name) {
-            return Err(EvalError::user_error(
-                format!(
-                    "macro name '{}' collides with registered builtin — macros cannot shadow builtins",
-                    name
-                ),
-                span,
-            )
-            .into());
-        }
         self.macros.insert(
             name,
             MacroMetadata {
@@ -311,7 +294,6 @@ fn register_stdlib_macros_from_env(
                 },
                 span,
             );
-            // register_macro checks for builtin collisions.
             let _ = env_macro.register_macro(
                 (*macro_name).to_string(),
                 transformer,
