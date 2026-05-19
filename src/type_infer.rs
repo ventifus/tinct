@@ -1,39 +1,12 @@
 //! Type inference machinery: InferState, Substitution, generalization, instantiation.
 //!
 //! This module contains the core type inference infrastructure including
-//! substitution, levels-based let-generalization (Kiselyov 2013), and kind inference.
+//! substitution and levels-based let-generalization (Kiselyov 2013).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::Span;
-use crate::types::{ClassDecl, ClassEnv, Constraint, InstanceEnv, Kind, KindError, Type};
-
-/// Bounds for a type variable in algebraic subtyping.
-/// A type variable α is satisfiable iff join(lower) <: meet(upper).
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypeVarBounds {
-    /// Lower bounds: types that are subtypes of this variable (positive positions).
-    /// Multiple lower bounds compact to a union: α ⊇ Int, α ⊇ Str → α = Int | Str
-    pub lower: Vec<Type>,
-    /// Upper bounds: types that are supertypes of this variable (negative positions).
-    /// Multiple upper bounds compact to an intersection: α ⊆ Number, α ⊆ Equatable → α = Number & Equatable
-    pub upper: Vec<Type>,
-}
-
-impl TypeVarBounds {
-    pub fn new() -> Self {
-        Self {
-            lower: vec![],
-            upper: vec![],
-        }
-    }
-}
-
-impl Default for TypeVarBounds {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+use crate::types::{ClassDecl, ClassEnv, Constraint, InstanceEnv, Kind, Type};
 
 /// Polymorphic type scheme: ∀ type_vars. constraints => body
 /// Used for let-bound polymorphism (Damas-Milner) and type class constraints.
@@ -94,12 +67,6 @@ pub struct InferState {
     /// Constraints are generated when overloaded builtins are called with type variables.
     /// During generalization, constraints on generalized variables are included in the TypeScheme.
     pub constraints: Vec<Constraint>,
-    /// Type variable bounds for algebraic subtyping.
-    /// Maps type variable names to their lower/upper bounds. Used alongside `subst` during
-    /// the migration from unification to constraint-based typing. Eventually, bounds will
-    /// replace equality-based substitution for all type variables.
-    #[allow(dead_code)] // Scaffolding for algebraic subtyping migration
-    pub bounds: HashMap<String, TypeVarBounds>,
     /// Kind environment: maps TypeVar names to their kinds.
     /// Populated during class method processing (Kind::Operator) and when `key@"k"` annotations
     /// are resolved (Kind::Label). Used to prevent promotion of label-kinded TypeVars and to
@@ -135,8 +102,7 @@ pub struct InferState {
     /// When a TypeStageApp has non-ground arguments or cannot be reduced, equality
     /// constraints involving it are deferred here. After each round of unification,
     /// process_deferred_equalities attempts to resolve them.
-    /// (Unused until chr-prelude sprint implements resolvers that produce TypeStageApp)
-    #[allow(dead_code)]
+    /// Actively written to (type_unify.rs) and saved/restored during branch inference (typecheck.rs).
     pub deferred_equalities: Vec<(Type, Type)>,
     /// Boundary guards collected during inference: span → expected_param_type.
     /// When a call-site argument has inferred type `Unknown` and the function parameter
@@ -305,7 +271,6 @@ impl InferState {
             levels: HashMap::new(),
             subst: Substitution::new(),
             constraints: Vec::new(),
-            bounds: HashMap::new(),
             kind_env: HashMap::new(),
             class_env,
             instance_env: InstanceEnv::new(),
@@ -339,12 +304,6 @@ impl InferState {
 
     // fresh_row_var_name removed — BAS Step 4: no RowVar tails exist
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub fn fresh_var(&mut self) -> Type {
-        self.fresh_type_var()
-    }
-
     /// Compact the levels map by removing entries for TypeVars that have been unified.
     /// A TypeVar is considered unified if its name appears in the substitution's type_map.
     /// This prevents unbounded growth of the levels HashMap during long inference sessions.
@@ -360,153 +319,6 @@ impl InferState {
 impl Default for InferState {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// State for kind inference and unification (Jones 1993)
-///
-/// Kind inference assigns kinds to type constructors and validates their usage.
-/// For example, `Seq` has kind `* -> *` (takes a type, returns a type), while
-/// `Int` has kind `*` (is a proper type). Kind variables (`Kind::Var`) are used
-/// for type constructors whose kind is not yet known.
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Scaffolding for type class implementation
-pub struct KindState {
-    /// Monotonic counter for fresh kind variable IDs
-    pub next_var: u32,
-    /// Substitution from kind variables to kinds
-    pub substitution: HashMap<u32, Kind>,
-}
-
-impl KindState {
-    /// Create a new kind inference state
-    pub fn new() -> Self {
-        Self {
-            next_var: 0,
-            substitution: HashMap::new(),
-        }
-    }
-
-    /// Generate a fresh kind variable
-    #[allow(dead_code)] // Scaffolding for kind inference
-    pub fn fresh_var(&mut self) -> Kind {
-        let id = self.next_var;
-        self.next_var = self.next_var.saturating_add(1);
-        Kind::Var(id)
-    }
-
-    /// Apply the current substitution to a kind (chase bindings to fixpoint)
-    pub fn apply(&self, kind: &Kind) -> Kind {
-        match kind {
-            Kind::Type => Kind::Type,
-            Kind::Arrow(k1, k2) => Kind::Arrow(Box::new(self.apply(k1)), Box::new(self.apply(k2))),
-            Kind::Operator => Kind::Operator,
-            Kind::Label => Kind::Label,
-            Kind::Var(id) => {
-                if let Some(k) = self.substitution.get(id) {
-                    self.apply(k) // Chase transitive bindings
-                } else {
-                    Kind::Var(*id)
-                }
-            }
-        }
-    }
-
-    /// Default all unresolved kind variables to `Kind::Type` (Jones 1993, §4)
-    ///
-    /// After kind inference completes, any remaining kind variables represent unconstrained
-    /// type constructors. By convention (and for simplicity), we default them to `*` (proper types).
-    /// This is sound because:
-    /// - If a type constructor has no applied arguments, it must have kind `*`
-    /// - If it has arguments but no kind constraints, defaulting to `*` is the most permissive choice
-    ///
-    /// Example: `[@Seq<$T> [1 2 3]]` infers `Seq: ?k0 -> *`, then defaults `?k0` to `*`, giving `Seq: * -> *`.
-    #[allow(dead_code)] // Scaffolding for kind inference
-    pub fn default_remaining(&mut self) {
-        // Collect all kind variables that appear in the substitution (transitively)
-        let mut all_vars = HashSet::new();
-        for k in self.substitution.values() {
-            self.collect_kind_vars(k, &mut all_vars);
-        }
-
-        // Default any unbound kind variables to Type
-        for id in 0..self.next_var {
-            if !self.substitution.contains_key(&id) && !all_vars.contains(&id) {
-                self.substitution.insert(id, Kind::Type);
-            }
-        }
-    }
-
-    /// Collect all kind variables appearing in a kind (for defaulting)
-    #[allow(dead_code)] // Scaffolding for kind inference
-    fn collect_kind_vars(&self, kind: &Kind, vars: &mut HashSet<u32>) {
-        match kind {
-            Kind::Type => {}
-            Kind::Arrow(k1, k2) => {
-                self.collect_kind_vars(k1, vars);
-                self.collect_kind_vars(k2, vars);
-            }
-            Kind::Operator => {}
-            Kind::Label => {}
-            Kind::Var(id) => {
-                if vars.insert(*id) {
-                    // Only recurse if we haven't seen this variable before
-                    if let Some(k) = self.substitution.get(id) {
-                        self.collect_kind_vars(k, vars);
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Default for KindState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Occurs check for kind unification — does kind variable `v` appear in kind `k`?
-///
-/// Prevents infinite kinds like `?k0 = ?k0 -> *`, which would create cycles in the kind structure.
-#[allow(dead_code)] // Scaffolding for type class implementation
-fn occurs_in_kind(v: u32, k: &Kind, state: &KindState) -> bool {
-    match state.apply(k) {
-        Kind::Type => false,
-        Kind::Arrow(k1, k2) => occurs_in_kind(v, &k1, state) || occurs_in_kind(v, &k2, state),
-        Kind::Operator => false,
-        Kind::Label => false,
-        Kind::Var(id) => id == v,
-    }
-}
-
-/// Unify two kinds, updating the kind substitution (Robinson's Algorithm U for kinds)
-///
-/// Kind unification is simpler than type unification because kinds don't have rows,
-/// literals, or subtyping. It's pure structural unification:
-/// - `*` unifies with `*`
-/// - `k1 -> k2` unifies with `k3 -> k4` if `k1 ~ k3` and `k2 ~ k4`
-/// - `?k` unifies with any kind `k` (if occurs check passes)
-#[allow(dead_code)] // Scaffolding for type class implementation
-pub fn unify_kind(k1: &Kind, k2: &Kind, state: &mut KindState) -> Result<(), KindError> {
-    let k1 = state.apply(k1);
-    let k2 = state.apply(k2);
-
-    match (&k1, &k2) {
-        (Kind::Type, Kind::Type) => Ok(()),
-        (Kind::Arrow(a1, r1), Kind::Arrow(a2, r2)) => {
-            unify_kind(a1, a2, state)?;
-            unify_kind(r1, r2, state)
-        }
-        (Kind::Var(v), k) | (k, Kind::Var(v)) => {
-            // Occurs check: prevent infinite kinds
-            if occurs_in_kind(*v, k, state) {
-                return Err(KindError::InfiniteKind);
-            }
-            state.substitution.insert(*v, k.clone());
-            Ok(())
-        }
-        _ => Err(KindError::Mismatch(k1, k2)),
     }
 }
 

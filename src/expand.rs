@@ -1789,11 +1789,10 @@ fn expand_macro_call(
     expand_expr(expanded_ast, env, ctx, stdlib_env)
 }
 
-/// Validate an argument against a syntax-class annotation (Task 3).
+/// Validate an argument against a syntax-class annotation.
 ///
 /// For now, only supports @VariantName syntax (e.g., @VarRef, @Literal).
 /// Full named syntax-class support is TODO.
-#[allow(dead_code)] // TODO: will be used when Task 1 pattern matching is fully implemented
 fn validate_syntax_class(
     arg: &Rc<Spanned<Expr>>,
     annotation: &crate::ast::Annotation,

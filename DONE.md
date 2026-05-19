@@ -6427,20 +6427,6 @@ The `===` sections are visible in rendered markdown — readers see code and exp
 inline, without needing HTML rendering to surface results. The `=== info` section is new
 (not in corpus tests) and captures `log`/stdout output.
 
-### do-hkt-inference: Complete HKT monad inference for inferred-form `[do ...]`
-
-The `do` macro supports an **inferred form** where the monad is not given explicitly:
-`[do [x: [Ok 1]] [Ok x]]`. The transformer desugars this using a `%do-infer` sentinel
-monad and calls `do-desugar-inferred`. At runtime, `[%do-infer.bind ...]` fails with
-"undefined variable: %do-infer" because the type checker hasn't resolved the sentinel.
-The type checker is supposed to detect `%do-infer` in the expanded AST and substitute
-the inferred monad type — this is the missing piece.
-
-- [x] Implement type-checker detection of `%do-infer` sentinel in expanded `[do]` AST; infer the monad type from the step expressions (e.g., `[Ok ...]` → `Result` monad) and substitute the resolved monad for `%do-infer` before evaluation (`src/typecheck.rs`, `src/expand.rs`)
-- [x] Update `do-desugar-inferred` in `stdlib/macros.llt` if needed once the type-checker side is implemented (no changes needed — macro already generates correct %do-infer.bind calls)
-- [x] Enable the two inferred-form unit tests once inference works: `test_do_macro_inferred_form_binding` and `test_do_macro_inferred_form_expr` in `src/lib.rs`; update expected behavior to reflect successful inference, not an error
-- [x] Add corpus tests for inferred-form `do` with `Result` monad (`tests/corpus/eval/macros/do_inferred_result_*.llt-eval`)
-
 **Weave (`--in-place`):** evaluate the code portion (everything before the first `===`
 line); update/insert `=== out`, `=== warn`, `=== info` sections with actual results.
 Replaces the previous `<!-- tinct-result: ... -->` HTML comment approach.
@@ -7861,3 +7847,42 @@ Doc consistency audit (2026-05-18). Principle: whatifs are the primary historica
 - [x] Assign `E091` to `ErrorKind::KindMismatch` in `src/error.rs` (or equivalent variant for kind-mismatch errors); add E091 to all three tables in `doc/10-errors.md` (variant catalog, codes table, categories table) (`src/error.rs`, `doc/10-errors.md`)
 - [x] Add corpus test `tests/corpus/eval/stdlib/hkt_monad_maybe_do.llt-eval`: explicit `[do MonadMaybe [x: [Some 42]] [Some [+ x 1]]]` — expect `Variant(Some, Int(43))` (`tests/corpus/eval/stdlib/`)
 - [x] Add corpus test `tests/corpus/eval/stdlib/hkt_monad_result_do.llt-eval`: explicit `[do MonadResult [x: [ok: 1]] [ok: [+ x 1]]]` — expect `Dict([ok: Int(2)])` (`tests/corpus/eval/stdlib/`)
+
+### do-hkt-inference: Complete HKT monad inference for inferred-form `[do ...]`
+
+The `do` macro supports an **inferred form** where the monad is not given explicitly:
+`[do [x: [Ok 1]] [Ok x]]`. The transformer desugars this using a `%do-infer` sentinel
+monad and calls `do-desugar-inferred`. At runtime, `[%do-infer.bind ...]` fails with
+"undefined variable: %do-infer" because the type checker hasn't resolved the sentinel.
+The type checker is supposed to detect `%do-infer` in the expanded AST and substitute
+the inferred monad type — this is the missing piece.
+
+- [x] Implement type-checker detection of `%do-infer` sentinel in expanded `[do]` AST; infer the monad type from the step expressions (e.g., `[Ok ...]` → `Result` monad) and substitute the resolved monad for `%do-infer` before evaluation (`src/typecheck.rs`, `src/expand.rs`)
+- [x] Update `do-desugar-inferred` in `stdlib/macros.llt` if needed once the type-checker side is implemented (no changes needed — macro already generates correct %do-infer.bind calls)
+- [x] Enable the two inferred-form unit tests once inference works: `test_do_macro_inferred_form_binding` and `test_do_macro_inferred_form_expr` in `src/lib.rs`; update expected behavior to reflect successful inference, not an error
+- [x] Add corpus tests for inferred-form `do` with `Result` monad (`tests/corpus/eval/macros/do_inferred_result_*.llt-eval`)
+
+### dead-code-sweep: Remove unused imports and inert dead-code suppressions
+
+Grep audit (2026-05-18) found 10 items with `#[allow(dead_code)]` or `#[allow(unused_imports)]` that have no planned activation path (scaffolding tied to active sprints is excluded). All ALREADY REMOVED in prior cleanup (verified 2026-05-18). Dead-code sweep D section (audit 2026-05-19) completed items: TypeVarBounds+KindState+KindError+fresh_var deleted; deferred_equalities/resolver_injective verified live; arena.rs test methods moved to #[cfg(test)]; validate_syntax_class verified live (has caller); Kind::Var+Kind::Arrow orphaned variants deleted.
+
+- [x] Remove `#[allow(unused_imports)]` from `src/types.rs:17`; delete or use the import — ALREADY REMOVED
+- [x] Remove `#[allow(unused_imports)]` from `src/eval_dict.rs:17`; delete or use the import — ALREADY REMOVED
+- [x] Remove `#[allow(unused_imports)]` from `src/builtins.rs:543,553`; delete or use the imports — ALREADY REMOVED
+- [x] Remove `#[allow(dead_code)]` from `src/type_env.rs:25`; delete or use the item — ALREADY REMOVED
+- [x] Remove `#[allow(dead_code)]` from `src/error.rs:2015`; delete or use the item — ALREADY REMOVED
+- [x] Remove `#[allow(dead_code)]` from `src/typecheck.rs:4384`; delete or use the item — ALREADY REMOVED
+- [x] Remove `#[allow(dead_code)]` from `src/lib.rs:37,1080,1093,1105`; delete or use each item — ALREADY REMOVED
+- [x] Remove `#[allow(dead_code)]` from `src/eval.rs:202,207` (EvalContext fields); delete the fields — ALREADY REMOVED
+- [x] Delete `extract_instance_type_name` at `src/eval.rs:1469` — ALREADY REMOVED
+- [x] Remove `#[allow(dead_code)]` from `src/eval_call.rs:41`; delete the dead function — ALREADY REMOVED
+- [x] Verify `just build` passes with `-D warnings` after all removals — pass
+
+### scaffolding-cleanup: Remove dead scaffolding from completed and cancelled sprints
+
+Follow-up audit confirmed most scaffolding items were genuinely dead. Section D (2026-05-19): TypeVarBounds struct, KindState struct+impl, KindError enum, InferState::fresh_var() deleted. deferred_equalities/resolver_injective/process_deferred_equalities verified live. 6 arena.rs methods moved to #[cfg(test)]. validate_syntax_class verified live (caller at expand.rs:1498). Kind::Var+Kind::Arrow orphaned variants deleted from Kind enum.
+
+- [x] Remove stale `#[allow(dead_code)]` from `Kind::*` variants in `src/type_def.rs` — NO dead_code annotations found; already clean
+- [x] Remove stale `#[allow(dead_code)]` from `ClassDecl` fields in `src/type_class.rs` — audited and resolved
+- [x] Delete BAS scaffolding functions (compact_bounds, check_bounds_satisfiable, constrain, TypeVarBounds::add_lower/add_upper, ConstraintSource, ClassEnv/InstanceEnv parent chain) — ALREADY DELETED
+- [x] D section: TypeVarBounds+KindState+KindError+fresh_var deleted; Kind::Var+Kind::Arrow deleted; arena.rs test methods moved to #[cfg(test)]; all build/tests pass

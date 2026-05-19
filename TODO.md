@@ -126,7 +126,7 @@ Unblocks `macros-v2-stdlib`. Currently `ast_to_dict` (src/builtins_meta.rs) emit
 
 - [x] Migrate 11 corpus test files from `defmacro` to `macro`; 4 kept as defmacro (variadic params not yet supported in macro keyword) (`tests/corpus/eval/macros/`)
 - [x] Migrate stdlib/macros.llt — tmpl/do/begin kept as defmacro (require variadic args); documented migration path (`stdlib/macros.llt`)
-- [x] gensym API update — deferred: would break existing macro expansion semantics; documented in stdlib/macros.llt
+- [ ] Update gensym API: change from zero-arg String return (`[gensym]` → `:gensym:0`) to one-arg `[gensym prefix@Str]` returning `VarRef(name: ":prefix:N")` — required for `[unquote (gensym "name")]` hygiene in quasiquote positions; migrate all `[gensym]` call sites to `[gensym "name"]`; update corpus tests; see `doc/whatif/macros-v2.md:903` (`stdlib/prelude.llt`, `src/builtins.rs`, corpus tests)
 - [x] Add `stdlib/ast.llt` — ~130 lines with Entry/Annotation/Expr nominal types; flatten-args and ident stubs (`stdlib/ast.llt`)
 - [x] Add `stdlib/syntax.llt` — macro fn/class/type let-softening stubs; opt-in via include (`stdlib/syntax.llt`)
 - [x] Add prelude helpers: span-of, wrap-in-let, let-decl-elems (stubs); first-or (implemented); macro-error (stub) (`stdlib/prelude.llt`)
@@ -188,7 +188,8 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [x] Fix Landlock path extraction to strip `:MODE` suffix before constructing PathBuf — applied `rsplit_once(':')` mode-stripping in `run_eval` Landlock block (`src/main.rs:1065-1074`); `run_literate_eval` and `run_literate_weave` do not have Landlock setup (no `no_landlock` param, no `setup_landlock` call) so no fix needed there
 - [x] Restore `--cap-fs docdir=doc/lib:w` in `just docgen` once Landlock path extraction is fixed — restored at `justfile:199`; `just build` and `just test-lib` pass clean
 - [x] Audit all `--- caps:` declarations in `scripts/`, `stdlib/`, and `samples/` for bare `@DirCap` and update to explicit flag lists (`scripts/`, `stdlib/`, `samples/`) — Updated `test_permissions.llt` to use `@[[all DirCap Listable Statable]]`; `scripts/docgen.llt` already has `@[DirCap [Writable]]`; no bare `@DirCap` found in `samples/` or `stdlib/`
-- [ ] **KNOWN ISSUE**: CLI-level backward-compat at `src/main.rs:1321,2469,2765` — `--cap-fs NAME=PATH` without `:MODE` defaults to `DirPerms::full()`. The type-level compat described in whatif doc lines 107-109 was never implemented. Removing CLI default breaks many tests (`tests/cli_tests.rs:1636,1671,2182,2215,2248,2285,2331`). Deferred until test suite is updated to use explicit modes.
+- [ ] Update 7 cli_tests to use explicit `--cap-fs NAME=PATH:MODE` syntax instead of bare `NAME=PATH` — prerequisite to closing the KNOWN ISSUE below (`tests/cli_tests.rs:1636,1671,2182,2215,2248,2285,2331`)
+- [ ] **KNOWN ISSUE**: CLI-level backward-compat at `src/main.rs:1321,2469,2765` — `--cap-fs NAME=PATH` without `:MODE` defaults to `DirPerms::full()`. The type-level compat described in whatif doc lines 107-109 was never implemented. Removing CLI default breaks many tests (`tests/cli_tests.rs:1636,1671,2182,2215,2248,2285,2331`). Blocked on the test suite update above.
 - [x] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
 
 ---
@@ -465,70 +466,6 @@ No public release has been made; there are no external users and nothing to be c
 - [x] Remove legacy positional constraint class list form at `src/typecheck_annot.rs:539` — ALREADY AN ERROR since typecheck-annot sprint; unkeyed list without `each` keyword produces type error with hint
 - [x] Remove legacy `Expr::Dict` path for `or`/`all`/`without` type expressions at `src/typecheck_annot.rs:1189-1205` — NEVER EXISTED; parser always produced `Call { implied: true }` for these forms
 - [x] Verify `just build` and `just test-lib` pass after all removals — `just build` exited 0, `just test-lib` exited 0
-
-### dead-code-sweep: Remove unused imports and inert dead-code suppressions (DONE)
-
-Grep audit (2026-05-18) found 10 items with `#[allow(dead_code)]` or `#[allow(unused_imports)]` that have no planned activation path (scaffolding tied to active sprints is excluded).
-
-- [x] Remove `#[allow(unused_imports)]` from `src/types.rs:17`; delete or use the import — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(unused_imports)]` from `src/eval_dict.rs:17`; delete or use the import — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(unused_imports)]` from `src/builtins.rs:543,553`; delete or use the imports — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(dead_code)]` from `src/type_env.rs:25`; delete or use the item — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(dead_code)]` from `src/error.rs:2015`; delete or use the item — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(dead_code)]` from `src/typecheck.rs:4384`; delete or use the item — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(dead_code)]` from `src/lib.rs:37,1080,1093,1105`; delete or use each item — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(dead_code)]` from `src/eval.rs:202,207` (EvalContext fields); either add a read site or delete the fields — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Delete `extract_instance_type_name` at `src/eval.rs:1469` — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Remove `#[allow(dead_code)]` from `src/eval_call.rs:41`; CEK migration has no active sprint — delete the dead function — ALREADY REMOVED in prior cleanup (verified 2026-05-18)
-- [x] Verify `just build` passes with `-D warnings` after all removals — `just build` exited 0, `just test-lib` passed (2026-05-18)
-
-### scaffolding-cleanup: Remove dead scaffolding from completed and cancelled sprints
-
-Follow-up audit (2026-05-18) confirmed most "scaffolding" items are genuinely dead — the sprints they were written for are done (DONE.md) but the scaffolding was never removed. Three categories:
-
-**A. Stale dead_code annotations on live code** — items marked dead_code when written but now activated by completed sprints; fix by removing the suppress attr:
-
-- [x] Remove stale `#[allow(dead_code)]` from `Kind::Arrow`, `Kind::Operator`, `Kind::Label`, `Kind::Var`, `KindError`, `Label` in `src/type_def.rs:42-93` — NO dead_code annotations found; already clean (verified 2026-05-18)
-- [x] Remove stale `#[allow(dead_code)]` from `ClassDecl` fields in `src/type_class.rs:74-100` — audited and resolved (2026-05-18): deleted `ClassDecl::methods` (no read sites anywhere; write-only scaffolding); removed `#[allow(dead_code)]` from `InstanceDecl::method_types` (live — read in `resolve_instance` and tests); kept `#[allow(dead_code)]` on `ClassDecl::resolver_injective` with corrected justification (field is stored but only read by chr-gaps sprint when it wires up FD resolution); `just build` exits 0 (`src/type_class.rs`)
-
-**B. Genuinely dead functions from completed sprints** — BAS infrastructure written but not wired; `bas-core` is done (DONE.md) and does not use these; delete them:
-
-- [x] Delete `compact_bounds` at `src/type_unify.rs:1323` — ALREADY DELETED (verified 2026-05-18)
-- [x] Delete `check_bounds_satisfiable` at `src/type_unify.rs:1365` — ALREADY DELETED (verified 2026-05-18)
-- [x] Delete `constrain` at `src/type_unify.rs:1412` — ALREADY DELETED (verified 2026-05-18)
-- [x] Note: `process_deferred_equalities` at `src/type_unify.rs:2053` is NOT dead BAS scaffolding — it is chr-gaps infrastructure for TypeStageApp resolution; has `#[allow(dead_code)]`, kept for chr-gaps Gap 1 (verified 2026-05-18)
-- [x] Delete `TypeVarBounds::add_lower` and `add_upper` at `src/type_infer.rs:32-41` — ALREADY DELETED (verified 2026-05-18)
-- [x] Delete `ConstraintSource` at `src/type_infer.rs:53-57` — ALREADY DELETED (verified 2026-05-18)
-- [x] Delete `ClassEnv::parent`, `ClassEnv::with_parent`, `InstanceEnv::parent`, `InstanceEnv::with_parent`, `InstanceEnv::get` at `src/type_class.rs:125-211` — ALREADY DELETED (verified 2026-05-18)
-
-**C. arena-phase3 scaffolding** — `FlatEnv`, `EnvArena`, `EnvId`, `ThunkArena::alloc_letrec_group`, `ThunkArena::fill_letrec_slot`, and the `env_arena` field on `EvalContext` are pre-written for the `arena-phase3` sprint and should NOT be deleted. See `arena-phase3` sprint below.
-
-**D. `#[allow(dead_code)]` sweep — audit 2026-05-19**
-
-All `#[allow(dead_code)]` items categorized. Three actions needed:
-
-*Delete — features shipped, scaffolding is genuinely dead:*
-- [ ] `src/type_infer.rs:101` — `bounds: HashMap<String, TypeVarBounds>` field on `InferState`, marked "Scaffolding for algebraic subtyping migration". BAS is shipped; delete the field and any construction sites (`src/type_infer.rs`)
-- [ ] `src/type_infer.rs:373-442` — `KindState` struct + `fresh_var()` + `default_remaining()` + `collect_kind_vars()` methods, marked "Scaffolding for type class/kind inference". HKT/CHR shipped; `KindState` is never instantiated from production code; delete the entire struct and its impl block (`src/type_infer.rs`)
-- [ ] `src/type_infer.rs:343` — `fresh_var()` method marked both `#[cfg(test)]` AND `#[allow(dead_code)]`. If cfg(test) it's compile-time-gated, so `#[allow]` means no test actually calls it. Delete the method (`src/type_infer.rs`)
-- [ ] `src/type_infer.rs:139` — `deferred_equalities: Vec<(Type, Type)>` on `InferState`, marked "Unused until chr-prelude sprint". chr-prelude is shipped; either this field is now used (remove the allow) or it's genuinely dead (delete it). Verify and act (`src/type_infer.rs`)
-- [ ] `src/type_class.rs:88` — `resolver_injective: bool` on `ClassDecl`, marked "Wired up when chr-gaps Gap 1 is implemented". chr-gaps shipped; verify whether this field is read anywhere; if not, delete it (`src/type_class.rs`)
-- [ ] `src/type_unify.rs:2052` — `process_deferred_equalities`, previously kept for chr-gaps. chr-prelude/chr-gaps are done; verify whether this function is now called. If called, remove the allow. If still unused, delete (`src/type_unify.rs`)
-
-*Move to `#[cfg(test)]` — test-only, currently in production scope:*
-- [ ] `src/arena.rs` — the 8 methods with "used in tests; production callers use X directly" comments (`alloc_child`, `get_mut`, `alloc_letrec_group`, `get_slot`, `get_by_name`, `insert_overflow`, `parent()`, one more): if they're genuinely only called from `#[cfg(test)]` blocks, move the method bodies (or the entire method) inside `#[cfg(test)]` so the compiler sees them as used without needing `#[allow]`. If any of these will be used by arena-phase3 production code, leave them and remove the allow when that sprint lands (`src/arena.rs`)
-
-*Implement or delete — pending feature, currently silenced:*
-- [ ] `src/expand.rs:1814` — `validate_syntax_class()` marked "TODO: will be used when Task 1 pattern matching is fully implemented". This is macros-v2 syntax-class validation (parameter annotation checking). Either implement it as part of macros-v2 remaining work, or delete it and track the feature requirement in the macros-v2-stdlib sprint separately (`src/expand.rs`)
-
-*ErrorKind constructor gap (tacked from health21-errorkind-constructors):*
-- [ ] Add `pub fn` constructors in `EvalError` for all `ErrorKind` variants that currently lack them (e.g., `InvalidUtf8InBytes`, `InvalidHexEncoding`, `KindMismatch`) — match the style of existing constructors like `EvalError::type_mismatch`, `EvalError::no_instance` (`src/error.rs`)
-
-*Legitimate clippy suppressions — no action needed:*
-- `too_many_arguments` in `src/main.rs`, `src/builtins_io.rs` — functions with many params, refactor separately
-- `enum_variant_names` in `src/type_def.rs` — deliberate naming
-- `type_complexity` in `src/value.rs` — complex but necessary types
-- `deprecated` in `src/lsp/analysis.rs` — LSP spec requires the deprecated field
 
 ### arena-phase3: O(1) variable lookup via FlatEnv display-vector addressing
 
