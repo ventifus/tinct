@@ -1,10 +1,7 @@
 # $apply passes string-keyed dict entries as named args to the called function.
-# When the called function is a Rust-native builtin (e.g. $builtin-add), it
-# calls reject_named and produces E023 (NamedArgRejected).
-# Note: $+ is a Tinct wrapper function, not the raw builtin.
-[apply builtin-add [named: 1]]
+# When the function does not declare a parameter named "named", apply
+# produces E022 (UnknownNamedArg).
+# Note: $+ is a Tinct wrapper function; builtin-add is not in user scope.
+[apply + [named: 1]]
 === error
-[E023]
-
-=== warn
-cannot unify Fn@⊤ [⊤] with Fn@_t2 [_t0 _t1] at 4:8-4:19
+[E022]

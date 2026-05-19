@@ -840,54 +840,49 @@ let result = rt.block_on(async { /* quinn QUIC handshake */ });
 
 **Extension:** If a session builtin needs to hold a live async connection across multiple builtin calls (e.g., streaming gRPC), the runtime must outlive the builtin call. In that case, store the runtime alongside the handle in the `Value::Handle` `caps` dict as an opaque Rust-managed resource.
 
-## Stable Aliases
+## %rust Virtual Module
 
-The following `builtin-*` aliases provide access to the raw Rust implementations, bypassing any LLT-implemented wrappers in the prelude:
+The `builtin-*` aliases provide access to the raw Rust implementations by stable names that cannot be shadowed by user code. They are only accessible inside `stdlib/prelude.llt` via `[include %rust "core"]` — **they are not available to user code**.
 
 | Alias | Target | Purpose |
 |-------|--------|---------|
-| `builtin-add` | `+` | Escape hatch for raw addition |
-| `builtin-sub` | `-` | Escape hatch for raw subtraction |
-| `builtin-mul` | `*` | Escape hatch for raw multiplication |
-| `builtin-div` | `/` | Escape hatch for raw division |
-| `builtin-eq` | `=` | Escape hatch for raw equality |
-| `builtin-lt` | `<` | Escape hatch for raw less-than |
-| `builtin-if` | `if` | Escape hatch for raw conditional |
-| `builtin-filter` | `filter` | Escape hatch for raw filter |
-| `builtin-map` | `map` | Escape hatch for raw map |
-| `builtin-reduce` | `reduce` | Escape hatch for raw reduce |
-| `builtin-take` | `take` | Escape hatch for raw take |
-| `builtin-drop` | `drop` | Escape hatch for raw drop |
-| `builtin-eval-ast` | `eval-ast` | Escape hatch for raw AST evaluation |
-| `builtin-gensym` | `gensym` | Escape hatch for raw symbol generation |
-| `builtin-llt-repr` | `llt-repr` | Escape hatch for raw LLT representation |
-| `builtin-tag-of` | `tag-of` | Escape hatch for raw variant tag extraction |
-| `builtin-variant` | `variant` | Escape hatch for raw variant construction |
-| `builtin-decimal` | `decimal` | Escape hatch for raw decimal conversion |
-| `builtin-big-int` | `big-int` | Escape hatch for raw big integer conversion |
-| `builtin-proxy` | `proxy` | Escape hatch for raw proxy construction |
+| `builtin-add` | `+` | Stable name for raw addition |
+| `builtin-sub` | `-` | Stable name for raw subtraction |
+| `builtin-mul` | `*` | Stable name for raw multiplication |
+| `builtin-div` | `/` | Stable name for raw division |
+| `builtin-eq` | `=` | Stable name for raw equality |
+| `builtin-lt` | `<` | Stable name for raw less-than |
+| `builtin-if` | `if` | Stable name for raw conditional |
+| `builtin-filter` | `filter` | Stable name for raw filter |
+| `builtin-map` | `map` | Stable name for raw map |
+| `builtin-reduce` | `reduce` | Stable name for raw reduce |
+| `builtin-take` | `take` | Stable name for raw take |
+| `builtin-drop` | `drop` | Stable name for raw drop |
+| `builtin-eval-ast` | `eval-ast` | Stable name for raw AST evaluation |
+| `builtin-gensym` | `gensym` | Stable name for raw symbol generation |
+| `builtin-llt-repr` | `llt-repr` | Stable name for raw LLT representation |
+| `builtin-tag-of` | `tag-of` | Stable name for raw variant tag extraction |
+| `builtin-variant` | `variant` | Stable name for raw variant construction |
+| `builtin-decimal` | `decimal` | Stable name for raw decimal conversion |
+| `builtin-big-int` | `big-int` | Stable name for raw big integer conversion |
+| `builtin-proxy` | `proxy` | Stable name for raw proxy construction |
 
-These exist to ensure that prelude-level wrappers (e.g., `>` implemented via `<` and `not`) cannot shadow the underlying primitives. If a wrapper has a bug or performance issue, callers can always reach the Rust implementation.
+These exist so that prelude wrappers (e.g., `>` implemented via `<` and `not`) call through to the underlying Rust primitive even when the public name is shadowed by user code. When a user writes `<: [fn [a b] ...]`, prelude's `>` still calls `builtin-lt` (unchanged). The prelude accesses them via the `%rust` virtual module (`[include %rust "core"]`), which creates a fresh env containing only the primitives in that group.
 
-### Env-Layer Isolation
+**Privacy:** `builtin-*` aliases are not in user scope. Any reference to `builtin-lt` from user code produces `undefined variable: builtin-lt` at both runtime and from the type checker. This is enforced by the environment chain — user code inherits only what prelude exports.
 
-The `builtin-*` aliases live in a dedicated env layer that is inserted below the prelude layer in the environment chain. This isolation model means:
-
-- **User code** inherits the prelude layer. If user code defines `+: [fn [a b] ...]`, it shadows the prelude's `+` but cannot shadow `builtin-add` (which is in a deeper layer user code cannot write to).
-- **Prelude code** calls `builtin-add` (not `+`) inside its own implementation of `+`. When prelude defines `+: [fn [a b] [builtin-add a b]]`, the self-reference in the wrapper is to `builtin-add` — not to itself — so there is no circularity, even if user code redefines `+`.
-- **The chain is:** `user env → prelude env → builtin-* alias env → Rust primitive env`. Each layer can shadow names in deeper layers; no layer can reach above itself.
-
-This design has a specific consequence for library authors: internal helpers that need guaranteed access to a primitive should use `builtin-*` names. Names without the `builtin-` prefix can be shadowed by any upstream layer.
-
-**When to use `builtin-*` names:**
-- Inside the stdlib itself, when writing wrappers that must not re-enter the wrapper
-- In testing or debugging, when you need to bypass a prelude wrapper to isolate behavior
-- Never in normal user code — the prelude wrappers provide coercion, better error messages, and typeclass dispatch
+**%rust module groups:**
+- `"core"` — arithmetic, comparison, control flow, and their `builtin-*` aliases
+- `"collection"` — dict and sequence primitives
+- `"string"` — string primitives
+- `"io"` — I/O primitives
+- `"meta"` — type introspection and code generation primitives
+- `"type-core"` — minimal subset for type-stage evaluation
 
 ## Summary
 
-**Total:** 184 Rust-native builtins + 37 stable aliases = 221 registered names.
+**Total:** 185 Rust-native builtins registered in `standard_builtins()`.
 
-Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation. The 37 stable aliases (prefixed `builtin-*`) provide access to raw Rust implementations bypassing LLT prelude wrappers.
+Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation.
 
 **Design principle:** These builtins are the minimal set of primitives that **cannot be expressed in LLT itself**. Everything else (sorting, logic operators, dict utilities, composition functions) is implemented in the [Standard Library](11-stdlib.md) using only these primitives plus LLT's syntax and lazy evaluation.

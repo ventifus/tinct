@@ -240,7 +240,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 **Tinct-implemented stdlib (wrappers and derived functions):**
 
-The prelude wraps every primary-name operator that has a stable alias, making it shadowable by domain-specific stdlib modules:
+The prelude wraps every primary-name operator that has a stable alias, making it shadowable by domain-specific stdlib modules. The `builtin-*` names used in the derivation column are prelude-internal — they are accessed via `[include %rust "core"]` and are not available to user code:
 
 | Function | Derivation | Notes |
 |----------|-----------|-------|
@@ -293,21 +293,19 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
 
-1. Create root environment with Rust-native builtins (primary names only — no `builtin-*` aliases)
-2. Create prelude evaluation environment: root + `builtin-*` aliases injected into a private layer
-3. Parse and evaluate `prelude.llt` in the prelude evaluation environment — produces wrappers and derived functions
-4. Promote the prelude's exported bindings into the prelude output environment (no `builtin-*` aliases)
-5. User code inherits from the prelude output environment
+1. Create bootstrap environment with only `include` and `%rust` (the virtual module registry)
+2. Parse and evaluate `prelude.llt` in a child of the bootstrap env — prelude accesses Rust primitives via `[include %rust "core"]`, `[include %rust "collection"]`, etc. This makes `builtin-*` aliases visible to prelude during its own evaluation
+3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env
+4. User code inherits the stdlib env — no `builtin-*` names are in scope
 
 ```
-Rust primitives (primary names: <, =, +, if, filter, map, proxy, ...)
-  └── Prelude evaluation layer (+ builtin-lt, builtin-eq, builtin-add, ... — private to prelude.llt)
-        └── Prelude output (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
-              └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
-                    └── User predicates and programs
+Bootstrap env: include + %rust (virtual module registry)
+  └── Stdlib env: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
+        └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
+              └── User predicates and programs
 ```
 
-The `builtin-*` aliases are invisible to user code and non-prelude stdlib modules. Any reference to `builtin-lt` from user code produces `undefined variable: builtin-lt`. The type checker emits a warning (`T009`) if any source file other than `prelude.llt` references a name matching `^builtin-`.
+The `builtin-*` aliases are only accessible to prelude via `[include %rust "core"]`. Any reference to `builtin-lt` from user code produces `undefined variable: builtin-lt` at both runtime and from the type checker.
 
 **Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
 
