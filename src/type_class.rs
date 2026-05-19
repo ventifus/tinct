@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::ast::Span;
-use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type, TypeScheme};
+use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
 
 /// Constraint on a type variable (type class membership or structural property)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -75,10 +75,6 @@ pub struct ClassDecl {
     /// Example: ("Functor", vec!["f"]) means this class extends Functor with parameter f.
     /// Updated from Vec<(String, String)> to Vec<(String, Vec<String>)> for multi-param support.
     pub superclasses: Vec<(String, Vec<String>)>,
-    /// Method signatures: method_name -> type scheme
-    #[allow(dead_code)]
-    // Written during registration, read during method type checking (future work)
-    pub methods: HashMap<String, TypeScheme>,
     /// Functional dependencies: (determining_positions, determined_positions) pairs.
     /// Each pair is (Vec<usize>, Vec<usize>) indexing into `params`.
     /// Example: for Add a b c with FD (a,b) → c: determines = vec![(vec![0,1], vec![2])]
@@ -88,8 +84,8 @@ pub struct ClassDecl {
     pub(crate) resolver: Option<String>,
     /// Whether the resolver is injective (one-to-one mapping).
     /// If true, the type checker can use the resolver result to refine the determining types.
+    /// Wired up when chr-gaps Gap 1 (resolver evaluation) is implemented.
     #[allow(dead_code)]
-    // Written during class declaration, read during FD resolution (chr-normalization sprint)
     pub(crate) resolver_injective: bool,
 }
 
@@ -109,8 +105,6 @@ pub struct InstanceDecl {
     pub det_positions: Vec<usize>,
     /// Method implementations: method_name -> inferred type
     /// (The actual dictionary value is stored in eval::ClassDictionary)
-    #[allow(dead_code)]
-    // Written during registration, read during dictionary construction (future work)
     pub method_types: HashMap<String, Type>,
 }
 

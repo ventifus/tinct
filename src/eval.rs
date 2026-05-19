@@ -135,6 +135,19 @@ pub struct EvalConfig {
     pub source_file: Option<String>,
 }
 
+/// Cache entry for the string-keyed include cache used by `include-cache-get`/`include-cache-put`.
+///
+/// Keyed by `blake3(cap-identity + "|" + source_text)` so that:
+/// - `Missing` — known cache miss (prevents redundant re-queries)
+/// - `Pending` — file is currently being evaluated (cycle detection sentinel)
+/// - `Cached` — successfully-evaluated result thunk
+#[derive(Debug, Clone)]
+pub enum IncludeCacheEntry {
+    Missing,
+    Pending,
+    Cached(Rc<Thunk>),
+}
+
 /// Mutable evaluation state (include guard, caching).
 #[derive(Debug)]
 pub struct EvalState {
@@ -143,6 +156,10 @@ pub struct EvalState {
     /// File identity (dev, ino) -> materialized result thunk (include result caching).
     /// Only successful evaluations are cached; errors are not cached.
     pub include_cache: HashMap<(u64, u64), Rc<Thunk>>,
+    /// String-keyed include cache for `include-cache-get`/`include-cache-put`.
+    /// Key is `blake3(cap-identity + "|" + source_text)`.
+    /// Complements the inode-keyed cache above; used by the decomposed include pipeline.
+    pub string_include_cache: HashMap<String, IncludeCacheEntry>,
     /// Stack of active $include calls: `(display_path, call_site_span)`.
     ///
     /// Pushed by `builtin_include` before evaluating the included file, popped
@@ -319,6 +336,7 @@ impl EvalContext {
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
                 include_cache: HashMap::new(),
+                string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
@@ -358,6 +376,7 @@ impl EvalContext {
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
                 include_cache: HashMap::new(),
+                string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
@@ -406,6 +425,7 @@ impl EvalContext {
             state: Rc::new(RefCell::new(EvalState {
                 include_guard: HashSet::new(),
                 include_cache: HashMap::new(),
+                string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
