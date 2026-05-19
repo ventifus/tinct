@@ -287,11 +287,11 @@ Comments are easy to abuse — structural enforcement is the correct approach. A
 
 Both builtins are kept and renamed to accurate names that reflect what they do. The Rust `deep_materialize` function already exists with the right name; the user-callable tinct builtins should match. `materialize` (WHNF) is the common case with the shorter name; `deep-materialize` is the thorough variant. Both remain available to user code — making Rust materialization primitives accessible for novel uses.
 
-- [ ] Rename `builtin_eval` (`src/builtins_meta.rs:56`) and its registration in `standard_builtins` from `"eval"` to `"deep-materialize"`
-- [ ] Rename `builtin_force` and its registration from `"force"` to `"materialize"`
-- [ ] Update prelude.llt if either is re-exported under the old name
-- [ ] Update the 2 corpus test files that reference `eval` directly (`tests/corpus/eval/builtins/eval.llt-eval`, `control_flow.llt-eval`)
-- [ ] Verify `just test` passes
+- [x] Rename `builtin_eval` (`src/builtins_meta.rs:56`) and its registration in `standard_builtins` from `"eval"` to `"deep-materialize"`
+- [x] Rename `builtin_force` and its registration from `"force"` to `"materialize"`
+- [x] Update prelude.llt if either is re-exported under the old name
+- [x] Update the 2 corpus test files that reference `eval` directly (`tests/corpus/eval/builtins/eval.llt-eval`, `control_flow.llt-eval`)
+- [x] Verify `just test` passes
 
 ### error-nominal: Rename Err→Error, err?→error?, error→raise; lean on nominal Result type
 
