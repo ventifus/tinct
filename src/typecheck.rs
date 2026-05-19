@@ -13102,7 +13102,7 @@ mod tests {
         // This example produces 2 diagnostics:
         // 1. The field access r.y has type Unknown
         // 2. The function's return type contains Unknown
-        let mut file = crate::parse("[f: [fn [r@[x: Int]] r.y]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn [r@[x: Int]] $r.y]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13125,7 +13125,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
         // Test that scan_type_quality does NOT emit diagnostics for concrete types
-        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Int [x@Int] $x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13145,7 +13145,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_explicit_unknown_annotation() {
         // Test that explicit @Unknown produces Info diagnostic (T011), not Warn (T010)
-        let mut file = crate::parse("[f: [fn@Unknown [x] x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Unknown [x] $x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13211,7 +13211,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_overbroad_number_annotation() {
         // Test that fn@Number when body infers Int produces Info diagnostic (T012)
-        let mut file = crate::parse("[f: [fn@Number [x@Int] x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Number [x@Int] $x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13245,7 +13245,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_no_overbroad_for_matching_type() {
         // Test that fn@Int when body infers Int does NOT produce over-broad diagnostic
-        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Int [x@Int] $x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
