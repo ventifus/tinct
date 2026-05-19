@@ -103,10 +103,10 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)
         .map_err(|e| format!("formatter materialize error: {e}"))?;
 
-    // Unwrap [Ok s] / surface [Err msg].
+    // Unwrap [Ok s] / surface [Error msg].
     // The formatters return `[try [fn [] [format-file %]]]` which produces
     // Value::Variant { tag: "Ok", payload: Some(string_thunk) } on success
-    // or Value::Variant { tag: "Err", payload: Some(msg_thunk) } on failure.
+    // or Value::Variant { tag: "Error", payload: Some(msg_thunk) } on failure.
     match result_val {
         Value::Variant { tag, payload } if tag == "Ok" => {
             let payload_id = payload.ok_or_else(|| "formatter Ok has no payload".to_string())?;
@@ -126,11 +126,11 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
                 }
             }
         }
-        Value::Variant { tag, payload } if tag == "Err" => {
+        Value::Variant { tag, payload } if tag == "Error" => {
             let msg = if let Some(err_id) = payload {
                 let err_thunk = ctx.get_thunk(err_id);
                 let err_val = eval::materialize(&err_thunk, None, &ctx)
-                    .map_err(|e| format!("formatter Err materialize error: {e}"))?;
+                    .map_err(|e| format!("formatter Error materialize error: {e}"))?;
                 crate::value_to_display_string(&err_val, &ctx)
                     .unwrap_or_else(|_| "<error displaying value>".to_string())
             } else {

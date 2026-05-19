@@ -126,7 +126,7 @@
 #    References private helpers from the first dict by plain name
 #    (eval_document injects first-dict bindings into scope for subsequent
 #    expressions, and the resolver models this scope chain).
-#    Type declarations (like Result) register variant constructors (Ok, Err)
+#    Type declarations (like Result) register variant constructors (Ok, Error)
 #    in the dict's letrec environment; these are re-exported as dict entries
 #    to make them available to code that includes the prelude.
 #

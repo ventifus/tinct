@@ -293,27 +293,6 @@ Both builtins are kept and renamed to accurate names that reflect what they do. 
 - [x] Update the 2 corpus test files that reference `eval` directly (`tests/corpus/eval/builtins/eval.llt-eval`, `control_flow.llt-eval`)
 - [x] Verify `just test` passes
 
-### error-nominal: Rename Err→Error, err?→error?, error→raise; lean on nominal Result type
-
-Errors in tinct should use the nominal `Result` type (`Ok`/`Error`) as the primary idiom. Current issues: the `Err` constructor is abbreviated (should be `Error`); the `[error "msg"]` throw builtin shares a name root with the new `Error` constructor (confusing); `err?` is abbreviated.
-
-**Design decisions:**
-- `raise` takes **String only** — it abends the program; functional languages (OCaml, Elixir, F#) use `raise`; this is the right name for tinct's functional style
-- `[Error "msg"]` is a **return value** used in `Result` — distinct from aborting; structured errors flow through return types, not exceptions
-- `[raise [Error "msg"]]` is intentionally NOT supported — it would double-wrap; if you want to abort, pass a string; if you want to return an error, return `[Error "msg"]` directly
-- `Result: [type [Ok a] [Error String]]` stays **concrete** (not parameterized) since `raise` only takes String and `try` always captures a string message
-- `raise` is typed as `Never` — it never returns a value; fixes match arm type pollution (see `typecheck-gaps` sprint)
-
-- [ ] Rename `Result` type comment on line 1339 and `Err: Err` re-export → `Error: Error` (`stdlib/prelude.llt:1339,1346`)
-- [ ] Rename all `[Err _]:` match arms in prelude to `[Error _]:` — lines 259, 405, 999, 1358, 1370, 1382, 1394, 1406, 1503, 1507, 1533 (`stdlib/prelude.llt`)
-- [ ] Rename `err?` → `error?` predicate; update doc strings and examples throughout (`stdlib/prelude.llt:1361–1370`)
-- [ ] Update all doc strings referencing `[Err ...]` or `Err` constructor (`stdlib/prelude.llt`)
-- [ ] Rename abend builtin: `"error"` → `"raise"` in `src/builtins_meta.rs` (function body + name string) and `src/builtins.rs` (registration); update `src/type_dict.rs:776` entry from `"error" => Ok(Type::Error)` to `"raise" => Ok(Type::Never)` (merges `typecheck-gaps` fix)
-- [ ] Update `[try ...]` return tag in `src/builtins_meta.rs:185`: `tag: "Err"` → `tag: "Error"`; update the two `assert_eq!(tag, "Err")` in `src/builtins.rs:3764,3881`
-- [ ] Update `type_env.rs:1666` and `typecheck.rs:11473` comments referencing `"Ok"/"Err"` tags
-- [ ] Migrate all corpus tests: `[Err ...]` → `[Error ...]`, `[error ...]` → `[raise ...]`, `err?` → `error?` (`tests/corpus/`)
-- [ ] Update doc examples, README, and `doc/*.md` referencing `error`, `Err`, or `err?` (`doc/`)
-- [ ] Verify `just test` passes
 
 ### parser-uniformity: Fix special cases and non-uniform handling found in parser audit (2026-05-18)
 
@@ -415,6 +394,36 @@ Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::
 
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a`; compare `Mappable` extension vs separate class using `Data.Witherable` as precedent; include instance examples for `Seq` and `Dict` (`doc/whatif/filterable.md`)
 - [ ] Accept `doc/whatif/schema-directed-from-json.md` via `/rnd` and create implementation sprint in TODO.md for `from-json @Schema` schema-directed typed parse (`doc/whatif/schema-directed-from-json.md`)
+
+---
+
+## Health Review #21 Findings (2026-05-19)
+
+### overlay-lazy-flatten: flatten_overlay forces entire Overlay chain eagerly
+
+When any builtin receives a `Value::Overlay`, `flatten_overlay()` is called synchronously and recursively materializes the entire Overlay tree (all L/R thunks). This creates a space leak for accumulator patterns using repeated `$merge`: a dict accumulated over N steps via overlay holds all N intermediate dicts alive until any builtin access forces the flatten. This is the primary memory concern for long-running pipeline pipelines.
+
+- [ ] Track flatten_overlay as a known space leak in `doc/08-evaluation.md §Overlay Eagerness` — document that Overlay flattening is eager and recommend `collect` for accumulation patterns to avoid the leak (`doc/08-evaluation.md`)
+- [ ] Consider a lazy flatten that only materializes one level when keys/values are accessed (future sprint `overlay-lazy-flatten`) (`src/builtins.rs:190-264`, `src/value.rs`)
+
+### health21-test-gaps: Missing corpus tests for MAX_PARSE_DEPTH and GuardedValidate lifecycle
+
+Two test coverage gaps found in health review #21:
+
+- [ ] Add corpus test for MAX_PARSE_DEPTH: a deeply-nested expression that exceeds the parser's depth limit (256) should produce a parse error, not a panic (`tests/corpus/invalid/syntax_errors/max_parse_depth_exceeded.llt-eval`)
+- [ ] Add unit tests for GuardedValidate thunk state transitions (branches 2+3): verify that validation failure + default fallback correctly transitions thunk state, that InProgress → Guarded restoration works, and that `validate_and_wrap_record` with a `default:` annotation evaluates the default in the caller's env (`src/eval_materialize.rs`, `src/typecheck.rs`)
+
+### health21-span-data-site: validate_and_wrap_record needs data_span for nested record errors
+
+`validate_and_wrap_record` in `eval.rs`/`eval_materialize.rs` accepts only the constraint-site span. When nested record validation fails, errors point to the annotation site rather than the actual malformed data location. This makes type assertion errors on deeply-nested records confusing.
+
+- [ ] Add `data_span: Span` parameter to `validate_and_wrap_record` and thread it through GuardedValidate continuations so type mismatch errors can report both where the constraint was declared AND where the data was defined (`src/eval.rs`, `src/eval_materialize.rs`)
+
+### health21-errorkind-constructors: New ErrorKind variants lack pub fn constructors
+
+Recent additions to `ErrorKind` (e.g., `InvalidUtf8InBytes`, `InvalidHexEncoding`, `KindMismatch`) were added directly as enum variants without the `pub fn` constructor pattern used by all other variants. This makes it easy to forget span attachment or miss the `.with_materialization_span()` convention.
+
+- [ ] Add `pub fn` constructors in `EvalError` for all `ErrorKind` variants that currently lack them (match the style of existing constructors like `EvalError::type_mismatch`, `EvalError::no_instance`) (`src/error.rs`)
 
 ---
 

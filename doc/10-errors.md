@@ -19,28 +19,28 @@ If `data` fails, accessing `host` or `parsed` fails with the original error (dec
 
 ### Raising Errors
 
-Use `[error "message"]` to raise an error from your own code:
+Use `[raise "message"]` to raise an error from your own code:
 
 ```tinct
 validated-port: [fn [p]
   [if [and [>= p 1] [<= p 65535]]
     p
-    [error [str "invalid port: " p " (must be 1-65535)"]]]]
+    [raise [str "invalid port: " p " (must be 1-65535)"]]]]
 
 # Usage
 port: [validated-port 8080]   # → 8080
 port: [validated-port 0]      # error: "invalid port: 0 (must be 1-65535)"
 ```
 
-`error` always raises — it never returns. Type: `Str → Never`.
+`raise` always raises — it never returns. Type: `Str → Never`.
 
 ### Catching Errors with `try`
 
-`try` takes a zero-argument function and returns `[Ok value]` or `[Err message]`:
+`try` takes a zero-argument function and returns `[Ok value]` or `[Error message]`:
 
 ```tinct
 result: [try [fn [] [from-json "[invalid"]]]
-# → [Err "from-json: invalid JSON: ..."]
+# → [Error "from-json: invalid JSON: ..."]
 
 result: [try [fn [] [from-json "[1, 2, 3]"]]]
 # → [Ok [0 1 1 2 2 3]]
@@ -51,14 +51,14 @@ Dispatch on the result with `match`:
 ```tinct
 [match [try [fn [] [parse-config]]]
   [Ok config]:  [start-server config]
-  [Err msg]:    [error [str "startup failed: " msg]]]
+  [Error msg]:    [raise [str "startup failed: " msg]]]
 ```
 
 `try` only catches the body — not failures in setting up arguments. Wrap exactly what you want to recover from.
 
 ### Returning Errors from Functions
 
-For functions that may legitimately fail, return `[Ok value]` or `[Err message]` explicitly rather than raising:
+For functions that may legitimately fail, return `[Ok value]` or `[Error message]` explicitly rather than raising:
 
 ```tinct
 parse-port: [fn [s]
@@ -66,19 +66,19 @@ parse-port: [fn [s]
     [let [n: [int s]]
       [if [and [>= n 1] [<= n 65535]]
         [Ok n]
-        [Err [str "port out of range: " s]]]]]]]
+        [Error [str "port out of range: " s]]]]]]]
 
 # Caller uses match to handle both cases
 [match [parse-port "8080"]
   [Ok port]:  [start port]
-  [Err msg]:  [log-warn msg]]
+  [Error msg]:  [log-warn msg]]
 ```
 
-The `Ok`/`Err` nominal variants (from [Consistent Error Handling](feature/error-patterns.md)) give callers a typed choice between success and failure without exceptions.
+The `Ok`/`Error` nominal variants (from [Consistent Error Handling](feature/error-patterns.md)) give callers a typed choice between success and failure without exceptions.
 
 ### Combining Results
 
-The `and-then` combinator chains operations that each return `Ok`/`Err`:
+The `and-then` combinator chains operations that each return `Ok`/`Error`:
 
 ```tinct
 result:
@@ -88,12 +88,12 @@ result:
         [Ok [get "host" data]]]]]]]
 ```
 
-`result-ok` and `result-err` extract values from `Ok`/`Err` without `match`:
+`result-ok` and `result-err` extract values from `Ok`/`Error` without `match`:
 
 ```tinct
 [result-ok  [Ok 42]]          # → 42
-[result-err [Err "oops"]]     # → "oops"
-[result-ok  [Err "oops"]]     # error — not an Ok
+[result-err [Error "oops"]]     # → "oops"
+[result-ok  [Error "oops"]]     # error — not an Ok
 ```
 
 ### Best Practices
@@ -102,9 +102,9 @@ result:
 
 **Use `try` at boundaries** — CLI argument parsing, file loading, external API calls, user input validation. Catch at the layer that can meaningfully recover, not inside deep library code.
 
-**Use `error` for invariant violations** — conditions that represent programmer errors or corrupted state. Don't use `error` as a control-flow mechanism.
+**Use `raise` for invariant violations** — conditions that represent programmer errors or corrupted state. Don't use `error` as a control-flow mechanism.
 
-**Use `Ok`/`Err` for expected failure modes** — functions where "not found" or "invalid" is a normal outcome that callers should handle. Return `Ok`/`Err` instead of raising so callers can choose their response.
+**Use `Ok`/`Error` for expected failure modes** — functions where "not found" or "invalid" is a normal outcome that callers should handle. Return `Ok`/`Err` instead of raising so callers can choose their response.
 
 **Don't `try` the uncatchable.** `DepthExceeded` and `ResourceLimitExceeded` propagate through `try` — they indicate resource exhaustion, not recoverable failures. There is no way to catch them in user code.
 
@@ -151,11 +151,11 @@ Once a thunk fails, the error is cached permanently. Subsequent accesses return 
 ```tinct
 # Explicit catching via stdlib
 safe: [try [fn [] [/ 10 2]]]       # → [Ok 5]
-safe: [try [fn [] [/ 1 0]]]        # → [Err "/: division by zero"]
+safe: [try [fn [] [/ 1 0]]]        # → [Error "/: division by zero"]
 safe: [try-or [fn [] [/ 1 0]] 0]   # → 0
 ```
 
-**`try` return shape:** `try` returns a nominal variant — `[Ok value]` on success or `[Err message]` on failure. Use `match` to distinguish outcomes. The `message` is the error's message string — spans and stack traces are not included in the caught value.
+**`try` return shape:** `try` returns a nominal variant — `[Ok value]` on success or `[Error message]` on failure. Use `match` to distinguish outcomes. The `message` is the error's message string — spans and stack traces are not included in the caught value.
 
 **What `try` catches:** Errors from evaluating the function's body. Errors from materializing the function itself (e.g., if the function argument is a broken thunk) are *not* caught — they propagate to `try`'s caller.
 
@@ -399,7 +399,7 @@ materialize(θ_func, _, d) ⇒ Function([], body, env)
 materialize(θ_body, _, d) ⇒ Err(ε)
 ε.kind.is_catchable()
 ──────────────────────────
-try(θ_func, d, s) ⇒ ok_val(Variant("Err", θ(ε.kind.to_string())))
+try(θ_func, d, s) ⇒ ok_val(Variant("Error", θ(ε.kind.to_string())))
 ```
 
 **[TRY-UNCATCHABLE]** — Uncatchable error re-raised:
@@ -427,17 +427,17 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **Catching boundary:** `try` catches errors at the zero-argument function body boundary. The function is materialized *outside* the catch — if the function thunk itself fails to materialize, that error propagates to `try`'s caller (not caught). Only errors from *calling* the function (evaluating its body) are caught.
 
-**Error-to-value conversion:** `try` extracts only the message string (`ε.kind.to_string()`). The spans and stack frames are discarded — `try` is for program-level error handling, not diagnostic reporting. The result is an ordinary dict with key `ok` or `err`, not a special type.
+**Error-to-value conversion:** `try` extracts only the message string (`ε.kind.to_string()`). The spans and stack frames are discarded — `try` is for program-level error handling, not diagnostic reporting. The result is a nominal variant `[Ok ...]` or `[Error ...]`, not an ordinary dict.
 
 **Arity constraint:** The function must take zero parameters. If `params.len() > 0`, `try` raises an error (not caught): `"try: expected a zero-argument function, got {n} parameters"`.
 
-**Interaction with Failed state:** When `try` materializes a Failed thunk *inside* the body, the cached error is returned via MEMO-REACCESS and caught by `try`. The Failed thunk's cache is updated (stack frame added) but the error is converted to `[err: message]` — it does not propagate past `try`.
+**Interaction with Failed state:** When `try` materializes a Failed thunk *inside* the body, the cached error is returned via MEMO-REACCESS and caught by `try`. The Failed thunk's cache is updated (stack frame added) but the error is converted to `[Error message]` — it does not propagate past `try`.
 
 **`try` interaction with structured errors:** `try` extracts `ε.kind.to_string()` — the Display output of ErrorKind. This preserves the behavior that the caught value is a human-readable error message string, not a structured error object. Error codes are not exposed through `try`.
 
 **Rationale:** `try` is for program-level error recovery ("did it fail?"), not error introspection. Programs that need to distinguish error kinds should use type checking and validation, not `try`-and-parse. Exposing structured error data through `try` would create a coupling between error representation (an implementation detail) and user programs.
 
-**Display stability:** Error codes are stable across releases (see Error Codes below). Display message *wording* is not part of the stability contract — message text may be refined for clarity across releases. Programs that match on `try` error strings (e.g., `[call $= $result.err "division by zero"]`) are inherently fragile and should not rely on exact wording.
+**Display stability:** Error codes are stable across releases (see Error Codes below). Display message *wording* is not part of the stability contract — message text may be refined for clarity across releases. Programs that match on `try` error strings are inherently fragile and should not rely on exact wording.
 
 ### Part 7: Properties
 
@@ -457,7 +457,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 
 **E8 — DECORATE idempotence:** Applying DECORATE twice with the same arguments produces the same result as applying it once: `DECORATE(DECORATE(ε, s, o, t), s, o, t) = DECORATE(ε, s, o, t)`. This follows from the deduplication guards in rules (1)–(3).
 
-**Typing:** `try` has type `Any → Any` — more precisely it expects `Fn(→ τ)` and returns `Ok(τ) | Err(Str)` (nominal variants), but neither the constraint on the argument nor the union result type can be expressed without union types — see [Type System Extensions](07-type-extensions.md) §Expressiveness. `error` has type `Str → Never` — the argument is materialized and coerced to String; `error` never returns a value (it always raises an error). `Never` is the bottom type.
+**Typing:** `try` has type `Any → Any` — more precisely it expects `Fn(→ τ)` and returns `Ok(τ) | Error(Str)` (nominal variants), but neither the constraint on the argument nor the union result type can be expressed without union types — see [Type System Extensions](07-type-extensions.md) §Expressiveness. `raise` has type `Str → Never` — the argument is materialized and coerced to String; `raise` never returns a value (it always raises an error). `Never` is the bottom type.
 
 **Runtime vs. static errors:** Runtime errors (`EvalError`, cached in `Failed` thunks) are distinct from the type inference engine's `Type::Error` marker. `Type::Error` represents the type of expressions that are statically known to produce errors (e.g., undefined variables caught during type checking); `EvalError` is the runtime value produced during evaluation.
 
@@ -479,7 +479,7 @@ try(θ_func, d, s) ⇒ ok_val(Dict({ok ↦ θ(v)}))
 | TRY-UNCATCHABLE | see `!e.kind.is_catchable()` re-raise branch in `builtin_try` in `src/builtins.rs` |
 | TRY catching boundary | see body materialize call inside `builtin_try` in `src/builtins.rs` |
 | Error-to-value | see `e.kind.to_string()` extraction in `builtin_try` in `src/builtins.rs` |
-| $error | see `builtin_error` in `src/builtins.rs` |
+| $raise | see `builtin_raise` in `src/builtins_meta.rs` |
 
 ## Structured Error Model
 
@@ -1087,7 +1087,7 @@ All 36 `ErrorKind` variants map to stable error codes and human-readable message
 | **JsonRange** | E062 | `"JSON number outside representable range"` | `from-json` call expression |
 | **UriParseError** | E063 | `"URI parse error: {detail}"` | `uri`/`url`/`urn` call expression |
 | **CircularDependency** | E070 | `"circular dependency detected while evaluating {name}"` (appends cycle path visualization when `cycle_path` is non-empty) | Thunk definition (dict entry) |
-| **UserError** | E080 | `"{message}"` (user-provided) | `error` call expression |
+| **UserError** | E080 | `"{message}"` (user-provided) | `raise` call expression |
 | **SchemaViolation** | E090 | `"schema validation failed with N error(s):\n  {field}: {msg}\n  ..."` (one violation per line, N = violation count) | Schema validation expression |
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
