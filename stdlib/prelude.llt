@@ -1866,12 +1866,34 @@ Note: Returns true if condition is true; raises an error with the given message 
 # Control flow
 if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
 
+# Error raising — re-exported so user code and macro-generated code can call [raise "msg"].
+raise@[doc: """
+Raise a user error with the given message string.
+
+Example: [raise "something went wrong"]
+
+Note: Always fails. The error message must be a String. Use [try f] to catch
+user errors from zero-arg functions.
+"""]: [fn [let msg@String] [builtin-raise msg]]
+
 # Higher-order collection functions
 filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
 map@[doc: "Apply function to each element"]: [fn [let f@Fn xs] [builtin-map f xs]]
 reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
 take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
 drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+
+# Primitive collection/string length — re-exported so macros.llt and user code
+# can call [length xs] without depending on %rust "collection" being in scope.
+length@[doc: """
+Number of entries in a dict, or character count of a string.
+
+Example: [length [a: 1  b: 2  c: 3]] => 3
+Example: [length "hello"] => 5
+Example: [length []] => 0
+
+Note: For Seq values, prefer [count identity xs] (length forces a Seq to a Dict first).
+"""]: [fn [let xs] [builtin-length xs]]
 
 # Reconstruct a Dict from a Seq of key-value pair dicts.
 # Takes a Seq of [key: K, value: V] dicts (as produced by each-kv).
@@ -1885,7 +1907,7 @@ collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [let xs] [bu
 # assert: [str-contains? "hello world" "world"] => true
 # assert: [str-contains? "hello" "xyz"] => false
 str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [let haystack@Stringing needle@Stringing]
-  [>= [str-index-of haystack needle] 0]]
+  [gte-impl [str-index-of haystack needle] 0]]
 
 # starts-with?: String -> String -> Bool
 # assert: [starts-with? "hello" "he"] => true

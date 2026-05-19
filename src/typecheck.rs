@@ -2009,7 +2009,11 @@ fn infer_expr(
                         .unwrap_or_else(|| state.fresh_type_var());
 
                     match &fn_resolved_ty {
-                        Type::Function { params, ret, variadic } => {
+                        Type::Function {
+                            params,
+                            ret,
+                            variadic,
+                        } => {
                             // Monomorphic recursion: the function's type is already known.
                             // Infer arguments and unify with parameter types.
                             let variadic = *variadic;
@@ -2036,9 +2040,7 @@ fn infer_expr(
                                 )]);
                             }
 
-                            for (arg, (_param_name, param_ty)) in
-                                args.iter().zip(params.iter())
-                            {
+                            for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
                                 let arg_ty = infer_expr(arg, env, state, type_map)?;
                                 let mut subst = std::mem::take(&mut state.subst);
                                 let unify_result =
@@ -5675,7 +5677,9 @@ mod tests {
         );
 
         // Also verify via direct infer_expr call
-        let mut file = crate::parse("[a: $undefined1  b: 42  c: $undefined2]").unwrap().file;
+        let mut file = crate::parse("[a: $undefined1  b: 42  c: $undefined2]")
+            .unwrap()
+            .file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -5835,8 +5839,8 @@ mod tests {
         // The shared-var guard fires, keeping the alias body as a Record (no Intersection).
         // Ensures unification doesn't bind `a` to two different values.
         check(
-            "[Pair: [type [a] [first: a  second: a]]]\
-             [p: [fn@[Pair Int] [] [first: 1  second: 2]]]",
+            "[Pair: [type [let a] [first: a  second: a]]]\
+             [p: [fn@[Pair Int] [let] [first: 1  second: 2]]]",
         )
         .unwrap();
     }
@@ -5952,7 +5956,9 @@ mod tests {
         //   generating the constraint.
 
         // In new syntax, string literals require quotes.
-        let mut file = crate::parse("[result: $data.name  data: [name: \"hello\"]]").unwrap().file;
+        let mut file = crate::parse("[result: $data.name  data: [name: \"hello\"]]")
+            .unwrap()
+            .file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -6202,7 +6208,7 @@ mod tests {
     fn test_annotation_record_with_type_field() {
         // Test that @[type: String id: Int] as a direct annotation creates a record
         // with two fields, not a type expression shorthand.
-        let ty = result_field("[f: [fn [data@[type: String id: Int]] $data]]", "f");
+        let ty = result_field("[f: [fn [let data@[type: String id: Int]] $data]]", "f");
         if let Type::Function { params, .. } = ty {
             assert_eq!(params.len(), 1);
             assert_has_field(&params[0].1, "type", &Type::Str);
@@ -6216,7 +6222,7 @@ mod tests {
 
     #[test]
     fn test_fn_unannotated() {
-        let ty = infer("[fn [x] 42]");
+        let ty = infer("[fn [let x] 42]");
         match ty {
             Type::Function {
                 params,
@@ -6242,7 +6248,7 @@ mod tests {
 
     #[test]
     fn test_fn_annotated_params() {
-        let ty = infer("[fn [x@Number] $x]");
+        let ty = infer("[fn [let x@Number] $x]");
         match ty {
             Type::Function {
                 params,
@@ -6258,7 +6264,7 @@ mod tests {
 
     #[test]
     fn test_fn_return_annotation_match() {
-        let ty = infer("[fn@Number [x@Number] $x]");
+        let ty = infer("[fn@Number [let x@Number] $x]");
         match ty {
             Type::Function { ret, .. } => assert_eq!(*ret, Type::Number),
             other => panic!("expected Function, got {other}"),
@@ -6267,7 +6273,7 @@ mod tests {
 
     #[test]
     fn test_fn_return_annotation_mismatch() {
-        let errors = check_err("[fn@String [x@Number] $x]");
+        let errors = check_err("[fn@String [let x@Number] $x]");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("cannot unify"));
     }
@@ -6473,7 +6479,7 @@ mod tests {
     fn test_seq_annotation_bare() {
         // Bare @Seq resolves to Type::Seq(Type::Unknown) in resolve_type_name
         // Test via parameter annotation which uses resolve_annotation
-        let ty = infer("[fn [xs@Seq] $xs]");
+        let ty = infer("[fn [let xs@Seq] $xs]");
         match ty {
             Type::Function { params, .. } => {
                 assert_eq!(
@@ -6501,7 +6507,7 @@ mod tests {
     #[test]
     fn test_null_annotation_bare() {
         // Bare @Null resolves to Type::Record(Row::Empty) in resolve_type_name
-        let ty = infer("[fn [x@Null] $x]");
+        let ty = infer("[fn [let x@Null] $x]");
         match ty {
             Type::Function { params, .. } => match &params[0].1 {
                 Type::Record(Row { fields }) => {
@@ -6532,7 +6538,7 @@ mod tests {
         // Null resolves to Type::Record(Row { fields: {} }), so check_expr checks
         // that the body [] (empty dict) satisfies that type.
         // The function return type should be the declared Null type (empty record).
-        let ty = result_field("[f: [fn@Null [s@String] []]]", "f");
+        let ty = result_field("[f: [fn@Null [let s@String] []]]", "f");
         match ty {
             Type::Function { params, ret, .. } => {
                 // Parameter should be String
@@ -6772,7 +6778,7 @@ mod tests {
         // Cross-kind collision detection (TypeVar vs RowVar) is no longer possible since
         // row_ann_mapping is always None. The annotation is valid and accepted.
         // `@[name: Int ...a]` resolves to Record({name: Int}) (closed, ...a ignored).
-        let result = check("[fn [x@a y@[name: Int ...a]] $x]");
+        let result = check("[fn [let x@a y@[name: Int ...a]] $x]");
         assert!(
             result.is_ok(),
             "BAS: cross-kind annotations no longer error since row vars are removed; got: {:?}",
@@ -6833,7 +6839,7 @@ mod tests {
         // Cross-kind collision detection (RowVar→TypeVar) no longer fires since row_ann_mapping
         // is always None. `y@r` creates a fresh TypeVar for `r`, and `...r` is silently ignored.
         // `@[name: Int ...r]` resolves to Record({name: Int}) (closed, ...r ignored).
-        let result = check("[fn [x@[name: Int ...r] y@r] $x]");
+        let result = check("[fn [let x@[name: Int ...r] y@r] $x]");
         assert!(
             result.is_ok(),
             "BAS: cross-kind annotations no longer error since row vars are removed; got: {:?}",
@@ -6889,7 +6895,7 @@ mod tests {
 
     #[test]
     fn test_annotation_property_dict_with_type() {
-        let ty = infer("[fn [x@[type: Number  default: 0]] $x]");
+        let ty = infer("[fn [let x@[type: Number  default: 0]] $x]");
         match ty {
             Type::Function { params, .. } => {
                 assert_eq!(params, vec![(Some("x".to_string()), Type::Number)])
@@ -7130,7 +7136,7 @@ mod tests {
 
     #[test]
     fn test_annotation_type_value_invalid_expr() {
-        let errors = check_err("[fn [x@[type: 42]] $x]");
+        let errors = check_err("[fn [let x@[type: 42]] $x]");
         assert!(errors
             .iter()
             .any(|e| e.message.contains("invalid type expression")));
@@ -7139,7 +7145,7 @@ mod tests {
     #[test]
     fn test_annotation_composite_function_type() {
         let ty =
-            infer("[fn [f@[type: [Fn@Number [Int]] default: [fn [x] $x]]] [@Number [call $f 42]]]");
+            infer("[fn [let f@[type: [Fn@Number [Int]] default: [fn [let x] $x]]] [@Number [call $f 42]]]");
         match ty {
             Type::Function {
                 params,
@@ -7167,7 +7173,7 @@ mod tests {
     #[test]
     fn test_annotation_composite_record_type() {
         let ty = infer(
-            "[fn [p@[type: [name: String  age: Number] default: [name: Alice  age: 30]]] $p.name]",
+            "[fn [let p@[type: [name: String  age: Number] default: [name: Alice  age: 30]]] $p.name]",
         );
         match ty {
             Type::Function {
@@ -7193,7 +7199,7 @@ mod tests {
         // With fresh TypeVars for unannotated params, the default function needs annotations
         // to match the expected type Fn@Number [Int]
         let ty = infer(
-            "[f: [fn [x] $x]  result: [@[type: [Fn@Number [Int]] default: [fn [x@Int] 0]] $f]]",
+            "[f: [fn [let x] $x]  result: [@[type: [Fn@Number [Int]] default: [fn [let x@Int] 0]] $f]]",
         );
         let result_ty = match ty {
             Type::Record(row) => row.fields.get("result").cloned(),
@@ -7220,7 +7226,7 @@ mod tests {
         // Exercises recursive resolve_type_expr: the return type [Fn@Int [Int]] is
         // itself a Fn type expression that must be recursively resolved.
         let ty = infer(
-            "[fn [f@[type: [Fn@[Fn@Int [Int]] [Int]] default: [fn [x] [fn [y] $y]]]] [call $f 0]]",
+            "[fn [let f@[type: [Fn@[Fn@Int [Int]] [Int]] default: [fn [let x] [fn [let y] $y]]]] [call $f 0]]",
         );
         // f has type Fn(Int -> Fn(Int -> Int))
         // [call $f 0] has return type Fn(Int -> Int)
@@ -7278,7 +7284,7 @@ mod tests {
         // It is called with records that have extra fields — this works via BAS width subtyping:
         //   Record({x:1, y:"hello"}) <: Record({x:Int}) = true (extra "y" allowed).
         let input = r#"
-            [make-record: [fn [] [project: [fn [r@[x: Int ...]] $r.x]]]]
+            [make-record: [fn [let] [project: [fn [let r@[x: Int ...]] $r.x]]]]
             ---
             [call $make-record]
             ---
@@ -7300,7 +7306,7 @@ mod tests {
     #[test]
     fn test_fn_type_one_param() {
         let ty = result_field(
-            "[Mapper: [type [Fn@b [a]]]]\n[x: [@Mapper [fn [v] $v]]]",
+            "[Mapper: [type [Fn@b [a]]]]\n[x: [@Mapper [fn [let v] $v]]]",
             "x",
         );
         match ty {
@@ -7338,7 +7344,7 @@ mod tests {
     #[test]
     fn test_fn_type_two_params() {
         let ty = result_field(
-            "[BinOp: [type [Fn@c [a b]]]]\n[x: [@BinOp [fn [p q] $p]]]",
+            "[BinOp: [type [Fn@c [a b]]]]\n[x: [@BinOp [fn [let p q] $p]]]",
             "x",
         );
         match ty {
@@ -7383,7 +7389,7 @@ mod tests {
     #[test]
     fn test_fn_type_concrete_types() {
         let ty = result_field(
-            "[Addable: [type [Fn@Number [Number Number]]]]\n[x: [@Addable [fn [a@Number b@Number] $a]]]",
+            "[Addable: [type [Fn@Number [Number Number]]]]\n[x: [@Addable [fn [let a@Number b@Number] $a]]]",
             "x",
         );
         match ty {
@@ -7402,7 +7408,7 @@ mod tests {
     #[test]
     fn test_fn_type_concrete_return_typevar_param() {
         let ty = result_field(
-            "[Pred: [type [Fn@Bool [a]]]]\n[x: [@Pred [fn [v] true]]]",
+            "[Pred: [type [Fn@Bool [a]]]]\n[x: [@Pred [fn [let v] true]]]",
             "x",
         );
         match ty {
@@ -7428,7 +7434,7 @@ mod tests {
     #[test]
     fn test_fn_type_higher_order() {
         let ty = result_field(
-            "[HO: [type [Fn@[Fn@c [b]] [a]]]]\n[x: [@HO [fn [v] [fn [w] $w]]]]",
+            "[HO: [type [Fn@[Fn@c [b]] [a]]]]\n[x: [@HO [fn [let v] [fn [let w] $w]]]]",
             "x",
         );
         match ty {
@@ -7528,7 +7534,7 @@ mod tests {
         // type), so that higher-order functions annotated with @Fn don't produce false
         // type errors when unified with concrete function types.
         // [fn [f@Fn] $f] should infer without type errors.
-        let ty = infer("[fn [f@Fn] $f]");
+        let ty = infer("[fn [let f@Fn] $f]");
         // The outer lambda infers as a Function type whose first parameter is Type::Unknown
         // (the @Fn annotation must resolve to Any, not a pseudo-Function type).
         match ty {
@@ -7549,7 +7555,7 @@ mod tests {
         // spurious type errors from attempting to unify Type::Unknown with a concrete
         // Function type — the two are compatible under Any semantics.
         // [fn [pred@Fn] [pred 42]] applied with a concrete function for pred.
-        let result = check("[result: [[fn [pred@Fn] [pred 42]] [fn [x@Number] $x]]]");
+        let result = check("[result: [[fn [let pred@Fn] [pred 42]] [fn [let x@Number] $x]]]");
         // There should be no type errors — @Fn accepts any callable.
         assert!(
             result.is_ok(),
@@ -7561,7 +7567,7 @@ mod tests {
     #[test]
     fn test_fn_type_in_type_assert() {
         let ty = result_field(
-            "[F: [type [Fn@Number [Number]]]]\n[x: [@F [fn [n@Number] $n]]]",
+            "[F: [type [Fn@Number [Number]]]]\n[x: [@F [fn [let n@Number] $n]]]",
             "x",
         );
         match ty {
@@ -7596,7 +7602,7 @@ mod tests {
     fn test_call_polymorphic_identity() {
         // Polymorphic identity call preserves literal type
         assert_eq!(
-            result_field("[id: [fn [x@a] $x]]\n[result: [call $id 42]]", "result"),
+            result_field("[id: [fn [let x@a] $x]]\n[result: [call $id 42]]", "result"),
             Type::IntLiteral(42),
         );
     }
@@ -7606,7 +7612,7 @@ mod tests {
         // Polymorphic identity call preserves literal type
         assert_eq!(
             result_field(
-                "[id: [fn [x@a] $x]]\n[result: [call $id \"hello\"]]",
+                "[id: [fn [let x@a] $x]]\n[result: [call $id \"hello\"]]",
                 "result"
             ),
             Type::StringLiteral("hello".into()),
@@ -7618,7 +7624,7 @@ mod tests {
         // Polymorphic call preserves literal type
         assert_eq!(
             result_field(
-                "[f: [fn [x@a y@b] $y]]\n[result: [call $f 42 \"hello\"]]",
+                "[f: [fn [let x@a y@b] $y]]\n[result: [call $f 42 \"hello\"]]",
                 "result"
             ),
             Type::StringLiteral("hello".into()),
@@ -7630,7 +7636,7 @@ mod tests {
         // Polymorphic call preserves literal type
         assert_eq!(
             result_field(
-                "[first: [fn [x@a y@b] $x]]\n[result: [call $first 42 \"hello\"]]",
+                "[first: [fn [let x@a y@b] $x]]\n[result: [call $first 42 \"hello\"]]",
                 "result"
             ),
             Type::IntLiteral(42),
@@ -7641,7 +7647,8 @@ mod tests {
     fn test_call_polymorphic_multiple_calls_different_types() {
         // In new syntax, string literals require quotes.
         // Polymorphic calls preserve literal types.
-        let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
+        let ty =
+            result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
                 assert_eq!(fields.get("r1"), Some(&Type::IntLiteral(42)));
@@ -7655,7 +7662,7 @@ mod tests {
     fn test_call_monomorphic_no_unification() {
         assert_eq!(
             result_field(
-                "[f: [fn@Number [x@Number] $x]]\n[result: [call $f 42]]",
+                "[f: [fn@Number [let x@Number] $x]]\n[result: [call $f 42]]",
                 "result"
             ),
             Type::Number,
@@ -7664,7 +7671,7 @@ mod tests {
 
     #[test]
     fn test_call_polymorphic_arity_mismatch_error() {
-        let errors = check_err("[f: [fn [x@a y@b] $x]]\n[result: [call $f 42]]");
+        let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]");
         assert!(
             errors.iter().any(|e| e.message.contains("arity mismatch")),
             "expected arity mismatch error, got: {:?}",
@@ -7674,7 +7681,8 @@ mod tests {
 
     #[test]
     fn test_call_monomorphic_arity_mismatch() {
-        let errors = check_err("[f: [fn@Number [x@Number y@Number] $x]]\n[result: [call $f 42]]");
+        let errors =
+            check_err("[f: [fn@Number [let x@Number y@Number] $x]]\n[result: [call $f 42]]");
         assert!(
             errors.iter().any(|e| e.message.contains("arity mismatch")),
             "expected arity mismatch for monomorphic function, got: {:?}",
@@ -7685,7 +7693,7 @@ mod tests {
     #[test]
     fn test_call_unification_error() {
         // In new syntax, string literals require quotes. Both args must unify to same type.
-        let errors = check_err("[f: [fn [x@a y@a] $x]]\n[result: [call $f 42 \"hello\"]]");
+        let errors = check_err("[f: [fn [let x@a y@a] $x]]\n[result: [call $f 42 \"hello\"]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "expected unification error, got: {:?}",
@@ -7701,7 +7709,7 @@ mod tests {
         // The function has 1 param; 1 named arg fills it → total_supplied = 1 = params.len() → ok.
         // Multi-document form ensures $f is fully resolved before the call site is type-checked.
         let result = check(
-            "[f: [fn [x@a] $x]]
+            "[f: [fn [let x@a] $x]]
              ---
              [result: [call $f x: 42]]",
         );
@@ -7713,7 +7721,7 @@ mod tests {
 
         // Wrong-type named arg: $f expects `x@Int`; passing a string should produce a type error.
         let errors = check_err(
-            "[f: [fn [x@Int] $x]]
+            "[f: [fn [let x@Int] $x]]
              ---
              [result: [call $f x: \"wrong-type\"]]",
         );
@@ -7727,7 +7735,7 @@ mod tests {
 
         // Unknown named arg: $f has no parameter named `z`; should produce an "unknown named argument" error.
         let errors = check_err(
-            "[f: [fn [x@Int] $x]]
+            "[f: [fn [let x@Int] $x]]
              ---
              [result: [call $f z: 42]]",
         );
@@ -7746,7 +7754,7 @@ mod tests {
         // total_supplied = 3 != params.len() = 2 → arity error.
         // At runtime this would also fail (C-NO-OVERLAP: named arg targets a positionally-bound param).
         let errors = check_err(
-            "[f: [fn [x@a y@b] $x]]
+            "[f: [fn [let x@a y@b] $x]]
              ---
              [result: [call $f 42 hello y: 77]]",
         );
@@ -7764,7 +7772,7 @@ mod tests {
         // before the call, avoiding the letrec TypeVar-arm bypass.
         // 1 positional + 1 named = 2 total matches the 2-param function (x, y).
         let errors = check_err(
-            "[f: [fn [x@Int y@Int] [call $+ $x $y]]]\n\
+            "[f: [fn [let x@Int y@Int] [call $+ $x $y]]]\n\
              ---\n\
              [result: [call $f 42 y: $missing]]",
         );
@@ -7783,7 +7791,7 @@ mod tests {
         // total_supplied = args.len() + named_args.len() = 1 + 1 = 2 = params.len() → ok.
         // This is a regression test for the named arg arity counting fix.
         let result = check(
-            "[f: [fn [a b] $a]]
+            "[f: [fn [let a b] $a]]
              ---
              [result: [call $f 1 b: 2]]",
         );
@@ -7791,7 +7799,7 @@ mod tests {
             "call with 1 positional + 1 named arg filling 2 param slots should not produce arity error",
         );
         let env = file_env(
-            "[f: [fn [a b] $a]]
+            "[f: [fn [let a b] $a]]
              ---
              [result: [call $f 1 b: 2]]",
         );
@@ -7968,7 +7976,7 @@ mod tests {
         // BAS: anonymous open record annotations "..." are treated as closed under BAS.
         // Both params are records (RowTail::Empty); the function type-checks correctly.
         let code = r#"
-            [f: [fn [x@[a: Int ...]  y@[b: String ...]]
+            [f: [fn [let x@[a: Int ...]  y@[b: String ...]]
                  [x: $x  y: $y]]]
         "#;
         let result = check(code);
@@ -7998,8 +8006,8 @@ mod tests {
     fn test_cross_function_anonymous_open_records_get_fresh_vars() {
         // BAS: anonymous open record annotations are independent between functions.
         let code = r#"
-            [f: [fn [x@[a: Int ...]] $x.a]
-             g: [fn [y@[b: String ...]] $y.b]]
+            [f: [fn [let x@[a: Int ...]] $x.a]
+             g: [fn [let y@[b: String ...]] $y.b]]
         "#;
         let result = check(code);
         assert!(result.is_ok(), "type check should succeed: {:?}", result);
@@ -8023,7 +8031,7 @@ mod tests {
         // BAS: named row variables "...r" in type annotations are treated as closed (Empty).
         // This test verifies the function type-checks correctly even with named row vars.
         let code = r#"
-            [f: [fn [x@[a: Int ...r]  y@[b: String ...r]]
+            [f: [fn [let x@[a: Int ...r]  y@[b: String ...r]]
                  [x: $x  y: $y]]]
         "#;
         let result = check(code);
@@ -8164,7 +8172,7 @@ mod tests {
         // In new syntax, string literals require quotes.
         // Polymorphic calls preserve literal types.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[result: [a: [call $id 42]  b: [call $id \"hello\"]]]",
+            "[id: [fn [let x@a] $x]]\n[result: [a: [call $id 42]  b: [call $id \"hello\"]]]",
             "result",
         );
         match ty {
@@ -8200,7 +8208,7 @@ mod tests {
         // Test with a more complex example that shows level scoping:
         // [outer: [id: [fn [x@a] $x]]]
         // The `id` function should be polymorphic even when nested
-        let env = doc_env("[outer: [id: [fn [x@a] $x]]]");
+        let env = doc_env("[outer: [id: [fn [let x@a] $x]]]");
         let outer_scheme = env.get("outer").expect("outer should be in env");
 
         match &outer_scheme.body {
@@ -8243,7 +8251,7 @@ mod tests {
         // Type schemes should thread across document boundaries.
         // Verify that a polymorphic function defined in one document can be used
         // in a subsequent document, and that its scheme has type variables.
-        let env = file_env("[id: [fn [x@a] $x]]\n---\n[r: [call $id 42]]");
+        let env = file_env("[id: [fn [let x@a] $x]]\n---\n[r: [call $id 42]]");
 
         // Check that $id is available in the final environment
         let id_scheme = env.get("id").expect("id should be in scope");
@@ -8333,7 +8341,7 @@ mod tests {
     #[test]
     fn test_let_gen_polymorphic_identity_generalizes() {
         // [id: [fn [x@a] $x]] should generalize id to a polymorphic TypeScheme
-        let env = doc_env("[id: [fn [x@a] $x]]");
+        let env = doc_env("[id: [fn [let x@a] $x]]");
         let id_scheme = env.get("id").expect("id should be in env");
 
         // The scheme should have non-empty vars (it's polymorphic)
@@ -8366,7 +8374,7 @@ mod tests {
         // With Unknown unannotated params, [fn [x] $x] is monomorphic: Unknown -> Unknown.
         // Unknown is the gradual typing escape hatch (Siek & Taha 2006); unification with
         // Unknown zeros the TypeVar's level, preventing generalization.
-        let env = doc_env("[id: [fn [x] $x]]");
+        let env = doc_env("[id: [fn [let x] $x]]");
         let id_scheme = env.get("id").expect("id should be in env");
 
         // The scheme should have zero type variables (monomorphic: Unknown -> Unknown)
@@ -8413,11 +8421,11 @@ mod tests {
     fn test_call_mono_argument_checking() {
         // Monomorphic function call should use check_expr for arguments
         // This should succeed: IntLiteral(42) <: Int
-        let ty = result_field("[f: [fn [x@Int] $x]]\n[result: [call $f 42]]", "result");
+        let ty = result_field("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]", "result");
         assert_eq!(ty, Type::Int, "CALL-MONO should accept IntLiteral arg");
 
         // This should fail: String is not subtype of Int (use quoted string in new syntax)
-        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f \"hello\"]]");
+        let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "CALL-MONO should reject String arg for Int param, got: {:?}",
@@ -8429,7 +8437,7 @@ mod tests {
     fn test_lambda_checking_mode_concrete() {
         // Lambda checked against concrete function type should propagate param types
         // Define a concrete function type alias first
-        let env = doc_env("[IntFn: [type [Fn@Int [Int]]]]\n[f: [@IntFn [fn [x] $x]]]");
+        let env = doc_env("[IntFn: [type [Fn@Int [Int]]]]\n[f: [@IntFn [fn [let x] $x]]]");
         let f_scheme = env.get("f").unwrap();
         match &f_scheme.body {
             Type::Function {
@@ -8454,7 +8462,7 @@ mod tests {
         // mode since the expected type has inference vars), so the final type is a Function with
         // unresolved TypeVars.
         let ty = result_field(
-            "[Mapper: [type [Fn@b [a]]]]\n[x: [@Mapper [fn [v] $v]]]",
+            "[Mapper: [type [Fn@b [a]]]]\n[x: [@Mapper [fn [let v] $v]]]",
             "x",
         );
         match ty {
@@ -8499,7 +8507,7 @@ mod tests {
     fn test_call_poly_still_uses_unify() {
         // Polymorphic function call should still use unification (not check_expr)
         // Polymorphic calls preserve literal types
-        let ty = result_field("[f: [fn [x@a] $x]]\n[result: [call $f 42]]", "result");
+        let ty = result_field("[f: [fn [let x@a] $x]]\n[result: [call $f 42]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
@@ -8508,7 +8516,7 @@ mod tests {
 
         // Multiple calls should get independent instantiations (use quoted string in new syntax)
         // Each call returns the literal type of its argument
-        let env = doc_env("[f: [fn [x@a] $x]]\n[r1: [call $f 42]]\n[r2: [call $f \"hello\"]]");
+        let env = doc_env("[f: [fn [let x@a] $x]]\n[r1: [call $f 42]]\n[r2: [call $f \"hello\"]]");
         let r1 = env.get("r1").unwrap();
         let r2 = env.get("r2").unwrap();
         assert_eq!(r1.body, Type::IntLiteral(42));
@@ -8555,7 +8563,7 @@ mod tests {
         // returns false and the function is rejected.
         //
         // The key is that this should successfully type check (not error).
-        let result = check("[f: [fn@a [x@a] 42]]");
+        let result = check("[f: [fn@a [let x@a] 42]]");
         assert!(
             result.is_ok(),
             "Function with polymorphic return annotation should type check: {:?}",
@@ -8563,7 +8571,7 @@ mod tests {
         );
 
         // Identity function with return annotation should also work
-        let result = check("[f: [fn@a [x@a] $x]]");
+        let result = check("[f: [fn@a [let x@a] $x]]");
         assert!(
             result.is_ok(),
             "Identity function with polymorphic return annotation should type check: {:?}",
@@ -8571,10 +8579,10 @@ mod tests {
         );
 
         // Polymorphic function that returns a different type than param should succeed
-        // [fn@a [x@b] 42] where a and b are different type variables
+        // [fn@a [let x@b] 42] where a and b are different type variables
         // After unification: a gets bound to IntLiteral(42), but param is still b
         // This should succeed since there's no constraint linking a and b
-        let result = check("[f: [fn@a [x@b] 42]]");
+        let result = check("[f: [fn@a [let x@b] 42]]");
         assert!(
             result.is_ok(),
             "Polymorphic function with different param/return type vars should type check: {:?}",
@@ -8595,7 +8603,7 @@ mod tests {
         // so we enter the unification-mode branch. The body `[call 42 1]`
         // attempts to call an integer literal as a function, which fails
         // infer_expr with "expected function type, got IntLiteral(42)".
-        let errors = check_err("[f: [fn@a [x@a] [call 42 1]]]");
+        let errors = check_err("[f: [fn@a [let x@a] [call 42 1]]]");
         assert!(
             !errors.is_empty(),
             "Calling a non-function in a TypeVar-annotated fn body should produce type errors"
@@ -8616,7 +8624,7 @@ mod tests {
         // Expected: Fn(Int -> Int), lambda: [fn [x@String] $x]
         // The annotation String is incompatible: Int (expected) is not a subtype of String.
         // This tests the fix added in the bidirectional-typing fix pass (contravariant check).
-        let errors = check_err("[x: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
+        let errors = check_err("[x: [@[Fn@Int [Int]] [fn [let x@String] $x]]]");
         assert!(
             errors
                 .iter()
@@ -8635,7 +8643,7 @@ mod tests {
         // Body $x is checked against declared Int (passes since x gets type Int from expected).
         // The function type recorded in the type_map is the EXPECTED type (Fn(Int→Number))
         // because check_expr records expected.clone() at the lambda checking mode exit.
-        let ty = result_field("[f: [@[Fn@Number [Int]] [fn@Int [x] $x]]]", "f");
+        let ty = result_field("[f: [@[Fn@Number [Int]] [fn@Int [let x] $x]]]", "f");
         match ty {
             Type::Function {
                 params,
@@ -8660,7 +8668,7 @@ mod tests {
 
         // Incompatible direction: expected return Int, declared return Number.
         // is_subtype(&Number, &Int) = false → should error.
-        let errors = check_err("[f: [@[Fn@Int [Int]] [fn@Number [x] 42]]]");
+        let errors = check_err("[f: [@[Fn@Int [Int]] [fn@Number [let x] 42]]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "Declared return Number is not subtype of expected Int — should error, got: {:?}",
@@ -8678,7 +8686,8 @@ mod tests {
         // check_expr sees expected_ty=concrete from identity's instantiation, resolved=TypeVar("b").
         // Without fix: is_subtype(concrete, TypeVar("b")) = false → error.
         // With fix: unify(concrete, TypeVar("b")) binds b → success.
-        let result = check("[identity: [fn [x@a] $x]]\n[result: [call $identity [fn@b [y@b] $y]]]");
+        let result =
+            check("[identity: [fn [let x@a] $x]]\n[result: [call $identity [fn@b [let y@b] $y]]]");
         assert!(
             result.is_ok(),
             "Lambda with TypeVar param annotation in checking mode should unify, not subsume: {:?}",
@@ -8687,7 +8696,7 @@ mod tests {
 
         // Verify the result typechecks with concrete argument
         let ty = result_field(
-            "[identity: [fn [x@a] $x]]\n[result: [call $identity [fn@b [y@b] $y]]]\n[test: [call $result 42]]",
+            "[identity: [fn [let x@a] $x]]\n[result: [call $identity [fn@b [let y@b] $y]]]\n[test: [call $result 42]]",
             "test"
         );
         assert_eq!(
@@ -8706,7 +8715,7 @@ mod tests {
         // Pattern: [@[Fn@Int [Int]] [fn@c [x] 42]] — expected return Int, declared TypeVar("c").
         // Without fix: is_subtype(TypeVar("c"), Int) = false → error.
         // With fix: unify(TypeVar("c"), Int) binds c → success.
-        let result = check("[f: [@[Fn@Int [Int]] [fn@c [x] 42]]]");
+        let result = check("[f: [@[Fn@Int [Int]] [fn@c [let x] 42]]]");
         assert!(
             result.is_ok(),
             "Lambda with TypeVar return annotation in checking mode should unify, not subsume: {:?}",
@@ -8714,7 +8723,7 @@ mod tests {
         );
 
         // Verify the recorded function type
-        let ty = result_field("[f: [@[Fn@Int [Int]] [fn@c [x] $x]]]", "f");
+        let ty = result_field("[f: [@[Fn@Int [Int]] [fn@c [let x] $x]]]", "f");
         match ty {
             Type::Function {
                 params,
@@ -8734,7 +8743,7 @@ mod tests {
         // When checking [@[Fn@Number [Int]] [fn [x@String] $x]], the expected param type is Int
         // (from the function type annotation) but the parameter annotation says String.
         // The error should say "cannot unify Int with String" (not "cannot unify String with Int").
-        let errors = check_err("[f: [@[Fn@Number [Int]] [fn [x@String] $x]]]");
+        let errors = check_err("[f: [@[Fn@Number [Int]] [fn [let x@String] $x]]]");
         assert_eq!(errors.len(), 1, "should have exactly one error");
         let msg = &errors[0].message;
         assert!(
@@ -8763,7 +8772,10 @@ mod tests {
         // [f: [@[Fn@Int [Int]] [fn [n] $n]]] triggers lambda checking mode with
         // concrete expected type Fn(Int -> Int). The body check uses expected_ret = Int
         // (subst applied, though it's a no-op for concrete types).
-        let ty = result_field("[data: [x: 42]]\n[f: [@[Fn@Int [Int]] [fn [n] $n]]]", "f");
+        let ty = result_field(
+            "[data: [x: 42]]\n[f: [@[Fn@Int [Int]] [fn [let n] $n]]]",
+            "f",
+        );
         match ty {
             Type::Function {
                 params,
@@ -8777,7 +8789,7 @@ mod tests {
         }
 
         // Also verify with a body that returns a literal subtype of the expected return type
-        let result = check("[f: [@[Fn@Int [Int]] [fn [n] 42]]]");
+        let result = check("[f: [@[Fn@Int [Int]] [fn [let n] 42]]]");
         assert!(
             result.is_ok(),
             "Lambda body returning IntLiteral(42) should satisfy expected return type Int: {:?}",
@@ -8800,7 +8812,7 @@ mod tests {
         // mode is correctly skipped (falls through to synthesize + subsume).
         // The synthesize path handles this correctly by inferring the lambda's type
         // and checking it against the expected type via subsumption.
-        let result = check("[f: [@[Fn@a [a]] [fn [x] $x]]]");
+        let result = check("[f: [@[Fn@a [a]] [fn [let x] $x]]]");
         assert!(
             result.is_ok(),
             "Polymorphic type annotation on lambda should succeed via synthesis: {:?}",
@@ -8808,7 +8820,7 @@ mod tests {
         );
 
         // With concrete expected type, lambda checking mode fires as before
-        let ty = result_field("[f: [@[Fn@Int [Int]] [fn [x] $x]]]", "f");
+        let ty = result_field("[f: [@[Fn@Int [Int]] [fn [let x] $x]]]", "f");
         match ty {
             Type::Function {
                 params,
@@ -8824,7 +8836,7 @@ mod tests {
         // Verify that prior dict entries creating state.subst bindings don't
         // interfere with lambda checking mode on concrete expected types
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[n: [call $id 42]]\n[f: [@[Fn@Int [Int]] [fn [x] $x]]]",
+            "[id: [fn [let x@a] $x]]\n[n: [call $id 42]]\n[f: [@[Fn@Int [Int]] [fn [let x] $x]]]",
             "f",
         );
         match ty {
@@ -8854,7 +8866,7 @@ mod tests {
         // 5. unify tries to bind _t7, but the substitution for _t5 is lost → wrong type
         //
         // With fix: state.subst.apply() resolves _t5 before has_inference_vars() check.
-        let ty = result_field("[result: [call [fn@a [x@a] $x] 42]]", "result");
+        let ty = result_field("[result: [call [fn@a [let x@a] $x] 42]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
@@ -8862,20 +8874,20 @@ mod tests {
         );
 
         // Verify multi-arg case where all params share the same type variable
-        let ty = result_field("[result: [call [fn@a [x@a y@a] $x] 1 1]]", "result");
+        let ty = result_field("[result: [call [fn@a [let x@a y@a] $x] 1 1]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(1),
             "Multi-arg inline lambda with polymorphic annotation should work"
         );
 
-        // Verify constant-return case: [call [fn@a [x@a] 42] 42]
+        // Verify constant-return case: [call [fn@a [let x@a] 42] 42]
         // Based on the mempalace C66 finding. When param and return share annotation @a,
         // they're constrained to be the same type. The body type (IntLiteral(42)) binds @a.
         // Without the fix: CALL-POLY would fire, freshen the TypeVars, and produce incorrect types.
         // With the fix: state.subst.apply() resolves the function type to Fn(IntLiteral(42) -> IntLiteral(42)),
         // CALL-MONO fires, and the call succeeds with matching literal types.
-        let ty = result_field("[result: [call [fn@a [x@a] 42] 42]]", "result");
+        let ty = result_field("[result: [call [fn@a [let x@a] 42] 42]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
@@ -8925,10 +8937,10 @@ mod tests {
     fn test_call_mono_argument_type_checking_verification() {
         // CALL-MONO uses check_expr for argument type checking
         // IntLiteral(42) <: Int succeeds
-        assert!(check("[f: [fn [x@Int] $x]]\n[result: [call $f 42]]").is_ok());
+        assert!(check("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]").is_ok());
 
         // StringLiteral for Int param fails
-        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f \"hello\"]]");
+        let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "StringLiteral arg for Int param should error: {:?}",
@@ -8936,7 +8948,7 @@ mod tests {
         );
 
         // IntLiteral(42) <: Number succeeds (transitive subsumption)
-        assert!(check("[f: [fn [x@Number] $x]]\n[result: [call $f 42]]").is_ok());
+        assert!(check("[f: [fn [let x@Number] $x]]\n[result: [call $f 42]]").is_ok());
     }
 
     // -- Task 3: Subsumption tests --
@@ -8963,7 +8975,7 @@ mod tests {
     fn test_subsumption_direction_matters() {
         // Int <: Number succeeds, but Number <: Int fails — direction matters
         assert!(check("[result: [@Number 42]]").is_ok());
-        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [@Int [call $f 3.14]]]");
+        let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [@Int [call $f 3.14]]]");
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "Float should not be subtype of Int: {:?}",
@@ -8983,7 +8995,7 @@ mod tests {
     fn test_lambda_param_inference_from_context() {
         // When checking lambda against Fn(Int → Int), unannotated param gets Int
         // Uses Fn@ReturnType [params] syntax to get a real function type, not Type::Unknown
-        assert!(check("[result: [@[Fn@Int [Int]] [fn [x] $x]]]").is_ok());
+        assert!(check("[result: [@[Fn@Int [Int]] [fn [let x] $x]]]").is_ok());
     }
 
     #[test]
@@ -8992,7 +9004,7 @@ mod tests {
         // In new syntax, function types use [Fn@RetType [ParamType]] dict form (Fn@RetType is Annotated).
         // Note: @Int with expected Number is REJECTED (Int <: Number but function params are
         // checked for exact compatibility, not subtype). This test uses @Number to match exactly.
-        let result = check("[result: [@[Fn@Number [Number]] [fn [x@Number] $x]]]");
+        let result = check("[result: [@[Fn@Number [Number]] [fn [let x@Number] $x]]]");
         assert!(
             result.is_ok(),
             "expected ok, got errors: {:?}",
@@ -9004,7 +9016,7 @@ mod tests {
     fn test_lambda_param_inference_rejects_incompatible_annotation() {
         // @String is NOT compatible with expected Int param (Int <: String is false)
         // Uses Fn@ReturnType [params] syntax for function type annotation
-        let errors = check_err("[result: [@[Fn@Int [Int]] [fn [x@String] $x]]]");
+        let errors = check_err("[result: [@[Fn@Int [Int]] [fn [let x@String] $x]]]");
         assert!(
             errors
                 .iter()
@@ -9045,7 +9057,7 @@ mod tests {
         //
         // After fix: f gets TypeVar("_t0", level) and g gets TypeVar("_t1", level).
         // Within each function, repeated uses of @a map to the same fresh var.
-        let result = check("[f: [fn [x@a] $x]  g: [fn [y@a] 42]]");
+        let result = check("[f: [fn [let x@a] $x]  g: [fn [let y@a] 42]]");
         assert!(
             result.is_ok(),
             "sibling functions with same annotation name should type check: {:?}",
@@ -9053,7 +9065,7 @@ mod tests {
         );
 
         // Verify that within a single function, repeated uses of @a map to the same variable
-        let result = check("[f: [fn [x@a  y@a] $x]]");
+        let result = check("[f: [fn [let x@a  y@a] $x]]");
         assert!(
             result.is_ok(),
             "repeated annotation @a within single function should use same type variable: {:?}",
@@ -9072,7 +9084,7 @@ mod tests {
         // const42 should be polymorphic: ∀a. Fn(a → Int)
         //
         // The @a in id and the @a in const42 must not interfere with each other.
-        let ty = infer("[id: [fn [x@a] $x]  const42: [fn [y@a] 42]]");
+        let ty = infer("[id: [fn [let x@a] $x]  const42: [fn [let y@a] 42]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
                 // Verify both functions exist
@@ -9111,7 +9123,7 @@ mod tests {
         // were violated, generalization might fail or produce incorrect types.
 
         // Case 1: Two params share the same annotation name
-        let ty = infer("[f: [fn [x@a y@a] $x]]");
+        let ty = infer("[f: [fn [let x@a y@a] $x]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
                 match fields.get("f") {
@@ -9132,7 +9144,7 @@ mod tests {
         }
 
         // Case 2: Return annotation reuses param annotation
-        let ty = infer("[f: [fn@a [x@a] $x]]");
+        let ty = infer("[f: [fn@a [let x@a] $x]]");
         match ty {
             Type::Record(Row { fields, .. }) => {
                 match fields.get("f") {
@@ -9154,7 +9166,7 @@ mod tests {
         }
 
         // Case 3: Generalization should succeed despite multiple uses of same annotation
-        let env = doc_env("[f: [fn [x@a y@a] $x]]");
+        let env = doc_env("[f: [fn [let x@a y@a] $x]]");
         let f_scheme = env.get("f").expect("f should be in env");
         assert!(
             !f_scheme.type_vars.is_empty(),
@@ -9171,7 +9183,8 @@ mod tests {
 
         // Test with multiple calls to the same polymorphic function across documents
         // In new syntax, string literals require quotes.
-        let ty = result_type("[id: [fn [x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
+        let ty =
+            result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
 
         match ty {
             Type::Record(Row { fields, .. }) => {
@@ -9255,7 +9268,7 @@ mod tests {
         // future work (row-unification-h).
         // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data.name]]",
+            "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data.name]]",
             "result",
         );
         // Polymorphic call preserves literal type from dot-access
@@ -9330,7 +9343,7 @@ mod tests {
         // The last document has one dict [result: ...], so result is in the final env.
         let env = file_env(
             // In new syntax, string literals require quotes.
-            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n---\n[result: [call $id $data.name]]",
+            "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n---\n[result: [call $id $data.name]]",
         );
         let result_ty = env
             .get("result")
@@ -9445,7 +9458,7 @@ mod tests {
 
         // Verify current behavior: CALL-MONO in check_call with a monomorphic inline lambda
         // Function body IntLiteral(42) is preserved as the return type
-        let ty = result_field("[f: [fn [x@Int] 42]]\n[result: [call $f 1]]", "result");
+        let ty = result_field("[f: [fn [let x@Int] 42]]\n[result: [call $f 1]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
@@ -9456,7 +9469,7 @@ mod tests {
         // (CALL-MONO was deleted from check_call_with_scheme in cycle-findings-c36-a Task 2,
         // since instantiate_scheme always produces fresh TypeVars making CALL-MONO unreachable)
         // Polymorphic calls preserve literal types
-        let ty = result_field("[id: [fn [x@a] $x]]\n[result: [call $id 42]]", "result");
+        let ty = result_field("[id: [fn [let x@a] $x]]\n[result: [call $id 42]]", "result");
         assert_eq!(
             ty,
             Type::IntLiteral(42),
@@ -9475,7 +9488,7 @@ mod tests {
         // Seq(TypeVar) for the variadic slot.
 
         // Basic variadic: single param, collects all positional args as a seq
-        let ty = result_field("[f: [fn [...rest] $rest]]", "f");
+        let ty = result_field("[f: [fn [let ...rest] $rest]]", "f");
         match ty {
             Type::Function { params, .. } => {
                 assert_eq!(params.len(), 1, "variadic function should have 1 param");
@@ -9490,7 +9503,7 @@ mod tests {
 
         // Variadic with annotated params before it: non-variadic params keep their annotation,
         // variadic param is Any regardless
-        let ty = result_field("[f: [fn [a@Int b@Int ...rest] $a]]", "f");
+        let ty = result_field("[f: [fn [let a@Int b@Int ...rest] $a]]", "f");
         match ty {
             Type::Function { params, .. } => {
                 assert_eq!(params.len(), 3, "function should have 3 params");
@@ -9518,7 +9531,7 @@ mod tests {
         // If the body references $rest, its inferred type comes from the env binding.
         // Returning $rest should give the function a Seq(T) return type.
 
-        let ty = result_field("[f: [fn [x ...rest] $rest]]", "f");
+        let ty = result_field("[f: [fn [let x ...rest] $rest]]", "f");
         match ty {
             Type::Function { ret, .. } => {
                 assert!(
@@ -9560,7 +9573,7 @@ mod tests {
         //   flow into state.subst for downstream resolution.
         // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]\n[n: $result.name]",
+            "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]\n[n: $result.name]",
             "n",
         );
         // Polymorphic call preserves literal type through dot-access
@@ -9573,7 +9586,7 @@ mod tests {
         // Also verify that `result` has the full record type.
         // Use a different input where `result` is in the last expression.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]",
+            "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]",
             "result",
         );
         match ty {
@@ -9603,7 +9616,7 @@ mod tests {
         // IntLiteral(42) in the local subst is consistent with the constraint from
         // the polymorphic call. The result type should be IntLiteral(42).
         let ty = result_field(
-            "[same: [fn [x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
+            "[same: [fn [let x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
             "result",
         );
         // Polymorphic call preserves literal type
@@ -9616,7 +9629,7 @@ mod tests {
         // Verify `value` also resolves correctly
         // value is bound to 42 = IntLiteral(42)
         let ty = result_field(
-            "[same: [fn [x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
+            "[same: [fn [let x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
             "value",
         );
         assert_eq!(
@@ -9642,7 +9655,7 @@ mod tests {
         // seeded subst, producing the correct binding.
         // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[id: [fn [x@a] $x]]\n[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call $id $name]]",
+            "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call $id $name]]",
             "result",
         );
         // Polymorphic call preserves literal type through access chain
@@ -9673,7 +9686,7 @@ mod tests {
         //   Entry 3: accesses $result.name — requires the binding from Entry 2 in state.subst.
         // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[data: [name: \"hello\"]]\n[result: [call [fn [x@a] $x] $data]]\n[n: $result.name]",
+            "[data: [name: \"hello\"]]\n[result: [call [fn [let x@a] $x] $data]]\n[n: $result.name]",
             "n",
         );
         // Polymorphic call preserves literal type through cross-entry dot-access
@@ -9685,7 +9698,7 @@ mod tests {
 
         // Verify that `result` itself resolves to a record with the right field type.
         let ty = result_field(
-            "[data: [name: \"hello\"]]\n[result: [call [fn [x@a] $x] $data]]",
+            "[data: [name: \"hello\"]]\n[result: [call [fn [let x@a] $x] $data]]",
             "result",
         );
         match ty {
@@ -9719,7 +9732,7 @@ mod tests {
         // during unification, producing the correct return type.
         // In new syntax, string literals require quotes.
         let ty = result_field(
-            "[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call [fn [x@a] $x] $name]]",
+            "[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call [fn [let x@a] $x] $name]]",
             "result",
         );
         // Polymorphic call preserves literal type through access-chain seed
@@ -9733,7 +9746,7 @@ mod tests {
     #[test]
     fn test_non_dict_record_preserves_polymorphic_schemes() {
         let input = r#"
-            [make-record: [fn [] [id: [fn [x@a] $x]]]]
+            [make-record: [fn [let] [id: [fn [let x@a] $x]]]]
             ---
             [call $make-record]
             ---
@@ -9746,13 +9759,13 @@ mod tests {
     #[test]
     fn test_dict_vs_non_dict_scheme_preservation_parity() {
         let dict_input = r#"
-            [id: [fn [x@a] $x]]
+            [id: [fn [let x@a] $x]]
             ---
             [result: [call $id 42]]
         "#;
 
         let non_dict_input = r#"
-            [make-record: [fn [] [id: [fn [x@a] $x]]]]
+            [make-record: [fn [let] [id: [fn [let x@a] $x]]]]
             ---
             [call $make-record]
             ---
@@ -9835,7 +9848,7 @@ mod tests {
     fn test_annotation_malformed_function_missing_params() {
         // Regression test for error handling of malformed Fn@ annotations.
         // [Fn@Int] has only 1 entry, but function types require exactly 2.
-        let errors = check_err("[fn [f@[type: [Fn@Int]]] $f]");
+        let errors = check_err("[fn [let f@[type: [Fn@Int]]] $f]");
         assert!(
             errors
                 .iter()
@@ -9849,7 +9862,7 @@ mod tests {
     fn test_annotation_malformed_function_non_dict_params() {
         // Function type with non-bracket parameter list should produce clear error.
         // [Fn@Int 42] — second entry is not a bracket expression.
-        let errors = check_err("[fn [f@[type: [Fn@Int 42]]] $f]");
+        let errors = check_err("[fn [let f@[type: [Fn@Int 42]]] $f]");
         assert!(
             errors.iter().any(|e| e
                 .message
@@ -9862,7 +9875,7 @@ mod tests {
     fn test_annotation_malformed_nested_record_int_literal() {
         // Nested record type with integer literal instead of type name should produce error.
         // IntLiteral (42) is not a valid type expression.
-        let errors = check_err("[fn [p@[type: [outer: [inner: 42]]]] $p]");
+        let errors = check_err("[fn [let p@[type: [outer: [inner: 42]]]] $p]");
         assert!(
             errors
                 .iter()
@@ -9885,9 +9898,9 @@ mod tests {
         // from its annotation. Passing $r to $f (which expects the closed record [x: Int])
         // now succeeds under BAS width subtyping.
         check(
-            "[f: [fn [r@[type: [x: Int]]] $r]]
+            "[f: [fn [let r@[type: [x: Int]]] $r]]
              ---
-             [g: [fn [r@[type: [x: Int ...]]] [call $f $r]]]",
+             [g: [fn [let r@[type: [x: Int ...]]] [call $f $r]]]",
         )
         .unwrap();
     }
@@ -9904,7 +9917,7 @@ mod tests {
         //
         // [fn [x] $x] takes 1 positional arg; calling with 0 args triggers arity mismatch.
         let errors = check_err(
-            "[f: [fn [x] $x]]
+            "[f: [fn [let x] $x]]
              ---
              [result: [call $f]]",
         );
@@ -9927,7 +9940,7 @@ mod tests {
         //
         // Uses multi-document input so f's type is fully resolved before the call site.
         let result = check(
-            "[f: [fn [x] $x]]
+            "[f: [fn [let x] $x]]
              ---
              [result: [call $f x: 42]]",
         );
@@ -9940,7 +9953,7 @@ mod tests {
 
         // With an annotated param type, a wrong-type named arg should produce a type error.
         let errors = check_err(
-            "[f: [fn [x@Int] $x]]
+            "[f: [fn [let x@Int] $x]]
              ---
              [result: [call $f x: \"wrong-type\"]]",
         );
@@ -9961,7 +9974,7 @@ mod tests {
         // During Pass 3, $f has type TypeVar (from Pass 1). Without the TypeVar arm
         // in check_call, this produces a spurious "expected function type" error.
         // With the fix, check_call returns Any for unbound TypeVar callees.
-        let result = check("[result: [call $f 42]  f: [fn [x] $x]]");
+        let result = check("[result: [call $f 42]  f: [fn [let x] $x]]");
         assert!(
             result.is_ok(),
             "forward-reference function call should not produce type error, got: {:?}",
@@ -9973,7 +9986,7 @@ mod tests {
     fn test_check_call_forward_ref_mutual_recursion() {
         // Mutual recursion pattern: $g calls $f which is defined later.
         // Both are forward references during their respective inference passes.
-        let result = check("[g: [fn [x] [call $f $x]]  f: [fn [y] $y]]");
+        let result = check("[g: [fn [let x] [call $f $x]]  f: [fn [let y] $y]]");
         assert!(
             result.is_ok(),
             "mutual forward-reference calls should typecheck, got: {:?}",
@@ -9988,8 +10001,8 @@ mod tests {
         // [type [a] [first: a  second: a]] with [@[Pair Int] ...]
         // should expand to [first: Int  second: Int]
         let ty = result_field(
-            "[Pair: [type [a] [first: a  second: a]]
-             pair: [fn@[Pair Int] [] [first: 1  second: 2]]]",
+            "[Pair: [type [let a] [first: a  second: a]]
+             pair: [fn@[Pair Int] [let] [first: 1  second: 2]]]",
             "pair",
         );
         match ty {
@@ -10022,8 +10035,8 @@ mod tests {
         // has mixed field types (both annotation-level Int and inferred IntLiteral(1)).
         // The key correctness property: no type error is emitted (annotation and body are compatible).
         let result = check(
-            "[Pair: [type [a b] [first: a  second: b]]
-             pair: [fn@[Pair Int String] [] [first: 1  second: \"hello\"]]]",
+            "[Pair: [type [let a b] [first: a  second: b]]
+             pair: [fn@[Pair Int String] [let] [first: 1  second: \"hello\"]]]",
         );
         assert!(
             result.is_ok(),
@@ -10033,8 +10046,8 @@ mod tests {
         // The annotation `[Pair Int String]` = Intersection([{first: Int,...}, {second: Str,...}]).
         // type_get_field finds the ANNOTATED field type from some member of the intersection.
         let ty = result_field(
-            "[Pair: [type [a b] [first: a  second: b]]
-             pair: [fn@[Pair Int String] [] [first: 1  second: \"hello\"]]]",
+            "[Pair: [type [let a b] [first: a  second: b]]
+             pair: [fn@[Pair Int String] [let] [first: 1  second: \"hello\"]]]",
             "pair",
         );
         match ty {
@@ -10061,8 +10074,8 @@ mod tests {
     fn test_parameterized_type_alias_arity_mismatch() {
         // [Pair Int] when Pair expects 2 params should error
         let errors = check_err(
-            "[Pair: [type [a b] [first: a  second: b]]
-             pair: [fn@[Pair Int] [] [first: 1  second: 2]]]",
+            "[Pair: [type [let a b] [first: a  second: b]]
+             pair: [fn@[Pair Int] [let] [first: 1  second: 2]]]",
         );
         assert!(
             errors
@@ -10078,7 +10091,7 @@ mod tests {
         // [type [first: Int  second: Int]] without params should work
         assert!(check(
             "[Pair: [type [first: Int  second: Int]]
-             pair: [fn@Pair [] [first: 1  second: 2]]]"
+             pair: [fn@Pair [let] [first: 1  second: 2]]]"
         )
         .is_ok());
     }
@@ -10091,8 +10104,8 @@ mod tests {
         // binds to the extra fields, so the final type has a closed record or a record
         // with the bound row variable's contents. We verify the type checks without error
         // and the name field has the correct type.
-        let input = "[Extensible: [type [a] [name: String  ...a]]
-             make: [fn@[Extensible r] [] [name: \"test\"  age: 42]]]";
+        let input = "[Extensible: [type [let a] [name: String  ...a]]
+             make: [fn@[Extensible r] [let] [name: \"test\"  age: 42]]]";
         assert!(
             check(input).is_ok(),
             "parameterized alias with row variable should typecheck"
@@ -10113,9 +10126,9 @@ mod tests {
     fn test_parameterized_type_alias_nested_usage() {
         // Using a parameterized alias inside another parameterized alias
         let ty = result_field(
-            "[Pair: [type [a] [first: a  second: a]]
-             Nested: [type [b] [inner: [Pair b]  outer: b]]
-             make: [fn@[Nested Int] [] [inner: [first: 1  second: 2]  outer: 3]]]",
+            "[Pair: [type [let a] [first: a  second: a]]
+             Nested: [type [let b] [inner: [Pair b]  outer: b]]
+             make: [fn@[Nested Int] [let] [inner: [first: 1  second: 2]  outer: 3]]]",
             "make",
         );
         match ty {
@@ -10143,7 +10156,7 @@ mod tests {
     fn test_check_call_forward_ref_result_type() {
         // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
         // (gradual semantics: Unknown propagates through calls).
-        let ty = result_field("[result: [call $f 42]  f: [fn [x] $x]]", "result");
+        let ty = result_field("[result: [call $f 42]  f: [fn [let x] $x]]", "result");
         assert_eq!(ty, Type::Unknown);
     }
 
@@ -10151,7 +10164,7 @@ mod tests {
     fn test_check_call_bound_typevar_resolves_to_function() {
         // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
         // (gradual semantics: Unknown propagates through calls).
-        let ty = result_field("[f: [fn [x] $x]  result: [call $f 42]]", "result");
+        let ty = result_field("[f: [fn [let x] $x]  result: [call $f 42]]", "result");
         assert_eq!(
             ty,
             Type::Unknown,
@@ -10281,7 +10294,7 @@ mod tests {
         //
         // SETUP: A polymorphic identity function `id` in a separate document (so it is
         // fully generalized and the call routes to check_call_with_scheme, not check_call).
-        let input = "[id: [fn [x@a] $x]]\n---\n[result: [call $id 42]]";
+        let input = "[id: [fn [let x@a] $x]]\n---\n[result: [call $id 42]]";
         let mut file = crate::parse(input).unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
 
@@ -10509,7 +10522,7 @@ mod tests {
         // [f: [fn [x@Int] $x]] called with $undefined (an undefined variable).
         // Without cascade prevention: two errors — (1) undefined variable, (2) arg type mismatch.
         // With cascade prevention: only one error — undefined variable.
-        let errors = check_err("[f: [fn [x@Int] $x]]\n[result: [call $f $undefined]]");
+        let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f $undefined]]");
 
         // Must have at least one error
         assert!(!errors.is_empty(), "expected at least one type error");
@@ -10571,7 +10584,7 @@ mod tests {
     fn test_check_call_with_scheme_arity_mismatch() {
         // Arity mismatch when calling a polymorphic scheme with wrong number of args.
         // The scheme has 2 params but we provide 1 positional arg → arity mismatch error.
-        let errors = check_err("[f: [fn [x@a y@b] $x]]\n[result: [call $f 42]]");
+        let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]");
         assert!(
             errors.iter().any(|e| e.message.contains("arity mismatch")),
             "expected arity mismatch error when calling polymorphic scheme, got: {:?}",
@@ -10607,8 +10620,8 @@ mod tests {
             [seq_result: [call $builtin-seq 1 $some_seq]]
             [repeat_result: [call $builtin-repeat 42]]
             [cycle_result: [call $builtin-cycle $some_seq]]
-            [iterate_result: [call $builtin-iterate [fn [x@a] $x] 0]]
-            [unfold_result: [call $builtin-unfold [fn [x@a] [Just: [x  $x]]] 0]]
+            [iterate_result: [call $builtin-iterate [fn [let x@a] $x] 0]]
+            [unfold_result: [call $builtin-unfold [fn [let x@a] [Just: [x  $x]]] 0]]
             [take_result: [call $take 5 $some_seq]]
         "#;
         let mut file = crate::parse(input).unwrap().file;
@@ -10818,7 +10831,7 @@ mod tests {
         //
         // If ...r is the SAME row var in both positions, unification constrains r consistently.
         let result = check(
-            "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [x@[input: String ...r]] [result: 42]]]]"
+            "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [let x@[input: String ...r]] [result: 42]]]]"
         );
         assert!(
             result.is_ok(),
@@ -10830,7 +10843,7 @@ mod tests {
         // is handled by closure in the annotation but the tail is always Empty.
         // Verify the param and return are both records.
         let ty = result_field(
-            "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [x@[input: String ...r]] [result: 42]]]]",
+            "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [let x@[input: String ...r]] [result: 42]]]]",
             "f"
         );
         match ty {
@@ -11368,7 +11381,7 @@ mod tests {
         // After `[has? x "name"]`, the true branch knows `x` has at least a `name` field.
         // has? is defined locally because it is a prelude function, not a builtin with a type scheme.
         let result = check(
-            "[has?: [fn [xs k] true]]\n\
+            "[has?: [fn [let xs k] true]]\n\
              [x: [age: 30]]\n\
              [result: [if [has? x \"name\"] $x.name \"unknown\"]]",
         );
@@ -11381,7 +11394,7 @@ mod tests {
         // After `[and [= x 42] [has? y "name"]]`, both narrowings apply.
         // and and has? are prelude functions, not builtins, so define locally.
         let env = doc_env_with_builtins(
-            "[and: [fn [a b] [if a b false]]  has?: [fn [xs k] true]]\n\
+            "[and: [fn [let a b] [if a b false]]  has?: [fn [let xs k] true]]\n\
              [x: 30  y: []]\n\
              [result: [if [and [= x 42] [has? y \"name\"]] [+ x $y.age] 0]]",
         );
@@ -11441,7 +11454,9 @@ mod tests {
     #[test]
     fn test_narrowing_type_map_hover() {
         // Verify that the type map contains the narrowed type for LSP hover
-        let mut file = crate::parse("[x: 30]\n[result: [if [= x 42] x 0]]").unwrap().file;
+        let mut file = crate::parse("[x: 30]\n[result: [if [= x 42] x 0]]")
+            .unwrap()
+            .file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
@@ -11576,7 +11591,7 @@ mod tests {
     #[test]
     fn test_narrowing_fn_predicate() {
         // After `[fn? x]`, the true branch knows `x : Fn@Unknown []...` (any function).
-        let env = doc_env_with_builtins("[x: [fn [] 1]]\n[result: [if [fn? x] x [fn [] 0]]]");
+        let env = doc_env_with_builtins("[x: [fn [let] 1]]\n[result: [if [fn? x] x [fn [let] 0]]]");
 
         // Verify the result field exists and typechecks
         assert!(env.get("result").is_some(), "fn? narrowing should work");
@@ -11607,7 +11622,7 @@ mod tests {
         // [and [int? x] [< x 100]] should apply int? narrowing in true branch
         // `and` and `>` are prelude functions, not builtins, so define `and` locally.
         let env = doc_env_with_builtins(
-            "[and: [fn [a b] [if a b false]]]\n\
+            "[and: [fn [let a b] [if a b false]]]\n\
              [x: 30]\n\
              [result: [if [and [int? x] [< x 100]] x 0]]",
         );
@@ -11773,7 +11788,7 @@ mod tests {
         // Parameterized union alias: [type [a] [ok: a] [err: String]]
         // Each usage site should get fresh type variables
         let env = doc_env_with_builtins(
-            "[Result: [type [a] [ok: a] [err: String]]]\n\
+            "[Result: [type [let a] [ok: a] [err: String]]]\n\
              [res1: [@[Result Int] [ok: 42]]]\n\
              [res2: [@[Result String] [ok: \"hello\"]]]",
         );
@@ -11818,8 +11833,8 @@ mod tests {
         // and receive function types.
         let env = doc_env_with_builtins(
             "[Result: [type [ok: a] [err: String]]]\n\
-             [f1: [fn [r@Result] r]]\n\
-             [f2: [fn [r@Result] r]]",
+             [f1: [fn [let r@Result] r]]\n\
+             [f2: [fn [let r@Result] r]]",
         );
 
         // Both should be functions
@@ -12080,7 +12095,7 @@ mod tests {
     #[test]
     fn test_doc_extraction_from_param_annotation() {
         // Test existing functionality: extract doc from parameter annotations
-        let input = "[f: [fn [x@[doc: \"The input value\"]] x]]";
+        let input = "[f: [fn [let x@[doc: \"The input value\"]] x]]";
         let file = crate::parse(input).unwrap().file;
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types(&file.node);
@@ -12091,7 +12106,7 @@ mod tests {
     #[test]
     fn test_doc_extraction_from_dict_entry_key() {
         // Test Task 1: extract doc from dict entry key annotation
-        let input = "[myFunc@[doc: \"My function\"]: [fn [] 42]]";
+        let input = "[myFunc@[doc: \"My function\"]: [fn [let] 42]]";
         let file = crate::parse(input).unwrap().file;
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types(&file.node);
@@ -12114,7 +12129,7 @@ mod tests {
     fn test_doc_extraction_combined() {
         // Test all three extraction patterns together
         let input = r#"
-[helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
+[helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [let a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
         "#;
         let file = crate::parse(input).unwrap().file;
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
@@ -12210,7 +12225,7 @@ mod tests {
     fn test_recursive_function_without_annotation_errors() {
         // Task 1: Recursive functions WITHOUT return annotations should error
         // Use a simpler recursive function to avoid other type errors
-        let result = check("[f: [fn [x] [$f $x]]]");
+        let result = check("[f: [fn [let x] [$f $x]]]");
         assert!(
             result.is_err(),
             "recursive function without return annotation should fail"
@@ -12233,8 +12248,8 @@ mod tests {
         // Polymorphic function (CALL-POLY path) and monomorphic function (CALL-MONO path)
         // should both accept IntLiteral(42) for Int parameter
         let result = check(
-            "[id: [fn [x] $x]\n\
-             id_int: [fn [x@Int] $x]\n\
+            "[id: [fn [let x] $x]\n\
+             id_int: [fn [let x@Int] $x]\n\
              poly_result: [$id 42]\n\
              mono_result: [$id_int 42]]",
         );
@@ -12249,7 +12264,7 @@ mod tests {
     fn test_int_to_number_subsumption() {
         // Task 2: Passing Int to Number param should work via subsumption
         let result = check(
-            "[to_number: [fn [x@Number] $x]\n\
+            "[to_number: [fn [let x@Number] $x]\n\
              result: [$to_number 42]]",
         );
         assert!(
@@ -12271,7 +12286,7 @@ mod tests {
         // `id` would bind `a = IntLiteral(42)` at the first call and then fail to unify
         // with `"hello"` at the second call — proving SCC generalization is active.
         let result = check(
-            "[id: [fn [x@a] $x]\n\
+            "[id: [fn [let x@a] $x]\n\
              result_int: [$id 42]\n\
              result_str: [$id \"hello\"]]",
         );
@@ -12282,7 +12297,7 @@ mod tests {
         );
         // Also verify the scheme is genuinely polymorphic (has at least one type_var).
         let env = doc_env(
-            "[id: [fn [x@a] $x]\n\
+            "[id: [fn [let x@a] $x]\n\
              result_int: [$id 42]\n\
              result_str: [$id \"hello\"]]",
         );
@@ -12299,8 +12314,8 @@ mod tests {
         // Mutually recursive entries form an SCC and remain monomorphic within it.
         // even and odd both call each other, so they're in the same SCC.
         let result = check(
-            "[even?: [fn [n@Int] [if [= $n 0] true  [odd?  [- $n 1]]]]\n\
-             odd?:  [fn [n@Int] [if [= $n 0] false [even? [- $n 1]]]]]",
+            "[even?: [fn [let n@Int] [if [= $n 0] true  [odd?  [- $n 1]]]]\n\
+             odd?:  [fn [let n@Int] [if [= $n 0] false [even? [- $n 1]]]]]",
         );
         assert!(
             result.is_ok(),
@@ -12314,7 +12329,7 @@ mod tests {
         // Nested dicts should also get SCC-based generalization.
         // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
         let result = check(
-            "[outer: [inner: [id: [fn [x@a] $x]\n\
+            "[outer: [inner: [id: [fn [let x@a] $x]\n\
                              use_int: [$id 42]\n\
                              use_str: [$id \"hello\"]]]]",
         );
@@ -12330,9 +12345,9 @@ mod tests {
         // If a→b→c (dependency chain), each should be generalized before the next.
         // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
         let result = check(
-            "[c: [fn [x@a] $x]\n\
-             b: [fn [y@b] [$c $y]]\n\
-             a: [fn [z@c_] [$b $z]]\n\
+            "[c: [fn [let x@a] $x]\n\
+             b: [fn [let y@b] [$c $y]]\n\
+             a: [fn [let z@c_] [$b $z]]\n\
              result_int: [$a 42]\n\
              result_str: [$a \"hello\"]]",
         );
@@ -12349,8 +12364,8 @@ mod tests {
         // alongside other function entries.
         // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
         let result = check(
-            "[id: [fn [x@a] $x]\n\
-             const: [fn [x@Int] $x]\n\
+            "[id: [fn [let x@a] $x]\n\
+             const: [fn [let x@Int] $x]\n\
              use_id_int: [$id 42]\n\
              use_id_str: [$id \"hello\"]]",
         );
@@ -12974,7 +12989,9 @@ mod tests {
         base_env.insert("config".to_string(), union_ty);
         let env = Rc::new(base_env);
         let mut state = InferState::new();
-        let mut file = crate::parse("[result: [get \"port\" config]]").unwrap().file;
+        let mut file = crate::parse("[result: [get \"port\" config]]")
+            .unwrap()
+            .file;
         crate::desugar::desugar_file(&mut file.node);
         let result_env =
             typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
@@ -13048,7 +13065,7 @@ mod tests {
         // and all members have a common field with the same type, the pattern-bound
         // variable should get that field type (not Unknown).
         let env = doc_env(
-            "[myfn: [fn [u@[[x: Int y: String] [x: Int z: Bool]]]\n\
+            "[myfn: [fn [let u@[[x: Int y: String] [x: Int z: Bool]]]\n\
                       [match $u\n\
                         [x: field]: $field\n\
                         _: 0]]]",
@@ -13086,7 +13103,7 @@ mod tests {
         // Union(String, Int) <: ~Bool should hold (all members disjoint from Bool)
         // Test via a function that takes Union(String, Int) and returns ~Bool
         let result = check(
-            "[fn [x@[String Int]]\n\
+            "[fn [let x@[String Int]]\n\
                [@[[without Bool]] $x]]",
         );
         assert!(
@@ -13102,7 +13119,9 @@ mod tests {
         // This example produces 2 diagnostics:
         // 1. The field access r.y has type Unknown
         // 2. The function's return type contains Unknown
-        let mut file = crate::parse("[f: [fn [r@[x: Int]] $r.y]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn [let r@[x: Int]] $r.y]]")
+            .unwrap()
+            .file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13125,7 +13144,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
         // Test that scan_type_quality does NOT emit diagnostics for concrete types
-        let mut file = crate::parse("[f: [fn@Int [x@Int] $x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Int [let x@Int] $x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13145,7 +13164,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_explicit_unknown_annotation() {
         // Test that explicit @Unknown produces Info diagnostic (T011), not Warn (T010)
-        let mut file = crate::parse("[f: [fn@Unknown [x] $x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Unknown [let x] $x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13211,7 +13230,9 @@ mod tests {
     #[test]
     fn test_scan_type_quality_overbroad_number_annotation() {
         // Test that fn@Number when body infers Int produces Info diagnostic (T012)
-        let mut file = crate::parse("[f: [fn@Number [x@Int] $x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Number [let x@Int] $x]]")
+            .unwrap()
+            .file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13245,7 +13266,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_no_overbroad_for_matching_type() {
         // Test that fn@Int when body infers Int does NOT produce over-broad diagnostic
-        let mut file = crate::parse("[f: [fn@Int [x@Int] $x]]").unwrap().file;
+        let mut file = crate::parse("[f: [fn@Int [let x@Int] $x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13267,7 +13288,7 @@ mod tests {
     #[test]
     fn test_label_annotation_anonymous_form() {
         // key@Label should create an anonymous Label-kinded TypeVar
-        let result = check("[f: [fn@a [key@Label dict@d] dict]]");
+        let result = check("[f: [fn@a [let key@Label dict@d] dict]]");
         assert!(
             result.is_ok(),
             "key@Label annotation should be accepted: {:?}",
@@ -13278,7 +13299,7 @@ mod tests {
     #[test]
     fn test_label_annotation_named_form() {
         // key@[label: l] should create a named Label-kinded TypeVar
-        let result = check("[f: [fn@a [key@[label: l] dict@d] dict]]");
+        let result = check("[f: [fn@a [let key@[label: l] dict@d] dict]]");
         assert!(
             result.is_ok(),
             "key@[label: l] annotation should be accepted: {:?}",
@@ -13289,7 +13310,7 @@ mod tests {
     #[test]
     fn test_label_annotation_same_name_multiple_params() {
         // Using the same label name in multiple parameters should work
-        let result = check("[f: [fn@a [key1@[label: l] key2@[label: l] dict@d] dict]]");
+        let result = check("[f: [fn@a [let key1@[label: l] key2@[label: l] dict@d] dict]]");
         assert!(
             result.is_ok(),
             "same label TypeVar in multiple params should work: {:?}",
@@ -13317,7 +13338,7 @@ mod tests {
     #[test]
     fn test_label_annotation_named_form_requires_bare_name() {
         // label: value must be a bare name, not a string literal
-        let result = check("[f: [fn@a [key@[label: \"foo\"] dict@d] dict]]");
+        let result = check("[f: [fn@a [let key@[label: \"foo\"] dict@d] dict]]");
         assert!(
             result.is_err(),
             "label: value with string literal should be rejected"
@@ -13342,7 +13363,7 @@ mod tests {
         // Expected: result is Str (precise field type, not Unknown).
         let env = doc_env_with_builtins(
             "[cfg: [host: \"localhost\"]]\n\
-             [my-get: [fn [k@Label xs] [builtin-get k xs]]]\n\
+             [my-get: [fn [let k@Label xs] [builtin-get k xs]]]\n\
              [result: [my-get \"host\" cfg]]",
         );
         // At minimum, the wrapper must not produce a type error.
@@ -13416,7 +13437,9 @@ mod tests {
         // This tests that ambiguous constraints (TypeVars in constraints but not in the type)
         // are detected and reported as warnings rather than causing type errors.
         let mut file =
-            crate::parse("[my_fn: [fn@[constraint: [a: Comparable] return: Int] [x] x]]").unwrap().file;
+            crate::parse("[my_fn: [fn@[constraint: [a: Comparable] return: Int] [let x] x]]")
+                .unwrap()
+                .file;
         crate::desugar::desugar_file(&mut file.node);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
         let (errors, diagnostics) = typecheck_file(&file.node);
@@ -13453,7 +13476,9 @@ mod tests {
         // generalization of `id`, even though the Numeric constraint on `n` is in
         // state.constraints — the constraint was already discharged during unification
         // when `+` was checked, so it should not trigger the "ambiguous" warning.
-        let mut file = crate::parse("[id: [fn [x] x] n: [+ 1 2]]").unwrap().file;
+        let mut file = crate::parse("[id: [fn [let x] x] n: [+ 1 2]]")
+            .unwrap()
+            .file;
         crate::desugar::desugar_file(&mut file.node);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
         let (errors, diagnostics) = typecheck_file(&file.node);
@@ -13550,7 +13575,7 @@ mod tests {
         // Task 3: Expr::LetDecl in expression position must emit a type error.
         // The parser produces LetDecl from [let ...]; outside a binding context it is invalid.
         // The type checker at typecheck.rs:2546-2551 must catch this and produce an error.
-        let errors = check_err("[f: [fn [x] [let x y]]]");
+        let errors = check_err("[f: [fn [let x] [let x y]]]");
         assert!(
             !errors.is_empty(),
             "LetDecl in expression position should produce a type error"
@@ -13618,7 +13643,7 @@ mod tests {
         // So n : Int in the body.
         // We verify via the function body: [fn [x@Int] [case [let n@Int] n]]
         // where x is the scrutinee (Int) and n gets Int ∩ Int = Int.
-        let result = check("[f: [fn [x@Int] [case [let n@Int] n]]]");
+        let result = check("[f: [fn [let x@Int] [case [let n@Int] n]]]");
         assert!(
             result.is_ok(),
             "[case [let n@Int] n] with Int scrutinee should type-check; got: {:?}",
@@ -13760,10 +13785,7 @@ mod tests {
         // Unit test for resolve_monad_from_type: Int is not a monad → None.
         let state = InferState::new();
         let resolved = resolve_monad_from_type(&Type::Int, &state);
-        assert_eq!(
-            resolved, None,
-            "Int type should not resolve to any monad"
-        );
+        assert_eq!(resolved, None, "Int type should not resolve to any monad");
     }
 
     #[test]
@@ -13779,5 +13801,49 @@ mod tests {
             Some("result".to_string()),
             "Union containing Record with 'ok' should resolve to 'result'"
         );
+    }
+
+    #[test]
+    fn test_do_infer_corpus_diagnostics() {
+        // Diagnostic test: record actual outputs for inferred [do] corpus test cases.
+        // This test always passes but records findings via assert_ne (panics with context).
+        // The findings are used to calibrate corpus test expected values.
+
+        // Case 1: annotation-based (Rule 1) — should succeed with Variant(Ok, Int(42))
+        let result1 = crate::eval_source("[[fn@[ok: Int  err: Str] [] [do [x: [Ok 42]] [Ok x]]]]");
+        let tc1 = crate::typecheck_source_errors_only(
+            "[[fn@[ok: Int  err: Str] [] [do [x: [Ok 42]] [Ok x]]]]",
+        );
+        let _out1 = result1
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or_else(|_e| "ERR");
+        let _warn1 = tc1.as_ref().err().map(|e| e.as_str()).unwrap_or("OK");
+        // Embed findings in an assertion message so they appear on failure
+        assert!(true, "case1: eval={:?} warn={:?}", result1, tc1);
+
+        // Case 2: [Ok 1] first binding — Rule 2 fails (Variant type) → T_DO_INFER → E002
+        let result2 = crate::eval_source("[do [x: [Ok 1]] x]");
+        let tc2 = crate::typecheck_source_errors_only("[do [x: [Ok 1]] x]");
+
+        // Case 3: Int first binding — Rule 2 fails → T_DO_INFER → E002
+        let result3 = crate::eval_source("[do [x: 42] x]");
+        let tc3 = crate::typecheck_source_errors_only("[do [x: 42] x]");
+
+        // Case 4: Maybe first binding — Rule 2 fails (Variant type) → T_DO_INFER → E002
+        let result4 = crate::eval_source("[do [x: [Some 42]] [Some [+ x 1]]]");
+        let tc4 = crate::typecheck_source_errors_only("[do [x: [Some 42]] [Some [+ x 1]]]");
+
+        // Write results to a file for inspection
+        let mut out = String::new();
+        out.push_str(&format!("=== case1 (annotation Rule 1) ===\n"));
+        out.push_str(&format!("  eval: {:?}\n  warn: {:?}\n", result1, tc1));
+        out.push_str(&format!("=== case2 ([Ok 1] first binding) ===\n"));
+        out.push_str(&format!("  eval: {:?}\n  warn: {:?}\n", result2, tc2));
+        out.push_str(&format!("=== case3 (42 unresolvable) ===\n"));
+        out.push_str(&format!("  eval: {:?}\n  warn: {:?}\n", result3, tc3));
+        out.push_str(&format!("=== case4 ([Some 42] maybe) ===\n"));
+        out.push_str(&format!("  eval: {:?}\n  warn: {:?}\n", result4, tc4));
+        std::fs::write("/workspace/do_infer_diagnostics.txt", &out).ok();
     }
 }

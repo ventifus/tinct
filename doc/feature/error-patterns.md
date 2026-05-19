@@ -193,7 +193,7 @@ short-circuits the chain.
 
 ### Stdlib Retrofit
 
-All stdlib I/O functions that previously propagated are updated to return
+All stdlib I/O functions that can fail return
 `Ok@T | Err@String` (nominal Result):
 
 - `stdlib/net.llt`: `fetch`, `http-get` — wrap connection/read errors as `Err msg`

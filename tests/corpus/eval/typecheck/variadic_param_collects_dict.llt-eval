@@ -4,7 +4,7 @@
 # are both set to Seq(fresh TypeVar) for type inference.
 # At runtime, excess positional args are collected into a Seq cons-list.
 # Empty variadic = Dict({}) (the nil sentinel); non-empty = Seq(head, ...).
-[f: [fn [x ...rest] rest]
+[f: [fn [let x ...rest] rest]
  result: [f 10 20 30]]
 === out
 Dict({"f": Function(x, rest), "result": Seq(Int(20), ...)})

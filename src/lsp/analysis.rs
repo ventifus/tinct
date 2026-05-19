@@ -44,7 +44,10 @@ pub fn hover_at(
         crate::resolve::resolve_file(&block_file_mut.file.node);
         let (seeded_env, _) = crate::imports::build_type_env(&block_file_mut.file.node, None);
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_file_with_types_and_env(&block_file_mut.file.node, seeded_env);
+            crate::typecheck::typecheck_file_with_types_and_env(
+                &block_file_mut.file.node,
+                seeded_env,
+            );
 
         // Walk the block's AST with block-local offset
         for document in &block_file.file.node.documents {
@@ -1732,8 +1735,9 @@ mod tests {
     #[test]
     fn test_hover_function_param() {
         let env = test_env();
-        let doc = DocumentState::new("[fn [x] $x]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 5, &test_include_graph()); // on 'x' in param list
+        // "[fn [let x] $x]" — 'x' is at offset 9
+        let doc = DocumentState::new("[fn [let x] $x]".to_string(), &env, &test_ctx(), None);
+        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph()); // on 'x' in param list
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Parameter"));
     }
@@ -1976,13 +1980,13 @@ mod tests {
         let env = test_env();
         let ctx = test_ctx();
         let doc = DocumentState::new(
-            "[call $map [fn [x] x] [1 2 3]]".to_string(),
+            "[call $map [fn [let x] x] [1 2 3]]".to_string(),
             &env,
             &ctx,
             None, // base_dir=None still seeds prelude types via imports::build_type_env
         );
         // Offset 6 is on '$map'
-        // "[call $map [fn [x] x] [1 2 3]]"
+        // "[call $map [fn [let x] x] [1 2 3]]"
         //  0123456789...
         let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph());
         assert!(hover.is_some(), "should find hover for $map");
@@ -2004,15 +2008,15 @@ mod tests {
     #[test]
     fn test_hover_shows_doc() {
         let env = test_env();
-        let source = r#"[fn [x@[type: String doc: "the name"]] $x]"#;
+        let source = r#"[fn [let x@[type: String doc: "the name"]] $x]"#;
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
-        // Hover on "$x" in the function body (starts at offset 39)
-        // "[fn [x@[type: String doc: "the name"]] $x]"
+        // Hover on "$x" in the function body (starts at offset 43)
+        // "[fn [let x@[type: String doc: "the name"]] $x]"
         //  0         1         2         3         4
-        //  0123456789012345678901234567890123456789012
-        //                                         ^-- $ at 39, x at 40, ] at 41
-        let hover = hover_at(&doc, &test_uri(), 39, &test_include_graph());
+        //  01234567890123456789012345678901234567890123456
+        //                                             ^-- $ at 43, x at 44
+        let hover = hover_at(&doc, &test_uri(), 43, &test_include_graph());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2028,13 +2032,14 @@ mod tests {
     #[test]
     fn test_hover_no_doc() {
         let env = test_env();
-        let source = r#"[fn [x@String] $x]"#;
+        let source = r#"[fn [let x@String] $x]"#;
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
-        // Hover on "$x" in the function body (starts at offset 15)
-        // "[fn [x@String] $x]"
-        //  012345678901234567
-        let hover = hover_at(&doc, &test_uri(), 15, &test_include_graph());
+        // Hover on "$x" in the function body (starts at offset 19)
+        // "[fn [let x@String] $x]"
+        //  0         1         2
+        //  0123456789012345678901
+        let hover = hover_at(&doc, &test_uri(), 19, &test_include_graph());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2050,14 +2055,14 @@ mod tests {
     #[test]
     fn test_hover_doc_and_default() {
         let env = test_env();
-        let source = r#"[fn [x@[type: Number default: 0 doc: "count"]] $x]"#;
+        let source = r#"[fn [let x@[type: Number default: 0 doc: "count"]] $x]"#;
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
-        // Hover on "$x" in the function body (starts at offset 48)
-        // "[fn [x@[type: Number default: 0 doc: "count"]] $x]"
-        //  0         1         2         3         4
-        //  012345678901234567890123456789012345678901234567890
-        let hover = hover_at(&doc, &test_uri(), 48, &test_include_graph());
+        // Hover on "$x" in the function body (starts at offset 52)
+        // "[fn [let x@[type: Number default: 0 doc: "count"]] $x]"
+        //  0         1         2         3         4         5
+        //  01234567890123456789012345678901234567890123456789012345
+        let hover = hover_at(&doc, &test_uri(), 52, &test_include_graph());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2074,13 +2079,13 @@ mod tests {
     #[test]
     fn test_hover_param_with_doc() {
         let env = test_env();
-        let source = r#"[fn [x@[type: String doc: "the name"]] $x]"#;
+        let source = r#"[fn [let x@[type: String doc: "the name"]] $x]"#;
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
 
-        // Hover on parameter "x" itself (around offset 5)
-        // "[fn [x@[type: String doc: "the name"]] $x]"
-        //  012345
-        let hover = hover_at(&doc, &test_uri(), 5, &test_include_graph());
+        // Hover on parameter "x" itself (at offset 9 in [fn [let x@...]])
+        // "[fn [let x@[type: String doc: "the name"]] $x]"
+        //  012345678 9
+        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph());
         assert!(hover.is_some(), "hover should be present on param");
         let text = hover.unwrap();
         assert!(
@@ -2100,16 +2105,16 @@ mod tests {
         // should show "x: Int y: Int" in the hover type.
         let env = test_env();
         // Use two-document pipeline: define f, then reference it.
-        // "[f: [fn [x@Int y@Int] 0]]" = 26 chars (0..25), \n at 26
-        // "[call $f 1 2]"  starts at 27
-        //  "$f" is at offset 33 ('$') and 34 ('f')
-        let source = "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]";
+        // "[f: [fn [let x@Int y@Int] 0]]" = 30 chars (0..29), \n at 30
+        // "[call $f 1 2]"  starts at 31
+        //  "$f" is at offset 37 ('$') and 38 ('f')
+        let source = "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
-        // "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]"
+        // "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]"
         //  0         1         2         3
-        //  0123456789012345678901234567890123456789
-        //                                   ^ 33 = '$f'
-        let hover = hover_at(&doc, &test_uri(), 33, &test_include_graph());
+        //  0123456789012345678901234567890123456789012345
+        //                                       ^ 37 = '$f'
+        let hover = hover_at(&doc, &test_uri(), 37, &test_include_graph());
         assert!(hover.is_some(), "should have hover on $f");
         let text = hover.unwrap();
         assert!(
@@ -2188,7 +2193,7 @@ mod tests {
 
         // Parse the prelude AST
         let prelude_source = include_str!("../../stdlib/prelude.llt");
-        let prelude_ast = crate::parser::parse(prelude_source).ok();
+        let prelude_ast = crate::parser::parse(prelude_source).ok().map(|o| o.file);
 
         // Offset 6 is on '$map'
         // "[call $map [fn [x] x] [1 2 3]]"

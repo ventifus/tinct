@@ -649,10 +649,7 @@ mod tests {
     use std::rc::Rc;
 
     fn str_thunk(s: &str, span: Span) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(
-            crate::value::string_val(s),
-            span,
-        ))
+        Rc::new(Thunk::new_materialized(crate::value::string_val(s), span))
     }
 
     fn call_span() -> Span {

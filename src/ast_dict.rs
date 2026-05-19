@@ -858,10 +858,7 @@ fn expr_to_thunk_id(
             if *resolver_injective {
                 dict.insert(
                     Key::String("injective".into()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
-                        Value::Bool(true),
-                        span,
-                    ))),
+                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(true), span))),
                 );
             }
         }

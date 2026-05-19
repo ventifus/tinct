@@ -1,4 +1,4 @@
-[f: [fn [x ...rest] rest]]
+[f: [fn [let x ...rest] rest]]
 
 [f 1 2 3]
 === out

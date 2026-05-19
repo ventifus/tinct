@@ -734,36 +734,30 @@ fn pre_scan_expr(
                     .iter()
                     .map(|binding| {
                         match &binding.node {
-                            Expr::VarRef { name, .. } => {
-                                Spanned::new(
-                                    Param {
-                                        name: name.clone(),
-                                        annotation: None,
-                                        variadic: false,
-                                    },
-                                    binding.span,
-                                )
-                            }
-                            Expr::Annotated { name, annotation } => {
-                                Spanned::new(
-                                    Param {
-                                        name: name.clone(),
-                                        annotation: Some(annotation.clone()),
-                                        variadic: false,
-                                    },
-                                    binding.span,
-                                )
-                            }
-                            Expr::Rest(Some(rest_name)) => {
-                                Spanned::new(
-                                    Param {
-                                        name: rest_name.clone(),
-                                        annotation: None,
-                                        variadic: true,
-                                    },
-                                    binding.span,
-                                )
-                            }
+                            Expr::VarRef { name, .. } => Spanned::new(
+                                Param {
+                                    name: name.clone(),
+                                    annotation: None,
+                                    variadic: false,
+                                },
+                                binding.span,
+                            ),
+                            Expr::Annotated { name, annotation } => Spanned::new(
+                                Param {
+                                    name: name.clone(),
+                                    annotation: Some(annotation.clone()),
+                                    variadic: false,
+                                },
+                                binding.span,
+                            ),
+                            Expr::Rest(Some(rest_name)) => Spanned::new(
+                                Param {
+                                    name: rest_name.clone(),
+                                    annotation: None,
+                                    variadic: true,
+                                },
+                                binding.span,
+                            ),
                             _ => {
                                 // Error case — invalid param; will be caught by type checker
                                 Spanned::new(

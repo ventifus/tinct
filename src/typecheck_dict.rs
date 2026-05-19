@@ -737,10 +737,7 @@ mod tests {
 
     /// Helper: build a key_entries list of named, non-alias entries.
     fn key_entries_for(names: &[&str]) -> Vec<(Option<String>, bool)> {
-        names
-            .iter()
-            .map(|n| (Some(n.to_string()), false))
-            .collect()
+        names.iter().map(|n| (Some(n.to_string()), false)).collect()
     }
 
     /// Collect the SCC groups as sorted index sets so tests are order-independent within
@@ -791,8 +788,14 @@ mod tests {
         // Two singleton SCCs
         assert_eq!(sccs.len(), 2, "expected 2 singleton SCCs for a→b chain");
         let sets = scc_index_sets(&sccs);
-        assert!(sets.contains(&vec![0]), "expected SCC containing index 0 (a)");
-        assert!(sets.contains(&vec![1]), "expected SCC containing index 1 (b)");
+        assert!(
+            sets.contains(&vec![0]),
+            "expected SCC containing index 0 (a)"
+        );
+        assert!(
+            sets.contains(&vec![1]),
+            "expected SCC containing index 1 (b)"
+        );
     }
 
     /// Two-node mutual cycle A↔B: both should be in the same SCC.
@@ -839,7 +842,7 @@ mod tests {
                     value: Rc::new(sp(Expr::VarRef {
                         name: "b".to_string(),
                         escaped: false,
-                resolved: std::cell::RefCell::new(None),
+                        resolved: std::cell::RefCell::new(None),
                     })),
                 }),
                 sp(Entry {
@@ -847,7 +850,7 @@ mod tests {
                     value: Rc::new(sp(Expr::VarRef {
                         name: "c".to_string(),
                         escaped: false,
-                resolved: std::cell::RefCell::new(None),
+                        resolved: std::cell::RefCell::new(None),
                     })),
                 }),
             ]))),
@@ -880,11 +883,22 @@ mod tests {
             }
         }
         // d (3) must come before b (1) and c (2)
-        assert!(output_pos[3] < output_pos[1], "d must be processed before b");
-        assert!(output_pos[3] < output_pos[2], "d must be processed before c");
+        assert!(
+            output_pos[3] < output_pos[1],
+            "d must be processed before b"
+        );
+        assert!(
+            output_pos[3] < output_pos[2],
+            "d must be processed before c"
+        );
         // b (1) and c (2) must come before a (0)
-        assert!(output_pos[1] < output_pos[0], "b must be processed before a");
-        assert!(output_pos[2] < output_pos[0], "c must be processed before a");
+        assert!(
+            output_pos[1] < output_pos[0],
+            "b must be processed before a"
+        );
+        assert!(
+            output_pos[2] < output_pos[0],
+            "c must be processed before a"
+        );
     }
-
 }

@@ -91,9 +91,13 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
     let _ = typecheck::typecheck_file(&formatter_file.file.node);
 
     // Evaluate formatter with AST as % (pipeline input).
-    let formatter_thunk =
-        eval::eval_file_with_input(&formatter_file.file.node, Rc::clone(&env), &ctx, Some(ast_thunk))
-            .map_err(|e| format!("formatter eval error: {e}"))?;
+    let formatter_thunk = eval::eval_file_with_input(
+        &formatter_file.file.node,
+        Rc::clone(&env),
+        &ctx,
+        Some(ast_thunk),
+    )
+    .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — should be [Ok String] or [Err msg].
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)
@@ -903,7 +907,7 @@ impl<'a> Formatter<'a> {
             Expr::DefMacro { name, params, body } => {
                 let mut w = 1 + 8 + 1 + name.len(); // [defmacro <name>
                 w += 1 + self.measure_expr_width(params); // params (LetDecl)
-                // Measure body
+                                                          // Measure body
                 if let Expr::Sequential(exprs) = &body.node {
                     for expr in exprs {
                         w += 1 + self.measure_expr_width(expr);
@@ -1663,7 +1667,7 @@ mod tests {
         assert_eq!(format_source("[@Int 42]").unwrap(), "[@Int 42]\n");
         // Annotation in param context — formatter now emits [let ...] form
         assert_eq!(
-            format_source("[fn [x@Int] $x]").unwrap(),
+            format_source("[fn [let x@Int] $x]").unwrap(),
             "[fn [let x@Int] $x]\n"
         );
     }
@@ -1719,7 +1723,7 @@ mod tests {
     #[test]
     fn test_fn_params_always_single_line() {
         // Formatter now emits [let ...] form for fn params
-        let input = "[fn [param1 param2 param3 param4 param5] [x: 1]]";
+        let input = "[fn [let param1 param2 param3 param4 param5] [x: 1]]";
         let formatted = format_source(input).unwrap();
         assert!(formatted.contains("[let param1 param2 param3 param4 param5]"));
     }
@@ -1798,7 +1802,7 @@ mod tests {
     #[test]
     fn test_fn_definition_single_line() {
         // Formatter now emits [let ...] form for fn params
-        let input = "[fn [x y] [call $add $x $y]]";
+        let input = "[fn [let x y] [call $add $x $y]]";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[fn [let x y] [call $add $x $y]]\n");
     }
@@ -1839,7 +1843,7 @@ mod tests {
     fn test_annotated_key() {
         // Annotated param in function — formatter now emits [let ...] form
         assert_eq!(
-            format_source("[fn [x@Int] $x]").unwrap(),
+            format_source("[fn [let x@Int] $x]").unwrap(),
             "[fn [let x@Int] $x]\n"
         );
     }

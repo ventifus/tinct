@@ -860,7 +860,12 @@ impl Thunk {
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Unevaluated { expr, env, env_id: None, ctx }),
+            state: RefCell::new(ThunkState::Unevaluated {
+                expr,
+                env,
+                env_id: None,
+                ctx,
+            }),
             span,
             origin: None,
         }
@@ -879,7 +884,12 @@ impl Thunk {
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Unevaluated { expr, env, env_id: Some(env_id), ctx }),
+            state: RefCell::new(ThunkState::Unevaluated {
+                expr,
+                env,
+                env_id: Some(env_id),
+                ctx,
+            }),
             span,
             origin: None,
         }
@@ -1051,7 +1061,12 @@ impl Thunk {
     )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::Unevaluated { expr, env, env_id: _, ctx } => Some((expr, env, ctx)),
+            ThunkState::Unevaluated {
+                expr,
+                env,
+                env_id: _,
+                ctx,
+            } => Some((expr, env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1276,7 +1291,10 @@ impl Environment {
         self.bindings.insert(name, thunk);
     }
 
-    /// O(1) slot-based lookup with level-based parent chain walking.
+    /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
+    ///
+    /// `level` is a De Bruijn index: 0 = current environment, 1 = parent, N = Nth ancestor.
+    /// This matches the resolver's level assignment in `resolve.rs::Resolver::resolve`.
     ///
     /// For `level = 0`: looks up `slot` directly in the current environment's
     /// `bindings` IndexMap using `get_index` — no name hash, no string comparison.
@@ -1287,7 +1305,7 @@ impl Environment {
     /// deep environments because we skip the string hash at each level.
     ///
     /// Returns `None` if the level or slot is out of bounds (indicates a resolver
-    /// bug; the fallback to name-based lookup should handle it).
+    /// bug; `eval.rs` falls back to name-based lookup when this returns `None`).
     pub fn get_by_slot(&self, level: u32, slot: u32) -> Option<Rc<Thunk>> {
         if level == 0 {
             // Fast path: O(1) index into the current scope's bindings

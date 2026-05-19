@@ -2,41 +2,41 @@
 
 ### `upper`
 
-Convert a string to uppercase
+
 
 ```tinct
-fn@String [s@String]
+fn@
 ```
 
 ### `lower`
 
-Convert a string to lowercase
+
 
 ```tinct
-fn@String [s@String]
+fn@
 ```
 
 ### `pad-left`
 
-Left-pad a string to a target width with a padding character
+
 
 ```tinct
-fn@String [s@String width@Int pad-char@String]
+fn@
 ```
 
 ### `pad-right`
 
-Right-pad a string to a target width with a padding character
+
 
 ```tinct
-fn@String [s@String width@Int pad-char@String]
+fn@
 ```
 
 ### `str-reverse`
 
-Reverse a string by characters
+
 
 ```tinct
-fn@String [s@String]
+fn@
 ```
 

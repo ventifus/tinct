@@ -831,6 +831,9 @@ enum StackFrame {
         body: Vec<Spanned<Expr>>,
         return_ann: Option<Spanned<Annotation>>,
         span_start: Position,
+        /// True once the parameter bracket has been consumed (even if it added 0 params).
+        /// Prevents a second empty bracket `[]` from being mistaken for a param list.
+        params_consumed: bool,
     },
     /// Type alias: `[type expr]` or `[type [params] expr]` or `[type T1 T2 ...]`
     TypeAlias {
@@ -1430,6 +1433,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             body: Vec::new(),
                             return_ann,
                             span_start: span.start,
+                            params_consumed: false,
                         });
                         continue;
                     }
@@ -2060,6 +2064,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         body,
                         return_ann,
                         span_start,
+                        params_consumed: _,
                     } => {
                         if body.is_empty() {
                             close_bracket_recover!(ParseError {
@@ -2490,7 +2495,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                     }
                                                     "injective" => {
                                                         // Extract boolean value
-                                                        if let Expr::Bool(b) = &entry.node.value.node {
+                                                        if let Expr::Bool(b) =
+                                                            &entry.node.value.node
+                                                        {
                                                             resolver_injective = *b;
                                                         }
                                                     }
@@ -4016,8 +4023,12 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 let has_following_identifier =
                     i < token_vec.len() && matches!(&token_vec[i].node, Token::Identifier(_));
 
-                if let Some(StackFrame::Dict { .. }) = stack.last() {
-                    // Inside Dict: this is a rest/open-row marker
+                let in_dict_or_letdecl = matches!(
+                    stack.last(),
+                    Some(StackFrame::Dict { .. }) | Some(StackFrame::LetDecl { .. })
+                );
+                if in_dict_or_letdecl {
+                    // Inside Dict or LetDecl: this is a rest/variadic marker
                     let (rest_name, rest_end) = if has_following_identifier {
                         if let Token::Identifier(name) = &token_vec[i].node {
                             let n = name.clone();
@@ -4055,7 +4066,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     i += name_advance;
                     continue;
                 } else if has_following_identifier {
-                    // Outside Dict, with identifier: error (variadic only in dict)
+                    // Outside Dict/LetDecl, with identifier: error (variadic only in those contexts)
                     let err = ParseError {
                         message: "variadic/rest markers not yet supported outside dict context"
                             .to_string(),
@@ -4883,21 +4894,205 @@ fn push_expr_to_parent(
             Some(StackFrame::Fn {
                 ref mut params,
                 ref mut body,
+                ref mut params_consumed,
                 ..
             }) => {
-                // First expression: check if it's a LetDecl parameter list
-                if params.is_empty() && body.is_empty() {
+                // First expression: check if it's a parameter list.
+                // Accepts both the new [let x y] form (Expr::LetDecl) and the old [x y] form
+                // (Expr::Dict with all positional entries). Both produce the same param list.
+                // params_consumed guards against a second empty bracket being mistaken for params.
+                if !*params_consumed && body.is_empty() {
+                    // Old-form backward compatibility: [fn [x y@Int ...rest] body]
+                    // The param bracket parses as either an implied Call or a Dict, depending on
+                    // whether the first token triggers Call dispatch or not:
+                    //
+                    //   [x]            → Call { func: VarRef("x"), args: [], implied: true }
+                    //   [x y]          → Call { func: VarRef("x"), args: [VarRef("y")], implied: true }
+                    //   [f ...args]    → Call { func: VarRef("f"), args: [Rest("args")], implied: true }
+                    //   [x@Int y]      → Dict([Annotated("x",Int), VarRef("y")]) (@ on head → Dict)
+                    //   [...rest]      → Dict([Rest("rest")]) (Ellipsis head → Dict)
+                    //   []             → Dict([]) (empty)
+                    //
+                    // Recognized when all elements are valid param patterns (VarRef, Annotated,
+                    // Rest(Some(_)), Placeholder) and there are no named args / keyed entries.
+                    let old_form_params: Option<Vec<Spanned<Expr>>> = match &expr.node {
+                        // Empty param list [] or annotated/variadic-head list
+                        Expr::Dict(entries) if entries.iter().all(|e| e.node.key.is_none()) => {
+                            let all_valid = entries.iter().all(|e| {
+                                matches!(
+                                    &e.node.value.node,
+                                    Expr::VarRef { .. }
+                                        | Expr::Placeholder
+                                        | Expr::Annotated { .. }
+                                        | Expr::Rest(Some(_))
+                                )
+                            });
+                            if all_valid {
+                                Some(entries.iter().map(|e| (*e.node.value).clone()).collect())
+                            } else {
+                                None
+                            }
+                        }
+                        // Unannotated-head list: [x], [x y], [f ...args], etc.
+                        Expr::Call {
+                            func,
+                            args,
+                            named_args,
+                            implied: true,
+                        } if named_args.is_empty() => {
+                            // func must be a bare VarRef (first param)
+                            if matches!(
+                                &func.node,
+                                Expr::VarRef { .. }
+                                    | Expr::Annotated { .. }
+                                    | Expr::Rest(Some(_))
+                                    | Expr::Placeholder
+                            ) {
+                                // All args must also be valid param patterns
+                                let all_valid = args.iter().all(|arg| {
+                                    matches!(
+                                        &arg.node,
+                                        Expr::VarRef { .. }
+                                            | Expr::Placeholder
+                                            | Expr::Annotated { .. }
+                                            | Expr::Rest(Some(_))
+                                    )
+                                });
+                                if all_valid {
+                                    let mut param_exprs: Vec<Spanned<Expr>> =
+                                        vec![(**func).clone()];
+                                    param_exprs.extend(args.iter().map(|a| (**a).clone()));
+                                    Some(param_exprs)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(param_exprs) = old_form_params {
+                        // Validate variadic constraints
+                        let variadic_count = param_exprs
+                            .iter()
+                            .filter(|e| matches!(&e.node, Expr::Rest(Some(_))))
+                            .count();
+                        if variadic_count > 1 {
+                            return Err(ParseError {
+                                message: "only one variadic parameter (...name) is allowed per fn"
+                                    .to_string(),
+                                span: Some(expr.span),
+                            });
+                        }
+                        if variadic_count == 1 {
+                            let last_non_placeholder = param_exprs
+                                .iter()
+                                .filter(|e| !matches!(&e.node, Expr::Placeholder))
+                                .last();
+                            if let Some(last) = last_non_placeholder {
+                                if !matches!(&last.node, Expr::Rest(Some(_))) {
+                                    return Err(ParseError {
+                                        message:
+                                            "variadic parameter (...name) must be the last parameter"
+                                                .to_string(),
+                                        span: Some(expr.span),
+                                    });
+                                }
+                            }
+                        }
+                        // Extract parameters from old-form param expressions
+                        *params_consumed = true;
+                        for p in &param_exprs {
+                            match &p.node {
+                                Expr::VarRef { name, .. } => {
+                                    params.push(Spanned::new(
+                                        Param {
+                                            name: name.clone(),
+                                            annotation: None,
+                                            variadic: false,
+                                        },
+                                        p.span,
+                                    ));
+                                }
+                                Expr::Annotated { name, annotation } => {
+                                    params.push(Spanned::new(
+                                        Param {
+                                            name: name.clone(),
+                                            annotation: Some(annotation.clone()),
+                                            variadic: false,
+                                        },
+                                        p.span,
+                                    ));
+                                }
+                                Expr::Rest(Some(name)) => {
+                                    params.push(Spanned::new(
+                                        Param {
+                                            name: name.clone(),
+                                            annotation: None,
+                                            variadic: true,
+                                        },
+                                        p.span,
+                                    ));
+                                }
+                                Expr::Placeholder => {
+                                    // Wildcard — skip
+                                }
+                                _ => {}
+                            }
+                        }
+                        return Ok(());
+                    }
+
                     if let Expr::LetDecl { bindings } = &expr.node {
-                        // Validate all bindings are valid parameter patterns before extracting
+                        // Validate all bindings are valid parameter patterns before extracting.
+                        // Valid: VarRef (bare), Annotated (typed), Rest(Some(_)) (variadic),
+                        //        Placeholder (skipped wildcard).
                         let all_valid_params = bindings.iter().all(|binding| {
                             matches!(
                                 &binding.node,
-                                Expr::VarRef { .. } | Expr::Placeholder | Expr::Annotated { .. }
+                                Expr::VarRef { .. }
+                                    | Expr::Placeholder
+                                    | Expr::Annotated { .. }
+                                    | Expr::Rest(Some(_))
                             )
                         });
 
                         if all_valid_params {
+                            // Validate variadic constraints before extracting:
+                            // 1. At most one variadic param
+                            // 2. Variadic must be last (after ignoring Placeholders)
+                            // 3. Variadic params cannot be annotated (Rest is never Annotated)
+                            let variadic_count = bindings
+                                .iter()
+                                .filter(|b| matches!(&b.node, Expr::Rest(Some(_))))
+                                .count();
+                            if variadic_count > 1 {
+                                return Err(ParseError {
+                                    message:
+                                        "only one variadic parameter (...name) is allowed per fn"
+                                            .to_string(),
+                                    span: Some(expr.span),
+                                });
+                            }
+                            if variadic_count == 1 {
+                                // Find the last non-Placeholder binding and check it's variadic
+                                let last_non_placeholder = bindings
+                                    .iter()
+                                    .filter(|b| !matches!(&b.node, Expr::Placeholder))
+                                    .last();
+                                if let Some(last) = last_non_placeholder {
+                                    if !matches!(&last.node, Expr::Rest(Some(_))) {
+                                        return Err(ParseError {
+                                            message: "variadic parameter (...name) must be the last parameter".to_string(),
+                                            span: Some(expr.span),
+                                        });
+                                    }
+                                }
+                            }
+
                             // Extract parameters from LetDecl bindings
+                            *params_consumed = true;
                             for binding in bindings {
                                 match &binding.node {
                                     Expr::VarRef { name, .. } => {
@@ -4918,6 +5113,17 @@ fn push_expr_to_parent(
                                                 name: name.clone(),
                                                 annotation: Some(annotation.clone()),
                                                 variadic: false,
+                                            },
+                                            binding.span,
+                                        ));
+                                    }
+                                    Expr::Rest(Some(name)) => {
+                                        // Variadic parameter (...name)
+                                        params.push(Spanned::new(
+                                            Param {
+                                                name: name.clone(),
+                                                annotation: None,
+                                                variadic: true,
                                             },
                                             binding.span,
                                         ));
@@ -5281,7 +5487,8 @@ fn push_expr_to_parent(
                         _ => {
                             // Not a LetDecl — parse error
                             Err(ParseError {
-                                message: "class declaration requires [let ClassName ...] form".to_string(),
+                                message: "class declaration requires [let ClassName ...] form"
+                                    .to_string(),
                                 span: Some(expr.span),
                             })
                         }
@@ -6057,9 +6264,9 @@ mod tests {
             "expected recovered error for colon in type-alias form"
         );
         assert!(
-            output2.errors[0]
-                .message
-                .contains("`:` can only appear in dict, call, class, instance, or match forms"),
+            output2.errors[0].message.contains(
+                "`:` can only appear in dict, call, class, instance, match, or syntax-class forms"
+            ),
             "expected error about colon in wrong context for [type x :], got: {}",
             output2.errors[0].message
         );
@@ -6428,7 +6635,7 @@ mod tests {
 
     #[test]
     fn test_fn_params_simple() {
-        let output = parse("[fn [x y] $x]").expect("parse failed");
+        let output = parse("[fn [let x y] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6454,7 +6661,7 @@ mod tests {
 
     #[test]
     fn test_fn_params_annotated() {
-        let output = parse("[fn [x@Int] $x]").expect("parse failed");
+        let output = parse("[fn [let x@Int] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -6473,7 +6680,7 @@ mod tests {
 
     #[test]
     fn test_fn_return_annotation() {
-        let output = parse("[fn@Number [x] $x]").expect("parse failed");
+        let output = parse("[fn@Number [let x] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6493,7 +6700,7 @@ mod tests {
 
     #[test]
     fn test_fn_variadic() {
-        let output = parse("[fn [...args] $args]").expect("parse failed");
+        let output = parse("[fn [let ...args] $args]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
@@ -6663,30 +6870,34 @@ mod tests {
 
     #[test]
     fn test_fn_param_variadic_not_last() {
-        // [...args x] — variadic param not last: parse returns Err.
-        // The param-list error triggers recovery which consumes the fn form;
-        // the surface error may be the param error or an unmatched-bracket cascade.
-        assert!(
-            parse("[fn [...args x] $x]").is_err(),
-            "expected parse to fail for param after variadic"
-        );
+        // [let ...args x] — variadic param not last: parse produces an error
+        // (fatal or recovered) because the variadic must be the last param.
+        let result = parse("[fn [let ...args x] $x]");
+        let has_error = result.is_err() || !result.unwrap().errors.is_empty();
+        assert!(has_error, "expected parse error for param after variadic");
     }
 
     #[test]
     fn test_fn_multiple_variadic() {
-        // [...args ...rest] — multiple variadic params: parse returns Err
+        // [let ...args ...rest] — multiple variadic params: parse produces an error
+        // (fatal or recovered) because only one variadic is allowed per fn.
+        let result = parse("[fn [let ...args ...rest] $x]");
+        let has_error = result.is_err() || !result.unwrap().errors.is_empty();
         assert!(
-            parse("[fn [...args ...rest] $x]").is_err(),
-            "expected parse to fail for multiple variadic params"
+            has_error,
+            "expected parse error for multiple variadic params"
         );
     }
 
     #[test]
     fn test_fn_variadic_with_annotation_errors() {
-        // [...args@Int] — annotation on variadic param: parse returns Err
+        // [let ...args@Int] — annotation on variadic param: parse produces an error
+        // (fatal or recovered) because variadic params cannot be annotated.
+        let result = parse("[fn [let ...args@Int] $args]");
+        let has_error = result.is_err() || !result.unwrap().errors.is_empty();
         assert!(
-            parse("[fn [...args@Int] $args]").is_err(),
-            "expected parse to fail for variadic annotation"
+            has_error,
+            "expected parse error for annotated variadic param"
         );
     }
 
@@ -6768,8 +6979,8 @@ mod tests {
 
     #[test]
     fn test_fn_params_mixed() {
-        // [fn [x y@Int ...rest] $x] — simple + annotated + variadic
-        let output = parse("[fn [x y@Int ...rest] $x]").expect("parse failed");
+        // [fn [let x y@Int ...rest] $x] — simple + annotated + variadic
+        let output = parse("[fn [let x y@Int ...rest] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, body, .. } => {
@@ -6799,8 +7010,8 @@ mod tests {
 
     #[test]
     fn test_fn_both_annotations() {
-        // [fn@Number [x@Int] $x] — return annotation + annotated param
-        let output = parse("[fn@Number [x@Int] $x]").expect("parse failed");
+        // [fn@Number [let x@Int] $x] — return annotation + annotated param
+        let output = parse("[fn@Number [let x@Int] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6935,8 +7146,8 @@ mod tests {
 
     #[test]
     fn test_fn_empty_params() {
-        // [fn [] 42] — fn with explicit empty param list, body Int(42)
-        let output = parse("[fn [] 42]").expect("parse failed");
+        // [fn [let] 42] — fn with explicit empty param list, body Int(42)
+        let output = parse("[fn [let] 42]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6956,24 +7167,24 @@ mod tests {
 
     #[test]
     fn test_fn_param_span() {
-        // [fn [x@Int] $x] — verify param[0] span covers "x@Int"
-        // "[fn [x@Int] $x]"
-        //  0123456789...
-        //  offset 5 = 'x', offset 6 = '@', offset 7..9 = "Int"
-        let output = parse("[fn [x@Int] $x]").expect("parse failed");
+        // [fn [let x@Int] $x] — verify param[0] span covers "x@Int"
+        // "[fn [let x@Int] $x]"
+        //  0123456789012345678
+        //  offset 9 = 'x', offset 10 = '@', offset 11..13 = "Int"
+        let output = parse("[fn [let x@Int] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
                 assert_eq!(params.len(), 1);
                 let param_span = params[0].span;
                 assert_eq!(
-                    param_span.start.offset, 5,
-                    "expected param span to start at offset 5 ('x'), got {}",
+                    param_span.start.offset, 9,
+                    "expected param span to start at offset 9 ('x'), got {}",
                     param_span.start.offset
                 );
                 assert!(
-                    param_span.end.offset > 9,
-                    "expected param span end > 9 (includes '@Int'), got {}",
+                    param_span.end.offset > 13,
+                    "expected param span end > 13 (includes '@Int'), got {}",
                     param_span.end.offset
                 );
             }
@@ -7817,8 +8028,8 @@ mod tests {
 
     #[test]
     fn test_format_parse_error() {
-        // Create a parse error with a span
-        let source = "[a: 1, b: ]";
+        // Create a parse error with a span — use unclosed bracket which is always fatal
+        let source = "[a: 1";
         let err = parse(source).unwrap_err();
 
         // Format it with the new function
@@ -7832,7 +8043,7 @@ mod tests {
         assert!(formatted.contains("test.llt"));
         assert!(formatted.contains("-->"));
         // The snippet should include the source line
-        assert!(formatted.contains("[a: 1, b: ]"));
+        assert!(formatted.contains("[a: 1"));
     }
 
     #[test]
@@ -7922,15 +8133,18 @@ mod tests {
 
     #[test]
     fn test_fn_params_letdecl_with_placeholder() {
-        // Test [fn [let x ... y] body] — placeholder in parameter list
-        let output = parse("[fn [let x ... y] $x]").expect("parse failed");
+        // Test [fn [let x ...y] body] — x is a plain param, ...y is variadic.
+        // In [let ...], whitespace between ... and the name is insignificant:
+        // `... y` parses identically to `...y` (both create a variadic param named y).
+        let output = parse("[fn [let x ...y] $x]").expect("parse failed");
         let doc = &output.file.node.documents[0].node;
         match &doc.expressions[0].node {
             Expr::Fn { params, .. } => {
-                // Placeholder should be skipped — only x and y are params
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
+                assert!(!params[0].node.variadic);
                 assert_eq!(params[1].node.name, "y");
+                assert!(params[1].node.variadic);
             }
             other => panic!("expected Fn, got {other:?}"),
         }

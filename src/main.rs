@@ -406,7 +406,12 @@ fn main() {
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
         Commands::Describe { json, file } => run_describe(&file, json),
         Commands::Explain { code } => run_explain(&code),
-        Commands::Lint { file, no_fs, cap_fs, cap_net } => run_lint(&file, no_fs, &cap_fs, &cap_net),
+        Commands::Lint {
+            file,
+            no_fs,
+            cap_fs,
+            cap_net,
+        } => run_lint(&file, no_fs, &cap_fs, &cap_net),
         Commands::Literate {
             mode,
             file,
@@ -1721,11 +1726,18 @@ fn run_eval(
                 tinct::build_prelude_env()
             }
         };
-        let (type_errors, _type_map, _doc_map, _scheme_map, type_diagnostics, infer_state, _final_env) =
-            tinct::typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
-                &ast.node, type_env, false, // disable scheme_map (not needed for eval)
-                false, // not in prelude load
-            );
+        let (
+            type_errors,
+            _type_map,
+            _doc_map,
+            _scheme_map,
+            type_diagnostics,
+            infer_state,
+            _final_env,
+        ) = tinct::typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
+            &ast.node, type_env, false, // disable scheme_map (not needed for eval)
+            false, // not in prelude load
+        );
         if !type_errors.is_empty() {
             let file_name = match stage {
                 PipelineStage::File(fp) => fp.as_str(),
@@ -1867,7 +1879,6 @@ fn run_eval(
         val
     };
 
-
     // Serialize and output
     // When no -o flag is given, no JSON output is produced (emit-only mode).
     // The -o flag appends an output formatter to the pipeline, so we never reach this point
@@ -1902,7 +1913,9 @@ fn run_fmt(
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let ast = parse(&source).map(|o| o.file).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+        let ast = parse(&source)
+            .map(|o| o.file)
+            .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
         // See also: src/lib.rs (typecheck_source pipeline)
@@ -1988,7 +2001,9 @@ fn run_lint(
     let source = read_source(file_path)?;
 
     // Parse the file
-    let ast = parse(&source).map(|o| o.file).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+    let ast = parse(&source)
+        .map(|o| o.file)
+        .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
     let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
@@ -2025,11 +2040,7 @@ fn run_lint(
 
 /// Format a TypeDiagnostic with source context for display.
 /// Similar to format_type_error but handles the diagnostic level (info/warn/err).
-fn format_type_diagnostic(
-    diag: &tinct::TypeDiagnostic,
-    source: &str,
-    file_name: &str,
-) -> String {
+fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name: &str) -> String {
     use tinct::DiagnosticLevel;
 
     let level_str = match diag.level {

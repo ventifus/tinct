@@ -1,6 +1,9 @@
 # What If: Macro System v2 — Parse-Stage Delivery and Declarative Patterns for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-05-17
+**Replaces:**
+- [`parse-stage-macros.md`](parse-stage-macros.md) — supersedes the parse-stage argument delivery approach
+- [`completed/macro-rewrite.md`](completed/macro-rewrite.md) — supersedes the defmacro-as-desugaring approach
 
 What would it take to make tinct's macro system powerful enough that user-programmers — not language designers — can implement any syntactic extension, including softening the strong positions the core language takes?
 
@@ -128,6 +131,49 @@ Variant names match their keywords. `Macro.params` and `Fn.params` are both type
 ```
 
 `[unquote (gensym "x")]` in a quasiquote splices a fresh `VarRef` identifier directly in any AST position — binding or reference. No special primitive needed.
+
+---
+
+### `inject:` — Anaphoric Name Injection
+
+Hygienic macros use `gensym` for names the caller should never reference. The opposite case — names the caller *must* reference — requires `inject:`. A macro declares `inject: name` to intentionally make `name` available in the caller's scope (Nim calls this "inject"; Kohlbecker 1986 calls it "breaking hygiene deliberately").
+
+```tinct
+[macro aif [let test@Expr  then@Expr  else@Expr]
+  inject: it       # "it" is the default injected name; caller overrides via dict key
+  [quote [let [[[unquote binding]: [unquote test]]]
+    [if [unquote binding] [unquote then] [unquote else]]]]]
+```
+
+`inject: it` does three things:
+1. Sets the **default binding name** (`it`) — used when the macro is called in expression position.
+2. Binds **`binding`** implicitly in the macro body — a `VarRef` holding the actual name in use. In expression position: `VarRef("it")`; in dict-key position: the caller's key.
+3. Enables **dict-key override** — when called as `user: [aif ...]`, the expander uses `user` as the binding name instead of `it`. The caller can always rename by writing a dict key. When called without a key, `it` is used.
+
+```tinct
+# Default name — "it" in scope inside then/else
+[aif [find-user id]
+  [log "found" name: it.name]
+  [error "not found"]]
+
+# Caller overrides via dict key — "user" in scope
+user: [aif [find-user id]
+  [log "found" name: user.name]
+  [error "not found"]]
+```
+
+The expander threads the dict key by injecting it into the `let` binding inside `aif`'s expansion — breaking the circular reference that would otherwise occur in tinct's letrec dict semantics (`user` bound to the `aif` result would circularly depend on itself if `user` appeared in a body argument). The internal `let` establishes `user` as the test result before any body argument is evaluated.
+
+**Anaphoric macros cannot be called anonymously** — if a macro declares `inject:` and is called in expression position without a dict key, the injected name falls back to the `inject:` default. This is always valid.
+
+**`[macro-injects name]`** — reflection primitive; returns the `inject:` default as a `Str`, or `Null` if the macro does not declare `inject:`.
+
+```tinct
+[macro-injects aif]   # → "it"
+[macro-injects swap]  # → null (gensym-hygienic, no injected name)
+```
+
+**`inject:` is not `gensym`.** Use `gensym` for names the caller should never reference (internal temporaries). Use `inject:` for names the caller must reference. The two cover all cases; there is no third kind.
 
 **`[quote expr]`** returns `Expr` — the AST node for `expr`. **`[unquote val]`** requires `val : Expr`; the type checker enforces this at each `[unquote ...]` site. A macro body must return `Expr`; returning any other type is a type error detected at macro definition time.
 
@@ -533,19 +579,19 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [with-tmp [expensive-computation] [+ tmp 1]]
-# → [let [[tmp__42: [expensive-computation]]] [+ tmp__42 1]]
+# → [let [[:tmp:42: [expensive-computation]]] [+ :tmp:42 1]]
 ```
 
-`gensym` returns `VarRef(name: "tmp__42")` — a genuine `Expr` variant. `[unquote tmp]` splices it directly as an identifier wherever it appears: in binding position, in reference position, anywhere. No special splicing primitive needed.
+`gensym` returns `VarRef(name: ":tmp:42")` — a genuine `Expr` variant. `[unquote tmp]` splices it directly as an identifier wherever it appears: in binding position, in reference position, anywhere. No special splicing primitive needed.
 
-**Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces a node whose name contains `__N` (a suffix that cannot appear in user-written tinct identifiers), so the user's `tmp` is unaffected.
+**Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces a node whose name contains `:` (a character in the lexer's denylist that cannot appear in user-written tinct identifiers), so the user's `tmp` is unaffected.
 
 ```tinct
 [let [tmp: 99]
   [with-tmp [compute] [+ tmp result]]]
 # → [let [tmp: 99]
-#     [let [[tmp__42: [compute]]]
-#       [+ tmp result]]]   # tmp refers to 99; tmp__42 is the computed value
+#     [let [[:tmp:42: [compute]]]
+#       [+ tmp result]]]   # tmp refers to 99; :tmp:42 is the computed value
 ```
 
 `tmp` in `[+ tmp result]` resolves to the user's `99`, not the macro's internal binding. Hygiene preserved.
@@ -629,6 +675,9 @@ This is the correct form. Match on `params` first; call `flatten-args` only in t
 [fn [] body]
 # params = Seq(elements: []) or Dict(entries: [])  →  wildcard arm
 # flatten-args(Seq/Dict) → []  →  [unquote-splice []] splices nothing
+# Note: a non-empty keyed dict as params (e.g., [fn [x: 1] body]) also hits this arm.
+# Keys are stripped; values become params. The type checker then rejects ill-typed params.
+# This is not a silent success — it produces a type error, just not a structural one.
 # → [fn [let] body]
 ```
 
@@ -811,8 +860,8 @@ Both versions produce errors at the exact offending source location. Syntax clas
 ### `src/parser.rs` — Pre-Scan and Neutral Key Handling
 
 **Current:** Duplicate detection uses bare-name identity unconditionally. `fn`/`class`/`type` StackFrames enforce `Expr::Let`.
-**Proposed:** (1) A pre-scan pass collects `macro` declarations before the main parse begins, building a registry of form names. (2) Any form with a `macro` declaration in scope gets neutral key handling — the parser does not apply bare-name duplicate detection for that form's argument positions. (3) `fn`/`class`/`type` StackFrames accept any first sub-expression without error (semantic enforcement moved to type checker).
-**Impact:** Moderate — pre-scan; neutral-key flag per form; StackFrame semantic checks removed.
+**Proposed:** (1) A pre-scan pass walks the already-parsed AST and collects all `macro` and `syntax-class` declarations, building a registry of form names with their `inject:` defaults. `inject:` is an ordinary dict entry key inside the macro body; the pre-scan extracts it by looking for a top-level `KeyedEntry` with key `"inject"`. **Only bare string-literal `include` paths are followed during pre-scan** — computed-path includes (`[include [str %libdir "/"  v ".llt"]]`) cannot declare macros; the expander raises an error if a computed include produces `macro` or `syntax-class` declarations. (2) Any form with a `macro` declaration in scope gets neutral key handling — the parser does not apply bare-name duplicate detection for that form's argument positions. (3) `fn`/`class`/`type` StackFrames accept any first sub-expression without error (semantic enforcement moved to type checker). (4) `syntax-class` is added to the parser keyword dispatch table with the same `peek_next_horizontal` colon-ahead guard as `fn`, `macro`, `type` — so `[syntax-class: foo]` parses as a dict entry, not a declaration.
+**Impact:** Moderate — pre-scan with `inject:` extraction; neutral-key flag per form; StackFrame semantic checks removed; `syntax-class` keyword added.
 
 ### `src/expand.rs` — Parse-Stage Transformation Pass
 
@@ -850,6 +899,7 @@ Add `ErrorKind::MacroError { span: Span, message: String }` — distinct from `E
 
 Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or` (sequence helpers).
 Add: `macro-error` as a Rust builtin.
+Add: `macro-injects` as a Rust builtin — takes a macro name (`Str`), returns the `inject:` default name (`Str`) or `Null` if the macro uses only gensym hygiene.
 **`gensym` API change:** The existing zero-arg `gensym` (returns a plain string like `:gensym:0`) is replaced by a one-arg `gensym prefix` that returns `VarRef(name: ":prefix:N")` — a genuine `Expr` variant. The `:` separator is in the lexer's denylist (structurally unforgeable). All call sites of `[gensym]` migrate to `[gensym "name"]`. The existing corpus tests for `gensym` migrate accordingly.
 **`macro` keyword:** `macro` becomes a reserved keyword. The existing 27 corpus test files in `tests/corpus/eval/macros/` using `defmacro` migrate to `macro`.
 

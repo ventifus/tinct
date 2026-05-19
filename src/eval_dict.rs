@@ -10,11 +10,11 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::{Entry, Expr, Span, Spanned};
+use crate::ast::{Entry, Expr, Param, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
-use super::{eagerly_register_constructors, eval, materialize, EvalContext};
+use super::{eval, extract_nominal_constructors, materialize, EvalContext, VARIANT_TAG_MARKER};
 
 /// Count the number of static string-keyed entries in a dict.
 ///
@@ -28,10 +28,7 @@ fn count_static_keys(entries: &[Spanned<Entry>]) -> usize {
         .iter()
         .filter(|entry| {
             entry.node.key.as_ref().is_some_and(|key_expr| {
-                matches!(
-                    &key_expr.node,
-                    Expr::Str(_) | Expr::Annotated { .. }
-                )
+                matches!(&key_expr.node, Expr::Str(_) | Expr::Annotated { .. })
             })
         })
         .count()
@@ -54,8 +51,8 @@ pub(crate) fn eval_dict(
     // The FlatEnv stores ThunkIds for static-key entries, enabling O(1) variable lookup
     // when VarRef nodes have been assigned (level, slot) coordinates by the resolver.
     // We use alloc_root (no parent FlatEnv) because the parent chain is still Rc-based;
-    // O(1) applies only to level=0 (same-dict sibling references). Outer-scope references
-    // fall back to the chain-based Environment.get_by_slot / Environment.get path.
+    // O(1) applies only to level=0 (same-dict sibling references, De Bruijn level 0 = current scope).
+    // Outer-scope references use level > 0, walking N parent hops via Environment.get_by_slot.
     //
     // env_id is stored in Unevaluated thunks for future use when take_unevaluated is
     // updated to propagate it. For now it acts as scaffolding (the evaluator discards it).
@@ -66,28 +63,71 @@ pub(crate) fn eval_dict(
     // Must stay in sync with resolve.rs Resolver::walk_expr Dict arm (Expr::Str | Expr::Annotated).
     let mut slot_idx: u32 = 0;
 
-    // Pre-pass: eagerly register nominal variant constructors from TypeAlias entries.
+    // Pre-pass: pre-COMPUTE (but do NOT insert) nominal variant constructor thunks.
     //
     // Problem: `Ok: Ok` is a self-referential letrec thunk. When forced, it evaluates
     // VarRef "Ok", which looks up dict_env["Ok"] — the same `Ok: Ok` thunk — causing
     // E070 circular dependency.
     //
-    // Fix: scan for TypeAlias entries *before* creating any thunks, and insert their
-    // constructors into dict_env as materialized thunks. Then, in the main pass below,
-    // skip dict_env.insert for keys that match a pre-registered constructor name (so the
-    // `Ok: Ok` lazy thunk does NOT overwrite the constructor in dict_env). When `Ok: Ok`
-    // is forced, VarRef "Ok" finds the pre-registered constructor thunk — no cycle.
+    // Fix (slot-safe): compute constructor thunks in a side table keyed by tag name.
+    // In the main pass below, when a re-export entry like `Ok: Ok` is processed,
+    // substitute the pre-computed materialized thunk instead of an unevaluated thunk,
+    // and INSERT it normally into dict_env at the correct (AST-order) position.
     //
-    // The `Ok: Ok` entry still appears in dict_map (the exported dict value), so callers
-    // that include the prelude can access `Ok` as a dict field.
-    let mut pre_registered_constructors: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    // This preserves the invariant that dict_env.bindings insertion order matches the
+    // resolver's slot assignments (both iterate entries in AST order). The previous
+    // approach inserted constructors into dict_env BEFORE the main loop (at positions
+    // 0..N), shifting all subsequent entries by N and breaking slot-based lookup.
+    //
+    // The TypeAlias entry itself (`Result: [type ...]`) must come before the re-export
+    // entries (`Ok: Ok`) in the AST — this is enforced by convention in the prelude.
+    // When `Result:` is processed in the main pass, `Expr::TypeAlias` evaluation
+    // (eval_step) will also insert constructors into dict_env — this is consistent
+    // with the pre-computed thunks and doesn't cause slot mismatches (IndexMap::insert
+    // with an existing key updates in-place without changing the position).
+    let mut constructor_precomputed: std::collections::HashMap<String, Rc<Thunk>> =
+        std::collections::HashMap::new();
 
     for entry in entries {
         if let Expr::TypeAlias { params: _, body } = &entry.node.value.node {
-            eagerly_register_constructors(&body.node, entry.node.value.span, &dict_env);
-            for (tag, _) in super::extract_nominal_constructors(&body.node) {
-                pre_registered_constructors.insert(tag);
+            let span = entry.node.value.span;
+            for (tag, has_payload) in extract_nominal_constructors(&body.node) {
+                let constructor_value = if has_payload {
+                    let constructor_env =
+                        Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&dict_env))));
+                    constructor_env.borrow_mut().insert(
+                        VARIANT_TAG_MARKER.to_string(),
+                        Rc::new(Thunk::new_materialized(string_val(&tag), span)),
+                    );
+                    let param = Param {
+                        name: "payload".to_string(),
+                        annotation: None,
+                        variadic: false,
+                    };
+                    let body_expr = Rc::new(Spanned::new(
+                        Expr::VarRef {
+                            name: "payload".to_string(),
+                            escaped: false,
+                            resolved: RefCell::new(None),
+                        },
+                        span,
+                    ));
+                    Value::Function {
+                        params: Rc::new(vec![param]),
+                        body: body_expr,
+                        env: constructor_env,
+                        annotation: None,
+                    }
+                } else {
+                    Value::Variant {
+                        tag: tag.clone(),
+                        payload: None,
+                    }
+                };
+                constructor_precomputed.insert(
+                    tag,
+                    Rc::new(Thunk::new_materialized(constructor_value, span)),
+                );
             }
         }
     }
@@ -117,49 +157,92 @@ pub(crate) fn eval_dict(
         // Fast path for literal values: create Materialized thunks directly,
         // avoiding Unevaluated → Materialized state transition overhead (Nix maybeThunk pattern).
         // Non-literal unevaluated thunks for static-key entries get env_id for future O(1) lookup.
-        let thunk = match &entry.node.value.node {
-            Expr::Int(n) => Rc::new(Thunk::new_materialized(
-                Value::Int(*n),
-                entry.node.value.span,
-            )),
-            Expr::Float(f) => Rc::new(Thunk::new_materialized(
-                Value::Float(*f),
-                entry.node.value.span,
-            )),
-            Expr::Bool(b) => Rc::new(Thunk::new_materialized(
-                Value::Bool(*b),
-                entry.node.value.span,
-            )),
-            Expr::Str(s) => Rc::new(Thunk::new_materialized(
-                string_val(s),
-                entry.node.value.span,
-            )),
-            _ if is_static_key => Rc::new(Thunk::new_unevaluated_with_env_id(
-                Rc::clone(&entry.node.value),
-                Rc::clone(&dict_env),
-                env_id,
-                Rc::clone(ctx),
-                entry.node.value.span,
-            )),
-            _ => Rc::new(Thunk::new_unevaluated(
-                Rc::clone(&entry.node.value),
-                Rc::clone(&dict_env),
-                Rc::clone(ctx),
-                entry.node.value.span,
-            )),
+        //
+        // Special case: if this entry's string key is a pre-computed constructor (e.g. `Ok: Ok`),
+        // substitute the materialized constructor thunk directly. This breaks the circular
+        // dependency where forcing `Ok: Ok` → VarRef("Ok") → dict_env["Ok"] → same thunk → cycle.
+        // The constructor thunk is inserted into dict_env at the CORRECT AST-order position,
+        // preserving slot index consistency with the resolver.
+        let thunk = if let Key::String(ref name) = key {
+            if let Some(ctor_thunk) = constructor_precomputed.get(name.as_str()) {
+                // Use the pre-computed materialized constructor thunk directly.
+                Rc::clone(ctor_thunk)
+            } else {
+                match &entry.node.value.node {
+                    Expr::Int(n) => Rc::new(Thunk::new_materialized(
+                        Value::Int(*n),
+                        entry.node.value.span,
+                    )),
+                    Expr::Float(f) => Rc::new(Thunk::new_materialized(
+                        Value::Float(*f),
+                        entry.node.value.span,
+                    )),
+                    Expr::Bool(b) => Rc::new(Thunk::new_materialized(
+                        Value::Bool(*b),
+                        entry.node.value.span,
+                    )),
+                    Expr::Str(s) => Rc::new(Thunk::new_materialized(
+                        string_val(s),
+                        entry.node.value.span,
+                    )),
+                    _ if is_static_key => Rc::new(Thunk::new_unevaluated_with_env_id(
+                        Rc::clone(&entry.node.value),
+                        Rc::clone(&dict_env),
+                        env_id,
+                        Rc::clone(ctx),
+                        entry.node.value.span,
+                    )),
+                    _ => Rc::new(Thunk::new_unevaluated(
+                        Rc::clone(&entry.node.value),
+                        Rc::clone(&dict_env),
+                        Rc::clone(ctx),
+                        entry.node.value.span,
+                    )),
+                }
+            }
+        } else {
+            match &entry.node.value.node {
+                Expr::Int(n) => Rc::new(Thunk::new_materialized(
+                    Value::Int(*n),
+                    entry.node.value.span,
+                )),
+                Expr::Float(f) => Rc::new(Thunk::new_materialized(
+                    Value::Float(*f),
+                    entry.node.value.span,
+                )),
+                Expr::Bool(b) => Rc::new(Thunk::new_materialized(
+                    Value::Bool(*b),
+                    entry.node.value.span,
+                )),
+                Expr::Str(s) => Rc::new(Thunk::new_materialized(
+                    string_val(s),
+                    entry.node.value.span,
+                )),
+                _ if is_static_key => Rc::new(Thunk::new_unevaluated_with_env_id(
+                    Rc::clone(&entry.node.value),
+                    Rc::clone(&dict_env),
+                    env_id,
+                    Rc::clone(ctx),
+                    entry.node.value.span,
+                )),
+                _ => Rc::new(Thunk::new_unevaluated(
+                    Rc::clone(&entry.node.value),
+                    Rc::clone(&dict_env),
+                    Rc::clone(ctx),
+                    entry.node.value.span,
+                )),
+            }
         };
 
         // String keys become bindings so sibling entries can reference via $name.
-        // Exception: skip dict_env.insert for keys that were pre-registered as nominal
-        // variant constructors in the pre-pass above. Those entries (e.g. `Ok: Ok`) must
-        // resolve `Ok` to the pre-registered constructor thunk, not to the `Ok: Ok` thunk
-        // itself (which would create a circular dependency / E070 error).
+        // All string-keyed entries are inserted into dict_env in AST order (preserving
+        // slot index consistency with the resolver). Constructor re-exports like `Ok: Ok`
+        // get the pre-computed materialized constructor thunk (set above), so they don't
+        // overwrite the constructor with a self-referential unevaluated thunk.
         if let Key::String(ref name) = key {
-            if !pre_registered_constructors.contains(name.as_str()) {
-                dict_env
-                    .borrow_mut()
-                    .insert(name.clone(), Rc::clone(&thunk));
-            }
+            dict_env
+                .borrow_mut()
+                .insert(name.clone(), Rc::clone(&thunk));
         }
 
         // Check for duplicate keys using insert(), which returns Some(old_value) if present.

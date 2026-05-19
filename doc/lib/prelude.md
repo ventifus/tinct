@@ -2,39 +2,39 @@
 
 ### `identity`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `const`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `not`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `and`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@[a
+fn@Unknown
 ```
 
 ### `or`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -42,167 +42,167 @@ fn@Unknown
 
 ### `any?`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `all?`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `>`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `<=`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `>=`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `quot`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Int
+fn@Unknown
 ```
 
 ### `mod`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Number
+fn@Unknown
 ```
 
 ### `ceil`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Int
+fn@Unknown
 ```
 
 ### `trunc`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Int
+fn@Unknown
 ```
 
 ### `abs`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Number
+fn@Unknown
 ```
 
 ### `sign`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Int
+fn@Unknown
 ```
 
 ### `clamp`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Number
+fn@Unknown
 ```
 
 ### `words`
 
-Split string on spaces into words
+
 
 ```tinct
-fn@Seq [let s@Stringing]
+fn@
 ```
 
 ### `unindent`
 
-Strip common leading indentation from a multi-line string
+
 
 ```tinct
-fn@Stringing [let s@Stringing]
+fn@
 ```
 
 ### `when`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@[a
+fn@Unknown
 ```
 
 ### `unless`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@[a
+fn@Unknown
 ```
 
 ### `cond`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@[a
+fn@Unknown
 ```
 
 ### `get`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `has?`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `get-or`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `get-in`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -210,7 +210,7 @@ fn@Unknown
 
 ### `get-in-or`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -218,71 +218,71 @@ fn@Unknown
 
 ### `empty?`
 
-Check if collection is empty
+
 
 ```tinct
-fn@Bool [let xs]
+fn@
 ```
 
 ### `make-entry`
 
-Construct single-entry dict from key and value
+
 
 ```tinct
-fn@Dict [let k v]
+fn@
 ```
 
 ### `set`
 
-Set key in dict
+
 
 ```tinct
-fn@Dict [let xs@Dict k v]
+fn@
 ```
 
 ### `remove`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `update`
 
-Update dict value by applying function
+
 
 ```tinct
-fn@Dict [let xs@Dict k f@Fn]
+fn@
 ```
 
 ### `values`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `entries`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `from-entries`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `nth`
 
-Get nth element (supports negative indices)
+
 
 ```tinct
 (value)
@@ -290,103 +290,103 @@ Get nth element (supports negative indices)
 
 ### `conj`
 
-Append element to end of list
+
 
 ```tinct
-fn@Dict [let xs@Dict x]
+fn@
 ```
 
 ### `reindex`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `sort-by`
 
-Sort with custom comparator
+
 
 ```tinct
-fn@Dict [let cmp@Fn xs@Dict]
+fn@
 ```
 
 ### `sorted`
 
-Sort collection in ascending order
+
 
 ```tinct
-fn@[return: Dict constraint: [a: Comparable]] [let xs]
+fn@
 ```
 
 ### `sorted-by`
 
-Sort with custom comparator (accepts Seq or Dict)
+
 
 ```tinct
-fn@Dict [let cmp@Fn xs]
+fn@
 ```
 
 ### `take-while`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `drop-while`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `map-entries`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `fold`
 
-Left fold (alias for reduce)
+
 
 ```tinct
-fn@a [let f@Fn init@a xs]
+fn@
 ```
 
 ### `slice-impl`
 
-Slice implementation (internal helper)
+
 
 ```tinct
-fn@Dict [let xs@Dict ks start@Int end@Int i@Int acc@Dict]
+fn@
 ```
 
 ### `slice-step`
 
-Slice step (internal helper)
+
 
 ```tinct
-fn@Dict [let xs@Dict ks start@Int end@Int i@Int acc@Dict current-key]
+fn@
 ```
 
 ### `slice`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `zip`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -394,263 +394,263 @@ fn@Unknown
 
 ### `flatten-impl`
 
-Flatten implementation (internal helper)
+
 
 ```tinct
-fn@Dict [let xs@Dict ks i@Int acc@Dict]
+fn@
 ```
 
 ### `flatten-step`
 
-Flatten step (internal helper)
+
 
 ```tinct
-fn@Dict [let xs@Dict ks i@Int acc@Dict current-key]
+fn@
 ```
 
 ### `flatten`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `find-deep-impl`
 
-Find-deep implementation (internal helper)
+
 
 ```tinct
-fn@Any [let xs@Dict target ks i@Int]
+fn@
 ```
 
 ### `find-deep-check`
 
-Find-deep check (internal helper)
+
 
 ```tinct
-fn@Any [let xs@Dict target ks i@Int current-key]
+fn@
 ```
 
 ### `find-deep-try`
 
-Find-deep try (internal helper)
+
 
 ```tinct
-fn@Any [let subtree@Dict target parent@Dict ks i@Int]
+fn@
 ```
 
 ### `find-deep-try-check`
 
-Find-deep try-check (internal helper)
+
 
 ```tinct
-fn@Any [let result parent@Dict target ks i@Int]
+fn@
 ```
 
 ### `find-deep`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Any
+fn@Unknown
 ```
 
 ### `with-entries`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `partition`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `flat-map`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `find-first`
 
-Find first element matching predicate; errors if none found
+
 
 ```tinct
-fn@a [let pred@Fn xs]
+fn@
 ```
 
 ### `find-first-or`
 
-Find first matching element or return default
+
 
 ```tinct
-fn@a [let pred@Fn default@a xs]
+fn@
 ```
 
 ### `group-by-step`
 
-Group-by step (internal helper)
+
 
 ```tinct
-fn@Dict [let acc@Dict x k]
+fn@
 ```
 
 ### `group-by`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `deep-merge-step`
 
-Deep-merge step (internal helper)
+
 
 ```tinct
-fn@Dict [let acc@Dict a@Dict b@Dict k]
+fn@
 ```
 
 ### `deep-merge`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `walk-dict`
 
-Walk nested dict structure (internal helper)
+
 
 ```tinct
-fn@Dict [let f@Fn xs@Dict]
+fn@
 ```
 
 ### `walk`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Any
+fn@Unknown
 ```
 
 ### `unzip`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `transpose`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `sum`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Number
+fn@Unknown
 ```
 
 ### `product`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Number
+fn@Unknown
 ```
 
 ### `min`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `max`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `count`
 
-Count elements satisfying predicate
+
 
 ```tinct
-fn@Int [let pred@Fn xs]
+fn@
 ```
 
 ### `contains?`
 
-Check if collection contains element
+
 
 ```tinct
-fn@Bool [let xs val]
+fn@
 ```
 
 ### `uniq-impl`
 
-Uniq implementation (internal helper)
+
 
 ```tinct
-fn@Dict [let ks xs@Dict acc@Dict seen@Dict i@Int]
+fn@
 ```
 
 ### `uniq-step`
 
-Uniq step (internal helper)
+
 
 ```tinct
-fn@Dict [let ks xs@Dict acc@Dict seen@Dict i@Int v]
+fn@
 ```
 
 ### `uniq`
 
-Remove duplicates (keep first occurrence). O(n²) due to repeated O(n) contains? check per element.
+
 
 ```tinct
-fn@Dict [let xs@Dict]
+fn@
 ```
 
 ### `foldr`
 
-Right fold
+
 
 ```tinct
-fn@a [let f@Fn acc@a xs]
+fn@
 ```
 
 ### `compose`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Fn
+fn@Unknown
 ```
 
 ### `->`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -658,15 +658,15 @@ fn@Unknown
 
 ### `num?`
 
-Check if value is numeric (Int or Float)
+
 
 ```tinct
-fn@Bool [let x]
+fn@
 ```
 
 ### `record?`
 
-Check if value is a record (Dict at runtime)
+
 
 ```tinct
 (value)
@@ -674,7 +674,7 @@ Check if value is a record (Dict at runtime)
 
 ### `map?`
 
-Check if value is a map (Dict at runtime)
+
 
 ```tinct
 (value)
@@ -682,39 +682,39 @@ Check if value is a map (Dict at runtime)
 
 ### `list?`
 
-Check if dict has all integer keys
+
 
 ```tinct
-fn@Bool [let xs]
+fn@
 ```
 
 ### `try-or`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `ok?`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `err?`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `and-then`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -722,15 +722,15 @@ fn@Unknown
 
 ### `result-or`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@a
+fn@Unknown
 ```
 
 ### `result-map`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -738,7 +738,7 @@ fn@Unknown
 
 ### `result-ok`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -746,7 +746,7 @@ fn@Unknown
 
 ### `result`
 
-Result monad dict for [do result ...] chains
+
 
 ```tinct
 (value)
@@ -754,7 +754,7 @@ Result monad dict for [do result ...] chains
 
 ### `Functor`
 
-Type class for type constructors supporting fmap
+
 
 ```tinct
 (value)
@@ -762,7 +762,7 @@ Type class for type constructors supporting fmap
 
 ### `FunctorResult`
 
-Functor instance for Result
+
 
 ```tinct
 (value)
@@ -770,7 +770,7 @@ Functor instance for Result
 
 ### `FunctorSeq`
 
-Functor instance for Seq
+
 
 ```tinct
 (value)
@@ -778,7 +778,7 @@ Functor instance for Seq
 
 ### `Applicative`
 
-Type class for applicative functors
+
 
 ```tinct
 (value)
@@ -786,7 +786,7 @@ Type class for applicative functors
 
 ### `ApplicativeResult`
 
-Applicative instance for Result
+
 
 ```tinct
 (value)
@@ -794,7 +794,7 @@ Applicative instance for Result
 
 ### `ApplicativeSeq`
 
-Applicative instance for Seq
+
 
 ```tinct
 (value)
@@ -802,7 +802,7 @@ Applicative instance for Seq
 
 ### `Monad`
 
-Type class for monads
+
 
 ```tinct
 (value)
@@ -810,7 +810,7 @@ Type class for monads
 
 ### `MonadResult`
 
-Monad instance for Result
+
 
 ```tinct
 (value)
@@ -818,7 +818,7 @@ Monad instance for Result
 
 ### `MonadSeq`
 
-Monad instance for Seq
+
 
 ```tinct
 (value)
@@ -826,7 +826,7 @@ Monad instance for Seq
 
 ### `Foldable`
 
-Type class for foldable structures
+
 
 ```tinct
 (value)
@@ -834,7 +834,7 @@ Type class for foldable structures
 
 ### `FoldableSeq`
 
-Foldable instance for Seq
+
 
 ```tinct
 (value)
@@ -842,7 +842,7 @@ Foldable instance for Seq
 
 ### `FoldableRecord`
 
-Foldable instance for Record
+
 
 ```tinct
 (value)
@@ -850,7 +850,7 @@ Foldable instance for Record
 
 ### `FoldableResult`
 
-Foldable instance for Result
+
 
 ```tinct
 (value)
@@ -858,7 +858,7 @@ Foldable instance for Result
 
 ### `Traversable`
 
-Type class for traversable structures
+
 
 ```tinct
 (value)
@@ -866,7 +866,7 @@ Type class for traversable structures
 
 ### `TraversableSeq`
 
-Traversable instance for Seq
+
 
 ```tinct
 (value)
@@ -874,7 +874,7 @@ Traversable instance for Seq
 
 ### `TraversableResult`
 
-Traversable instance for Result
+
 
 ```tinct
 (value)
@@ -882,7 +882,7 @@ Traversable instance for Result
 
 ### `maybe-map`
 
-Map over Maybe value
+
 
 ```tinct
 (value)
@@ -890,7 +890,7 @@ Map over Maybe value
 
 ### `FunctorMaybe`
 
-Functor instance for Maybe
+
 
 ```tinct
 (value)
@@ -898,7 +898,7 @@ Functor instance for Maybe
 
 ### `ApplicativeMaybe`
 
-Applicative instance for Maybe
+
 
 ```tinct
 (value)
@@ -906,7 +906,7 @@ Applicative instance for Maybe
 
 ### `MonadMaybe`
 
-Monad instance for Maybe
+
 
 ```tinct
 (value)
@@ -914,7 +914,7 @@ Monad instance for Maybe
 
 ### `TraversableMaybe`
 
-Traversable instance for Maybe
+
 
 ```tinct
 (value)
@@ -922,7 +922,7 @@ Traversable instance for Maybe
 
 ### `sequence`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -930,7 +930,7 @@ fn@Unknown
 
 ### `traverse`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -938,7 +938,7 @@ fn@Unknown
 
 ### `forM`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -946,7 +946,7 @@ fn@Unknown
 
 ### `liftM2`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -954,7 +954,7 @@ fn@Unknown
 
 ### `whenM`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -962,7 +962,7 @@ fn@Unknown
 
 ### `Add`
 
-Type class for addition with FD (a, b) → c
+
 
 ```tinct
 (value)
@@ -970,7 +970,7 @@ Type class for addition with FD (a, b) → c
 
 ### `Sub`
 
-Type class for subtraction with FD (a, b) → c
+
 
 ```tinct
 (value)
@@ -978,7 +978,7 @@ Type class for subtraction with FD (a, b) → c
 
 ### `Mul`
 
-Type class for multiplication with FD (a, b) → c
+
 
 ```tinct
 (value)
@@ -986,7 +986,7 @@ Type class for multiplication with FD (a, b) → c
 
 ### `Div`
 
-Type class for division with FD (a, b) → c
+
 
 ```tinct
 (value)
@@ -994,7 +994,7 @@ Type class for division with FD (a, b) → c
 
 ### `Equatable`
 
-Type class for types that support equality comparison
+
 
 ```tinct
 (value)
@@ -1002,7 +1002,7 @@ Type class for types that support equality comparison
 
 ### `# EquatableInt`
 
-Equatable instance for Int
+
 
 ```tinct
 (value)
@@ -1010,7 +1010,7 @@ Equatable instance for Int
 
 ### `# EquatableFloat`
 
-Equatable instance for Float
+
 
 ```tinct
 (value)
@@ -1018,7 +1018,7 @@ Equatable instance for Float
 
 ### `# EquatableStr`
 
-Equatable instance for Str
+
 
 ```tinct
 (value)
@@ -1026,7 +1026,7 @@ Equatable instance for Str
 
 ### `# EquatableBool`
 
-Equatable instance for Bool
+
 
 ```tinct
 (value)
@@ -1034,7 +1034,7 @@ Equatable instance for Bool
 
 ### `Comparable`
 
-Type class for types that support ordering
+
 
 ```tinct
 (value)
@@ -1042,7 +1042,7 @@ Type class for types that support ordering
 
 ### `# ComparableInt`
 
-Comparable instance for Int
+
 
 ```tinct
 (value)
@@ -1050,7 +1050,7 @@ Comparable instance for Int
 
 ### `# ComparableFloat`
 
-Comparable instance for Float
+
 
 ```tinct
 (value)
@@ -1058,7 +1058,7 @@ Comparable instance for Float
 
 ### `# ComparableStr`
 
-Comparable instance for Str
+
 
 ```tinct
 (value)
@@ -1066,7 +1066,7 @@ Comparable instance for Str
 
 ### `Showable`
 
-Type class for types that can be converted to strings
+
 
 ```tinct
 (value)
@@ -1074,7 +1074,7 @@ Type class for types that can be converted to strings
 
 ### `# ShowableInt`
 
-Showable instance for Int
+
 
 ```tinct
 (value)
@@ -1082,7 +1082,7 @@ Showable instance for Int
 
 ### `# ShowableFloat`
 
-Showable instance for Float
+
 
 ```tinct
 (value)
@@ -1090,7 +1090,7 @@ Showable instance for Float
 
 ### `# ShowableStr`
 
-Showable instance for Str
+
 
 ```tinct
 (value)
@@ -1098,7 +1098,7 @@ Showable instance for Str
 
 ### `# ShowableBool`
 
-Showable instance for Bool
+
 
 ```tinct
 (value)
@@ -1106,7 +1106,7 @@ Showable instance for Bool
 
 ### `Mappable`
 
-Type class for mappable type constructors (Seq, Dict)
+
 
 ```tinct
 (value)
@@ -1114,7 +1114,7 @@ Type class for mappable type constructors (Seq, Dict)
 
 ### `MappableSeq`
 
-Mappable instance for Seq: fmap = builtin-map
+
 
 ```tinct
 (value)
@@ -1122,7 +1122,7 @@ Mappable instance for Seq: fmap = builtin-map
 
 ### `MappableDict`
 
-Mappable instance for Dict: fmap = builtin-map
+
 
 ```tinct
 (value)
@@ -1130,7 +1130,7 @@ Mappable instance for Dict: fmap = builtin-map
 
 ### `Appendable`
 
-Type class for appendable types (String, Dict, Seq)
+
 
 ```tinct
 (value)
@@ -1138,7 +1138,7 @@ Type class for appendable types (String, Dict, Seq)
 
 ### `AppendableStr`
 
-Appendable instance for String: append-one = str, empty = empty string
+
 
 ```tinct
 (value)
@@ -1146,7 +1146,7 @@ Appendable instance for String: append-one = str, empty = empty string
 
 ### `AppendableDict`
 
-Appendable instance for Dict: append-one = merge, empty = empty dict
+
 
 ```tinct
 (value)
@@ -1154,7 +1154,7 @@ Appendable instance for Dict: append-one = merge, empty = empty dict
 
 ### `AppendableSeq`
 
-Appendable instance for Seq: append-one = concat, empty = empty seq
+
 
 ```tinct
 (value)
@@ -1162,63 +1162,63 @@ Appendable instance for Seq: append-one = concat, empty = empty seq
 
 ### `assert`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Bool
+fn@Unknown
 ```
 
 ### `<`
 
-Less than
+
 
 ```tinct
-fn@[return: Bool constraint: [a: Comparable]] [let x@a y@a]
+fn@
 ```
 
 ### `=`
 
-Equality
+
 
 ```tinct
-fn@[return: Bool constraint: [a: Equatable]] [let x@a y@a]
+fn@
 ```
 
 ### `+`
 
-Addition
+
 
 ```tinct
-fn@Number [let a@Number b@Number]
+fn@
 ```
 
 ### `-`
 
-Subtraction
+
 
 ```tinct
-fn@Number [let a@Number b@Number]
+fn@
 ```
 
 ### `*`
 
-Multiplication
+
 
 ```tinct
-fn@Number [let a@Number b@Number]
+fn@
 ```
 
 ### `/`
 
-Division
+
 
 ```tinct
-fn@Number [let a@Number b@Number]
+fn@
 ```
 
 ### `if`
 
-Conditional (select branch by condition)
+
 
 ```tinct
 (value)
@@ -1226,7 +1226,7 @@ Conditional (select branch by condition)
 
 ### `filter`
 
-Keep elements matching predicate
+
 
 ```tinct
 (value)
@@ -1234,7 +1234,7 @@ Keep elements matching predicate
 
 ### `map`
 
-Apply function to each element
+
 
 ```tinct
 (value)
@@ -1242,7 +1242,7 @@ Apply function to each element
 
 ### `reduce`
 
-Reduce collection with binary function
+
 
 ```tinct
 (value)
@@ -1250,7 +1250,7 @@ Reduce collection with binary function
 
 ### `take`
 
-Take first n elements
+
 
 ```tinct
 (value)
@@ -1258,7 +1258,7 @@ Take first n elements
 
 ### `drop`
 
-Drop first n elements
+
 
 ```tinct
 (value)
@@ -1266,87 +1266,87 @@ Drop first n elements
 
 ### `collect-kv`
 
-Reconstruct dict from key-value pairs
+
 
 ```tinct
-fn@Dict [let xs]
+fn@
 ```
 
 ### `str-contains?`
 
-Check if haystack contains needle
+
 
 ```tinct
-fn@Bool [let haystack@String needle@String]
+fn@
 ```
 
 ### `starts-with?`
 
-Check if string starts with prefix
+
 
 ```tinct
-fn@Bool [let s@String prefix@String]
+fn@
 ```
 
 ### `ends-with?`
 
-Check if string ends with suffix
+
 
 ```tinct
-fn@Bool [let s@String suffix@String]
+fn@
 ```
 
 ### `str-repeat`
 
-Repeat string n times
+
 
 ```tinct
-fn@String [let s@String n@Int]
+fn@
 ```
 
 ### `str-find`
 
-Find first occurrence of needle in haystack; returns byte index or -1
+
 
 ```tinct
-fn@Int [let haystack@String needle@String]
+fn@
 ```
 
 ### `between`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Fn
+fn@Unknown
 ```
 
 ### `non-negative`
 
-Check if value is non-negative
+
 
 ```tinct
-fn@Bool [let v]
+fn@
 ```
 
 ### `positive`
 
-Check if value is positive
+
 
 ```tinct
-fn@Bool [let v]
+fn@
 ```
 
 ### `seq`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Seq
+fn@Unknown
 ```
 
 ### `head`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -1354,71 +1354,71 @@ fn@Unknown
 
 ### `tail`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Seq
+fn@Unknown
 ```
 
 ### `collect`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `range`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Seq
+fn@Unknown
 ```
 
 ### `repeat`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Seq
+fn@Unknown
 ```
 
 ### `cycle`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Seq
+fn@Unknown
 ```
 
 ### `iterate`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Seq
+fn@Unknown
 ```
 
 ### `unfold`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Seq
+fn@Unknown
 ```
 
 ### `join`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@String
+fn@Unknown
 ```
 
 ### `concat`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -1426,7 +1426,7 @@ fn@Unknown
 
 ### `first`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -1434,7 +1434,7 @@ fn@Unknown
 
 ### `last`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -1442,39 +1442,39 @@ fn@Unknown
 
 ### `rest`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `cons`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `reverse`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `sort`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Dict
+fn@Unknown
 ```
 
 ### `eval-ast`
 
-(multi-line doc string - see source)
+
 
 ```tinct
 fn@Unknown
@@ -1482,57 +1482,57 @@ fn@Unknown
 
 ### `gensym`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@String
+fn@Unknown
 ```
 
 ### `llt-repr`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@String
+fn@Unknown
 ```
 
 ### `tag-of`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@String
+fn@Unknown
 ```
 
 ### `variant`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Variant
+fn@Unknown
 ```
 
 ### `decimal`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Decimal
+fn@Unknown
 ```
 
 ### `big-int`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@BigInt
+fn@Unknown
 ```
 
 ### `proxy`
 
-(multi-line doc string - see source)
+
 
 ```tinct
-fn@Proxy
+fn@Unknown
 ```
 

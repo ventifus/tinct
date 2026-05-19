@@ -2,7 +2,7 @@
 # This verifies that user code can define new type classes and instances beyond prelude classes.
 [
   # Define a custom class MyClass with param a
-  MyClass: [class [MyClass a]]
+  MyClass: [class [let MyClass a]]
 
   # Define an instance of MyClass for Int
   MyClassInt: [instance MyClass [pattern [Int]]:

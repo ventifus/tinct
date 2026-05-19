@@ -209,7 +209,10 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
 
 /// Helper: allocate a string value as a materialized thunk in `ctx`.
 fn alloc_str(s: &str, ctx: &Rc<crate::eval::EvalContext>) -> crate::arena::ThunkId {
-    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), crate::ast::Span::origin())))
+    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        string_val(s),
+        crate::ast::Span::origin(),
+    )))
 }
 
 /// Convert a `Type` to its type-dict `Value` representation.
@@ -402,7 +405,10 @@ pub(crate) fn evaluate_resolver(
         .iter()
         .map(|ty| {
             let dict_val = type_to_dict(ty, &ctx)?;
-            Some(Rc::new(Thunk::new_materialized(dict_val, crate::ast::Span::origin())))
+            Some(Rc::new(Thunk::new_materialized(
+                dict_val,
+                crate::ast::Span::origin(),
+            )))
         })
         .collect::<Option<Vec<_>>>()?;
 

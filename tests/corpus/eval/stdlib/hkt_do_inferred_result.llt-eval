@@ -1,0 +1,9 @@
+# Test: inferred [do] monad from return annotation (Rule 1).
+# [fn@[ok: Int  err: Str] [] ...] — annotation has ok+err fields → type checker
+# resolves monad = "result" from expected_return. The %do-infer sentinel is substituted
+# at eval time. Body: [do [x: [Ok 42]] [Ok x]] → result.bind [Ok 42] [fn [x] [Ok x]]
+# → and-then [Ok 42] [fn [x] [Ok x]] → [Ok 42].
+[[fn@[ok: Int  err: Str] []
+  [do [x: [Ok 42]] [Ok x]]]]
+=== out
+Variant(Ok, Int(42))

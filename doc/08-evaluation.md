@@ -626,7 +626,10 @@ All 59 Rust-native builtins. Builtins marked `†` have dual dispatch on Dict/Se
 | Builtin | Signature | Category |
 |---------|-----------|----------|
 | `from-json` | `S → D` | Materializing |
-| `include` | `S → D` | Materializing (I/O) |
+| `include` | `DirCap → String → Any` | Materializing (I/O); content-addressed cache; tinct-defined in prelude |
+| `load` | `String → Dict` | Non-materializing (pure parse) |
+| `expand` | `Dict → Dict` | Non-materializing (pure transform) |
+| `eval` | `Dict × Any × Dict → Any` | Materializing (evaluation) |
 
 **Sequence constructors:**
 

@@ -1071,9 +1071,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 ### `[do]` Inference
 
-The `[do]` macro supports both an explicit monad argument and an inferred form. The inferred `[do]` form deduces the monad from context:
-
-The `[do]` macro infers the monad from context when no explicit monad argument is given:
+The `[do]` macro supports both an explicit monad argument and an inferred form. The inferred form omits the monad argument; the type checker deduces the monad from context and wires it to the evaluator via a `%do-infer` sentinel in the desugared AST.
 
 ```tinct
 # Explicit form — always works
@@ -1081,26 +1079,26 @@ The `[do]` macro infers the monad from context when no explicit monad argument i
   [r: [fetch %nc url]]
   [r.body]]
 
-# Inferred form — @Result annotation implies result monad
-[fetch-and-parse: [fn@[ok: Str  err: Str] [url@Str]
+# Inferred form — return annotation has ok+err fields → type checker resolves result monad
+[fn@[ok: Str  err: Str] [url@Str]
   [do
-    [r:    [fetch %nc url]]
-    [data: [from-json r.body]]
-    [get "items" data]]]]
-=== error
-type errors:
-  undefined variable: result at 2:5-2:11
-  undefined type: Str at 7:48-7:51
-
+    [r:    [Ok "hello"]]
+    [Ok r.body]]]
 ```
 
-**Inference priority:**
+**Inference rules (applied in order):**
 
-1. If the enclosing function's return type annotation unifies with `App(m, _)` for a registered Monad `m`, use that instance
-2. If the first binding's RHS infers as `App(m, a)` for a known Monad, use that instance
-3. Otherwise require an explicit monad argument
+1. **Rule 1 — annotation:** If the enclosing function's return type annotation has `ok` or `err` fields (structural Result-like record), resolve to the `result` monad dict.
+2. **Rule 2 — first binding:** If the first binding's RHS infers as a Record with `ok` or `err` fields, resolve to `result`. (Note: nominal variant types such as `[Ok x]` are not yet recognized here — see Known Limitations.)
+3. **Rule 3 — failure:** If neither rule succeeds, emit `T_DO_INFER` type error and leave `%do-infer` unresolved; the evaluator produces `[E002] undefined variable: %do-infer`.
 
 The explicit `[do monad ...]` form always takes priority and is backward-compatible.
+
+**Known limitations:**
+
+- Rule 2 recognizes structural records (`{ok: x}`) but not nominal variant calls (`[Ok x]`). Full variant typing requires precise constructor types, which are not yet tracked in the type environment.
+- Only the `result` monad is resolved by structural heuristic. `Maybe` monad resolution requires `App(Maybe, _)` nominal types.
+- `Maybe` monad inference and other HKT monads require full `App(m, a)` type constructor tracking (deferred to a future sprint).
 
 ### HasField — Label-Polymorphic Field Access
 

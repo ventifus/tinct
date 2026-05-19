@@ -1,7 +1,7 @@
 # Basic constraint annotation test
 # Verifies Comparable constraint is attached to TypeVar 'a'
 [
-  MyClass: [class [MyClass a]]
+  MyClass: [class [let MyClass a]]
   MyClassInt: [instance MyClass [pattern [Int]]:]
   constrained-fn: [fn@[return: a  constraint: [a: MyClass]] [x@a] x]
   result: [constrained-fn 42]

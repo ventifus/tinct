@@ -652,7 +652,7 @@ UNIFY-RECORD:
   unify_types(Record(r₁), Record(r₂), S) = unify_rows(r₁, r₂, S)
 ```
 
-All record unification delegates to row unification. The current nine-case `match` in `unify()` for Record (lines 319-340 of types.rs) is replaced by this single delegation.
+All record unification delegates to row unification.
 
 **Complexity:** Field partitioning is O(n) where n is the total number of fields across both rows (hash-based set operations on HashMap keys). This improves on the cons-list extract-and-recurse approach which is O(n²) worst case (O(n) scan per field). For tinct's use case (configuration records, typically < 100 fields) both are acceptable, but O(n) is strictly better.
 
@@ -789,7 +789,7 @@ The Rémy design uses `RowTail` (not `RowRest`), a `Row` struct, and `Record(Row
 
 **Annotation isolation constraint.** Each annotation containing an anonymous open record (`[x: Int ...]`) gets a fresh row variable generated inline in `resolve_property_dict_as_record`: the name counter is read as `_open{n}` (via `format!("_open{}", state.name_counter)`), the counter is incremented, and the level is registered in `state.levels`. There is no helper method wrapping this logic; the freshening happens at the `Expr::Rest(None)` match arm. This ensures that two annotations with the same shape in different positions (e.g., two function parameters both typed as `[x: Int ...]`) get distinct row variables (`_open3`, `_open4`), preventing spurious constraint propagation. Without this isolation, unifying one annotation's row variable during constraint solving would affect the other annotation's row, causing type errors for structurally identical but semantically independent open records. The isolation is achieved by freshening during the type checking pass, not during parsing — the parser produces `Expr::Rest(None)`, and freshening happens per annotation site, not per source occurrence.
 
-**Structural comparison to simpler model.** The dict+tail representation is structurally close to `Record(IndexMap<String, Type>, RowRest)` — the field map is the same, and `RowRest` maps to `RowTail` with the `Open` variant replaced by a named `RowVar`. Pattern matches on `Record(fields, rest)` become `Record(Row { fields, tail })` — a mechanical transformation.
+**Structural notes.** The `Row { fields, tail }` structure is analogous to `(IndexMap<String, Type>, RowRest)`: `fields` is the same HashMap, and `tail` is a `RowTail` distinguishing closed (`RowTail::Closed`), open-with-variable (`RowTail::RowVar(ρ)`), and empty (`RowTail::Empty`) rows. The `RowVar` form names the openness explicitly, enabling the kind-separated substitution described below.
 
 **Substitution split.** The unification function routes variable bindings to the correct map based on the variable's kind (inferred from context: `TypeVar(α)` → `type_map`, `RowTail::RowVar(ρ)` → `row_map`). Type variables and row variables occupy separate namespaces enforced by the `Substitution` structure.
 

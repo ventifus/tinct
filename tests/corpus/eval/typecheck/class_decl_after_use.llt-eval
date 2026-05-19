@@ -3,7 +3,7 @@
 # is visible when use-it's annotation is resolved even though MyClass is declared later.
 [
   use-it: [fn@[return: a constraint: [a: MyClass]] [x@a] x]
-  MyClass: [class [MyClass a]]
+  MyClass: [class [let MyClass a]]
   MyClassInt: [instance MyClass [pattern [Int]]:]
   result: [use-it 42]
 ]

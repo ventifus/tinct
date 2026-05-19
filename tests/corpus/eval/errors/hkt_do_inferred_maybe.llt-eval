@@ -1,5 +1,9 @@
-# Test: inferred [do] with Maybe monad — monad should be inferred from [Some 42]
-# in the first binding step. Not yet implemented; emits a helpful error.
+# Test: inferred [do] with Maybe monad — first binding uses [Some 42] (Variant).
+# Rule 2 cannot resolve monad from Variant type (no App(Maybe,_) type yet) → T_DO_INFER.
+# Eval: %do-infer unresolved → E002 undefined variable.
+# Note: Maybe monad resolution via structural types is not yet supported.
 [do [x: [Some 42]] [Some [+ x 1]]]
 === error
-[E080] inferred [do] not yet supported
+[E002] undefined variable: %do-infer
+=== warn
+cannot infer monad

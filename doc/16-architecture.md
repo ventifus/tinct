@@ -518,7 +518,7 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 
 - **CPU time**: No hard limit by default except `--timeout` flag on Unix platforms
 - **Memory**: No heap usage cap; bounded only by collection/string/file size limits
-- **Network**: Not applicable — LLT has no network builtins (future expansion would require explicit sandboxing)
+- **Network**: Controlled via `NetCap` capability — programs only reach hosts and ports explicitly granted by `--cap-net` flags; the builtin layer enforces the allowlist before any socket is opened
 
 ### Mitigations in Place
 

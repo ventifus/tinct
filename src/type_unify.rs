@@ -505,7 +505,10 @@ fn improve_functional_dependency_inner(
         // 2. NEW PATH (additive): resolver-based lookup for classes with resolver names
 
         // Check if this is a hardcoded arithmetic class (Addable, Subtractable, Multipliable, Divisible)
-        let result_type = if matches!(class, "Addable" | "Subtractable" | "Multipliable" | "Divisible") {
+        let result_type = if matches!(
+            class,
+            "Addable" | "Subtractable" | "Multipliable" | "Divisible"
+        ) {
             // Hardcoded arithmetic path — propagate errors
             lookup_arithmetic_instance(
                 class,
@@ -521,7 +524,8 @@ fn improve_functional_dependency_inner(
             if let Some(ref resolver_name) = class_decl.resolver.clone() {
                 // Resolver-based path: construct a TypeStageApp and normalize it.
                 // Normalization calls evaluate_resolver() which invokes the type-stage function.
-                let det_arg_types: Vec<Type> = det_types.iter().map(|(_, _, ty)| ty.clone()).collect();
+                let det_arg_types: Vec<Type> =
+                    det_types.iter().map(|(_, _, ty)| ty.clone()).collect();
                 let stage_app = Type::TypeStageApp {
                     fn_name: resolver_name.clone(),
                     args: det_arg_types,
@@ -1358,7 +1362,6 @@ fn lower_levels_check_occurs(
         }
     }
 }
-
 
 /// Transfer all `Constraint::Class` entries from `alpha` to `beta` (deduplicated).
 ///

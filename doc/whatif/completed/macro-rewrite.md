@@ -1,6 +1,7 @@
 # What If: Macro-Rewrite — Desugar and Typing-Cluster as Macros
 
 **State:** Superseded — let-binding implemented as `Expr::Sequential`; match as `Expr::Match`. `i"..."` migrated to `[defmacro tmpl]` (`tmpl-macro` sprint complete).
+**Superseded by:** [`macros-v2.md`](../macros-v2.md)
 
 What would it take to replace tinct's hardcoded desugar pass with
 `[defmacro]` definitions, and to land the typing-cluster's user-facing

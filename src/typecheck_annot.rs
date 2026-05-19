@@ -1136,7 +1136,12 @@ pub(crate) fn resolve_annotation(
                         _ => {
                             // Single-type form: @Tuple@Int → {0: Int}
                             let elem_ty = resolve_annotation(
-                                inner, env, span, state, ann_mapping, row_ann_mapping,
+                                inner,
+                                env,
+                                span,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
                             )?;
                             let mut fields = HashMap::new();
                             fields.insert("0".to_string(), elem_ty);
@@ -2212,7 +2217,14 @@ fn resolve_type_dict_with_guard(
                 },
                 None => {
                     // Mixed keyed+positional dict — fall back to the full resolver.
-                    return resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping);
+                    return resolve_type_dict(
+                        entries,
+                        env,
+                        span,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    );
                 }
             };
             let ty = resolve_type_expr_with_guard(

@@ -2,7 +2,7 @@
 
 ### `pi`
 
-Pi: ratio of a circle's circumference to its diameter
+
 
 ```tinct
 (value)
@@ -10,7 +10,7 @@ Pi: ratio of a circle's circumference to its diameter
 
 ### `e`
 
-Euler's number: base of the natural logarithm
+
 
 ```tinct
 (value)
@@ -18,7 +18,7 @@ Euler's number: base of the natural logarithm
 
 ### `phi`
 
-Golden ratio: (1 + sqrt(5)) / 2
+
 
 ```tinct
 (value)
@@ -26,33 +26,33 @@ Golden ratio: (1 + sqrt(5)) / 2
 
 ### `hypot`
 
-Hypotenuse: Euclidean distance sqrt(a² + b²)
+
 
 ```tinct
-fn@Float [a@Number b@Number]
+fn@
 ```
 
 ### `deg->rad`
 
-Convert degrees to radians
+
 
 ```tinct
-fn@Float [d@Number]
+fn@
 ```
 
 ### `rad->deg`
 
-Convert radians to degrees
+
 
 ```tinct
-fn@Float [r@Number]
+fn@
 ```
 
 ### `log-base`
 
-Logarithm with arbitrary base
+
 
 ```tinct
-fn@Float [base@Number x@Number]
+fn@
 ```
 

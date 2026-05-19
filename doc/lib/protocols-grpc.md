@@ -2,7 +2,7 @@
 
 ### `build-grpc-frame`
 
-Build a gRPC Length-Prefixed Message frame
+
 
 ```tinct
 (value)
@@ -10,7 +10,7 @@ Build a gRPC Length-Prefixed Message frame
 
 ### `parse-grpc-frame-header`
 
-Parse gRPC Length-Prefixed Message header
+
 
 ```tinct
 (value)
