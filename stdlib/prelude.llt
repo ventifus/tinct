@@ -1950,6 +1950,25 @@ str-repeat@[doc: "Repeat string n times"]: [fn@Stringing [let s@Stringing n@Int]
 str-find@[doc: "Find first occurrence of needle in haystack; returns byte index or -1"]: [fn@Int [let haystack@Stringing needle@Stringing]
   [str-index-of haystack needle]]
 
+# Split a string by a separator into a dict of substrings (integer-keyed list).
+# Delegates to the Rust builtin via the builtin-split alias (from [include %rust "core"]).
+# NOTE: This wrapper is essential for stdlib/macros.llt — the tmpl macro transformer
+# calls split to parse template strings, so split must be in the prelude's public exports.
+# split: String -> String -> Dict String
+# assert: [split " " "a b c"] => [0: "a"  1: "b"  2: "c"]
+# assert: [split "," "one,two,three"] => [0: "one"  1: "two"  2: "three"]
+# assert: [split " " ""] => []
+split: builtin-split
+
+# Re-export builtins needed by stdlib/macros.llt (tmpl macro transformer).
+# These are available from [include %rust "core"] / "string" / "collection"
+# but must be re-exported here so macros.llt can access them.
+str-slice: builtin-str-slice
+str: builtin-str
+str-length: builtin-str-length
+append: builtin-append
+to-int: builtin-to-int
+
 # ============================================================================
 # Numeric Range Predicates
 # ============================================================================
