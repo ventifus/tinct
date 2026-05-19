@@ -82,17 +82,17 @@ These failures exist in the corpus test suite and are unrelated to fn-params mig
 
 Root cause: the parser error-recovery mechanism converts all `push_value` errors into recovered `Expr::Error` nodes, meaning `parse()` returns `Ok(errors)` instead of `Err`. Fix requires either: (a) making specific errors fatal, or (b) having `parse()` return `Err` when there are recovered errors.
 
-- [ ] Investigate which errors should be fatal vs. recovered
-- [ ] Fix `parse()` to propagate fatal errors as `Err` (or make specific validation errors fatal)
-- [ ] Verify `test_invalid_corpus` passes after fix
+- [x] Investigate which errors should be fatal vs. recovered — approach: check ParseOutput.errors
+- [x] Fix test harness to check recovered errors in ParseOutput instead of requiring parse() to return Err (f5994c9)
+- [x] Verify `test_invalid_corpus` passes after fix
 
 ### corpus-prelude-interpolated-strings: `split` undefined during tmpl macro expansion typecheck
 
 `tests/corpus/valid/literals/interpolated_strings.llt-eval` and `triple_quoted_interpolated.llt-eval` produce unexpected warning: `[E002] undefined variable: split`. Root cause: the `tmpl` macro expansion references `split` (from `stdlib/prelude.llt`) during typecheck, but `split` is reported as undefined when typechecking isolated from the full prelude scope.
 
-- [ ] Identify why `split` is undefined in the typecheck context for interpolated string tests
-- [ ] Fix by ensuring `split` (and other string utilities) are visible during macro expansion typecheck
-- [ ] Verify `test_valid_corpus` passes for these two files
+- [x] Identify why `split` is undefined — macros.llt loaded with stdlib_env which only has prelude exports, not [include %rust "..."] group names
+- [x] Fix by exporting split/str-slice/append/to-int from prelude via builtin-* aliases (ad5e943)
+- [x] Verify `test_valid_corpus` passes for these two files
 
 ### corpus-fixes-misc: Fix small corpus test failures
 
