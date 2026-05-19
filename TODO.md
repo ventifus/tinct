@@ -110,9 +110,19 @@ Four corpus tests were failing due to small authoring errors: wrong type names, 
 
 `macros-v2` accepted 2026-05-17. See `doc/whatif/macros-v2.md`. Unified `macro` form with `[let ...]` patterns, `inject:` for anaphoric binding, `splice` for multi-form output, `syntax-class` for declarative argument validation. Implementation order: macros-v2-ast → macros-v2-expand → macros-v2-inject → macros-v2-stdlib.
 
+### typed-expr-constructors: Register Expr variant constructors in ast_to_dict output
+
+Unblocks `macros-v2-stdlib`. Currently `ast_to_dict` (src/builtins_meta.rs) emits string `type:` fields (`type: "call"`, `type: "var"`, etc.). The `stdlib/ast.llt` Expr nominal types (`Call`, `VarRef`, `Dict`, etc.) exist as stubs but are never used. This sprint changes `ast_to_dict` to emit typed Expr variant values so macros can pattern-match on nominal types instead of string comparisons.
+
+- [ ] Register Expr variant constructors (`Call`, `VarRef`, `Dict`, `DotAccess`, `Annotated`, `Fn`, `Sequential`, `Match`, `LetDecl`, `Literal`, `Placeholder`, `Error`) as named constructors in the macro expansion environment, mirroring the types defined in `stdlib/ast.llt` (`src/builtins_meta.rs`, `src/expand.rs`)
+- [ ] Update `ast_to_dict` to wrap each AST node dict in the corresponding Expr variant constructor (e.g., `[Call [func: ... args: ...]]` instead of `[type: "call" func: ... args: ...]`) (`src/builtins_meta.rs`)
+- [ ] Update `stdlib/ast.llt` type definitions to match the actual fields emitted by the updated `ast_to_dict` (`stdlib/ast.llt`)
+- [ ] Update all macro transformer code that pattern-matches on `[get "type" node]` to use variant match instead (`stdlib/macros.llt`)
+- [ ] Verify `just test` passes — all existing macro corpus tests and do/tmpl/begin must work with new AST format (`tests/corpus/eval/macros/`)
+
 ### macros-v2-stdlib: Migrate defmacro, add stdlib/ast.llt and stdlib/syntax.llt
 
-**Depends on:** `macros-v2-expand`
+**Depends on:** `macros-v2-expand`, `typed-expr-constructors`
 
 - [x] Migrate 11 corpus test files from `defmacro` to `macro`; 4 kept as defmacro (variadic params not yet supported in macro keyword) (`tests/corpus/eval/macros/`)
 - [x] Migrate stdlib/macros.llt — tmpl/do/begin kept as defmacro (require variadic args); documented migration path (`stdlib/macros.llt`)
@@ -193,18 +203,18 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 
 - [x] Register `blake3`, `cap-identity`, `load`, `include-cache-get`, `include-cache-put` in `standard_builtins()` (`src/builtins.rs`, `src/builtins_meta.rs`) — `expand`, `eval`, `eval-types` deferred (require AST evaluation semantics)
 - [x] Implement `load`: parse source `String` to file AST dict (same format as `ast_to_dict`); `name:` named arg provides provenance hint (`src/builtins_meta.rs`)
-- [ ] Implement `expand`: run macro expansion on a file AST dict, return expanded dict (`src/expand.rs`, `src/builtins_meta.rs`) — **SKIPPED**: requires AST dict → File round-trip, deferred to next sprint
-- [ ] Implement `eval`: evaluate `[ExprAST]` in runtime stage env (prelude env + `%:` + `env:` merge); returns thunk; sequential let\* scoping from `eval_document` internalized (`src/eval.rs`, `src/builtins_meta.rs`) — **SKIPPED**: complex eval semantics, deferred to next sprint
-- [ ] Implement `eval-types`: evaluate `[ExprAST]` in `type_stage_env`; no `%` input; called by type checker for `--- stage: type` documents (`src/builtins_meta.rs`, `src/type_normalize.rs`) — **SKIPPED**: complex, deferred to next sprint
+- [ ] Implement `expand`: run macro expansion on a file AST dict, return expanded dict (`src/expand.rs`, `src/builtins_meta.rs`) — **SKIPPED**: moved to `include-decomp-eval-primitives`
+- [ ] Implement `eval`: evaluate `[ExprAST]` in runtime stage env (prelude env + `%:` + `env:` merge); returns thunk; sequential let\* scoping from `eval_document` internalized (`src/eval.rs`, `src/builtins_meta.rs`) — **SKIPPED**: moved to `include-decomp-eval-primitives`
+- [ ] Implement `eval-types`: evaluate `[ExprAST]` in `type_stage_env`; no `%` input; called by type checker for `--- stage: type` documents (`src/builtins_meta.rs`, `src/type_normalize.rs`) — **SKIPPED**: moved to `include-decomp-eval-primitives`
 - [x] Implement `blake3`: compute blake3 hash of a `String` (`src/builtins_meta.rs`)
 - [x] Implement `cap-identity`: return `"dev:ino"` string from `fstat` on the DirCap's O_DIRECTORY fd (`src/builtins_meta.rs`)
 - [x] Implement `include-cache-get`/`include-cache-put`: read/write `EvalState::string_include_cache: HashMap<String, IncludeCacheEntry>`; cache keyed by `blake3(cap-identity + "|" + source)` (`src/eval.rs`, `src/builtins_meta.rs`)
 - [x] Add `EvalState::string_include_cache: HashMap<String, IncludeCacheEntry>` (new field alongside old inode-keyed cache); add Rust enum `enum IncludeCacheEntry { Missing, Pending, Cached(Rc<Thunk>) }` (`src/eval.rs`) — old cache retained because `builtin_include` still depends on it
-- [ ] Delete `builtin_include` entirely (`src/builtins_meta.rs`) — all 350+ lines — **SKIPPED**: unresolved dependencies (`RustRegistry`, `rust_module`, include pipeline not yet replaced)
-- [ ] Delete `EvalState::include_guard: HashSet<(u64, u64)>` and old `EvalState::include_cache` (`src/eval.rs`) — **SKIPPED**: depends on deleting `builtin_include` first
-- [ ] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`) — **SKIPPED**: `builtin_include` uses `RustRegistry` for `[include %rust "..."]`; cannot delete without replacing include pipeline
-- [ ] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`) — **SKIPPED**: depends on include pipeline replacement
-- [ ] Delete `eval_file_with_input`, `eval_document`, `run_eval` from `src/eval_pipeline.rs`; delete file entirely once empty — **SKIPPED**: used throughout lib.rs public API and builtins.rs; cannot delete without major refactoring
+- [ ] Delete `builtin_include` entirely (`src/builtins_meta.rs`) — all 350+ lines — **SKIPPED**: moved to `include-decomp-eval-primitives`
+- [ ] Delete `EvalState::include_guard: HashSet<(u64, u64)>` and old `EvalState::include_cache` (`src/eval.rs`) — **SKIPPED**: moved to `include-decomp-eval-primitives`
+- [ ] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`) — **SKIPPED**: moved to `include-decomp-eval-primitives`
+- [ ] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`) — **SKIPPED**: moved to `include-decomp-eval-primitives`
+- [ ] Delete `eval_file_with_input`, `eval_document`, `run_eval` from `src/eval_pipeline.rs`; delete file entirely once empty — **SKIPPED**: moved to `include-decomp-eval-primitives`
 - [x] Delete `materialize` call on accumulator in `builtin_reduce` (`src/builtins_seq_reduce.rs:80-81`) — pass thunk directly as next acc
 - [x] Delete shadow guard from `expand` (`src/expand.rs:174`)
 - [x] Add `document_to_dict` emission of `stage: [Runtime] | [Type]` nominal variant (`src/ast_dict.rs`)
@@ -212,11 +222,32 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [x] Tests: corpus tests for `blake3`, `include-cache-get` added (`tests/corpus/eval/builtins/`); `cap-identity` skipped (requires real filesystem/DirCap); `load` tests deferred with `expand`/`eval`
 - [x] Verify `just test-lib` passes
 
+### include-decomp-eval-primitives: Implement expand/eval/eval-types and delete builtin_include
+
+**Whatif:** `include-decomposition`
+**Spec chapters:** `doc/whatif/include-decomposition.md §What Would Change`
+**Depends on:** `include-decomp-primitives`
+
+- [ ] Add `dict_to_file(val: &Value, ctx: &Rc<EvalContext>) -> Result<File, AstError>` to `src/ast_dict.rs` — internal, not a registered builtin; file-level inverse of `ast_to_dict`; reconstructs `File` from schema produced by `document_to_dict` (documents → expressions via `dict_to_ast`, name, stage nominal variant, output-type, expects; caps always `None`)
+- [ ] Add `type_stage_env: Rc<RefCell<Environment>>` to `EvalConfig` (`src/eval.rs`); build it once at startup using `build_type_stage_env()` from the typechecker; pass into `EvalConfig::new(...)`
+- [ ] Extract `eval_expressions(exprs: &[Spanned<Expr>], env: Rc<RefCell<Environment>>, ctx: &Rc<EvalContext>) -> EvalResult<Rc<Thunk>>` helper from `eval_document` — the sequential let\* loop; reused by the `eval` builtin and the remaining bootstrap prelude-load path
+- [ ] Implement `expand` builtin: `dict_to_file` → `crate::expand::expand()` → `ast_to_dict`; schema errors from `dict_to_file` surface as user errors (`src/builtins_meta.rs`)
+- [ ] Implement `eval` builtin: deserialize `exprs` (positional Dict) via `dict_to_ast`, build env chain (`stdlib_env` + `env:` entries + `"$"` = `%:` thunk), call `eval_expressions`; `caps:` validation skipped (`src/builtins_meta.rs`)
+- [ ] Implement `eval-types` builtin: same as `eval` but uses `ctx.config.type_stage_env` as base env; no `%:` or `env:` parameters (`src/builtins_meta.rs`)
+- [ ] Register `expand`, `eval`, `eval-types` in `standard_builtins()` (`src/builtins.rs`)
+- [ ] Delete `builtin_include` entirely (`src/builtins_meta.rs`) — all 350+ lines
+- [ ] Delete `EvalState::include_guard: HashSet<(u64, u64)>` and old `EvalState::include_cache` (`src/eval.rs`)
+- [ ] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`)
+- [ ] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`)
+- [ ] Delete `eval_file_with_input`, `eval_document`, `run_eval` from `src/eval_pipeline.rs`; delete file entirely once empty
+- [ ] Tests: unit tests for `dict_to_file` round-trip (`load` output → `dict_to_file` → compare field structure); corpus tests for `expand` and `eval` builtins (`tests/corpus/eval/builtins/`)
+- [ ] Verify `just test-lib` passes
+
 ### include-decomp-prelude: Add pipeline functions to prelude.llt
 
 **Whatif:** `include-decomposition`
 **Spec chapters:** `doc/whatif/include-decomposition.md §Tinct Implementation`
-**Depends on:** `include-decomp-primitives`
+**Depends on:** `include-decomp-eval-primitives`
 
 - [ ] Change `%rust` from `Value::RustRegistry` to a flat `Value::Dict` of all Rust primitives; seed at startup (`src/builtins.rs`, `src/value.rs`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
 - [ ] Rewrite prelude.llt opening: replace `[include %rust "core"]` etc. with single `%rust` expression that scope-promotes all primitives (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
@@ -267,25 +298,45 @@ Note: `builtin-*` aliases remain available to prelude via `[include %rust "core"
 
 ## Codebase Health
 
+### clippy-clean: Fix all clippy warnings (`just lint` currently fails with 205 errors)
+
+`just lint` fails (exit 101) with 205 clippy warnings across 43 lint categories, all treated as errors via `-D warnings`. Two-step fix:
+
+- [ ] Run `just lint-fix` to apply auto-fixable suggestions (covers most of: `redundant_field_names`, `redundant_closure`, `needless_borrow`, `needless_return`, `collapsible_match`, `collapsible_if`, `len_zero`, `useless_format`, `useless_conversion`, `unnecessary_cast`, `unwrap_or_default`, `needless_range_loop`, `while_let_loop`, `single_match`, `match_like_matches_macro`, `manual_map`, `needless_question_mark`, `to_string_in_format_args`, and more)
+- [ ] Manually fix remaining warnings that `lint-fix` cannot auto-apply: `type_complexity`, `too_many_arguments`, `box_collection`, `borrowed_box`, `result_large_err`, `mutable_key_type`, `new_without_default`, `enum_variant_names`, `only_used_in_recursion`, `missing_const_for_thread_local`, `doc_lazy_continuation`, `doc_overindented_list_items` — these require design decisions (refactor vs. `#[allow]` with justification)
+- [ ] Verify `just lint` passes (exit 0) after both steps
+
+### clippy-allow-cleanup: Remove suppressible #[allow] attributes
+
+Two clippy suppressions can be eliminated through refactoring rather than silencing.
+
+**#2 — `type_complexity` in `src/value.rs` (3 occurrences)**
+
+`take_unevaluated()`, `take_pending_builtin()`, and `take_pending_call()` return complex `Option<(Rc<...>, Rc<...>, ...)>` tuples that trip clippy's type-complexity lint. The existing comment claims "a type alias would add indirection without clarity" — the reverse is true.
+
+- [ ] Add type aliases at the top of `src/value.rs` for the three tuple return types: `UnevaluatedData`, `PendingBuiltinData`, `PendingCallData`; update the three method signatures to use them; remove the three `#[allow(clippy::type_complexity)]` attrs (`src/value.rs`)
+
+**#3 — `too_many_arguments` in `src/main.rs` (3 functions) and `src/builtins_io.rs` (1 function)**
+
+`run_literate`, `run_literate_eval`, `run_literate_weave`, and `http_request_h2` all exceed clippy's 7-argument threshold.
+
+- [ ] Introduce `LiterateConfig` struct in `src/main.rs` consolidating the shared parameters across `run_literate` / `run_literate_eval` / `run_literate_weave` (file_path, mode, no_substitute, strict, cap_fs, cap_net, etc.); update all three function signatures and their call sites; remove the three `#[allow(clippy::too_many_arguments)]` attrs (`src/main.rs`)
+- [ ] Introduce `Http2RequestConfig` struct in `src/builtins_io.rs` for `http_request_h2` parameters (client, base_url, method_str, path, headers, body, timeout); update the function signature and its call sites; remove the `#[allow(clippy::too_many_arguments)]` attr (`src/builtins_io.rs`)
+
 ### debug-artifact-cleanup: Remove hardcoded debug file write in typecheck.rs
 
 `src/typecheck.rs:13843` contains `std::fs::write("/workspace/do_infer_diagnostics.txt", &out).ok()` inside a `#[test]` function (`test_do_infer_corpus_diagnostics`). The hardcoded `/workspace/` path is environment-specific (silently fails outside that path) and leaves debug artifacts outside the repo. Delete the `std::fs::write` line; diagnostic output should go to `eprintln!` or be dropped entirely if the test's purpose has been served.
 
 - [x] Delete `std::fs::write("/workspace/do_infer_diagnostics.txt", &out).ok();` from `src/typecheck.rs:13843`; replace with `eprintln!("{}", out)` if the diagnostic is still needed, or delete the entire test if it was a one-off calibration artifact (`src/typecheck.rs:13803-13845`) **[replaced with eprintln! 2026-05-18]**
 
-### do-hkt-inference: Complete HKT monad inference for inferred-form `[do ...]`
+### do-infer-span-hygiene: Fix span collision in do_infer_resolutions
 
-The `do` macro supports an **inferred form** where the monad is not given explicitly:
-`[do [x: [Ok 1]] [Ok x]]`. The transformer desugars this using a `%do-infer` sentinel
-monad and calls `do-desugar-inferred`. At runtime, `[%do-infer.bind ...]` fails with
-"undefined variable: %do-infer" because the type checker hasn't resolved the sentinel.
-The type checker is supposed to detect `%do-infer` in the expanded AST and substitute
-the inferred monad type — this is the missing piece.
+All macro-synthesized `%do-infer` VarRef nodes share `Span::origin()` (no span field in the `do-var-node` dict output). This makes `do_infer_resolutions: HashMap<Span, String>` collide across multiple `[do]` blocks in the same file. Currently harmless (only `result` monad is supported), but will cause incorrect monad resolution when a second monad (Maybe, custom) is added: `[do [x: [Some 1]] [Some x]]` would silently resolve to `result` instead of `maybe` if a previous `[do [y: [Ok 1]] [Ok y]]` was type-checked first.
 
-- [ ] Implement type-checker detection of `%do-infer` sentinel in expanded `[do]` AST; infer the monad type from the step expressions (e.g., `[Ok ...]` → `Result` monad) and substitute the resolved monad for `%do-infer` before evaluation (`src/typecheck.rs`, `src/expand.rs`)
-- [ ] Update `do-desugar-inferred` in `stdlib/macros.llt` if needed once the type-checker side is implemented
-- [ ] Enable the two inferred-form unit tests once inference works: `test_do_macro_inferred_form_binding_error` and `test_do_macro_inferred_form_expr_error` in `src/lib.rs`; update expected behavior to reflect successful inference, not an error
-- [ ] Add corpus tests for inferred-form `do` with `Result`, `Maybe`, and a custom monad (`tests/corpus/eval/macros/`)
+- [ ] Fix span collision: choose one of (a) propagate macro call-site span into `do-var-node` dict output; (b) fix up `Span::origin()` nodes in expand.rs after macro expansion; (c) replace span key with monotonic sentinel ID embedded in the VarRef name (`%do-infer-0`, `%do-infer-1`) (`stdlib/macros.llt`, `src/expand.rs`, `src/typecheck.rs`, `src/eval.rs`)
+- [ ] Tighten lib.rs inferred-form do assertions: `output.contains("Ok")` → `output.contains("Variant(Ok,")` (avoids false positives) (`src/lib.rs:2001,2021`)
+- [ ] Add corpus test for non-constructor first binding failure: `[do [x: some_var] [Ok x]]` → T_DO_INFER error (`tests/corpus/eval/errors/`)
+- [ ] Fix `resolve_monad_from_type` Union branch: require unanimous monad agreement instead of first-match (harmless now, but wrong when a second monad is added) (`src/typecheck.rs:3699-3706`)
 
 ### reactivate-ignored-tests: Fix test infrastructure for ignored unit tests
 
@@ -452,6 +503,33 @@ Follow-up audit (2026-05-18) confirmed most "scaffolding" items are genuinely de
 
 **C. arena-phase3 scaffolding** — `FlatEnv`, `EnvArena`, `EnvId`, `ThunkArena::alloc_letrec_group`, `ThunkArena::fill_letrec_slot`, and the `env_arena` field on `EvalContext` are pre-written for the `arena-phase3` sprint and should NOT be deleted. See `arena-phase3` sprint below.
 
+**D. `#[allow(dead_code)]` sweep — audit 2026-05-19**
+
+All `#[allow(dead_code)]` items categorized. Three actions needed:
+
+*Delete — features shipped, scaffolding is genuinely dead:*
+- [ ] `src/type_infer.rs:101` — `bounds: HashMap<String, TypeVarBounds>` field on `InferState`, marked "Scaffolding for algebraic subtyping migration". BAS is shipped; delete the field and any construction sites (`src/type_infer.rs`)
+- [ ] `src/type_infer.rs:373-442` — `KindState` struct + `fresh_var()` + `default_remaining()` + `collect_kind_vars()` methods, marked "Scaffolding for type class/kind inference". HKT/CHR shipped; `KindState` is never instantiated from production code; delete the entire struct and its impl block (`src/type_infer.rs`)
+- [ ] `src/type_infer.rs:343` — `fresh_var()` method marked both `#[cfg(test)]` AND `#[allow(dead_code)]`. If cfg(test) it's compile-time-gated, so `#[allow]` means no test actually calls it. Delete the method (`src/type_infer.rs`)
+- [ ] `src/type_infer.rs:139` — `deferred_equalities: Vec<(Type, Type)>` on `InferState`, marked "Unused until chr-prelude sprint". chr-prelude is shipped; either this field is now used (remove the allow) or it's genuinely dead (delete it). Verify and act (`src/type_infer.rs`)
+- [ ] `src/type_class.rs:88` — `resolver_injective: bool` on `ClassDecl`, marked "Wired up when chr-gaps Gap 1 is implemented". chr-gaps shipped; verify whether this field is read anywhere; if not, delete it (`src/type_class.rs`)
+- [ ] `src/type_unify.rs:2052` — `process_deferred_equalities`, previously kept for chr-gaps. chr-prelude/chr-gaps are done; verify whether this function is now called. If called, remove the allow. If still unused, delete (`src/type_unify.rs`)
+
+*Move to `#[cfg(test)]` — test-only, currently in production scope:*
+- [ ] `src/arena.rs` — the 8 methods with "used in tests; production callers use X directly" comments (`alloc_child`, `get_mut`, `alloc_letrec_group`, `get_slot`, `get_by_name`, `insert_overflow`, `parent()`, one more): if they're genuinely only called from `#[cfg(test)]` blocks, move the method bodies (or the entire method) inside `#[cfg(test)]` so the compiler sees them as used without needing `#[allow]`. If any of these will be used by arena-phase3 production code, leave them and remove the allow when that sprint lands (`src/arena.rs`)
+
+*Implement or delete — pending feature, currently silenced:*
+- [ ] `src/expand.rs:1814` — `validate_syntax_class()` marked "TODO: will be used when Task 1 pattern matching is fully implemented". This is macros-v2 syntax-class validation (parameter annotation checking). Either implement it as part of macros-v2 remaining work, or delete it and track the feature requirement in the macros-v2-stdlib sprint separately (`src/expand.rs`)
+
+*ErrorKind constructor gap (tacked from health21-errorkind-constructors):*
+- [ ] Add `pub fn` constructors in `EvalError` for all `ErrorKind` variants that currently lack them (e.g., `InvalidUtf8InBytes`, `InvalidHexEncoding`, `KindMismatch`) — match the style of existing constructors like `EvalError::type_mismatch`, `EvalError::no_instance` (`src/error.rs`)
+
+*Legitimate clippy suppressions — no action needed:*
+- `too_many_arguments` in `src/main.rs`, `src/builtins_io.rs` — functions with many params, refactor separately
+- `enum_variant_names` in `src/type_def.rs` — deliberate naming
+- `type_complexity` in `src/value.rs` — complex but necessary types
+- `deprecated` in `src/lsp/analysis.rs` — LSP spec requires the deprecated field
+
 ### arena-phase3: O(1) variable lookup via FlatEnv display-vector addressing
 
 Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::get)` per VarRef) with O(1) slot access via de Bruijn (level, slot) coordinates. The variable resolution pass (`arena-resolve`, DONE) already populates every `VarRef.resolved` with static coordinates; the evaluator currently ignores them (`let _ = resolved`). This sprint wires them up.
@@ -472,7 +550,8 @@ Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::
 - [x] Wire `eval_dict` to allocate a `FlatEnv` for each dict scope via `alloc_letrec_group` (pre-size to the static-key count from the resolve pass); call `fill_letrec_slot` as each entry thunk is created; pass the `FlatEnv`'s `EnvId` to child thunks (`src/eval_dict.rs`) — done in 10e78fe; uses `alloc_root` + `fill_letrec_slot` + `new_unevaluated_with_env_id`
 - [x] Wire `eval.rs:677-684` VarRef dispatch: if `*resolved.borrow()` is `Some(Some((level, slot)))`, read via `Environment::get_by_slot(level, slot)` (O(level) chain walk instead of O(depth × hash) name search); if `Some(None)` (stdlib binding) or `None` (computed key), fall back to name-based `env.borrow().get(name)` (`src/eval.rs`) — implemented via `get_by_slot` on `Rc<RefCell<Environment>>` chain; FlatEnv arena path deferred until `take_unevaluated` propagates `env_id`
 - [x] No level-offset hack needed: the resolver assigns level 0 to the outermost user dict scope and cannot see stdlib bindings (injected at runtime), so all stdlib VarRefs produce `Some(None)` and take the name-based fallback path; user-scope levels are self-contained in the display vector (`src/resolve.rs`) — confirmed correct by design; stdlib injection happens after resolve pass
-- [ ] Update closure capture in `eval_call` (function application): when creating a function closure, clone the callee's display vector and extend it with the new param-scope `FlatEnv` (`src/eval_call.rs`) — **SKIPPED**: blocked: requires threading `env_id` through `take_unevaluated` / force loop (currently `env_id: None` at eval.rs:2223)
+- [ ] Thread `env_id` through `take_unevaluated` / force loop: when a thunk is created with `new_unevaluated_with_env_id`, the `env_id` must survive through `take_unevaluated` and be available after force completes, so the evaluator can use FlatEnv display-vector addressing for closures (`src/eval.rs`, `src/value.rs`)
+- [ ] Update closure capture in `eval_call` (function application): when creating a function closure, clone the callee's display vector and extend it with the new param-scope `FlatEnv` (`src/eval_call.rs`) — **Depends on:** env_id threading above
 - [x] Remove block-level `#[allow(dead_code)]` from `EnvArena` impl, `FlatEnv` struct/impl — replaced with per-item attributes on the specific methods still unused from production (alloc_child, get_mut, alloc_letrec_group, get_slot, get_by_name, insert_overflow, parent()); `alloc_root`, `fill_letrec_slot`, `get`, `env_arena` field, and `EnvId` type are now live (no suppression needed) (`src/arena.rs`)
 - [ ] Benchmark: run `just bench` (or a representative workload) before and after; confirm VarRef-heavy programs see measurable improvement; document in commit message (`tests/`) — **deferred**: needs production workload
 - [x] Verify `just build` passes (`src/`) — passes; `just test-lib` passes (compilation confirmed clean after dead_code fixes)
@@ -505,12 +584,6 @@ Two test coverage gaps found in health review #21:
 `validate_and_wrap_record` in `eval.rs`/`eval_materialize.rs` accepts only the constraint-site span. When nested record validation fails, errors point to the annotation site rather than the actual malformed data location. This makes type assertion errors on deeply-nested records confusing.
 
 - [x] Add `data_span: Span` parameter to `validate_and_wrap_record` and thread it through GuardedValidate continuations so type mismatch errors can report both where the constraint was declared AND where the data was defined (`src/eval.rs`, `src/eval_materialize.rs`)
-
-### health21-errorkind-constructors: New ErrorKind variants lack pub fn constructors
-
-Recent additions to `ErrorKind` (e.g., `InvalidUtf8InBytes`, `InvalidHexEncoding`, `KindMismatch`) were added directly as enum variants without the `pub fn` constructor pattern used by all other variants. This makes it easy to forget span attachment or miss the `.with_materialization_span()` convention.
-
-- [ ] Add `pub fn` constructors in `EvalError` for all `ErrorKind` variants that currently lack them (match the style of existing constructors like `EvalError::type_mismatch`, `EvalError::no_instance`) (`src/error.rs`)
 
 ---
 

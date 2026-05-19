@@ -346,13 +346,20 @@ type annotation:
     [get "items" data]]]]
 ```
 
-**Inference rules (in priority order):**
+**Inference rules (applied in order):**
 
-1. If the enclosing function has an explicit return type annotation `@T` where `T` unifies with `App(m, _)` for a registered `Monad m` instance, use that instance.
-2. If the first `[do]` binding's right-hand side has inferred type `App(m, a)` where `m` has a registered `Monad` instance, use that instance.
-3. If neither provides context, `[do]` requires an explicit monad argument. Backward compatible — existing `[do monad ...]` calls are unaffected.
+1. **Rule 1 — annotation:** If the enclosing function has an explicit return type annotation `@T` where `T` has `ok` or `err` fields (structural Result-like record), use the `result` monad.
+2. **Rule 2 — first binding (type-level):** If the first `[do]` binding's right-hand side has inferred type `App(m, a)` where `m` has a registered `Monad` instance (or a structural record with `ok`/`err` fields), use that instance.
+3. **Rule 2b — first binding (syntactic fallback):** If Rule 2 type-level resolution fails, inspect the first binding's RHS AST. If it is an implied constructor call to `Ok` or `Error` (i.e., `[Ok ...]` or `[Error ...]` in source, not `[call Ok ...]`), resolve to the `result` monad. This handles nominal variant constructors whose types are not yet tracked. The check is case-sensitive.
+4. **Rule 3 — failure:** If no rule succeeds, emit a `T_DO_INFER` type error and leave `%do-infer` unresolved. The evaluator produces `[E002] undefined variable: %do-infer`.
 
-The explicit `[do monad ...]` form always takes priority over inference.
+The explicit `[do monad ...]` form always takes priority over inference and is backward-compatible.
+
+**Known limitations:**
+
+- Rule 2 (type-level) recognizes structural records (`{ok: x}`) but not nominal variant calls (`[Ok x]`). Full variant typing requires precise constructor types, which are not yet tracked in the type environment.
+- Rule 2b (syntactic fallback) currently only recognizes `Ok` and `Error` constructors for the `result` monad. Once constructor types are tracked (typed-expr-constructors sprint), this AST-level fallback can be removed in favor of pure type-level resolution.
+- `Maybe` monad inference and other HKT monads require full `App(m, a)` type constructor tracking. The syntactic fallback could be extended to recognize `Some`/`None` constructors, but this is deferred.
 
 ## Formal Type Rules
 

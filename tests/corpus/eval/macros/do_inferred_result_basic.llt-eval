@@ -1,0 +1,6 @@
+# Inferred [do] form — type checker resolves Result monad from [Ok ...] constructor
+# via AST fallback. [do [x: [Ok 1]] [Ok [+ x 1]]] → result.bind [Ok 1] [fn [x] [Ok [+ x 1]]]
+# → and-then [Ok 1] [fn [x] [Ok [+ x 1]]] → [Ok 2].
+[do [x: [Ok 1]] [Ok [+ x 1]]]
+=== out
+Variant(Ok, Int(2))

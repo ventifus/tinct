@@ -1089,16 +1089,17 @@ The `[do]` macro supports both an explicit monad argument and an inferred form. 
 **Inference rules (applied in order):**
 
 1. **Rule 1 — annotation:** If the enclosing function's return type annotation has `ok` or `err` fields (structural Result-like record), resolve to the `result` monad dict.
-2. **Rule 2 — first binding:** If the first binding's RHS infers as a Record with `ok` or `err` fields, resolve to `result`. (Note: nominal variant types such as `[Ok x]` are not yet recognized here — see Known Limitations.)
-3. **Rule 3 — failure:** If neither rule succeeds, emit `T_DO_INFER` type error and leave `%do-infer` unresolved; the evaluator produces `[E002] undefined variable: %do-infer`.
+2. **Rule 2 — first binding (type-level):** If the first binding's RHS infers as a Record with `ok` or `err` fields, resolve to `result`.
+3. **Rule 2b — first binding (syntactic fallback):** If Rule 2 type-level resolution fails, inspect the first binding's RHS AST. If it is an implied constructor call to `Ok` or `Error` (i.e., `Expr::Call { func: VarRef("Ok" | "Error"), implied: true, .. }`), resolve to the `result` monad. This handles nominal variant types whose constructor types are not yet tracked. The check is case-sensitive and only recognizes uppercase constructor names.
+4. **Rule 3 — failure:** If no rule succeeds, emit `T_DO_INFER` type error and leave `%do-infer` unresolved; the evaluator produces `[E002] undefined variable: %do-infer`.
 
 The explicit `[do monad ...]` form always takes priority and is backward-compatible.
 
 **Known limitations:**
 
-- Rule 2 recognizes structural records (`{ok: x}`) but not nominal variant calls (`[Ok x]`). Full variant typing requires precise constructor types, which are not yet tracked in the type environment.
-- Only the `result` monad is resolved by structural heuristic. `Maybe` monad resolution requires `App(Maybe, _)` nominal types.
-- `Maybe` monad inference and other HKT monads require full `App(m, a)` type constructor tracking (deferred to a future sprint).
+- Rule 2 (type-level) recognizes structural records (`{ok: x}`) but not nominal variant calls (`[Ok x]`). Full variant typing requires precise constructor types, which are not yet tracked in the type environment.
+- Rule 2b (syntactic fallback) currently only recognizes `Ok` and `Error` constructors for the `result` monad. Once constructor types are tracked, this AST-level fallback can be removed in favor of pure type-level resolution.
+- `Maybe` monad inference and other HKT monads require full `App(m, a)` type constructor tracking. The syntactic fallback could be extended to recognize `Some`/`None` constructors, but this is deferred to a future sprint.
 
 ### HasField — Label-Polymorphic Field Access
 

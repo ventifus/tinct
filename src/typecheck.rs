@@ -3528,21 +3528,22 @@ fn check_get_in(
 /// The `do` macro emits `[%do-infer.bind e [fn [x] ...]]` when no explicit monad is provided.
 /// This function:
 ///   1. Resolves the monad variable name (Rule 1: from `state.expected_return`, Rule 2: from
-///      the first arg's inferred type, Rule 3: emit TypeError).
+///      the first arg's inferred type, AST fallback: from syntactic constructor pattern,
+///      Rule 3: emit TypeError).
 ///   2. Records `sentinel_span → monad_name` in `state.do_infer_resolutions` so the evaluator
 ///      can substitute the sentinel with the concrete monad dict at runtime.
 ///   3. Infers all argument expressions for type-map population and side effects.
 ///   4. Returns the expected return type (if available) or a fresh TypeVar.
 ///
 /// **Monad resolution heuristics** (simplified — full HKT inference requires `App(m, a)` types):
-///   - Rule 1: If `state.expected_return` is a Record with `ok`/`err` fields, or a union of
-///     such records, resolve to the `"result"` monad dict.
-///   - Rule 2: If the first arg's inferred type matches `App(m, _)` where m has a registered
-///     Monad instance, or is a Result-like Record, resolve to the corresponding monad dict.
-///   - Rule 3: If neither rule succeeds, emit TypeError T_DO_INFER.
-///
-/// KNOWN ISSUE: Rule 2 requires `[Ok x]` to infer as `App(Result, T)`, which requires precise
-/// constructor typing (not yet implemented). Rule 2 currently fires only when App types exist.
+///   - Rule 1 (type-level): If `state.expected_return` is a Record with `ok`/`err` fields, or
+///     a union of such records, resolve to the `"result"` monad dict.
+///   - Rule 2 (type-level): If the first arg's inferred type matches `App(m, _)` where m has a
+///     registered Monad instance, or is a Result-like Record, resolve to the corresponding monad dict.
+///   - AST fallback (syntactic): If type-level resolution fails, inspect the first arg's AST.
+///     If it's a call to a nominal constructor (`[Ok ...]`, `[Error ...]`), resolve to the
+///     corresponding monad dict.
+///   - Rule 3 (failure): If all resolution attempts fail, emit TypeError T_DO_INFER.
 fn check_do_infer(
     method: &crate::ast::DotKey,
     sentinel_span: Span,
@@ -3564,53 +3565,63 @@ fn check_do_infer(
     };
 
     // Step 1: Resolve the monad name from context.
-    // Check if we've already resolved a monad for this sentinel span (re-entrant call).
-    let already_resolved = state.do_infer_resolutions.get(&sentinel_span).cloned();
+    //
+    // NOTE: The fast path `state.do_infer_resolutions.get(&sentinel_span)` was removed because
+    // all macro-synthesized `%do-infer` VarRef nodes share `Span::origin()` (the do-var-node
+    // helper emits no span field, so ast_dict.rs assigns Span::origin() = 0:0:0-0:0:0). This
+    // makes `do_infer_resolutions` collide across multiple `[do]` blocks in the same file.
+    // The full resolution logic (Rules 1/2/2b) is idempotent for a given monad context, so
+    // removing the fast path is safe. The insert at Step 2 remains for evaluator wiring.
+    // See TODO.md §do-infer-span-hygiene for the long-term fix.
 
-    let (monad_name, first_arg_already_inferred) = if let Some(name) = already_resolved {
-        // Already resolved — reuse and skip re-inference of first arg.
-        (name, false)
+    // Rule 1: Check state.expected_return for a Result-like type.
+    let resolved = if let Some(ret_ty) = state.expected_return.clone() {
+        let applied = state.subst.apply(&ret_ty);
+        resolve_monad_from_type(&applied, state)
     } else {
-        // Rule 1: Check state.expected_return for a Result-like type.
-        let resolved = if let Some(ret_ty) = state.expected_return.clone() {
-            let applied = state.subst.apply(&ret_ty);
-            resolve_monad_from_type(&applied, state)
-        } else {
-            None
-        };
+        None
+    };
 
-        // Rule 2: If Rule 1 failed, infer the first arg's type (for side effects too),
-        // then check if it resolves to a known monad.
-        // first_arg_already_inferred tracks whether we consumed the first arg here,
-        // so Step 3 can skip it to avoid double-inference.
-        let (resolved, first_arg_already_inferred) = if resolved.is_none() && !args.is_empty() {
-            let first_arg_ty = infer_expr(&args[0], env, state, type_map)
-                .ok()
-                .map(|ty| state.subst.apply(&ty));
-            let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
-            (rule2_result, true)
-        } else {
-            (resolved, false)
-        };
+    // Rule 2: If Rule 1 failed, infer the first arg's type (for side effects too),
+    // then check if it resolves to a known monad.
+    // first_arg_already_inferred tracks whether we consumed the first arg here,
+    // so Step 3 can skip it to avoid double-inference.
+    let (resolved, first_arg_already_inferred) = if resolved.is_none() && !args.is_empty() {
+        let first_arg_ty = infer_expr(&args[0], env, state, type_map)
+            .ok()
+            .map(|ty| state.subst.apply(&ty));
+        let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
+        (rule2_result, true)
+    } else {
+        (resolved, false)
+    };
 
-        // Rule 3: If neither rule worked, emit TypeError.
-        match resolved {
-            Some(name) => (name, first_arg_already_inferred),
-            None => {
-                // Infer remaining args for type map population before returning error.
-                let start = if first_arg_already_inferred { 1 } else { 0 };
-                for arg in args.iter().skip(start) {
-                    let _ = infer_expr(arg, env, state, type_map);
-                }
-                for na in named_args {
-                    let _ = infer_expr(&na.node.value, env, state, type_map);
-                }
-                return Err(vec![TypeError::new(
-                    "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])",
-                    call_span,
-                )
-                .with_code("T_DO_INFER")]);
+    // Rule 2b — AST fallback: If type-level resolution failed, try syntactic pattern matching.
+    // This handles nominal constructors like [Ok ...] and [Error ...] whose types
+    // currently infer as Unknown.
+    let resolved = if resolved.is_none() && !args.is_empty() {
+        resolve_monad_from_expr(&args[0])
+    } else {
+        resolved
+    };
+
+    // Rule 3: If no rule worked, emit TypeError.
+    let (monad_name, first_arg_already_inferred) = match resolved {
+        Some(name) => (name, first_arg_already_inferred),
+        None => {
+            // Infer remaining args for type map population before returning error.
+            let start = if first_arg_already_inferred { 1 } else { 0 };
+            for arg in args.iter().skip(start) {
+                let _ = infer_expr(arg, env, state, type_map);
             }
+            for na in named_args {
+                let _ = infer_expr(&na.node.value, env, state, type_map);
+            }
+            return Err(vec![TypeError::new(
+                "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])",
+                call_span,
+            )
+            .with_code("T_DO_INFER")]);
         }
     };
 
@@ -3648,13 +3659,16 @@ fn check_do_infer(
 
 /// Heuristic: resolve a monad dict variable name from a type.
 ///
-/// Recognizes:
+/// Type-level resolution rules:
 ///   - Record with `ok` and/or `err` fields → "result"
 ///   - Union containing records with ok/err fields → "result"
 ///   - `App(Operator("Result"), _)` → "result"
+///   - `Operator("Result")` (bare type constructor) → "result"
 ///   - `Seq(_)` → would be "seq-monad" (not yet implemented)
 ///
 /// Returns `Some(monad_var_name)` if a known monad is recognized, `None` otherwise.
+///
+/// Note: If type-level resolution fails, see `resolve_monad_from_expr` for AST-level fallback.
 fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
     match ty {
         // App(Result, _) — nominal Result type constructor applied to a type argument
@@ -3665,6 +3679,26 @@ fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
                 }
             }
             None
+        }
+        // Operator("Result") — bare Result type constructor (not yet applied to a type arg).
+        //
+        // Reachability: this arm is reached when the inferred type of a [do] binding's RHS
+        // is the bare type constructor `Result` rather than `App(Result, a)`. In the current
+        // type system, this can occur if a variable is annotated as `@Result` (the operator
+        // itself, without a type argument) or if a future typed-expr-constructors pass emits
+        // Operator("Result") before application. With the current untyped variant constructors
+        // (Ok/Error infer as Unknown), Rule 2 type-level never reaches this arm in practice —
+        // the AST fallback (Rule 2b / resolve_monad_from_expr) handles those cases instead.
+        //
+        // TODO: verify reachability once constructor types are tracked (typed-expr-constructors
+        // sprint). If App(Result, _) always subsumes bare Operator("Result") after that sprint,
+        // this arm can be removed.
+        Type::Operator(name) => {
+            if name == "Result" {
+                Some("result".to_string())
+            } else {
+                None
+            }
         }
         // Record with ok and/or err fields — structural Result-like type
         Type::Record(row) => {
@@ -3686,6 +3720,35 @@ fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
         }
         // Seq — could be seq monad, but no dict var exists yet
         // Type::Seq(_) => Some("seq-monad".to_string()),
+        _ => None,
+    }
+}
+
+/// AST-level fallback for monad resolution when type inference fails.
+///
+/// Syntactic resolution rules:
+///   - `Call { func: VarRef("Ok"), implied: true, .. }` → "result"
+///   - `Call { func: VarRef("Error"), implied: true, .. }` → "result"
+///
+/// This is a FALLBACK — `resolve_monad_from_type` takes priority. Only used when
+/// type-level inference returns `Unknown` or another non-resolvable type.
+///
+/// Returns `Some(monad_var_name)` if a known constructor pattern is recognized, `None` otherwise.
+fn resolve_monad_from_expr(expr: &Spanned<Expr>) -> Option<String> {
+    match &expr.node {
+        Expr::Call {
+            func,
+            implied: true,
+            ..
+        } => {
+            // Check if func is a VarRef to Ok or Error
+            if let Expr::VarRef { name, .. } = &func.node {
+                if name == "Ok" || name == "Error" {
+                    return Some("result".to_string());
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -13796,6 +13859,256 @@ mod tests {
             resolved,
             Some("result".to_string()),
             "Union containing Record with 'ok' should resolve to 'result'"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_operator_result() {
+        // resolve_monad_from_type on Operator("Result") → "result".
+        let state = InferState::new();
+        let resolved = resolve_monad_from_type(&Type::Operator("Result".to_string()), &state);
+        assert_eq!(
+            resolved,
+            Some("result".to_string()),
+            "Operator(\"Result\") should resolve to 'result' monad"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_expr_ok_constructor() {
+        // Unit test for resolve_monad_from_expr: [Ok x] → "result".
+        use crate::ast::{Expr, Position, Span, Spanned};
+
+        // Helper to create dummy spans for tests
+        let dummy_span = |start: usize, end: usize| Span {
+            start: Position {
+                offset: start,
+                line: 1,
+                column: start,
+            },
+            end: Position {
+                offset: end,
+                line: 1,
+                column: end,
+            },
+        };
+
+        // Build AST for [Ok 1] — Call { func: VarRef("Ok"), args: [1], implied: true }
+        let ok_var = Expr::VarRef {
+            name: "Ok".to_string(),
+            escaped: false,
+            resolved: Default::default(),
+        };
+        let one_lit = Expr::Int(1);
+        let ok_call = Expr::Call {
+            func: Box::new(Spanned {
+                node: ok_var,
+                span: dummy_span(0, 2),
+            }),
+            args: vec![Rc::new(Spanned {
+                node: one_lit,
+                span: dummy_span(3, 4),
+            })],
+            named_args: vec![],
+            implied: true,
+        };
+        let expr = Spanned {
+            node: ok_call,
+            span: dummy_span(0, 5),
+        };
+
+        let resolved = resolve_monad_from_expr(&expr);
+        assert_eq!(
+            resolved,
+            Some("result".to_string()),
+            "[Ok ...] constructor call should resolve to 'result' monad"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_expr_error_constructor() {
+        // Unit test for resolve_monad_from_expr: [Error "msg"] → "result".
+        // Tinct's Result type uses "Error" (not "Err") as the error constructor.
+        use crate::ast::{Expr, Position, Span, Spanned};
+
+        let dummy_span = |start: usize, end: usize| Span {
+            start: Position {
+                offset: start,
+                line: 1,
+                column: start,
+            },
+            end: Position {
+                offset: end,
+                line: 1,
+                column: end,
+            },
+        };
+
+        let err_var = Expr::VarRef {
+            name: "Error".to_string(),
+            escaped: false,
+            resolved: Default::default(),
+        };
+        let str_lit = Expr::Str("msg".to_string());
+        let err_call = Expr::Call {
+            func: Box::new(Spanned {
+                node: err_var,
+                span: dummy_span(0, 3),
+            }),
+            args: vec![Rc::new(Spanned {
+                node: str_lit,
+                span: dummy_span(4, 9),
+            })],
+            named_args: vec![],
+            implied: true,
+        };
+        let expr = Spanned {
+            node: err_call,
+            span: dummy_span(0, 10),
+        };
+
+        let resolved = resolve_monad_from_expr(&expr);
+        assert_eq!(
+            resolved,
+            Some("result".to_string()),
+            "[Error ...] constructor call should resolve to 'result' monad"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_expr_case_sensitive() {
+        // Unit test for resolve_monad_from_expr: [ok x] (lowercase) → None.
+        use crate::ast::{Expr, Position, Span, Spanned};
+
+        let dummy_span = |start: usize, end: usize| Span {
+            start: Position {
+                offset: start,
+                line: 1,
+                column: start,
+            },
+            end: Position {
+                offset: end,
+                line: 1,
+                column: end,
+            },
+        };
+
+        let ok_var_lower = Expr::VarRef {
+            name: "ok".to_string(), // lowercase
+            escaped: false,
+            resolved: Default::default(),
+        };
+        let one_lit = Expr::Int(1);
+        let ok_call = Expr::Call {
+            func: Box::new(Spanned {
+                node: ok_var_lower,
+                span: dummy_span(0, 2),
+            }),
+            args: vec![Rc::new(Spanned {
+                node: one_lit,
+                span: dummy_span(3, 4),
+            })],
+            named_args: vec![],
+            implied: true,
+        };
+        let expr = Spanned {
+            node: ok_call,
+            span: dummy_span(0, 5),
+        };
+
+        let resolved = resolve_monad_from_expr(&expr);
+        assert_eq!(
+            resolved, None,
+            "[ok ...] (lowercase) should not resolve — case-sensitive check required"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_expr_non_constructor() {
+        // Unit test for resolve_monad_from_expr: bare VarRef or other expr → None.
+        use crate::ast::{Expr, Position, Span, Spanned};
+
+        let dummy_span = |start: usize, end: usize| Span {
+            start: Position {
+                offset: start,
+                line: 1,
+                column: start,
+            },
+            end: Position {
+                offset: end,
+                line: 1,
+                column: end,
+            },
+        };
+
+        // Bare VarRef (not a Call)
+        let ok_var = Expr::VarRef {
+            name: "Ok".to_string(),
+            escaped: false,
+            resolved: Default::default(),
+        };
+        let expr = Spanned {
+            node: ok_var,
+            span: dummy_span(0, 2),
+        };
+
+        let resolved = resolve_monad_from_expr(&expr);
+        assert_eq!(
+            resolved, None,
+            "Bare VarRef (not a constructor call) should not resolve"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
+        // Unit test for resolve_monad_from_expr: [call Ok 1] with implied: false → None.
+        //
+        // The AST fallback only recognizes implied constructor syntax ([Ok 1] → implied: true).
+        // Explicit call form ([call Ok 1] → implied: false) must not trigger monad resolution —
+        // it is a lower-level construct that should not be pattern-matched heuristically.
+        use crate::ast::{Expr, Position, Span, Spanned};
+
+        let dummy_span = |start: usize, end: usize| Span {
+            start: Position {
+                offset: start,
+                line: 1,
+                column: start,
+            },
+            end: Position {
+                offset: end,
+                line: 1,
+                column: end,
+            },
+        };
+
+        // Build AST for [call Ok 1] — Call { func: VarRef("Ok"), args: [1], implied: false }
+        let ok_var = Expr::VarRef {
+            name: "Ok".to_string(),
+            escaped: false,
+            resolved: Default::default(),
+        };
+        let one_lit = Expr::Int(1);
+        let ok_call = Expr::Call {
+            func: Box::new(Spanned {
+                node: ok_var,
+                span: dummy_span(0, 2),
+            }),
+            args: vec![Rc::new(Spanned {
+                node: one_lit,
+                span: dummy_span(3, 4),
+            })],
+            named_args: vec![],
+            implied: false, // explicit [call ...] form, NOT implied constructor syntax
+        };
+        let expr = Spanned {
+            node: ok_call,
+            span: dummy_span(0, 5),
+        };
+
+        let resolved = resolve_monad_from_expr(&expr);
+        assert_eq!(
+            resolved, None,
+            "[call Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers AST fallback"
         );
     }
 

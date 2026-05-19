@@ -1,0 +1,5 @@
+# Inferred [do] with single step (no bindings) — base case
+# [do [Ok 42]] → do-fold base case returns the expression directly → [Ok 42].
+[do [Ok 42]]
+=== out
+Variant(Ok, Int(42))

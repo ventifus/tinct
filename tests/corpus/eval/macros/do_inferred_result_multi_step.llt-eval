@@ -1,0 +1,6 @@
+# Inferred [do] with multiple binding steps
+# [do [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]] → result.bind [Ok 1] [fn [x] [result.bind [Ok 2] [fn [y] [Ok [+ x y]]]]]
+# → [Ok 3].
+[do [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]
+=== out
+Variant(Ok, Int(3))
