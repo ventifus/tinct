@@ -3137,35 +3137,6 @@ impl TypeEnv {
             },
         );
 
-        // builtin-* aliases: same types as canonical counterparts.
-        // Used by stdlib/prelude to call builtins when canonical names may be shadowed.
-        for (alias, canonical) in [
-            ("builtin-lt", "<"),
-            ("builtin-eq", "="),
-            ("builtin-add", "+"),
-            ("builtin-sub", "-"),
-            ("builtin-mul", "*"),
-            ("builtin-div", "/"),
-            ("builtin-if", "if"),
-            ("builtin-filter", "filter"),
-            ("builtin-map", "map"),
-            ("builtin-reduce", "reduce"),
-            ("builtin-take", "take"),
-            ("builtin-drop", "drop"),
-            ("builtin-eval-ast", "eval-ast"),
-            ("builtin-gensym", "gensym"),
-            ("builtin-llt-repr", "llt-repr"),
-            ("builtin-tag-of", "tag-of"),
-            ("builtin-variant", "variant"),
-            ("builtin-decimal", "decimal"),
-            ("builtin-big-int", "big-int"),
-            ("builtin-proxy", "proxy"),
-        ] {
-            if let Some(scheme) = env.get(canonical).cloned() {
-                env.insert_scheme(alias.to_string(), scheme);
-            }
-        }
-
         // URI parsing builtins: uri, url, urn
         // These return Dict types — the type system doesn't yet support precise row types
         // for the returned dicts, so we use a generic Dict type.
@@ -3292,6 +3263,45 @@ impl TypeEnv {
         );
 
         env
+    }
+
+    /// Inject `builtin-*` aliases into this type environment.
+    ///
+    /// These aliases map `builtin-lt` → `<`, `builtin-add` → `+`, etc.
+    /// They are used by `stdlib/prelude.llt` to call Rust primitives by stable
+    /// names that cannot be shadowed by user code.
+    ///
+    /// **Only call this when type-checking prelude itself.** User code does NOT
+    /// have `builtin-*` names in scope — they are private to the prelude evaluation
+    /// layer. Adding them here for user type-checking would allow the type checker
+    /// to accept code that the evaluator would reject with "undefined variable".
+    pub fn inject_builtin_aliases(&mut self) {
+        for (alias, canonical) in [
+            ("builtin-lt", "<"),
+            ("builtin-eq", "="),
+            ("builtin-add", "+"),
+            ("builtin-sub", "-"),
+            ("builtin-mul", "*"),
+            ("builtin-div", "/"),
+            ("builtin-if", "if"),
+            ("builtin-filter", "filter"),
+            ("builtin-map", "map"),
+            ("builtin-reduce", "reduce"),
+            ("builtin-take", "take"),
+            ("builtin-drop", "drop"),
+            ("builtin-eval-ast", "eval-ast"),
+            ("builtin-gensym", "gensym"),
+            ("builtin-llt-repr", "llt-repr"),
+            ("builtin-tag-of", "tag-of"),
+            ("builtin-variant", "variant"),
+            ("builtin-decimal", "decimal"),
+            ("builtin-big-int", "big-int"),
+            ("builtin-proxy", "proxy"),
+        ] {
+            if let Some(scheme) = self.get(canonical).cloned() {
+                self.insert_scheme(alias.to_string(), scheme);
+            }
+        }
     }
 }
 

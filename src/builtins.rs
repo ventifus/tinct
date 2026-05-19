@@ -1614,7 +1614,7 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "type-of");
             // Internal builtin-* aliases (stable names for prelude to use even when
             // public names are shadowed by user code via include).
-            // These names match the builtin-* prefix used in inject_prelude_aliases().
+            // These are only available via [include %rust "core"] — not in user scope.
             // Aliases share the function pointer and strictness with the public name;
             // only the env key differs.
             let alias_from_public =

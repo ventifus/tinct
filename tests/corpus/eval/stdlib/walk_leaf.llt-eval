@@ -1,4 +1,4 @@
 # walk: transform applied to flat value
-[walk [fn [x] [builtin-if [builtin-eq [type-of x] "Dict"] x [* x 2]]] 5]
+[walk [fn [x] [if [= [type-of x] "Dict"] x [* x 2]]] 5]
 === out
 Int(10)
