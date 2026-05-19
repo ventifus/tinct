@@ -1154,7 +1154,7 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
 /// Path resolution: relative paths are resolved within the provided DirCap (RESOLVE_BENEATH).
 /// Absolute paths are rejected by cap-std. Cycle detection prevents A→B→A
 /// circular includes. The included file gets an empty `%`, the stdlib environment,
-/// plus injected `%libdir` and `%pwd` caps so that it can include further files.
+/// plus injected `%libdir` cap so that it can include further files.
 ///
 /// ## Argument strictness
 ///

@@ -35,14 +35,14 @@ See DONE.md for the full history of completed sprints.
 
 The goal is complete deletion of old paths, not a fallback parse error. `[let ...]` already works in all three contexts via `Expr::LetDecl` in `push_expr_to_parent` — no new code needed, only deletions.
 
-- [ ] Manually rewrite all non-stdlib `.llt` files using old param syntax to `[let ...]` form; known: `scripts/docgen.llt` (all fn params); audit `samples/` for others
-- [ ] Convert `defmacro` to deferred push_expr_to_parent pattern (receive name as VarRef, then LetDecl params) — currently the last remaining eager caller of `parse_param_list` besides `fn` and `macro`; migrate first, then delete `parse_param_list` and all three call sites
-- [ ] Delete `parse_param_list` entirely (`src/parser.rs:798`) and all call sites (lines 1656, 1869, 1901) once defmacro is migrated
-- [ ] Delete `push_expr_to_parent` `StackFrame::Fn` implied-call heuristic (lines 5250–5276)
-- [ ] Delete `push_expr_to_parent` `StackFrame::TypeAlias` Cases 1 and 2 (Dict and implied-call detection, lines 5228–5277); keep only the `Expr::LetDecl` branch
-- [ ] Delete `push_expr_to_parent` `StackFrame::ClassDecl` `Expr::VarRef`, `Expr::Dict`, and `Expr::Call { implied: true }` branches (lines 5541–5598); keep only `Expr::LetDecl` — no-param classes use `[class [let Equatable] ...]`; bare-word shorthand belongs in the `macro class` let-softening macro (macros-v2-stdlib)
-- [ ] Verify `just test` passes after deletions
-- [ ] Update DONE.md to note the `unified-bindings-migrate` checkbox was completed here (the original was premature)
+- [x] Manually rewrite all non-stdlib `.llt` files using old param syntax to `[let ...]` form; known: `scripts/docgen.llt` (all fn params); audit `samples/` for others
+- [x] Convert `defmacro` to deferred push_expr_to_parent pattern (receive name as VarRef, then LetDecl params) — currently the last remaining eager caller of `parse_param_list` besides `fn` and `macro`; migrate first, then delete `parse_param_list` and all three call sites
+- [x] Delete `parse_param_list` entirely (`src/parser.rs:798`) and all call sites (lines 1656, 1869, 1901) once defmacro is migrated
+- [x] Delete `push_expr_to_parent` `StackFrame::Fn` implied-call heuristic (lines 5250–5276)
+- [x] Delete `push_expr_to_parent` `StackFrame::TypeAlias` Cases 1 and 2 (Dict and implied-call detection, lines 5228–5277); keep only the `Expr::LetDecl` branch
+- [x] Delete `push_expr_to_parent` `StackFrame::ClassDecl` `Expr::VarRef`, `Expr::Dict`, and `Expr::Call { implied: true }` branches (lines 5541–5598); keep only `Expr::LetDecl` — no-param classes use `[class [let Equatable] ...]`; bare-word shorthand belongs in the `macro class` let-softening macro (macros-v2-stdlib)
+- [x] Verify `just test` passes after deletions
+- [x] Update DONE.md to note the `unified-bindings-migrate` checkbox was completed here (the original was premature)
 
 ### equatable-comparable-instances: Uncomment Equatable/Comparable/Showable primitive instances
 

@@ -220,8 +220,11 @@ enum Annotation {
 | `Unquote(expr)` | `[unquote expr]` | Unquote inside quote — evaluates expr and splices result into quoted AST |
 | `UnquoteSplice(expr)` | `[unquote-splice expr]` | Unquote-splice inside quote — evaluates expr (must be list) and splices each element into enclosing list |
 | `DefMacro { name, params, body }` | `[defmacro name [params] body...]` | Macro definition — registers compile-time transformer function |
+| `MacroDecl { name, params, body }` | `[macro name [let ...] body]` | Macro special form — compile-time syntax transformer, produced by `macro` keyword |
+| `SyntaxClass { name, pattern, message }` | `[syntax-class name pattern: [...] message: "..."]` | Syntax class declaration — names a set of syntactic patterns with a diagnostic message |
+| `Splice(Vec<Spanned<Expr>>)` | (internal) | Macro-expansion-internal splice — not a parser keyword; produced during macro expansion, not by direct source parsing |
 | `Match { scrutinee, arms }` | `[match val pat1: body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
-| `ClassDecl { name, params, superclasses, methods, determines, resolver }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters, method signatures, optional functional dependencies (`determines`), and optional resolver function (`resolver`) |
+| `ClassDecl { name, params, superclasses, methods, determines, resolver, resolver_injective }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters, method signatures, optional functional dependencies (`determines`), optional resolver function (`resolver`), and `resolver_injective: bool` flag for CHR constraint head uniqueness |
 | `InstanceDecl { class_name, arms }` | `[instance ClassName [pattern [...]]: methods...]` | Type class instance with match-arm syntax; each arm pairs a `PatternDecl` expression with method entries |
 | `PatternDecl { bindings }` | `[pattern [a@Int b@Float]]` | Pattern declaration for instance match arms; bindings are typically `Annotated` nodes |
 
@@ -339,7 +342,7 @@ The older `[fn [x y] body]` syntax (bare parameter list without `let`) is still 
 
 ### Parser Output
 
-`parse()` returns `Result<Spanned<File>, ParseError>`. The underlying `parse2()` function returns `ParseOutput { file: Spanned<File>, source: String, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` with comment side-tables for formatter support. The main `parse()` entry point extracts `.file` from `ParseOutput` for evaluator and type checker use; formatters can call `parse2()` directly to access comments.
+`parse()` returns `Result<ParseOutput, ParseError>`. `ParseOutput { file: Spanned<File>, source: String, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` carries the AST plus comment side-tables for formatter support. The evaluator and type checker access `.file`; the formatter uses the comment maps directly.
 
 ### Annotation Bracket Restriction
 
@@ -373,7 +376,7 @@ The following constructs are rejected inside annotation brackets:
 | `type` | Special form — produces `Expr::TypeAlias`, not `Expr::Dict` |
 | `type_assert_body` (`[@Annotation expr]`) | Produces `Expr::TypeAssert`, not `Expr::Dict` — rejected even though it is not a named special form keyword |
 
-All four are caught by the same check in `parse_annotation`: after re-parsing the bracket sub-string via `parse2`, the result is classified as follows:
+All four are caught by the same check in `parse_annotation`: after re-parsing the bracket sub-string, the result is classified as follows:
 
 - `Expr::Dict` → accepted as a property dict annotation (named entries, e.g. `[type: Number  default: 30]`).
 - `Expr::Call { implied: true, func: VarRef(..), .. }` → accepted as a positional union type annotation: the func and each arg become auto-indexed `Entry` values in a `PropertyDict`. This handles `fn@[Int Null]` (parameterized) and `fn@[a Null]` (type variable). Both uppercase and lowercase VarRef heads are accepted.

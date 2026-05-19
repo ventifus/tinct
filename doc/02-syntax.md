@@ -384,6 +384,8 @@ Only constructs that affect **binding structure** or **dict construction** are s
 | `unquote` | Splices values into quoted templates |
 | `unquote-splice` | Splices sequence elements into quoted list positions |
 | `defmacro` | Registers compile-time AST transformation |
+| `macro` | Defines a syntax transformer (compile-time macro) |
+| `syntax-class` | Declares a named syntactic pattern class with a diagnostic message |
 
 A keyword followed by `:` is a dict entry, not a special form: `[call: something]` is a dict with key `call`.
 
@@ -795,6 +797,7 @@ All components are optional. A bare `---` is valid. Components may appear in any
 | Output type annotation | `@Type` | Declares the type of this document's output |
 | Input contract | `expects: Type` | Declares the expected type of `%` |
 | Capability requirements | `caps: [%cap: @Type ...]` | Declares required capability bindings |
+| Evaluation stage | `stage: type` | Marks the document as a type-stage document (evaluated during type checking, not at runtime); only `type` is a valid value |
 
 ```tinct
 ---                                    # bare separator
