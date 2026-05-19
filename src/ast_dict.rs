@@ -12,6 +12,7 @@ use indexmap::IndexMap;
 use crate::arena::ThunkId;
 use crate::ast::{
     Annotation, Document, DotKey, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned,
+    Stage,
 };
 use crate::error::EvalResult;
 use crate::value::{string_val, Key, Thunk, Value};
@@ -175,6 +176,22 @@ fn document_to_dict(
                 span,
             ))),
         },
+    );
+
+    // stage: [Runtime] | [Type] — nominal variant based on document stage annotation
+    let stage_tag = match &doc.stage {
+        Some(Stage::Type) => "Type",
+        Some(Stage::Runtime) | None => "Runtime",
+    };
+    dict.insert(
+        Key::String("stage".into()),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Variant {
+                tag: stage_tag.to_string(),
+                payload: None,
+            },
+            span,
+        ))),
     );
 
     // leading-comments: absent when None or empty

@@ -207,8 +207,8 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [ ] Delete `eval_file_with_input`, `eval_document`, `run_eval` from `src/eval_pipeline.rs`; delete file entirely once empty — **SKIPPED**: used throughout lib.rs public API and builtins.rs; cannot delete without major refactoring
 - [x] Delete `materialize` call on accumulator in `builtin_reduce` (`src/builtins_seq_reduce.rs:80-81`) — pass thunk directly as next acc
 - [x] Delete shadow guard from `expand` (`src/expand.rs:174`)
-- [ ] Add `document_to_dict` emission of `stage: [Runtime] | [Type]` nominal variant (`src/ast_dict.rs`)
-- [ ] Update `src/main.rs` to call tinct `cli-pipeline` function directly after prelude loads; construct `files_thunk` as positional Dict from `Vec<String>` file paths; pass `%pwd` DirCap as third argument
+- [x] Add `document_to_dict` emission of `stage: [Runtime] | [Type]` nominal variant (`src/ast_dict.rs`)
+- [ ] Update `src/main.rs` to call tinct `cli-pipeline` function directly after prelude loads; construct `files_thunk` as positional Dict from `Vec<String>` file paths; pass `%pwd` DirCap as third argument — **SKIPPED**: blocked: requires include-decomp-prelude to be complete first
 - [x] Tests: corpus tests for `blake3`, `include-cache-get` added (`tests/corpus/eval/builtins/`); `cap-identity` skipped (requires real filesystem/DirCap); `load` tests deferred with `expand`/`eval`
 - [x] Verify `just test-lib` passes
 
@@ -218,27 +218,27 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 **Spec chapters:** `doc/whatif/include-decomposition.md §Tinct Implementation`
 **Depends on:** `include-decomp-primitives`
 
-- [ ] Change `%rust` from `Value::RustRegistry` to a flat `Value::Dict` of all Rust primitives; seed at startup (`src/builtins.rs`, `src/value.rs`)
-- [ ] Rewrite prelude.llt opening: replace `[include %rust "core"]` etc. with single `%rust` expression that scope-promotes all primitives (`stdlib/prelude.llt`)
-- [ ] Add `eval-document-runtime` to prelude public dict (`stdlib/prelude.llt`)
-- [ ] Add `eval-document-pipeline` to prelude public dict (`stdlib/prelude.llt`)
-- [ ] Add `eval-file` to prelude public dict (`stdlib/prelude.llt`)
-- [ ] Add `include-cache-success`, `include-cache-failure`, `include-evaluate-and-cache` to prelude private dict (`stdlib/prelude.llt`)
-- [ ] Add `include` to prelude public dict (replaces `builtin_include` as the user-facing include function) (`stdlib/prelude.llt`)
-- [ ] Add `cli-pipeline` to prelude public dict (`stdlib/prelude.llt`)
-- [ ] Verify `IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]` is in prelude type namespace (`stdlib/prelude.llt`)
-- [ ] Update formatter and docgen to use `load` directly instead of internal `ast_to_dict` (`stdlib/formatter/`, `scripts/docgen.llt`)
-- [ ] Tests: corpus test verifying `[include %include-dir "sibling.llt"]` works within a multi-file include chain (`tests/corpus/eval/`)
-- [ ] Tests: corpus test for circular include detection via `[Pending]` cache state (`tests/corpus/eval/errors/`)
-- [ ] Tests: corpus test for `cli-pipeline` threading `%` across files (`tests/corpus/eval/`)
-- [ ] Verify `just test` passes and `just docgen` runs successfully
+- [ ] Change `%rust` from `Value::RustRegistry` to a flat `Value::Dict` of all Rust primitives; seed at startup (`src/builtins.rs`, `src/value.rs`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Rewrite prelude.llt opening: replace `[include %rust "core"]` etc. with single `%rust` expression that scope-promotes all primitives (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Add `eval-document-runtime` to prelude public dict (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Add `eval-document-pipeline` to prelude public dict (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Add `eval-file` to prelude public dict (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Add `include-cache-success`, `include-cache-failure`, `include-evaluate-and-cache` to prelude private dict (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Add `include` to prelude public dict (replaces `builtin_include` as the user-facing include function) (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Add `cli-pipeline` to prelude public dict (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Verify `IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]` is in prelude type namespace (`stdlib/prelude.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Update formatter and docgen to use `load` directly instead of internal `ast_to_dict` (`stdlib/formatter/`, `scripts/docgen.llt`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Tests: corpus test verifying `[include %include-dir "sibling.llt"]` works within a multi-file include chain (`tests/corpus/eval/`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Tests: corpus test for circular include detection via `[Pending]` cache state (`tests/corpus/eval/errors/`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Tests: corpus test for `cli-pipeline` threading `%` across files (`tests/corpus/eval/`) — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
+- [ ] Verify `just test` passes and `just docgen` runs successfully — **SKIPPED**: blocked: requires deleting builtin_include which needs include pipeline replacement
 
 ### include-decomposition-review: Post-implementation review
 
 **Whatif:** `include-decomposition`
 **Depends on:** `include-decomp-prelude`
 
-- [ ] Run `/review-whatif include-decomposition` — verify all sprints complete, implementation matches spec, `doc/08-evaluation.md` and `doc/09-documents.md` updated to describe self-hosted pipeline in present tense, no stubs or de-scoped features
+- [ ] Run `/review-whatif include-decomposition` — verify all sprints complete, implementation matches spec, `doc/08-evaluation.md` and `doc/09-documents.md` updated to describe self-hosted pipeline in present tense, no stubs or de-scoped features — **SKIPPED**: blocked: requires include-decomp-prelude complete
 
 ### builtin-privacy-complete: Activate the builtin-privacy isolation switch
 
@@ -472,9 +472,9 @@ Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::
 - [x] Wire `eval_dict` to allocate a `FlatEnv` for each dict scope via `alloc_letrec_group` (pre-size to the static-key count from the resolve pass); call `fill_letrec_slot` as each entry thunk is created; pass the `FlatEnv`'s `EnvId` to child thunks (`src/eval_dict.rs`) — done in 10e78fe; uses `alloc_root` + `fill_letrec_slot` + `new_unevaluated_with_env_id`
 - [x] Wire `eval.rs:677-684` VarRef dispatch: if `*resolved.borrow()` is `Some(Some((level, slot)))`, read via `Environment::get_by_slot(level, slot)` (O(level) chain walk instead of O(depth × hash) name search); if `Some(None)` (stdlib binding) or `None` (computed key), fall back to name-based `env.borrow().get(name)` (`src/eval.rs`) — implemented via `get_by_slot` on `Rc<RefCell<Environment>>` chain; FlatEnv arena path deferred until `take_unevaluated` propagates `env_id`
 - [x] No level-offset hack needed: the resolver assigns level 0 to the outermost user dict scope and cannot see stdlib bindings (injected at runtime), so all stdlib VarRefs produce `Some(None)` and take the name-based fallback path; user-scope levels are self-contained in the display vector (`src/resolve.rs`) — confirmed correct by design; stdlib injection happens after resolve pass
-- [ ] Update closure capture in `eval_call` (function application): when creating a function closure, clone the callee's display vector and extend it with the new param-scope `FlatEnv` (`src/eval_call.rs`) — deferred; requires threading `env_id` through `take_unevaluated` / force loop first
+- [ ] Update closure capture in `eval_call` (function application): when creating a function closure, clone the callee's display vector and extend it with the new param-scope `FlatEnv` (`src/eval_call.rs`) — **SKIPPED**: blocked: requires threading `env_id` through `take_unevaluated` / force loop (currently `env_id: None` at eval.rs:2223)
 - [x] Remove block-level `#[allow(dead_code)]` from `EnvArena` impl, `FlatEnv` struct/impl — replaced with per-item attributes on the specific methods still unused from production (alloc_child, get_mut, alloc_letrec_group, get_slot, get_by_name, insert_overflow, parent()); `alloc_root`, `fill_letrec_slot`, `get`, `env_arena` field, and `EnvId` type are now live (no suppression needed) (`src/arena.rs`)
-- [ ] Benchmark: run `just bench` (or a representative workload) before and after; confirm VarRef-heavy programs see measurable improvement; document in commit message (`tests/`)
+- [ ] Benchmark: run `just bench` (or a representative workload) before and after; confirm VarRef-heavy programs see measurable improvement; document in commit message (`tests/`) — **deferred**: needs production workload
 - [x] Verify `just build` passes (`src/`) — passes; `just test-lib` passes (compilation confirmed clean after dead_code fixes)
 
 ---
