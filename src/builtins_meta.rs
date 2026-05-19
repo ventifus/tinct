@@ -1144,6 +1144,292 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
+/// `blake3`: compute the blake3 hash of a String argument.
+///
+/// Takes 1 positional arg (String) and returns the lowercase hex digest as a String.
+/// The string is encoded as UTF-8 bytes before hashing.
+///
+/// Example: `[blake3 "hello"]` → `"ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"`
+pub(crate) fn builtin_blake3(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("blake3", args, named, &ctx, call_span)?;
+    let s = require_string("blake3", val, args[0].span)?;
+    let hex = blake3_hex(s.as_bytes());
+    ok_val(string_val(hex.as_str()), call_span)
+}
+
+/// `cap-identity`: return the stable identity string `"dev:ino"` of a DirCap.
+///
+/// Takes 1 positional arg (DirCap or RevocableDirCap) and returns a String of the form
+/// `"<dev>:<ino>"` derived from `fstat` on the directory's open file descriptor.
+/// On non-Unix platforms, falls back to `"0:<hash>"` using a path hash.
+///
+/// This stable identity can be combined with source text to form a content-addressed
+/// cache key: `blake3(cap-identity + "|" + source)`.
+pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("cap-identity", args, named, &ctx, call_span)?;
+
+    let dir = match &val {
+        Value::DirCap { dir, .. } => Rc::clone(dir),
+        Value::RevocableDirCap { inner, revoked, .. } => {
+            if revoked.get() {
+                return Err(EvalError::internal(
+                    "cap-identity: capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            Rc::clone(inner)
+        }
+        _ => {
+            return Err(EvalError::type_mismatch("DirCap", val.type_name(), args[0].span).into());
+        }
+    };
+
+    // Get the identity string from the directory's metadata.
+    // On Unix: "dev:ino" from fstat on the O_DIRECTORY fd.
+    // On non-Unix: "0:<hash>" as a best-effort fallback.
+    #[cfg(unix)]
+    let identity = {
+        use cap_std::fs::MetadataExt;
+        let meta = dir.open(".").and_then(|f| f.metadata()).map_err(|e| {
+            EvalError::internal(
+                format!("cap-identity: failed to stat directory: {e}"),
+                call_span,
+            )
+        })?;
+        format!("{}:{}", meta.dev(), meta.ino())
+    };
+
+    #[cfg(not(unix))]
+    let identity = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        // On non-Unix, use the Debug representation of the Dir as a stable-ish id.
+        let mut hasher = DefaultHasher::new();
+        format!("{:?}", *dir).hash(&mut hasher);
+        format!("0:{}", hasher.finish())
+    };
+
+    ok_val(string_val(identity.as_str()), call_span)
+}
+
+/// `load`: parse a source String into a file AST dict (same format as `ast-of`/`ast_to_dict`).
+///
+/// Takes 1 positional arg (String source text) and an optional `name:` named arg (String,
+/// used as the provenance hint for error messages).
+///
+/// Pipeline: parse → macro-expand → desugar → ast_to_dict.
+/// Returns a Dict in the canonical AST schema (type: "file", schema-version: 1, documents: [...]).
+///
+/// This is the primitive underlying the `include` pipeline in the include-decomposition design.
+pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    // Extract optional name: named arg
+    let name_hint: Option<String> = if let Some(named_map) = named {
+        // Reject unknown named args
+        for key in named_map.keys() {
+            if key != "name" {
+                return Err(EvalError::named_arg_rejected("load".to_string(), call_span).into());
+            }
+        }
+        if let Some(name_thunk) = named_map.get("name") {
+            let name_val = materialize(name_thunk, Some(&call_span), &ctx)?;
+            let name_str = require_string("load", name_val, name_thunk.span)?;
+            Some(name_str)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Extract source string
+    let source_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let source = require_string("load", source_val, args[0].span)?;
+
+    // Use name hint for error messages
+    let display_name = name_hint.as_deref().unwrap_or("<load>");
+
+    // Parse
+    let parsed = crate::parser::parse(&source).map_err(|e| {
+        EvalError::include_parse_failed(display_name.to_string(), e.to_string(), call_span)
+    })?;
+
+    // Macro expansion — use ctx.config.base_dir as the directory context for macro includes.
+    let expand_result =
+        crate::expand::expand_macros(parsed.file, ctx.config.no_fs, &ctx.config.base_dir).map_err(
+            |e| {
+                EvalError::include_parse_failed(
+                    display_name.to_string(),
+                    format!("macro expansion error: {e}"),
+                    call_span,
+                )
+            },
+        )?;
+    let mut file = expand_result.file;
+
+    // Desugar $_ implicit lambdas
+    crate::desugar::desugar_file(&mut file.node);
+
+    // Variable resolution
+    crate::resolve::resolve_file(&file.node);
+
+    // Convert to AST dict
+    let opts = crate::ast_dict::AstToDictOpts {
+        source: Some(&source),
+        comments: None,
+    };
+    Ok(crate::ast_dict::ast_to_dict(&file.node, &opts, &ctx)?)
+}
+
+/// `include-cache-get`: look up the string-keyed include cache by blake3 key.
+///
+/// Takes 1 positional arg (String key). Returns:
+/// - `[Missing]`       — key not in cache
+/// - `[Pending]`       — key is marked as in-progress (cycle detection)
+/// - `[Cached value]`  — cached result thunk
+pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("include-cache-get", args, named, &ctx, call_span)?;
+    let key = require_string("include-cache-get", val, args[0].span)?;
+
+    let entry = ctx.state.borrow().string_include_cache.get(&key).cloned();
+
+    match entry {
+        None => ok_val(
+            Value::Variant {
+                tag: "Missing".to_string(),
+                payload: None,
+            },
+            call_span,
+        ),
+        Some(crate::eval::IncludeCacheEntry::Missing) => ok_val(
+            Value::Variant {
+                tag: "Missing".to_string(),
+                payload: None,
+            },
+            call_span,
+        ),
+        Some(crate::eval::IncludeCacheEntry::Pending) => ok_val(
+            Value::Variant {
+                tag: "Pending".to_string(),
+                payload: None,
+            },
+            call_span,
+        ),
+        Some(crate::eval::IncludeCacheEntry::Cached(thunk)) => {
+            let payload_id = ctx.alloc_thunk(Rc::clone(&thunk));
+            ok_val(
+                Value::Variant {
+                    tag: "Cached".to_string(),
+                    payload: Some(payload_id),
+                },
+                call_span,
+            )
+        }
+    }
+}
+
+/// `include-cache-put`: insert or update the string-keyed include cache.
+///
+/// Takes 2 positional args: String key and a value.
+/// The value must be a `[Missing]`, `[Pending]`, or `[Cached x]` Variant.
+/// Returns the stored value (pass-through).
+pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("include-cache-put", named, call_span)?;
+    if args.len() != 2 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+
+    let key_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let key = require_string("include-cache-put", key_val, args[0].span)?;
+
+    // The second arg is the entry variant: [Missing], [Pending], or [Cached value]
+    let entry_val = materialize(&args[1], Some(&call_span), &ctx)?;
+
+    let entry = match &entry_val {
+        Value::Variant { tag, payload } => match tag.as_str() {
+            "Missing" => crate::eval::IncludeCacheEntry::Missing,
+            "Pending" => crate::eval::IncludeCacheEntry::Pending,
+            "Cached" => {
+                let payload_thunk = match payload {
+                    Some(id) => ctx.get_thunk(*id),
+                    None => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "include-cache-put".to_string(),
+                            "[Cached value]",
+                            "[Cached]",
+                            args[1].span,
+                        )
+                        .into())
+                    }
+                };
+                crate::eval::IncludeCacheEntry::Cached(payload_thunk)
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "include-cache-put".to_string(),
+                    "[Missing] | [Pending] | [Cached value]",
+                    &format!("[{other}]"),
+                    args[1].span,
+                )
+                .into())
+            }
+        },
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                "include-cache-put".to_string(),
+                "[Missing] | [Pending] | [Cached value]",
+                entry_val.type_name(),
+                args[1].span,
+            )
+            .into())
+        }
+    };
+
+    ctx.state
+        .borrow_mut()
+        .string_include_cache
+        .insert(key, entry);
+
+    // Return the stored value (pass-through — the args[1] thunk, not the entry)
+    Ok(Rc::clone(&args[1]))
+}
+
 /// `include`: takes 2 or 3 args (DirCap + path, optional hash), evaluates the file,
 /// returns its result. The capless 1-arg form `[include "path"]` is no longer supported.
 ///
@@ -1377,7 +1663,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Macro expansion runs first so that DefMacro nodes are registered and macro calls
     // are expanded before the underscore desugar pass and evaluation.
     // This matches the pipeline in main.rs, lib.rs, and LSP.
-    let expand_result = crate::expand::expand_macros(file, ctx.config.no_fs).map_err(|e| {
+    let expand_result = crate::expand::expand_macros(file, ctx.config.no_fs, &*dir_cap).map_err(|e| {
         EvalError::include_parse_failed(
             file_path_str.clone(),
             format!("macro expansion error: {}", e),

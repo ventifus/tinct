@@ -156,7 +156,8 @@ pub struct InferState {
     pub instance_resolution_depth: u32,
     /// Flag indicating whether we are currently type-checking the prelude.
     /// When true, instance method body inference is skipped (optimization — method types
-    /// are unused during prelude loading as they are #[allow(dead_code)] in InstanceDecl).
+    /// in InstanceDecl are populated but only consumed by resolve_instance, which is not
+    /// called during prelude loading itself).
     pub in_prelude_load: bool,
     /// Monad resolutions for inferred [do] forms: call-site span → resolved monad variable name.
     /// When the type checker resolves `%do-infer` to a concrete monad (e.g., "result"), it records
@@ -185,7 +186,6 @@ impl InferState {
             name: "Equatable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -196,7 +196,6 @@ impl InferState {
             name: "Numeric".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
             superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -212,7 +211,6 @@ impl InferState {
                 ("c".to_string(), Kind::Type),
             ],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -227,7 +225,6 @@ impl InferState {
                 ("c".to_string(), Kind::Type),
             ],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -242,7 +239,6 @@ impl InferState {
                 ("c".to_string(), Kind::Type),
             ],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -257,7 +253,6 @@ impl InferState {
                 ("c".to_string(), Kind::Type),
             ],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -268,7 +263,6 @@ impl InferState {
             name: "Comparable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
             superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -279,7 +273,6 @@ impl InferState {
             name: "Showable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -291,7 +284,6 @@ impl InferState {
             name: "Mappable".to_string(),
             params: vec![("f".to_string(), Kind::Operator)],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,
@@ -302,7 +294,6 @@ impl InferState {
             name: "Appendable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
             superclasses: vec![],
-            methods: HashMap::new(),
             determines: vec![],
             resolver: None,
             resolver_injective: false,

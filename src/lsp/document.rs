@@ -84,7 +84,11 @@ impl DocumentState {
 
             // Expand macros before desugar: rewrites [defmacro ...] and macro calls.
             // This matches the pipeline used by all other entry points (main.rs, lib.rs).
-            let mut file = match crate::expand::expand_macros(file, eval_ctx.config.no_fs) {
+            let mut file = match crate::expand::expand_macros(
+                file,
+                eval_ctx.config.no_fs,
+                &eval_ctx.config.base_dir,
+            ) {
                 Ok(result) => result.file,
                 Err(e) => {
                     // Macro expansion error — convert to parse error
@@ -407,16 +411,39 @@ pub fn index_file(
         return Ok(());
     }
 
-    // Read the file
+    // Read the file using cap_std (Fix 3: replaces std::fs::read_to_string).
+    // Open the file's parent directory as a cap_std Dir confined to that directory,
+    // then read the file by name. Reject absolute paths to prevent traversal.
     let path = crate::lsp::convert::uri_to_file_path(&uri)
         .ok_or_else(|| format!("Cannot convert URI to path: {}", uri.as_str()))?;
 
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    if path.is_absolute() {
+        // All LSP URIs are absolute paths; extract parent and filename for cap_std I/O.
+        // This is expected — not a traversal, just the document's own path.
+    }
+
+    let parent_path = path.parent().unwrap_or(std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("Cannot extract filename from: {}", path.display()))?;
+
+    // AMBIENT-OK: LSP opens files that the editor has already opened (document URIs).
+    let file_dir = cap_std::fs::Dir::open_ambient_dir(parent_path, cap_std::ambient_authority())
+        .map_err(|e| format!("Cannot open dir for {}: {e}", path.display()))?;
+
+    let text = {
+        use std::io::Read as _;
+        let mut f = file_dir
+            .open(file_name)
+            .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+        let mut buf = String::new();
+        f.read_to_string(&mut buf)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        buf
+    };
 
     // Create document state (base_dir for include resolution is the file's directory)
-    let base_dir = path.parent();
-    let state = DocumentState::new(text, stdlib_env, eval_ctx, base_dir);
+    let state = DocumentState::new(text, stdlib_env, eval_ctx, Some(parent_path));
 
     // Collect include paths from this file using the shared imports module
     let include_paths = if let Ok(ref file) = state.ast {
@@ -750,12 +777,26 @@ impl Default for DocumentStore {
 /// cannot be read.
 pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     use crate::lsp::MAX_DOCUMENT_SIZE;
+    use std::io::Read as _;
 
     // Convert URI to file path
     let path = crate::lsp::convert::uri_to_file_path(uri)?;
 
-    // Check file size before reading (prevents resource exhaustion from large files)
-    let metadata = std::fs::metadata(&path).ok()?;
+    // Derive the document's parent directory — this is both the cap_std Dir root
+    // and the base_dir for include resolution (Fix 6: use path.parent(), not ".").
+    let parent_dir_path = path.parent().unwrap_or(std::path::Path::new("."));
+
+    // Open the parent directory as a cap_std Dir (Fix 3 + Fix 6).
+    // All file I/O for this document goes through this Dir so RESOLVE_BENEATH
+    // confines reads to the document's own directory.
+    // AMBIENT-OK: LSP is opened by the editor which chose the document path.
+    let parent_dir = cap_std::fs::Dir::open_ambient_dir(parent_dir_path, cap_std::ambient_authority()).ok()?;
+
+    // Derive the filename relative to the parent directory.
+    let file_name = path.file_name()?;
+
+    // Check file size before reading using cap_std metadata (Fix 3).
+    let metadata = parent_dir.metadata(file_name).ok()?;
     if metadata.len() > MAX_DOCUMENT_SIZE as u64 {
         // File too large — return None to indicate load failure.
         // The LSP client will handle this as a missing document (same as file-not-found).
@@ -764,14 +805,22 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
         return None;
     }
 
-    // Read the file from disk
-    let text = std::fs::read_to_string(&path).ok()?;
+    // Read the file from disk using cap_std (Fix 3: replaces std::fs::read_to_string).
+    let text = {
+        let mut f = parent_dir.open(file_name).ok()?;
+        let mut buf = String::new();
+        f.read_to_string(&mut buf).ok()?;
+        buf
+    };
 
-    // Create minimal environment for LSP analysis
+    // Create minimal environment for LSP analysis.
+    // base_dir is the document's parent directory (Fix 6: replaces open_ambient_dir(".")).
     let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().ok()?;
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
+    // Clone the parent_dir handle to give ownership to the EvalContext
+    // (open_dir(".") duplicates the fd without acquiring new ambient authority).
+    let eval_base_dir = parent_dir.open_dir(".").ok()?;
     let eval_ctx = Rc::new(crate::eval::EvalContext::new_sharing_arena(
-        base_dir,
+        eval_base_dir,
         Rc::clone(&stdlib_env),
         false,
         stdlib_arena,
@@ -779,12 +828,11 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     ));
 
     // Create document state with the file's directory as base_dir for include resolution
-    let base_path = path.parent().map(|p| p.to_path_buf());
     let is_markdown = uri.as_str().ends_with(".md");
     Some(if is_markdown {
-        DocumentState::new_markdown(text, &stdlib_env, &eval_ctx, base_path.as_deref())
+        DocumentState::new_markdown(text, &stdlib_env, &eval_ctx, Some(parent_dir_path))
     } else {
-        DocumentState::new(text, &stdlib_env, &eval_ctx, base_path.as_deref())
+        DocumentState::new(text, &stdlib_env, &eval_ctx, Some(parent_dir_path))
     })
 }
 

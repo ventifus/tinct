@@ -775,8 +775,22 @@ fn resolve_includes(
             Err(_) => continue, // Skip unparseable files
         };
 
-        // Run macro expansion (tolerate errors)
-        let expand_result = match expand::expand_macros(file, true) {
+        // Run macro expansion (tolerate errors).
+        // Use the cap_std Dir for expansion when available (avoids re-acquiring ambient authority).
+        // AMBIENT-OK: falls back to CWD open only when no cap Dir is provided (lib API boundary).
+        let fallback_dir;
+        let expand_dir: &cap_std::fs::Dir = match base_cap_dir {
+            Some(dir) => dir,
+            None => {
+                fallback_dir =
+                    match cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()) {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+                &fallback_dir
+            }
+        };
+        let expand_result = match expand::expand_macros(file, true, expand_dir) {
             Ok(r) => r,
             Err(_) => continue,
         };

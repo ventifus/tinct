@@ -158,7 +158,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
     // See also: src/main.rs:234-240 (run_eval pipeline)
     // Expand macros (pre-desugar AST transformation).
-    let expand_result = expand::expand_macros(file.file, no_fs).map_err(|e| format!("{e}"))?;
+    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
+    let expand_result =
+        expand::expand_macros(file.file, no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -291,7 +295,11 @@ pub fn eval_source_with_cap_net(
 
     // Use the standard config path, then inject caps after env creation
     let file = parse(input).map_err(|e| format!("{e}"))?;
-    let expand_result = expand::expand_macros(file.file, no_fs).map_err(|e| format!("{e}"))?;
+    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
+    let expand_result =
+        expand::expand_macros(file.file, no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -414,7 +422,11 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
     // Expand macros (pre-desugar AST transformation).
-    let expand_result = expand::expand_macros(file.file, false).map_err(|e| format!("{e}"))?;
+    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
+    let expand_result =
+        expand::expand_macros(file.file, false, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
@@ -448,7 +460,11 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
 pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
-    let expand_result = expand::expand_macros(file.file, false).map_err(|e| format!("{e}"))?;
+    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
+    let expand_result =
+        expand::expand_macros(file.file, false, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
@@ -1758,8 +1774,10 @@ mod tests {
     fn typecheck_source_resolves_prelude_map() {
         let input = "[call $map [fn [let x] $x] [1 2 3]]";
         let file = parse(input).expect("parse failed");
-        let expand_result =
-            expand::expand_macros(file.file, false).expect("macro expansion failed");
+        let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("open cwd for test macro expansion");
+        let expand_result = expand::expand_macros(file.file, false, &expand_base_dir)
+            .expect("macro expansion failed");
         let mut file = expand_result.file;
         desugar::desugar_file(&mut file.node);
         resolve::resolve_file(&file.node);

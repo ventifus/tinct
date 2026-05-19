@@ -2416,12 +2416,12 @@ fn infer_expr(
                 )]);
             }
 
-            // Parse method signatures and build ClassDecl
-            let mut method_types = HashMap::new();
-
+            // Validate method signatures (name and type expression syntax).
+            // The resolved types are not stored — ClassDecl::methods was removed
+            // since no read sites exist. Re-add the field when method type checking is implemented.
             for method in methods {
                 // Extract method name from key (must be a string literal or identifier)
-                let method_name = match &method.node.key {
+                let _method_name = match &method.node.key {
                     Some(key_expr) => match &key_expr.node {
                         Expr::Str(s) => s.clone(),
                         Expr::VarRef { name, .. } => name.clone(),
@@ -2440,14 +2440,10 @@ fn infer_expr(
                     }
                 };
 
-                // Resolve method signature type from value expression
-                // Method signatures are type expressions, not runtime values
-                let method_type =
+                // Resolve method signature type from value expression — validates syntax.
+                let _method_type =
                     resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
                         .map_err(|e| vec![e])?;
-
-                // Wrap in a monomorphic TypeScheme (class methods don't have their own quantifiers)
-                method_types.insert(method_name, TypeScheme::mono(method_type));
             }
 
             // Build class declaration. Inherit param kinds from any existing pre-registration
@@ -2519,7 +2515,6 @@ fn infer_expr(
                     .iter()
                     .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
                     .collect(),
-                methods: method_types,
                 determines: fd_indices,
                 resolver: resolver_name,
                 resolver_injective: *resolver_injective,
@@ -2728,9 +2723,10 @@ fn infer_expr(
                 let mut method_types = HashMap::new();
 
                 // Skip method body inference during prelude loading (optimization).
-                // The method types are unused — they're stored in InstanceDecl.method_types
-                // which is #[allow(dead_code)]. This avoids O(N²) state clones in
-                // patterns_overlap when prelude instances reach a certain count.
+                // The method types are stored in InstanceDecl.method_types and consumed
+                // by resolve_instance (not called during prelude loading itself).
+                // Skipping avoids O(N²) state clones in patterns_overlap when prelude
+                // instances reach a certain count.
                 if !state.in_prelude_load {
                     for method in *methods {
                         // Extract method name from key

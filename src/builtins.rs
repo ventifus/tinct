@@ -362,11 +362,12 @@ pub(crate) use crate::builtins_io::{
 pub(crate) use crate::builtins_meta::blake3_hex;
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
-    builtin_apply, builtin_ast_of, builtin_big_int, builtin_bool_check, builtin_bytes_check,
-    builtin_decimal, builtin_dict_check, builtin_eval, builtin_eval_ast, builtin_float_check,
-    builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include,
-    builtin_int_check, builtin_llt_repr, builtin_macro_injects, builtin_null_check, builtin_raise,
-    builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
+    builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_bool_check,
+    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_dict_check, builtin_eval,
+    builtin_eval_ast, builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json,
+    builtin_gensym, builtin_include, builtin_include_cache_get, builtin_include_cache_put,
+    builtin_int_check, builtin_llt_repr, builtin_load, builtin_macro_injects, builtin_null_check,
+    builtin_raise, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
     builtin_validate, builtin_variant,
 };
 
@@ -1327,6 +1328,16 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("include", builtin_include, [Strictness::Seq]),
+        // Decomposed include primitives (include-decomp-primitives sprint)
+        builtin!("blake3", builtin_blake3, [Strictness::Seq]),
+        builtin!("cap-identity", builtin_cap_identity, [Strictness::Seq]),
+        builtin!("load", builtin_load, [Strictness::Seq]),
+        builtin!(
+            "include-cache-get",
+            builtin_include_cache_get,
+            [Strictness::Seq]
+        ),
+        builtin!("include-cache-put", builtin_include_cache_put),
         // Sequences (registered under builtin-NAME; prelude exports the unwrapped names)
         builtin!("builtin-seq", builtin_seq),
         builtin!("builtin-head", builtin_head, [Strictness::Seq]),

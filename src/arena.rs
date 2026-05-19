@@ -114,7 +114,6 @@ pub(crate) struct EnvArena {
     envs: Vec<FlatEnv>,
 }
 
-#[allow(dead_code)] // alloc_child, get_mut, alloc_letrec_group not yet called (scaffolding for Phase 3)
 impl EnvArena {
     /// Create a new empty environment arena.
     pub fn new() -> Self {
@@ -145,6 +144,7 @@ impl EnvArena {
     /// Allocate a child environment with the given parent.
     ///
     /// The display vector is cloned from the parent and extended with the new environment's EnvId.
+    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production callers use alloc_root directly
     pub fn alloc_child(&mut self, slot_count: usize, parent_id: EnvId) -> EnvId {
         let len = self.envs.len();
         assert!(
@@ -181,6 +181,7 @@ impl EnvArena {
     /// Get a mutable reference to the environment at the given handle.
     ///
     /// Used to fill slots after allocation (letrec pattern).
+    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests and internally via fill_letrec_slot
     pub fn get_mut(&mut self, id: EnvId) -> &mut FlatEnv {
         &mut self.envs[id.0 as usize]
     }
@@ -192,6 +193,7 @@ impl EnvArena {
     /// after creating the corresponding thunk.
     ///
     /// The display vector is cloned from the parent and extended with the new environment's EnvId.
+    #[allow(dead_code)] // Phase 3 (arena-eval): production uses alloc_root (no parent FlatEnv yet)
     pub fn alloc_letrec_group(&mut self, static_key_count: usize, parent_id: EnvId) -> EnvId {
         self.alloc_child(static_key_count, parent_id)
     }
@@ -223,7 +225,6 @@ impl Default for EnvArena {
 /// **Display vector:** Prepopulated at creation with the `EnvId` of every ancestor
 /// scope from level 0 to current level. This enables true O(1) access via
 /// `display[level].slots[slot]` without walking the parent chain.
-#[allow(dead_code)] // get_by_name, insert_overflow, parent() not yet called (scaffolding for Phase 3 full dispatch)
 #[derive(Debug)]
 pub(crate) struct FlatEnv {
     /// Static keys indexed by compile-time slot number from the resolver.
@@ -239,16 +240,17 @@ pub(crate) struct FlatEnv {
     pub(crate) display: Vec<EnvId>,
 }
 
-#[allow(dead_code)] // get_slot, get_by_name, insert_overflow, parent() not yet called by force loop (Phase 3)
 impl FlatEnv {
     /// Get a thunk by slot index (static key, assigned by the resolver).
     ///
     /// Returns `None` if the slot is out of bounds or unfilled.
+    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production VarRef dispatch uses Environment::get_by_slot
     pub fn get_slot(&self, slot: u32) -> Option<ThunkId> {
         self.slots.get(slot as usize).and_then(|&opt| opt)
     }
 
     /// Get a thunk by name from the overflow table (computed key, name-based lookup).
+    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production computed-key lookup uses Environment::get
     pub fn get_by_name(&self, name: &str) -> Option<ThunkId> {
         self.overflow.get(name).copied()
     }
@@ -267,11 +269,13 @@ impl FlatEnv {
     }
 
     /// Insert a thunk into the overflow table (computed key).
+    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production dict construction uses Environment::insert
     pub fn insert_overflow(&mut self, name: String, id: ThunkId) {
         self.overflow.insert(name, id);
     }
 
     /// Get the parent environment ID, if any.
+    #[allow(dead_code)] // Phase 3 (arena-eval): used in tests; production chain walk uses Rc<RefCell<Environment>>
     pub fn parent(&self) -> Option<EnvId> {
         self.parent
     }

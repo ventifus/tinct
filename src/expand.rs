@@ -336,9 +336,15 @@ std::thread_local! {
 ///
 /// This is the top-level entry point called from the pipeline.
 /// Takes a no_fs flag to match the pipeline configuration.
+/// `base_dir` is the already-open capability directory for the file being expanded;
+/// it is cloned (via `open_dir(".")`) so no new ambient authority is acquired here.
 /// Returns the expanded AST and the provenance side map for dual-span error reporting.
 /// Stdlib macros are loaded by expanding `stdlib/macros.llt` and collecting discovered macros.
-pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResult> {
+pub fn expand_macros(
+    file: Spanned<File>,
+    no_fs: bool,
+    base_dir: &cap_std::fs::Dir,
+) -> EvalResult<ExpandResult> {
     // Detect infinite recursion
     let em_depth = EXPAND_MACROS_DEPTH.get();
     if em_depth > 10 {
@@ -354,19 +360,14 @@ pub fn expand_macros(file: Spanned<File>, no_fs: bool) -> EvalResult<ExpandResul
 
     let mut env_macro = MacroEnv::new();
 
-    // Create a minimal eval context for macro expansion
-    // Use current directory as base_dir
-    let base_dir_path = std::env::current_dir()
-        .ok()
-        .and_then(|d| d.canonicalize().ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| {
-            EvalError::internal(
-                format!("cannot open base directory for macro expansion: {e}"),
-                file.span,
-            )
-        })?;
+    // Clone the caller's already-open Dir handle (open_dir(".") duplicates the fd
+    // without acquiring new ambient authority).
+    let base_dir = base_dir.open_dir(".").map_err(|e| {
+        EvalError::internal(
+            format!("cannot clone base directory for macro expansion: {e}"),
+            file.span,
+        )
+    })?;
 
     // Create the stdlib env for macro expansion. Provides prelude functions for [defmacro]
     // transformer bodies.

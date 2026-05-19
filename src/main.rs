@@ -1675,20 +1675,7 @@ fn run_eval(
             }
         })?;
 
-        // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
-        // See also: src/lib.rs (eval_source_with_config pipeline)
-        // Expand macros (pre-desugar AST transformation).
-        let expand_result = tinct::expand::expand_macros(ast, no_fs).map_err(|e| format!("{e}"))?;
-        let mut ast = expand_result.file;
-        let _provenance = expand_result.provenance;
-
-        // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
-        tinct::desugar::desugar_file(&mut ast.node);
-
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        tinct::resolve::resolve_file(&ast.node);
-
-        // Determine base directory for $include resolution (needed for type checking with includes)
+        // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
         let file_base_dir_path = match stage {
             PipelineStage::Expr(_) => {
                 // Inline expressions use cwd as base directory
@@ -1713,6 +1700,28 @@ fn run_eval(
                 }
             }
         };
+
+        // Open base_dir as a cap-std Dir before expand_macros so it can be passed in
+        // without re-acquiring ambient authority inside the expansion step.
+        // AMBIENT-OK: CLI bootstrap — operator chose this file; base_dir is then passed
+        // down to expand_macros and eval without further ambient opens.
+        let base_dir =
+            cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
+                .map_err(|e| format!("cannot open base directory: {e}"))?;
+
+        // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
+        // See also: src/lib.rs (eval_source_with_config pipeline)
+        // Expand macros (pre-desugar AST transformation).
+        let expand_result =
+            tinct::expand::expand_macros(ast, no_fs, &base_dir).map_err(|e| format!("{e}"))?;
+        let mut ast = expand_result.file;
+        let _provenance = expand_result.provenance;
+
+        // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
+        tinct::desugar::desugar_file(&mut ast.node);
+
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        tinct::resolve::resolve_file(&ast.node);
 
         // Type errors are advisory unless --strict is set.
         // Build type environment with prelude + includes (if file-based).
@@ -1770,11 +1779,6 @@ fn run_eval(
                 eprintln!("{}", format_type_diagnostic(d, &source, diag_file_name));
             }
         }
-
-        // Open base_dir as a cap-std Dir
-        let base_dir =
-            cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
-                .map_err(|e| format!("cannot open base directory: {e}"))?;
 
         // Create or derive the evaluation context.
         // First file: create the base context (owns the ThunkArena).
@@ -1921,7 +1925,18 @@ fn run_fmt(
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
         // See also: src/lib.rs (typecheck_source pipeline)
-        let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+        // AMBIENT-OK: CLI bootstrap — operator specified this file path.
+        let fmt_base_dir = {
+            let p = std::path::Path::new(file_path);
+            let dir = p
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new("."));
+            cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
+                .map_err(|e| format!("cannot open base directory for fmt: {e}"))?
+        };
+        let expand_result =
+            tinct::expand::expand_macros(ast, false, &fmt_base_dir).map_err(|e| format!("{e}"))?;
         let mut ast = expand_result.file;
 
         tinct::desugar::desugar_file(&mut ast.node);
@@ -2008,7 +2023,18 @@ fn run_lint(
         .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
-    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    // AMBIENT-OK: CLI bootstrap — operator specified this file path.
+    let lint_base_dir = {
+        let p = std::path::Path::new(file_path);
+        let dir = p
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open base directory for lint: {e}"))?
+    };
+    let expand_result =
+        tinct::expand::expand_macros(ast, false, &lint_base_dir).map_err(|e| format!("{e}"))?;
     let mut ast = expand_result.file;
 
     tinct::desugar::desugar_file(&mut ast.node);
@@ -2264,7 +2290,18 @@ fn run_literate_eval(
     })?;
 
     // Expand macros (pre-desugar AST transformation).
-    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    // AMBIENT-OK: CLI bootstrap — operator specified this markdown_path.
+    let weave_base_dir = {
+        let p = std::path::Path::new(markdown_path);
+        let dir = p
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open base directory for weave: {e}"))?
+    };
+    let expand_result =
+        tinct::expand::expand_macros(ast, false, &weave_base_dir).map_err(|e| format!("{e}"))?;
     let mut ast = expand_result.file;
 
     tinct::desugar::desugar_file(&mut ast.node);
@@ -2845,25 +2882,26 @@ fn run_literate_weave(
         };
 
         // Expand macros (pre-desugar AST transformation).
-        let expand_result = match tinct::expand::expand_macros(ast, false) {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = format!("{e}");
-                if fail_on_errors {
-                    return Err(format!(
-                        "macro expansion error in code block {}: {msg}",
-                        i + 1
-                    ));
+        let expand_result =
+            match tinct::expand::expand_macros(ast, false, &base_eval_ctx.config.base_dir) {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("{e}");
+                    if fail_on_errors {
+                        return Err(format!(
+                            "macro expansion error in code block {}: {msg}",
+                            i + 1
+                        ));
+                    }
+                    block_outputs.push(BlockOutput {
+                        out: None,
+                        warn: None,
+                        error: Some(msg),
+                        info: None,
+                    });
+                    continue;
                 }
-                block_outputs.push(BlockOutput {
-                    out: None,
-                    warn: None,
-                    error: Some(msg),
-                    info: None,
-                });
-                continue;
-            }
-        };
+            };
         let mut ast = expand_result.file;
 
         tinct::desugar::desugar_file(&mut ast.node);
@@ -3225,7 +3263,18 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let ast = parse(&source).map(|o| o.file).map_err(|e| format!("{e}"))?;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
-    let expand_result = tinct::expand::expand_macros(ast, false).map_err(|e| format!("{e}"))?;
+    // AMBIENT-OK: CLI bootstrap — operator specified this file path.
+    let describe_base_dir = {
+        let p = std::path::Path::new(file_path);
+        let dir = p
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open base directory for describe: {e}"))?
+    };
+    let expand_result =
+        tinct::expand::expand_macros(ast, false, &describe_base_dir).map_err(|e| format!("{e}"))?;
     let mut ast = expand_result.file;
 
     tinct::desugar::desugar_file(&mut ast.node);
