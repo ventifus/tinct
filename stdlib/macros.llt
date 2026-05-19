@@ -308,6 +308,18 @@ do-fold: [fn [let monad-ast steps i n]
     [get i steps]
     [do-wrap monad-ast [get i steps] [do-fold monad-ast steps [+ i 1] n]]]]
 
+# Desugar the inferred [do] form: emit bind chain with %do-infer sentinel monad.
+# Called when args[0] is NOT a monad (it's a binding step or other expression).
+# All n args are steps; the %do-infer sentinel is prepended as the monad.
+# The type checker detects %do-infer, resolves the monad, and wires it to eval.
+# Returns: [%do-infer.bind step1 [fn [name] [%do-infer.bind step2 [...]]]] or
+#          [%do-infer.bind step1 [fn [name] last-step]] for a 2-step do block.
+do-desugar-inferred: [fn [let n args]
+  [sentinel: [do-var-node "%do-infer"]]
+  [new-n: [+ n 1]]
+  [new-args: [reduce [fn [let acc i] [set acc [+ i 1] [get i args]]] [set [] 0 sentinel] [range 0 n]]]
+  [do-fold sentinel new-args 1 new-n]]
+
 ]
 
 # ============================================================================
@@ -356,14 +368,10 @@ do: [fn [let args]
     # Explicit monad: args[0].type == "var" or "dot-access"
     # Inferred form: args[0].type == "dict" (binding step) or anything else
     [if [do-is-inferred-form [get 0 args]]
-      # Inferred [do] form detected - not yet supported
-      [type: "call"
-       fn: [type: "var" name: "error"]
-       args: [0: [type: "literal" kind: "str"
-                  value: "inferred [do] not yet supported — add an explicit monad argument (e.g., [do result ...])"
-                  bare: false]]
-       named-args: []
-       implied: true]
+      # Inferred [do] form: emit bind chain with %do-infer sentinel.
+      # do-desugar-inferred builds {0:sentinel, 1:step1, ...} and calls do-fold.
+      # The type checker detects %do-infer, resolves the monad, wires it to eval.
+      [do-desugar-inferred n args]
       [if [= n 1]
         # [do monad] with no steps → [monad.pure []]
         [do-call-1

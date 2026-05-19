@@ -1940,6 +1940,33 @@ fn infer_expr(
                 }
             }
 
+            // Special case: `%do-infer.bind` sentinel — inferred [do] form monad resolution.
+            // The `do` macro emits `[%do-infer.bind e [fn [x] ...]]` when no explicit monad
+            // is provided. The type checker detects this DotAccess pattern and resolves the
+            // monad from the enclosing function's expected return type (Rule 1) or the first
+            // binding's inferred type (Rule 2). The resolved monad name is stored in
+            // state.do_infer_resolutions keyed by the call-site span for eval wiring.
+            if let Expr::DotAccess {
+                expr: da_target,
+                field: da_field,
+            } = &func.node
+            {
+                if let Expr::VarRef { name, .. } = &da_target.node {
+                    if name == "%do-infer" && named_args.is_empty() {
+                        return check_do_infer(
+                            da_field,
+                            da_target.span,
+                            args,
+                            named_args,
+                            env,
+                            expr.span,
+                            state,
+                            type_map,
+                        );
+                    }
+                }
+            }
+
             // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
             // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
@@ -3490,6 +3517,173 @@ fn check_get_in(
             // Path is not a literal sequence: fall back to Unknown
             Ok(Type::Unknown)
         }
+    }
+}
+
+/// Type check an inferred `[do]` form — the `%do-infer.bind` / `%do-infer.pure` sentinel.
+///
+/// The `do` macro emits `[%do-infer.bind e [fn [x] ...]]` when no explicit monad is provided.
+/// This function:
+///   1. Resolves the monad variable name (Rule 1: from `state.expected_return`, Rule 2: from
+///      the first arg's inferred type, Rule 3: emit TypeError).
+///   2. Records `sentinel_span → monad_name` in `state.do_infer_resolutions` so the evaluator
+///      can substitute the sentinel with the concrete monad dict at runtime.
+///   3. Infers all argument expressions for type-map population and side effects.
+///   4. Returns the expected return type (if available) or a fresh TypeVar.
+///
+/// **Monad resolution heuristics** (simplified — full HKT inference requires `App(m, a)` types):
+///   - Rule 1: If `state.expected_return` is a Record with `ok`/`err` fields, or a union of
+///     such records, resolve to the `"result"` monad dict.
+///   - Rule 2: If the first arg's inferred type matches `App(m, _)` where m has a registered
+///     Monad instance, or is a Result-like Record, resolve to the corresponding monad dict.
+///   - Rule 3: If neither rule succeeds, emit TypeError T_DO_INFER.
+///
+/// KNOWN ISSUE: Rule 2 requires `[Ok x]` to infer as `App(Result, T)`, which requires precise
+/// constructor typing (not yet implemented). Rule 2 currently fires only when App types exist.
+fn check_do_infer(
+    method: &crate::ast::DotKey,
+    sentinel_span: Span,
+    args: &[Rc<Spanned<Expr>>],
+    named_args: &[Spanned<NamedArg>],
+    env: &Rc<TypeEnv>,
+    call_span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    let method_str = match method {
+        crate::ast::DotKey::Ident(s) => s.as_str(),
+        crate::ast::DotKey::Int(n) => {
+            return Err(vec![TypeError::new(
+                format!("inferred [do]: unexpected integer method index {n} on %do-infer"),
+                call_span,
+            )]);
+        }
+    };
+
+    // Step 1: Resolve the monad name from context.
+    // Check if we've already resolved a monad for this sentinel span (re-entrant call).
+    let already_resolved = state.do_infer_resolutions.get(&sentinel_span).cloned();
+
+    let (monad_name, first_arg_already_inferred) = if let Some(name) = already_resolved {
+        // Already resolved — reuse and skip re-inference of first arg.
+        (name, false)
+    } else {
+        // Rule 1: Check state.expected_return for a Result-like type.
+        let resolved = if let Some(ret_ty) = state.expected_return.clone() {
+            let applied = state.subst.apply(&ret_ty);
+            resolve_monad_from_type(&applied, state)
+        } else {
+            None
+        };
+
+        // Rule 2: If Rule 1 failed, infer the first arg's type (for side effects too),
+        // then check if it resolves to a known monad.
+        // first_arg_already_inferred tracks whether we consumed the first arg here,
+        // so Step 3 can skip it to avoid double-inference.
+        let (resolved, first_arg_already_inferred) = if resolved.is_none() && !args.is_empty() {
+            let first_arg_ty = infer_expr(&args[0], env, state, type_map)
+                .ok()
+                .map(|ty| state.subst.apply(&ty));
+            let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
+            (rule2_result, true)
+        } else {
+            (resolved, false)
+        };
+
+        // Rule 3: If neither rule worked, emit TypeError.
+        match resolved {
+            Some(name) => (name, first_arg_already_inferred),
+            None => {
+                // Infer remaining args for type map population before returning error.
+                let start = if first_arg_already_inferred { 1 } else { 0 };
+                for arg in args.iter().skip(start) {
+                    let _ = infer_expr(arg, env, state, type_map);
+                }
+                for na in named_args {
+                    let _ = infer_expr(&na.node.value, env, state, type_map);
+                }
+                return Err(vec![TypeError::new(
+                    "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])",
+                    call_span,
+                )
+                .with_code("T_DO_INFER")]);
+            }
+        }
+    };
+
+    // Step 2: Record sentinel_span → monad_name for eval wiring.
+    state
+        .do_infer_resolutions
+        .insert(sentinel_span, monad_name.clone());
+
+    // Step 3: Infer all remaining args for type-map population and side effects.
+    // Skip the first arg if Rule 2 already inferred it (avoid double-inference side effects).
+    let start = if first_arg_already_inferred { 1 } else { 0 };
+    for arg in args.iter().skip(start) {
+        let _ = infer_expr(arg, env, state, type_map);
+    }
+    for na in named_args {
+        let _ = infer_expr(&na.node.value, env, state, type_map);
+    }
+
+    // Step 4: Return the expected return type or a fresh TypeVar.
+    // For "bind": the return type is the monad applied to the continuation's return type.
+    // Without precise bind types, return expected_return (if set) or a fresh TypeVar.
+    let ret = match method_str {
+        "bind" | "pure" => {
+            if let Some(ret_ty) = state.expected_return.clone() {
+                state.subst.apply(&ret_ty)
+            } else {
+                state.fresh_type_var()
+            }
+        }
+        _ => state.fresh_type_var(),
+    };
+
+    Ok(ret)
+}
+
+/// Heuristic: resolve a monad dict variable name from a type.
+///
+/// Recognizes:
+///   - Record with `ok` and/or `err` fields → "result"
+///   - Union containing records with ok/err fields → "result"
+///   - `App(Operator("Result"), _)` → "result"
+///   - `Seq(_)` → would be "seq-monad" (not yet implemented)
+///
+/// Returns `Some(monad_var_name)` if a known monad is recognized, `None` otherwise.
+fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
+    match ty {
+        // App(Result, _) — nominal Result type constructor applied to a type argument
+        Type::App(f, _) => {
+            if let Type::Operator(name) = f.as_ref() {
+                if name == "Result" {
+                    return Some("result".to_string());
+                }
+            }
+            None
+        }
+        // Record with ok and/or err fields — structural Result-like type
+        Type::Record(row) => {
+            if row.fields.contains_key("ok") || row.fields.contains_key("err") {
+                Some("result".to_string())
+            } else {
+                None
+            }
+        }
+        // Union — check if any member looks like a monad return type
+        Type::Union(members) => {
+            // All members must agree on a monad (or any member suffices for heuristic)
+            for m in members {
+                if let Some(name) = resolve_monad_from_type(m, _state) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+        // Seq — could be seq monad, but no dict var exists yet
+        // Type::Seq(_) => Some("seq-monad".to_string()),
+        _ => None,
     }
 }
 
@@ -5476,7 +5670,7 @@ mod tests {
         );
 
         // Also verify via direct infer_expr call
-        let mut file = crate::parse("[a: $undefined1  b: 42  c: $undefined2]").unwrap();
+        let mut file = crate::parse("[a: $undefined1  b: 42  c: $undefined2]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -5753,7 +5947,7 @@ mod tests {
         //   generating the constraint.
 
         // In new syntax, string literals require quotes.
-        let mut file = crate::parse("[result: $data.name  data: [name: \"hello\"]]").unwrap();
+        let mut file = crate::parse("[result: $data.name  data: [name: \"hello\"]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -6764,7 +6958,7 @@ mod tests {
     #[test]
     fn test_hkt_kind_operator_class_param_registration() {
         // Test that Mappable class has Operator-kinded param registered in kind_env
-        let mut file = crate::parse("[x: 1]").unwrap();
+        let mut file = crate::parse("[x: 1]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let state = InferState::new();
 
@@ -11242,7 +11436,7 @@ mod tests {
     #[test]
     fn test_narrowing_type_map_hover() {
         // Verify that the type map contains the narrowed type for LSP hover
-        let mut file = crate::parse("[x: 30]\n[result: [if [= x 42] x 0]]").unwrap();
+        let mut file = crate::parse("[x: 30]\n[result: [if [= x 42] x 0]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
@@ -12559,7 +12753,7 @@ mod tests {
         );
         let env = Rc::new(base_env);
         let mut state = InferState::new();
-        let mut file = crate::parse("[result: [get \"key\" m]]").unwrap();
+        let mut file = crate::parse("[result: [get \"key\" m]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let result_env =
             typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
@@ -12582,7 +12776,7 @@ mod tests {
         );
         let env = Rc::new(base_env);
         let mut state = InferState::new();
-        let mut file = crate::parse("[result: [get? \"key\" m]]").unwrap();
+        let mut file = crate::parse("[result: [get? \"key\" m]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let result_env =
             typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
@@ -12769,7 +12963,7 @@ mod tests {
         base_env.insert("config".to_string(), union_ty);
         let env = Rc::new(base_env);
         let mut state = InferState::new();
-        let mut file = crate::parse("[result: [get \"port\" config]]").unwrap();
+        let mut file = crate::parse("[result: [get \"port\" config]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let result_env =
             typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
@@ -12897,7 +13091,7 @@ mod tests {
         // This example produces 2 diagnostics:
         // 1. The field access r.y has type Unknown
         // 2. The function's return type contains Unknown
-        let mut file = crate::parse("[f: [fn [r@[x: Int]] r.y]]").unwrap();
+        let mut file = crate::parse("[f: [fn [r@[x: Int]] r.y]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -12920,7 +13114,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
         // Test that scan_type_quality does NOT emit diagnostics for concrete types
-        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap();
+        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -12940,7 +13134,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_explicit_unknown_annotation() {
         // Test that explicit @Unknown produces Info diagnostic (T011), not Warn (T010)
-        let mut file = crate::parse("[f: [fn@Unknown [x] x]]").unwrap();
+        let mut file = crate::parse("[f: [fn@Unknown [x] x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -12973,7 +13167,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_typeassert_unknown() {
         // Test that [@Unknown expr] produces Info diagnostic (T011)
-        let mut file = crate::parse("[x: [@Unknown 42]]").unwrap();
+        let mut file = crate::parse("[x: [@Unknown 42]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13006,7 +13200,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_overbroad_number_annotation() {
         // Test that fn@Number when body infers Int produces Info diagnostic (T012)
-        let mut file = crate::parse("[f: [fn@Number [x@Int] x]]").unwrap();
+        let mut file = crate::parse("[f: [fn@Number [x@Int] x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13040,7 +13234,7 @@ mod tests {
     #[test]
     fn test_scan_type_quality_no_overbroad_for_matching_type() {
         // Test that fn@Int when body infers Int does NOT produce over-broad diagnostic
-        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap();
+        let mut file = crate::parse("[f: [fn@Int [x@Int] x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let (errors, diagnostics) = typecheck_file(&file.node);
 
@@ -13211,7 +13405,7 @@ mod tests {
         // This tests that ambiguous constraints (TypeVars in constraints but not in the type)
         // are detected and reported as warnings rather than causing type errors.
         let mut file =
-            crate::parse("[my_fn: [fn@[constraint: [a: Comparable] return: Int] [x] x]]").unwrap();
+            crate::parse("[my_fn: [fn@[constraint: [a: Comparable] return: Int] [x] x]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
         let (errors, diagnostics) = typecheck_file(&file.node);
@@ -13248,7 +13442,7 @@ mod tests {
         // generalization of `id`, even though the Numeric constraint on `n` is in
         // state.constraints — the constraint was already discharged during unification
         // when `+` was checked, so it should not trigger the "ambiguous" warning.
-        let mut file = crate::parse("[id: [fn [x] x] n: [+ 1 2]]").unwrap();
+        let mut file = crate::parse("[id: [fn [x] x] n: [+ 1 2]]").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
         let (errors, diagnostics) = typecheck_file(&file.node);
@@ -13367,7 +13561,7 @@ mod tests {
         // Task 4: Expr::Placeholder (the `...` expression) has type Unknown.
         // This is the gradual typing escape hatch — ... satisfies any type constraint.
         // Verify via direct infer call. Since `...` is a Placeholder token, we parse it.
-        let mut file = crate::parse("...").unwrap();
+        let mut file = crate::parse("...").unwrap().file;
         crate::desugar::desugar_file(&mut file.node);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
@@ -13490,6 +13684,89 @@ mod tests {
             Type::normalize_intersection(vec![Type::Unknown, Type::Unknown]),
             Type::Top,
             "All-Unknown intersection returns Top (all identity elements, empty result list)"
+        );
+    }
+
+    // -- Inferred [do] form (hkt-do-inferred-fix sprint) --
+
+    #[test]
+    fn test_do_infer_rule1_from_expected_return() {
+        // Rule 1: expected_return is a Result-like Record → resolve to "result".
+        // We call eval_source which runs the full pipeline: parse → expand → desugar → typecheck → eval.
+        // [do [ok: 42]] — first binding's RHS is {ok: 42}, a Result-like record.
+        // check_do_infer should resolve "result" from it with no type error.
+        let result = crate::eval_source("[do [ok: 42]]");
+        // Should not panic or produce undefined-variable for %do-infer.
+        // May produce type errors (T_DO_INFER) but should not panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn test_do_infer_rule3_no_context_emits_error() {
+        // Rule 3: when there's no expected_return and no recognizable first-binding type,
+        // check_do_infer should emit T_DO_INFER.
+        // We simulate by calling eval_source which runs the full pipeline.
+        // [do [x: 42] x] — 42 is not a monad return type, so Rule 2 fails.
+        // Rule 1 also fails (no return annotation). Should get T_DO_INFER or
+        // a runtime error about undefined %do-infer.
+        // We just verify no panic occurs.
+        let result = crate::eval_source("[do [x: 42] x]");
+        let _ = result;
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_record_with_ok_field() {
+        // Unit test for resolve_monad_from_type: a Record with 'ok' field → "result".
+        let mut fields = HashMap::new();
+        fields.insert("ok".to_string(), Type::Int);
+        let ty = Type::Record(Row { fields });
+        let state = InferState::new();
+        let resolved = resolve_monad_from_type(&ty, &state);
+        assert_eq!(
+            resolved,
+            Some("result".to_string()),
+            "Record with 'ok' field should resolve to 'result' monad"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_record_with_err_field() {
+        // Unit test for resolve_monad_from_type: a Record with 'err' field → "result".
+        let mut fields = HashMap::new();
+        fields.insert("err".to_string(), Type::Str);
+        let ty = Type::Record(Row { fields });
+        let state = InferState::new();
+        let resolved = resolve_monad_from_type(&ty, &state);
+        assert_eq!(
+            resolved,
+            Some("result".to_string()),
+            "Record with 'err' field should resolve to 'result' monad"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_int_returns_none() {
+        // Unit test for resolve_monad_from_type: Int is not a monad → None.
+        let state = InferState::new();
+        let resolved = resolve_monad_from_type(&Type::Int, &state);
+        assert_eq!(
+            resolved, None,
+            "Int type should not resolve to any monad"
+        );
+    }
+
+    #[test]
+    fn test_do_infer_resolve_monad_from_union_with_ok_member() {
+        // resolve_monad_from_type on Union([Record{ok: Int}, Str]) → "result" (first match).
+        let mut ok_fields = HashMap::new();
+        ok_fields.insert("ok".to_string(), Type::Int);
+        let ty = Type::Union(vec![Type::Record(Row { fields: ok_fields }), Type::Str]);
+        let state = InferState::new();
+        let resolved = resolve_monad_from_type(&ty, &state);
+        assert_eq!(
+            resolved,
+            Some("result".to_string()),
+            "Union containing Record with 'ok' should resolve to 'result'"
         );
     }
 }

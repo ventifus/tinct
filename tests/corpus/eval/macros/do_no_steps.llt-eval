@@ -5,4 +5,4 @@
 ---
 [Ok []]
 === warn
-undefined variable: result at 3:5-3:11
+undefined variable: result

@@ -1786,8 +1786,9 @@ fn run_eval(
             ctx
         };
 
-        // Wire boundary guards from type inference to the eval context
+        // Wire boundary guards and do-infer resolutions from type inference to the eval context
         eval_ctx.set_boundary_guards(infer_state.boundary_guards);
+        eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
         // Evaluate file with pipeline input
         let file_result =

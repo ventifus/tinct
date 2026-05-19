@@ -229,8 +229,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         stdlib_arena,
         expand_result.macro_injects_map,
     );
-    // Wire boundary guards from type inference to the eval context
+    // Wire boundary guards and do-infer resolutions from type inference to the eval context
     ctx.set_boundary_guards(infer_state.boundary_guards);
+    ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
     // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
     // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
@@ -333,8 +334,9 @@ pub fn eval_source_with_cap_net(
         stdlib_arena,
         expand_result.macro_injects_map,
     );
-    // Wire boundary guards from type inference to the eval context
+    // Wire boundary guards and do-infer resolutions from type inference to the eval context
     ctx.set_boundary_guards(infer_state.boundary_guards);
+    ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
     if !no_fs {
         if let Ok(pwd_dir) =
@@ -1420,7 +1422,7 @@ mod tests {
         stdin_json: Option<serde_json::Value>,
     ) -> serde_json::Value {
         let mut file = parse(source).expect("parse failed");
-        desugar::desugar_file(&mut file.node);
+        desugar::desugar_file(&mut file.file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 
@@ -1430,7 +1432,7 @@ mod tests {
         });
 
         let thunk =
-            eval::eval_file_with_input(&file.node, env, &ctx, initial_input).expect("eval failed");
+            eval::eval_file_with_input(&file.file.node, env, &ctx, initial_input).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
         value_to_json(&val, &ctx).expect("value_to_json failed")
     }
@@ -1497,10 +1499,10 @@ mod tests {
     fn test_pipeline_deep_materialize() {
         let source = "[a: [b: [c: 42]]]";
         let mut file = parse(source).expect("parse failed");
-        desugar::desugar_file(&mut file.node);
+        desugar::desugar_file(&mut file.file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = eval::eval_file(&file.node, env, &ctx).expect("eval failed");
+        let thunk = eval::eval_file(&file.file.node, env, &ctx).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
         let json = value_to_json(&forced, &ctx).expect("value_to_json failed");
@@ -1511,10 +1513,10 @@ mod tests {
     fn test_pipeline_display_format() {
         let source = "[x: 42]";
         let mut file = parse(source).expect("parse failed");
-        desugar::desugar_file(&mut file.node);
+        desugar::desugar_file(&mut file.file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = eval::eval_file(&file.node, env, &ctx).expect("eval failed");
+        let thunk = eval::eval_file(&file.file.node, env, &ctx).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
         let display = value_to_display_string(&forced, &ctx).expect("display failed");
@@ -1687,13 +1689,13 @@ mod tests {
 
         // Parse the source manually to get a real AST with spans.
         let mut file = parse(source).expect("parse should succeed");
-        desugar::desugar_file(&mut file.node);
-        let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
+        desugar::desugar_file(&mut file.file.node);
+        let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 
         // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result = eval::eval_file(&file.node, Rc::clone(&env), &ctx);
+        let eval_result = eval::eval_file(&file.file.node, Rc::clone(&env), &ctx);
         assert!(
             eval_result.is_err(),
             "expected eval to fail for undefined variable"
