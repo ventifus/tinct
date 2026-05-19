@@ -4855,6 +4855,7 @@ See doc/whatif/access-pipeline.md §Phase 1. Additive — bracket access continu
 
 ### narrowing-basic
 
+**Whatif:** `narrowing`
 - [x] if special form: infer_if with environment forking for conditional branches
 - [x] Narrowing enum: EqLiteral, TypeOf, HasKey constraints
 - [x] extract_narrowings: recognizes [= x lit], [= [type-of x] "Type"], [has? x "key"], [and]
@@ -5116,6 +5117,7 @@ Gaps between the typing-cluster plan (`doc/whatif/plans/typing-cluster.md`) and 
 
 ### narrowing-predicates
 
+**Whatif:** `narrowing`
 - [x] extract_narrowings extended for int?, str?, bool?, float?, num?, dict?, seq?, null?, fn?
 - [x] Predicate-to-type mapping: int?→Int, str?→Str, dict?→Record(Open), null?→Record(Empty), etc.
 - [x] num? → Number supertype narrowing
@@ -7405,6 +7407,7 @@ Breaks the `value.rs → types.rs` circular dependency. `types.rs` → 4 new top
 
 ### fn-narrowing-variadic: Restore precise `fn?` narrowing once variadic unification is implemented
 
+**Whatif:** `narrowing`
 `fn?` type narrowing currently produces `Type::Unknown` (`src/typecheck.rs`). The more
 precise form `Function{params:[], ret:Unknown, variadic:true}` was attempted but reverted
 because `unify` rejects a zero-param variadic as incompatible with any concrete arity (the
@@ -7423,6 +7426,7 @@ values inside `[fn? narrowed-branch ...]` arms.
 
 ### fn-narrowing-followup: Type system completeness for function negation narrowing
 
+**Whatif:** `narrowing`
 Follow-up items from fn-narrowing-variadic panel review.
 
 - [x] Extend `is_consistent` (src/type_def.rs) to handle `Function{params:[], variadic:true}` ("any function") against concrete Function types (`src/type_def.rs`)
@@ -7431,6 +7435,7 @@ Follow-up items from fn-narrowing-variadic panel review.
 
 ### fn-narrowing-tests: Additional fn? narrowing test coverage
 
+**Whatif:** `narrowing`
 - [x] Add corpus test for fn? narrowing in `cond` guard (`tests/corpus/eval/typecheck/fn_predicate_cond_guard.llt-eval`)
 - [x] Add corpus test for fn? narrowing with user-defined variadic function (`tests/corpus/eval/typecheck/fn_predicate_variadic_user.llt-eval`)
 - [x] Document fn? narrowing limitation: when/unless are prelude functions, narrowing only fires for if/cond/match AST forms (`doc/05-type-annotations.md`)
