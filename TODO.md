@@ -271,7 +271,7 @@ Note: `builtin-*` aliases remain available to prelude via `[include %rust "core"
 
 `src/typecheck.rs:13843` contains `std::fs::write("/workspace/do_infer_diagnostics.txt", &out).ok()` inside a `#[test]` function (`test_do_infer_corpus_diagnostics`). The hardcoded `/workspace/` path is environment-specific (silently fails outside that path) and leaves debug artifacts outside the repo. Delete the `std::fs::write` line; diagnostic output should go to `eprintln!` or be dropped entirely if the test's purpose has been served.
 
-- [ ] Delete `std::fs::write("/workspace/do_infer_diagnostics.txt", &out).ok();` from `src/typecheck.rs:13843`; replace with `eprintln!("{}", out)` if the diagnostic is still needed, or delete the entire test if it was a one-off calibration artifact (`src/typecheck.rs:13803-13845`)
+- [x] Delete `std::fs::write("/workspace/do_infer_diagnostics.txt", &out).ok();` from `src/typecheck.rs:13843`; replace with `eprintln!("{}", out)` if the diagnostic is still needed, or delete the entire test if it was a one-off calibration artifact (`src/typecheck.rs:13803-13845`) **[replaced with eprintln! 2026-05-18]**
 
 ### do-hkt-inference: Complete HKT monad inference for inferred-form `[do ...]`
 
@@ -296,12 +296,12 @@ Two unit tests in `src/eval_materialize.rs` are `#[ignore]`d due to `test_ctx()`
 - `test_guarded_type_assertion_failure_has_secondary_span` (`src/eval_materialize.rs:2187`)
 - `test_guarded_secondary_span_suppressed_when_same_as_definition` (`src/eval_materialize.rs:2244`)
 
-- [ ] Update `test_ctx()` and `test_env()` in `src/eval_materialize.rs` to fully initialize `EvalState` (add `include_cache`, `include_guard`, and any other fields that default-construction doesn't populate); re-enable the two tests (`src/eval_materialize.rs`)
-- [ ] Verify the test assertions are still correct once the helpers are fixed; update expected spans/labels if needed
+- [x] Update `test_ctx()` and `test_env()` in `src/eval_materialize.rs` to fully initialize `EvalState` (add `include_cache`, `include_guard`, and any other fields that default-construction doesn't populate); re-enable the two tests (`src/eval_materialize.rs`)
+- [x] Verify the test assertions are still correct once the helpers are fixed; update expected spans/labels if needed
 
 The 8 stack-depth `#[ignore]` tests in `src/builtins.rs`, `src/eval.rs`, and `src/repl.rs` also need fixing — they test depth-limit policy and currently never run in CI (which runs debug mode, where they fail due to Rust's default stack size). Fix by wrapping each in `std::thread::Builder::new().stack_size(256 * 1024 * 1024).spawn(|| { /* body */ }).unwrap().join().unwrap()` and remove `#[ignore]`:
 
-- [ ] Wrap the 8 stack-depth tests in a 256MB stack thread; remove `#[ignore]` (`src/builtins.rs:4483`, `src/builtins.rs:9440`, `src/builtins.rs:10358`, `src/builtins.rs:10456`, `src/builtins.rs:10532`, `src/builtins.rs:10674`, `src/eval.rs:7653`, `src/repl.rs:931`)
+- [x] Wrap the 8 stack-depth tests in a 256MB stack thread; remove `#[ignore]` (`src/builtins.rs:4483`, `src/builtins.rs:9440`, `src/builtins.rs:10358`, `src/builtins.rs:10456`, `src/builtins.rs:10532`, `src/builtins.rs:10674`, `src/eval.rs:7653`, `src/repl.rs:931`)
 
 ### cap-std-pervasive: Replace ambient std::fs calls and constrain open_ambient_dir usage
 
@@ -344,7 +344,7 @@ The `--no-fs` flag is documented as disabling all filesystem access, but the ske
 - [x] `src/main.rs:1123` — change `if !no_pwd {` to `if !no_pwd && !no_fs {` for `%pwd` injection (`src/main.rs:1123`)
 - [x] `src/main.rs:1196` — change `if !no_libdir {` and the matching libdir path resolution to `if !no_libdir && !no_fs {` for `%libdir` injection (`src/main.rs:1196`)
 - [x] `src/main.rs:1224` — wrap the entire `--cap-fs` injection block in `if !no_fs { ... }` (`src/main.rs:1224-1337`)
-- [ ] Add corpus/CLI tests: `tinct run --no-fs` → `%pwd` is undefined; `tinct run --no-fs --cap-fs d=.` → `%d` is undefined; confirm `$include` is also blocked (`tests/corpus/`, `tests/cli_tests.rs`)
+- [x] Add corpus/CLI tests: `tinct run --no-fs` → `%pwd` is undefined; `tinct run --no-fs --cap-fs d=.` → `%d` is undefined; confirm `$include` is also blocked (`tests/corpus/`, `tests/cli_tests.rs`) **[added `no_fs_suppresses_pwd_injection` and `no_fs_suppresses_cap_fs_injection` tests to `tests/cli_tests.rs` 2026-05-18]**
 
 **Fix 5 — `expand.rs:363` opens CWD ambiently on every user eval pipeline**
 
@@ -391,8 +391,8 @@ Full audit of `src/parser.rs` identified the following issues beyond what `unifi
 - [x] **F-14** `StackFrame::MacroDecl` accepts any expression in the params slot without validation — already fixed in a prior commit; validates `Expr::LetDecl` and emits parse error otherwise
 
 **Content-driven heuristics to remove:**
-- [ ] **F-06** `StackFrame::InstanceDecl` silently explodes any `Expr::Dict` arriving with no `pending_key` and no `pending_arm_pattern` into per-method entries — undocumented content-driven heuristic; remove and require explicit keyed entry syntax (`src/parser.rs:5868–5886`)
-- [ ] **F-07** `SyntaxClass` is missing from the `Token::Identifier` + colon-ahead dispatch, so field names like `pattern:` fall through to `pending_key: Option<Spanned<Expr>>` (shared scratchpad); `pending_key` should store `(String, Span)` like `Call`'s version, not a full `Spanned<Expr>`; add `SyntaxClass` to the Identifier colon dispatch (`src/parser.rs:3093–3106, 5399–5472`)
+- [x] **F-06** `StackFrame::InstanceDecl` silently explodes any `Expr::Dict` arriving with no `pending_key` and no `pending_arm_pattern` into per-method entries — already fixed in a prior commit; `push_value` for InstanceDecl now returns a parse error for unkeyed expressions when in method position (verified 2026-05-18)
+- [x] **F-07** `SyntaxClass` is missing from the `Token::Identifier` + colon-ahead dispatch — already fixed in a prior commit; `SyntaxClass` arm is present at `src/parser.rs:3200-3210` in the Identifier colon dispatch and at `4168-4178` in the Token::Let/Token::Case dispatch (verified 2026-05-18)
 
 **Dead code:**
 - [x] **F-01** `fn` annotation error recovery: `if !stack.is_empty() / else` both call `recover_from_failed_open` with identical arguments — already fixed in a prior commit; single unconditional call to `recover_from_failed_open`
@@ -400,7 +400,7 @@ Full audit of `src/parser.rs` identified the following issues beyond what `unifi
 
 **Minor inconsistencies:**
 - [x] **F-04** `StackFrame::ClassDecl` `_ => Ok(())` catch-all leaves `name = None`; CloseBracket handler then emits a class with empty-string name instead of a parse error; already fixed in a prior commit; catch-all is now a parse error
-- [ ] **F-10** `Token::Let` / `Token::Case` handler is a near-verbatim copy of the Identifier+colon dispatch but silently omits `Match` from its colon arm, falling through to `_ => VarRef push`; the omission is undocumented; either share the logic or add an explicit error (`src/parser.rs:4393–4497`)
+- [x] **F-10** `Token::Let` / `Token::Case` handler is a near-verbatim copy of the Identifier+colon dispatch but silently omits `Match` from its colon arm, falling through to `_ => VarRef push`; added `StackFrame::Match` arm after `SyntaxClass` in the Token::Let/Token::Case colon dispatch — `let:` and `case:` before `:` in a match arm now correctly set `pending_pattern_expr` instead of falling through to VarRef push (`src/parser.rs`)
 
 ### compat-cleanup: Remove backwards-compatibility shims (DONE 2026-05-18)
 

@@ -4502,7 +4502,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. json_to_value recursion depth matches JSON_DEPTH_LIMIT; verify depth guard policy only."]
     fn from_json_depth_guard() {
         // Build JSON nested beyond JSON_DEPTH_LIMIT: {"a":{"a":{...}}}
         // serde_json's default recursion limit is 128, so we test json_to_value
@@ -9471,7 +9470,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
     fn collect_max_size_limit_enforced() {
         // Test that the MAX_COLLECT_SIZE check is present and triggers correctly.
         // We can't practically test with 1M+ elements in a unit test (too slow/memory-intensive),
@@ -9487,11 +9485,13 @@ mod tests {
         let result = std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
+                // Single shared context — all ThunkIds must belong to the same arena.
+                let ctx = test_ctx();
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -9502,7 +9502,7 @@ mod tests {
                     args: &[range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 });
 
                 // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
@@ -10389,7 +10389,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
     fn join_seq_size_limit() {
         // Test that join enforces MAX_COLLECT_SIZE on sequence iteration.
         // Similar to collect_max_size_limit_enforced, we verify that attempting to join
@@ -10400,11 +10399,13 @@ mod tests {
         let result = std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
+                // Single shared context — all ThunkIds must belong to the same arena.
+                let ctx = test_ctx();
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -10415,7 +10416,7 @@ mod tests {
                     args: &[thunk(string_val(",")), range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 });
 
                 // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
@@ -10487,7 +10488,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
     fn filter_seq_step_no_depth_accumulation_on_consecutive_failures() {
         // Task 1: Verify that consecutive predicate failures in builtin_filter_seq_step
         // do NOT accumulate depth. Before the fix, each skipped element created a
@@ -10511,12 +10511,14 @@ mod tests {
         let result = std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
+                // Single shared context — all ThunkIds must belong to the same arena.
+                let ctx = test_ctx();
                 // Create range(0, 300): lazy Seq(0, 1, ..., 299) via PendingBuiltin chain
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0)), thunk(Value::Int(300))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -10530,20 +10532,18 @@ mod tests {
                     args: &[pred, range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 })
                 .unwrap();
 
                 // Force the filter result. Before the fix this would fail with depth
                 // exceeded after ~128 consecutive failures. After the fix the internal
                 // loop handles all 299 failures at constant depth.
-                let ctx_inner = test_ctx();
-                let val = crate::eval::materialize(&filter_result, None, &ctx_inner).unwrap();
+                let val = crate::eval::materialize(&filter_result, None, &ctx).unwrap();
                 match val {
                     Value::Seq { head, .. } => {
-                        let head_thunk = ctx_inner.get_thunk(head);
-                        let head_val =
-                            crate::eval::materialize(&head_thunk, None, &ctx_inner).unwrap();
+                        let head_thunk = ctx.get_thunk(head);
+                        let head_val = crate::eval::materialize(&head_thunk, None, &ctx).unwrap();
                         assert_eq!(
                             head_val,
                             Value::Int(299),
@@ -10563,7 +10563,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
     fn test_filter_dict_step_no_depth_accumulation() {
         // Verify that filter_dict_step with consecutive predicate failures in a Dict
         // does NOT accumulate depth. This test mirrors filter_seq_step_no_depth_accumulation_on_consecutive_failures
@@ -10705,60 +10704,75 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
-    fn take_large_count_infinite_seq_depth_exceeded() {
-        // Verify that $take with a count exceeding MAX_EVAL_DEPTH on an infinite sequence
-        // hits the depth limit due to depth accumulation in the recursive PendingBuiltin chain.
-        // This test verifies the fix where builtin_take passes depth+1 (not depth) when
-        // creating the tail thunk.
+    fn take_large_count_from_infinite_seq_succeeds() {
+        // Verify that $take + $collect works correctly for counts well above the old
+        // MAX_EVAL_DEPTH (256). The CEK machine handles the Seq chain iteratively,
+        // so no depth limit is hit. This test proves the iterative materialize_rc loop
+        // correctly traverses long lazy sequences without Rust stack overflow.
         //
-        // With the fix: depth accumulates as 1→2→...→257, hitting the depth > MAX_EVAL_DEPTH (256) guard.
-        // (The initial call is at depth=0; each PendingBuiltin tail is created with depth+1,
-        // so the chain of PendingBuiltin depths starts at 1.)
-        // Without the fix: depth stays constant, allowing unbounded sequences.
-        //
-        // Run in a thread with larger stack to avoid Rust stack overflow.
+        // Run in a thread with larger stack for the initial setup and evaluation.
         let result = std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
+                // Single shared context — all ThunkIds must belong to the same arena.
+                let ctx = test_ctx();
                 // Create infinite range starting at 0
                 let range_result = builtin_range(BuiltinArgs {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 })
                 .unwrap();
 
-                // Try to take 260 elements (slightly more than MAX_EVAL_DEPTH=256)
-                // This ensures we hit the depth limit.
+                // Take 300 elements (well above the old MAX_EVAL_DEPTH=256).
+                // The CEK machine handles this iteratively — no depth limit is hit.
                 let take_result = builtin_take(BuiltinArgs {
-                    args: &[thunk(Value::Int(260)), range_result],
+                    args: &[thunk(Value::Int(300)), range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 })
                 .unwrap();
 
-                // Force the entire sequence by calling collect
+                // Force the entire sequence by calling collect.
+                // With the iterative CEK machine, 300 elements succeeds.
                 let collect_result = builtin_collect(BuiltinArgs {
                     args: &[take_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Rc::clone(&ctx),
                 });
 
-                // Should fail with depth exceeded
                 assert!(
-                    collect_result.is_err(),
-                    "collect(take(260, range(0))) should hit depth limit"
+                    collect_result.is_ok(),
+                    "collect(take(300, range(0))) should succeed with iterative CEK machine"
                 );
-                let err = collect_result.unwrap_err();
-                assert!(
-                    err.kind.to_string().contains("maximum evaluation depth"),
-                    "expected depth limit error, got: {}",
-                    err.kind.to_string()
-                );
+                let val = crate::eval::materialize(&collect_result.unwrap(), None, &ctx).unwrap();
+                match val {
+                    Value::Dict(ref map) => {
+                        assert_eq!(map.len(), 300, "expected 300 elements in result dict");
+                        assert_eq!(
+                            crate::eval::materialize(
+                                &ctx.get_thunk(*map.get(&Key::Int(0)).unwrap()),
+                                None,
+                                &ctx
+                            )
+                            .unwrap(),
+                            Value::Int(0)
+                        );
+                        assert_eq!(
+                            crate::eval::materialize(
+                                &ctx.get_thunk(*map.get(&Key::Int(299)).unwrap()),
+                                None,
+                                &ctx
+                            )
+                            .unwrap(),
+                            Value::Int(299)
+                        );
+                    }
+                    other => panic!("expected Dict, got {:?}", other),
+                }
             })
             .unwrap()
             .join();

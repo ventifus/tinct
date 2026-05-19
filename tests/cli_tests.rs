@@ -1313,6 +1313,50 @@ fn no_fs_flag_blocks_include() {
     );
 }
 
+#[test]
+fn no_fs_suppresses_pwd_injection() {
+    // --no-fs must suppress %pwd injection; code that references %pwd should
+    // fail with "undefined variable: %pwd", not succeed.
+    let (path, _dir) = write_temp_llt("no_fs_suppresses_pwd", "%pwd");
+    let output = Command::new(tinct_bin())
+        .args(["run", "--no-fs", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when --no-fs suppresses %pwd, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("%pwd") || stderr.contains("undefined"),
+        "expected error mentioning %pwd or undefined variable, got: {stderr}"
+    );
+}
+
+#[test]
+fn no_fs_suppresses_cap_fs_injection() {
+    // --no-fs must suppress --cap-fs injection: even if the operator passes
+    // --cap-fs d=., the %d capability must NOT be injected when --no-fs is set.
+    let (path, _dir) = write_temp_llt("no_fs_suppresses_cap_fs", "%d");
+    let output = Command::new(tinct_bin())
+        .args(["run", "--no-fs", "--cap-fs", "d=.", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when --no-fs suppresses --cap-fs d=. injection, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("%d") || stderr.contains("undefined"),
+        "expected error mentioning %d or undefined variable, got: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // DirCap filesystem confinement (removed --allow-path tests)
 // ---------------------------------------------------------------------------

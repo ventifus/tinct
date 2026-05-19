@@ -2640,11 +2640,16 @@ pub fn materialize(
                         } else {
                             format!("field {}: ", format_field_path(&field_path))
                         };
-                        let err = EvalError::type_assert_failed(
+                        let mut err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
                             &value.type_name(),
                             inner_span,
                         );
+                        // Add secondary span if inner value was produced at a different
+                        // location than the assertion site (guard_span).
+                        if inner_span != guard_span {
+                            err = err.with_secondary_span(inner_span, "value produced here");
+                        }
                         let err = decorate(err.into());
                         thunk.cache_failure(&err);
                         Err(err)
@@ -2711,11 +2716,16 @@ pub fn materialize(
                         } else {
                             format!("field {}: ", format_field_path(&field_path))
                         };
-                        let err = EvalError::type_assert_failed(
+                        let mut err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
                             &value.type_name(),
                             inner_span,
                         );
+                        // Add secondary span if inner value was produced at a different
+                        // location than the assertion site (guard_span).
+                        if inner_span != guard_span {
+                            err = err.with_secondary_span(inner_span, "value produced here");
+                        }
                         let err = decorate(err.into());
                         thunk.cache_failure(&err);
                         Err(err)
@@ -7690,7 +7700,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires >128MB Rust stack in debug mode; passes in release mode. Stack safety is guaranteed by the iterative materialize_rc loop; these tests verify the depth-limit POLICY only."]
     fn test_pending_call_cycle_detection() {
         // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
         let result = std::thread::Builder::new()
