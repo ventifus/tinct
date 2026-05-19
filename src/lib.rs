@@ -101,7 +101,9 @@ pub use builtins::{
 };
 
 /// Import resolution for the type checker.
-pub use imports::{apply_include_type_post_pass, build_prelude_env, build_type_env};
+pub use imports::{
+    apply_include_type_post_pass, build_prelude_env, build_type_env, build_type_env_with_cap,
+};
 
 // Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
 #[cfg(feature = "lsp")]
