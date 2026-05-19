@@ -26,7 +26,17 @@ pub fn format_source(input: &str) -> Result<String, ParseError> {
 /// Whether to pass source/comment information is inferred from the script name:
 /// scripts named `compact` receive a minimal AST (no source, no comments); all others
 /// receive the full AST (with source info and comments for comment preservation).
-pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result<String, String> {
+/// Format source using the tinct-hosted formatter script, optionally receiving an already-open
+/// base directory to avoid re-acquiring ambient filesystem authority.
+///
+/// `base_dir` should be passed by callers (e.g., `src/main.rs`) that already hold an open Dir.
+/// When `None`, falls back to opening the current working directory ambiently — this path is
+/// used by the LSP server which does not have an open CWD Dir at the formatter call site.
+pub fn format_source_tinct_with_dir(
+    input: &str,
+    script_path: &std::path::Path,
+    base_dir: Option<cap_std::fs::Dir>,
+) -> Result<String, String> {
     use crate::ast_dict::{ast_to_dict, AstToDictOpts};
     use crate::builtins::create_stdlib_env;
     use crate::desugar;
@@ -42,13 +52,19 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
         .and_then(|s| s.to_str())
         .map_or(false, |name| name == "compact");
 
-    // Set up evaluation context
-    let base_dir_path = std::env::current_dir()
-        .ok()
-        .and_then(|d| d.canonicalize().ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open base directory: {e}"))?;
+    // Set up evaluation context: use the caller-provided Dir if available; otherwise open CWD.
+    let base_dir = match base_dir {
+        Some(dir) => dir,
+        None => {
+            // AMBIENT-OK: fallback for callers (LSP) that do not hold an open CWD Dir.
+            let base_dir_path = std::env::current_dir()
+                .ok()
+                .and_then(|d| d.canonicalize().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+                .map_err(|e| format!("cannot open base directory: {e}"))?
+        }
+    };
 
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
     let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
@@ -146,6 +162,14 @@ pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result
             ))
         }
     }
+}
+
+/// Convenience wrapper: format without a pre-opened Dir (falls back to opening CWD ambiently).
+///
+/// Callers that already hold an open `cap_std::fs::Dir` should use
+/// [`format_source_tinct_with_dir`] instead to avoid re-acquiring ambient authority.
+pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result<String, String> {
+    format_source_tinct_with_dir(input, script_path, None)
 }
 
 struct Formatter<'a> {

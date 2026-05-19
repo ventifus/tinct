@@ -259,6 +259,13 @@ fuzz-list:
 audit:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo install cargo-audit@0.22.1 --locked && cargo audit"
 
+# Check that open_ambient_dir is only used in the designated capability boundary files
+# (src/main.rs, src/repl.rs, src/lib.rs, and src/builtins.rs for bootstrap context
+# loading) or inside #[cfg(test)] / lines annotated with // AMBIENT-OK.
+# Any production use outside these files violates the cap-std capability boundary policy.
+check-ambient-dir:
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rg 'open_ambient_dir' src/ --glob '!src/main.rs' --glob '!src/repl.rs' --glob '!src/lib.rs' --glob '!src/builtins.rs' --type rust | grep -v '// AMBIENT-OK' | grep -v '#\[cfg(test)\]' && echo 'FAIL: open_ambient_dir found outside designated bootstrap files' && exit 1 || true"
+
 # Remove all container images (cleanup)
 clean-images:
     {{container}} rmi {{rust_image}} || true

@@ -298,6 +298,12 @@ pub struct EvalContext {
     /// Parallel to boundary_guards: type-checker-to-evaluator communication via span-keyed side channel.
     /// Populated by typecheck_file via set_do_infer_resolutions(), consumed during eval().
     pub do_infer_resolutions: RefCell<HashMap<Span, String>>,
+    /// Already-open libdir Dir, shared from the bootstrap boundary (main.rs or repl.rs).
+    /// Used by `builtin_include` to inject `%libdir` into the included file's environment
+    /// without calling `open_ambient_dir` again. `None` in contexts where libdir was not
+    /// opened (e.g., --no-libdir, bootstrap contexts, tests).
+    /// Propagated through `with_base_dir` so nested includes see the same Dir.
+    pub libdir_dir: RefCell<Option<Rc<cap_std::fs::Dir>>>,
 }
 
 impl EvalContext {
@@ -349,6 +355,7 @@ impl EvalContext {
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(HashMap::new()),
             do_infer_resolutions: RefCell::new(HashMap::new()),
+            libdir_dir: RefCell::new(None),
         })
     }
 
@@ -389,6 +396,7 @@ impl EvalContext {
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(HashMap::new()),
             do_infer_resolutions: RefCell::new(HashMap::new()),
+            libdir_dir: RefCell::new(None),
         })
     }
 
@@ -438,6 +446,7 @@ impl EvalContext {
             blame_map: RefCell::new(HashMap::new()),
             boundary_guards: RefCell::new(HashMap::new()),
             do_infer_resolutions: RefCell::new(HashMap::new()),
+            libdir_dir: RefCell::new(None),
         })
     }
 
@@ -470,6 +479,7 @@ impl EvalContext {
             blame_map: RefCell::new(self.blame_map.borrow().clone()),
             boundary_guards: RefCell::new(self.boundary_guards.borrow().clone()),
             do_infer_resolutions: RefCell::new(self.do_infer_resolutions.borrow().clone()),
+            libdir_dir: RefCell::new(self.libdir_dir.borrow().clone()),
         })
     }
 
@@ -517,6 +527,16 @@ impl EvalContext {
     /// variable names (e.g., "result") resolved by the type checker.
     pub fn set_do_infer_resolutions(&self, resolutions: HashMap<Span, String>) {
         *self.do_infer_resolutions.borrow_mut() = resolutions;
+    }
+
+    /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
+    /// into included files without calling `open_ambient_dir` again.
+    ///
+    /// Called by the capability initialization boundary (main.rs, repl.rs) immediately
+    /// after opening the libdir directory and creating the EvalContext. Propagated
+    /// through `with_base_dir` to child contexts (nested includes).
+    pub fn set_libdir_dir(&self, dir: Rc<cap_std::fs::Dir>) {
+        *self.libdir_dir.borrow_mut() = Some(dir);
     }
 }
 

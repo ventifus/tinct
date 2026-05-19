@@ -1203,20 +1203,26 @@ fn run_eval(
     } else {
         None
     };
+    // libdir_rc_for_ctx: the same Dir is shared with the EvalContext so that
+    // `builtin_include` can inject `%libdir` into nested includes without calling
+    // open_ambient_dir again. None when --no-libdir or --no-fs is set.
+    let mut libdir_rc_for_ctx: Option<Rc<cap_std::fs::Dir>> = None;
     if !no_libdir && !no_fs {
         use tinct::Value;
         if let Some(ref path) = resolved_libdir_path {
             if let Ok(libdir_std) =
                 cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
             {
+                let libdir_rc = Rc::new(libdir_std);
                 let libdir_value = Value::DirCap {
-                    dir: Rc::new(libdir_std),
+                    dir: Rc::clone(&libdir_rc),
                     perms: tinct::DirPerms::full(),
                 };
                 let libdir_thunk =
                     tinct::Thunk::new_materialized(libdir_value, tinct::Span::origin());
                 env.borrow_mut()
                     .insert("%libdir".to_string(), Rc::new(libdir_thunk));
+                libdir_rc_for_ctx = Some(libdir_rc);
             }
             // If the dir can't be opened, silently skip — stdlib is embedded anyway.
         }
@@ -1794,6 +1800,11 @@ fn run_eval(
                 require_integrity,
                 env_allowed.clone(),
             );
+            // Share the already-open libdir Dir with the evaluator so that builtin_include
+            // can inject %libdir into nested includes without re-acquiring ambient authority.
+            if let Some(ref libdir_rc) = libdir_rc_for_ctx {
+                ctx.set_libdir_dir(Rc::clone(libdir_rc));
+            }
             // Convert stdin JSON using this context so ThunkIds go into the shared arena.
             if let Some(ref json) = stdin_json {
                 let thunk_val =
@@ -1982,7 +1993,17 @@ fn run_fmt(
     // Format the source using the tinct-hosted formatter.
     // The formatter re-parses internally; we cannot reuse the typecheck AST because
     // the formatter needs to preserve comments and layout details.
-    let formatted = tinct::format_source_tinct(&source, &script_path)?;
+    // Pass the file's directory as an already-open Dir to avoid re-acquiring ambient authority.
+    let fmt_base_dir_for_formatter = {
+        let p = std::path::Path::new(file_path);
+        let dir = p
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority()).ok()
+    };
+    let formatted =
+        tinct::format_source_tinct_with_dir(&source, &script_path, fmt_base_dir_for_formatter)?;
 
     if check {
         if source != formatted {
