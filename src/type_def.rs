@@ -39,18 +39,14 @@ pub enum Kind {
     /// * — kind of proper types (Int, Str, [name: Str], etc.)
     Type,
     /// k1 -> k2 — kind of type constructors (Seq: * -> *, Mappable: (* -> *) -> Constraint)
-    #[allow(dead_code)] // Scaffolding for higher-kinded types
     Arrow(Box<Kind>, Box<Kind>),
     /// Operator — kind of type constructors (* → *), represents `Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Type))`
     /// Used for type constructor variables like `m` in `Monad m`
-    #[allow(dead_code)] // Used in hkt-kind-inference sprint
     Operator,
     /// Label — kind of type-level string labels used for record field names
     /// Used for label TypeVars in `HasField` constraints (e.g., `key@"k"`)
-    #[allow(dead_code)] // Used in hkt-mappable-appendable sprint
     Label,
     /// Kind variable — unification variable for kind inference
-    #[allow(dead_code)] // Scaffolding for kind inference
     Var(u32),
 }
 
@@ -68,7 +64,6 @@ impl fmt::Display for Kind {
 
 /// Errors that can occur during kind unification
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Scaffolding for type class implementation
 pub enum KindError {
     /// Kind mismatch — attempted to unify incompatible kinds
     Mismatch(Kind, Kind),
@@ -90,7 +85,6 @@ impl fmt::Display for KindError {
 /// Provides compile-time structural enforcement that the label position is always
 /// a string literal or a label TypeVar name, never an arbitrary Type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // Scaffolding for HasField constraint (hkt-mappable-appendable sprint)
 pub enum Label {
     /// Concrete label — a known field name like "host" or "port"
     Concrete(String),

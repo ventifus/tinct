@@ -349,7 +349,7 @@ No public release has been made; there are no external users and nothing to be c
 - [ ] Remove legacy `Expr::Dict` path for `or`/`all`/`without` type expressions at `src/typecheck_annot.rs:1189-1205`; the parser consistently produces `Call { implied: true }` for these forms and the legacy path is provably unreachable (`src/typecheck_annot.rs:1189`)
 - [ ] Verify `just test` passes after all removals (`tests/`)
 
-### dead-code-sweep: Remove unused imports and inert dead-code suppressions
+### dead-code-sweep: Remove unused imports and inert dead-code suppressions (DONE)
 
 Grep audit (2026-05-18) found 10 items with `#[allow(dead_code)]` or `#[allow(unused_imports)]` that have no planned activation path (scaffolding tied to active sprints is excluded).
 
