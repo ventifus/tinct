@@ -3514,7 +3514,9 @@ mod tests {
         // First attempt: should fail with "undefined variable"
         let err1 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err1.kind.to_string().contains("undefined variable: missing"),
+            err1.kind
+                .to_string()
+                .contains("undefined variable: missing"),
             "first attempt: got: {}",
             err1.kind.to_string()
         );
@@ -3522,7 +3524,9 @@ mod tests {
         // Second attempt: should produce the SAME error, not "circular dependency"
         let err2 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err2.kind.to_string().contains("undefined variable: missing"),
+            err2.kind
+                .to_string()
+                .contains("undefined variable: missing"),
             "second attempt should not be poisoned, got: {}",
             err2.kind.to_string()
         );
@@ -6735,7 +6739,8 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(err
-            .kind.to_string()
+            .kind
+            .to_string()
             .contains("missing argument for required parameter"));
         assert!(
             err.stack.iter().any(|f| f.label == "[f ...]"),
@@ -7276,7 +7281,9 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err1.kind.to_string().contains("undefined variable: undefined"),
+            err1.kind
+                .to_string()
+                .contains("undefined variable: undefined"),
             "first error: got: {}",
             err1.kind.to_string()
         );
@@ -7285,7 +7292,8 @@ mod tests {
         match &*x_thunk.state() {
             ThunkState::Failed(cached_err) => {
                 assert!(cached_err
-                    .kind.to_string()
+                    .kind
+                    .to_string()
                     .contains("undefined variable: undefined"));
             }
             other => panic!("expected Failed state, got {other:?}"),
@@ -7294,7 +7302,9 @@ mod tests {
         // Second materialization: should return the cached error
         let err2 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err2.kind.to_string().contains("undefined variable: undefined"),
+            err2.kind
+                .to_string()
+                .contains("undefined variable: undefined"),
             "second error: got: {}",
             err2.kind.to_string()
         );
@@ -7376,7 +7386,10 @@ mod tests {
 
         // First materialization: error should have stack frames
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.kind.to_string().contains("undefined variable: nonexistent"));
+        assert!(err1
+            .kind
+            .to_string()
+            .contains("undefined variable: nonexistent"));
         let frame_count1 = err1.stack.len();
         assert!(frame_count1 > 0, "should have at least one stack frame");
 
@@ -7421,7 +7434,10 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.kind.to_string().contains("builtin intentionally failed"));
+        assert!(err1
+            .kind
+            .to_string()
+            .contains("builtin intentionally failed"));
 
         // Check that the thunk is now in Failed state
         match &*thunk.state() {
@@ -7431,7 +7447,10 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err2.kind.to_string().contains("builtin intentionally failed"));
+        assert!(err2
+            .kind
+            .to_string()
+            .contains("builtin intentionally failed"));
     }
 
     #[test]
@@ -7463,7 +7482,8 @@ mod tests {
         // First materialization: should fail
         let err1 = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err1
-            .kind.to_string()
+            .kind
+            .to_string()
             .contains("undefined variable: does_not_exist"));
 
         // Check that the thunk is now in Failed state
@@ -7475,7 +7495,8 @@ mod tests {
         // Second materialization: should return cached error
         let err2 = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err2
-            .kind.to_string()
+            .kind
+            .to_string()
             .contains("undefined variable: does_not_exist"));
     }
 
@@ -7502,7 +7523,8 @@ mod tests {
         // First materialization should fail with undefined variable error
         let err = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err
-            .kind.to_string()
+            .kind
+            .to_string()
             .contains("undefined variable: nonexistent_func"));
 
         // The thunk should be in Failed state, NOT InProgress
@@ -7515,7 +7537,8 @@ mod tests {
         // Second access should return cached error, NOT "circular dependency"
         let err2 = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err2
-            .kind.to_string()
+            .kind
+            .to_string()
             .contains("undefined variable: nonexistent_func"));
         assert!(!err2.kind.to_string().contains("circular dependency"));
     }
@@ -7534,7 +7557,10 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.kind.to_string().contains("undefined variable: undefined_var"));
+        assert!(err1
+            .kind
+            .to_string()
+            .contains("undefined variable: undefined_var"));
 
         // Check that the thunk is now in Failed state
         match &*thunk.state() {
@@ -7544,7 +7570,10 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err2.kind.to_string().contains("undefined variable: undefined_var"));
+        assert!(err2
+            .kind
+            .to_string()
+            .contains("undefined variable: undefined_var"));
     }
 
     #[test]
@@ -7562,7 +7591,10 @@ mod tests {
         // First materialization: error with a specific mat_span
         let mat_span = test_span(10, 5, 10, 15);
         let err1 = materialize(&thunk, Some(&mat_span), &test_ctx()).unwrap_err();
-        assert!(err1.kind.to_string().contains("undefined variable: undefined_var"));
+        assert!(err1
+            .kind
+            .to_string()
+            .contains("undefined variable: undefined_var"));
         let frame_count1 = err1.stack.len();
 
         // Second materialization: same mat_span
@@ -7588,7 +7620,10 @@ mod tests {
 
         // First access: None mat_span
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.kind.to_string().contains("undefined variable: undefined_var"));
+        assert!(err1
+            .kind
+            .to_string()
+            .contains("undefined variable: undefined_var"));
         assert!(err1.materialization_span.is_none());
 
         // Second access: Some(span1) — should update materialization_span
@@ -7662,7 +7697,8 @@ mod tests {
             .unwrap();
         assert!(
             result
-                .kind.to_string()
+                .kind
+                .to_string()
                 .contains("maximum evaluation depth exceeded"),
             "got: {}",
             result.kind.to_string()
@@ -7692,7 +7728,9 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err1.kind.to_string().contains("undefined variable: undefined"),
+            err1.kind
+                .to_string()
+                .contains("undefined variable: undefined"),
             "expected undefined variable error, got: {}",
             err1.kind.to_string()
         );
@@ -7702,7 +7740,8 @@ mod tests {
             ThunkState::Failed(cached_err) => {
                 assert!(
                     cached_err
-                        .kind.to_string()
+                        .kind
+                        .to_string()
                         .contains("undefined variable: undefined"),
                     "cached error mismatch: got: {}",
                     cached_err.to_string()
@@ -9193,7 +9232,8 @@ mod tests {
         assert!(
             result2
                 .unwrap_err()
-                .kind.to_string()
+                .kind
+                .to_string()
                 .contains("type assertion failed"),
             "cached error should still say 'type assertion failed'"
         );

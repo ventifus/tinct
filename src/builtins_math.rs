@@ -20,93 +20,8 @@ use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext};
-use crate::eval_call::{invoke_function, CallContext};
 use crate::value::Key;
 use crate::value::{BuiltinArgs, Thunk, Value};
-
-/// Helper to dispatch a typeclass method call if an instance is registered.
-/// Returns Some(result) if instance was found and method called, None to fall through.
-/// For MPTC, materializes all determining-position args to build the lookup key.
-fn try_dispatch_method(
-    class_name: &'static str,
-    method_name: &str,
-    args: &[Rc<Thunk>],
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
-    call_span: Span,
-    ctx: &Rc<EvalContext>,
-) -> Option<EvalResult<Rc<Thunk>>> {
-    if args.is_empty() {
-        return None;
-    }
-
-    // Only materialize if at least one instance for this class is registered.
-    // Registry keys use type names (post chr-prelude); until then all lookups miss.
-    // Gating here avoids forcing a lazy thunk solely to check a registry key.
-    let has_candidate = ctx.state.borrow().registered_classes.contains(class_name);
-    if !has_candidate {
-        return None;
-    }
-
-    // Determine number of determining-position args from the class registry.
-    // Falls back to 1 if the class is not yet registered (should not happen in practice).
-    let num_determining = ctx
-        .state
-        .borrow()
-        .class_registry
-        .get(class_name)
-        .map(|c| c.num_determining)
-        .unwrap_or(1);
-
-    // Materialize determining-position args and collect type names.
-    let mut type_tags = Vec::with_capacity(num_determining);
-    for i in 0..num_determining.min(args.len()) {
-        let val = materialize(&args[i], Some(&call_span), ctx).ok()?;
-        type_tags.push(val.type_name().to_string());
-    }
-
-    let instance_thunk = ctx
-        .state
-        .borrow()
-        .instance_registry
-        .get(&(class_name, type_tags))
-        .cloned()?;
-
-    let instance_val = materialize(&instance_thunk, Some(&call_span), ctx).ok()?;
-
-    if let Value::Dict(methods_map) = instance_val {
-        let method_id = methods_map.get(&Key::String(method_name.to_string()))?;
-        let method_thunk = ctx.get_thunk(*method_id);
-        let method_val = materialize(&method_thunk, Some(&call_span), ctx).ok()?;
-
-        match method_val {
-            Value::Function {
-                params,
-                body,
-                env: closure_env,
-                ..
-            } => Some(invoke_function(&CallContext {
-                params: &params,
-                body: &body,
-                closure_env: &closure_env,
-                positional: args,
-                named: None,
-                default_env: &closure_env,
-                call_span,
-                origin: Some(Rc::from(format!("{}.{}", class_name, method_name))),
-                ctx,
-            })),
-            Value::Builtin(def) => Some((def.func)(BuiltinArgs {
-                args,
-                named,
-                call_span,
-                ctx: Rc::clone(ctx),
-            })),
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
 
 /// Maximum safe integer for Int→Float promotion (2^53).
 /// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
@@ -313,14 +228,10 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // Runtime typeclass dispatch: check for Equatable instance BEFORE materializing.
-    // try_dispatch_method materializes args[0] internally, so checking first avoids
-    // double-materialization when a typeclass instance exists.
-    if let Some(result) = try_dispatch_method("Equatable", "eq", args, named, call_span, &ctx) {
-        return result;
-    }
-
-    // No typeclass instance — materialize for default equality comparison
+    // Pure primitive: no typeclass dispatch. Equatable instances in stdlib/prelude.llt
+    // are type-checker annotations only (same pattern as Addable/builtin-add for arithmetic).
+    // Dispatch was removed because EquatableInt.eq calls [builtin-eq a b] which aliases
+    // back to this function, causing infinite recursion.
     let left = materialize(&args[0], Some(&call_span), &ctx)?;
     let right = materialize(&args[1], Some(&call_span), &ctx)?;
 
@@ -544,12 +455,11 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    // Runtime typeclass dispatch: check for Comparable instance before materializing,
-    // so registered types don't pay double-materialization cost.
-    if let Some(result) = try_dispatch_method("Comparable", "lt", args, named, call_span, &ctx) {
-        return result;
-    }
 
+    // Pure primitive: no typeclass dispatch. Comparable instances in stdlib/prelude.llt
+    // are type-checker annotations only (same pattern as Addable/builtin-add for arithmetic).
+    // Dispatch was removed because ComparableInt.lt calls [builtin-lt a b] which aliases
+    // back to this function, causing infinite recursion.
     let left = materialize(&args[0], Some(&call_span), &ctx)?;
     let right = materialize(&args[1], Some(&call_span), &ctx)?;
 
@@ -1201,5 +1111,52 @@ mod tests {
             "expected TypeMismatch, got: {:?}",
             err.kind
         );
+    }
+
+    // --- Equatable/Comparable/Showable: no infinite recursion with prelude loaded ---
+    //
+    // These tests verify that = and < are pure primitives — they do NOT dispatch
+    // through Equatable/Comparable instances in stdlib/prelude.llt, which would cause
+    // infinite recursion (EquatableInt.eq calls [builtin-eq a b] which is = which
+    // would dispatch again). After the fix, = and < behave like builtin-add: pure
+    // Rust primitives, type-checker annotations only.
+
+    /// [= 1 1] returns true with prelude loaded (Equatable instances registered).
+    /// This would infinite-loop before the dispatch-removal fix.
+    #[test]
+    fn test_eq_int_no_infinite_recursion_with_prelude() {
+        let result = crate::eval_source_with_config("[= 1 1]", true);
+        assert!(
+            result.is_ok(),
+            "expected [= 1 1] to succeed, got: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), "Bool(true)");
+    }
+
+    /// [< 1 2] returns true with prelude loaded (Comparable instances registered).
+    /// This would infinite-loop before the dispatch-removal fix.
+    #[test]
+    fn test_lt_int_no_infinite_recursion_with_prelude() {
+        let result = crate::eval_source_with_config("[< 1 2]", true);
+        assert!(
+            result.is_ok(),
+            "expected [< 1 2] to succeed, got: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), "Bool(true)");
+    }
+
+    /// [sort [3 1 2]] works with prelude loaded (sort uses < internally).
+    /// This would infinite-loop before the dispatch-removal fix.
+    #[test]
+    fn test_sort_no_infinite_recursion_with_prelude() {
+        let result = crate::eval_source_with_config("[sort [3 1 2]]", true);
+        assert!(
+            result.is_ok(),
+            "expected [sort [3 1 2]] to succeed, got: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), "Dict({0: Int(1), 1: Int(2), 2: Int(3)})");
     }
 }

@@ -1327,7 +1327,9 @@ mod tests {
         };
         let err = value_to_json(&f, &test_ctx()).unwrap_err();
         assert!(
-            err.kind.to_string().contains("cannot serialize Function to JSON"),
+            err.kind
+                .to_string()
+                .contains("cannot serialize Function to JSON"),
             "got: {}",
             err.kind.to_string()
         );
@@ -1353,7 +1355,9 @@ mod tests {
         };
         let err = value_to_json(&seq, &ctx).unwrap_err();
         assert!(
-            err.kind.to_string().contains("cannot serialize Seq to JSON"),
+            err.kind
+                .to_string()
+                .contains("cannot serialize Seq to JSON"),
             "got: {}",
             err.kind.to_string()
         );
@@ -1375,7 +1379,8 @@ mod tests {
         });
         let err = value_to_json(&b, &test_ctx()).unwrap_err();
         assert!(
-            err.kind.to_string()
+            err.kind
+                .to_string()
                 .contains("cannot serialize Builtin (test) to JSON"),
             "got: {}",
             err.kind.to_string()
@@ -1392,7 +1397,9 @@ mod tests {
         };
         let err = value_to_json(&proxy, &ctx).unwrap_err();
         assert!(
-            err.kind.to_string().contains("cannot serialize Proxy to JSON"),
+            err.kind
+                .to_string()
+                .contains("cannot serialize Proxy to JSON"),
             "got: {}",
             err.kind.to_string()
         );
