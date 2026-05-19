@@ -1148,19 +1148,19 @@ mod tests {
     #[test]
     fn test_json_float_nan_error() {
         let err = value_to_json(&Value::Float(f64::NAN), &test_ctx()).unwrap_err();
-        assert!(err.message().contains("NaN"));
+        assert!(err.kind.to_string().contains("NaN"));
     }
 
     #[test]
     fn test_json_float_infinity_error() {
         let err = value_to_json(&Value::Float(f64::INFINITY), &test_ctx()).unwrap_err();
-        assert!(err.message().contains("is not a finite number"));
+        assert!(err.kind.to_string().contains("is not a finite number"));
     }
 
     #[test]
     fn test_json_float_neg_infinity_error() {
         let err = value_to_json(&Value::Float(f64::NEG_INFINITY), &test_ctx()).unwrap_err();
-        assert!(err.message().contains("is not a finite number"));
+        assert!(err.kind.to_string().contains("is not a finite number"));
     }
 
     #[test]
@@ -1327,9 +1327,9 @@ mod tests {
         };
         let err = value_to_json(&f, &test_ctx()).unwrap_err();
         assert!(
-            err.message().contains("cannot serialize Function to JSON"),
+            err.kind.to_string().contains("cannot serialize Function to JSON"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert_eq!(err.kind.code(), "E035");
     }
@@ -1353,9 +1353,9 @@ mod tests {
         };
         let err = value_to_json(&seq, &ctx).unwrap_err();
         assert!(
-            err.message().contains("cannot serialize Seq to JSON"),
+            err.kind.to_string().contains("cannot serialize Seq to JSON"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert_eq!(err.kind.code(), "E035");
     }
@@ -1375,10 +1375,10 @@ mod tests {
         });
         let err = value_to_json(&b, &test_ctx()).unwrap_err();
         assert!(
-            err.message()
+            err.kind.to_string()
                 .contains("cannot serialize Builtin (test) to JSON"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert_eq!(err.kind.code(), "E035");
     }
@@ -1392,9 +1392,9 @@ mod tests {
         };
         let err = value_to_json(&proxy, &ctx).unwrap_err();
         assert!(
-            err.message().contains("cannot serialize Proxy to JSON"),
+            err.kind.to_string().contains("cannot serialize Proxy to JSON"),
             "got: {}",
-            err.message()
+            err.kind.to_string()
         );
         assert_eq!(err.kind.code(), "E035");
     }

@@ -3464,9 +3464,9 @@ mod tests {
         // First materialization: should detect the cycle and fail
         let err1 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err1.message().contains("circular dependency"),
+            err1.kind.to_string().contains("circular dependency"),
             "first error: got: {}",
-            err1.message()
+            err1.kind.to_string()
         );
 
         // Check that the thunk is now in Failed state, not stuck in InProgress
@@ -3484,9 +3484,9 @@ mod tests {
         // Second materialization: should return the cached circular dependency error
         let err2 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err2.message().contains("circular dependency"),
+            err2.kind.to_string().contains("circular dependency"),
             "second error: got: {}",
-            err2.message()
+            err2.kind.to_string()
         );
     }
 
@@ -3514,20 +3514,20 @@ mod tests {
         // First attempt: should fail with "undefined variable"
         let err1 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err1.message().contains("undefined variable: missing"),
+            err1.kind.to_string().contains("undefined variable: missing"),
             "first attempt: got: {}",
-            err1.message()
+            err1.kind.to_string()
         );
 
         // Second attempt: should produce the SAME error, not "circular dependency"
         let err2 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err2.message().contains("undefined variable: missing"),
+            err2.kind.to_string().contains("undefined variable: missing"),
             "second attempt should not be poisoned, got: {}",
-            err2.message()
+            err2.kind.to_string()
         );
         assert!(
-            !err2.message().contains("circular dependency"),
+            !err2.kind.to_string().contains("circular dependency"),
             "thunk was poisoned: got circular dependency on retry"
         );
     }
@@ -6735,7 +6735,7 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(err
-            .message()
+            .kind.to_string()
             .contains("missing argument for required parameter"));
         assert!(
             err.stack.iter().any(|f| f.label == "[f ...]"),
@@ -7276,16 +7276,16 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err1.message().contains("undefined variable: undefined"),
+            err1.kind.to_string().contains("undefined variable: undefined"),
             "first error: got: {}",
-            err1.message()
+            err1.kind.to_string()
         );
 
         // Check that the thunk is now in Failed state
         match &*x_thunk.state() {
             ThunkState::Failed(cached_err) => {
                 assert!(cached_err
-                    .message()
+                    .kind.to_string()
                     .contains("undefined variable: undefined"));
             }
             other => panic!("expected Failed state, got {other:?}"),
@@ -7294,9 +7294,9 @@ mod tests {
         // Second materialization: should return the cached error
         let err2 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err2.message().contains("undefined variable: undefined"),
+            err2.kind.to_string().contains("undefined variable: undefined"),
             "second error: got: {}",
-            err2.message()
+            err2.kind.to_string()
         );
     }
 
@@ -7376,7 +7376,7 @@ mod tests {
 
         // First materialization: error should have stack frames
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.message().contains("undefined variable: nonexistent"));
+        assert!(err1.kind.to_string().contains("undefined variable: nonexistent"));
         let frame_count1 = err1.stack.len();
         assert!(frame_count1 > 0, "should have at least one stack frame");
 
@@ -7421,7 +7421,7 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.message().contains("builtin intentionally failed"));
+        assert!(err1.kind.to_string().contains("builtin intentionally failed"));
 
         // Check that the thunk is now in Failed state
         match &*thunk.state() {
@@ -7431,7 +7431,7 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err2.message().contains("builtin intentionally failed"));
+        assert!(err2.kind.to_string().contains("builtin intentionally failed"));
     }
 
     #[test]
@@ -7463,7 +7463,7 @@ mod tests {
         // First materialization: should fail
         let err1 = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err1
-            .message()
+            .kind.to_string()
             .contains("undefined variable: does_not_exist"));
 
         // Check that the thunk is now in Failed state
@@ -7475,7 +7475,7 @@ mod tests {
         // Second materialization: should return cached error
         let err2 = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err2
-            .message()
+            .kind.to_string()
             .contains("undefined variable: does_not_exist"));
     }
 
@@ -7502,7 +7502,7 @@ mod tests {
         // First materialization should fail with undefined variable error
         let err = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err
-            .message()
+            .kind.to_string()
             .contains("undefined variable: nonexistent_func"));
 
         // The thunk should be in Failed state, NOT InProgress
@@ -7515,9 +7515,9 @@ mod tests {
         // Second access should return cached error, NOT "circular dependency"
         let err2 = materialize(&pending, None, &test_ctx()).unwrap_err();
         assert!(err2
-            .message()
+            .kind.to_string()
             .contains("undefined variable: nonexistent_func"));
-        assert!(!err2.message().contains("circular dependency"));
+        assert!(!err2.kind.to_string().contains("circular dependency"));
     }
 
     #[test]
@@ -7534,7 +7534,7 @@ mod tests {
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.message().contains("undefined variable: undefined_var"));
+        assert!(err1.kind.to_string().contains("undefined variable: undefined_var"));
 
         // Check that the thunk is now in Failed state
         match &*thunk.state() {
@@ -7544,7 +7544,7 @@ mod tests {
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err2.message().contains("undefined variable: undefined_var"));
+        assert!(err2.kind.to_string().contains("undefined variable: undefined_var"));
     }
 
     #[test]
@@ -7562,7 +7562,7 @@ mod tests {
         // First materialization: error with a specific mat_span
         let mat_span = test_span(10, 5, 10, 15);
         let err1 = materialize(&thunk, Some(&mat_span), &test_ctx()).unwrap_err();
-        assert!(err1.message().contains("undefined variable: undefined_var"));
+        assert!(err1.kind.to_string().contains("undefined variable: undefined_var"));
         let frame_count1 = err1.stack.len();
 
         // Second materialization: same mat_span
@@ -7588,7 +7588,7 @@ mod tests {
 
         // First access: None mat_span
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(err1.message().contains("undefined variable: undefined_var"));
+        assert!(err1.kind.to_string().contains("undefined variable: undefined_var"));
         assert!(err1.materialization_span.is_none());
 
         // Second access: Some(span1) — should update materialization_span
@@ -7662,10 +7662,10 @@ mod tests {
             .unwrap();
         assert!(
             result
-                .message()
+                .kind.to_string()
                 .contains("maximum evaluation depth exceeded"),
             "got: {}",
-            result.message()
+            result.kind.to_string()
         );
     }
 
@@ -7692,9 +7692,9 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &ctx).unwrap_err();
         assert!(
-            err1.message().contains("undefined variable: undefined"),
+            err1.kind.to_string().contains("undefined variable: undefined"),
             "expected undefined variable error, got: {}",
-            err1.message()
+            err1.kind.to_string()
         );
 
         // The thunk SHOULD be in Failed state because UndefinedVariable is cacheable
@@ -7702,7 +7702,7 @@ mod tests {
             ThunkState::Failed(cached_err) => {
                 assert!(
                     cached_err
-                        .message()
+                        .kind.to_string()
                         .contains("undefined variable: undefined"),
                     "cached error mismatch: got: {}",
                     cached_err.to_string()
@@ -9071,9 +9071,9 @@ mod tests {
         assert!(result.is_err(), "Expected cached error");
         let error = result.unwrap_err();
         assert!(
-            error.message().contains("type mismatch"),
+            error.kind.to_string().contains("type mismatch"),
             "Expected cached type mismatch error, got: {}",
-            error.message()
+            error.kind.to_string()
         );
     }
 
@@ -9193,7 +9193,7 @@ mod tests {
         assert!(
             result2
                 .unwrap_err()
-                .message()
+                .kind.to_string()
                 .contains("type assertion failed"),
             "cached error should still say 'type assertion failed'"
         );
@@ -9235,7 +9235,7 @@ mod tests {
         assert!(result.is_err(), "Expected type assertion failure");
 
         let error = result.unwrap_err();
-        let msg = error.message();
+        let msg = error.kind.to_string();
 
         // The error should be a type assertion failure
         assert!(
@@ -9373,9 +9373,9 @@ mod tests {
         assert!(result3.is_err(), "3-node cycle should be detected");
         let err3 = result3.unwrap_err();
         assert!(
-            err3.message().contains("circular dependency"),
+            err3.kind.to_string().contains("circular dependency"),
             "3-node cycle error should mention circular dependency, got: {}",
-            err3.message()
+            err3.kind.to_string()
         );
 
         // Test self-reference: x→x
@@ -9397,9 +9397,9 @@ mod tests {
         assert!(result_self.is_err(), "Self-reference should be detected");
         let err_self = result_self.unwrap_err();
         assert!(
-            err_self.message().contains("circular dependency"),
+            err_self.kind.to_string().contains("circular dependency"),
             "Self-reference error should mention circular dependency, got: {}",
-            err_self.message()
+            err_self.kind.to_string()
         );
     }
 

@@ -336,18 +336,18 @@ Full audit of `src/parser.rs` identified the following issues beyond what `unifi
 - [ ] **F-04** `StackFrame::ClassDecl` `_ => Ok(())` catch-all leaves `name = None`; CloseBracket handler then emits a class with empty-string name instead of a parse error; fix: the catch-all should be a parse error (`src/parser.rs:5624–5628`)
 - [ ] **F-10** `Token::Let` / `Token::Case` handler is a near-verbatim copy of the Identifier+colon dispatch but silently omits `Match` from its colon arm, falling through to `_ => VarRef push`; the omission is undocumented; either share the logic or add an explicit error (`src/parser.rs:4393–4497`)
 
-### compat-cleanup: Remove backwards-compatibility shims
+### compat-cleanup: Remove backwards-compatibility shims (DONE 2026-05-18)
 
 No public release has been made; there are no external users and nothing to be compatible with. Grep audit (2026-05-18) found 6 explicit compat paths.
 
-- [ ] Remove legacy 3-arg string mode from `builtin_open` at `src/builtins_io.rs:198-254` — drop the `if matches!(third_arg_val, Value::String { .. })` branch; only the Variant-flags form (`[open dir path Readable Text]`) is the supported API; update any tests using `[open cap path "r"]` (`src/builtins_io.rs:158-254`)
-- [ ] Remove `substitute_inline_markers` and its call site at `src/main.rs:3097-3104`; all doc/*.md files use `=== out` sections; the `<!-- tinct-result: ... -->` HTML comment format is fully retired (`src/main.rs:3093-3158`)
-- [ ] Remove `EvalError::new()` compat shim at `src/error.rs:881-885`; grep for `EvalError::new(` and update all call sites to `EvalError::internal()` or a typed `ErrorKind` constructor (`src/error.rs:881`)
-- [ ] Remove `EvalError::message()` compat shim at `src/error.rs:902-905`; grep for `.message()` and update all call sites to `.kind.to_string()` directly (`src/error.rs:902`)
-- [ ] Rename `parse2()` → `parse()` and delete the `parse()` compatibility wrapper at `src/parser.rs:5909-5920`; update all callers (`src/parser.rs:5909`)
-- [ ] Remove legacy positional constraint class list form at `src/typecheck_annot.rs:539` — the `[a: [Comparable Showable]]` form without an `each` keyword; make unkeyed list without `each` a type error with a hint pointing to `[each Comparable Showable]` syntax (`src/typecheck_annot.rs:539`)
-- [ ] Remove legacy `Expr::Dict` path for `or`/`all`/`without` type expressions at `src/typecheck_annot.rs:1189-1205`; the parser consistently produces `Call { implied: true }` for these forms and the legacy path is provably unreachable (`src/typecheck_annot.rs:1189`)
-- [ ] Verify `just test` passes after all removals (`tests/`)
+- [x] Remove legacy 3-arg string mode from `builtin_open` at `src/builtins_io.rs:198-254` — ALREADY REMOVED in prior cleanup
+- [x] Remove `substitute_inline_markers` and its call site at `src/main.rs:3097-3104` — ALREADY REMOVED in prior cleanup
+- [x] Remove `EvalError::new()` compat shim at `src/error.rs:881-885` — ALREADY REMOVED in prior cleanup
+- [x] Remove `EvalError::message()` compat shim at `src/error.rs:902-905` — removed; updated 58 call sites across `src/eval.rs`, `src/value.rs`, `src/lib.rs`, `src/eval_materialize.rs` to use `.kind.to_string()` directly
+- [x] Rename `parse2()` → `parse()` and delete the `parse()` compatibility wrapper at `src/parser.rs:5909-5920` — ALREADY DONE in prior cleanup
+- [x] Remove legacy positional constraint class list form at `src/typecheck_annot.rs:539` — ALREADY AN ERROR since typecheck-annot sprint; unkeyed list without `each` keyword produces type error with hint
+- [x] Remove legacy `Expr::Dict` path for `or`/`all`/`without` type expressions at `src/typecheck_annot.rs:1189-1205` — NEVER EXISTED; parser always produced `Call { implied: true }` for these forms
+- [x] Verify `just build` and `just test-lib` pass after all removals — `just build` exited 0, `just test-lib` exited 0
 
 ### dead-code-sweep: Remove unused imports and inert dead-code suppressions (DONE)
 
