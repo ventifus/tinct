@@ -1719,23 +1719,26 @@ fn eval_quote(
 
 /// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
 ///
-/// Preprocesses the expression tree to handle nested unquotes, then converts to
-/// `Value::Expression(Arc<SurfaceNode>)` — the runtime-v2 representation.
+/// Preprocesses the expression tree to handle nested unquotes, then converts to dict AST.
+/// NOTE: runtime-v2 plan changes quote to return Value::Expression, but this requires
+/// Part G (stdlib/macros migration) — keeping Dict return for now to avoid breaking
+/// the formatter and existing macro code. Migrated in Part G.
 fn eval_quote_walk(
     expr: &Expr,
     span: Span,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
-    // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
+    use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
+    // Preprocess to handle nested unquotes
     let processed_expr = eval_quote_preprocess(expr, span, &env, ctx)?;
 
-    // runtime-v2: return Value::Expression (was: ast_to_dict_expr returning Value::Dict)
-    let surface_node = crate::ast_convert::expr_to_surface_node(&processed_expr);
-    Ok(Rc::new(Thunk::new_materialized(
-        Value::Expression(surface_node),
-        span,
-    )))
+    // Convert the preprocessed AST to dict (stays as Dict until Part G migrates stdlib)
+    let opts = AstToDictOpts {
+        source: None,
+        comments: None,
+    };
+    ast_to_dict_expr(&processed_expr, &opts, ctx)
 }
 
 /// Convert a runtime Value back to an Expr AST node for unquoting.
@@ -1751,10 +1754,6 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Rc<EvalContext>) -> EvalResult
             Expr::Str(source[*start..*end].to_string()),
             span,
         )),
-        // runtime-v2: Value::Expression is the native AST type; convert back to old Expr via bridge
-        Value::Expression(node) => {
-            Ok(crate::ast_convert::surface_node_to_expr(node))
-        }
         Value::Variant { .. } => {
             // Variant form of an AST node — use dict_to_ast directly
             crate::ast_dict::dict_to_ast(value, ctx).map_err(|err| {
