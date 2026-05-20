@@ -23,6 +23,7 @@ use super::{eval, extract_nominal_constructors, materialize, EvalContext, VARIAN
 /// to pre-size the FlatEnv slot vector for O(1) VarRef lookup.
 ///
 /// Matches the static key logic in `resolve.rs::Resolver::walk_expr` (Dict arm).
+#[allow(dead_code)] // arena-phase3 scaffolding: will be used when FlatEnv allocation is re-enabled
 fn count_static_keys(entries: &[Spanned<Entry>]) -> usize {
     entries
         .iter()
@@ -45,23 +46,6 @@ pub(crate) fn eval_dict(
     ))));
     let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
-
-    // Phase 3 (arena-eval): Allocate a FlatEnv for this dict scope.
-    //
-    // The FlatEnv stores ThunkIds for static-key entries, enabling O(1) variable lookup
-    // when VarRef nodes have been assigned (level, slot) coordinates by the resolver.
-    // We use alloc_root (no parent FlatEnv) because the parent chain is still Rc-based;
-    // O(1) applies only to level=0 (same-dict sibling references, De Bruijn level 0 = current scope).
-    // Outer-scope references use level > 0, walking N parent hops via Environment.get_by_slot.
-    //
-    // env_id is stored in Unevaluated thunks for future use when take_unevaluated is
-    // updated to propagate it. For now it acts as scaffolding (the evaluator discards it).
-    let static_key_count = count_static_keys(entries);
-    let env_id = ctx.env_arena.borrow_mut().alloc_root(static_key_count);
-
-    // Slot index counter: incremented only for static-key entries (matching resolver logic).
-    // Must stay in sync with resolve.rs Resolver::walk_expr Dict arm (Expr::Str | Expr::Annotated).
-    let mut slot_idx: u32 = 0;
 
     // Pre-pass: pre-COMPUTE (but do NOT insert) nominal variant constructor thunks.
     //
@@ -116,6 +100,7 @@ pub(crate) fn eval_dict(
                         params: Rc::new(vec![param]),
                         body: body_expr,
                         env: constructor_env,
+                        env_id: None,
                         annotation: None,
                     }
                 } else {
@@ -133,12 +118,6 @@ pub(crate) fn eval_dict(
     }
 
     for entry in entries {
-        // Determine if this entry has a static key (Expr::Str or Expr::Annotated).
-        // This must match resolve.rs Resolver::walk_expr Dict arm exactly.
-        let is_static_key = entry.node.key.as_ref().is_some_and(|key_expr| {
-            matches!(&key_expr.node, Expr::Str(_) | Expr::Annotated { .. })
-        });
-
         let key = match &entry.node.key {
             // Keys are evaluated in the parent scope, not dict_env, because key
             // expressions must not see sibling bindings. This prevents keys from
@@ -156,13 +135,10 @@ pub(crate) fn eval_dict(
 
         // Fast path for literal values: create Materialized thunks directly,
         // avoiding Unevaluated → Materialized state transition overhead (Nix maybeThunk pattern).
-        // Non-literal unevaluated thunks for static-key entries get env_id for future O(1) lookup.
         //
         // Special case: if this entry's string key is a pre-computed constructor (e.g. `Ok: Ok`),
         // substitute the materialized constructor thunk directly. This breaks the circular
         // dependency where forcing `Ok: Ok` → VarRef("Ok") → dict_env["Ok"] → same thunk → cycle.
-        // The constructor thunk is inserted into dict_env at the CORRECT AST-order position,
-        // preserving slot index consistency with the resolver.
         let thunk = if let Key::String(ref name) = key {
             if let Some(ctor_thunk) = constructor_precomputed.get(name.as_str()) {
                 // Use the pre-computed materialized constructor thunk directly.
@@ -183,13 +159,6 @@ pub(crate) fn eval_dict(
                     )),
                     Expr::Str(s) => Rc::new(Thunk::new_materialized(
                         string_val(s),
-                        entry.node.value.span,
-                    )),
-                    _ if is_static_key => Rc::new(Thunk::new_unevaluated_with_env_id(
-                        Rc::clone(&entry.node.value),
-                        Rc::clone(&dict_env),
-                        env_id,
-                        Rc::clone(ctx),
                         entry.node.value.span,
                     )),
                     _ => Rc::new(Thunk::new_unevaluated(
@@ -216,13 +185,6 @@ pub(crate) fn eval_dict(
                 )),
                 Expr::Str(s) => Rc::new(Thunk::new_materialized(
                     string_val(s),
-                    entry.node.value.span,
-                )),
-                _ if is_static_key => Rc::new(Thunk::new_unevaluated_with_env_id(
-                    Rc::clone(&entry.node.value),
-                    Rc::clone(&dict_env),
-                    env_id,
-                    Rc::clone(ctx),
                     entry.node.value.span,
                 )),
                 _ => Rc::new(Thunk::new_unevaluated(
@@ -256,16 +218,6 @@ pub(crate) fn eval_dict(
                 &key.to_string(),
                 entry.span,
             )));
-        }
-
-        // Fill the FlatEnv slot for this static-key entry.
-        // Slot indices must match those assigned by resolve.rs exactly (sequential,
-        // incremented only for Expr::Str | Expr::Annotated key entries).
-        if is_static_key {
-            ctx.env_arena
-                .borrow_mut()
-                .fill_letrec_slot(env_id, slot_idx, thunk_id);
-            slot_idx += 1;
         }
     }
 

@@ -33,6 +33,7 @@ type GuardedData = (
 type UnevaluatedData = (
     Rc<Spanned<Expr>>,
     Rc<RefCell<Environment>>,
+    Option<crate::arena::EnvId>,
     Rc<crate::eval::EvalContext>,
 );
 
@@ -337,6 +338,9 @@ pub enum Value {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        /// Optional flat environment ID for the closure's creation scope.
+        /// When Some(env_id), function calls can allocate child FlatEnvs for O(1) param lookup.
+        env_id: Option<crate::arena::EnvId>,
         annotation: Option<Box<FnAnnotation>>,
     },
     /// Rust-native built-in function
@@ -1092,9 +1096,9 @@ impl Thunk {
             ThunkState::Unevaluated {
                 expr,
                 env,
-                env_id: _,
+                env_id,
                 ctx,
-            } => Some((expr, env, ctx)),
+            } => Some((expr, env, env_id, ctx)),
             other => {
                 *state = other;
                 None
@@ -1404,6 +1408,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
+            env_id: None,
             annotation: None,
         };
         assert_ne!(f.clone(), f);
@@ -1700,6 +1705,7 @@ mod tests {
             params,
             body,
             env,
+            env_id: None,
             annotation: None,
         };
         assert_eq!(format!("{func}"), "[fn [x y] ...]");
@@ -1784,6 +1790,7 @@ mod tests {
             params,
             body,
             env,
+            env_id: None,
             annotation: None,
         };
         assert_eq!(format!("{func:?}"), "Function(a, b)");
@@ -1854,7 +1861,7 @@ mod tests {
             "take_unevaluated should succeed on Unevaluated thunk"
         );
 
-        let (_taken_expr, _taken_env, taken_ctx) = taken.unwrap();
+        let (_taken_expr, _taken_env, _taken_env_id, taken_ctx) = taken.unwrap();
 
         // Verify the taken ctx is the same Rc as ctx1
         assert!(
@@ -1946,6 +1953,7 @@ mod tests {
                     test_span(1, 1, 1, 1),
                 )),
                 env: Rc::new(RefCell::new(Environment::new())),
+                env_id: None,
                 annotation: None,
             },
             span,

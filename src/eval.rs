@@ -1024,6 +1024,7 @@ pub(crate) fn eval_recursive(
                                             params,
                                             body,
                                             closure_env: fn_env,
+                                            closure_env_id: None,
                                             positional: &[val_thunk],
                                             named: None,
                                             default_env: fn_env,
@@ -1210,6 +1211,7 @@ pub(crate) fn eval_recursive(
                     params: Rc::new(fn_params),
                     body: Rc::clone(body),
                     env: Rc::clone(&env),
+                    env_id: None,
                     annotation,
                 },
                 expr.span,
@@ -1261,6 +1263,7 @@ pub(crate) fn eval_recursive(
                             params: Rc::new(vec![param]),
                             body,
                             env: constructor_env,
+                            env_id: None,
                             annotation: None,
                         }
                     } else {
@@ -1380,6 +1383,7 @@ pub(crate) fn eval_recursive(
                                     params,
                                     body,
                                     closure_env: fn_env,
+                                    closure_env_id: None,
                                     positional: &[scrutinee_arg],
                                     named: None,
                                     default_env: fn_env,
@@ -2202,7 +2206,7 @@ pub fn materialize(
     let origin_opt: Option<&str> = origin.as_deref();
     let decorate = |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span);
 
-    if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
+    if let Some((expr, env, _env_id, thunk_ctx)) = thunk.take_unevaluated() {
         let result = eval(Rc::clone(&expr), Rc::clone(&env), &thunk_ctx)
             .and_then(|result_thunk| {
                 run(
@@ -2340,6 +2344,7 @@ pub fn materialize(
                     params: &params,
                     body: &body,
                     closure_env: &env,
+                    closure_env_id: None,
                     positional: &args,
                     named: named.as_ref(),
                     // For normal calls, `default_env` is the caller's environment (the env at
@@ -3728,6 +3733,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3765,6 +3771,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("b".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3833,6 +3840,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3869,6 +3877,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3915,6 +3924,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3957,6 +3967,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3990,6 +4001,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4039,6 +4051,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4087,6 +4100,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("rest".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4150,6 +4164,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("rest".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4299,6 +4314,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4403,6 +4419,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -5989,6 +6006,7 @@ mod tests {
             }]),
             body: Rc::new(Spanned::new(Expr::Int(0), span)),
             env: Rc::new(RefCell::new(Environment::new())),
+            env_id: None,
             annotation: None,
         };
         let result = deep_materialize(&val, &test_ctx(), None).unwrap();
@@ -6099,6 +6117,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(Expr::Int(0), span)),
             env: Rc::new(RefCell::new(Environment::new())),
+            env_id: None,
             annotation: None,
         };
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
@@ -6421,6 +6440,7 @@ mod tests {
                 test_span(1, 15, 1, 23),
             )),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -6478,6 +6498,7 @@ mod tests {
                 test_span(1, 20, 1, 28),
             )),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -6509,6 +6530,7 @@ mod tests {
                 inner_call_span,
             )),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -6772,6 +6794,7 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("a".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -6899,6 +6922,7 @@ mod tests {
                 implied: false,
             })),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
 
@@ -7020,6 +7044,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
 
@@ -7098,6 +7123,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
 
@@ -7187,6 +7213,7 @@ mod tests {
                 implied: false,
             })),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
 
@@ -7284,6 +7311,7 @@ mod tests {
                 implied: false,
             })),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
 
@@ -7425,6 +7453,7 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("nonexistent".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
 
@@ -7521,6 +7550,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(sp(Expr::var_ref("does_not_exist".into()))),
             env: Rc::clone(&env),
+            env_id: None,
             annotation: None,
         };
 
@@ -7729,6 +7759,7 @@ mod tests {
                         implied: false,
                     })),
                     env: Rc::clone(&env),
+                    env_id: None,
                     annotation: None,
                 };
 

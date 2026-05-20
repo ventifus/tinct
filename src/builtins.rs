@@ -993,6 +993,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         params,
                         body,
                         closure_env,
+                        closure_env_id: None,
                         positional: &pos_args,
                         named: None,
                         default_env: closure_env,
@@ -2330,6 +2331,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
             env: Rc::new(RefCell::new(Environment::new())),
+            env_id: None,
             annotation: None,
         }
     }
@@ -2349,6 +2351,7 @@ mod tests {
             ),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
             env: Rc::new(RefCell::new(Environment::new())),
+            env_id: None,
             annotation: None,
         }
     }
@@ -11102,6 +11105,7 @@ mod tests {
             ),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
             env,
+            env_id: None,
             annotation: None,
         }
     }
