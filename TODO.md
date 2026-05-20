@@ -16,18 +16,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Tooling
-
-### dircap-cleanup: Cap-fs edge cases and test coverage gaps
-
-- [ ] Add guard for empty mode string: `--cap-fs NAME=PATH:` (trailing colon, empty mode) currently produces a zero-permission DirCap silently — add error "mode string is empty" and a test (`src/main.rs`, `tests/cli_tests.rs`)
-- [ ] Fix stale `--cap-file` doc: `dir-cap-permissions.md:166-167` says bare default is read-write full, but implementation is read-only (`doc/whatif/completed/dir-cap-permissions.md`)
-- [ ] Add Literate/Weave coverage for bare cap-fs error path (`tests/cli_tests.rs`)
-- [ ] Extract cap-fs parsing to shared helper: three identical blocks in run_eval/run_literate_eval/run_literate_weave (`src/main.rs`)
-- [ ] Document `_cap_fs` ignored in run_lint: add comment explaining why lint doesn't inject cap-fs DirCaps (`src/main.rs`)
-
----
-
 ## Primitive Privacy
 
 ### include-decomp-eval-primitives: Implement expand/eval/eval-types and delete builtin_include

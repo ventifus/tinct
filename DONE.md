@@ -8271,3 +8271,13 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [x] Update 7 cli_tests to use explicit `--cap-fs NAME=PATH:MODE` syntax instead of bare `NAME=PATH` — updated 9 tests total: `include_with_dircap` (1226), `include_with_hash` (1270), `no_fs_suppresses_cap_fs_injection` (1344), `no_landlock_with_cap_fs_accepted` (1681), `landlock_with_cap_fs_permits_include` (1716), `revocable_and_revoke` (2226), `lines_basic` (2259), `write_basic` (2292), `write_atomic_basic` (2329), `write_and_slurp_roundtrip` (2375) to use `:r` or `:rw` modes (`tests/cli_tests.rs`)
 - [x] **KNOWN ISSUE**: CLI-level backward-compat at `src/main.rs:1321,2469,2765` — `--cap-fs NAME=PATH` without `:MODE` defaults to `DirPerms::full()`. The type-level compat described in whatif doc lines 107-109 was never implemented. Removing CLI default breaks many tests. — **FIXED**: Changed all three locations to return error requiring `:MODE` suffix (`src/main.rs:1338-1342,2506-2510,2802-2806`)
 - [x] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
+
+## Tooling
+
+### dircap-cleanup: Cap-fs edge cases and test coverage gaps
+
+- [x] Add guard for empty mode string: `--cap-fs NAME=PATH:` (trailing colon, empty mode) currently produces a zero-permission DirCap silently — add error "mode string is empty" and a test (`src/main.rs`, `tests/cli_tests.rs`)
+- [x] Fix stale `--cap-file` doc: `dir-cap-permissions.md:166-167` says bare default is read-write full, but implementation is read-only (`doc/whatif/completed/dir-cap-permissions.md`)
+- [x] Add Literate/Weave coverage for bare cap-fs error path (`tests/cli_tests.rs`)
+- [x] Extract cap-fs parsing to shared helper: three identical blocks in run_eval/run_literate_eval/run_literate_weave (`src/main.rs`)
+- [x] Document `_cap_fs` ignored in run_lint: add comment explaining why lint doesn't inject cap-fs DirCaps (`src/main.rs`)

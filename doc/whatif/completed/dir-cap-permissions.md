@@ -164,7 +164,7 @@ startup error.
 
 **`--cap-file`:** Same extension — the extended `:[Cap1 Cap2 ...]` syntax is also
 accepted, with valid names `Readable`, `Writable`, `Appendable`, `Binary`. No
-`:mode` suffix → open file read-write (full access). Existing `r`/`rb`/`w`/`wb`
+`:mode` suffix → default to read-only (`r`). Existing `r`/`rb`/`w`/`wb`
 letter shorthands remain valid (backward compat).
 
 ### `src/value.rs` — `DirPerms` and `Value::DirCap`

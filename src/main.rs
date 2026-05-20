@@ -937,6 +937,121 @@ fn interleave_files_and_exprs(files: &[String], exprs: &[String]) -> Vec<Pipelin
     result
 }
 
+/// Parse --cap-fs entries from CLI arguments into (NAME, PATH, DirPerms) tuples.
+/// Returns an error if any entry is malformed or has invalid mode syntax.
+fn parse_cap_fs_entries(
+    cap_fs: &[String],
+) -> Result<Vec<(String, PathBuf, tinct::DirPerms)>, String> {
+    use std::path::PathBuf;
+    use tinct::DirPerms;
+
+    let mut result = Vec::new();
+
+    for cap_fs_entry in cap_fs {
+        let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
+            format!(
+                "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
+                cap_fs_entry
+            )
+        })?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(format!(
+                "--cap-fs: NAME must not be empty in {:?}",
+                cap_fs_entry
+            ));
+        }
+
+        // Split PATH:MODE on the last colon (rsplit_once handles Windows drive letters)
+        let (path_str, mode_str) = match path_and_mode.rsplit_once(':') {
+            Some((path, mode)) => (path, Some(mode)),
+            None => (path_and_mode, None),
+        };
+
+        let cap_path = PathBuf::from(path_str.trim());
+
+        // Parse mode into DirPerms
+        let perms = if let Some(mode) = mode_str {
+            let mode = mode.trim();
+            if mode.is_empty() {
+                return Err(format!(
+                    "--cap-fs mode string is empty: NAME=PATH: (did you mean NAME=PATH:r?)\nGot: {:?}",
+                    cap_fs_entry
+                ));
+            }
+            if mode.starts_with('[') {
+                // Extended syntax: [Readable Writable ...]
+                if !mode.ends_with(']') {
+                    return Err(format!(
+                        "--cap-fs: extended mode must end with ']', got {:?}",
+                        mode
+                    ));
+                }
+                let caps_str = &mode[1..mode.len() - 1];
+                let mut perms = DirPerms {
+                    readable: false,
+                    statable: false,
+                    listable: false,
+                    writable: false,
+                    appendable: false,
+                    deletable: false,
+                    renameable: false,
+                };
+                for cap_name in caps_str.split_whitespace() {
+                    match cap_name {
+                        "Readable" => perms.readable = true,
+                        "Statable" => perms.statable = true,
+                        "Listable" => perms.listable = true,
+                        "Writable" => perms.writable = true,
+                        "Appendable" => perms.appendable = true,
+                        "Deletable" => perms.deletable = true,
+                        "Renameable" => perms.renameable = true,
+                        _ => {
+                            return Err(format!(
+                                "--cap-fs: unknown capability {:?} in extended mode",
+                                cap_name
+                            ))
+                        }
+                    }
+                }
+                perms
+            } else {
+                // Letter mode: r/w/a/s/l
+                let mut perms = DirPerms {
+                    readable: false,
+                    statable: false,
+                    listable: false,
+                    writable: false,
+                    appendable: false,
+                    deletable: false,
+                    renameable: false,
+                };
+                for c in mode.chars() {
+                    if let Some(letter_perms) = DirPerms::from_letter(c) {
+                        perms = perms.union(&letter_perms);
+                    } else {
+                        return Err(format!(
+                            "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
+                            c
+                        ));
+                    }
+                }
+                perms
+            }
+        } else {
+            // No mode specified → error (mode is required)
+            return Err(format!(
+                "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
+                cap_fs_entry
+            ));
+        };
+
+        result.push((name.to_string(), cap_path, perms));
+    }
+
+    Ok(result)
+}
+
 fn run_eval(
     file_paths: &[String],
     force_eval: bool,
@@ -1242,107 +1357,17 @@ fn run_eval(
     // --no-fs suppresses all cap-fs injection: operator-specified caps are not available
     // to user code when filesystem access is globally disabled.
     if !no_fs {
-        use tinct::{DirPerms, Value};
-        for cap_fs_entry in &cap_fs {
-            let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
-                format!(
-                    "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
-                    cap_fs_entry
-                )
-            })?;
-            let name = name.trim();
-            if name.is_empty() {
-                return Err(format!(
-                    "--cap-fs: NAME must not be empty in {:?}",
-                    cap_fs_entry
-                ));
-            }
-
-            // Split PATH:MODE on the last colon (rsplit_once handles Windows drive letters)
-            let (path_str, mode_str) = match path_and_mode.rsplit_once(':') {
-                Some((path, mode)) => (path, Some(mode)),
-                None => (path_and_mode, None),
-            };
-
-            let cap_path = std::path::Path::new(path_str.trim());
+        use tinct::Value;
+        let parsed_entries = parse_cap_fs_entries(&cap_fs)?;
+        for (name, cap_path, perms) in parsed_entries {
             let cap_dir =
-                cap_std::fs::Dir::open_ambient_dir(cap_path, cap_std::ambient_authority())
+                cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
                     .map_err(|e| {
                         format!(
                             "--cap-fs: cannot open directory {:?}: {e}",
                             cap_path.display()
                         )
                     })?;
-
-            // Parse mode into DirPerms
-            let perms = if let Some(mode) = mode_str {
-                let mode = mode.trim();
-                if mode.starts_with('[') {
-                    // Extended syntax: [Readable Writable ...]
-                    if !mode.ends_with(']') {
-                        return Err(format!(
-                            "--cap-fs: extended mode must end with ']', got {:?}",
-                            mode
-                        ));
-                    }
-                    let caps_str = &mode[1..mode.len() - 1];
-                    let mut perms = DirPerms {
-                        readable: false,
-                        statable: false,
-                        listable: false,
-                        writable: false,
-                        appendable: false,
-                        deletable: false,
-                        renameable: false,
-                    };
-                    for cap_name in caps_str.split_whitespace() {
-                        match cap_name {
-                            "Readable" => perms.readable = true,
-                            "Statable" => perms.statable = true,
-                            "Listable" => perms.listable = true,
-                            "Writable" => perms.writable = true,
-                            "Appendable" => perms.appendable = true,
-                            "Deletable" => perms.deletable = true,
-                            "Renameable" => perms.renameable = true,
-                            _ => {
-                                return Err(format!(
-                                    "--cap-fs: unknown capability {:?} in extended mode",
-                                    cap_name
-                                ))
-                            }
-                        }
-                    }
-                    perms
-                } else {
-                    // Letter mode: r/w/a/s/l
-                    let mut perms = DirPerms {
-                        readable: false,
-                        statable: false,
-                        listable: false,
-                        writable: false,
-                        appendable: false,
-                        deletable: false,
-                        renameable: false,
-                    };
-                    for c in mode.chars() {
-                        if let Some(letter_perms) = DirPerms::from_letter(c) {
-                            perms = perms.union(&letter_perms);
-                        } else {
-                            return Err(format!(
-                                "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
-                                c
-                            ));
-                        }
-                    }
-                    perms
-                }
-            } else {
-                // No mode specified → error (mode is required)
-                return Err(format!(
-                    "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
-                    cap_fs_entry
-                ));
-            };
 
             let cap_value = Value::DirCap {
                 dir: Rc::new(cap_dir),
@@ -2044,6 +2069,9 @@ fn run_lint(
     file_path: &str,
     _no_fs: bool,
     strict: bool,
+    // cap_fs is accepted by the CLI for consistency but not injected into the
+    // lint environment. Lint does not evaluate code, so DirCap injection is
+    // unnecessary. --no-fs is the default for lint.
     _cap_fs: &[String],
     _cap_net: &[String],
 ) -> Result<(), String> {
@@ -2413,107 +2441,17 @@ fn run_literate_eval(
 
     // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
     {
-        use tinct::{DirPerms, Value};
-        for cap_fs_entry in cap_fs {
-            let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
-                format!(
-                    "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
-                    cap_fs_entry
-                )
-            })?;
-            let name = name.trim();
-            if name.is_empty() {
-                return Err(format!(
-                    "--cap-fs: NAME must not be empty in {:?}",
-                    cap_fs_entry
-                ));
-            }
-
-            // Split PATH:MODE on the last colon
-            let (path_str, mode_str) = match path_and_mode.rsplit_once(':') {
-                Some((path, mode)) => (path, Some(mode)),
-                None => (path_and_mode, None),
-            };
-
-            let cap_path = std::path::Path::new(path_str.trim());
+        use tinct::Value;
+        let parsed_entries = parse_cap_fs_entries(cap_fs)?;
+        for (name, cap_path, perms) in parsed_entries {
             let cap_dir =
-                cap_std::fs::Dir::open_ambient_dir(cap_path, cap_std::ambient_authority())
+                cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
                     .map_err(|e| {
                         format!(
                             "--cap-fs: cannot open directory {:?}: {e}",
                             cap_path.display()
                         )
                     })?;
-
-            // Parse mode into DirPerms (letter mode: r/w/a/s/l or extended [Cap1 ...])
-            let perms = if let Some(mode) = mode_str {
-                let mode = mode.trim();
-                if mode.starts_with('[') {
-                    // Extended syntax: [Readable Writable ...]
-                    if !mode.ends_with(']') {
-                        return Err(format!(
-                            "--cap-fs: extended mode must end with ']', got {:?}",
-                            mode
-                        ));
-                    }
-                    let caps_str = &mode[1..mode.len() - 1];
-                    let mut perms = DirPerms {
-                        readable: false,
-                        statable: false,
-                        listable: false,
-                        writable: false,
-                        appendable: false,
-                        deletable: false,
-                        renameable: false,
-                    };
-                    for cap_name in caps_str.split_whitespace() {
-                        match cap_name {
-                            "Readable" => perms.readable = true,
-                            "Statable" => perms.statable = true,
-                            "Listable" => perms.listable = true,
-                            "Writable" => perms.writable = true,
-                            "Appendable" => perms.appendable = true,
-                            "Deletable" => perms.deletable = true,
-                            "Renameable" => perms.renameable = true,
-                            _ => {
-                                return Err(format!(
-                                    "--cap-fs: unknown capability {:?} in extended mode",
-                                    cap_name
-                                ))
-                            }
-                        }
-                    }
-                    perms
-                } else {
-                    // Letter mode: r/w/a/s/l
-                    let mut perms = DirPerms {
-                        readable: false,
-                        statable: false,
-                        listable: false,
-                        writable: false,
-                        appendable: false,
-                        deletable: false,
-                        renameable: false,
-                    };
-                    for c in mode.chars() {
-                        if let Some(letter_perms) = DirPerms::from_letter(c) {
-                            perms = perms.union(&letter_perms);
-                        } else {
-                            return Err(format!(
-                                "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
-                                c
-                            ));
-                        }
-                    }
-                    perms
-                }
-            } else {
-                // No mode specified → error (mode is required)
-                return Err(format!(
-                    "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
-                    cap_fs_entry
-                ));
-            };
 
             let cap_value = Value::DirCap {
                 dir: Rc::new(cap_dir),
@@ -2712,107 +2650,17 @@ fn run_literate_weave(
 
     // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
     {
-        use tinct::{DirPerms, Value};
-        for cap_fs_entry in cap_fs {
-            let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
-                format!(
-                    "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
-                    cap_fs_entry
-                )
-            })?;
-            let name = name.trim();
-            if name.is_empty() {
-                return Err(format!(
-                    "--cap-fs: NAME must not be empty in {:?}",
-                    cap_fs_entry
-                ));
-            }
-
-            // Split PATH:MODE on the last colon
-            let (path_str, mode_str) = match path_and_mode.rsplit_once(':') {
-                Some((path, mode)) => (path, Some(mode)),
-                None => (path_and_mode, None),
-            };
-
-            let cap_path = std::path::Path::new(path_str.trim());
+        use tinct::Value;
+        let parsed_entries = parse_cap_fs_entries(cap_fs)?;
+        for (name, cap_path, perms) in parsed_entries {
             let cap_dir =
-                cap_std::fs::Dir::open_ambient_dir(cap_path, cap_std::ambient_authority())
+                cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
                     .map_err(|e| {
                         format!(
                             "--cap-fs: cannot open directory {:?}: {e}",
                             cap_path.display()
                         )
                     })?;
-
-            // Parse mode into DirPerms (letter mode: r/w/a/s/l or extended [Cap1 ...])
-            let perms = if let Some(mode) = mode_str {
-                let mode = mode.trim();
-                if mode.starts_with('[') {
-                    // Extended syntax: [Readable Writable ...]
-                    if !mode.ends_with(']') {
-                        return Err(format!(
-                            "--cap-fs: extended mode must end with ']', got {:?}",
-                            mode
-                        ));
-                    }
-                    let caps_str = &mode[1..mode.len() - 1];
-                    let mut perms = DirPerms {
-                        readable: false,
-                        statable: false,
-                        listable: false,
-                        writable: false,
-                        appendable: false,
-                        deletable: false,
-                        renameable: false,
-                    };
-                    for cap_name in caps_str.split_whitespace() {
-                        match cap_name {
-                            "Readable" => perms.readable = true,
-                            "Statable" => perms.statable = true,
-                            "Listable" => perms.listable = true,
-                            "Writable" => perms.writable = true,
-                            "Appendable" => perms.appendable = true,
-                            "Deletable" => perms.deletable = true,
-                            "Renameable" => perms.renameable = true,
-                            _ => {
-                                return Err(format!(
-                                    "--cap-fs: unknown capability {:?} in extended mode",
-                                    cap_name
-                                ))
-                            }
-                        }
-                    }
-                    perms
-                } else {
-                    // Letter mode: r/w/a/s/l
-                    let mut perms = DirPerms {
-                        readable: false,
-                        statable: false,
-                        listable: false,
-                        writable: false,
-                        appendable: false,
-                        deletable: false,
-                        renameable: false,
-                    };
-                    for c in mode.chars() {
-                        if let Some(letter_perms) = DirPerms::from_letter(c) {
-                            perms = perms.union(&letter_perms);
-                        } else {
-                            return Err(format!(
-                                "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
-                                c
-                            ));
-                        }
-                    }
-                    perms
-                }
-            } else {
-                // No mode specified → error (mode is required)
-                return Err(format!(
-                    "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
-                    cap_fs_entry
-                ));
-            };
 
             let cap_value = Value::DirCap {
                 dir: Rc::new(cap_dir),
