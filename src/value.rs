@@ -971,6 +971,22 @@ impl Thunk {
         }
     }
 
+    /// Create a lazy AstNodeField thunk — evaluates a single named field from a SurfaceNode.
+    ///
+    /// `field` must be a `'static str` (a literal field name like "name", "args", "span").
+    /// These are the field names from `surface_expr_field_names()`.
+    pub fn new_ast_node_field(
+        node: std::sync::Arc<crate::ast::SurfaceNode>,
+        field: &'static str,
+        span: Span,
+    ) -> Self {
+        Self {
+            state: RefCell::new(ThunkState::AstNodeField { node, field }),
+            span,
+            origin: None,
+        }
+    }
+
     /// `named`: pass `None` when there are no named args (the common case for internal
     /// thunks); pass `Some(map)` only when named args are actually present.
     pub fn new_pending_builtin(
