@@ -93,6 +93,23 @@ pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
+    if args.len() != 1 {
+        // Temporary diagnostic: print args info before failing
+        let named_count = named.map(|n| n.len()).unwrap_or(0);
+        println!(
+            "[DEBUG builtin_raise] got {} positional args, {} named args at {:?}",
+            args.len(),
+            named_count,
+            call_span
+        );
+        for (i, arg) in args.iter().enumerate() {
+            if let Some(v) = arg.try_get_materialized() {
+                println!("  arg[{}] = {:?}", i, v.type_name());
+            } else {
+                println!("  arg[{}] = <unevaluated>", i);
+            }
+        }
+    }
     let val = crate::builtins::expect_one_arg("raise", args, named, &ctx, call_span)?;
     let msg = require_string("raise", val, args[0].span)?;
     Err(EvalError::user_error(msg.to_string(), call_span).into())
@@ -404,8 +421,13 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes a file AST dict (the output of `load` or `ast-of`) and returns the
 /// macro-expanded file AST dict. The round-trip is:
 /// 1. Dict → File (via `dict_to_file`)
-/// 2. File → expanded File (via `expand_macros`)
+/// 2. File → expanded File (via `expand_macros_in_ctx`)
 /// 3. expanded File → Dict (via `ast_to_dict`)
+///
+/// Uses `expand_macros_in_ctx` instead of `expand_macros` to avoid a redundant
+/// stdlib reload. The caller's `EvalContext` already has a fully-loaded stdlib env
+/// (including all prelude functions and macro transformers), so there is no need to
+/// call `create_stdlib_env_with_arena()` again from within the include pipeline.
 ///
 /// Schema errors from `dict_to_file` surface as user errors.
 pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -421,11 +443,11 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let file = crate::ast_dict::dict_to_file(&val, &ctx)
         .map_err(|e| EvalError::user_error(format!("expand: {}", e), call_span))?;
 
-    // Run macro expansion
-    // Wrap the File in a Spanned for expand_macros
+    // Run macro expansion using the caller's existing EvalContext.
+    // This avoids a redundant create_stdlib_env_with_arena() call that would otherwise
+    // re-parse the prelude, overwrite STDLIB_ARENA_CACHE, and break ThunkId sharing.
     let spanned_file = crate::ast::Spanned::new(file, call_span);
-    let expand_result =
-        crate::expand::expand_macros(spanned_file, ctx.config.no_fs, &ctx.config.base_dir)?;
+    let expand_result = crate::expand::expand_macros_in_ctx(spanned_file, &ctx)?;
 
     // Convert back to dict
     let opts = crate::ast_dict::AstToDictOpts::default();
