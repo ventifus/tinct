@@ -2,7 +2,7 @@
 # [do monad] with no steps should return [monad.pure []]
 
 [do result]
----
-[Ok []]
+=== out
+Variant(Ok, Dict({}))
 === warn
 undefined variable: result

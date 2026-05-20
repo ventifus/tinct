@@ -2,7 +2,7 @@
 [do result
   [x: [Ok 42]]
   [Ok x]]
----
-[Ok 42]
+=== out
+Variant(Ok, Int(42))
 === warn
 undefined variable: result

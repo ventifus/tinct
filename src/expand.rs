@@ -33,7 +33,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ast::{Document, Entry, Expr, File, MatchArm, NamedArg, Param, Span, Spanned};
 use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
@@ -42,23 +42,16 @@ use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
 use crate::value::{Environment, Thunk, Value};
 
-/// Global scope ID counter — monotonically increasing across all expansions.
-/// Each macro invocation gets a fresh scope ID.
-static SCOPE_COUNTER: AtomicU32 = AtomicU32::new(1);
-
 /// A scope identifier assigned to each macro invocation.
 /// Scope 0 is reserved for user code (never assigned to a macro).
+/// Scope-set hygiene (Flatt 2016) is deferred; this type is kept as a placeholder
+/// for the future implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
 
 impl ScopeId {
     /// The user-code scope — variables written by the user, not introduced by macros.
     pub const USER: ScopeId = ScopeId(0);
-
-    /// Allocate a fresh scope ID for a new macro invocation.
-    fn fresh() -> Self {
-        ScopeId(SCOPE_COUNTER.fetch_add(1, Ordering::SeqCst))
-    }
 }
 
 /// Provenance information for a macro-generated AST node.
@@ -265,10 +258,11 @@ pub struct ExpandResult {
 
 /// Register stdlib macros by looking up transformer functions in the stdlib environment.
 ///
-/// Stdlib macros are defined in `stdlib/macros.llt` as regular function exports.
-/// They cannot use the normal `[macro ...]` / `[defmacro ...]` mechanism because:
-/// 1. create_stdlib_env() loads macros.llt BEFORE expand_macros runs on user code
-/// 2. The macro registration mechanism requires expand_macros to be running
+/// Stdlib macros are defined in `stdlib/macros.llt` as plain `[fn ...]` exports rather
+/// than `[macro ...]` declarations. This is a deliberate bootstrapping choice: the
+/// transformer functions must be registered before user code's `expand_macros` runs,
+/// and using `[macro ...]` would create a circular dependency (the macro expander is not
+/// yet active when macros.llt is first loaded by `create_stdlib_env`).
 ///
 /// Instead, stdlib/macros.llt exports transformer functions as normal dict bindings,
 /// and we register them here by looking them up by name.
@@ -1763,10 +1757,6 @@ fn expand_macro_call(
         expanded_ast.span = call_span;
     }
 
-    // Phase 1: allocate a fresh scope ID for hygiene provenance tracking.
-    // Phase 2 (future): apply scope-based alpha-renaming to macro-template bindings.
-    let _scope_id = ScopeId::fresh();
-
     // Record provenance for this expansion (dual-span tracking)
     env.provenance.insert(
         SpanKey::from(call_span),
@@ -1837,7 +1827,7 @@ fn validate_syntax_class(
                 Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) => "Literal",
                 Expr::Call { .. } => "Call",
                 Expr::Dict(_) => "Dict",
-                Expr::LetDecl { .. } => "Let",
+                Expr::LetDecl { .. } => "LetDecl",
                 Expr::Fn { .. } => "Fn",
                 Expr::Sequential(_) => "Seq",
                 Expr::Annotated { .. } => "Annotated",

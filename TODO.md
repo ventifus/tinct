@@ -8,12 +8,6 @@ See DONE.md for the full history of completed sprints.
 
 `macros-v2` accepted 2026-05-17. See `doc/whatif/macros-v2.md`. Unified `macro` form with `[let ...]` patterns, `inject:` for anaphoric binding, `splice` for multi-form output, `syntax-class` for declarative argument validation. Implementation order: macros-v2-ast → macros-v2-expand → macros-v2-inject → macros-v2-stdlib.
 
-- [ ] Cleanup nits (tack onto next macro sprint): stale doc comment in `register_stdlib_macros_from_env`; `"Let"` vs `"LetDecl"` inconsistency in `validate_syntax_class` allowlist; anonymous-Rest edge case in `fn-binding-to-param`; add corpus test for syntax.llt let-softening path; remove syntax.llt no-op stub once let-softening is removed (`src/expand.rs`, `stdlib/syntax.llt`)
-- [ ] `builtin_ast_of` Materialized branch returns `Value::Dict` (with `type:` field) while Unevaluated branch returns `Value::Variant` — inconsistent return type; `[tag-of [ast-of already-forced-val]]` returns empty string not a tag; fix: unify both branches to return Variant (`src/builtins_meta.rs:629-640`)
-- [ ] `gensym` returns String but macros-v2 spec says it should return VarRef AST node — spec divergence; decide whether to change gensym or update the spec (`doc/whatif/macros-v2.md:903`, `src/builtins_meta.rs`)
-- [ ] `ScopeId::fresh()` allocated but unused (`_scope_id`) in expand.rs — placeholder for future scope-set hygiene; remove or implement (`src/expand.rs:1787`)
-- [ ] 6 `do` corpus tests have stale expected output format: `do_minimal.llt-eval` and `do_hardcoded.llt-eval` expect `[Ok 42]` but runtime produces `Variant(Ok, Int(42))`; 4 other do tests (`do_three_step`, `do_nonbinding_step`, `do_no_steps`, `do_err_propagation`) have no `=== out` section at all (`tests/corpus/eval/macros/`)
-
 ---
 
 ## Primitive Privacy
@@ -69,6 +63,13 @@ Character-level string access needed to implement `from-json` in tinct (recursiv
 - [ ] Once available: migrate `from-json` from Rust primitive to tinct in `stdlib/codecs/json.llt`
 - [ ] Decide names for character-position string parsing: `parse-int`/`parse-float` (new names, used in `codecs/json.llt` deserializer) vs `to-int`/`to-float` (existing builtins). Either add `parse-int`/`parse-float` as aliases or rename all calls in `codecs/json.llt` to use `to-int`/`to-float`.
 - [ ] DESIGN: `str-slice` planned as `(start, len, string)` but existing `builtin-str-slice` is `(string, start, end)` — adding to `strings.llt` would shadow/conflict. Adding the new `str-slice` to `strings.llt` constitutes a breaking change for any file that includes `strings.llt` and calls `[str-slice s start end]`. Decide on naming before implementing: options are (a) use distinct name `str-substr` in `strings.llt`, (b) rename Rust builtin to `str-slice-range` and update all call sites, (c) accept shadowing (only affects files that include `strings.llt`).
+
+## Known Bugs (Type Checker)
+
+- [ ] `typecheck::tests::test_dot_access_intersection_found` — Intersection type unification bug: `typecheck_document_simple` returns error "cannot unify [x: [Int]] & [y: [String]] with [x: 1 y: \"hello\"]"; marked `#[ignore]` in `src/typecheck.rs:5517`
+- [ ] `typecheck::tests::test_dot_access_intersection_missing_field_returns_unknown` — same Intersection unification bug; marked `#[ignore]` in `src/typecheck.rs:5827`
+
+Root cause: no `Record ↔ Intersection` unification arm in `type_unify.rs`. `typecheck_document_simple` unifies the whole-document type (the concrete record `[x: 1 y: "hello"]`) against the inferred intersection type, which fails. Fix requires adding a `(Type::Record(..), Type::Intersection(..))` arm to `type_unify` that distributes unification across intersection members.
 
 ---
 

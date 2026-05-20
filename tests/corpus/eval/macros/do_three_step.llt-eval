@@ -3,7 +3,7 @@
   [x: [Ok 1]]
   [y: [Ok 2]]
   [Ok [+ x y]]]
----
-[Ok 3]
+=== out
+Variant(Ok, Int(3))
 === warn
 undefined variable: result

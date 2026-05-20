@@ -335,8 +335,9 @@ fn-binding-to-param: [fn [let p-b]
     "VarRef":    [name: [get "name" p-b]  annotation: []  variadic: false]
     # Annotated: typed parameter like x@Int
     "Annotated": [name: [get "name" p-b]  annotation: [get "annotation" p-b]  variadic: false]
-    # Rest: variadic parameter like ...rest
-    "Rest":      [name: [get "name" p-b]  annotation: []  variadic: true]
+    # Rest: variadic parameter like ...rest (named) or ... (anonymous — name is [] empty dict)
+    # Anonymous Rest has name=[] (empty dict from ast_dict.rs); use "_" as placeholder name.
+    "Rest":      [name: [if [str? [get "name" p-b]] [get "name" p-b] "_"]  annotation: []  variadic: true]
     # Unknown binding form — emit placeholder name
     _:           [name: "???"             annotation: []  variadic: false]]]
 
