@@ -295,8 +295,6 @@ pub(crate) fn infer_dict(
         }
     }
 
-    let mut dict_env = dict_env;
-
     // Initialize global substitution and field types accumulator.
     // Start with empty local substitution and incrementally merge state.subst entries per SCC.
     // Eliminates O(n) upfront clone of state.subst.type_map (cycle-31 major item).

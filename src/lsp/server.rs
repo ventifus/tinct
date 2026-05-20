@@ -478,6 +478,8 @@ fn handle_request(
             let workspace_edit: Option<WorkspaceEdit> = if let Some(doc) = store.get(&uri) {
                 lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
                     rename_at(doc, offset, &new_name).map(|edits| {
+                        #[allow(clippy::mutable_key_type)]
+                        // Uri interior mutability is safe for HashMap keys
                         let mut changes = std::collections::HashMap::new();
                         changes.insert(uri.clone(), edits);
                         WorkspaceEdit {
@@ -492,6 +494,8 @@ fn handle_request(
                 load_doc_from_uri(&uri).and_then(|doc| {
                     lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
                         rename_at(&doc, offset, &new_name).map(|edits| {
+                            #[allow(clippy::mutable_key_type)]
+                            // Uri interior mutability is safe for HashMap keys
                             let mut changes = std::collections::HashMap::new();
                             changes.insert(uri.clone(), edits);
                             WorkspaceEdit {

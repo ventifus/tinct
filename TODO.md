@@ -98,13 +98,6 @@ The fix noted at `coverage.rs:205` ("Future: Type::NominalVariant — not yet in
 - [ ] Update `coverage.rs:ConstructorSignature::from_union` to use the variant name as the constructor tag for nominal variants, falling back to the current field-key path for structural ADTs
 - [ ] Add corpus tests: a multi-field nominal variant with exhaustive match (should pass exhaustiveness), and a non-exhaustive match (should warn)
 
-### clippy-clean: Fix all clippy warnings (`just lint` currently fails with 205 errors)
-
-`just lint` fails (exit 101) with 205 clippy warnings across 43 lint categories, all treated as errors via `-D warnings`. Two-step fix:
-
-- [ ] Run `just lint-fix` to apply auto-fixable suggestions (covers most of: `redundant_field_names`, `redundant_closure`, `needless_borrow`, `needless_return`, `collapsible_match`, `collapsible_if`, `len_zero`, `useless_format`, `useless_conversion`, `unnecessary_cast`, `unwrap_or_default`, `needless_range_loop`, `while_let_loop`, `single_match`, `match_like_matches_macro`, `manual_map`, `needless_question_mark`, `to_string_in_format_args`, and more)
-- [ ] Manually fix remaining warnings that `lint-fix` cannot auto-apply: `type_complexity`, `too_many_arguments`, `box_collection`, `borrowed_box`, `result_large_err`, `mutable_key_type`, `new_without_default`, `enum_variant_names`, `only_used_in_recursion`, `missing_const_for_thread_local`, `doc_lazy_continuation`, `doc_overindented_list_items` — these require design decisions (refactor vs. `#[allow]` with justification)
-- [ ] Verify `just lint` passes (exit 0) after both steps
 
 ### clippy-allow-cleanup: Remove suppressible #[allow] attributes
 

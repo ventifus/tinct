@@ -822,7 +822,7 @@ pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
     // Convert to display string
     let display_str = crate::value_to_display_string(&deep_val, &ctx)
-        .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind.to_string()), call_span))?;
+        .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span))?;
     ok_val(string_val(&display_str), call_span)
 }
 
@@ -1373,7 +1373,7 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         source: Some(&source),
         comments: None,
     };
-    Ok(crate::ast_dict::ast_to_dict(&file.node, &opts, &ctx)?)
+    crate::ast_dict::ast_to_dict(&file.node, &opts, &ctx)
 }
 
 /// `include-cache-get`: look up the string-keyed include cache by blake3 key.
@@ -1736,7 +1736,7 @@ pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // are expanded before the underscore desugar pass and evaluation.
     // This matches the pipeline in main.rs, lib.rs, and LSP.
     let expand_result =
-        crate::expand::expand_macros(file, ctx.config.no_fs, &*dir_cap).map_err(|e| {
+        crate::expand::expand_macros(file, ctx.config.no_fs, &dir_cap).map_err(|e| {
             EvalError::include_parse_failed(
                 file_path_str.clone(),
                 format!("macro expansion error: {}", e),
@@ -1974,8 +1974,8 @@ fn expect_two_args(
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
 
-    let val1 = materialize(&args[0], Some(&call_span), &ctx)?;
-    let val2 = materialize(&args[1], Some(&call_span), &ctx)?;
+    let val1 = materialize(&args[0], Some(&call_span), ctx)?;
+    let val2 = materialize(&args[1], Some(&call_span), ctx)?;
 
     Ok((val1, val2))
 }
@@ -1995,7 +1995,7 @@ fn validate_value(
     // Check `type` constraint
     if let Some(&type_thunk_id) = schema.get(&Key::String("type".to_string())) {
         let type_thunk = ctx.get_thunk(type_thunk_id);
-        let type_val = materialize(&type_thunk, Some(&span), &ctx)?;
+        let type_val = materialize(&type_thunk, Some(&span), ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -2016,27 +2016,19 @@ fn validate_value(
     // Check numeric range constraints (min, max)
     if let Some(&min_thunk_id) = schema.get(&Key::String("min".to_string())) {
         let min_thunk = ctx.get_thunk(min_thunk_id);
-        let min_val = materialize(&min_thunk, Some(&span), &ctx)?;
+        let min_val = materialize(&min_thunk, Some(&span), ctx)?;
         match (data, &min_val) {
-            (Value::Int(n), Value::Int(min)) => {
-                if n < min {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Int(n), Value::Int(min)) if n < min => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
-            (Value::Float(n), Value::Float(min)) => {
-                if n < min {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Float(n), Value::Float(min)) if n < min => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
-            (Value::Int(n), Value::Float(min)) => {
-                if (*n as f64) < *min {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Int(n), Value::Float(min)) if (*n as f64) < *min => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
-            (Value::Float(n), Value::Int(min)) => {
-                if *n < (*min as f64) {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Float(n), Value::Int(min)) if *n < (*min as f64) => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
             _ => {}
         }
@@ -2044,27 +2036,19 @@ fn validate_value(
 
     if let Some(&max_thunk_id) = schema.get(&Key::String("max".to_string())) {
         let max_thunk = ctx.get_thunk(max_thunk_id);
-        let max_val = materialize(&max_thunk, Some(&span), &ctx)?;
+        let max_val = materialize(&max_thunk, Some(&span), ctx)?;
         match (data, &max_val) {
-            (Value::Int(n), Value::Int(max)) => {
-                if n > max {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Int(n), Value::Int(max)) if n > max => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
-            (Value::Float(n), Value::Float(max)) => {
-                if n > max {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Float(n), Value::Float(max)) if n > max => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
-            (Value::Int(n), Value::Float(max)) => {
-                if (*n as f64) > *max {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Int(n), Value::Float(max)) if (*n as f64) > *max => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
-            (Value::Float(n), Value::Int(max)) => {
-                if *n > (*max as f64) {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Float(n), Value::Int(max)) if *n > (*max as f64) => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
             _ => {}
         }
@@ -2073,7 +2057,7 @@ fn validate_value(
     // Check string/sequence length constraints
     if let Some(&min_len_thunk_id) = schema.get(&Key::String("min-length".to_string())) {
         let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
-        let min_len_val = materialize(&min_len_thunk, Some(&span), &ctx)?;
+        let min_len_val = materialize(&min_len_thunk, Some(&span), ctx)?;
         if let Value::Int(min_len) = min_len_val {
             let actual_len = match data {
                 Value::String {
@@ -2099,7 +2083,7 @@ fn validate_value(
 
     if let Some(&max_len_thunk_id) = schema.get(&Key::String("max-length".to_string())) {
         let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
-        let max_len_val = materialize(&max_len_thunk, Some(&span), &ctx)?;
+        let max_len_val = materialize(&max_len_thunk, Some(&span), ctx)?;
         if let Value::Int(max_len) = max_len_val {
             let actual_len = match data {
                 Value::String {
@@ -2122,7 +2106,7 @@ fn validate_value(
     // Check pattern constraint (for strings)
     if let Some(&pattern_thunk_id) = schema.get(&Key::String("pattern".to_string())) {
         let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
-        let pattern_val = materialize(&pattern_thunk, Some(&span), &ctx)?;
+        let pattern_val = materialize(&pattern_thunk, Some(&span), ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -2154,12 +2138,12 @@ fn validate_value(
     // Check enum constraint
     if let Some(&enum_thunk_id) = schema.get(&Key::String("enum".to_string())) {
         let enum_thunk = ctx.get_thunk(enum_thunk_id);
-        let enum_val = materialize(&enum_thunk, Some(&span), &ctx)?;
+        let enum_val = materialize(&enum_thunk, Some(&span), ctx)?;
         if let Value::Dict(ref enum_dict) = enum_val {
             let mut found = false;
             for (_key, &val_thunk_id) in enum_dict {
                 let val_thunk = ctx.get_thunk(val_thunk_id);
-                let val = materialize(&val_thunk, Some(&span), &ctx)?;
+                let val = materialize(&val_thunk, Some(&span), ctx)?;
                 if values_equal(&val, data) {
                     found = true;
                     break;
@@ -2174,13 +2158,13 @@ fn validate_value(
     // Check fields constraint (for dicts)
     if let Some(&fields_thunk_id) = schema.get(&Key::String("fields".to_string())) {
         let fields_thunk = ctx.get_thunk(fields_thunk_id);
-        let fields_val = materialize(&fields_thunk, Some(&span), &ctx)?;
+        let fields_val = materialize(&fields_thunk, Some(&span), ctx)?;
         if let Value::Dict(ref fields_schema) = fields_val {
             if let Value::Dict(ref data_dict) = data {
                 // Validate each field in the schema
                 for (field_key, &field_schema_thunk_id) in fields_schema {
                     let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
-                    let field_schema_val = materialize(&field_schema_thunk, Some(&span), &ctx)?;
+                    let field_schema_val = materialize(&field_schema_thunk, Some(&span), ctx)?;
                     if let Value::Dict(ref field_schema) = field_schema_val {
                         let field_name = match field_key {
                             Key::String(s) => s.clone(),
@@ -2198,7 +2182,7 @@ fn validate_value(
                             field_schema.get(&Key::String("required".to_string()))
                         {
                             let req_thunk = ctx.get_thunk(req_thunk_id);
-                            let req_val = materialize(&req_thunk, Some(&span), &ctx)?;
+                            let req_val = materialize(&req_thunk, Some(&span), ctx)?;
                             matches!(req_val, Value::Bool(true))
                         } else {
                             false
@@ -2206,7 +2190,7 @@ fn validate_value(
 
                         if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
                             let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
-                            let field_value = materialize(&field_value_thunk, Some(&span), &ctx)?;
+                            let field_value = materialize(&field_value_thunk, Some(&span), ctx)?;
                             validate_value(
                                 field_schema,
                                 &field_value,
@@ -2227,13 +2211,13 @@ fn validate_value(
     // Check items constraint (for sequences/dicts with uniform element schema)
     if let Some(&items_thunk_id) = schema.get(&Key::String("items".to_string())) {
         let items_thunk = ctx.get_thunk(items_thunk_id);
-        let items_val = materialize(&items_thunk, Some(&span), &ctx)?;
+        let items_val = materialize(&items_thunk, Some(&span), ctx)?;
         if let Value::Dict(ref items_schema) = items_val {
             match data {
                 Value::Dict(ref data_dict) => {
                     for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
-                        let val = materialize(&val_thunk, Some(&span), &ctx)?;
+                        let val = materialize(&val_thunk, Some(&span), ctx)?;
                         let item_path = if path.is_empty() {
                             format!("[{}]", idx)
                         } else {
@@ -2269,7 +2253,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 start: start2,
                 end: end2,
             },
-        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
+        ) => s1[*start1..*end1] == s2[*start2..*end2],
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Dict(x), Value::Dict(y)) => x.is_empty() && y.is_empty(), // Null check
         _ => false,

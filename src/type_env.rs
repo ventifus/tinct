@@ -337,7 +337,7 @@ pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<C
         // Keep the target if no other constraint entails it
         !snapshot.iter().any(|other| {
             // Don't compare a constraint with itself
-            other != target && entails(class_env, &[other.clone()], target)
+            other != target && entails(class_env, std::slice::from_ref(other), target)
         })
     });
 }
@@ -737,10 +737,8 @@ pub fn pretty_type(ty: &Type) -> String {
 
 fn collect_pretty_type_vars(ty: &Type, seen: &mut Vec<String>) {
     match ty {
-        Type::TypeVar(name, _) if name.starts_with("_t") => {
-            if !seen.contains(name) {
-                seen.push(name.clone());
-            }
+        Type::TypeVar(name, _) if name.starts_with("_t") && !seen.contains(name) => {
+            seen.push(name.clone());
         }
         Type::Function { params, ret, .. } => {
             for (_, p) in params {

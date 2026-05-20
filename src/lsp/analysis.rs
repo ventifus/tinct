@@ -23,6 +23,7 @@ use crate::types::{pretty_type_str, TypeError, TypeScheme};
 /// after migration to the shared imports module. Prelude types are still seeded
 /// via imports::build_type_env(), so hover should work for prelude functions if
 /// the type checker inferred their types correctly.
+#[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys
 pub fn hover_at(
     doc: &DocumentState,
     doc_url: &Uri,
@@ -139,6 +140,7 @@ fn format_scheme_for_hover(scheme: &TypeScheme) -> String {
 /// Note: Prelude type map fallback is not currently supported after migration to
 /// the shared imports module. Prelude types should still appear in hover if the
 /// type checker inferred them correctly (via imports::build_type_env seeding).
+#[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys
 fn type_suffix(
     span: Span,
     type_map: &TypeMap,
@@ -186,6 +188,8 @@ fn doc_suffix(name: &str, doc_map: &DocMap) -> String {
 }
 
 /// Recursively search an expression tree for the node at the given offset.
+#[allow(clippy::too_many_arguments)] // AST traversal requires full context
+#[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys
 fn hover_at_expr(
     expr: &Expr,
     span: Span,
@@ -208,7 +212,7 @@ fn hover_at_expr(
             let is_escaped = source
                 .as_bytes()
                 .get(span.start.offset)
-                .map_or(false, |&b| b == b'$');
+                .is_some_and(|&b| b == b'$');
             let display = if is_escaped {
                 format!("${name}")
             } else {
@@ -942,6 +946,7 @@ fn find_key_definition(expr: &Expr, _span: Span, name: &str) -> Option<Span> {
 /// - The variable reference has no definition in the document, includes, or prelude.
 ///
 /// Searches in order: document-local definitions, direct includes, prelude.
+#[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys
 pub fn definition_at(
     doc: &DocumentState,
     doc_url: &Uri,
@@ -3247,10 +3252,8 @@ pub fn inlay_hints_for(doc: &DocumentState) -> Vec<lsp_types::InlayHint> {
                         if let Some(scheme) = doc.scheme_map.get(&span_key) {
                             let raw = format_scheme_for_hover(scheme);
                             Some(crate::types::pretty_type_str(&raw))
-                        } else if let Some(ty) = doc.type_map.get(&span_key) {
-                            Some(crate::types::pretty_type(ty))
                         } else {
-                            None
+                            doc.type_map.get(&span_key).map(crate::types::pretty_type)
                         };
 
                     let type_str = match type_str {

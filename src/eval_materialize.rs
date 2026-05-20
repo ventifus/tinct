@@ -20,7 +20,7 @@ use crate::eval::{
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{eval_call, invoke_function, CallContext};
 use crate::types::Type;
-use crate::value::{string_val, Environment, Thunk, ThunkState, Value};
+use crate::value::{string_val, DefaultFallback, Environment, Thunk, ThunkState, Value};
 
 /// Maximum continuation stack depth. Prevents resource exhaustion from deeply
 /// nested evaluation chains that would otherwise exhaust heap memory.
@@ -78,14 +78,14 @@ pub(crate) enum RestoreState {
     },
     PendingBuiltin {
         def: crate::value::BuiltinDef,
-        args: Box<Vec<Rc<Thunk>>>,
+        args: Vec<Rc<Thunk>>,
         named: Option<IndexMap<String, Rc<Thunk>>>,
         call_span: Span,
         ctx: Rc<EvalContext>,
     },
     PendingCall {
         func: Rc<Thunk>,
-        args: Box<Vec<Rc<Thunk>>>,
+        args: Vec<Rc<Thunk>>,
         named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
         call_span: Span,
         caller_env: Rc<RefCell<Environment>>,
@@ -94,13 +94,10 @@ pub(crate) enum RestoreState {
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
-        field_path: Box<Vec<String>>,
+        field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
-        )>,
+        default: DefaultFallback,
     },
 }
 
@@ -181,6 +178,7 @@ pub(crate) struct MemoizeData {
 }
 
 /// Payload for Cont::PendingCallDispatch. Boxed to keep the Cont enum ≤96 bytes.
+#[allow(clippy::box_collection)] // Box<Vec<...>> is intentional: trades one heap allocation for keeping Cont enum small
 pub(crate) struct PendingCallDispatchData {
     pub(crate) thunk: Rc<Thunk>,
     pub(crate) func_thunk: Rc<Thunk>,
@@ -195,6 +193,7 @@ pub(crate) struct PendingCallDispatchData {
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
+#[allow(clippy::box_collection)] // Box<Vec<...>> is intentional: trades one heap allocation for keeping Cont enum small
 pub(crate) struct GuardedValidateData {
     pub(crate) thunk: Rc<Thunk>,
     pub(crate) expected: Type,
@@ -209,10 +208,7 @@ pub(crate) struct GuardedValidateData {
     pub(crate) ctx: Rc<EvalContext>,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
     /// Default expression and environment from TypeAssert `default:` annotation.
-    pub(crate) default: Option<(
-        Rc<crate::ast::Spanned<crate::ast::Expr>>,
-        Rc<RefCell<crate::value::Environment>>,
-    )>,
+    pub(crate) default: DefaultFallback,
     /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
     /// Wrapped in Option to enable .take() when passing to default-fallback Memoize continuations.
     pub(crate) restore: Option<RestoreState>,
@@ -563,7 +559,7 @@ pub(crate) fn force_step(
             stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                 thunk: Rc::clone(thunk),
                 def,
-                args: args.take().expect("args set above"),
+                args: (*args.take().unwrap()).to_vec(),
                 named: named.take().expect("named set above"),
                 call_span,
                 ctx: thunk_ctx,
@@ -600,7 +596,7 @@ pub(crate) fn force_step(
                     // Move args/named into RestoreState — no clone needed.
                     let restore = RestoreState::PendingBuiltin {
                         def,
-                        args: Box::new(args.take().expect("args set above")),
+                        args: (*args.take().unwrap()).to_vec(),
                         named: named.take().expect("named set above"),
                         call_span,
                         ctx: Rc::clone(&thunk_ctx),
@@ -634,7 +630,7 @@ pub(crate) fn force_step(
                     // Move args/named into PendingBuiltin — no clone needed.
                     thunk.set_state(ThunkState::PendingBuiltin {
                         def,
-                        args: Box::new(args.take().expect("args set above")),
+                        args: (*args.take().unwrap()).to_vec(),
                         named: named.take().expect("named set above"),
                         call_span,
                         ctx: thunk_ctx,
@@ -690,7 +686,7 @@ pub(crate) fn force_step(
         let restore = RestoreState::Guarded {
             inner: Rc::clone(&inner),
             expected: expected.clone(),
-            field_path: Box::new(field_path.clone()),
+            field_path: field_path.clone(),
             guard_span,
             blame_label: blame_label.clone(),
             default: default_opt.clone(),
@@ -814,7 +810,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 // the Ok result, args/named are not needed for anything else.
                                 let restore = RestoreState::PendingCall {
                                     func: func_thunk,
-                                    args: args.take().expect("args set above"),
+                                    args: (*args.take().unwrap()).to_vec(),
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     caller_env,
@@ -846,7 +842,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Move args/named into PendingCall — no clone needed.
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args: args.take().expect("args set above"),
+                                        args: (*args.take().unwrap()).to_vec(),
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
@@ -889,7 +885,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
                             thunk.set_state(ThunkState::PendingBuiltin {
                                 def,
-                                args: args.take().expect("args set above"),
+                                args: (*args.take().unwrap()).to_vec(),
                                 named: named.take().expect("named set above").map(|b| *b),
                                 call_span,
                                 ctx: thunk_ctx,
@@ -922,7 +918,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Move args/named into RestoreState — no clone needed.
                                     let restore = RestoreState::PendingCall {
                                         func: func_thunk,
-                                        args: args.take().expect("args set above"),
+                                        args: (*args.take().unwrap()).to_vec(),
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
@@ -951,7 +947,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Move args/named into PendingCall — no clone needed.
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args: args.take().expect("args set above"),
+                                        args: (*args.take().unwrap()).to_vec(),
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
@@ -977,7 +973,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // Move args/named into PendingCall — no clone needed.
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk,
-                                args: args.take().expect("args set above"),
+                                args: (*args.take().unwrap()).to_vec(),
                                 named: named.take().expect("named set above"),
                                 call_span,
                                 caller_env,
@@ -997,7 +993,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         // Move args/named into PendingCall — no clone needed.
                         thunk.set_state(ThunkState::PendingCall {
                             func: func_thunk,
-                            args: args.take().expect("args set above"),
+                            args: (*args.take().unwrap()).to_vec(),
                             named: named.take().expect("named set above"),
                             call_span,
                             caller_env,
@@ -1052,7 +1048,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             match validate_and_wrap_record(
                                 entries,
                                 row.as_ref(),
-                                &mut *field_path,
+                                &mut field_path,
                                 guard_span,
                                 inner_span,
                                 &guard_ctx,
@@ -1114,7 +1110,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                &value.type_name(),
+                                value.type_name(),
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
@@ -1164,7 +1160,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                &value.type_name(),
+                                value.type_name(),
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
@@ -1240,7 +1236,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                             thunk,
                             def,
-                            args: args.take().expect("args set above"),
+                            args: (*args.take().unwrap()).to_vec(),
                             named: named.take().expect("named set above"),
                             call_span,
                             ctx: thunk_ctx,
@@ -1274,7 +1270,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 // Move args/named into RestoreState — no clone needed.
                                 let restore = RestoreState::PendingBuiltin {
                                     def,
-                                    args: Box::new(args.take().expect("args set above")),
+                                    args: (*args.take().unwrap()).to_vec(),
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     ctx: Rc::clone(&thunk_ctx),
@@ -1302,7 +1298,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 // Move args/named into PendingBuiltin — no clone needed.
                                 thunk.set_state(ThunkState::PendingBuiltin {
                                     def,
-                                    args: Box::new(args.take().expect("args set above")),
+                                    args: (*args.take().unwrap()).to_vec(),
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     ctx: thunk_ctx,
@@ -1322,7 +1318,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         // Move args/named into PendingBuiltin — no clone needed.
                         thunk.set_state(ThunkState::PendingBuiltin {
                             def,
-                            args: Box::new(args.take().expect("args set above")),
+                            args: (*args.take().unwrap()).to_vec(),
                             named: named.take().expect("named set above"),
                             call_span,
                             ctx: thunk_ctx,
@@ -1560,7 +1556,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 } else {
                                     Action::Continue(Err(EvalError::type_assert_failed(
                                         &format_type_for_assert(&expected),
-                                        &value.type_name(),
+                                        value.type_name(),
                                         thunk_span,
                                     )
                                     .with_materialization_span(expr_span)
@@ -1582,7 +1578,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         } else {
                             Action::Continue(Err(EvalError::type_assert_failed(
                                 &format_type_for_assert(&expected),
-                                &value.type_name(),
+                                value.type_name(),
                                 thunk_span,
                             )
                             .with_materialization_span(expr_span)
@@ -2019,7 +2015,7 @@ mod tests {
         // Create RestoreState and restore
         let restore = RestoreState::PendingBuiltin {
             def: dummy_def,
-            args: Box::new(args),
+            args,
             named: None,
             call_span: span,
             ctx: ctx.clone(),
@@ -2072,7 +2068,7 @@ mod tests {
         // Create RestoreState and restore
         let restore = RestoreState::PendingCall {
             func: Rc::clone(&func_thunk),
-            args: Box::new(args),
+            args,
             named: if named.is_empty() {
                 None
             } else {
@@ -2139,7 +2135,7 @@ mod tests {
         // Restore
         let restore = RestoreState::PendingCall {
             func: Rc::clone(&func_thunk),
-            args: Box::new(args.clone()),
+            args: args.clone(),
             named: if named.is_empty() {
                 None
             } else {

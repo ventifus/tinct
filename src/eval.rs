@@ -37,7 +37,7 @@ use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::value::{string_val, Environment, Key, Thunk, ThunkState, Value};
+use crate::value::{string_val, DefaultFallback, Environment, Key, Thunk, ThunkState, Value};
 
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -559,7 +559,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Bool => matches!(value, Value::Bool(_)),
         Type::Bytes => matches!(value, Value::Bytes { .. }),
         Type::IntLiteral(n) => matches!(value, Value::Int(v) if v == n),
-        Type::StringLiteral(s) => value.as_str().map_or(false, |v| v == s),
+        Type::StringLiteral(s) => value.as_str().is_some_and(|v| v == s),
         Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin(_)),
         Type::Seq(_) => matches!(value, Value::Seq { .. }),
         Type::Map(_, _) => matches!(value, Value::Dict(_) | Value::Overlay(..)), // Map matches any Dict for now
@@ -687,7 +687,7 @@ pub(crate) fn validate_and_wrap_record(
     guard_span: Span,
     data_span: Span,
     ctx: &Rc<EvalContext>,
-    default: Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)>,
+    default: DefaultFallback,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -994,7 +994,7 @@ pub(crate) fn eval_recursive(
                         }
                         Err(EvalError::type_assert_failed(
                             &format_type_for_assert(&expected),
-                            &value.type_name(),
+                            value.type_name(),
                             thunk.span, // value's definition site, not annotation site
                         )
                         .with_materialization_span(expr.span)
@@ -1022,15 +1022,15 @@ pub(crate) fn eval_recursive(
                                         ..
                                     } => {
                                         let call_ctx = crate::eval_call::CallContext {
-                                            params: params,
-                                            body: body,
+                                            params,
+                                            body,
                                             closure_env: fn_env,
                                             positional: &[val_thunk],
                                             named: None,
                                             default_env: fn_env,
                                             call_span: expr.span,
                                             origin: Some("is: predicate".into()),
-                                            ctx: ctx,
+                                            ctx,
                                         };
                                         crate::eval_call::invoke_function(&call_ctx)?
                                     }
@@ -1046,7 +1046,7 @@ pub(crate) fn eval_recursive(
                                     _ => {
                                         return Err(EvalError::type_mismatch(
                                             "Function (is: predicate)",
-                                            &pred_val.type_name(),
+                                            pred_val.type_name(),
                                             expr.span,
                                         )
                                         .into());
@@ -1072,7 +1072,7 @@ pub(crate) fn eval_recursive(
                                                 "{} (is: predicate failed)",
                                                 format_type_for_assert(&expected)
                                             ),
-                                            &value.type_name(),
+                                            value.type_name(),
                                             thunk.span,
                                         )
                                         .with_materialization_span(expr.span)
@@ -1080,7 +1080,7 @@ pub(crate) fn eval_recursive(
                                     }
                                     _ => Err(EvalError::type_mismatch(
                                         "Bool (is: predicate return type)",
-                                        &result_val.type_name(),
+                                        result_val.type_name(),
                                         expr.span,
                                     )
                                     .into()),
@@ -1096,7 +1096,7 @@ pub(crate) fn eval_recursive(
                             }
                             Err(EvalError::type_assert_failed(
                                 &format_type_for_assert(&expected),
-                                &value.type_name(),
+                                value.type_name(),
                                 thunk.span, // value's definition site, not annotation site
                             )
                             .with_materialization_span(expr.span)
@@ -1470,7 +1470,7 @@ pub(crate) fn eval_recursive(
             let num_determining = if let Some(fd_expr) = determines.first() {
                 // FD is a 2-element list: [[a b] c] — first element is the determining set.
                 match &fd_expr.node {
-                    Expr::Dict(entries) if entries.len() >= 1 => {
+                    Expr::Dict(entries) if !entries.is_empty() => {
                         // Try to read the first entry's value as a list (array-like dict).
                         // Dict form: {0: [a b], 1: c} — entry 0 has the determining set.
                         match &entries[0].node.value.node {
@@ -1572,7 +1572,7 @@ pub(crate) fn eval_recursive(
                 // Register this arm in the runtime registry.
                 // Extract the first num_determining type tags from the pattern so the
                 // key matches what try_dispatch_method builds (determined params excluded).
-                let type_tags = extract_instance_type_tags(&pattern_expr, num_determining);
+                let type_tags = extract_instance_type_tags(pattern_expr, num_determining);
                 {
                     let mut state = ctx.state.borrow_mut();
                     state.instance_registry.insert(
@@ -1665,7 +1665,7 @@ pub(crate) const VARIANT_TAG_MARKER: &str = "__variant_tag__";
 
 /// Check if an identifier starts with an uppercase letter.
 pub(crate) fn is_constructor_name(name: &str) -> bool {
-    name.chars().next().map_or(false, |c| c.is_uppercase())
+    name.chars().next().is_some_and(|c| c.is_uppercase())
 }
 
 /// Check if an expression is a nominal variant constructor declaration.
@@ -2273,7 +2273,7 @@ pub fn materialize(
                             } else {
                                 thunk.set_state(ThunkState::PendingBuiltin {
                                     def,
-                                    args: Box::new(args),
+                                    args,
                                     named,
                                     call_span,
                                     ctx: thunk_ctx,
@@ -2291,7 +2291,7 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingBuiltin {
                         def,
-                        args: Box::new(args),
+                        args,
                         named,
                         call_span,
                         ctx: thunk_ctx,
@@ -2321,7 +2321,7 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingCall {
                         func: func_thunk.clone(),
-                        args: Box::new(args.clone()),
+                        args: args.clone(),
                         named: named.clone().map(Box::new),
                         call_span,
                         caller_env: caller_env.clone(),
@@ -2378,7 +2378,7 @@ pub fn materialize(
                                 } else {
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk.clone(),
-                                        args: Box::new(args.clone()),
+                                        args: args.clone(),
                                         named: named.clone().map(Box::new),
                                         call_span,
                                         caller_env: caller_env.clone(),
@@ -2402,7 +2402,7 @@ pub fn materialize(
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk.clone(),
-                                args: Box::new(args.clone()),
+                                args: args.clone(),
                                 named: named.clone().map(Box::new),
                                 call_span,
                                 caller_env: caller_env.clone(),
@@ -2445,7 +2445,7 @@ pub fn materialize(
                                     } else {
                                         thunk.set_state(ThunkState::PendingCall {
                                             func: func_thunk.clone(),
-                                            args: Box::new(args.clone()),
+                                            args: args.clone(),
                                             named: named.clone().map(Box::new),
                                             call_span,
                                             caller_env: caller_env.clone(),
@@ -2463,7 +2463,7 @@ pub fn materialize(
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk.clone(),
-                                args: Box::new(args.clone()),
+                                args: args.clone(),
                                 named: named.clone().map(Box::new),
                                 call_span,
                                 caller_env: caller_env.clone(),
@@ -2483,7 +2483,7 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingCall {
                         func: func_thunk,
-                        args: Box::new(args),
+                        args,
                         named: named.map(Box::new),
                         call_span,
                         caller_env,
@@ -2550,7 +2550,7 @@ pub fn materialize(
                                                 thunk.set_state(ThunkState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path: Box::new(field_path),
+                                                    field_path,
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2575,7 +2575,7 @@ pub fn materialize(
                                                 thunk.set_state(ThunkState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path: Box::new(field_path),
+                                                    field_path,
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2609,7 +2609,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path: Box::new(field_path),
+                                            field_path,
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2633,7 +2633,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path: Box::new(field_path),
+                                            field_path,
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2652,7 +2652,7 @@ pub fn materialize(
                         };
                         let mut err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
-                            &value.type_name(),
+                            value.type_name(),
                             inner_span,
                         );
                         // Add secondary span if inner value was produced at a different
@@ -2685,7 +2685,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path: Box::new(field_path),
+                                            field_path,
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2709,7 +2709,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path: Box::new(field_path),
+                                            field_path,
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2728,7 +2728,7 @@ pub fn materialize(
                         };
                         let mut err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
-                            &value.type_name(),
+                            value.type_name(),
                             inner_span,
                         );
                         // Add secondary span if inner value was produced at a different
@@ -2753,7 +2753,7 @@ pub fn materialize(
                     thunk.set_state(ThunkState::Guarded {
                         inner,
                         expected,
-                        field_path: Box::new(field_path),
+                        field_path,
                         guard_span,
                         blame_label,
                         default,
@@ -3175,7 +3175,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 start: start2,
                 end: end2,
             },
-        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
+        ) => s1[*start1..*end1] == s2[*start2..*end2],
         (Value::Dict(_), Value::Dict(_)) => false, // Dict equality is complex, not supported for now
         // Nullary variants compare by tag equality
         (

@@ -1107,12 +1107,10 @@ pub(crate) fn resolve_annotation(
                                 row_ann_mapping,
                             )
                         }
-                        _ => {
-                            return Err(TypeError::new(
-                                "Record parameterization requires a dict: @Record@[field: Type ...]",
-                                span,
-                            ));
-                        }
+                        _ => Err(TypeError::new(
+                            "Record parameterization requires a dict: @Record@[field: Type ...]",
+                            span,
+                        )),
                     }
                 }
                 "Tuple" => {
@@ -1226,32 +1224,30 @@ pub(crate) fn resolve_annotation(
                 // for these forms. We dispatch to resolve_type_expr which handles the keyword.
                 if positional_entries.len() == 1 {
                     let inner_expr = &positional_entries[0].node.value;
-                    match &inner_expr.node {
-                        Expr::Call {
-                            implied: true,
-                            func,
-                            ..
-                        } => {
-                            if let Expr::VarRef { name: kw, .. } = &func.node {
-                                if kw == "or" || kw == "all" || kw == "without" {
-                                    return resolve_type_expr(
-                                        inner_expr,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    );
-                                }
+                    if let Expr::Call {
+                        implied: true,
+                        func,
+                        ..
+                    } = &inner_expr.node
+                    {
+                        if let Expr::VarRef { name: kw, .. } = &func.node {
+                            if kw == "or" || kw == "all" || kw == "without" {
+                                return resolve_type_expr(
+                                    inner_expr,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                );
                             }
                         }
-                        _ => {}
                     }
                 }
 
                 // Built-in type constructor application: @[or Int Null], @[Seq Int], @[Map String Int]
                 // @[all A B] and @[without A] are handled in the single-positional-entry arm above.
                 // Check BEFORE parameterized alias lookup so built-in constructors have priority.
-                if positional_entries.len() >= 1 {
+                if !positional_entries.is_empty() {
                     if let Expr::VarRef { name, .. } = &positional_entries[0].node.value.node {
                         match name.as_str() {
                             "or" => {
@@ -1621,6 +1617,7 @@ fn apply_type_alias_substitution(
 }
 
 /// Resolve a type name with recursion guard (used during alias registration).
+#[allow(clippy::too_many_arguments)] // Internal helper for type alias expansion
 pub(crate) fn resolve_type_name_with_guard(
     name: &str,
     env: &TypeEnv,
@@ -1864,6 +1861,8 @@ pub(crate) fn resolve_type_name(
 /// Expand an alias body type, recursively expanding any nested type alias references.
 /// Uses equi-recursive semantics (Amadio & Cardelli 1993) with a depth guard to prevent infinite unfolding.
 /// The guard tracks aliases currently being expanded to detect cycles.
+#[allow(clippy::too_many_arguments)] // Recursive helper with state threading
+#[allow(clippy::only_used_in_recursion)] // env, state, ann_mapping, row_ann_mapping needed for recursive expansion
 fn expand_alias_body_guarded(
     ty: &Type,
     env: &TypeEnv,
@@ -2043,6 +2042,7 @@ fn expand_alias_body_guarded(
 
 /// Resolve a type expression with recursion guard for recursive type aliases.
 /// This is the internal version used during alias registration.
+#[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 pub(crate) fn resolve_type_expr_with_guard(
     expr: &Spanned<Expr>,
     env: &TypeEnv,
@@ -2099,6 +2099,7 @@ pub(crate) fn resolve_type_expr_with_guard(
 }
 
 /// Resolve a dict in type position with recursion guard.
+#[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 fn resolve_type_dict_with_guard(
     entries: &[Spanned<Entry>],
     env: &TypeEnv,
@@ -2614,7 +2615,7 @@ pub(crate) fn resolve_type_dict(
 
     // Built-in type constructor application: [Seq Int], [Map String Int]
     // Check BEFORE parameterized alias lookup so built-in constructors have priority.
-    if entries.len() >= 1 {
+    if !entries.is_empty() {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let Expr::VarRef { name, .. } = &first.node.value.node {
@@ -2629,8 +2630,6 @@ pub(crate) fn resolve_type_dict(
                                     row_ann_mapping,
                                 )?;
                                 return Ok(Type::Seq(Box::new(elem_ty)));
-                            } else if entries.len() == 1 {
-                                return Err(TypeError::new("Seq requires 1 type argument", span));
                             } else {
                                 return Err(TypeError::new("Seq requires 1 type argument", span));
                             }
@@ -2681,11 +2680,6 @@ pub(crate) fn resolve_type_dict(
                                     row_ann_mapping,
                                 )?;
                                 return Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_ty)));
-                            } else if entries.len() == 1 {
-                                return Err(TypeError::new(
-                                    "Map requires 1 or 2 type arguments",
-                                    span,
-                                ));
                             } else {
                                 return Err(TypeError::new(
                                     "Map requires 1 or 2 type arguments",

@@ -174,16 +174,18 @@ pub(crate) fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Key::Int(n) => Some(*n),
             _ => None,
         })
-        .max()
-        .map(|max| {
-            max.checked_add(1)
-                .ok_or_else(|| EvalError::integer_overflow("append".to_string(), call_span))
-        })
-        .transpose()?
-        .unwrap_or(0);
+        .max();
+
+    #[allow(clippy::result_large_err)] // EvalError size is acceptable for error path
+    let next_idx = match next_key {
+        Some(max) => max
+            .checked_add(1)
+            .ok_or_else(|| EvalError::integer_overflow("append".to_string(), call_span))?,
+        None => 0,
+    };
 
     let value_id = ctx.alloc_thunk(Rc::clone(&args[1]));
-    map.insert(Key::Int(next_key), value_id);
+    map.insert(Key::Int(next_idx), value_id);
     ok_val(Value::Dict(map), call_span)
 }
 

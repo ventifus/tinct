@@ -15,6 +15,20 @@ use crate::types::Type;
 // Re-export ThunkId for use in other modules
 pub use crate::arena::ThunkId;
 
+/// Type alias for the default fallback expression and environment pair used in
+/// Guarded thunks and type assertion contexts.
+pub type DefaultFallback = Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)>;
+
+/// Type alias for take_guarded return type
+type GuardedData = (
+    Rc<Thunk>,
+    Type,
+    Vec<String>,
+    Span,
+    Option<crate::error::BlameLabel>,
+    DefaultFallback,
+);
+
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
 #[derive(Clone, Debug)]
@@ -711,7 +725,7 @@ impl PartialEq for Value {
                     start: start_b,
                     end: end_b,
                 },
-            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
+            ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
@@ -726,7 +740,7 @@ impl PartialEq for Value {
                     start: start_b,
                     end: end_b,
                 },
-            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
+            ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
             (
                 Value::Uri {
                     scheme: scheme_a,
@@ -792,7 +806,7 @@ pub enum ThunkState {
     },
     PendingBuiltin {
         def: BuiltinDef,
-        args: Box<Vec<Rc<Thunk>>>,
+        args: Vec<Rc<Thunk>>,
         /// Named args for this builtin call. `None` means no named args (the common case);
         /// avoids allocating an empty `IndexMap` for the many internal `PendingBuiltin`
         /// thunks created by sequence generators and transforms.
@@ -802,7 +816,7 @@ pub enum ThunkState {
     },
     PendingCall {
         func: Rc<Thunk>,
-        args: Box<Vec<Rc<Thunk>>>,
+        args: Vec<Rc<Thunk>>,
         /// Named args for this call. `None` means no named args (the common case);
         /// avoids allocating an empty `IndexMap` for positional-only calls.
         named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
@@ -818,13 +832,10 @@ pub enum ThunkState {
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
-        field_path: Box<Vec<String>>,
+        field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
-        )>,
+        default: DefaultFallback,
     },
     InProgress,
     Materialized(Value),
@@ -916,7 +927,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::PendingBuiltin {
                 def,
-                args: Box::new(args),
+                args,
                 named,
                 call_span: span,
                 ctx,
@@ -926,6 +937,7 @@ impl Thunk {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // Constructor for PendingCall state
     pub fn new_pending_call(
         func: Rc<Thunk>,
         args: Vec<Rc<Thunk>>,
@@ -944,7 +956,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::PendingCall {
                 func,
-                args: Box::new(args),
+                args,
                 named,
                 call_span,
                 caller_env,
@@ -980,16 +992,13 @@ impl Thunk {
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
-        )>,
+        default: DefaultFallback,
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::Guarded {
                 inner,
                 expected,
-                field_path: Box::new(field_path),
+                field_path,
                 guard_span,
                 blame_label,
                 default,
@@ -1094,7 +1103,7 @@ impl Thunk {
                 named,
                 call_span,
                 ctx,
-            } => Some((def, *args, named, call_span, ctx)),
+            } => Some((def, args, named, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -1122,7 +1131,7 @@ impl Thunk {
                 call_span,
                 caller_env,
                 ctx,
-            } => Some((func, *args, named.map(|b| *b), call_span, caller_env, ctx)),
+            } => Some((func, args, named.map(|b| *b), call_span, caller_env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1138,19 +1147,7 @@ impl Thunk {
     /// - If the thunk is NOT Guarded, the state is restored unchanged and None is returned.
     ///
     /// The InProgress transition prevents re-entrance during guard materialization.
-    pub fn take_guarded(
-        &self,
-    ) -> Option<(
-        Rc<Thunk>,
-        Type,
-        Vec<String>,
-        Span,
-        Option<crate::error::BlameLabel>,
-        Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
-        )>,
-    )> {
+    pub fn take_guarded(&self) -> Option<GuardedData> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Guarded {
@@ -1163,7 +1160,7 @@ impl Thunk {
             } => Some((
                 inner,
                 expected,
-                *field_path,
+                field_path,
                 guard_span,
                 blame_label,
                 default,
@@ -2065,7 +2062,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*expected, Type::Int);
-                assert_eq!(field_path.as_ref(), &vec!["field".to_string()]);
+                assert_eq!(*field_path, vec!["field".to_string()]);
             }
             other => panic!("expected Guarded state, got {other:?}"),
         }

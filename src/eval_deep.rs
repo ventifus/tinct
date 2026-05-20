@@ -301,6 +301,7 @@ fn deep_materialize_impl(
 /// `mat_span` is the materialization-site span to thread through nested materializations.
 ///
 /// Returns `Err` if the Seq spine guard fires (seq_depth >= MAX_COLLECT_SIZE).
+#[allow(clippy::too_many_arguments)] // Internal helper for deep_materialize work queue
 fn push_structural(
     val: &Value,
     cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,

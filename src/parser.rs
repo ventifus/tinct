@@ -15,6 +15,9 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::lexer::{self, Token};
 
+/// Type alias for pattern with optional guard (used in match arms)
+type PatternWithGuard = (Spanned<Pattern>, Option<Box<Spanned<Expr>>>);
+
 /// Error returned when parsing fails, including message and optional source location.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
@@ -42,10 +45,10 @@ impl std::error::Error for ParseError {}
 const MAX_PARSE_DEPTH: usize = 256;
 
 /// Helper: peek at the next significant (non-whitespace, non-newline, non-comment) token.
-fn peek_next_significant<'a>(
-    tokens: &'a [Spanned<Token>],
+fn peek_next_significant(
+    tokens: &[Spanned<Token>],
     current_index: usize,
-) -> Option<(&'a Token, usize)> {
+) -> Option<(&Token, usize)> {
     let mut idx = current_index + 1;
     while idx < tokens.len() {
         match &tokens[idx].node {
@@ -60,10 +63,10 @@ fn peek_next_significant<'a>(
 
 /// Helper: peek at the next horizontally adjacent token (skip comments only, but NOT newlines or semicolons).
 /// Used for keyword-colon lookahead where `[call\n: x]` and `[call;: x]` must NOT be classified as dict entries.
-fn peek_next_horizontal<'a>(
-    tokens: &'a [Spanned<Token>],
+fn peek_next_horizontal(
+    tokens: &[Spanned<Token>],
     current_index: usize,
-) -> Option<(&'a Token, usize)> {
+) -> Option<(&Token, usize)> {
     let mut idx = current_index + 1;
     while idx < tokens.len() {
         match &tokens[idx].node {
@@ -232,7 +235,7 @@ fn skip_whitespace_tokens(
                     if !collected_comments.is_empty() {
                         leading_comments
                             .entry(next_offset)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .extend(collected_comments);
                     }
                     if has_blank_line {
@@ -615,8 +618,8 @@ fn parse_annotation(
             let mut depth: usize = 0;
             let mut end_i = bracket_start;
             let mut found = false;
-            for j in bracket_start..tokens.len() {
-                match &tokens[j].node {
+            for (j, token) in tokens.iter().enumerate().skip(bracket_start) {
+                match &token.node {
                     Token::OpenBracket => depth += 1,
                     Token::CloseBracket => {
                         depth -= 1;
@@ -894,7 +897,7 @@ enum StackFrame {
         /// Pending pattern expression (before colon) — may be bracket or identifier
         pending_pattern_expr: Option<Spanned<Expr>>,
         /// Pending pattern (with optional guard) after conversion from pending_pattern_expr
-        pending_pattern: Option<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>)>,
+        pending_pattern: Option<PatternWithGuard>,
         span_start: Position,
     },
     /// Class declaration: `[class [ClassName param...] [structural-metadata] method: Type ...]`
@@ -1113,11 +1116,7 @@ fn recover_from_bracket_error(
                     None
                 };
 
-                if func.is_none() {
-                    // No function — can't build a call, use plain error
-                    Spanned::new(Expr::Error(error_span), error_span)
-                } else {
-                    let func = func.unwrap();
+                if let Some(func) = func {
                     let mut positional_args = Vec::new();
                     let mut named_args = Vec::new();
 
@@ -1168,6 +1167,9 @@ fn recover_from_bracket_error(
                             call_span,
                         )
                     }
+                } else {
+                    // No function — can't build a call, use plain error
+                    Spanned::new(Expr::Error(error_span), error_span)
                 }
             }
             _ => {
@@ -2510,7 +2512,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             }
 
                             let class_expr = Expr::ClassDecl {
-                                name: name.unwrap_or_else(|| String::new()),
+                                name: name.unwrap_or_else(String::new),
                                 params,
                                 superclasses,
                                 methods: methods
@@ -2550,12 +2552,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         current_arm_methods,
                         span_start,
                     } => {
-                        if class_name.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "instance form requires a class name".to_string(),
-                                span: Some(span),
-                            });
-                        } else if pending_key.is_some() {
+                        if pending_key.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "instance form has incomplete method (key without value)"
                                     .to_string(),
@@ -2568,7 +2565,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                         .to_string(),
                                 span: Some(span),
                             });
-                        } else {
+                        } else if let Some(class_name_str) = class_name {
                             // Finalize current arm methods by appending to the last arm
                             if !current_arm_methods.is_empty() {
                                 if let Some(last_arm) = arms.last_mut() {
@@ -2585,7 +2582,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             }
 
                             let instance_expr = Expr::InstanceDecl {
-                                class_name: class_name.unwrap(),
+                                class_name: class_name_str,
                                 arms: arms
                                     .into_iter()
                                     .map(|(pattern, methods)| {
@@ -2631,6 +2628,11 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             spanned_pattern,
                         ) {
                             close_bracket_recover!(push_err);
+                        } else {
+                            close_bracket_recover!(ParseError {
+                                message: "instance form requires a class name".to_string(),
+                                span: Some(span),
+                            });
                         }
                     }
 
@@ -3323,7 +3325,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             let next_offset = token_vec[next_idx].span.start.offset;
                             leading_comments
                                 .entry(next_offset)
-                                .or_insert_with(Vec::new)
+                                .or_default()
                                 .push(comment_text.clone());
                         }
                     }
@@ -3333,7 +3335,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         let next_offset = token_vec[next_idx].span.start.offset;
                         leading_comments
                             .entry(next_offset)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(comment_text.clone());
                     }
                 }
@@ -4373,7 +4375,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 /// must re-push the transformed value, which will create a new entry (either keyed or auto-indexed
 /// depending on whether there was a pending_key).
 fn pop_last_value_from_frame(
-    stack: &mut Vec<StackFrame>,
+    stack: &mut [StackFrame],
     span: Span,
 ) -> Result<Spanned<Expr>, ParseError> {
     match stack.last_mut() {
@@ -4643,9 +4645,7 @@ fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> 
 }
 
 /// Convert expression to pattern, extracting guard if present
-fn expr_to_pattern_with_guard(
-    expr: Spanned<Expr>,
-) -> Result<(Spanned<Pattern>, Option<Box<Spanned<Expr>>>), ParseError> {
+fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, ParseError> {
     let span = expr.span;
     let (pattern, guard) = match expr.node {
         // Handle Pipe as or-pattern separator
@@ -4706,9 +4706,9 @@ fn expr_to_pattern_with_guard(
             // Determine the base pattern
             let base_pattern = if name == "_" {
                 Pattern::Wildcard
-            } else if name.chars().next().map_or(false, |c| c.is_lowercase()) {
+            } else if name.chars().next().is_some_and(|c| c.is_lowercase()) {
                 Pattern::Variable(name.clone())
-            } else if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+            } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                 Pattern::TypeTag(name.clone())
             } else {
                 return Err(ParseError {
@@ -4727,10 +4727,10 @@ fn expr_to_pattern_with_guard(
             // Escaped ref: $name in pattern context → pin pattern
             (Pattern::Pin(name), None)
         }
-        Expr::VarRef { name, .. } if name.chars().next().map_or(false, |c| c.is_lowercase()) => {
+        Expr::VarRef { name, .. } if name.chars().next().is_some_and(|c| c.is_lowercase()) => {
             (Pattern::Variable(name), None)
         }
-        Expr::VarRef { name, .. } if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
+        Expr::VarRef { name, .. } if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
             (Pattern::TypeTag(name), None)
         }
         Expr::VarRef { name, .. } => {
@@ -4815,7 +4815,7 @@ fn expr_to_pattern_with_guard(
                             None,
                         )
                     }
-                    (_, 1) if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
+                    (_, 1) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
                         // [Constructor payload] — nominal variant payload pattern
                         let payload_pat = expr_to_pattern((*args[0]).clone())?;
                         (
@@ -5745,6 +5745,7 @@ fn push_value(
 /// - Type-alias: `[type expr]`
 /// - Type-assert: `[@Annotation expr]`
 /// - Dot access chains: `$a.b.c`, `$a.0` (identifier and integer keys)
+///
 /// Parse a single tinct expression.
 ///
 /// This is a convenience wrapper that parses the input and returns the first expression

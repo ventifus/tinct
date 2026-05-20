@@ -95,14 +95,15 @@ lint:
 
 # Run tinct lint --strict on every .llt file in stdlib/
 lint-stdlib-strict: build-release
-    for f in stdlib/**/*.llt stdlib/*.llt; do \
+    for f in stdlib/*.llt stdlib/*/*.llt stdlib/*/*/*.llt stdlib/*/*/*/*.llt; do \
+        [ -f "$$f" ] || continue; \
         echo "  lint: $$f"; \
         {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --strict "$$f" || exit 1; \
     done
 
 # Run clippy with auto-fixes
 lint-fix:
-    {{container}} run {{run_flags}} {{rust_image}} cargo clippy --fix --allow-dirty --allow-staged
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy --fix --allow-dirty --allow-staged"
 
 # Check code formatting
 fmt-check:
@@ -142,8 +143,9 @@ tree:
 
 # Lint all stdlib .llt files for type errors without executing them
 lint-stdlib: build-release
-    for f in stdlib/**/*.llt stdlib/*.llt; do \
-        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --no-fs "$f" || exit 1; \
+    for f in stdlib/*.llt stdlib/*/*.llt stdlib/*/*/*.llt stdlib/*/*/*/*.llt; do \
+        [ -f "$$f" ] || continue; \
+        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --no-fs "$$f" || exit 1; \
     done
 
 # Lint a single tinct source file

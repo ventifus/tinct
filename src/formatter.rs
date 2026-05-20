@@ -47,10 +47,7 @@ pub fn format_source_tinct_with_dir(
     use crate::value::Value;
 
     // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
-    let compact = script_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map_or(false, |name| name == "compact");
+    let compact = script_path.file_stem().and_then(|s| s.to_str()) == Some("compact");
 
     // Set up evaluation context: use the caller-provided Dir if available; otherwise open CWD.
     let base_dir = match base_dir {
@@ -387,7 +384,7 @@ impl<'a> Formatter<'a> {
                     .source
                     .as_bytes()
                     .get(expr.span.start.offset)
-                    .map_or(false, |&b| b == b'"');
+                    .is_some_and(|&b| b == b'"');
                 if is_quoted {
                     self.output.push('"');
                     for ch in s.chars() {
@@ -812,7 +809,7 @@ impl<'a> Formatter<'a> {
                     .source
                     .as_bytes()
                     .get(expr.span.start.offset)
-                    .map_or(false, |&b| b == b'"');
+                    .is_some_and(|&b| b == b'"');
                 if is_quoted {
                     s.len() + 2
                 } else {
@@ -1447,8 +1444,8 @@ impl<'a> Formatter<'a> {
     fn push_space(&mut self, next_char: Option<char>) {
         if self.nospaces {
             // Only insert space if both preceding and following chars are bare-word chars
-            let last_is_bareword = self.output.chars().last().map_or(false, is_bare_word_char);
-            let next_is_bareword = next_char.map_or(false, is_bare_word_char);
+            let last_is_bareword = self.output.chars().last().is_some_and(is_bare_word_char);
+            let next_is_bareword = next_char.is_some_and(is_bare_word_char);
             if last_is_bareword && next_is_bareword {
                 self.output.push(' ');
             }
@@ -1490,7 +1487,7 @@ impl<'a> Formatter<'a> {
                     .source
                     .as_bytes()
                     .get(expr.span.start.offset)
-                    .map_or(false, |&b| b == b'"');
+                    .is_some_and(|&b| b == b'"');
                 if is_quoted {
                     Some('"')
                 } else {

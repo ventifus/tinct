@@ -56,15 +56,13 @@ pub fn desugar_expr(expr: &mut Spanned<Expr>, depth: usize) {
 /// Programmatic AST construction (macros, quasiquoting) must respect this bound.
 fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
     // At depth 0, try to wrap based on raw children
-    if depth == 0 {
-        if try_wrap(expr) {
-            // After wrapping, the body is at depth+1 (inside the generated lambda)
-            // We need to recurse into the wrapped body
-            if let Expr::Fn { body, .. } = &mut expr.node {
-                desugar(Rc::make_mut(body), 1);
-            }
-            return;
+    if depth == 0 && try_wrap(expr) {
+        // After wrapping, the body is at depth+1 (inside the generated lambda)
+        // We need to recurse into the wrapped body
+        if let Expr::Fn { body, .. } = &mut expr.node {
+            desugar(Rc::make_mut(body), 1);
         }
+        return;
     }
 
     // No wrapping occurred (or depth > 0): recurse into children
@@ -314,15 +312,15 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
         // The expression inside [unquote ...] is evaluated in the current environment,
         // so $_ desugaring should apply.
         Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
-            desugar(&mut **inner, depth);
+            desugar(inner, depth);
         }
 
         // Match: recurse into scrutinee and arm bodies (but not patterns).
         // Patterns don't contain runtime expressions, so they don't need desugaring.
         Expr::Match { scrutinee, arms } => {
-            desugar(&mut **scrutinee, depth);
+            desugar(scrutinee, depth);
             for arm in arms {
-                desugar(&mut *arm.body, depth);
+                desugar(&mut arm.body, depth);
             }
         }
 
@@ -333,8 +331,8 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
 
         // MacroDecl: desugar params and body expressions.
         Expr::MacroDecl { params, body, .. } => {
-            desugar(&mut **params, depth);
-            desugar(&mut **body, depth);
+            desugar(params, depth);
+            desugar(body, depth);
         }
 
         // Splice: desugar each form.
@@ -346,7 +344,7 @@ fn recurse_children(expr: &mut Spanned<Expr>, depth: usize) {
 
         // SyntaxClass: desugar pattern expression.
         Expr::SyntaxClass { pattern, .. } => {
-            desugar(&mut **pattern, depth);
+            desugar(pattern, depth);
         }
 
         // ClassDecl: recurse into method signatures (type expressions may contain $_ in complex annotations)

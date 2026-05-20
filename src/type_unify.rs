@@ -8,6 +8,9 @@ use crate::ast::Span;
 
 use super::*;
 
+/// Type alias for class constraint data: (class_name, vars, fundeps)
+type ClassConstraintData = (String, Vec<String>, Vec<(Vec<usize>, Vec<usize>)>);
+
 /// Maximum recursion depth for constraint satisfaction checking.
 /// Prevents infinite loops when checking constraints on recursive types.
 const MAX_CONSTRAINT_DEPTH: usize = 256;
@@ -170,10 +173,11 @@ pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint
             let target_var = &target_vars[0];
             for constraint in context {
                 if let Constraint::Class { class, vars, .. } = constraint {
-                    if vars.len() == 1 && vars[0] == *target_var {
-                        if is_superclass_of(class_env, class, target_class) {
-                            return true;
-                        }
+                    if vars.len() == 1
+                        && vars[0] == *target_var
+                        && is_superclass_of(class_env, class, target_class)
+                    {
+                        return true;
                     }
                 }
             }
@@ -405,6 +409,7 @@ fn check_constraints_on_var(
 /// check_constraints_on_var → improve_functional_dependency cycle.
 const MAX_FD_DEPTH: usize = 16;
 
+#[allow(clippy::too_many_arguments)] // FD improvement requires all constraint components
 fn improve_functional_dependency(
     class: &str,
     vars: &[String],
@@ -427,6 +432,7 @@ fn improve_functional_dependency(
     result
 }
 
+#[allow(clippy::too_many_arguments)] // FD improvement requires all constraint components
 fn improve_functional_dependency_inner(
     class: &str,
     vars: &[String],
@@ -850,9 +856,7 @@ pub fn resolve_has_field(
 
         // TypeVar: defer constraint (handled by caller)
         Type::TypeVar(_, _) => Err(TypeError::new(
-            format!(
-                "cannot resolve HasField constraint on unbound type variable (expected caller to defer)"
-            ),
+            "cannot resolve HasField constraint on unbound type variable (expected caller to defer)".to_string(),
             span,
         )),
 
@@ -1071,9 +1075,8 @@ impl Substitution {
                 // When an Operator TypeVar resolves to a concrete constructor name, normalize to
                 // the corresponding builtin type variant to maintain type system invariants.
                 if let Type::Operator(ctor_name) = &f_applied {
-                    match ctor_name.as_str() {
-                        "Seq" => return Cow::Owned(Type::Seq(Box::new(a_applied))),
-                        _ => {}
+                    if ctor_name.as_str() == "Seq" {
+                        return Cow::Owned(Type::Seq(Box::new(a_applied)));
                     }
                 }
 
@@ -1374,7 +1377,7 @@ fn lower_levels_check_occurs(
 fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
     // Collect all Class constraints on α. Early-exit if there are none.
     // For single-param constraints only (MPTC transfer is more complex and deferred)
-    let alpha_constraints: Vec<(String, Vec<String>, Vec<(Vec<usize>, Vec<usize>)>)> = state
+    let alpha_constraints: Vec<ClassConstraintData> = state
         .constraints
         .iter()
         .filter_map(|c| match c {

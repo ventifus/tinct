@@ -232,7 +232,7 @@ pub(crate) fn builtin_url(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     );
 
     // port (default to scheme default if not specified)
-    let port = parsed.port_or_known_default().unwrap_or_else(|| {
+    let port = parsed.port_or_known_default().unwrap_or({
         // Fallback for unknown schemes: return port 0 as sentinel
         // (url::Url::port_or_known_default returns None for unknown schemes)
         0
