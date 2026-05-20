@@ -78,6 +78,10 @@ pub(crate) mod builtins_datetime;
 pub mod desugar;
 // Macro expansion (pre-desugar AST transformation).
 pub mod expand;
+// runtime-v2: lowering pass (SurfaceExpression → CoreExpr).
+pub(crate) mod lower;
+// runtime-v2: surface AST field extraction for match dispatch and dot-access.
+pub(crate) mod surface_fields;
 // Literate tinct: extract and evaluate tinct code blocks from Markdown files.
 pub mod literate;
 // REPL (Read-Eval-Print Loop).
@@ -780,6 +784,18 @@ pub fn visit_value<V: ValueVisitor>(
                 ast::Span::origin(),
             )))
         }
+        value::Value::Program(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Program".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::Document(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Document".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::Expression(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Expression".to_string(),
+            ast::Span::origin(),
+        ))),
         value::Value::Program(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Program".to_string(),
             ast::Span::origin(),
