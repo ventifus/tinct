@@ -8421,3 +8421,17 @@ Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::
 - [x] Remove block-level `#[allow(dead_code)]` from `EnvArena` impl, `FlatEnv` struct/impl — replaced with per-item attributes on the specific methods still unused from production (alloc_child, get_mut, alloc_letrec_group, get_slot, get_by_name, insert_overflow, parent()); `alloc_root`, `fill_letrec_slot`, `get`, `env_arena` field, and `EnvId` type are now live (no suppression needed) (`src/arena.rs`)
 - [x] Benchmark: removed — no formal benchmark needed; correctness verified by unit tests; perf improvement documented in commit message when env_id threading lands
 - [x] Verify `just build` passes (`src/`) — passes; `just test-lib` passes (compilation confirmed clean after dead_code fixes)
+
+---
+
+## exhaustiveness-multi-field-nominal: Fix exhaustiveness checking for multi-field nominal variant payloads
+
+`coverage.rs:ConstructorSignature::from_union` (line 182–190) builds constructor tags from the field key set of each union member rather than from the declared variant name. For single-field variants (`[Ok T]`, `[Some a]`) this is unambiguous — the single key is the tag. For multi-field named-payload variants (`[IntLiteral value: Int span: AstSpan]`) the combined-key path produces `"span,value"` rather than `"IntLiteral"`, which does not match the `Pattern::Constructor` tag produced by the parser. Exhaustiveness checking silently fails to fire for multi-field nominal variants.
+
+Currently latent — no existing nominal type uses multi-field named payloads. Will be triggered when `AstExpr` is declared (runtime-v2) or when any user-defined multi-field nominal variant is matched.
+
+The fix noted at `coverage.rs:205` ("Future: Type::NominalVariant — not yet in Type enum"): union members need to carry their declared constructor name, not just their field set.
+
+- [x] Add `Type::NominalVariant { tag: String, fields: Row }` (or equivalent discriminant) to `src/type_def.rs` so union members produced by `[type [Tag field: T ...] ...]` declarations carry the variant name
+- [x] Update `coverage.rs:ConstructorSignature::from_union` to use the variant name as the constructor tag for nominal variants, falling back to the current field-key path for structural ADTs
+- [x] Add corpus tests: a multi-field nominal variant with exhaustive match (should pass exhaustiveness), and a non-exhaustive match (should warn)

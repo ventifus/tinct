@@ -1099,6 +1099,13 @@ impl Substitution {
                     .map(|arg| self.apply_type(arg, depth + 1, visited_types).into_owned())
                     .collect(),
             }),
+            Type::NominalVariant { tag, fields } => {
+                let applied_fields = self.apply_row(fields, depth + 1, visited_types);
+                Cow::Owned(Type::NominalVariant {
+                    tag: tag.clone(),
+                    fields: applied_fields,
+                })
+            }
             Type::Operator(name) => {
                 // Look up Operator variable in substitution map
                 if visited_types.contains(name) {
@@ -1360,6 +1367,13 @@ fn lower_levels_check_occurs(
             let mut found = false;
             for arg in args {
                 found |= lower_levels_check_occurs(arg, occurs_name, cap_level, state);
+            }
+            found
+        }
+        Type::NominalVariant { tag: _, fields } => {
+            let mut found = false;
+            for ty in fields.fields.values() {
+                found |= lower_levels_check_occurs(ty, occurs_name, cap_level, state);
             }
             found
         }
@@ -1899,6 +1913,46 @@ pub fn unify(
 
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
+
+        // NominalVariant unification: tags must match (nominal identity), then unify fields structurally
+        (
+            Type::NominalVariant {
+                tag: tag1,
+                fields: fields1,
+            },
+            Type::NominalVariant {
+                tag: tag2,
+                fields: fields2,
+            },
+        ) => {
+            if tag1 != tag2 {
+                return Err(TypeError::new(
+                    format!(
+                        "cannot unify nominal variants with different tags: {} and {}",
+                        tag1, tag2
+                    ),
+                    span,
+                ));
+            }
+            // Tags match — unify fields structurally
+            unify_rows(fields1, fields2, subst, state, span)
+        }
+
+        // NominalVariant vs Record: never unifiable (nominal vs structural distinction)
+        (Type::NominalVariant { tag, .. }, Type::Record(_)) => Err(TypeError::new(
+            format!(
+                "cannot unify nominal variant {} with structural record",
+                tag
+            ),
+            span,
+        )),
+        (Type::Record(_), Type::NominalVariant { tag, .. }) => Err(TypeError::new(
+            format!(
+                "cannot unify structural record with nominal variant {}",
+                tag
+            ),
+            span,
+        )),
 
         // Record ↔ Intersection-of-Records unification.
         //

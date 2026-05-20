@@ -531,6 +531,21 @@ impl fmt::Display for Type {
                 }
                 write!(f, ")")
             }
+            Type::NominalVariant { tag, fields } => {
+                write!(f, "[{}", tag)?;
+                if !fields.fields.is_empty() {
+                    write!(f, " ")?;
+                    let mut sorted: Vec<_> = fields.fields.iter().collect();
+                    sorted.sort_by_key(|(k, _)| *k);
+                    for (i, (key, ty)) in sorted.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " ")?;
+                        }
+                        write!(f, "{}: {}", key, ty)?;
+                    }
+                }
+                write!(f, "]")
+            }
         }
     }
 }

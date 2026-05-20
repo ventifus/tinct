@@ -188,6 +188,15 @@ pub enum Type {
         fn_name: String,
         args: Vec<Type>,
     },
+    /// Nominal variant — a union member that carries its declared constructor name.
+    /// Used for nominal variants like `[Some a]`, `[IntLiteral value: Int span: AstSpan]`, and `None`.
+    /// The `tag` is the constructor name (e.g., "Some", "IntLiteral", "None"), and `fields` are
+    /// the named or positional payload fields.
+    /// Distinct from structural `Record` types — nominal variants are never subtypes of records.
+    NominalVariant {
+        tag: String,
+        fields: Row,
+    },
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -256,6 +265,16 @@ impl PartialEq for Type {
                     args: args2,
                 },
             ) => fn1 == fn2 && args1 == args2,
+            (
+                Type::NominalVariant {
+                    tag: tag1,
+                    fields: fields1,
+                },
+                Type::NominalVariant {
+                    tag: tag2,
+                    fields: fields2,
+                },
+            ) => tag1 == tag2 && fields1 == fields2,
             _ => false,
         }
     }
@@ -329,6 +348,13 @@ impl std::hash::Hash for Type {
             Type::TypeStageApp { fn_name, args } => {
                 fn_name.hash(state);
                 args.hash(state);
+            }
+            Type::NominalVariant { tag, fields } => {
+                tag.hash(state);
+                // Hash fields in sorted order for deterministic hashing
+                let mut field_vec: Vec<_> = fields.fields.iter().collect();
+                field_vec.sort_by_key(|(k, _)| *k);
+                field_vec.hash(state);
             }
         }
     }
@@ -506,6 +532,37 @@ impl Type {
             (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
             // TypeStageApp is not a subtype of anything until reduced (conservative)
             (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => false,
+            // NominalVariant is a subtype of another NominalVariant iff tags match and fields are compatible
+            (
+                Type::NominalVariant {
+                    tag: tag1,
+                    fields: fields1,
+                },
+                Type::NominalVariant {
+                    tag: tag2,
+                    fields: fields2,
+                },
+            ) => {
+                // Tags must match (nominal identity)
+                if tag1 != tag2 {
+                    return false;
+                }
+                // Fields must satisfy structural subtyping (same as Record)
+                for (k, sup_ty) in &fields2.fields {
+                    match fields1.fields.get(k) {
+                        Some(sub_ty) => {
+                            if !Type::is_subtype(sub_ty, sup_ty) {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                }
+                true
+            }
+            // NominalVariant is NEVER a subtype of Record (nominal vs structural distinction)
+            (Type::NominalVariant { .. }, Type::Record(_)) => false,
+            (Type::Record(_), Type::NominalVariant { .. }) => false,
             _ => false,
         }
     }
@@ -599,13 +656,31 @@ impl Type {
             (Type::Bool, Type::Function { .. }) => true,
             (Type::Bytes, Type::Function { .. }) => true,
 
-            // Function vs structural types (Record, Seq, Map)
+            // Function vs structural types (Record, Seq, Map, NominalVariant)
             (Type::Function { .. }, Type::Record(_)) => true,
             (Type::Function { .. }, Type::Seq(_)) => true,
             (Type::Function { .. }, Type::Map(_, _)) => true,
+            (Type::Function { .. }, Type::NominalVariant { .. }) => true,
             (Type::Record(_), Type::Function { .. }) => true,
             (Type::Seq(_), Type::Function { .. }) => true,
             (Type::Map(_, _), Type::Function { .. }) => true,
+            (Type::NominalVariant { .. }, Type::Function { .. }) => true,
+
+            // NominalVariant vs primitives
+            (Type::NominalVariant { .. }, Type::Int | Type::IntLiteral(_)) => true,
+            (Type::NominalVariant { .. }, Type::Float) => true,
+            (Type::NominalVariant { .. }, Type::Str | Type::StringLiteral(_)) => true,
+            (Type::NominalVariant { .. }, Type::Bool) => true,
+            (Type::NominalVariant { .. }, Type::Bytes) => true,
+            (Type::NominalVariant { .. }, Type::Seq(_)) => true,
+            (Type::NominalVariant { .. }, Type::Map(_, _)) => true,
+            (Type::Int | Type::IntLiteral(_), Type::NominalVariant { .. }) => true,
+            (Type::Float, Type::NominalVariant { .. }) => true,
+            (Type::Str | Type::StringLiteral(_), Type::NominalVariant { .. }) => true,
+            (Type::Bool, Type::NominalVariant { .. }) => true,
+            (Type::Bytes, Type::NominalVariant { .. }) => true,
+            (Type::Seq(_), Type::NominalVariant { .. }) => true,
+            (Type::Map(_, _), Type::NominalVariant { .. }) => true,
 
             // Union: disjoint if ALL members are disjoint from the other type
             (Type::Union(members), t) | (t, Type::Union(members)) => {
@@ -631,6 +706,13 @@ impl Type {
 
             // TypeStageApp might overlap with anything (conservative)
             (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => false,
+            // NominalVariant with different tags are disjoint (nominal disjointness)
+            (Type::NominalVariant { tag: tag1, .. }, Type::NominalVariant { tag: tag2, .. }) => {
+                tag1 != tag2
+            }
+            // NominalVariant vs Record (both directions)
+            (Type::NominalVariant { .. }, Type::Record(_)) => true,
+            (Type::Record(_), Type::NominalVariant { .. }) => true,
             // Conservative: assume all other combinations might overlap
             _ => false,
         }
@@ -781,6 +863,31 @@ impl Type {
             }
             // TypeStageApp is consistent with everything (pending computation)
             (Type::TypeStageApp { .. }, _) | (_, Type::TypeStageApp { .. }) => true,
+            // NominalVariant: consistent iff tags match and fields are structurally consistent
+            (
+                Type::NominalVariant {
+                    tag: tag1,
+                    fields: fields1,
+                },
+                Type::NominalVariant {
+                    tag: tag2,
+                    fields: fields2,
+                },
+            ) => {
+                // Tags must match for consistency (nominal identity)
+                if tag1 != tag2 {
+                    return false;
+                }
+                // Shared fields must be consistent (same logic as Record ~ Record)
+                for (k, ty1) in &fields1.fields {
+                    if let Some(ty2) = fields2.fields.get(k) {
+                        if !Type::is_consistent(ty1, ty2) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            }
             // Capability types, Proxy: consistent only if equal (handled by a == b above)
             // All other combinations are inconsistent
             _ => false,
@@ -898,6 +1005,11 @@ impl Type {
                     arg.collect_type_vars(vars);
                 }
             }
+            Type::NominalVariant { tag: _, fields } => {
+                for ty in fields.fields.values() {
+                    ty.collect_type_vars(vars);
+                }
+            }
             _ => {}
         }
     }
@@ -926,6 +1038,9 @@ impl Type {
             Type::TypeStageApp { fn_name: _, args } => {
                 args.iter().any(|arg| arg.has_inference_vars())
             }
+            Type::NominalVariant { tag: _, fields } => {
+                fields.fields.values().any(|ty| ty.has_inference_vars())
+            }
             Type::Proxy => false,
             _ => false,
         }
@@ -951,6 +1066,9 @@ impl Type {
             Type::Intersection(members) => members.iter().any(|m| m.has_type_stage_app()),
             Type::Negation(inner) => inner.has_type_stage_app(),
             Type::App(f, a) => f.has_type_stage_app() || a.has_type_stage_app(),
+            Type::NominalVariant { tag: _, fields } => {
+                fields.fields.values().any(|ty| ty.has_type_stage_app())
+            }
             _ => false,
         }
     }
@@ -1010,6 +1128,11 @@ impl Type {
             Type::TypeStageApp { fn_name: _, args } => {
                 for arg in args {
                     arg.collect_all_vars(type_vars, row_vars);
+                }
+            }
+            Type::NominalVariant { tag: _, fields } => {
+                for ty in fields.fields.values() {
+                    ty.collect_all_vars(type_vars, row_vars);
                 }
             }
             _ => {}
@@ -1096,6 +1219,13 @@ impl Type {
                 }
                 found
             }
+            Type::NominalVariant { tag: _, fields } => {
+                let mut found = false;
+                for ty in fields.fields.values() {
+                    found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                }
+                found
+            }
             _ => false,
         }
     }
@@ -1155,6 +1285,11 @@ impl Type {
                     arg.collect_all_vars_vec(type_vars, row_vars);
                 }
             }
+            Type::NominalVariant { tag: _, fields } => {
+                for ty in fields.fields.values() {
+                    ty.collect_all_vars_vec(type_vars, row_vars);
+                }
+            }
             _ => {}
         }
     }
@@ -1201,6 +1336,11 @@ impl Type {
             Type::TypeStageApp { fn_name: _, args } => {
                 for arg in args {
                     arg.collect_operator_names(operator_names);
+                }
+            }
+            Type::NominalVariant { tag: _, fields } => {
+                for ty in fields.fields.values() {
+                    ty.collect_operator_names(operator_names);
                 }
             }
             _ => {}
@@ -1545,6 +1685,19 @@ impl Type {
                 fn_name,
                 args: args.into_iter().map(Type::simplify_type).collect(),
             },
+            Type::NominalVariant { tag, fields } => {
+                let simplified_fields = fields
+                    .fields
+                    .into_iter()
+                    .map(|(k, v)| (k, Type::simplify_type(v)))
+                    .collect();
+                Type::NominalVariant {
+                    tag,
+                    fields: Row {
+                        fields: simplified_fields,
+                    },
+                }
+            }
             _ => ty,
         }
     }
@@ -1590,6 +1743,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::App(_, _) => 34,
         Type::Operator(_) => 35,
         Type::TypeStageApp { .. } => 36,
+        Type::NominalVariant { .. } => 37,
     }
 }
 
@@ -1623,6 +1777,13 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
             }
             other => other,
         },
+        // NominalVariant: compare by tag first, then by fields (via Display for simplicity)
+        (Type::NominalVariant { tag: tag1, .. }, Type::NominalVariant { tag: tag2, .. }) => {
+            match tag1.cmp(tag2) {
+                Ordering::Equal => a.to_string().cmp(&b.to_string()),
+                other => other,
+            }
+        }
         // For complex types (Record, Function, Seq, Map, App), use Display representation
         // This is not ideal but ensures stability
         (Type::Record(_), Type::Record(_))
@@ -1703,6 +1864,12 @@ pub fn check_kind_wellformed(
         Type::TypeStageApp { fn_name: _, args } => {
             for arg in args {
                 check_kind_wellformed(arg, kind_env, span)?;
+            }
+            Ok(())
+        }
+        Type::NominalVariant { tag: _, fields } => {
+            for field_ty in fields.fields.values() {
+                check_kind_wellformed(field_ty, kind_env, span)?;
             }
             Ok(())
         }

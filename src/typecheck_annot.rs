@@ -2299,6 +2299,15 @@ pub(crate) fn resolve_type_expr(
         // VarRef still goes to resolve_type_name for type alias lookup.
         Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
         Expr::VarRef { name, .. } => {
+            // Unit constructor: None in [type [Some a] None]
+            if crate::eval::is_constructor_name(name) {
+                return Ok(Type::NominalVariant {
+                    tag: name.clone(),
+                    fields: Row {
+                        fields: HashMap::new(),
+                    },
+                });
+            }
             // Pass row_ann_mapping as read-only reference for cross-kind collision detection.
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(name, env, expr.span, state, ann_mapping, &row_ref)
@@ -2340,6 +2349,7 @@ pub(crate) fn resolve_type_expr(
             implied: true,
             func,
             args,
+            named_args,
             ..
         } => {
             if let Expr::Annotated { name, annotation } = &func.node {
@@ -2584,6 +2594,60 @@ pub(crate) fn resolve_type_expr(
 
                     // Build substitution and apply to body
                     return instantiate_type_alias(alias, &type_args, state);
+                }
+            }
+
+            // Nominal constructor: [ConstructorName field1: T1 field2: T2 ...]
+            // Check if func is an uppercase VarRef (nominal constructor name).
+            if let Expr::VarRef { name, .. } = &func.node {
+                if crate::eval::is_constructor_name(name) {
+                    // This is a nominal variant constructor with named fields.
+                    // args is empty, named_args contains the field types.
+                    // We need to resolve each field type and build a NominalVariant.
+                    if !named_args.is_empty() {
+                        let mut fields_map = HashMap::new();
+                        for named_arg in named_args {
+                            let field_ty = resolve_type_expr(
+                                &named_arg.node.value,
+                                env,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            fields_map.insert(named_arg.node.name.clone(), field_ty);
+                        }
+                        return Ok(Type::NominalVariant {
+                            tag: name.clone(),
+                            fields: Row { fields: fields_map },
+                        });
+                    } else if args.len() == 1 {
+                        // Single positional payload: [Some a] → NominalVariant("Some", { "0": a })
+                        // Use integer string key "0" for the single positional payload field.
+                        let payload_ty =
+                            resolve_type_expr(&args[0], env, state, ann_mapping, row_ann_mapping)?;
+                        let mut fields_map = HashMap::new();
+                        fields_map.insert("0".to_string(), payload_ty);
+                        return Ok(Type::NominalVariant {
+                            tag: name.clone(),
+                            fields: Row { fields: fields_map },
+                        });
+                    } else if args.is_empty() {
+                        // Unit constructor: [None] → NominalVariant("None", {})
+                        return Ok(Type::NominalVariant {
+                            tag: name.clone(),
+                            fields: Row {
+                                fields: HashMap::new(),
+                            },
+                        });
+                    } else {
+                        return Err(TypeError::new(
+                            format!(
+                                "nominal constructor {} requires either 0 args, 1 arg, or named args",
+                                name
+                            ),
+                            expr.span,
+                        ));
+                    }
                 }
             }
 
