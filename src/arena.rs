@@ -125,6 +125,7 @@ impl EnvArena {
     /// Allocate a root environment (no parent) with the given slot capacity.
     ///
     /// The display vector is initialized to contain only the new environment's own EnvId.
+    #[allow(dead_code)] // arena-phase3 scaffolding: will be used for dict scope allocation
     pub fn alloc_root(&mut self, slot_count: usize) -> EnvId {
         let len = self.envs.len();
         assert!(
@@ -147,8 +148,9 @@ impl EnvArena {
     ///
     /// The display vector is cloned from the parent and extended with the new environment's EnvId.
     ///
-    /// Private helper used by `alloc_letrec_group` (arena-phase3 scaffolding) and tests.
-    fn alloc_child(&mut self, slot_count: usize, parent_id: EnvId) -> EnvId {
+    /// Allocate a child FlatEnv with the given parent (arena-phase3).
+    /// Used by function call to create param-binding scopes.
+    pub fn alloc_child(&mut self, parent_id: EnvId, slot_count: u32) -> EnvId {
         let len = self.envs.len();
         assert!(
             len < u32::MAX as usize,
@@ -163,7 +165,7 @@ impl EnvArena {
         display.push(id);
 
         let env = FlatEnv {
-            slots: Vec::with_capacity(slot_count),
+            slots: Vec::with_capacity(slot_count as usize),
             overflow: HashMap::new(),
             parent: Some(parent_id),
             display,
@@ -208,13 +210,14 @@ impl EnvArena {
     /// The display vector is cloned from the parent and extended with the new environment's EnvId.
     #[allow(dead_code)] // arena-phase3 will use this: when display-vector addressing is wired, this method allocates child FlatEnvs with parent linkage
     pub fn alloc_letrec_group(&mut self, static_key_count: usize, parent_id: EnvId) -> EnvId {
-        self.alloc_child(static_key_count, parent_id)
+        self.alloc_child(parent_id, static_key_count as u32)
     }
 
     /// Fill a slot in a letrec environment with a ThunkId.
     ///
     /// Used during dict construction: after allocating the shared dict_env via
     /// `alloc_letrec_group`, fill each slot as its corresponding entry thunk is created.
+    #[allow(dead_code)] // arena-phase3 scaffolding: will be used for dict/function scope slot filling
     pub fn fill_letrec_slot(&mut self, env_id: EnvId, slot: u32, thunk_id: ThunkId) {
         self.get_mut(env_id).set_slot(slot, thunk_id);
     }
@@ -241,6 +244,7 @@ impl Default for EnvArena {
 #[derive(Debug)]
 pub(crate) struct FlatEnv {
     /// Static keys indexed by compile-time slot number from the resolver.
+    #[allow(dead_code)] // arena-phase3 scaffolding: will be used for O(1) variable lookup
     pub(crate) slots: Vec<Option<ThunkId>>,
     /// Computed keys (resolver returned None) indexed by name.
     #[allow(dead_code)] // arena-phase3: used for computed keys when wired into eval
@@ -276,6 +280,7 @@ impl FlatEnv {
     /// This is used during FlatEnv construction when filling slots in order.
     /// If `slot` is beyond the current vec length, intermediate slots are filled with
     /// `None` (unfilled placeholders). Callers must not query unfilled slots.
+    #[allow(dead_code)] // arena-phase3 scaffolding: called by fill_letrec_slot
     pub fn set_slot(&mut self, slot: u32, id: ThunkId) {
         let slot_idx = slot as usize;
         if slot_idx >= self.slots.len() {
@@ -509,7 +514,7 @@ mod tests {
         let root_id = env_arena.alloc_root(0);
 
         // Create a child env with root as parent
-        let child_id = env_arena.alloc_child(0, root_id);
+        let child_id = env_arena.alloc_child(root_id, 0);
 
         let child = env_arena.get(child_id);
         assert_eq!(child.parent(), Some(root_id));

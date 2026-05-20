@@ -74,6 +74,7 @@ pub(crate) enum RestoreState {
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        env_id: Option<crate::arena::EnvId>,
         ctx: Rc<EvalContext>,
     },
     PendingBuiltin {
@@ -104,11 +105,16 @@ pub(crate) enum RestoreState {
 impl RestoreState {
     pub(crate) fn restore(self, thunk: &Thunk) {
         match self {
-            RestoreState::Unevaluated { expr, env, ctx } => {
+            RestoreState::Unevaluated {
+                expr,
+                env,
+                env_id,
+                ctx,
+            } => {
                 thunk.set_state(ThunkState::Unevaluated {
                     expr,
                     env,
-                    env_id: None,
+                    env_id,
                     ctx,
                 });
             }
@@ -324,6 +330,7 @@ pub(crate) enum Action {
     Eval {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
+        env_id: Option<crate::arena::EnvId>,
         ctx: Rc<EvalContext>,
     },
 }
@@ -426,7 +433,7 @@ pub(crate) fn force_step(
     // Defer origin clone to here — it's only needed for error reporting and Memoize continuations.
     let origin = thunk.origin.clone();
 
-    if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
+    if let Some((expr, env, env_id, thunk_ctx)) = thunk.take_unevaluated() {
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
@@ -437,6 +444,7 @@ pub(crate) fn force_step(
         let restore = RestoreState::Unevaluated {
             expr: expr.clone(),
             env: env.clone(),
+            env_id,
             ctx: thunk_ctx.clone(),
         };
 
@@ -784,7 +792,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
             match result.map_err(&decorate) {
                 Ok(func_value) => match func_value {
                     Value::Function {
-                        params, body, env, ..
+                        params,
+                        body,
+                        env,
+                        env_id,
+                        ..
                     } => {
                         // The block scopes borrows of args/named so the borrow checker
                         // allows args.take()/named.take() in the match arms below.
@@ -793,6 +805,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 params: &params,
                                 body: &body,
                                 closure_env: &env,
+                                closure_env_id: env_id,
                                 positional: args.as_deref().expect("args set above"),
                                 named: named.as_ref().expect("named set above").as_deref(),
                                 default_env: &caller_env, // Use caller's environment for default param evaluation
@@ -1074,6 +1087,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         return Action::Eval {
                                             expr: default_expr,
                                             env: default_env,
+                                            env_id: None,
                                             ctx: guard_ctx,
                                         };
                                     }
@@ -1096,6 +1110,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 return Action::Eval {
                                     expr: default_expr,
                                     env: default_env,
+                                    env_id: None,
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1146,6 +1161,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 return Action::Eval {
                                     expr: default_expr,
                                     env: default_env,
+                                    env_id: None,
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1535,6 +1551,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                             Action::Eval {
                                                 expr: default,
                                                 env,
+                                                env_id: None,
                                                 ctx: Rc::clone(&ctx),
                                             }
                                         } else {
@@ -1551,6 +1568,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
+                                        env_id: None,
                                         ctx: Rc::clone(&ctx),
                                     }
                                 } else {
@@ -1573,6 +1591,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             Action::Eval {
                                 expr: Rc::new(default_expr.clone()),
                                 env,
+                                env_id: None,
                                 ctx: Rc::clone(&ctx),
                             }
                         } else {
@@ -1617,6 +1636,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     return Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
+                                        env_id: None,
                                         ctx: Rc::clone(&ctx),
                                     };
                                 }
@@ -1642,6 +1662,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     return Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
+                                        env_id: None,
                                         ctx: Rc::clone(&ctx),
                                     };
                                 }
@@ -1671,6 +1692,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
 pub(crate) fn eval_step(
     expr: Rc<Spanned<Expr>>,
     env: Rc<RefCell<Environment>>,
+    env_id: Option<crate::arena::EnvId>,
     ctx: &Rc<EvalContext>,
     stack: &mut Vec<Cont>,
 ) -> Action {
@@ -1788,6 +1810,7 @@ pub(crate) fn eval_step(
                 params: Rc::new(fn_params),
                 body: Rc::new(body.as_ref().clone()),
                 env: Rc::clone(&env),
+                env_id,
                 annotation: None,
             }))
         }
@@ -1910,9 +1933,10 @@ pub(crate) fn run(initial: Action, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
             Action::Eval {
                 expr,
                 env,
+                env_id,
                 ctx: action_ctx,
             } => {
-                action = eval_step(expr, env, &action_ctx, &mut stack);
+                action = eval_step(expr, env, env_id, &action_ctx, &mut stack);
             }
             Action::Materialize { thunk, mat_span } => {
                 action = force_step(&thunk, mat_span, &mut stack, ctx);
@@ -1966,6 +1990,7 @@ mod tests {
         let restore = RestoreState::Unevaluated {
             expr: expr.clone(),
             env: env.clone(),
+            env_id: None,
             ctx: ctx.clone(),
         };
         restore.restore(&thunk);
@@ -2041,6 +2066,7 @@ mod tests {
                 params: Rc::new(vec![]),
                 body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
+                env_id: None,
                 annotation: None,
             },
             span,
@@ -2099,6 +2125,7 @@ mod tests {
                 params: Rc::new(vec![]),
                 body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
+                env_id: None,
                 annotation: None,
             },
             span,

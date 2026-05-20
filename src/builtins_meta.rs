@@ -311,6 +311,7 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
             params: &params,
             body: &body,
             closure_env: &closure_env,
+            closure_env_id: None,
             positional: &positional,
             named: if named_args.is_empty() {
                 None

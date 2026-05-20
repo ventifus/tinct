@@ -137,6 +137,7 @@ fn try_dispatch_method(
             params,
             body,
             closure_env,
+            closure_env_id: None,
             positional: arg_thunks,
             named: None,
             default_env: closure_env,

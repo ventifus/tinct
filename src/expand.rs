@@ -1693,6 +1693,7 @@ fn expand_macro_call(
                 positional: &positional_thunks,
                 named: None,
                 closure_env,
+                closure_env_id: None,
                 default_env: closure_env,
                 ctx,
                 call_span,

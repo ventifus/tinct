@@ -1142,6 +1142,7 @@ pub fn format_with_json_llt(
                 params,
                 body,
                 closure_env,
+                closure_env_id: None,
                 positional: &positional_args,
                 named: None,
                 default_env: closure_env,
@@ -1426,6 +1427,7 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(ast::Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
+            env_id: None,
             annotation: None,
         };
         let err = value_to_json(&f, &test_ctx()).unwrap_err();
