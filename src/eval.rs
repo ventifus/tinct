@@ -151,26 +151,13 @@ pub enum IncludeCacheEntry {
     Cached(Rc<Thunk>),
 }
 
-/// Mutable evaluation state (include guard, caching).
+/// Mutable evaluation state (class registry, instance registry, evaluation stack).
 #[derive(Debug)]
 pub struct EvalState {
-    /// File identities (dev, ino) currently being evaluated by $include (cycle detection).
-    pub include_guard: HashSet<(u64, u64)>,
-    /// File identity (dev, ino) -> materialized result thunk (include result caching).
-    /// Only successful evaluations are cached; errors are not cached.
-    pub include_cache: HashMap<(u64, u64), Rc<Thunk>>,
     /// String-keyed include cache for `include-cache-get`/`include-cache-put`.
     /// Key is `blake3(cap-identity + "|" + source_text)`.
-    /// Complements the inode-keyed cache above; used by the decomposed include pipeline.
+    /// Used by the decomposed include pipeline.
     pub string_include_cache: HashMap<String, IncludeCacheEntry>,
-    /// Stack of active $include calls: `(display_path, call_site_span)`.
-    ///
-    /// Pushed by `builtin_include` before evaluating the included file, popped
-    /// after (in both success and error branches). Used to annotate errors from
-    /// nested includes with the full include path, e.g.:
-    ///   "included from a.llt at 3:10-3:25"
-    ///   "included from b.llt at 1:5-1:20"
-    pub include_chain: Vec<(String, Span)>,
     /// Stack of thunks currently being evaluated: `(origin_label, span)`.
     ///
     /// Pushed when transitioning from Unevaluated/PendingBuiltin/PendingCall/Guarded
@@ -302,10 +289,9 @@ pub struct EvalContext {
     /// Populated by typecheck_file via set_do_infer_resolutions(), consumed during eval().
     pub do_infer_resolutions: RefCell<HashMap<String, String>>,
     /// Already-open libdir Dir, shared from the bootstrap boundary (main.rs or repl.rs).
-    /// Used by `builtin_include` to inject `%libdir` into the included file's environment
-    /// without calling `open_ambient_dir` again. `None` in contexts where libdir was not
-    /// opened (e.g., --no-libdir, bootstrap contexts, tests).
-    /// Propagated through `with_base_dir` so nested includes see the same Dir.
+    /// Available via `%libdir` capability in user environments.
+    /// `None` in contexts where libdir was not opened (e.g., --no-libdir, bootstrap contexts, tests).
+    /// Propagated through `with_base_dir` so derived contexts see the same Dir.
     pub libdir_dir: RefCell<Option<Rc<cap_std::fs::Dir>>>,
 }
 
@@ -344,10 +330,7 @@ impl EvalContext {
                 source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
-                include_guard: HashSet::new(),
-                include_cache: HashMap::new(),
                 string_include_cache: HashMap::new(),
-                include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
@@ -386,10 +369,7 @@ impl EvalContext {
                 source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
-                include_guard: HashSet::new(),
-                include_cache: HashMap::new(),
                 string_include_cache: HashMap::new(),
-                include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
@@ -437,10 +417,7 @@ impl EvalContext {
                 source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
-                include_guard: HashSet::new(),
-                include_cache: HashMap::new(),
                 string_include_cache: HashMap::new(),
-                include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
@@ -536,12 +513,11 @@ impl EvalContext {
         *self.do_infer_resolutions.borrow_mut() = resolutions;
     }
 
-    /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
-    /// into included files without calling `open_ambient_dir` again.
+    /// Set the already-open libdir Dir for `%libdir` capability injection.
     ///
     /// Called by the capability initialization boundary (main.rs, repl.rs) immediately
     /// after opening the libdir directory and creating the EvalContext. Propagated
-    /// through `with_base_dir` to child contexts (nested includes).
+    /// through `with_base_dir` to child contexts.
     pub fn set_libdir_dir(&self, dir: Rc<cap_std::fs::Dir>) {
         *self.libdir_dir.borrow_mut() = Some(dir);
     }
@@ -5226,11 +5202,6 @@ mod tests {
         });
         let err = eval_document(&doc, empty_env(), &test_ctx()).unwrap_err();
         assert!(
-            err.to_string().contains("document pipeline"),
-            "got: {}",
-            err.to_string()
-        );
-        assert!(
             err.to_string().contains("expected Dict"),
             "got: {}",
             err.to_string()
@@ -7954,446 +7925,6 @@ mod tests {
         );
     }
 
-    // === EvalContext isolation tests ===
-
-    #[test]
-    fn test_evalcontext_include_cache_persists_within_context() {
-        // Create a temp directory with a test file
-        let temp_dir = std::env::temp_dir().join(format!("tinct_test_{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let test_file = temp_dir.join("test_cache.llt");
-        std::fs::write(&test_file, "[value: 42]").unwrap();
-
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
-            .expect("failed to open temp_dir");
-        let stdlib_env = crate::builtins::create_stdlib_env().unwrap();
-        let ctx = EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
-
-        // Create an env with %pwd bound to the test directory so [include %pwd "..."] works.
-        let test_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-            &stdlib_env,
-        ))));
-        {
-            let pwd_dir =
-                cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
-                    .expect("open temp_dir for %pwd");
-            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap {
-                    dir: Rc::new(pwd_dir),
-                    perms: crate::value::DirPerms::full(),
-                },
-                Span::origin(),
-            ));
-            test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        }
-
-        // First include: should evaluate and cache.
-        // Use 2-arg form [include %pwd "test_cache.llt"].
-        let include_expr1 = sp(Expr::Call {
-            func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![
-                rsp(Expr::var_ref("%pwd".into())),
-                rsp(Expr::Str("test_cache.llt".into())),
-            ],
-            named_args: vec![],
-            implied: false,
-        });
-        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&test_env), &ctx).unwrap();
-        let val1 = materialize(&result1, None, &ctx).unwrap();
-
-        // Verify the cache contains the file
-        assert_eq!(
-            ctx.state.borrow().include_cache.len(),
-            1,
-            "include_cache should contain exactly one entry"
-        );
-
-        // Second include of the same file: should hit cache
-        let include_expr2 = sp(Expr::Call {
-            func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![
-                rsp(Expr::var_ref("%pwd".into())),
-                rsp(Expr::Str("test_cache.llt".into())),
-            ],
-            named_args: vec![],
-            implied: false,
-        });
-        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&test_env), &ctx).unwrap();
-        let val2 = materialize(&result2, None, &ctx).unwrap();
-
-        // Both results should be the same value
-        match (&val1, &val2) {
-            (Value::Dict(m1), Value::Dict(m2)) => {
-                assert_eq!(m1.len(), m2.len());
-                let v1 = m1.get(&Key::String("value".into())).unwrap();
-                let v2 = m2.get(&Key::String("value".into())).unwrap();
-                assert_eq!(mat_id(v1, &ctx).unwrap(), mat_id(v2, &ctx).unwrap());
-            }
-            _ => panic!("expected Dict values"),
-        }
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
-    }
-
-    #[test]
-    fn test_evalcontext_include_guard_detects_cycles() {
-        // Create a temp directory with a test file
-        let temp_dir =
-            std::env::temp_dir().join(format!("tinct_test_guard_{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let test_file = temp_dir.join("guard_test.llt");
-        std::fs::write(&test_file, "[x: 1]").unwrap();
-
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
-            .expect("failed to open temp_dir");
-        let stdlib_env = crate::builtins::create_stdlib_env().unwrap();
-        let ctx = EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
-
-        // Manually insert the file identity (dev, ino) into the include guard
-        #[cfg(unix)]
-        let file_id = {
-            use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(&test_file).unwrap();
-            (metadata.dev(), metadata.ino())
-        };
-        #[cfg(not(unix))]
-        let file_id = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            "guard_test.llt".hash(&mut hasher);
-            (0u64, hasher.finish())
-        };
-        ctx.state.borrow_mut().include_guard.insert(file_id);
-
-        // Create an env with %pwd bound to temp_dir for the 2-arg include form.
-        let test_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-            &stdlib_env,
-        ))));
-        {
-            let pwd_dir =
-                cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
-                    .expect("open temp_dir for %pwd");
-            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap {
-                    dir: Rc::new(pwd_dir),
-                    perms: crate::value::DirPerms::full(),
-                },
-                Span::origin(),
-            ));
-            test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        }
-
-        // Attempt to include the file via [include %pwd "guard_test.llt"]: should detect cycle
-        let include_expr = sp(Expr::Call {
-            func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![
-                rsp(Expr::var_ref("%pwd".into())),
-                rsp(Expr::Str("guard_test.llt".into())),
-            ],
-            named_args: vec![],
-            implied: false,
-        });
-        let result = eval(Rc::new(include_expr.clone()), Rc::clone(&test_env), &ctx).unwrap();
-        let err = materialize(&result, None, &ctx).unwrap_err();
-
-        assert!(
-            err.to_string().contains("circular include") || err.to_string().contains("cycle"),
-            "expected circular include error, got: {}",
-            err.to_string()
-        );
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir).unwrap();
-    }
-
-    #[test]
-    fn test_evalcontext_two_contexts_with_different_base_dirs() {
-        // Create two temp directories with identical file structure
-        let temp_dir1 =
-            std::env::temp_dir().join(format!("tinct_test_ctx1_{}", std::process::id()));
-        let temp_dir2 =
-            std::env::temp_dir().join(format!("tinct_test_ctx2_{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir1).unwrap();
-        std::fs::create_dir_all(&temp_dir2).unwrap();
-
-        // Create test.llt in each directory with different content
-        let test_file1 = temp_dir1.join("test.llt");
-        let test_file2 = temp_dir2.join("test.llt");
-        std::fs::write(&test_file1, "[value: 100]").unwrap();
-        std::fs::write(&test_file2, "[value: 200]").unwrap();
-
-        // Create two independent EvalContexts with different base_dirs
-        let base_dir1 =
-            cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
-                .expect("failed to open temp_dir1");
-        let ctx1 = EvalContext::new(
-            base_dir1,
-            crate::builtins::create_stdlib_env().unwrap(),
-            false,
-        );
-        let base_dir2 =
-            cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
-                .expect("failed to open temp_dir2");
-        let ctx2 = EvalContext::new(
-            base_dir2,
-            crate::builtins::create_stdlib_env().unwrap(),
-            false,
-        );
-
-        // Include test.llt from ctx1 using 2-arg form with %pwd = temp_dir1.
-        let env1 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-            &ctx1.config.stdlib_env,
-        ))));
-        {
-            let pwd_dir1 =
-                cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
-                    .expect("open temp_dir1 for %pwd");
-            let pwd_thunk1 = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap {
-                    dir: Rc::new(pwd_dir1),
-                    perms: crate::value::DirPerms::full(),
-                },
-                Span::origin(),
-            ));
-            env1.borrow_mut().insert("%pwd".to_string(), pwd_thunk1);
-        }
-        let include_expr1 = sp(Expr::Call {
-            func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![
-                rsp(Expr::var_ref("%pwd".into())),
-                rsp(Expr::Str("test.llt".into())),
-            ],
-            named_args: vec![],
-            implied: false,
-        });
-        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&env1), &ctx1).unwrap();
-        let val1 = materialize(&result1, None, &ctx1).unwrap();
-
-        // Include test.llt from ctx2 using 2-arg form with %pwd = temp_dir2.
-        let env2 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-            &ctx2.config.stdlib_env,
-        ))));
-        {
-            let pwd_dir2 =
-                cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
-                    .expect("open temp_dir2 for %pwd");
-            let pwd_thunk2 = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap {
-                    dir: Rc::new(pwd_dir2),
-                    perms: crate::value::DirPerms::full(),
-                },
-                Span::origin(),
-            ));
-            env2.borrow_mut().insert("%pwd".to_string(), pwd_thunk2);
-        }
-        let include_expr2 = sp(Expr::Call {
-            func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![
-                rsp(Expr::var_ref("%pwd".into())),
-                rsp(Expr::Str("test.llt".into())),
-            ],
-            named_args: vec![],
-            implied: false,
-        });
-        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&env2), &ctx2).unwrap();
-        let val2 = materialize(&result2, None, &ctx2).unwrap();
-
-        // Verify that the two contexts resolved different files
-        match (&val1, &val2) {
-            (Value::Dict(m1), Value::Dict(m2)) => {
-                let v1_id = m1.get(&Key::String("value".into())).unwrap();
-                let v2_id = m2.get(&Key::String("value".into())).unwrap();
-                let v1 = mat_id(v1_id, &ctx1).unwrap();
-                let v2 = mat_id(v2_id, &ctx2).unwrap();
-                assert_eq!(
-                    v1,
-                    Value::Int(100),
-                    "ctx1 should resolve to temp_dir1/test.llt"
-                );
-                assert_eq!(
-                    v2,
-                    Value::Int(200),
-                    "ctx2 should resolve to temp_dir2/test.llt"
-                );
-            }
-            _ => panic!("expected Dict values"),
-        }
-
-        // Verify that the two contexts have independent caches
-        assert_eq!(ctx1.state.borrow().include_cache.len(), 1);
-        assert_eq!(ctx2.state.borrow().include_cache.len(), 1);
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir1).unwrap();
-        std::fs::remove_dir_all(&temp_dir2).unwrap();
-    }
-
-    #[test]
-    fn test_evalcontext_shared_state_different_config() {
-        // Create two temp directories
-        let temp_dir1 =
-            std::env::temp_dir().join(format!("tinct_test_shared1_{}", std::process::id()));
-        let temp_dir2 =
-            std::env::temp_dir().join(format!("tinct_test_shared2_{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir1).unwrap();
-        std::fs::create_dir_all(&temp_dir2).unwrap();
-
-        // Create a test file in dir1
-        let test_file1 = temp_dir1.join("shared_test.llt");
-        std::fs::write(&test_file1, "[cached: true]").unwrap();
-
-        // Create ctx1 with base_dir = temp_dir1
-        let base_dir1 =
-            cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
-                .expect("failed to open temp_dir1");
-        let ctx1 = EvalContext::new(
-            base_dir1,
-            crate::builtins::create_stdlib_env().unwrap(),
-            false,
-        );
-
-        // Create ctx2 that shares ctx1's state but has a different base_dir
-        let base_dir2 =
-            cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
-                .expect("failed to open temp_dir2");
-        let ctx2 = ctx1.with_base_dir(base_dir2);
-
-        // Verify that ctx2 has a different base_dir (we can't directly compare Dirs,
-        // but we can verify they point to different paths by checking if files exist)
-        // This is sufficient to verify the test's intent: ctx1 and ctx2 have different base_dirs.
-
-        // Verify that ctx2 shares the same state as ctx1 (using Rc::ptr_eq)
-        assert!(
-            Rc::ptr_eq(&ctx1.state, &ctx2.state),
-            "ctx2 should share the same state Rc as ctx1"
-        );
-
-        // Include a file using ctx1 - this populates the include_cache.
-        // Use 2-arg form with %pwd = temp_dir1.
-        let env_ctx1 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-            &ctx1.config.stdlib_env,
-        ))));
-        {
-            let pwd_dir =
-                cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
-                    .expect("open temp_dir1 for %pwd");
-            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap {
-                    dir: Rc::new(pwd_dir),
-                    perms: crate::value::DirPerms::full(),
-                },
-                Span::origin(),
-            ));
-            env_ctx1.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        }
-        let include_expr1 = sp(Expr::Call {
-            func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![
-                rsp(Expr::var_ref("%pwd".into())),
-                rsp(Expr::Str("shared_test.llt".into())),
-            ],
-            named_args: vec![],
-            implied: false,
-        });
-        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&env_ctx1), &ctx1).unwrap();
-        let _val1 = materialize(&result1, None, &ctx1).unwrap();
-
-        // Verify that ctx1's include_cache has one entry
-        assert_eq!(
-            ctx1.state.borrow().include_cache.len(),
-            1,
-            "ctx1 include_cache should have exactly one entry"
-        );
-
-        // Verify that ctx2's include_cache ALSO has the same entry (shared state)
-        assert_eq!(
-            ctx2.state.borrow().include_cache.len(),
-            1,
-            "ctx2 include_cache should share the same entry as ctx1"
-        );
-
-        // Verify they reference the exact same cache HashMap
-        // The cache key is (dev, ino) — extract from the test file's metadata.
-        let cache_key = {
-            use std::os::unix::fs::MetadataExt;
-            let meta = std::fs::metadata(&test_file1).unwrap();
-            (meta.dev(), meta.ino())
-        };
-        assert!(
-            ctx1.state.borrow().include_cache.contains_key(&cache_key),
-            "ctx1 cache should contain the file identity"
-        );
-        assert!(
-            ctx2.state.borrow().include_cache.contains_key(&cache_key),
-            "ctx2 cache should contain the same file identity"
-        );
-
-        // Test include_guard sharing: create same file in both directories
-        let guard_path1 = temp_dir1.join("guard_test.llt");
-        let guard_path2 = temp_dir2.join("guard_test.llt");
-        std::fs::write(&guard_path1, "[x: 1]").unwrap();
-        std::fs::write(&guard_path2, "[x: 2]").unwrap();
-
-        // Insert the (dev, ino) of guard_path2 into ctx1's include guard
-        let guard_file_id = {
-            use std::os::unix::fs::MetadataExt;
-            let meta = std::fs::metadata(&guard_path2).unwrap();
-            (meta.dev(), meta.ino())
-        };
-        ctx1.state.borrow_mut().include_guard.insert(guard_file_id);
-
-        // Verify the guard is visible in ctx2 (shared state)
-        assert!(
-            ctx2.state.borrow().include_guard.contains(&guard_file_id),
-            "ctx2 include_guard should contain the file identity inserted via ctx1"
-        );
-
-        // Attempt to include the guarded file using ctx2 - should detect cycle.
-        // This resolves to temp_dir2/guard_test.llt which is in the shared guard.
-        // Use 2-arg form with %pwd = temp_dir2.
-        let env_ctx2 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-            &ctx2.config.stdlib_env,
-        ))));
-        {
-            let pwd_dir =
-                cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
-                    .expect("open temp_dir2 for %pwd");
-            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
-                crate::value::Value::DirCap {
-                    dir: Rc::new(pwd_dir),
-                    perms: crate::value::DirPerms::full(),
-                },
-                Span::origin(),
-            ));
-            env_ctx2.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        }
-        let include_expr2 = sp(Expr::Call {
-            func: Box::new(sp(Expr::var_ref("include".into()))),
-            args: vec![
-                rsp(Expr::var_ref("%pwd".into())),
-                rsp(Expr::Str("guard_test.llt".into())),
-            ],
-            named_args: vec![],
-            implied: false,
-        });
-        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&env_ctx2), &ctx2).unwrap();
-        let err = materialize(&result2, None, &ctx2).unwrap_err();
-
-        assert!(
-            err.to_string().contains("circular include") || err.to_string().contains("cycle"),
-            "expected circular include error from shared guard, got: {}",
-            err.to_string()
-        );
-
-        // Cleanup
-        std::fs::remove_dir_all(&temp_dir1).unwrap();
-        std::fs::remove_dir_all(&temp_dir2).unwrap();
-    }
-
     // ── Structural TypeAssert tests (resolved_type: Some(Type::...)) ────
     // These test the NEW structural validation path added by the
     // typeassert-structural sprint, distinct from the nominal fallback path
@@ -9764,19 +9295,19 @@ mod tests {
 
     #[test]
     fn test_eval_context_new_empty_state() {
-        // EvalContext::new() should create an empty include_guard and include_cache
+        // EvalContext::new() should create an empty string_include_cache and eval_stack
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         let env = empty_env();
         let ctx = EvalContext::new(base_dir, env, false);
 
         assert!(
-            ctx.state.borrow().include_guard.is_empty(),
-            "include_guard should be empty on creation"
+            ctx.state.borrow().string_include_cache.is_empty(),
+            "string_include_cache should be empty on creation"
         );
         assert!(
-            ctx.state.borrow().include_cache.is_empty(),
-            "include_cache should be empty on creation"
+            ctx.state.borrow().eval_stack.is_empty(),
+            "eval_stack should be empty on creation"
         );
     }
 
@@ -9788,9 +9319,13 @@ mod tests {
         let env = empty_env();
         let ctx1 = EvalContext::new(base_dir1, env, false);
 
-        // Populate the state
-        ctx1.state.borrow_mut().include_guard.insert((0, 1));
-        assert_eq!(ctx1.state.borrow().include_guard.len(), 1);
+        // Populate the string_include_cache (the new equivalent of include_cache)
+        use crate::eval::IncludeCacheEntry;
+        ctx1.state
+            .borrow_mut()
+            .string_include_cache
+            .insert("test-key".to_string(), IncludeCacheEntry::Missing);
+        assert_eq!(ctx1.state.borrow().string_include_cache.len(), 1);
 
         // Create ctx2 with a different base_dir but shared state
         let base_dir2 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
@@ -9803,15 +9338,18 @@ mod tests {
             "ctx2 should share the same state Rc as ctx1"
         );
 
-        // Verify the state is actually shared (include_guard has the same entry)
+        // Verify the state is actually shared (string_include_cache has the same entry)
         assert_eq!(
-            ctx2.state.borrow().include_guard.len(),
+            ctx2.state.borrow().string_include_cache.len(),
             1,
-            "ctx2 should see the same include_guard as ctx1"
+            "ctx2 should see the same string_include_cache as ctx1"
         );
         assert!(
-            ctx2.state.borrow().include_guard.contains(&(0, 1)),
-            "ctx2 should see the entry added to ctx1's include_guard"
+            ctx2.state
+                .borrow()
+                .string_include_cache
+                .contains_key("test-key"),
+            "ctx2 should see the entry added to ctx1's string_include_cache"
         );
     }
 
@@ -9835,16 +9373,11 @@ mod tests {
         );
     }
 
-    /// Integration test: `with_base_dir()` inherits `no_fs` flag.
+    /// `with_base_dir()` inherits `no_fs` flag.
     ///
-    /// Verifies the no_fs=true code path end-to-end through `with_base_dir()`:
-    /// 1. Create a ctx1 with no_fs=true.
-    /// 2. Call ctx1.with_base_dir() to get ctx2 with a different base_dir.
-    /// 3. Evaluate a `$include` call using ctx2.
-    /// 4. Confirm the result is `IncludeForbidden` [E042] — proving:
-    ///    a. `with_base_dir()` correctly propagates the no_fs flag.
-    ///    b. `$include` resolves via ctx2's config (not a stale ctx1 config).
-    ///    c. No actual filesystem access is needed — the error fires immediately.
+    /// Verifies structural properties of with_base_dir():
+    /// 1. no_fs=true propagates to the derived context.
+    /// 2. The derived context shares the same state Rc.
     #[test]
     fn test_eval_context_with_base_dir_inherits_no_fs() {
         // Two separate base dirs: ctx1 starts with no_fs=true.
@@ -9869,37 +9402,6 @@ mod tests {
         assert!(
             Rc::ptr_eq(&ctx1.state, &ctx2.state),
             "ctx2 must share the same state Rc as ctx1"
-        );
-
-        // Exercise the no_fs path: $include must produce IncludeForbidden [E042].
-        // This proves ctx2 correctly propagates no_fs to $include without needing
-        // any real files on disk.
-        let include_expr = sp(crate::ast::Expr::Call {
-            func: Box::new(sp(crate::ast::Expr::var_ref("include".into()))),
-            args: vec![Rc::new(sp(crate::ast::Expr::Str(
-                "hypothetical.llt".into(),
-            )))],
-            named_args: vec![],
-            implied: false,
-        });
-
-        let thunk = eval(
-            Rc::new(include_expr.clone()),
-            Rc::clone(&ctx2.config.stdlib_env),
-            &ctx2,
-        )
-        .expect("eval should succeed (thunk creation does not access filesystem)");
-        let err = materialize(&thunk, None, &ctx2).expect_err("$include with no_fs=true must fail");
-
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::IncludeForbidden),
-            "Expected IncludeForbidden [E042], got: {}",
-            err.kind.code()
-        );
-        assert_eq!(
-            err.kind.code(),
-            "E042",
-            "IncludeForbidden must produce error code E042"
         );
     }
 

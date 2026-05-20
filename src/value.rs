@@ -451,10 +451,6 @@ pub enum Value {
         socket: DatagramSocket,
         creation_span: Span,
     },
-    /// Rust primitive registry — virtual module cap for `[include %rust "module"]`.
-    /// Opaque Rust value that cannot be constructed by tinct code; injected only into
-    /// stdlib evaluation context. Never equal to anything, even itself.
-    RustRegistry,
 }
 
 /// State for an HTTP/3 session: the request sender and the background driver task.
@@ -541,7 +537,6 @@ impl Value {
             Value::Http3Session(_) => "Http3Session",
             Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
             Value::DatagramHandle { .. } => "DatagramHandle",
-            Value::RustRegistry => "RustRegistry",
         }
     }
 
@@ -621,7 +616,6 @@ impl fmt::Debug for Value {
             Value::Http3Session(_) => write!(f, "Http3Session"),
             Value::QuicDatagramHandle(_) => write!(f, "QuicDatagramHandle"),
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
-            Value::RustRegistry => write!(f, "RustRegistry"),
         }
     }
 }
@@ -703,7 +697,6 @@ impl fmt::Display for Value {
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
             Value::QuicDatagramHandle(_) => write!(f, "<QuicDatagramHandle>"),
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
-            Value::RustRegistry => write!(f, "<rust-registry>"),
         }
     }
 }

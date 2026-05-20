@@ -640,6 +640,7 @@ fn make_include_dir(label: &str) -> TempDir {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_basic_dict() {
     let dir = make_include_dir("basic_dict");
     let helper = dir.path().join("helper.llt");
@@ -663,6 +664,7 @@ fn include_basic_dict() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_namespaced() {
     // Include a helper and access its fields via the namespace binding
     let dir = make_include_dir("namespaced");
@@ -696,6 +698,7 @@ fn include_namespaced() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_merged_scope_chain() {
     // First expression is an include (result merges into scope), second uses its bindings
     let dir = make_include_dir("merged_scope");
@@ -724,6 +727,7 @@ fn include_merged_scope_chain() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_nested_a_includes_b_includes_c() {
     // A includes B, B includes C — nested transitive include
     let dir = make_include_dir("nested_chain");
@@ -760,6 +764,7 @@ fn include_nested_a_includes_b_includes_c() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_circular_error() {
     // A includes B, B includes A — circular dependency
     let dir = make_include_dir("circular");
@@ -783,6 +788,7 @@ fn include_circular_error() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_self_circular_error() {
     // File includes itself — degenerate circular case
     let dir = make_include_dir("self_circular");
@@ -805,6 +811,7 @@ fn include_self_circular_error() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_file_not_found_error() {
     let dir = make_include_dir("file_not_found");
     fs::write(
@@ -830,6 +837,7 @@ fn include_file_not_found_error() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_relative_path_from_subdirectory() {
     // Main file in root dir includes a file in a subdirectory via relative path
     let dir = make_include_dir("relative_subdir");
@@ -863,6 +871,7 @@ fn include_relative_path_from_subdirectory() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_relative_path_from_included_file() {
     // Main includes sub/a.llt, which eagerly includes sibling b.llt (relative to sub/).
     // The include must be at the top level (not inside a dict entry) so it is
@@ -907,6 +916,7 @@ fn include_relative_path_from_included_file() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_with_stdlib_builtins() {
     // Included file uses stdlib builtins (arithmetic)
     let dir = make_include_dir("stdlib_builtins");
@@ -938,6 +948,7 @@ fn include_with_stdlib_builtins() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_returns_scalar() {
     // Included file evaluates to a scalar (not a dict)
     let dir = make_include_dir("scalar_return");
@@ -969,6 +980,7 @@ fn include_returns_scalar() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_returns_string() {
     // Included file evaluates to a string scalar
     let dir = make_include_dir("string_return");
@@ -1000,6 +1012,7 @@ fn include_returns_string() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_diamond_pattern_no_cycle() {
     // Diamond: main includes A and B, both include C — NOT circular
     // (C is included twice but never re-enters while already in the guard)
@@ -1048,6 +1061,7 @@ fn include_diamond_pattern_no_cycle() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_isolation_no_caller_scope() {
     // Included file should NOT see bindings from the caller's scope
     let dir = make_include_dir("isolation");
@@ -1077,6 +1091,7 @@ fn include_isolation_no_caller_scope() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_with_deep_materialize() {
     // Use --eval flag with includes to exercise deep materialization
     let dir = make_include_dir("deep_materialize");
@@ -1109,6 +1124,7 @@ fn include_with_deep_materialize() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_llt_format_output() {
     // Include test with LLT display format output
     let dir = make_include_dir("llt_format");
@@ -1135,6 +1151,7 @@ fn include_llt_format_output() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_path_traversal_parent_dir() {
     // child.llt in a subdirectory tries to include ../parent.llt via path traversal.
     // cap-std's RESOLVE_BENEATH sandbox correctly rejects parent-directory escapes,
@@ -1167,6 +1184,7 @@ fn include_path_traversal_parent_dir() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_underscore_desugar() {
     // Regression test for $include + $_ (implicit lambda) desugaring.
     // The helper file contains $_ syntax which must be desugared before eval.
@@ -1204,6 +1222,7 @@ fn include_underscore_desugar() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_with_dircap() {
     // Test the new cap-qualified include pattern: [include $cap "path"]
     let dir = make_include_dir("dircap_include");
@@ -1240,6 +1259,7 @@ fn include_with_dircap() {
 }
 
 #[test]
+#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_with_dircap_and_hash() {
     // Test cap-qualified include with integrity hash: [include $cap "path" "hash"]
     let dir = make_include_dir("dircap_hash");

@@ -2,7 +2,7 @@
 # Converts AST dict (from ast_to_dict) to compact source text.
 # Single-line output: semicolons for separators, no comments, no layout decisions.
 
-[include %rust "core"]
+# Builtins (if, =, +, -, *, <, length, merge, etc.) are provided via the stdlib env.
 
 [
 

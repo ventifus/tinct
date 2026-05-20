@@ -385,21 +385,18 @@ pub(crate) use crate::builtins_io::{
     builtin_write_atomic, builtin_write_handle,
 };
 
-// Type/eval/meta builtins: type-of, deep-materialize, include, error, try, apply, validate.
+// Type/eval/meta builtins: type-of, deep-materialize, error, try, apply, validate.
 // Implementations live in builtins_meta.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
-#[cfg(test)]
-pub(crate) use crate::builtins_meta::blake3_hex;
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_bool_check,
     builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_deep_materialize,
     builtin_dict_check, builtin_eval, builtin_eval_ast, builtin_eval_types, builtin_expand,
     builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
-    builtin_include, builtin_include_cache_get, builtin_include_cache_put, builtin_int_check,
-    builtin_llt_repr, builtin_load, builtin_macro_injects, builtin_null_check, builtin_raise,
-    builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
-    builtin_validate, builtin_variant,
+    builtin_include_cache_get, builtin_include_cache_put, builtin_int_check, builtin_llt_repr,
+    builtin_load, builtin_macro_injects, builtin_null_check, builtin_raise, builtin_str_check,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1375,7 +1372,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
-        builtin!("include", builtin_include, [Strictness::Seq]),
         // Decomposed include primitives (include-decomp-primitives sprint)
         builtin!("blake3", builtin_blake3, [Strictness::Seq]),
         builtin!("cap-identity", builtin_cap_identity, [Strictness::Seq]),
@@ -1607,423 +1603,95 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
     ]
 }
 
-/// Create a virtual Rust module environment containing the named primitive group.
-///
-/// This function is called by the include resolver when evaluating `[include %rust "module-name"]`.
-/// Each module returns an environment containing only the builtins in that group.
-///
-/// Module names:
-/// - `core`: arithmetic, comparison, control flow, core dict primitives, type predicates
-/// - `string`: string manipulation and conversion
-/// - `collection`: dict/seq operations, iteration, sorting
-/// - `io`: filesystem and I/O operations
-/// - `net`: network operations (TCP, QUIC, HTTP, etc.)
-/// - `math`: numeric operations (trig, logarithms, bitwise)
-/// - `datetime`: timestamp and duration operations
-/// - `bytes`: byte sequence operations
-/// - `json`: JSON parsing
-/// - `meta`: runtime introspection (type-of, validate, eval-ast, etc.)
-///
-/// Returns an error if the module name is unknown.
-pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
-    let env = Rc::new(RefCell::new(Environment::new()));
-    let all_builtins = standard_builtins();
-
-    // Helper to insert a builtin by name
-    let insert = |env: &Rc<RefCell<Environment>>, builtin_name: &str| {
-        if let Some(def) = all_builtins.iter().find(|b| b.name == builtin_name) {
-            let thunk = Rc::new(Thunk::new_materialized(
-                Value::Builtin(*def),
-                Span::origin(),
-            ));
-            env.borrow_mut().insert(def.name.to_string(), thunk);
-        }
-    };
-
-    match name {
-        "core" => {
-            // Arithmetic (public names)
-            insert(&env, "+");
-            insert(&env, "-");
-            insert(&env, "*");
-            insert(&env, "/");
-            // Comparison (public names)
-            insert(&env, "=");
-            insert(&env, "<");
-            // Control (public names)
-            insert(&env, "if");
-            insert(&env, "raise");
-            insert(&env, "error"); // legacy alias — silently no-ops since rename; kept for compat
-            insert(&env, "try");
-            insert(&env, "materialize");
-            insert(&env, "until");
-            // Evaluation control
-            insert(&env, "deep-materialize");
-            insert(&env, "apply");
-            insert(&env, "eval-ast");
-            insert(&env, "builtin-gensym");
-            // Type predicates
-            insert(&env, "int?");
-            insert(&env, "float?");
-            insert(&env, "str?");
-            insert(&env, "bool?");
-            insert(&env, "bytes?");
-            insert(&env, "null?");
-            insert(&env, "dict?");
-            insert(&env, "fn?");
-            insert(&env, "seq?");
-            // Type introspection
-            insert(&env, "type-of");
-            // Internal builtin-* aliases (stable names for prelude to use even when
-            // public names are shadowed by user code via include).
-            // These are only available via [include %rust "core"] — not in user scope.
-            // Aliases share the function pointer and strictness with the public name;
-            // only the env key differs.
-            let alias_from_public =
-                |env: &Rc<RefCell<Environment>>, alias_name: &'static str, public_name: &str| {
-                    if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
-                        let thunk = Rc::new(Thunk::new_materialized(
-                            Value::Builtin(*def),
-                            Span::origin(),
-                        ));
-                        env.borrow_mut().insert(alias_name.to_string(), thunk);
-                    }
-                };
-            alias_from_public(&env, "builtin-lt", "<");
-            alias_from_public(&env, "builtin-eq", "=");
-            alias_from_public(&env, "builtin-add", "+");
-            alias_from_public(&env, "builtin-sub", "-");
-            alias_from_public(&env, "builtin-mul", "*");
-            alias_from_public(&env, "builtin-div", "/");
-            alias_from_public(&env, "builtin-if", "if");
-            alias_from_public(&env, "builtin-raise", "raise");
-            alias_from_public(&env, "builtin-deep-materialize", "deep-materialize");
-            alias_from_public(&env, "builtin-materialize", "materialize");
-            // Type predicate aliases — stable names so prelude can export them without
-            // creating circular self-references (fn?: fn? would be circular in letrec).
-            alias_from_public(&env, "builtin-int?", "int?");
-            alias_from_public(&env, "builtin-float?", "float?");
-            alias_from_public(&env, "builtin-str?", "str?");
-            alias_from_public(&env, "builtin-bool?", "bool?");
-            alias_from_public(&env, "builtin-null?", "null?");
-            alias_from_public(&env, "builtin-dict?", "dict?");
-            alias_from_public(&env, "builtin-fn?", "fn?");
-            alias_from_public(&env, "builtin-seq?", "seq?");
-            // String operation aliases — stdlib/macros.llt uses these
-            alias_from_public(&env, "builtin-split", "split");
-            alias_from_public(&env, "builtin-str-slice", "str-slice");
-            alias_from_public(&env, "builtin-str", "str");
-            alias_from_public(&env, "builtin-str-length", "str-length");
-            // Collection operation aliases — stdlib/macros.llt uses these
-            alias_from_public(&env, "builtin-append", "append");
-            alias_from_public(&env, "builtin-to-int", "to-int");
-        }
-        "string" => {
-            insert(&env, "str");
-            insert(&env, "split");
-            insert(&env, "replace");
-            insert(&env, "trim");
-            insert(&env, "trim-start");
-            insert(&env, "trim-end");
-            insert(&env, "str-length");
-            insert(&env, "str-slice");
-            insert(&env, "str-chars");
-            insert(&env, "char-code");
-            insert(&env, "chr");
-            insert(&env, "str-bytes");
-            insert(&env, "bytes-str");
-            insert(&env, "str-index-of");
-            insert(&env, "str-to-upper-char");
-            insert(&env, "str-to-lower-char");
-            insert(&env, "str-map-chars");
-            insert(&env, "regex-match?");
-        }
-        "collection" => {
-            insert(&env, "keys");
-            insert(&env, "length");
-            insert(&env, "merge");
-            insert(&env, "append");
-            insert(&env, "builtin-get");
-            insert(&env, "get?");
-            insert(&env, "each");
-            insert(&env, "each-key");
-            insert(&env, "each-kv");
-            insert(&env, "builtin-seq");
-            insert(&env, "builtin-head");
-            insert(&env, "builtin-tail");
-            insert(&env, "builtin-collect");
-            insert(&env, "builtin-range");
-            insert(&env, "builtin-repeat");
-            insert(&env, "builtin-cycle");
-            insert(&env, "builtin-iterate");
-            insert(&env, "builtin-unfold");
-            insert(&env, "map");
-            insert(&env, "filter");
-            insert(&env, "take");
-            insert(&env, "drop");
-            insert(&env, "reduce");
-            // builtin-* aliases for collection operations (stable names used
-            // by prelude and stdlib modules even when public names are shadowed).
-            // Reuse alias_from_public helper — same pattern as core's builtin-* aliases.
-            // (alias_from_public is defined in the "core" match arm above; Rust closures
-            // are only in scope within their defining match arm, so we inline the logic here.)
-            {
-                let alias_coll = |env: &Rc<RefCell<Environment>>,
-                                  alias_name: &'static str,
-                                  public_name: &str| {
-                    if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
-                        let thunk = Rc::new(Thunk::new_materialized(
-                            Value::Builtin(*def),
-                            Span::origin(),
-                        ));
-                        env.borrow_mut().insert(alias_name.to_string(), thunk);
-                    }
-                };
-                alias_coll(&env, "builtin-map", "map");
-                alias_coll(&env, "builtin-filter", "filter");
-                alias_coll(&env, "builtin-reduce", "reduce");
-                alias_coll(&env, "builtin-take", "take");
-                alias_coll(&env, "builtin-drop", "drop");
-                alias_coll(&env, "builtin-length", "length");
-            }
-            insert(&env, "builtin-join");
-            insert(&env, "builtin-concat");
-            insert(&env, "builtin-first");
-            insert(&env, "builtin-last");
-            insert(&env, "builtin-rest");
-            insert(&env, "builtin-cons");
-            insert(&env, "builtin-reverse");
-            insert(&env, "builtin-sort");
-        }
-        "io" => {
-            insert(&env, "emit");
-            insert(&env, "env");
-            insert(&env, "open");
-            insert(&env, "slurp");
-            insert(&env, "lines");
-            insert(&env, "write");
-            insert(&env, "write-atomic");
-            insert(&env, "write-handle");
-            insert(&env, "flush");
-            insert(&env, "close");
-            insert(&env, "seek");
-            insert(&env, "seek-end");
-            insert(&env, "position");
-            insert(&env, "list-dir");
-            insert(&env, "stat");
-            insert(&env, "make-dir");
-            insert(&env, "builtin-remove");
-            insert(&env, "rename");
-            insert(&env, "link");
-            insert(&env, "read-link");
-            insert(&env, "narrow");
-            insert(&env, "revocable");
-            insert(&env, "revoke-cap");
-            insert(&env, "cap-data");
-            insert(&env, "raw-create");
-        }
-        "net" => {
-            insert(&env, "connect");
-            insert(&env, "tls-layer");
-            insert(&env, "tls-peer-cert");
-            insert(&env, "send-datagram");
-            insert(&env, "recv-datagram");
-            insert(&env, "quic-session");
-            insert(&env, "quic-open-stream");
-            insert(&env, "quic-open-datagram");
-            insert(&env, "http2-session");
-            insert(&env, "http3-session");
-            insert(&env, "http-request");
-            insert(&env, "icmp-ping");
-            insert(&env, "uri");
-            insert(&env, "url");
-            insert(&env, "urn");
-        }
-        "math" => {
-            insert(&env, "floor");
-            insert(&env, "round");
-            insert(&env, "pow");
-            insert(&env, "sqrt");
-            insert(&env, "log");
-            insert(&env, "log2");
-            insert(&env, "log10");
-            insert(&env, "exp");
-            insert(&env, "sin");
-            insert(&env, "cos");
-            insert(&env, "tan");
-            insert(&env, "asin");
-            insert(&env, "acos");
-            insert(&env, "atan");
-            insert(&env, "atan2");
-            insert(&env, "nan?");
-            insert(&env, "inf?");
-            insert(&env, "finite?");
-            insert(&env, "band");
-            insert(&env, "bor");
-            insert(&env, "bxor");
-            insert(&env, "shl");
-            insert(&env, "shr");
-            insert(&env, "float");
-            insert(&env, "to-int");
-            insert(&env, "to-float");
-            insert(&env, "decimal");
-            insert(&env, "big-int");
-        }
-        "datetime" => {
-            insert(&env, "parse-timestamp");
-            insert(&env, "format-timestamp");
-            insert(&env, "timestamp->unix");
-            insert(&env, "unix->timestamp");
-            insert(&env, "now");
-            insert(&env, "fixed-clock");
-            insert(&env, "timestamp-add");
-            insert(&env, "timestamp-diff");
-            insert(&env, "timestamp<?");
-            insert(&env, "timestamp>?");
-            insert(&env, "timestamp=?");
-            insert(&env, "timestamp-year");
-            insert(&env, "timestamp-month");
-            insert(&env, "timestamp-day");
-            insert(&env, "timestamp-hour");
-            insert(&env, "timestamp-minute");
-            insert(&env, "timestamp-second");
-            insert(&env, "timestamp-parts");
-            insert(&env, "duration-nanos");
-            insert(&env, "duration-seconds");
-            insert(&env, "duration-minutes");
-            insert(&env, "duration-hours");
-            insert(&env, "duration-days");
-            insert(&env, "duration->seconds");
-            insert(&env, "duration->nanos");
-            insert(&env, "load-tz");
-            insert(&env, "timestamp-in-tz");
-            insert(&env, "local->timestamp");
-            insert(&env, "local-tz-name");
-        }
-        "bytes" => {
-            insert(&env, "bytes");
-            insert(&env, "bytes-find");
-            insert(&env, "bytes-of");
-            insert(&env, "bytes-equal?");
-            insert(&env, "ct-equal?");
-        }
-        "json" => {
-            insert(&env, "from-json");
-        }
-        "meta" => {
-            insert(&env, "type-of");
-            insert(&env, "ast-of");
-            insert(&env, "validate");
-            insert(&env, "until");
-            insert(&env, "llt-repr");
-            insert(&env, "tag-of");
-            insert(&env, "variant");
-            insert(&env, "eval-ast");
-            insert(&env, "proxy");
-            insert(&env, "macro-injects");
-            // Alias for prelude compatibility
-            let alias_from_public =
-                |env: &Rc<RefCell<Environment>>, alias_name: &'static str, public_name: &str| {
-                    if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
-                        let thunk = Rc::new(Thunk::new_materialized(
-                            Value::Builtin(*def),
-                            Span::origin(),
-                        ));
-                        env.borrow_mut().insert(alias_name.to_string(), thunk);
-                    }
-                };
-            alias_from_public(&env, "builtin-macro-injects", "macro-injects");
-            // Meta primitive aliases — prelude wrappers use these stable names
-            alias_from_public(&env, "builtin-tag-of", "tag-of");
-            alias_from_public(&env, "builtin-variant", "variant");
-            alias_from_public(&env, "builtin-llt-repr", "llt-repr");
-        }
-        "type-core" => {
-            // Core primitives needed for type system implementation
-            // From core
-            insert(&env, "if");
-            insert(&env, "=");
-            insert(&env, "null?");
-            insert(&env, "dict?");
-            insert(&env, "str?");
-            insert(&env, "int?");
-            insert(&env, "raise");
-            insert(&env, "error"); // legacy alias — silently no-ops since rename; kept for compat
-                                   // From collection
-            insert(&env, "builtin-get");
-            insert(&env, "get?");
-            insert(&env, "keys");
-            insert(&env, "length");
-            insert(&env, "merge");
-            insert(&env, "append");
-            insert(&env, "each");
-            insert(&env, "map");
-            insert(&env, "filter");
-            insert(&env, "reduce");
-            insert(&env, "builtin-seq");
-            insert(&env, "builtin-head");
-            insert(&env, "builtin-tail");
-            insert(&env, "builtin-collect");
-            insert(&env, "builtin-cons");
-            insert(&env, "builtin-concat");
-            insert(&env, "builtin-join");
-            insert(&env, "builtin-first");
-            insert(&env, "builtin-last");
-            insert(&env, "builtin-rest");
-            // From string
-            insert(&env, "str");
-        }
-        _ => return Err(format!("unknown Rust module: {}", name)),
-    }
-
-    Ok(env)
-}
-
-/// Create the bootstrap environment used when evaluating the prelude.
-///
-/// Contains ONLY:
-/// - `include` — the special form for loading modules and files
-/// - `%rust` — the opaque `Value::RustRegistry` sentinel that grants access to Rust
-///   primitive groups via `[include %rust "group-name"]`
-///
-/// No other builtins are present. The prelude must explicitly include the Rust
-/// primitive groups it needs (e.g., `[include %rust "core"]`) to get access to
-/// arithmetic, comparison, and control-flow primitives.
-///
-/// This env is NOT the parent of the user env. It is used exclusively during prelude
-/// evaluation. After the prelude is loaded, the prelude output env becomes the
-/// parent of user code's environment.
-pub fn create_bootstrap_env() -> Rc<RefCell<Environment>> {
-    let env = Rc::new(RefCell::new(Environment::new()));
-
-    // Register `include` (the only special form available in the bootstrap env).
-    let include_def = standard_builtins()
-        .into_iter()
-        .find(|b| b.name == "include")
-        .expect("include builtin must be registered in standard_builtins");
-    let include_thunk = Rc::new(Thunk::new_materialized(
-        Value::Builtin(include_def),
-        Span::origin(),
-    ));
-    env.borrow_mut()
-        .insert("include".to_string(), include_thunk);
-
-    // Register `%rust` — the opaque registry sentinel.
-    // Prelude uses `[include %rust "module"]` to get Rust primitive groups.
-    let rust_thunk = Rc::new(Thunk::new_materialized(Value::RustRegistry, Span::origin()));
-    env.borrow_mut().insert("%rust".to_string(), rust_thunk);
-
-    env
-}
+// rust_module() and create_bootstrap_env() deleted — builtin grouping by module
+// name is no longer needed. All builtins are pre-injected into the bootstrap
+// env by create_root_env() at startup. The [include %rust "..."] mechanism
+// has been removed.
 
 /// Create the root environment with all builtins registered as `Value::Builtin`.
 /// Used only by `src/expand.rs` for macro expansion during prelude bootstrap.
 pub(crate) fn create_root_env() -> Rc<RefCell<Environment>> {
     let env = Rc::new(RefCell::new(Environment::new()));
-    for def in standard_builtins() {
-        let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
+    let all_builtins = standard_builtins();
+    for def in &all_builtins {
+        let thunk = Rc::new(Thunk::new_materialized(
+            Value::Builtin(*def),
+            Span::origin(),
+        ));
         env.borrow_mut().insert(def.name.to_string(), thunk);
     }
+
+    // Insert builtin-* aliases: stable names used internally by prelude.llt and macros.llt.
+    // These were previously injected via [include %rust "core"] / [include %rust "collection"]
+    // but now that those mechanisms are gone, we inject them directly at startup.
+    // The alias shares the same BuiltinDef (function pointer + strictness) as the public name.
+    let alias = |env: &Rc<RefCell<Environment>>,
+                 alias_name: &'static str,
+                 public_name: &str,
+                 all_builtins: &[crate::value::BuiltinDef]| {
+        if let Some(def) = all_builtins.iter().find(|b| b.name == public_name) {
+            let thunk = Rc::new(Thunk::new_materialized(
+                Value::Builtin(*def),
+                Span::origin(),
+            ));
+            env.borrow_mut().insert(alias_name.to_string(), thunk);
+        }
+    };
+
+    // Core arithmetic/comparison/control aliases
+    alias(&env, "builtin-lt", "<", &all_builtins);
+    alias(&env, "builtin-eq", "=", &all_builtins);
+    alias(&env, "builtin-add", "+", &all_builtins);
+    alias(&env, "builtin-sub", "-", &all_builtins);
+    alias(&env, "builtin-mul", "*", &all_builtins);
+    alias(&env, "builtin-div", "/", &all_builtins);
+    alias(&env, "builtin-if", "if", &all_builtins);
+    alias(&env, "builtin-raise", "raise", &all_builtins);
+    alias(
+        &env,
+        "builtin-deep-materialize",
+        "deep-materialize",
+        &all_builtins,
+    );
+    alias(&env, "builtin-materialize", "materialize", &all_builtins);
+
+    // Type predicate aliases
+    alias(&env, "builtin-int?", "int?", &all_builtins);
+    alias(&env, "builtin-float?", "float?", &all_builtins);
+    alias(&env, "builtin-str?", "str?", &all_builtins);
+    alias(&env, "builtin-bool?", "bool?", &all_builtins);
+    alias(&env, "builtin-null?", "null?", &all_builtins);
+    alias(&env, "builtin-dict?", "dict?", &all_builtins);
+    alias(&env, "builtin-fn?", "fn?", &all_builtins);
+    alias(&env, "builtin-seq?", "seq?", &all_builtins);
+
+    // String operation aliases
+    alias(&env, "builtin-split", "split", &all_builtins);
+    alias(&env, "builtin-str-slice", "str-slice", &all_builtins);
+    alias(&env, "builtin-str", "str", &all_builtins);
+    alias(&env, "builtin-str-length", "str-length", &all_builtins);
+
+    // Collection operation aliases
+    alias(&env, "builtin-append", "append", &all_builtins);
+    alias(&env, "builtin-to-int", "to-int", &all_builtins);
+    alias(&env, "builtin-map", "map", &all_builtins);
+    alias(&env, "builtin-filter", "filter", &all_builtins);
+    alias(&env, "builtin-reduce", "reduce", &all_builtins);
+    alias(&env, "builtin-take", "take", &all_builtins);
+    alias(&env, "builtin-drop", "drop", &all_builtins);
+    alias(&env, "builtin-length", "length", &all_builtins);
+
+    // Meta operation aliases
+    alias(
+        &env,
+        "builtin-macro-injects",
+        "macro-injects",
+        &all_builtins,
+    );
+    alias(&env, "builtin-tag-of", "tag-of", &all_builtins);
+    alias(&env, "builtin-variant", "variant", &all_builtins);
+    alias(&env, "builtin-llt-repr", "llt-repr", &all_builtins);
+    alias(&env, "builtin-proxy", "proxy", &all_builtins);
 
     // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
     // Now registered automatically by the prelude's [type [Tcp] [Udp] ...] declaration.
@@ -2155,17 +1823,14 @@ pub(crate) fn create_stdlib_env_with_arena() -> StdlibEnvResult {
 }
 
 fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvResult {
-    // Phase 2: Bootstrap env switch.
-    // The bootstrap env contains ONLY `include` and `%rust`. Prelude uses
-    // `[include %rust "core"]`, `[include %rust "collection"]`, etc. to pull in
-    // the Rust primitives it needs. After the prelude loads, its exported bindings
-    // become the standard library environment that user code inherits.
-    let bootstrap_env = create_bootstrap_env();
+    // Pre-inject all Rust primitives into the bootstrap env so that prelude.llt
+    // and macros.llt can use them without [include %rust "..."] calls.
+    // All builtins (arithmetic, comparison, string, collection, meta, io, etc.)
+    // are injected at startup; the prelude selectively re-exports them under
+    // their public names.
+    let bootstrap_env = create_root_env();
 
-    // Create a bootstrap EvalContext backed by the bootstrap env.
-    // The bootstrap_ctx uses bootstrap_env as its stdlib_env, which means:
-    //   - `include` resolves to the builtin_include function
-    //   - `%rust` resolves to Value::RustRegistry for [include %rust "..."] calls
+    // Create a bootstrap EvalContext backed by the all-builtins env.
     // bootstrap_base_dir was opened by the caller (create_stdlib_env_with_arena) to confine
     // open_ambient_dir to the public entry point.
     // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're BUILDING the stdlib here,
@@ -2174,20 +1839,15 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvRes
         crate::eval::EvalContext::new_empty(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
 
     // Create stdlib env as a child of bootstrap_env.
-    // This means: user code (child of stdlib_env) can walk up to bootstrap_env
-    // and see `%rust` — but the prelude acts as the primary scope boundary.
-    // Full isolation (hiding %rust from user scope) is future work.
+    // The prelude's exported bindings layer on top of the raw builtins.
     let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
         &bootstrap_env,
     ))));
 
     // Load prelude — provides all public stdlib functions.
-    // Prelude uses [include %rust "core"] etc. to access Rust primitives directly,
-    // without relying on all builtins being in the parent env.
+    // All Rust primitives are already in bootstrap_env via the parent chain.
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
-
-    // User code now only sees what prelude exports — no direct access to Rust builtins.
 
     // Load macros — exports tmpl-transformer and helpers used by expand_macros.
     // Loaded after prelude so macro helpers can reference prelude functions.
@@ -2239,8 +1899,9 @@ pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::er
     crate::desugar::desugar_file(&mut file.node);
     crate::resolve::resolve_file(&file.node);
 
-    // Create minimal bootstrap env: include + %rust
-    let bootstrap_env = create_bootstrap_env();
+    // Pre-inject all Rust primitives so the type-stage prelude can use them
+    // without [include %rust "type-core"] calls.
+    let bootstrap_env = create_root_env();
 
     // Create a bootstrap EvalContext. bootstrap_base_dir was opened above.
     let bootstrap_ctx =
@@ -6653,9 +6314,11 @@ mod tests {
             "cached arena should be a snapshot of the stdlib arena"
         );
 
+        // After include-decomp-prelude: [include %rust "..."] calls removed from prelude/macros,
+        // so fewer thunks are allocated (no include-result dicts). Threshold lowered to 200.
         assert!(
-            cached_arena.borrow().len() > 390,
-            "cached arena should contain at least 390 stdlib thunks (prelude + macros), got {}",
+            cached_arena.borrow().len() > 200,
+            "cached arena should contain at least 200 stdlib thunks (prelude + macros), got {}",
             cached_arena.borrow().len()
         );
     }
@@ -6666,9 +6329,9 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
-        // are now in standard_builtins and accessible only via %rust "meta" module.
+        // are now in standard_builtins; 1 removed: builtin_include (include-decomp-prelude sprint).
         assert_eq!(
-            count, 193,
+            count, 192,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6772,7 +6435,7 @@ mod tests {
         assert!(names.contains(&"link"), "missing link");
         assert!(names.contains(&"read-link"), "missing read-link");
         assert!(names.contains(&"from-json"), "missing from-json");
-        assert!(names.contains(&"include"), "missing include");
+        // include deleted (include-decomp-prelude sprint) — replaced by LLT-level include
         // Sequences (registered as builtin-NAME; prelude exports unwrapped names)
         assert!(names.contains(&"builtin-seq"), "missing builtin-seq");
         assert!(names.contains(&"builtin-head"), "missing builtin-head");
@@ -6903,8 +6566,8 @@ mod tests {
         );
         assert_eq!(
             names.len(),
-            193,
-            "expected 193 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, builtin-gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects; 5 new include-decomp primitives: blake3, cap-identity, load, include-cache-get, include-cache-put)",
+            192,
+            "expected 192 builtins, got {} (include removed in include-decomp-prelude sprint)",
             names.len()
         );
     }
@@ -8244,944 +7907,6 @@ mod tests {
             env_ref.get("hex-encode").is_none(),
             "hex-encode should not be in startup env (requires [include libdir \"encoding.llt\"])"
         );
-    }
-
-    /// Helper: create an EvalContext pointing at the given base directory.
-    fn include_ctx(base_dir: &std::path::Path) -> Rc<crate::eval::EvalContext> {
-        let stdlib_env = create_stdlib_env().expect("stdlib env");
-        let dir = cap_std::fs::Dir::open_ambient_dir(base_dir, cap_std::ambient_authority())
-            .expect("failed to open base_dir");
-        crate::eval::EvalContext::new(dir, stdlib_env, false)
-    }
-
-    /// Helper: create a Value::DirCap for a given directory path.
-    fn dir_cap_val(base_dir: &std::path::Path) -> Value {
-        Value::DirCap {
-            dir: Rc::new(
-                cap_std::fs::Dir::open_ambient_dir(base_dir, cap_std::ambient_authority())
-                    .expect("open dir for DirCap"),
-            ),
-            perms: crate::value::DirPerms::full(),
-        }
-    }
-
-    /// Helper: write a temp file and return its path.
-    fn write_temp_file(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf {
-        let path = dir.join(name);
-        std::fs::write(&path, content).expect("write temp file");
-        path
-    }
-
-    #[test]
-    fn include_wrong_type_error() {
-        let dir = std::env::temp_dir().join("llt_test_include_type");
-        std::fs::create_dir_all(&dir).ok();
-        let ctx = include_ctx(&dir);
-
-        // Pass 2 args where first is Int (not DirCap): arity check passes (2 args OK),
-        // then type-mismatch fires because Int != DirCap.
-        let args = vec![thunk(Value::Int(42)), thunk(string_val("path.llt"))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected DirCap or String")
-                || err.kind.to_string().contains("type mismatch"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_file_not_found() {
-        let dir = std::env::temp_dir().join("llt_test_include_notfound");
-        std::fs::create_dir_all(&dir).ok();
-        let ctx = include_ctx(&dir);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("nonexistent.llt")),
-        ];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot access"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_simple_dict() {
-        let dir = std::env::temp_dir().join("llt_test_include_simple");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "lib.llt", "[x: 42 y: \"hello\"]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("lib.llt"))];
-        let result = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                let x = mat_id(*map.get(&Key::String("x".into())).unwrap(), &ctx);
-                assert_eq!(x, Value::Int(42));
-                let y = mat_id(*map.get(&Key::String("y".into())).unwrap(), &ctx);
-                assert_eq!(y, string_val("hello".into()));
-            }
-            other => panic!("expected Dict, got {:?}", other),
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_scalar_value() {
-        let dir = std::env::temp_dir().join("llt_test_include_scalar");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "num.llt", "42");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("num.llt"))];
-        let result = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        }));
-        assert_eq!(result, Value::Int(42));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_parse_error() {
-        let dir = std::env::temp_dir().join("llt_test_include_parse_err");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "bad.llt", "[x: ]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("bad.llt"))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        // Parser with error recovery: [x: ] either gives a parse error or
-        // recovers and produces an error node that fails at eval time.
-        let msg = err.kind.to_string();
-        assert!(
-            msg.contains("parse error")
-                || msg.contains("syntax error")
-                || msg.contains("error node"),
-            "expected parse-related error, got: {}",
-            msg
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_circular_detection() {
-        let dir = std::env::temp_dir().join("llt_test_include_circular");
-        std::fs::create_dir_all(&dir).ok();
-        // File A includes file B at top level (not inside a dict entry, so
-        // the include is evaluated eagerly during eval_file). File B includes
-        // file A the same way, triggering the cycle.
-        write_temp_file(&dir, "a.llt", "[include %pwd \"b.llt\"]");
-        write_temp_file(&dir, "b.llt", "[include %pwd \"a.llt\"]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("a.llt"))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("circular include"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_self_circular() {
-        let dir = std::env::temp_dir().join("llt_test_include_self");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "self.llt", "[include %pwd \"self.llt\"]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("self.llt"))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("circular include"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_nested() {
-        let dir = std::env::temp_dir().join("llt_test_include_nested");
-        std::fs::create_dir_all(&dir).ok();
-        std::fs::create_dir_all(dir.join("sub")).ok();
-        write_temp_file(
-            &dir,
-            "outer.llt",
-            "[inner: [include %pwd \"sub/inner.llt\"]]",
-        );
-        write_temp_file(&dir.join("sub"), "inner.llt", "[val: 99]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("outer.llt"))];
-        let result = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                let inner = mat_id(*map.get(&Key::String("inner".into())).unwrap(), &ctx);
-                match inner {
-                    Value::Dict(inner_map) => {
-                        let val = mat_id(*inner_map.get(&Key::String("val".into())).unwrap(), &ctx);
-                        assert_eq!(val, Value::Int(99));
-                    }
-                    other => panic!("expected inner Dict, got {:?}", other),
-                }
-            }
-            other => panic!("expected Dict, got {:?}", other),
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_absolute_path() {
-        // Absolute paths are rejected by cap-std's RESOLVE_BENEATH sandbox.
-        let dir = std::env::temp_dir().join("llt_test_include_abs");
-        std::fs::create_dir_all(&dir).ok();
-        let file_path = write_temp_file(&dir, "abs.llt", "[val: 77]");
-        // Use a different directory as base — the absolute path should be rejected.
-        let other_dir = std::env::temp_dir().join("llt_test_include_abs_other");
-        std::fs::create_dir_all(&other_dir).ok();
-        let ctx = include_ctx(&other_dir);
-
-        // DirCap points to other_dir, path is absolute — cap-std RESOLVE_BENEATH rejects it.
-        let args = vec![
-            thunk(dir_cap_val(&other_dir)),
-            thunk(string_val(&file_path.to_string_lossy())),
-        ];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("cannot access"),
-            "expected path rejection error, got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::remove_dir_all(&other_dir).ok();
-    }
-
-    #[test]
-    fn include_arity_error() {
-        let dir = std::env::temp_dir().join("llt_test_include_arity");
-        std::fs::create_dir_all(&dir).ok();
-        let ctx = include_ctx(&dir);
-
-        // No arguments (include requires 2 or 3 args)
-        let err = builtin_include(BuiltinArgs {
-            args: &[],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind.to_string()
-        );
-
-        // Four arguments (include requires 2 or 3 args; 4 is an arity error)
-        // Pattern: [include $cap "path" "hash"] uses 3 args (cap + path + hash), so 4 triggers arity error.
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("a.llt")),
-            thunk(string_val(
-                "blake3:0000000000000000000000000000000000000000000000000000000000000000",
-            )),
-            thunk(string_val("too-many")),
-        ];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_rejects_named_args() {
-        let dir = std::env::temp_dir().join("llt_test_include_named");
-        std::fs::create_dir_all(&dir).ok();
-        let ctx = include_ctx(&dir);
-
-        // Pass 2 positional args (arity OK) + named arg — named arg rejection fires.
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("test.llt"))];
-        let mut named = IndexMap::new();
-        named.insert("path".to_string(), thunk(string_val("x")));
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: Some(&named),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind
-                .to_string()
-                .contains("does not accept named arguments"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_multi_document() {
-        let dir = std::env::temp_dir().join("llt_test_include_multidoc");
-        std::fs::create_dir_all(&dir).ok();
-        // Two documents: first produces [x: 10], % pipeline passes to second
-        write_temp_file(&dir, "multi.llt", "[x: 10]\n---\n[y: %.x]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("multi.llt"))];
-        let result = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                let y = mat_id(*map.get(&Key::String("y".into())).unwrap(), &ctx);
-                assert_eq!(y, Value::Int(10));
-            }
-            other => panic!("expected Dict, got {:?}", other),
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_uses_stdlib() {
-        // The included file should have access to stdlib builtins
-        let dir = std::env::temp_dir().join("llt_test_include_stdlib");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "stdlib_test.llt", "[result: [call $+ 1 2]]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("stdlib_test.llt")),
-        ];
-        let result = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                let val = mat_id(*map.get(&Key::String("result".into())).unwrap(), &ctx);
-                assert_eq!(val, Value::Int(3));
-            }
-            other => panic!("expected Dict, got {:?}", other),
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Verify that `$include` returns the **same Rc<Thunk> allocation** on the second call
-    /// to the same file. This proves the cache stores a `Rc::clone()` of the original thunk
-    /// rather than re-evaluating the file and creating a new Thunk allocation.
-    ///
-    /// This is the pointer-identity proof: `Rc::ptr_eq(&first, &second)` — both calls
-    /// return an `Rc` pointing to the identical Thunk object in memory. This would only
-    /// be true if the second call hit the cache.
-    #[test]
-    fn include_cache_returns_same_rc_ptr() {
-        let dir = std::env::temp_dir().join("llt_test_include_rc_ptr");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "cached_ptr.llt", "[value: 99]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("cached_ptr.llt")),
-        ];
-
-        // First include — builds and caches the Thunk
-        let raw1 = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        })
-        .expect("first include should succeed");
-
-        // Second include — must return Rc::clone of the cached Thunk
-        let raw2 = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        })
-        .expect("second include should succeed");
-
-        // Pointer identity: both Rcs must point to the same Thunk allocation.
-        // If the cache is bypassed and the file is re-evaluated, a new Thunk is
-        // allocated and ptr_eq returns false.
-        assert!(
-            Rc::ptr_eq(&raw1, &raw2),
-            "Second $include of same file must return the same Rc<Thunk> as the first \
-             (cache hit, not re-evaluation). Got distinct allocations — the cache is not working."
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_caches_result() {
-        // Including the same file twice should return the cached result, not re-evaluate.
-        let dir = std::env::temp_dir().join("llt_test_include_cache");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "cached.llt", "[value: 42]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("cached.llt"))];
-
-        // First include
-        let result1 = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-
-        // Second include -- should hit cache
-        let result2 = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-
-        // Both should return the same value
-        match (&result1, &result2) {
-            (Value::Dict(map1), Value::Dict(map2)) => {
-                let val1 = mat_id(*map1.get(&Key::String("value".into())).unwrap(), &ctx);
-                let val2 = mat_id(*map2.get(&Key::String("value".into())).unwrap(), &ctx);
-                assert_eq!(val1, Value::Int(42));
-                assert_eq!(val2, Value::Int(42));
-            }
-            _ => panic!("expected Dict, got {:?} and {:?}", result1, result2),
-        }
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_cache_respects_normalization() {
-        // Including a file via different paths that resolve to the same canonical path
-        // should hit the cache.
-        let dir = std::env::temp_dir().join("llt_test_include_cache_norm");
-        std::fs::create_dir_all(&dir).ok();
-        let subdir = dir.join("subdir");
-        std::fs::create_dir_all(&subdir).ok();
-        write_temp_file(&dir, "target.llt", "[value: 99]");
-        let ctx = include_ctx(&dir);
-
-        // First include with relative path
-        let args1 = vec![thunk(dir_cap_val(&dir)), thunk(string_val("./target.llt"))];
-        let result1 = mat(builtin_include(BuiltinArgs {
-            args: &args1,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-
-        // Second include with normalized path
-        let args2 = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("subdir/../target.llt")),
-        ];
-        let result2 = mat(builtin_include(BuiltinArgs {
-            args: &args2,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-
-        // Both should return the same value
-        match (&result1, &result2) {
-            (Value::Dict(map1), Value::Dict(map2)) => {
-                let val1 = mat_id(*map1.get(&Key::String("value".into())).unwrap(), &ctx);
-                let val2 = mat_id(*map2.get(&Key::String("value".into())).unwrap(), &ctx);
-                assert_eq!(val1, Value::Int(99));
-                assert_eq!(val2, Value::Int(99));
-            }
-            _ => panic!("expected Dict, got {:?} and {:?}", result1, result2),
-        }
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_cache_shared_across_nested() {
-        // File A includes file B. File C also includes file B. Both should share
-        // the cached result of B.
-        let dir = std::env::temp_dir().join("llt_test_include_cache_nested");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "shared.llt", "[shared: 123]");
-        write_temp_file(&dir, "file_a.llt", "[a: [include %pwd \"shared.llt\"]]");
-        write_temp_file(&dir, "file_c.llt", "[c: [include %pwd \"shared.llt\"]]");
-        let ctx = include_ctx(&dir);
-
-        // Include file_a (which includes shared.llt)
-        let args_a = vec![thunk(dir_cap_val(&dir)), thunk(string_val("file_a.llt"))];
-        let result_a = mat(builtin_include(BuiltinArgs {
-            args: &args_a,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-
-        // Include file_c (which also includes shared.llt -- should hit cache)
-        let args_c = vec![thunk(dir_cap_val(&dir)), thunk(string_val("file_c.llt"))];
-        let result_c = mat(builtin_include(BuiltinArgs {
-            args: &args_c,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-
-        // Verify that both got the shared value
-        match (&result_a, &result_c) {
-            (Value::Dict(map_a), Value::Dict(map_c)) => {
-                let a_val = mat_id(*map_a.get(&Key::String("a".into())).unwrap(), &ctx);
-                let c_val = mat_id(*map_c.get(&Key::String("c".into())).unwrap(), &ctx);
-
-                // Both should be dicts with "shared: 123"
-                match (&a_val, &c_val) {
-                    (Value::Dict(a_inner), Value::Dict(c_inner)) => {
-                        let a_shared =
-                            mat_id(*a_inner.get(&Key::String("shared".into())).unwrap(), &ctx);
-                        let c_shared =
-                            mat_id(*c_inner.get(&Key::String("shared".into())).unwrap(), &ctx);
-                        assert_eq!(a_shared, Value::Int(123));
-                        assert_eq!(c_shared, Value::Int(123));
-                    }
-                    _ => panic!("expected nested dicts, got {:?} and {:?}", a_val, c_val),
-                }
-            }
-            _ => panic!("expected Dict, got {:?} and {:?}", result_a, result_c),
-        }
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_forbidden_when_no_fs() {
-        // When no_fs is true, $include should return IncludeForbidden error
-        let dir = std::env::temp_dir().join("llt_test_include_no_fs");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "test.llt", "[x: 42]");
-
-        // Create context with no_fs: true
-        let stdlib_env = create_stdlib_env().expect("stdlib env");
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(&dir, cap_std::ambient_authority())
-            .expect("failed to open temp_dir");
-        let ctx = crate::eval::EvalContext::new(base_dir, stdlib_env, true);
-
-        let args = vec![thunk(string_val("test.llt".into()))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-
-        // Check error message and code
-        let error_msg = format!("{}", err);
-        assert!(
-            error_msg.contains("filesystem access is disabled"),
-            "got: {}",
-            error_msg
-        );
-        assert!(
-            error_msg.contains("[E042]"),
-            "missing error code [E042], got: {}",
-            error_msg
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_with_correct_blake3_hash() {
-        // $include with a correct blake3 hash should succeed.
-        // 3-arg form: [include DirCap "path" "blake3:hex"]
-        let dir = std::env::temp_dir().join("llt_test_include_hash_ok");
-        std::fs::create_dir_all(&dir).ok();
-        let content = "[x: 99]";
-        write_temp_file(&dir, "hashed.llt", content);
-        let expected_hex = blake3_hex(content.as_bytes());
-        let ctx = include_ctx(&dir);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("hashed.llt")),
-            thunk(string_val(&format!("blake3:{expected_hex}"))),
-        ];
-        let result = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                let val = mat_id(*map.get(&Key::String("x".into())).unwrap(), &ctx);
-                assert_eq!(val, Value::Int(99));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_with_wrong_blake3_hash_errors() {
-        // $include with a wrong blake3 hash should return IncludeHashMismatch.
-        // 3-arg form: [include DirCap "path" "blake3:wrong"]
-        let dir = std::env::temp_dir().join("llt_test_include_hash_mismatch");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "data.llt", "[x: 1]");
-        let wrong_hex = "0".repeat(64);
-        let ctx = include_ctx(&dir);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("data.llt")),
-            thunk(string_val(&format!("blake3:{wrong_hex}"))),
-        ];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("integrity check failed"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_hash_invalid_format_errors() {
-        // A hash string without a colon should produce an error.
-        // 3-arg form: [include DirCap "path" "notahash"]
-        let dir = std::env::temp_dir().join("llt_test_include_hash_format");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "file.llt", "[x: 1]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("file.llt")),
-            thunk(string_val("notahash")),
-        ];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("integrity hash must be"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_hash_unsupported_algo_errors() {
-        // An unsupported algorithm should produce a clear error.
-        // 3-arg form: [include DirCap "path" "md5:abc"]
-        let dir = std::env::temp_dir().join("llt_test_include_hash_algo");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "file.llt", "[x: 1]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("file.llt")),
-            thunk(string_val("md5:abc")),
-        ];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("unsupported hash algorithm"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_require_integrity_rejects_hashless() {
-        // With require_integrity=true, a hashless $include should error with IncludeHashRequired.
-        // 2-arg form: [include DirCap "path"] without hash — IncludeHashRequired fires.
-        let dir = std::env::temp_dir().join("llt_test_include_require_integrity");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "file.llt", "[x: 1]");
-
-        let stdlib_env = create_stdlib_env().expect("stdlib env");
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(&dir, cap_std::ambient_authority())
-            .expect("open dir");
-        let ctx =
-            crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true, None);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("file.llt"))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("integrity hash required"),
-            "got: {}",
-            err.kind.to_string()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn include_require_integrity_accepts_hashed() {
-        // With require_integrity=true, a $include with a correct hash should succeed.
-        // 3-arg form: [include DirCap "path" "blake3:hex"]
-        let dir = std::env::temp_dir().join("llt_test_include_require_integrity_ok");
-        std::fs::create_dir_all(&dir).ok();
-        let content = "[y: 55]";
-        write_temp_file(&dir, "ok.llt", content);
-        let hex = blake3_hex(content.as_bytes());
-
-        let stdlib_env = create_stdlib_env().expect("stdlib env");
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(&dir, cap_std::ambient_authority())
-            .expect("open dir");
-        let ctx =
-            crate::eval::EvalContext::new_with_options(base_dir, stdlib_env, false, true, None);
-
-        let args = vec![
-            thunk(dir_cap_val(&dir)),
-            thunk(string_val("ok.llt")),
-            thunk(string_val(&format!("blake3:{hex}"))),
-        ];
-        let result = mat(builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                let val = mat_id(*map.get(&Key::String("y".into())).unwrap(), &ctx);
-                assert_eq!(val, Value::Int(55));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    // Include chain threading tests
-
-    /// Verify that nested include errors carry the full include chain as stack frames.
-    ///
-    /// Setup: outer.llt includes middle.llt, which includes bad.llt (parse error).
-    /// Expected stack frames on the error (outermost first in display):
-    ///   [0] "included from outer.llt"   (added by the top-level include of outer.llt)
-    ///   [1] "included from middle.llt"  (added by outer.llt's include of middle.llt)
-    ///
-    /// Note: bad.llt's parse fails before its guard/chain entry is pushed, so
-    /// there is no "included from bad.llt" frame — the IncludeParseFailed error
-    /// message already names bad.llt directly.
-    #[test]
-    fn include_chain_nested_error() {
-        let dir = std::env::temp_dir().join("llt_test_include_chain");
-        std::fs::create_dir_all(&dir).ok();
-
-        // bad.llt: parse error
-        write_temp_file(&dir, "bad.llt", "[x: ]");
-        // middle.llt: includes bad.llt via cap-qualified form
-        write_temp_file(&dir, "middle.llt", "[include %pwd \"bad.llt\"]");
-        // outer.llt: includes middle.llt via cap-qualified form
-        write_temp_file(&dir, "outer.llt", "[include %pwd \"middle.llt\"]");
-
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("outer.llt"))];
-        let err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-        })
-        .unwrap_err();
-
-        // The error should be a parse/syntax failure (bad.llt is the innermost problem).
-        // Parser error recovery may surface as "parse error" or "syntax error" depending
-        // on whether recovery produced an error node.
-        let msg = err.kind.to_string();
-        assert!(
-            msg.contains("parse error")
-                || msg.contains("syntax error")
-                || msg.contains("error node"),
-            "expected parse-related error, got: {}",
-            msg
-        );
-
-        // The stack should contain include chain frames.
-        // Frame 0: outer.llt frame (inserted at position 0 by the outermost include).
-        // Frame 1: middle.llt frame (inserted at position 0 by middle.llt's include, then
-        //          shifted to position 1 when outer.llt inserts its own frame at position 0).
-        assert!(
-            err.stack.len() >= 2,
-            "expected at least 2 stack frames for the include chain, got {}: {:?}",
-            err.stack.len(),
-            err.stack
-        );
-        assert!(
-            err.stack[0].label.contains("outer.llt"),
-            "frame[0] should mention outer.llt: {:?}",
-            err.stack[0]
-        );
-        assert!(
-            err.stack[1].label.contains("middle.llt"),
-            "frame[1] should mention middle.llt: {:?}",
-            err.stack[1]
-        );
-        // The span on frame[0] should be the call_span we passed (the test's outer call site).
-        assert_eq!(
-            err.stack[0].span,
-            call_span(),
-            "frame[0] span should be the outer call_span"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Verify that the include chain is cleaned up after a successful include.
-    ///
-    /// After `builtin_include` returns successfully, `state.include_chain` must be empty.
-    /// A non-empty chain after success would corrupt future error annotations.
-    #[test]
-    fn include_chain_cleaned_up_after_success() {
-        let dir = std::env::temp_dir().join("llt_test_include_chain_cleanup");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "ok.llt", "42");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("ok.llt"))];
-        let _result = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        })
-        .unwrap();
-
-        assert!(
-            ctx.state.borrow().include_chain.is_empty(),
-            "include_chain must be empty after successful include"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Verify that the include chain is cleaned up after a failed include.
-    ///
-    /// After `builtin_include` returns an error, `state.include_chain` must be empty.
-    #[test]
-    fn include_chain_cleaned_up_after_error() {
-        let dir = std::env::temp_dir().join("llt_test_include_chain_err_cleanup");
-        std::fs::create_dir_all(&dir).ok();
-        write_temp_file(&dir, "bad.llt", "[x: ]");
-        let ctx = include_ctx(&dir);
-
-        let args = vec![thunk(dir_cap_val(&dir)), thunk(string_val("bad.llt"))];
-        let _err = builtin_include(BuiltinArgs {
-            args: &args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Rc::clone(&ctx),
-        })
-        .unwrap_err();
-
-        assert!(
-            ctx.state.borrow().include_chain.is_empty(),
-            "include_chain must be empty after failed include"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Sequence builtins tests

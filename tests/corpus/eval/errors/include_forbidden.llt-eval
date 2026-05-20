@@ -1,4 +1,6 @@
 # no_fs
+# include was removed in include-decomp-prelude; this test now verifies that calling
+# [include] raises an undefined variable error (include is no longer a builtin).
 [include "some_file.llt"]
 === error
-[E042] filesystem access is disabled
+[E002]

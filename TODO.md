@@ -12,40 +12,11 @@ See DONE.md for the full history of completed sprints.
 
 ## Primitive Privacy
 
-### include-decomp-prelude: Add pipeline functions to prelude.llt ✓ DONE 2026-05-19
-
-**Whatif:** `include-decomposition`
-**Spec chapters:** `doc/whatif/include-decomposition.md §Tinct Implementation`
-**Depends on:** `include-decomp-eval-primitives`
-
-- [x] Delete `builtin_include` entirely (`src/builtins_meta.rs`) — done in prior sprint; tombstone comment at builtins_meta.rs:1681
-- [x] Delete `EvalState::include_guard: HashSet<(u64, u64)>` and old `EvalState::include_cache` (`src/eval.rs`) — done in prior sprint
-- [x] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`) — done in prior sprint; tombstone comment at builtins.rs:1607
-- [x] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`) — aliases now injected directly in `create_root_env()`; no module grouping remains
-- [x] Add `eval-document-runtime` to prelude public dict (`stdlib/prelude.llt`)
-- [x] Add `eval-document-pipeline` to prelude public dict (`stdlib/prelude.llt`)
-- [x] Add `eval-file` to prelude public dict (`stdlib/prelude.llt`)
-- [x] Add `include-cache-success`, `include-cache-failure`, `include-evaluate-and-cache` to prelude public dict (`stdlib/prelude.llt`)
-- [x] Add `include` to prelude public dict (`stdlib/prelude.llt`)
-- [x] Add `cli-pipeline` to prelude public dict (`stdlib/prelude.llt`)
-- [x] Verify `IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]` in prelude type namespace — added to type-stage section
-- [x] Fix `builtin-variant: builtin-variant` self-referential letrec entry (pre-existing bug from working tree) — removed; macros.llt uses parent env chain instead
-- [x] Fix `exhaustiveness_multi_field_nominal.llt-eval` broken syntax — moved to `type_errors/` directory with correct format
-
-**Deferred (requires separate sprint or main.rs changes):**
-- [ ] Delete `eval_file_with_input`, `eval_document` from `src/eval_pipeline.rs`; delete file entirely — blocked: still used by main.rs, repl.rs, formatter.rs (requires main.rs rewrite to use `cli-pipeline`)
-- [ ] Update `src/main.rs` to call tinct `cli-pipeline` function directly — blocked: requires full main.rs rewrite; eval_file_with_input still needed
-- [ ] Update formatter and docgen to use `load` directly instead of internal `ast_to_dict`
-- [ ] Tests: corpus test for `[include %include-dir "sibling.llt"]` within multi-file include chain
-- [ ] Tests: corpus test for circular include detection via `[Pending]` cache state
-- [ ] Tests: corpus test for `cli-pipeline` threading `%` across files
-- [ ] Verify `just test` passes (known pre-existing `just test-lib` failure from working tree `test_do_infer_corpus_diagnostics` — see below)
-
-### Pre-existing: `just test-lib` fails with exit 101
-
-`cargo test --lib -D warnings` fails in the working tree (pre-existing, not from include-decomp-prelude sprint). The failing test is in `src/typecheck.rs::test_do_infer_corpus_diagnostics` or a nearby unit test. The failure occurs both before and after the include-decomp-prelude changes. Investigation needed to identify the exact test. `just test-one <filter>` and all corpus tests pass.
-
-- [ ] Identify which unit test fails in `just test-lib` and fix it (`src/typecheck.rs` or related module)
+**Fix-later nits (from include-decomp-prelude sprint):**
+- [ ] `src/builtins.rs:1590` — stale comment referencing %rust "meta" module (deleted this sprint)
+- [ ] `src/builtins.rs:1869` — stale `create_type_stage_env()` doc comment referencing %rust "type-core"
+- [ ] `src/builtins_meta.rs:1481` — `builtin_load` pipeline doc comment missing resolve step
+- [ ] `stdlib/ast.llt:28-29` — `[Literal ... bare: Bool]` claims bare is always present but only emitted for kind:"str"
 
 ### include-decomposition-review: Post-implementation review
 
@@ -56,7 +27,11 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Known Bugs (Type Checker)
+## Known Bugs
+
+- [ ] `just test-lib` fails with exit 101 (pre-existing, present before include-decomp-prelude). The failure is in the `-D warnings` binary (`cargo test --lib -e RUSTFLAGS="-D warnings"`). All module-scoped `just test-one` runs pass (those use a binary compiled without `-D warnings`). Failing test identity unknown — needs investigation. May be a stack overflow in a test that evaluates the full prelude without `RUST_MIN_STACK` set (unlike `just test` which sets `RUST_MIN_STACK=67108864`).
+
+### Known Bugs (Type Checker)
 
 - [x] `typecheck::tests::test_dot_access_intersection_found` — Intersection type unification bug: fixed by adding `(Type::Record(..), Type::Intersection(..))` arm to `src/type_unify.rs` that distributes unification across intersection members. Tests pass.
 - [x] `typecheck::tests::test_dot_access_intersection_missing_field_returns_unknown` — same Intersection unification bug; fixed by same arm. Tests pass.
