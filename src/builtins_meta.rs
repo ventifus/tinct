@@ -93,23 +93,6 @@ pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         call_span,
         ctx,
     } = ctx_arg;
-    if args.len() != 1 {
-        // Temporary diagnostic: print args info before failing
-        let named_count = named.map(|n| n.len()).unwrap_or(0);
-        println!(
-            "[DEBUG builtin_raise] got {} positional args, {} named args at {:?}",
-            args.len(),
-            named_count,
-            call_span
-        );
-        for (i, arg) in args.iter().enumerate() {
-            if let Some(v) = arg.try_get_materialized() {
-                println!("  arg[{}] = {:?}", i, v.type_name());
-            } else {
-                println!("  arg[{}] = <unevaluated>", i);
-            }
-        }
-    }
     let val = crate::builtins::expect_one_arg("raise", args, named, &ctx, call_span)?;
     let msg = require_string("raise", val, args[0].span)?;
     Err(EvalError::user_error(msg.to_string(), call_span).into())
