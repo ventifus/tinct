@@ -82,6 +82,8 @@ pub mod expand;
 pub(crate) mod lower;
 // runtime-v2: surface AST field extraction for match dispatch and dot-access.
 pub(crate) mod surface_fields;
+// runtime-v2: bridge converter from old File/Expr AST to SurfaceProgram (transitional).
+pub(crate) mod ast_convert;
 // Literate tinct: extract and evaluate tinct code blocks from Markdown files.
 pub mod literate;
 // REPL (Read-Eval-Print Loop).
