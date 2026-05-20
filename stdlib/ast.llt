@@ -25,7 +25,7 @@
 # Matches the Rust Expr enum in src/ast.rs
 [type Expr
   # Literals — all literal types share the Literal constructor
-  # kind: "int"|"float"|"bool"|"str"  value: the literal value  bare: true if unquoted
+  # kind: "int"|"float"|"bool"|"str"  value: the literal value  bare: only emitted for kind:"str" nodes (true if unquoted)
   [Literal    kind: String  value: Unknown  bare: Bool]
 
   # Variables and references

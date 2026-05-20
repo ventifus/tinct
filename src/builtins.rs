@@ -1587,7 +1587,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_icmp_ping,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
-        // Meta primitives (exposed via %rust "meta" module)
+        // Meta primitives (pre-injected into bootstrap env; %rust "meta" module deleted in include-decomp-prelude)
         builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
         builtin!("expand", builtin_expand, [Strictness::Seq]),
         builtin!("eval", builtin_eval, [Strictness::Seq]),
@@ -1866,7 +1866,7 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvRes
 ///
 /// This function parses the prelude, filters to only `--- stage: type` documents,
 /// and evaluates them with a minimal bootstrap context containing only `include`
-/// and `%rust "type-core"`.
+/// and a minimal bootstrap env (all Rust primitives pre-injected; %rust "type-core" module deleted in include-decomp-prelude).
 ///
 /// The type-stage env is separate from the runtime stdlib env — it contains only
 /// the bindings defined in type-stage documents (e.g., `Int`, `Str`, `Seq`, `union`).

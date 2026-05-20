@@ -1315,6 +1315,39 @@ NamedPipe: NamedPipe
 Icmp: Icmp
 
 # ============================================================================
+# OpenFlag Type (File Open Mode Variants)
+# ============================================================================
+
+# OpenFlag type: capability flags passed to the [open] builtin.
+# Each flag is a unit variant; multiple flags may be combined in a single open call.
+#
+# Note: AppendableFlag is intentionally omitted here because the name "Appendable"
+# is already used by the Appendable type class (see §Type Class Declarations below).
+# Use the "Appendable" string directly with [open] if append mode is needed until
+# a rename is decided (pre-1.0).
+#
+# DirCap permission flags (used by [narrow]) that do not conflict with open flags:
+# Statable, Listable, Deletable, Renameable.
+OpenFlag: [type [Readable] [Writable] [Binary] [Text] [Seekable]]
+
+# Re-export OpenFlag variant constructors (used as args to [open])
+Readable: Readable
+Writable: Writable
+Binary: Binary
+Text: Text
+Seekable: Seekable
+
+# DirCapFlag type: permission flags passed to the [narrow] builtin.
+# Controls which capabilities a narrowed DirCap inherits from its source.
+DirCapFlag: [type [Statable] [Listable] [Deletable] [Renameable]]
+
+# Re-export DirCapFlag variant constructors
+Statable: Statable
+Listable: Listable
+Deletable: Deletable
+Renameable: Renameable
+
+# ============================================================================
 # Result Type and Combinators
 # ============================================================================
 
@@ -1848,6 +1881,10 @@ Note: Always fails. The error message must be a String. Use [try f] to catch
 user errors from zero-arg functions.
 """]: [fn [let msg@String] [builtin-raise msg]]
 
+# error: alias for raise. Historically used throughout the standard library
+# and user code as [error "message"]. Kept for compatibility; prefer [raise] in new code.
+error: raise
+
 # Higher-order collection functions
 filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
 map@[doc: "Apply function to each element"]: [fn [let f@Fn xs] [builtin-map f xs]]
@@ -2297,6 +2334,16 @@ Example:
 #
 # See doc/whatif/include-decomposition.md for full design rationale.
 
+# IncludeCacheEntry runtime variant constructors.
+# Also declared in the type-stage section for the type namespace, but the
+# variant constructors must be in scope at runtime for include-cache-put/get.
+IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]
+
+# Re-export IncludeCacheEntry variant constructors
+Missing: Missing
+Pending: Pending
+Cached: Cached
+
 # eval-document-runtime: evaluate one Runtime-stage document, returning updated
 # pipeline state dict {prev: result, named: accumulated-named-sections}.
 #
@@ -2383,8 +2430,8 @@ Store include result in cache and return it. Internal helper for include.
 include-cache-failure: [fn@[return: Never  doc: """
 Reset include cache entry on error and re-raise. Internal helper for include.
 """] [let hash e]
-  [include-cache-put hash [Missing]]
-  [error e]]
+  [include-cache-put hash Missing]
+  [raise e]]
 
 # include-evaluate-and-cache: evaluate a file and memoize it.
 # Marks [Pending] before evaluation so circular includes surface as an error
@@ -2397,7 +2444,7 @@ path:   file path string (for error spans)
 hash:   content cache key (blake3(cap-identity + "|" + source))
 cap:    DirCap — passed as %include-dir; included files start with % = []
 """] [let source path hash cap]
-  [include-cache-put hash [Pending]]
+  [include-cache-put hash Pending]
   [match [try [fn [] [eval-file [expand [load source name: path]] [] cap]]]
     [Ok result]: [include-cache-success hash result]
     [Error e]:   [include-cache-failure hash e]]]
