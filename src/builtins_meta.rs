@@ -1358,6 +1358,37 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     crate::ast_dict::ast_to_dict(&file.node, &opts, &ctx)
 }
 
+/// `expand`: takes a `Value::Program`, runs macro expansion, returns `Value::Program`.
+///
+/// runtime-v2 Part G stub: macro expansion is run internally in `builtin_load`.
+/// This primitive exists for the include-decomp self-hosted pipeline which separates
+/// parse/expand/eval into distinct primitives. For now, expansion has already been
+/// performed by `builtin_load`, so this is an identity function.
+///
+/// Full implementation: unwrap Program → run expand_macros → wrap back as Program.
+pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { args, named, call_span, ctx } = ctx_arg;
+    crate::builtins::reject_named("expand", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    match val {
+        Value::Program(_) => {
+            // Identity: expansion was already performed by builtin_load.
+            // TODO: when include-decomp self-hosted pipeline is implemented,
+            // this should actually run expand_macros on the SurfaceProgram.
+            Ok(Rc::new(Thunk::new_materialized(val, call_span)))
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "expand".to_string(),
+            "Program",
+            val.type_name(),
+            call_span,
+        ).into()),
+    }
+}
+
 /// `include-cache-get`: look up the string-keyed include cache by blake3 key.
 ///
 /// Takes 1 positional arg (String key). Returns:
