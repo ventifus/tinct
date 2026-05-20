@@ -496,6 +496,9 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let env_val = materialize(env_thunk, Some(&call_span), &ctx)?;
             let env_dict = match env_val {
                 Value::Dict(d) => d,
+                Value::Overlay(l, r) => {
+                    crate::builtins::flatten_overlay(&l, &r, "eval env:", &ctx, call_span)?
+                }
                 _ => {
                     return Err(EvalError::type_mismatch_ctx(
                         "eval env:".to_string(),
@@ -1478,7 +1481,7 @@ pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 /// Takes 1 positional arg (String source text) and an optional `name:` named arg (String,
 /// used as the provenance hint for error messages).
 ///
-/// Pipeline: parse → macro-expand → desugar → ast_to_dict.
+/// Pipeline: parse → macro-expand → desugar → resolve → ast_to_dict.
 /// Returns a Dict in the canonical AST schema (type: "file", schema-version: 1, documents: [...]).
 ///
 /// This is the primitive underlying the `include` pipeline in the include-decomposition design.

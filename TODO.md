@@ -13,10 +13,10 @@ See DONE.md for the full history of completed sprints.
 ## Primitive Privacy
 
 **Fix-later nits (from include-decomp-prelude sprint):**
-- [ ] `src/builtins.rs:1590` — stale comment referencing %rust "meta" module (deleted this sprint)
-- [ ] `src/builtins.rs:1869` — stale `create_type_stage_env()` doc comment referencing %rust "type-core"
-- [ ] `src/builtins_meta.rs:1481` — `builtin_load` pipeline doc comment missing resolve step
-- [ ] `stdlib/ast.llt:28-29` — `[Literal ... bare: Bool]` claims bare is always present but only emitted for kind:"str"
+- [x] `src/builtins.rs:1590` — stale comment referencing %rust "meta" module (deleted this sprint)
+- [x] `src/builtins.rs:1869` — stale `create_type_stage_env()` doc comment referencing %rust "type-core"
+- [x] `src/builtins_meta.rs:1481` — `builtin_load` pipeline doc comment missing resolve step
+- [x] `stdlib/ast.llt:28-29` — `[Literal ... bare: Bool]` claims bare is always present but only emitted for kind:"str"
 
 ### include-decomposition-review: Post-implementation review
 
@@ -29,7 +29,7 @@ See DONE.md for the full history of completed sprints.
 
 ## Known Bugs
 
-- [ ] `just test-lib` fails with exit 101 (pre-existing, present before include-decomp-prelude). The failure is in the `-D warnings` binary (`cargo test --lib -e RUSTFLAGS="-D warnings"`). All module-scoped `just test-one` runs pass (those use a binary compiled without `-D warnings`). Failing test identity unknown — needs investigation. May be a stack overflow in a test that evaluates the full prelude without `RUST_MIN_STACK` set (unlike `just test` which sets `RUST_MIN_STACK=67108864`).
+- [ ] `just test-lib` fails with exit 101 (pre-existing). **Investigation (2026-05-19):** 4 failing tests identified: `test_syntax_llt_fn_{no_break,macro_triggered,single_param,already_let_decl}`. All test `[include %libdir "syntax.llt"]`. Root cause: the self-hosted `include` pipeline in `stdlib/prelude.llt` uses `Readable` as a VarRef (`[open cap path Readable]`) but `Readable` is not defined as a runtime variant in the prelude — it exists only as a concept in the `open` Rust builtin. The fix requires adding `OpenFlag: [type [Readable] [Writable] ...]` + re-exports to prelude.llt (and similarly `IncludeCacheEntry`, `Missing`/`Pending`/`Cached`, and `error: raise`). However, these prelude additions cause OOM/SIGKILL in `just test-corpus` due to increased stdlib size per load. The deeper issue is that `include` calls `builtin_expand` which triggers a second full stdlib reload (via `create_stdlib_env_with_arena()` at `EXPAND_MACROS_DEPTH==0`), and the interaction between the first and second stdlib loads creates a context mismatch that needs architectural attention. NOT a stack overflow — fails even with `RUST_MIN_STACK=67108864`. Needs a sprint to: (1) define the missing prelude variants, (2) fix the double-stdlib-load in the include pipeline, or (3) restructure `builtin_expand` to avoid the second stdlib load.
 
 ### Known Bugs (Type Checker)
 
