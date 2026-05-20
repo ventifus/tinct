@@ -1,9 +1,6 @@
-# Compact Formatter for Tinct AST (runtime-v2)
-# TODO: The pre-existing formatter bug (functions from dicts always report wrong arity
-# with eval_document strict forcing) prevents this from working. The Expression-based
-# rewrite is the target but needs the core bug fixed first.
-# For now, keeping original Variant-schema dispatch as placeholder.
-# The formatter bug predates runtime-v2 (introduced in typed-expr-constructors).
+# Compact Formatter for Tinct AST
+# Converts AST dict (from ast_to_dict) to compact source text.
+# Single-line output: semicolons for separators, no comments, no layout decisions.
 
 # Builtins (if, =, +, -, *, <, length, merge, etc.) are provided via the stdlib env.
 
