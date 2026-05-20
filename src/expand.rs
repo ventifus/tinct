@@ -139,6 +139,12 @@ fn next_synthetic_id() -> u64 {
     SYNTHETIC_COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
+impl Default for MacroEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MacroEnv {
     pub fn new() -> Self {
         Self {
@@ -296,7 +302,7 @@ fn register_stdlib_macros_from_env(
         // Look up the transformer function by its export name (may differ from macro name)
         let transformer_thunk = {
             let env_ref = stdlib_env.borrow();
-            env_ref.get(*transformer_fn_name)
+            env_ref.get(transformer_fn_name)
         };
         if let Some(transformer) = transformer_thunk {
             // Build parameter bindings for the LetDecl pattern
@@ -903,12 +909,12 @@ fn pre_scan_expr(
 
 /// Helper for scanning Box<Spanned<Expr>>
 fn pre_scan_expr_boxed(
-    expr: &Box<Spanned<Expr>>,
+    expr: &Spanned<Expr>,
     env: &mut MacroEnv,
     ctx: &Rc<EvalContext>,
     stdlib_env: &Rc<RefCell<Environment>>,
 ) -> EvalResult<()> {
-    pre_scan_expr(&Rc::new(expr.as_ref().clone()), env, ctx, stdlib_env)
+    pre_scan_expr(&Rc::new(expr.clone()), env, ctx, stdlib_env)
 }
 
 /// Helper for scanning Spanned<Expr>
@@ -1521,6 +1527,7 @@ fn expand_expr_inner(
 /// The macro expansion boundary is a data boundary. Both the input AST dict and the output
 /// AST dict are fully materialized before crossing. No arena-relative ThunkId handles may
 /// flow from the stdlib arena into the expansion arena or vice versa.
+#[allow(clippy::too_many_arguments)] // Macro expansion requires full context threading
 fn expand_macro_call(
     macro_name: &str,
     args: &[Rc<Spanned<Expr>>],

@@ -38,6 +38,15 @@ use crate::eval::materialize;
 use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{BuiltinArgs, Environment, Key, Thunk, Value};
 
+/// Type alias for stdlib environment creation return type
+type StdlibEnvResult = Result<
+    (
+        Rc<RefCell<Environment>>,
+        Rc<RefCell<crate::arena::ThunkArena>>,
+    ),
+    Box<crate::error::EvalError>,
+>;
+
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
 ///
 /// `builtin!("name", fn)` — all-lazy (empty strictness array).
@@ -460,7 +469,8 @@ fn float_to_int_builtin(
 /// - Float input: applies `f64::floor()` then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
-/// Inherently materializing: must inspect numeric value to convert/round.
+///
+///   Inherently materializing: must inspect numeric value to convert/round.
 fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -477,7 +487,8 @@ fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Float input: applies `f64::round()` (half-away-from-zero) then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
-/// Inherently materializing: must inspect numeric value to convert/round.
+///
+///   Inherently materializing: must inspect numeric value to convert/round.
 fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -492,7 +503,8 @@ fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
-/// Inherently materializing: must inspect string content to parse integer value.
+///
+///   Inherently materializing: must inspect string content to parse integer value.
 fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -517,7 +529,8 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Parses the string as a float via `str::parse::<f64>()`. Returns Float.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
-/// Inherently materializing: must inspect string content to parse float value.
+///
+///   Inherently materializing: must inspect string content to parse float value.
 fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -591,7 +604,8 @@ pub(crate) use crate::builtins_datetime::{
 /// - Dict path: O(1) — returns the value at the first key (insertion order).
 /// - String path: O(1) — returns a single-char String slice of the first codepoint.
 /// - Bytes path: O(1) — returns the first byte as Value::Int.
-/// Inherently materializing: must access the value to determine type and extract first element.
+///
+///   Inherently materializing: must access the value to determine type and extract first element.
 fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -658,7 +672,8 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Dict path: O(n) — must iterate to the last entry (IndexMap doesn't have O(1) last).
 /// - String path: O(n) — must walk UTF-8 chars to find the last codepoint.
 /// - Bytes path: O(1) — returns the last byte as Value::Int.
-/// Inherently materializing: must access the value to determine type and extract last element.
+///
+///   Inherently materializing: must access the value to determine type and extract last element.
 fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -726,8 +741,10 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Dict path: O(n) — drops the first entry by insertion order, rebuilds with dense
 ///   integer keys starting at 0. Same asymptotic cost as the LLT implementation, but
 ///   avoids interpreter loop overhead.
-/// Inherently materializing for Dict: must copy all remaining entries.
-/// Lazy for Seq: O(1) tail extraction.
+///
+///   Inherently materializing for Dict: must copy all remaining entries.
+///
+///   Lazy for Seq: O(1) tail extraction.
 fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -769,8 +786,10 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Dict path: O(n) — builds a new dict with the element at key 0, followed by
 ///   the existing entries reindexed as 1..n. Same asymptotic cost as the LLT
 ///   implementation, but avoids interpreter loop overhead.
-/// Inherently materializing for Dict: must copy all existing entries.
-/// Lazy for Seq: O(1) prepend.
+///
+///   Inherently materializing for Dict: must copy all existing entries.
+///
+///   Lazy for Seq: O(1) prepend.
 fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -816,7 +835,8 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Materializes the dict, collects entries in reverse insertion order,
 ///   builds a new dict with dense integer keys 0..n-1.
 /// - O(n) — avoids the recursive LLT accumulator pattern.
-/// Inherently materializing: must know all entries to reverse order.
+///
+///   Inherently materializing: must know all entries to reverse order.
 fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -899,7 +919,8 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
 /// - O(n log n) using Rust's `sort_by`.
 /// - Errors on mixed incompatible types when using natural ordering.
 /// - Errors on Seq input (callers must `$collect` first).
-/// Inherently materializing: must inspect all values to determine sort order.
+///
+///   Inherently materializing: must inspect all values to determine sort order.
 fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1954,7 +1975,7 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
 /// Contains ONLY:
 /// - `include` — the special form for loading modules and files
 /// - `%rust` — the opaque `Value::RustRegistry` sentinel that grants access to Rust
-///             primitive groups via `[include %rust "group-name"]`
+///   primitive groups via `[include %rust "group-name"]`
 ///
 /// No other builtins are present. The prelude must explicitly include the Rust
 /// primitive groups it needs (e.g., `[include %rust "core"]`) to get access to
@@ -2067,7 +2088,7 @@ std::thread_local! {
     /// Cache of the stdlib arena so EvalContexts created after create_stdlib_env()
     /// can inherit the stdlib ThunkIds without the caller explicitly threading the arena.
     static STDLIB_ARENA_CACHE: std::cell::RefCell<Option<Rc<RefCell<crate::arena::ThunkArena>>>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Return a new ThunkArena pre-populated with the stdlib thunks (via Rc::clone),
@@ -2096,13 +2117,7 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 /// `EvalContext::new()` calls on this thread inherit the stdlib ThunkIds. This ensures cache
 /// consistency regardless of which entry point (`create_stdlib_env()` or
 /// `create_stdlib_env_with_arena()`) was used to build the stdlib.
-pub(crate) fn create_stdlib_env_with_arena() -> Result<
-    (
-        Rc<RefCell<Environment>>,
-        Rc<RefCell<crate::arena::ThunkArena>>,
-    ),
-    Box<crate::error::EvalError>,
-> {
+pub(crate) fn create_stdlib_env_with_arena() -> StdlibEnvResult {
     let d = STDLIB_ENV_DEPTH.get();
     if d > 5 {
         panic!(
@@ -2130,15 +2145,7 @@ pub(crate) fn create_stdlib_env_with_arena() -> Result<
     result
 }
 
-fn create_stdlib_env_inner(
-    bootstrap_base_dir: cap_std::fs::Dir,
-) -> Result<
-    (
-        Rc<RefCell<Environment>>,
-        Rc<RefCell<crate::arena::ThunkArena>>,
-    ),
-    Box<crate::error::EvalError>,
-> {
+fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvResult {
     // Phase 2: Bootstrap env switch.
     // The bootstrap env contains ONLY `include` and `%rust`. Prelude uses
     // `[include %rust "core"]`, `[include %rust "collection"]`, etc. to pull in

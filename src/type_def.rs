@@ -182,6 +182,8 @@ pub enum Type {
     /// Type-stage function application — represents a pending type-level computation.
     /// Created during constraint generation for FD classes; reduced by normalize().
     /// Example: TypeStageApp { fn_name: "AddResult", args: vec![Int, Float] } reduces to Float.
+    #[allow(clippy::enum_variant_names)]
+    // Type prefix is intentional for type-level computation
     TypeStageApp {
         fn_name: String,
         args: Vec<Type>,
@@ -619,15 +621,12 @@ impl Type {
             // {x: T} and {y: U} where x ≠ y have no values in common — no record can
             // satisfy both field requirements. This improves Negation subtyping precision
             // without requiring full RDNF normalization.
-            (Type::Record(row1), Type::Record(row2)) => {
-                if row1.fields.len() == 1 && row2.fields.len() == 1 {
-                    let key1 = row1.fields.keys().next().unwrap();
-                    let key2 = row2.fields.keys().next().unwrap();
-                    key1 != key2
-                } else {
-                    // Multi-field records: conservative (might overlap)
-                    false
-                }
+            (Type::Record(row1), Type::Record(row2))
+                if row1.fields.len() == 1 && row2.fields.len() == 1 =>
+            {
+                let key1 = row1.fields.keys().next().unwrap();
+                let key2 = row2.fields.keys().next().unwrap();
+                key1 != key2
             }
 
             // TypeStageApp might overlap with anything (conservative)
@@ -958,6 +957,7 @@ impl Type {
 
     /// Collect both type variables and row variables in a single tree walk.
     /// Performance optimization: avoids allocating two HashSets and traversing the type tree twice.
+    #[allow(clippy::only_used_in_recursion)] // row_vars reserved for future row variable collection
     pub fn collect_all_vars(
         &self,
         type_vars: &mut HashSet<String>,
@@ -1022,6 +1022,7 @@ impl Type {
     ///
     /// This replaces the double-walk pattern of calling `type_var_occurs()` then
     /// `collect_all_vars()` separately in each U-VAR arm of `unify()`.
+    #[allow(clippy::only_used_in_recursion)] // row_vars reserved for future row variable collection
     pub fn collect_all_vars_check_occurs(
         &self,
         occurs_name: &str,
@@ -1103,6 +1104,7 @@ impl Type {
     /// allocation; callers that need deduplication handle it via seen-set or contains_key guards.
     /// Production callers: `instantiate_at_level` and `generalize`. (The test-only `instantiate()`
     /// uses the HashSet variant `collect_all_vars` instead.)
+    #[allow(clippy::only_used_in_recursion)] // row_vars reserved for future row variable collection
     pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>, row_vars: &mut Vec<String>) {
         match self {
             Type::TypeVar(name, _) => {
@@ -1465,7 +1467,7 @@ impl Type {
                 }
                 let reduced: Vec<Type> = members
                     .into_iter()
-                    .zip(to_keep.into_iter())
+                    .zip(to_keep)
                     .filter_map(|(m, keep)| if keep { Some(m) } else { None })
                     .collect();
                 if reduced.is_empty() {

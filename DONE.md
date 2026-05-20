@@ -8281,3 +8281,13 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [x] Add Literate/Weave coverage for bare cap-fs error path (`tests/cli_tests.rs`)
 - [x] Extract cap-fs parsing to shared helper: three identical blocks in run_eval/run_literate_eval/run_literate_weave (`src/main.rs`)
 - [x] Document `_cap_fs` ignored in run_lint: add comment explaining why lint doesn't inject cap-fs DirCaps (`src/main.rs`)
+
+## Codebase Health
+
+### clippy-clean: Fix all clippy warnings (`just lint` currently fails with 205 errors)
+
+`just lint` fails (exit 101) with 205 clippy warnings across 43 lint categories, all treated as errors via `-D warnings`. Two-step fix:
+
+- [x] Run `just lint-fix` to apply auto-fixable suggestions (covers most of: `redundant_field_names`, `redundant_closure`, `needless_borrow`, `needless_return`, `collapsible_match`, `collapsible_if`, `len_zero`, `useless_format`, `useless_conversion`, `unnecessary_cast`, `unwrap_or_default`, `needless_range_loop`, `while_let_loop`, `single_match`, `match_like_matches_macro`, `manual_map`, `needless_question_mark`, `to_string_in_format_args`, and more)
+- [x] Manually fix remaining warnings that `lint-fix` cannot auto-apply: `type_complexity`, `too_many_arguments`, `box_collection`, `borrowed_box`, `result_large_err`, `mutable_key_type`, `new_without_default`, `enum_variant_names`, `only_used_in_recursion`, `missing_const_for_thread_local`, `doc_lazy_continuation`, `doc_overindented_list_items` — these require design decisions (refactor vs. `#[allow]` with justification)
+- [x] Verify `just lint` passes (exit 0) after both steps

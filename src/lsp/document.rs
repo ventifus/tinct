@@ -389,6 +389,7 @@ pub fn resolve_include_uri(base_uri: &Uri, path: &str) -> Option<Uri> {
 /// Recursively indexes all included files up to a depth limit of 16.
 /// Uses plain `std::fs::read_to_string` (not eval-time `$include`) — safe
 /// because no user code execution occurs, only parsing.
+#[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys
 pub fn index_file(
     uri: Uri,
     graph: &mut IncludeGraph,
@@ -493,6 +494,7 @@ pub fn index_file(
 ///
 /// Follows reverse edges breadth-first to find all files that transitively
 /// include the changed file, then re-indexes them.
+#[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys
 pub fn invalidate_dependents(
     changed_uri: &Uri,
     graph: &mut IncludeGraph,
@@ -501,6 +503,7 @@ pub fn invalidate_dependents(
 ) {
     use std::collections::VecDeque;
     let mut queue = VecDeque::new();
+    #[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashSet keys
     let mut visited = std::collections::HashSet::new();
 
     // Start with the changed file's dependents

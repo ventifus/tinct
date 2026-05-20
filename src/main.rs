@@ -32,6 +32,7 @@ struct Cli {
     command: Commands,
 }
 
+#[allow(clippy::large_enum_variant)] // Run variant contains all CLI flags
 #[derive(Subcommand)]
 enum Commands {
     /// Evaluate an LLT file and output the result.
@@ -569,7 +570,7 @@ fn setup_rlimits(
             rlim_cur: limit_val,
             rlim_max: limit_val,
         };
-        let ret = unsafe { libc::setrlimit(resource as u32, &rlim) };
+        let ret = unsafe { libc::setrlimit(resource, &rlim) };
         if ret != 0 {
             return Err(format!(
                 "failed to set {} limit to {}: {}",
@@ -1052,6 +1053,7 @@ fn parse_cap_fs_entries(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)] // CLI entrypoint with all flags
 fn run_eval(
     file_paths: &[String],
     force_eval: bool,
@@ -1083,7 +1085,7 @@ fn run_eval(
     // Prepend -i input formatter if specified
     if let Some(ref input_format) = input {
         let libdir_path = resolve_libdir_path(libdir_path.as_deref())
-            .ok_or_else(|| format!("--input: stdlib directory not found (libdir)"))?;
+            .ok_or_else(|| "--input: stdlib directory not found (libdir)".to_string())?;
         let input_path = libdir_path
             .join("cli")
             .join("in")
@@ -1108,7 +1110,7 @@ fn run_eval(
     // Append -o output formatter if specified
     if let Some(ref output_format) = output {
         let libdir_path = resolve_libdir_path(libdir_path.as_deref())
-            .ok_or_else(|| format!("--output: stdlib directory not found (libdir)"))?;
+            .ok_or_else(|| "--output: stdlib directory not found (libdir)".to_string())?;
         let output_path = libdir_path
             .join("cli")
             .join("out")
@@ -1871,7 +1873,7 @@ fn run_eval(
         // The producing stage label is the file path or expression index.
         let stage_label = match stage {
             PipelineStage::File(p) => p.clone(),
-            PipelineStage::Expr(_) => format!("(inline expression)"),
+            PipelineStage::Expr(_) => "(inline expression)".to_string(),
         };
 
         // Pass the result as lazy thunk to next file (matching --- boundary semantics).
@@ -1881,11 +1883,9 @@ fn run_eval(
 
         // Record blame for the % thunk at this pipeline boundary.
         // This is used by contract violation errors to identify the producing stage.
-        if let Ok(val) = tinct::materialize(&file_result, None, &eval_ctx) {
-            if let tinct::Value::Dict(ref map) = val {
-                for (_, thunk_id) in map {
-                    eval_ctx.record_blame(*thunk_id, stage_label.clone());
-                }
+        if let Ok(tinct::Value::Dict(ref map)) = tinct::materialize(&file_result, None, &eval_ctx) {
+            for (_, thunk_id) in map {
+                eval_ctx.record_blame(*thunk_id, stage_label.clone());
             }
         }
         // Also record blame for the result thunk itself
@@ -2432,7 +2432,7 @@ fn run_literate_eval(
         };
 
         let nanos = i64::try_from(mtime.as_nanosecond())
-            .map_err(|_| format!("mtime is out of i64 range"))?;
+            .map_err(|_| "mtime is out of i64 range".to_string())?;
         let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
         env.borrow_mut()
@@ -2641,7 +2641,7 @@ fn run_literate_weave(
         };
 
         let nanos = i64::try_from(mtime.as_nanosecond())
-            .map_err(|_| format!("mtime is out of i64 range"))?;
+            .map_err(|_| "mtime is out of i64 range".to_string())?;
         let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
         env.borrow_mut()

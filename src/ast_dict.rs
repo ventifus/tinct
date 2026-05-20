@@ -633,8 +633,7 @@ fn expr_to_thunk_id(
             // Serialize arms as a list
             let arms_thunks: Vec<ThunkId> = arms
                 .iter()
-                .enumerate()
-                .map(|(_i, arm)| {
+                .map(|arm| {
                     let mut arm_dict = IndexMap::new();
                     arm_dict.insert(
                         Key::String("pattern".into()),
@@ -1507,7 +1506,7 @@ fn dict_to_ast_from_dict(
     ctx: &Rc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Expr>, AstError> {
     // Extract span (optional — if absent, use synthetic origin span)
-    let span = extract_span(&dict, ctx).unwrap_or_else(Span::origin);
+    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
 
     let expr = match type_str.as_str() {
         "literal" | "Literal" => {
@@ -1586,7 +1585,7 @@ fn dict_to_ast_from_dict(
             let exprs_val = get_dict_field(dict, "exprs", &["type"], ctx)?;
             let exprs_list = extract_list(&exprs_val, &["exprs"], ctx)?;
             let mut exprs = Vec::new();
-            for (_i, expr_val) in exprs_list.into_iter().enumerate() {
+            for expr_val in exprs_list.into_iter() {
                 let expr = dict_to_ast(&expr_val, ctx)?;
                 exprs.push(Rc::new(expr));
             }
@@ -1594,7 +1593,7 @@ fn dict_to_ast_from_dict(
         }
 
         "dict" | "Dict" => {
-            let entries_val = get_dict_field(&dict, "entries", &["type"], ctx)?;
+            let entries_val = get_dict_field(dict, "entries", &["type"], ctx)?;
             let entries_list = extract_list(&entries_val, &["entries"], ctx)?;
             let mut entries = Vec::new();
             for (i, entry_val) in entries_list.into_iter().enumerate() {
@@ -1612,7 +1611,7 @@ fn dict_to_ast_from_dict(
             let args_val = get_dict_field(dict, "args", &["type"], ctx)?;
             let args_list = extract_list(&args_val, &["args"], ctx)?;
             let mut args = Vec::new();
-            for (_i, arg_val) in args_list.into_iter().enumerate() {
+            for arg_val in args_list.into_iter() {
                 let arg = dict_to_ast(&arg_val, ctx)?;
                 args.push(Rc::new(arg));
             }
@@ -1674,43 +1673,26 @@ fn dict_to_ast_from_dict(
                             // Extract params from integer-keyed dict
                             let mut param_names = Vec::new();
                             let mut i = 0i64;
-                            loop {
-                                match params_dict.get(&Key::Int(i)) {
-                                    Some(thunk_id) => {
-                                        let thunk = ctx.get_thunk(*thunk_id);
-                                        let val =
-                                            thunk.try_get_materialized().ok_or_else(|| {
-                                                AstError {
-                                                    message: format!(
-                                                        "param {} is not materialized",
-                                                        i
-                                                    ),
-                                                    field_path: vec![
-                                                        "params".to_string(),
-                                                        i.to_string(),
-                                                    ],
-                                                }
-                                            })?;
-                                        match val {
-                                            Value::String {
-                                                ref source,
-                                                start,
-                                                end,
-                                            } => param_names.push(source[start..end].to_string()),
-                                            _ => {
-                                                return Err(AstError {
-                                                    message: format!("param {} must be String", i),
-                                                    field_path: vec![
-                                                        "params".to_string(),
-                                                        i.to_string(),
-                                                    ],
-                                                });
-                                            }
-                                        }
-                                        i += 1;
+                            while let Some(thunk_id) = params_dict.get(&Key::Int(i)) {
+                                let thunk = ctx.get_thunk(*thunk_id);
+                                let val = thunk.try_get_materialized().ok_or_else(|| AstError {
+                                    message: format!("param {} is not materialized", i),
+                                    field_path: vec!["params".to_string(), i.to_string()],
+                                })?;
+                                match val {
+                                    Value::String {
+                                        ref source,
+                                        start,
+                                        end,
+                                    } => param_names.push(source[start..end].to_string()),
+                                    _ => {
+                                        return Err(AstError {
+                                            message: format!("param {} must be String", i),
+                                            field_path: vec!["params".to_string(), i.to_string()],
+                                        });
                                     }
-                                    None => break,
                                 }
+                                i += 1;
                             }
                             param_names
                         }
@@ -1815,7 +1797,7 @@ fn dict_to_ast_from_dict(
             let forms_val = get_dict_field(dict, "forms", &["type"], ctx)?;
             let forms_list = extract_list(&forms_val, &["forms"], ctx)?;
             let mut forms = Vec::new();
-            for (_i, form_val) in forms_list.into_iter().enumerate() {
+            for form_val in forms_list.into_iter() {
                 forms.push(dict_to_ast(&form_val, ctx)?);
             }
             Expr::Splice(forms)
@@ -1864,7 +1846,7 @@ fn dict_to_ast_from_dict(
             let bindings_val = get_dict_field(dict, "bindings", &["type"], ctx)?;
             let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
             let mut bindings = Vec::new();
-            for (_i, binding_val) in bindings_list.into_iter().enumerate() {
+            for binding_val in bindings_list.into_iter() {
                 let binding = dict_to_ast(&binding_val, ctx)?;
                 bindings.push(binding);
             }

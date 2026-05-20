@@ -32,6 +32,9 @@ pub type TypeMap = HashMap<(usize, usize), Type>;
 /// Populated during type checking by extracting `doc:` properties from annotations.
 pub type DocMap = HashMap<String, String>;
 
+/// Type alias for match arm type data: (param_types, span, entries)
+type MatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<Entry>>);
+
 /// Re-export SchemeMap from types for LSP consumers.
 pub use crate::types::SchemeMap;
 
@@ -1883,7 +1886,7 @@ fn infer_expr(
                 } else {
                     // Intermediate expression must be a record (dict)
                     return Err(vec![TypeError::new(
-                        &format!(
+                        format!(
                             "sequential expression requires intermediate expressions to be dicts, got {}",
                             expr_ty
                         ),
@@ -2203,7 +2206,7 @@ fn infer_expr(
             state.subst = subst;
             result.map_err(|_e| {
                 vec![TypeError::new(
-                    &format!("unquote-splice expects a list (Dict), got {}", inner_ty),
+                    format!("unquote-splice expects a list (Dict), got {}", inner_ty),
                     inner.span,
                 )]
             })?;
@@ -2569,7 +2572,7 @@ fn infer_expr(
             };
 
             // Process each arm: extract pattern types, check arity, collect for soundness checks
-            let mut arm_data: Vec<(Vec<Type>, Span, &Vec<Spanned<Entry>>)> = Vec::new();
+            let mut arm_data: Vec<MatchArmData> = Vec::new();
 
             for (pattern_expr, methods) in arms {
                 // Extract types from pattern (Task 7.1)
@@ -2617,8 +2620,7 @@ fn infer_expr(
             if has_fds {
                 for (determining_indices, determined_indices) in &fd_list {
                     // Coverage check (Task 7.3): all determined vars must appear in determining vars
-                    for arm_idx in 0..arm_data.len() {
-                        let (pattern_types, span, _) = &arm_data[arm_idx];
+                    for (pattern_types, span, _) in &arm_data {
                         for &det_idx in determined_indices {
                             if !determining_indices.contains(&det_idx) {
                                 // Check if this determined param appears in the pattern
@@ -2848,7 +2850,7 @@ fn infer_expr(
         }
 
         Expr::Error(span) => Err(vec![TypeError::new(
-            &format!(
+            format!(
                 "syntax error at {}:{} (cannot typecheck error node)",
                 span.start.line, span.start.column
             ),
@@ -3457,10 +3459,7 @@ fn check_get_in(
                 // Check if auto-indexed (key is None or matches index)
                 let is_auto_indexed = match &entry.node.key {
                     None => true,
-                    Some(key_expr) => match &key_expr.node {
-                        Expr::Int(n) if *n == idx as i64 => true,
-                        _ => false,
-                    },
+                    Some(key_expr) => matches!(&key_expr.node, Expr::Int(n) if *n == idx as i64),
                 };
 
                 if !is_auto_indexed {
@@ -3544,6 +3543,7 @@ fn check_get_in(
 ///     If it's a call to a nominal constructor (`[Ok ...]`, `[Error ...]`), resolve to the
 ///     corresponding monad dict.
 ///   - Rule 3 (failure): If all resolution attempts fail, emit TypeError T_DO_INFER.
+#[allow(clippy::too_many_arguments)] // Signature matches check_call pattern
 fn check_do_infer(
     method: &crate::ast::DotKey,
     sentinel_span: Span,
@@ -3922,6 +3922,7 @@ fn is_concrete_type(ty: &Type) -> bool {
 /// Check a call where the function is a TypeScheme (from a VarRef lookup).
 /// This avoids double instantiation: instead of VAR-POLY instantiating the scheme
 /// and then CALL-POLY instantiating the result, we instantiate once here.
+#[allow(clippy::too_many_arguments)] // Signature matches check_call pattern
 fn check_call_with_scheme(
     scheme: &TypeScheme,
     func_span: Span,
@@ -4064,19 +4065,16 @@ fn check_call_with_scheme(
                 // non_variadic_param_count against the Seq element type. Widen literals first.
                 if *variadic && arg_types.len() > non_variadic_param_count {
                     // The last param is the variadic param — extract its Seq element type
-                    if let Some((_, param_ty)) = params.last() {
-                        if let Type::Seq(elem_ty) = param_ty {
-                            for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
-                                // Widen literal types before unifying
-                                let widened_ty = match arg_ty {
-                                    Type::IntLiteral(_) => Type::Int,
-                                    Type::StringLiteral(_) => Type::Str,
-                                    other => other.clone(),
-                                };
-                                if let Err(e) = unify(elem_ty, &widened_ty, &mut subst, state, span)
-                                {
-                                    arg_errors.get_or_insert_with(Vec::new).push(e);
-                                }
+                    if let Some((_, Type::Seq(elem_ty))) = params.last() {
+                        for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
+                            // Widen literal types before unifying
+                            let widened_ty = match arg_ty {
+                                Type::IntLiteral(_) => Type::Int,
+                                Type::StringLiteral(_) => Type::Str,
+                                other => other.clone(),
+                            };
+                            if let Err(e) = unify(elem_ty, &widened_ty, &mut subst, state, span) {
+                                arg_errors.get_or_insert_with(Vec::new).push(e);
                             }
                         }
                     }
@@ -4238,8 +4236,9 @@ fn check_call_with_scheme(
 /// - CALL-POLY (here): same name-based lookup and unify on the instantiated params.
 /// - `check_call_with_scheme` Function arm: same name-based lookup and unify after positional
 ///   arg unification; uses `params` from the already-instantiated `func_ty`.
-/// Note: named-arg checking fires only for resolved function types; same-dict letrec forward
-/// references fall through to the `TypeVar` arm and skip named-arg validation.
+///
+///   Note: named-arg checking fires only for resolved function types; same-dict letrec forward
+///   references fall through to the `TypeVar` arm and skip named-arg validation.
 fn check_call(
     func: &Spanned<Expr>,
     args: &[Rc<Spanned<Expr>>],
@@ -4348,29 +4347,27 @@ fn check_call(
                 // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
                 if *variadic && args.len() > non_variadic_param_count {
                     // The last param is the variadic param — extract its Seq element type
-                    if let Some((_, param_ty)) = params.last() {
-                        if let Type::Seq(elem_ty) = param_ty {
-                            for arg in args.iter().skip(non_variadic_param_count) {
-                                match infer_expr(arg, env, state, type_map) {
-                                    Ok(arg_ty) => {
-                                        // Widen literal types before unifying to allow [f 10 20 30]
-                                        // where 10, 20, 30 all unify with Int element type.
-                                        let widened_ty = match arg_ty {
-                                            Type::IntLiteral(_) => Type::Int,
-                                            Type::StringLiteral(_) => Type::Str,
-                                            other => other,
-                                        };
-                                        let mut subst = std::mem::take(&mut state.subst);
-                                        if let Err(e) =
-                                            unify(&widened_ty, elem_ty, &mut subst, state, arg.span)
-                                        {
-                                            errors.push(e);
-                                        }
-                                        state.subst = subst;
+                    if let Some((_, Type::Seq(elem_ty))) = params.last() {
+                        for arg in args.iter().skip(non_variadic_param_count) {
+                            match infer_expr(arg, env, state, type_map) {
+                                Ok(arg_ty) => {
+                                    // Widen literal types before unifying to allow [f 10 20 30]
+                                    // where 10, 20, 30 all unify with Int element type.
+                                    let widened_ty = match arg_ty {
+                                        Type::IntLiteral(_) => Type::Int,
+                                        Type::StringLiteral(_) => Type::Str,
+                                        other => other,
+                                    };
+                                    let mut subst = std::mem::take(&mut state.subst);
+                                    if let Err(e) =
+                                        unify(&widened_ty, elem_ty, &mut subst, state, arg.span)
+                                    {
+                                        errors.push(e);
                                     }
-                                    Err(mut errs) => {
-                                        errors.append(&mut errs);
-                                    }
+                                    state.subst = subst;
+                                }
+                                Err(mut errs) => {
+                                    errors.append(&mut errs);
                                 }
                             }
                         }
@@ -4522,28 +4519,26 @@ fn check_call(
                 // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
                 if *variadic && args.len() > non_variadic_param_count {
                     // The last param is the variadic param — extract its Seq element type
-                    if let Some((_, param_ty)) = inst_params.last() {
-                        if let Type::Seq(elem_ty) = param_ty {
-                            for arg in args.iter().skip(non_variadic_param_count) {
-                                match infer_expr(arg, env, state, type_map) {
-                                    Ok(arg_ty) => {
-                                        // Widen literal types before unifying
-                                        let widened_ty = match arg_ty {
-                                            Type::IntLiteral(_) => Type::Int,
-                                            Type::StringLiteral(_) => Type::Str,
-                                            other => other,
-                                        };
-                                        let mut subst = std::mem::take(&mut state.subst);
-                                        if let Err(e) =
-                                            unify(&widened_ty, elem_ty, &mut subst, state, arg.span)
-                                        {
-                                            arg_errors.get_or_insert_with(Vec::new).push(e);
-                                        }
-                                        state.subst = subst;
+                    if let Some((_, Type::Seq(elem_ty))) = inst_params.last() {
+                        for arg in args.iter().skip(non_variadic_param_count) {
+                            match infer_expr(arg, env, state, type_map) {
+                                Ok(arg_ty) => {
+                                    // Widen literal types before unifying
+                                    let widened_ty = match arg_ty {
+                                        Type::IntLiteral(_) => Type::Int,
+                                        Type::StringLiteral(_) => Type::Str,
+                                        other => other,
+                                    };
+                                    let mut subst = std::mem::take(&mut state.subst);
+                                    if let Err(e) =
+                                        unify(&widened_ty, elem_ty, &mut subst, state, arg.span)
+                                    {
+                                        arg_errors.get_or_insert_with(Vec::new).push(e);
                                     }
-                                    Err(mut errs) => {
-                                        arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                                    }
+                                    state.subst = subst;
+                                }
+                                Err(mut errs) => {
+                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                                 }
                             }
                         }

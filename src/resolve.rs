@@ -26,6 +26,12 @@ pub struct Resolver {
     scopes: Vec<IndexMap<String, u32>>,
 }
 
+impl Default for Resolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Resolver {
     /// Create a new resolver with an empty scope stack.
     pub fn new() -> Self {

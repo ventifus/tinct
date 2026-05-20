@@ -1711,12 +1711,8 @@ impl fmt::Display for EvalError {
 
             if let Some((period, full_repeats)) = detect_repeating_period(&visible_frames) {
                 // Display one period copy
-                for i in 0..period {
-                    write!(
-                        f,
-                        "\n  in {} at {}",
-                        visible_frames[i].label, visible_frames[i].span
-                    )?;
+                for frame in visible_frames.iter().take(period) {
+                    write!(f, "\n  in {} at {}", frame.label, frame.span)?;
                 }
                 // Display summary line
                 let remaining = full_repeats - 1;

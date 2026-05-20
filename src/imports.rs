@@ -25,6 +25,9 @@ use crate::typecheck::{
 };
 use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeEnv};
 
+/// Type alias for include bindings map: span → list of (name, type) pairs
+type IncludeBindings = HashMap<Span, Vec<(String, Type)>>;
+
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
 const MAX_INCLUDE_DEPTH: usize = 16;
 
@@ -645,7 +648,7 @@ fn resolve_includes(
     visited: &mut HashSet<String>,
     depth: usize,
     base_cap_dir: Option<&cap_std::fs::Dir>,
-) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
+) -> (Rc<TypeEnv>, IncludeBindings) {
     if depth >= MAX_INCLUDE_DEPTH {
         // Depth limit reached: return base_env unchanged with empty binding map
         return (base_env, HashMap::new());
@@ -1041,10 +1044,7 @@ fn apply_include_type_to_spanned(
 /// - A mapping from each include call's `Span` to the bindings it contributed
 ///
 /// Best-effort: IO failures, parse errors, and type errors are silently ignored.
-pub fn build_type_env(
-    file: &File,
-    base_dir: Option<&Path>,
-) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
+pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> (Rc<TypeEnv>, IncludeBindings) {
     build_type_env_with_cap(file, base_dir, None)
 }
 
@@ -1057,7 +1057,7 @@ pub fn build_type_env_with_cap(
     file: &File,
     base_dir: Option<&Path>,
     base_cap_dir: Option<&cap_std::fs::Dir>,
-) -> (Rc<TypeEnv>, HashMap<Span, Vec<(String, Type)>>) {
+) -> (Rc<TypeEnv>, IncludeBindings) {
     let prelude_env = build_prelude_env();
 
     // Seed with always-available cap types

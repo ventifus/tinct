@@ -400,11 +400,11 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
     } else {
         // Should never reach here due to earlier validation
-        return Err(EvalError::user_error(
+        Err(EvalError::user_error(
             "open: internal error - no mode specified".to_string(),
             call_span,
         )
-        .into());
+        .into())
     }
 }
 
@@ -473,7 +473,8 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes a DirCap and either:
 ///   - A String subpath to narrow to a subdirectory (preserves permissions)
 ///   - One or more Variant flags to restrict permissions (preserves directory)
-/// Returns a new DirCap with the narrowed scope or restricted permissions.
+///
+///     Returns a new DirCap with the narrowed scope or restricted permissions.
 pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -635,7 +636,7 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         ok_val(
             Value::DirCap {
-                dir: Rc::clone(&dir),
+                dir: Rc::clone(dir),
                 perms: narrowed_perms,
             },
             call_span,
@@ -880,7 +881,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             let host = require_string("connect", host_val, args[2].span)?;
             let port = match port_val {
-                Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
+                Value::Int(n) if (1..=65535).contains(&n) => n as u16,
                 Value::Int(_) => {
                     return Err(EvalError::user_error(
                         "connect: port must be 1-65535".to_string(),
@@ -1072,7 +1073,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
             let host = require_string("connect", host_val, args[2].span)?;
             let port = match port_val {
-                Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
+                Value::Int(n) if (1..=65535).contains(&n) => n as u16,
                 Value::Int(_) => {
                     return Err(EvalError::user_error(
                         "connect: port must be 1-65535".to_string(),
@@ -1248,11 +1249,9 @@ fn check_net_cap_allowlist(
     let mut hostname_match = false;
     for entry in entries {
         match entry {
-            NetCapEntry::Hostname(allowed_host) => {
-                if host.eq_ignore_ascii_case(allowed_host) {
-                    hostname_match = true;
-                    break;
-                }
+            NetCapEntry::Hostname(allowed_host) if host.eq_ignore_ascii_case(allowed_host) => {
+                hostname_match = true;
+                break;
             }
             NetCapEntry::HostPort(allowed_host, allowed_port) => {
                 if let Some(p) = port {
@@ -1607,7 +1606,7 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     drop(temp_file);
 
     // Atomically rename temp file to target path
-    dir.rename(&temp_name, &dir, &path).map_err(|e| {
+    dir.rename(&temp_name, dir, &path).map_err(|e| {
         // Clean up temp file on rename failure
         let _ = dir.remove_file(&temp_name);
         EvalError::user_error(
@@ -1966,7 +1965,7 @@ pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let file = dir
         .open_with(
             &path,
-            &OpenOptions::new().write(true).create(true).truncate(true),
+            OpenOptions::new().write(true).create(true).truncate(true),
         )
         .map_err(|e| {
             EvalError::user_error(
@@ -2597,7 +2596,7 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let new_path = require_string("rename", new_path_val, args[2].span)?;
 
     // Rename (both source and dest are in the same DirCap)
-    dir.rename(&old_path, &dir, &new_path).map_err(|e| {
+    dir.rename(&old_path, dir, &new_path).map_err(|e| {
         EvalError::user_error(
             format!(
                 "rename: failed to rename '{}' to '{}': {}",
@@ -2640,7 +2639,7 @@ pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let link_path = require_string("link", link_path_val, args[2].span)?;
 
     // Create hard link
-    dir.hard_link(&existing_path, &dir, &link_path)
+    dir.hard_link(&existing_path, dir, &link_path)
         .map_err(|e| {
             EvalError::user_error(
                 format!(
@@ -3820,7 +3819,7 @@ impl std::io::Write for QuicSendWriter {
 /// - `host` — hostname or IP string
 /// - `port` — integer port (1–65535)
 /// - `opts` — TLS options dict (same keys as `tls-connect`: `no-system-roots`,
-///             `mozilla-roots`, `ca-bundle`, `client-cert`, `client-key`, `alpn`, `pins`)
+///   `mozilla-roots`, `ca-bundle`, `client-cert`, `client-key`, `alpn`, `pins`)
 ///
 /// Returns a `QuicSession` on success.
 pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -3870,7 +3869,7 @@ pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     let host_str = require_string("quic-session", host_val, args[1].span)?;
 
     let port = match port_val {
-        Value::Int(n) if n >= 1 && n <= 65535 => n as u16,
+        Value::Int(n) if (1..=65535).contains(&n) => n as u16,
         Value::Int(_) => {
             return Err(EvalError::user_error(
                 "quic-session: port must be 1–65535".to_string(),
@@ -4852,7 +4851,7 @@ fn icmp_ping_impl(
     let timeout_usecs = (timeout_ms % 1000) * 1000;
 
     // Bounds check for platforms where time_t is 32-bit (prevents silent truncation)
-    if timeout_secs > libc::time_t::MAX as i64 || timeout_secs < libc::time_t::MIN as i64 {
+    if !(libc::time_t::MIN..=libc::time_t::MAX).contains(&timeout_secs) {
         return icmp_err_val(
             format!(
                 "icmp-ping: timeout-ms too large for platform (max {} seconds)",

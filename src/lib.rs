@@ -584,7 +584,7 @@ pub fn visit_value<V: ValueVisitor>(
             let head_out = visit_value(&head_val, ctx, depth + 1, visitor)?;
             visitor.visit_seq_head(head_out)
         }
-        value::Value::Function { params, .. } => visitor.visit_function(&**params),
+        value::Value::Function { params, .. } => visitor.visit_function(params),
         value::Value::Builtin(def) => visitor.visit_builtin(def.name),
         value::Value::Proxy { .. } => visitor.visit_proxy(),
         value::Value::DirCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(

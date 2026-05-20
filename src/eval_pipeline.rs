@@ -261,7 +261,7 @@ pub fn eval_file_with_input(
     initial_input: Option<Rc<Thunk>>,
 ) -> EvalResult<Rc<Thunk>> {
     // % starts as the provided input, or empty dict if none given
-    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Rc::clone(t)));
+    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(Rc::clone));
     // Named section accumulator: maps section name → result thunk
     let mut named: IndexMap<String, Rc<Thunk>> = IndexMap::new();
 

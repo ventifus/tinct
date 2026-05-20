@@ -191,7 +191,7 @@ impl InstanceEnv {
                     .map(|&pos| {
                         row.fields
                             .get(&pos.to_string())
-                            .map(|ty| type_to_string_key(ty))
+                            .map(type_to_string_key)
                             .unwrap_or_default()
                     })
                     .collect(),
