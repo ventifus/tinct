@@ -2363,11 +2363,12 @@ include-dir: DirCap injected as %include-dir
 
 Returns: updated state {prev: result, named: updated-named-sections}
 """] [let state doc include-dir]
+  [prev-val: state.prev]
   [result: [eval
     doc.expressions
-    %:   state.prev
+    %:   prev-val
     env: [merge
-           [merge [if [dict? state.prev] state.prev []] state.named]
+           [merge [if [dict? prev-val] prev-val []] state.named]
            ["%include-dir": include-dir]]]]
   [prev:  result
    named: [if [str? doc.name]
