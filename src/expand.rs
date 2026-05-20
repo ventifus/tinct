@@ -445,6 +445,88 @@ pub fn expand_macros(
     })
 }
 
+/// Expand macros using an already-loaded `EvalContext`, avoiding a stdlib reload.
+///
+/// This is called from `builtin_expand` (inside the self-hosted include pipeline) when
+/// macro expansion is needed but a full stdlib env is already available via the caller's
+/// `EvalContext`. Using the caller's context avoids a redundant `create_stdlib_env_with_arena()`
+/// call, which would:
+///   - Re-parse and re-evaluate `stdlib/prelude.llt` from scratch (expensive)
+///   - Overwrite `STDLIB_ARENA_CACHE` with a fresh arena (breaking ThunkId sharing)
+///   - Leave `EXPAND_MACROS_DEPTH` at 0 so the inner call recurses into yet another load
+///
+/// The caller's `ctx` is used directly for macro transformer evaluation and expansion.
+/// Stdlib macros are registered from `ctx.config.stdlib_env`.
+pub(crate) fn expand_macros_in_ctx(
+    file: Spanned<File>,
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<ExpandResult> {
+    let em_depth = EXPAND_MACROS_DEPTH.get();
+    if em_depth > 10 {
+        return Err(EvalError::resource_limit_exceeded(
+            format!(
+                "expand_macros: infinite recursion detected (depth={})",
+                em_depth
+            ),
+            file.span,
+        )
+        .into());
+    }
+
+    let mut env_macro = MacroEnv::new();
+
+    // Clone the caller's base_dir handle for use during pre-scan (libdir includes).
+    let base_dir = ctx.config.base_dir.open_dir(".").map_err(|e| {
+        EvalError::internal(
+            format!("cannot clone base directory for macro expansion: {e}"),
+            file.span,
+        )
+    })?;
+
+    // Reuse the caller's stdlib env — no reload needed.
+    let stdlib_env = Rc::clone(&ctx.config.stdlib_env);
+
+    // Register stdlib macros from the existing stdlib env (same as depth-0 path).
+    register_stdlib_macros_from_env(&mut env_macro, &stdlib_env, file.span);
+
+    // Build a child EvalContext that shares the caller's arena so ThunkIds from
+    // the stdlib remain valid during macro transformer evaluation.
+    let expand_ctx = Rc::new(EvalContext::new_sharing_arena(
+        base_dir,
+        Rc::clone(&stdlib_env),
+        ctx.config.no_fs,
+        Rc::clone(&ctx.thunk_arena),
+        HashMap::new(),
+    ));
+
+    // Pre-scan: collect MacroDecl and SyntaxClass nodes before main expansion.
+    pre_scan_file(&file.node, &mut env_macro, &expand_ctx, &stdlib_env)?;
+
+    // Process each document in the file.
+    let expanded_documents = file
+        .node
+        .documents
+        .into_iter()
+        .map(|doc| {
+            let expanded_doc = expand_document(doc.node, &mut env_macro, &expand_ctx, &stdlib_env)?;
+            Ok(Spanned::new(expanded_doc, doc.span))
+        })
+        .collect::<EvalResult<Vec<_>>>()?;
+
+    let macro_injects_map = env_macro.get_inject_map();
+    Ok(ExpandResult {
+        file: Spanned::new(
+            File {
+                documents: expanded_documents,
+            },
+            file.span,
+        ),
+        provenance: env_macro.provenance,
+        discovered_macros: env_macro.discovered_macros,
+        macro_injects_map,
+    })
+}
+
 /// Pre-scan a File AST to collect MacroDecl and SyntaxClass nodes.
 ///
 /// This runs BEFORE the main expansion pass and registers all macro and syntax-class
