@@ -246,32 +246,36 @@ do-empty-dict-node: [fn [let]
 
 # Check if a step AST is a binding step (a dict literal with at least one entry).
 # A binding step was written as [name: expr] in the do-block.
-# Its quoted AST has variant tag "Dict".
+# Dual-dispatch: works with both old Variant("Dict") and new Value::Expression(Dict).
 do-is-binding: [fn [let step]
   [= [tag-of step] "Dict"]]
 
 # Check if the first arg looks like an inferred-form step rather than an explicit monad.
-# Explicit monad args are usually VarRef or DotAccess.
+# Explicit monad args are Var (new schema) / VarRef (old schema) or DotAccess.
 # Inferred form: the first arg is a binding dict or any other expression.
 # Returns true if this is the inferred form (no explicit monad given).
 do-is-inferred-form: [fn [let first-arg]
-  # Explicit monad types: VarRef and DotAccess
-  # Everything else is inferred form
-  [if [= [tag-of first-arg] "VarRef"]
+  # tag-of returns "Var" for Value::Expression(VarRef), "VarRef" for old Variant
+  [if [or [= [tag-of first-arg] "Var"] [= [tag-of first-arg] "VarRef"]]
     false
     [if [= [tag-of first-arg] "DotAccess"]
       false
       true]]]
 
 # Extract the binding name from a binding step.
-# step is now a Variant("Dict", {entries: [...]}) where the payload is auto-unpacked by [get ...].
-# step.entries[0].key is the key expr: Variant("Literal", {kind: "str", value: "name", bare: true})
-# We read the "value" field of that key literal to get the string name.
+# Works with both old Variant("Dict") and new Value::Expression(Dict).
+# For Value::Expression(Dict): step.entries returns {0: Entry{key, value, span}}.
+# The key entry is a Var or StrLiteral whose "name"/"value" field is the binding name.
+# For old Variant: step.entries[0].key is Variant("Literal", {value: name}).
 do-binding-name: [fn [let step]
-  [get "value" [get "key" [get 0 [get "entries" step]]]]]
+  [entry-key: [get "key" [get 0 [get "entries" step]]]]
+  [if [= [tag-of entry-key] "StrLiteral"]
+    [get "value" entry-key]
+    [get "value" entry-key]]]
 
 # Extract the bound expression AST from a binding step.
-# step.entries[0].value is the value expr.
+# For Value::Expression(Dict): step.entries[0].value is the value expr.
+# For old Variant: same field access path.
 do-binding-expr: [fn [let step]
   [get "value" [get 0 [get "entries" step]]]]
 
