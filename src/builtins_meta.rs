@@ -17,6 +17,9 @@
 //! - `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`: Type predicates (plus `num?`, `record?`, `map?` in LLT stdlib)
 //!
 //! **AST and evaluation:**
+//! - `expand`: Run macro expansion on a file AST dict (dict → expand → dict)
+//! - `eval`: Evaluate AST expression nodes with optional `env:` and `%:` named args
+//! - `eval-types`: Evaluate AST expression nodes in the type stage environment
 //! - `eval-ast`: Reconstruct and evaluate AST from dict representation
 //! - `gensym`: Generate unique symbol names for macro hygiene
 //!
@@ -35,6 +38,7 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -48,12 +52,12 @@ use crate::builtins::{
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_call::{invoke_function, CallContext};
-use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Environment, Key, Thunk, Value};
 
 /// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
-pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_deep_materialize(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -394,6 +398,215 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Evaluate the reconstructed AST in the stdlib environment
     let env = Rc::clone(&ctx.config.stdlib_env);
     crate::eval::eval(Rc::new(ast), env, &ctx)
+}
+
+/// `expand`: Run macro expansion on a file AST dict.
+///
+/// Takes a file AST dict (the output of `load` or `ast-of`) and returns the
+/// macro-expanded file AST dict. The round-trip is:
+/// 1. Dict → File (via `dict_to_file`)
+/// 2. File → expanded File (via `expand_macros`)
+/// 3. expanded File → Dict (via `ast_to_dict`)
+///
+/// Schema errors from `dict_to_file` surface as user errors.
+pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("expand", args, named, &ctx, call_span)?;
+
+    // Convert the dict to a File AST
+    let file = crate::ast_dict::dict_to_file(&val, &ctx)
+        .map_err(|e| EvalError::user_error(format!("expand: {}", e), call_span))?;
+
+    // Run macro expansion
+    // Wrap the File in a Spanned for expand_macros
+    let spanned_file = crate::ast::Spanned::new(file, call_span);
+    let expand_result =
+        crate::expand::expand_macros(spanned_file, ctx.config.no_fs, &ctx.config.base_dir)?;
+
+    // Convert back to dict
+    let opts = crate::ast_dict::AstToDictOpts::default();
+    crate::ast_dict::ast_to_dict(&expand_result.file.node, &opts, &ctx)
+}
+
+/// `eval`: Evaluate AST expression nodes in the runtime stage environment.
+///
+/// Positional arg: `exprs` — a positional Dict of expression AST dicts (from a document's
+/// `expressions` field after `expand`).
+///
+/// Named args:
+/// - `%:` — the pipeline input, bound as `%` in the evaluation environment (default: `[]`)
+/// - `env:` — extra bindings dict, merged into the environment (default: `[]`)
+///
+/// Returns the result of evaluating the expressions with sequential let* scoping.
+pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Get the positional dict of expression AST dicts.
+    // Do NOT use expect_one_arg here — it rejects named args, but builtin_eval
+    // accepts env: and %: named args that are read below.
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let exprs_dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let exprs_dict = match &exprs_dict_val {
+        Value::Dict(d) => d,
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                "eval".to_string(),
+                "Dict",
+                exprs_dict_val.type_name(),
+                call_span,
+            )
+            .into());
+        }
+    };
+
+    // Extract expression AST dicts from the positional dict
+    let mut exprs = Vec::new();
+    for i in 0.. {
+        match exprs_dict.get(&Key::Int(i)) {
+            Some(thunk_id) => {
+                let thunk = ctx.get_thunk(*thunk_id);
+                let expr_val = materialize(&thunk, Some(&call_span), &ctx)?;
+                let expr_ast = crate::ast_dict::dict_to_ast(&expr_val, &ctx).map_err(|e| {
+                    EvalError::user_error(format!("eval: expression {}: {}", i, e), call_span)
+                })?;
+                // dict_to_ast already returns Spanned<Expr>, don't wrap again
+                exprs.push(expr_ast);
+            }
+            None => break,
+        }
+    }
+
+    // Build environment chain: stdlib_env → env: entries → "$" = %:
+    let base_env = Rc::clone(&ctx.config.stdlib_env);
+
+    // Add env: entries if provided
+    let env_with_extra = if let Some(named_map) = named {
+        if let Some(env_thunk) = named_map.get("env") {
+            let env_val = materialize(env_thunk, Some(&call_span), &ctx)?;
+            let env_dict = match env_val {
+                Value::Dict(d) => d,
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval env:".to_string(),
+                        "Dict",
+                        env_val.type_name(),
+                        call_span,
+                    )
+                    .into());
+                }
+            };
+
+            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&base_env))));
+            for (key, val_thunk_id) in env_dict {
+                if let Key::String(name) = key {
+                    let val_thunk = ctx.get_thunk(val_thunk_id);
+                    child_env.borrow_mut().insert(name, val_thunk);
+                }
+            }
+            child_env
+        } else {
+            base_env
+        }
+    } else {
+        base_env
+    };
+
+    // Add "%" = %: if provided
+    let final_env = if let Some(named_map) = named {
+        if let Some(percent_thunk) = named_map.get("%") {
+            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                &env_with_extra,
+            ))));
+            child_env
+                .borrow_mut()
+                .insert("%".to_string(), Rc::clone(percent_thunk));
+            child_env
+        } else {
+            env_with_extra
+        }
+    } else {
+        env_with_extra
+    };
+
+    // Call eval_expressions
+    crate::eval::eval_expressions(&exprs, final_env, &ctx)
+}
+
+/// `eval-types`: Evaluate AST expression nodes in the type stage environment.
+///
+/// Positional arg: `exprs` — a positional Dict of expression AST dicts.
+///
+/// No `%:` or `env:` parameters. Uses `ctx.config.type_stage_env` as the base environment,
+/// which contains type-level builtins only (no IO, no caps, no runtime API).
+pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    reject_named("eval-types", named, call_span)?;
+
+    // Get the positional dict of expression AST dicts.
+    // reject_named above already validated no named args; use a manual arity check
+    // here so the intent is clear (expect_one_arg would re-check named redundantly).
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let exprs_dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let exprs_dict = match &exprs_dict_val {
+        Value::Dict(d) => d,
+        _ => {
+            return Err(EvalError::type_mismatch_ctx(
+                "eval-types".to_string(),
+                "Dict",
+                exprs_dict_val.type_name(),
+                call_span,
+            )
+            .into());
+        }
+    };
+
+    // Extract expression AST dicts from the positional dict
+    let mut exprs = Vec::new();
+    for i in 0.. {
+        match exprs_dict.get(&Key::Int(i)) {
+            Some(thunk_id) => {
+                let thunk = ctx.get_thunk(*thunk_id);
+                let expr_val = materialize(&thunk, Some(&call_span), &ctx)?;
+                let expr_ast = crate::ast_dict::dict_to_ast(&expr_val, &ctx).map_err(|e| {
+                    EvalError::user_error(format!("eval-types: expression {}: {}", i, e), call_span)
+                })?;
+                // dict_to_ast already returns Spanned<Expr>, don't wrap again
+                exprs.push(expr_ast);
+            }
+            None => break,
+        }
+    }
+
+    // Use type_stage_env if available, otherwise fall back to stdlib_env
+    let base_env = ctx
+        .config
+        .type_stage_env
+        .as_ref()
+        .map(Rc::clone)
+        .unwrap_or_else(|| Rc::clone(&ctx.config.stdlib_env));
+
+    // Call eval_expressions
+    crate::eval::eval_expressions(&exprs, base_env, &ctx)
 }
 
 /// `gensym`: Generate a unique symbol name for macro hygiene.

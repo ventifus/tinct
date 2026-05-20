@@ -11,9 +11,9 @@ use indexmap::IndexMap;
 
 use crate::ast::{Document, File, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{Environment, Key, Thunk, Value};
+use crate::value::{Environment, Thunk, Value};
 
-use super::{eval, materialize, EvalContext};
+use super::EvalContext;
 
 thread_local! {
     /// Cached empty dict thunk used as the default `%` when no stdin is provided.
@@ -104,63 +104,10 @@ pub fn eval_document(
         }
     }
 
-    let mut current_env = env;
-
-    for (i, expr) in exprs.iter().enumerate() {
-        let is_last = i == exprs.len() - 1;
-
-        if is_last {
-            // Last expression: return its thunk as-is (lazy, any type)
-            return eval(Rc::clone(expr), current_env, ctx);
-        }
-
-        // Intermediate expression: materialize and extract dict bindings
-        let thunk = eval(Rc::clone(expr), Rc::clone(&current_env), ctx)?;
-        let value = materialize(&thunk, Some(&expr.span), ctx)?;
-
-        // Flatten Overlay to Dict for scope chain binding.
-        let map = match value {
-            Value::Dict(map) => map,
-            Value::Overlay(l, r) => {
-                crate::builtins::flatten_overlay(&l, &r, "document pipeline", ctx, expr.span)?
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "document pipeline".to_string(),
-                    "Dict",
-                    value.type_name(),
-                    expr.span,
-                )
-                .into());
-            }
-        };
-        {
-            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-                &current_env,
-            ))));
-            for (key, val_thunk_id) in map {
-                // Only string keys become scope bindings; int keys are positional, not named.
-                // Owned iteration (into_iter): Key::String(name) moves the String rather than
-                // cloning it — saves one String clone per string-keyed entry.
-                // Named bindings are forced to WHNF at binding time — strict let* semantics.
-                // This means dead-but-erroring bindings fail eagerly.
-                if let Key::String(name) = key {
-                    let val_thunk = ctx.get_thunk(val_thunk_id);
-                    let forced_value = materialize(&val_thunk, Some(&expr.span), ctx)?;
-                    let strict_thunk = Rc::new(Thunk::new_materialized(forced_value, expr.span));
-                    child_env.borrow_mut().insert(name, strict_thunk);
-                }
-            }
-            current_env = child_env;
-        }
-    }
-
-    // INVARIANT: This is unreachable because the loop above always returns when
-    // processing the last expression (when i == exprs.len() - 1). The loop only
-    // terminates naturally if exprs is empty, but we return early for empty docs.
-    unreachable!(
-        "eval_document: loop did not return — exprs was non-empty but is_last never triggered"
-    )
+    // Delegate to the shared eval_expressions helper
+    // Convert Vec<Rc<Spanned<Expr>>> to Vec<Spanned<Expr>> by dereferencing the Rc
+    let exprs_unwrapped: Vec<_> = exprs.iter().map(|e| e.as_ref().clone()).collect();
+    crate::eval::eval_expressions(&exprs_unwrapped, env, ctx)
 }
 
 /// Wrap a thunk with nominal type validation for pipeline input contracts.
