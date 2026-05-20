@@ -1998,7 +1998,7 @@ mod tests {
         let output = result.unwrap();
         // Result should be [Ok 1] as a Variant
         assert!(
-            output.contains("Ok"),
+            output.contains("Variant(Ok,"),
             "expected Ok variant in output, got: {output}"
         );
     }
@@ -2019,7 +2019,7 @@ mod tests {
         );
         let output = result.unwrap();
         assert!(
-            output.contains("Ok"),
+            output.contains("Variant(Ok,"),
             "expected Ok(1) for [do [Ok 1]], got: {output}"
         );
     }

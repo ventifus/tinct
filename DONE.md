@@ -8308,3 +8308,17 @@ Two clippy suppressions can be eliminated through refactoring rather than silenc
 
 - [x] Introduce `LiterateConfig` struct in `src/main.rs` consolidating the shared parameters across `run_literate` / `run_literate_eval` / `run_literate_weave` (file_path, mode, no_substitute, strict, cap_fs, cap_net, etc.); update all three function signatures and their call sites; remove the three `#[allow(clippy::too_many_arguments)]` attrs (`src/main.rs`)
 - [x] Introduce `Http2RequestConfig` struct in `src/builtins_io.rs` for `http_request_h2` parameters (client, base_url, method_str, path, headers, body, timeout); update the function signature and its call sites; remove the `#[allow(clippy::too_many_arguments)]` attr (`src/builtins_io.rs`)
+
+### `do-infer-span-hygiene` (2026-05-19)
+
+Fixed span collision in `do_infer_resolutions` HashMap that would cause incorrect monad resolution when multiple `[do]` blocks exist in the same file. All macro-synthesized `%do-infer` VarRef nodes shared `Span::origin()`, causing HashMap collisions across distinct `[do]` blocks.
+
+**Solution:** Option (c) — use `gensym` to generate unique sentinel names (`:do-infer:0`, `:do-infer:1`, etc.) in `stdlib/macros.llt`, and change `do_infer_resolutions` from `HashMap<Span, String>` to `HashMap<String, String>`. The evaluator now looks up by sentinel name instead of span.
+
+- Changed `do-desugar-inferred` in `stdlib/macros.llt` to use `[gensym "do-infer"]` instead of fixed `"%do-infer"` name
+- Updated `do_infer_resolutions` type from `HashMap<Span, String>` to `HashMap<String, String>` in `src/type_infer.rs` and `src/eval.rs`
+- Updated `check_do_infer` in `src/typecheck.rs` to take `sentinel_name: &str` instead of `sentinel_span: Span`, and recognize `:do-infer:` prefix pattern
+- Updated VarRef evaluation in `src/eval.rs` to check `name.starts_with(":do-infer:")` instead of `name == "%do-infer"`, and look up by name instead of span
+- Tightened lib.rs test assertions from `output.contains("Ok")` to `output.contains("Variant(Ok,")` to avoid false positives
+- Added corpus test `tests/corpus/eval/errors/do_inferred_non_monad_first_arg.llt-eval` for non-constructor first binding failure (T_DO_INFER)
+- Fixed `resolve_monad_from_type` Union branch to require unanimous monad agreement instead of first-match (prevents silent misresolution when multiple monads are added)

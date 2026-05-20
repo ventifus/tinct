@@ -291,13 +291,13 @@ pub struct EvalContext {
     /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
     /// Populated by typecheck_file via set_boundary_guards(), consumed during eval().
     pub boundary_guards: RefCell<HashMap<Span, Type>>,
-    /// Monad resolutions for inferred [do] forms: %do-infer VarRef span → monad variable name.
-    /// The type checker records the resolved monad name here (keyed by the span of the
-    /// `%do-infer` VarRef in the desugared bind chain). At eval time, when `VarRef("%do-infer")`
-    /// is evaluated, the evaluator looks up this map by span and returns the monad dict value.
-    /// Parallel to boundary_guards: type-checker-to-evaluator communication via span-keyed side channel.
+    /// Monad resolutions for inferred [do] forms: sentinel VarRef name → monad variable name.
+    /// The type checker records the resolved monad name here (keyed by the sentinel VarRef name
+    /// like `:do-infer:0` from gensym). At eval time, when the sentinel VarRef is evaluated,
+    /// the evaluator looks up this map by name and returns the monad dict value.
+    /// Parallel to boundary_guards: type-checker-to-evaluator communication via side channel.
     /// Populated by typecheck_file via set_do_infer_resolutions(), consumed during eval().
-    pub do_infer_resolutions: RefCell<HashMap<Span, String>>,
+    pub do_infer_resolutions: RefCell<HashMap<String, String>>,
     /// Already-open libdir Dir, shared from the bootstrap boundary (main.rs or repl.rs).
     /// Used by `builtin_include` to inject `%libdir` into the included file's environment
     /// without calling `open_ambient_dir` again. `None` in contexts where libdir was not
@@ -523,9 +523,9 @@ impl EvalContext {
 
     /// Set do-infer resolutions from type inference.
     /// Called after type checking to wire inferred [do] monad resolution to the evaluator.
-    /// The map keys are the spans of `%do-infer` VarRef nodes; values are the monad dict
-    /// variable names (e.g., "result") resolved by the type checker.
-    pub fn set_do_infer_resolutions(&self, resolutions: HashMap<Span, String>) {
+    /// The map keys are the sentinel VarRef names (e.g., `:do-infer:0` from gensym); values
+    /// are the monad dict variable names (e.g., "result") resolved by the type checker.
+    pub fn set_do_infer_resolutions(&self, resolutions: HashMap<String, String>) {
         *self.do_infer_resolutions.borrow_mut() = resolutions;
     }
 
@@ -795,26 +795,25 @@ pub(crate) fn eval_recursive(
         Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
         Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
         Expr::VarRef { name, resolved, .. } => {
-            // Special case: `%do-infer` sentinel — inferred [do] form monad resolution.
-            // The `do` macro emits `[%do-infer.bind ...]` when no explicit monad is given.
+            // Special case: do-infer sentinel — inferred [do] form monad resolution.
+            // The `do` macro emits `[`:do-infer:N`.bind ...]` when no explicit monad is given.
             // The type checker resolved the monad name and stored it in do_infer_resolutions
-            // keyed by this VarRef's span. At runtime, substitute the sentinel with the
-            // actual monad dict looked up from the environment by its resolved name.
-            if name == "%do-infer" {
-                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(&expr.span).cloned()
-                {
+            // keyed by this VarRef's name (e.g., `:do-infer:0`). At runtime, substitute the
+            // sentinel with the actual monad dict looked up from the environment by its resolved name.
+            if name.starts_with(":do-infer:") {
+                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(name).cloned() {
                     let found = env.borrow().get(&monad_name);
                     return match found {
                         Some(thunk) => Ok(thunk),
                         None => Err(EvalError::undefined_variable(
-                            format!("%do-infer → {monad_name}"),
+                            format!("{name} → {monad_name}"),
                             expr.span,
                         )
                         .into()),
                     };
                 }
                 // Fallthrough: no resolution recorded (type checker didn't run or failed).
-                // Fall through to normal lookup so the error message is "undefined variable: %do-infer".
+                // Fall through to normal lookup so the error message is "undefined variable: :do-infer:N".
             }
 
             // O(1) fast path: use resolved (level, slot) pair if available.
