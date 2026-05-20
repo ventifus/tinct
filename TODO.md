@@ -18,13 +18,6 @@ See DONE.md for the full history of completed sprints.
 - [x] `src/builtins_meta.rs:1481` — `builtin_load` pipeline doc comment missing resolve step
 - [x] `stdlib/ast.llt:28-29` — `[Literal ... bare: Bool]` claims bare is always present but only emitted for kind:"str"
 
-### include-decomposition-review: Post-implementation review
-
-**Whatif:** `include-decomposition`
-**Depends on:** `include-decomp-prelude`
-
-- [ ] Run `/review-whatif include-decomposition` — verify all sprints complete, implementation matches spec, `doc/08-evaluation.md` and `doc/09-documents.md` updated to describe self-hosted pipeline in present tense, no stubs or de-scoped features
-
 ---
 
 ## Known Bugs
