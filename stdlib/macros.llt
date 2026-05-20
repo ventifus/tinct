@@ -308,6 +308,50 @@ do-desugar-inferred: [fn [let steps]
   [sentinel: [do-var-node "%do-infer"]]
   [do-fold sentinel steps]]
 
+# ============================================================================
+# [fn] / [class] / [type] let-softening helpers
+# ============================================================================
+#
+# These helpers support the fn, class, and type macros which normalize
+# "bare" param lists ([x y]) to explicit [let x y] LetDecl form.
+#
+# Key naming: all function params are prefixed with p- to avoid letrec
+# key-shadowing when the param name matches a key in the output AST dict.
+# For example, [builtin-variant "Fn" [params: ...]] uses p-params (not params)
+# for the macro arg, since "params" is a key in the Fn Variant payload.
+#
+# All helpers are defined here (private dict) so they run in the stdlib
+# context, avoiding the arena-crossing circular-dependency issue that arises
+# when macro body thunks reference user-code arena thunks.
+
+# Convert a single binding AST Variant to a param dict {name, annotation, variadic}.
+# Used by fn-binding-to-param, which is mapped over the flat bindings list.
+fn-binding-to-param: [fn [let p-b]
+  [match [tag-of p-b]
+    # VarRef: plain parameter like x
+    "VarRef":    [name: [get "name" p-b]  annotation: []  variadic: false]
+    # Annotated: typed parameter like x@Int
+    "Annotated": [name: [get "name" p-b]  annotation: [get "annotation" p-b]  variadic: false]
+    # Rest: variadic parameter like ...rest
+    "Rest":      [name: [get "name" p-b]  annotation: []  variadic: true]
+    # Unknown binding form — emit placeholder name
+    _:           [name: "???"             annotation: []  variadic: false]]]
+
+# Flatten a params expression to a list of binding Variants.
+# Handles all param forms the parser can produce:
+#   LetDecl — extract bindings directly
+#   Call    — prepend fn to args ([x y z] → [x, y, z])
+#   Dict    — extract entry values (annotation dict forms)
+#   VarRef  — single-param: wrap in singleton list
+#   other   — wrap in singleton list
+fn-flatten-params: [fn [let p-params]
+  [match [tag-of p-params]
+    "LetDecl": [get "bindings" p-params]
+    "Call":    [concat [0: [get "fn" p-params]] [get "args" p-params]]
+    "Dict":    [map [fn [let p-e] [get "value" p-e]] [get "entries" p-params]]
+    "VarRef":  [0: p-params]
+    _:         [0: p-params]]]
+
 ]
 
 # ============================================================================
@@ -379,5 +423,47 @@ begin: [fn [let ...exprs]
   # [begin e1 e2 ...] → Variant("Sequential", {exprs: [e1, e2, ...]})
   # collect converts the variadic Seq to an integer-keyed Dict for AST field access
   [builtin-variant "Sequential" [exprs: [collect exprs]]]]
+
+# ============================================================================
+# fn / class / type let-softening macro transformers
+# ============================================================================
+#
+# These macros normalize bare param lists in programmatic (macro-output) contexts.
+# The parser already handles both [fn [x y] body] and [fn [let x y] body] for
+# source code. These macros intercept Call(VarRef("fn"), ...) nodes produced by
+# other macros and normalize the params expression.
+#
+# Registered globally (like tmpl/do/begin) so they are always available without
+# an explicit include.
+
+# fn macro transformer: let-soften function parameter lists.
+# Receives p-params (quoted params expr) and macro-body (quoted body expr).
+# Returns an Fn Variant with proper param dicts and the given body.
+#
+# Uses helper functions fn-flatten-params and fn-binding-to-param (defined in
+# the private dict above) to avoid arena-crossing thunk cycles.
+syntax-fn: [fn [let p-params macro-body]
+  [builtin-variant "Fn" [
+    params: [map fn-binding-to-param [fn-flatten-params p-params]]
+    body: macro-body
+    return-ann: []
+    desugared: false]]]
+
+# class macro transformer: let-soften type class tvar declarations.
+# Receives tvars (quoted tvars expr).
+# If already a LetDecl, returns unchanged. Otherwise wraps in LetDecl.
+syntax-class: [fn [let tvars]
+  [if [= [tag-of tvars] "LetDecl"]
+    tvars
+    [builtin-variant "LetDecl" [
+      bindings: [fn-flatten-params tvars]]]]]
+
+# type macro transformer: let-soften type alias parameter declarations.
+# Receives p-params (quoted params expr) and p-body (quoted body expr).
+# Extracts param name strings and returns a TypeAlias Variant.
+syntax-type: [fn [let p-params p-body]
+  [builtin-variant "TypeAlias" [
+    params: [map [fn [let p-b] [get "name" p-b]] [fn-flatten-params p-params]]
+    expr: p-body]]]
 
 ]

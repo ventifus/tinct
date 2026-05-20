@@ -1,4 +1,4 @@
-//! Macro expansion pass for `[defmacro ...]` forms.
+//! Macro expansion pass for `[macro ...]` and legacy `[defmacro ...]` forms.
 //!
 //! Runs between parse and desugar: `parse -> expand_macros -> desugar -> typecheck -> eval`
 //!
@@ -40,7 +40,7 @@ use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
-use crate::value::{Environment, Key, Thunk, Value};
+use crate::value::{Environment, Thunk, Value};
 
 /// Global scope ID counter — monotonically increasing across all expansions.
 /// Each macro invocation gets a fresh scope ID.
@@ -103,14 +103,6 @@ struct MacroMetadata {
     params: Spanned<Expr>,
     /// Optional inject: default name for anaphoric macros.
     inject_default: Option<String>,
-    /// True for `[macro ...]` (macros-v2 pattern-matching style): each argument is quoted
-    /// individually and passed as a separate positional thunk to the transformer function.
-    /// False for `[defmacro ...]` (legacy style): all args are packed into a single integer-keyed
-    /// dict and passed as one positional thunk. The `[defmacro ...]` path remains for user-defined
-    /// macros; `do`/`tmpl`/`begin` in stdlib now use `new_style=true` via
-    /// `register_stdlib_macros_from_env`. This field can be removed once `[defmacro ...]` is
-    /// either migrated or removed from the language.
-    new_style: bool,
 }
 
 /// Macro expansion context — tracks registered macros and prevents infinite expansion.
@@ -166,7 +158,6 @@ impl MacroEnv {
         transformer: Rc<Thunk>,
         params: Spanned<Expr>,
         inject_default: Option<String>,
-        new_style: bool,
         _span: Span,
     ) -> EvalResult<()> {
         self.macros.insert(
@@ -175,7 +166,6 @@ impl MacroEnv {
                 transformer,
                 params,
                 inject_default,
-                new_style,
             },
         );
         Ok(())
@@ -269,11 +259,10 @@ pub struct ExpandResult {
 
 /// Register stdlib macros by looking up transformer functions in the stdlib environment.
 ///
-/// Stdlib macros are defined in `stdlib/macros.llt` as `[defmacro name [args] body]`
-/// declarations. However, we can't use the normal DefMacro expansion mechanism for
-/// stdlib macros because:
+/// Stdlib macros are defined in `stdlib/macros.llt` as regular function exports.
+/// They cannot use the normal `[macro ...]` / `[defmacro ...]` mechanism because:
 /// 1. create_stdlib_env() loads macros.llt BEFORE expand_macros runs on user code
-/// 2. The DefMacro mechanism requires expand_macros to be running
+/// 2. The macro registration mechanism requires expand_macros to be running
 ///
 /// Instead, stdlib/macros.llt exports transformer functions as normal dict bindings,
 /// and we register them here by looking them up by name.
@@ -284,17 +273,30 @@ fn register_stdlib_macros_from_env(
 ) {
     // Known stdlib macros with their transformer function names and parameter patterns.
     // Each macro is registered with new-style argument passing (individual quoted args).
-    let stdlib_macros: &[(&str, Vec<&str>, Option<&str>)] = &[
-        // (name, non-variadic params, variadic param)
-        ("tmpl", vec!["template"], Some("parts")),
-        ("do", vec!["first"], Some("rest")),
-        ("begin", vec![], Some("exprs")),
+    //
+    // Format: (macro_name, transformer_fn_name, fixed_params, variadic_param)
+    // - macro_name: the name the macro is invoked with (e.g., "fn" shadows the keyword
+    //   for programmatic Call(VarRef("fn"), ...) contexts)
+    // - transformer_fn_name: the function exported from macros.llt (may differ from macro_name)
+    // - fixed_params: non-variadic param names
+    // - variadic_param: optional variadic param name (collects remaining args as Seq)
+    let stdlib_macros: &[(&str, &str, Vec<&str>, Option<&str>)] = &[
+        // (macro_name, transformer_fn_name, fixed_params, variadic_param)
+        ("tmpl", "tmpl", vec!["template"], Some("parts")),
+        ("do", "do", vec!["first"], Some("rest")),
+        ("begin", "begin", vec![], Some("exprs")),
+        // Let-softening macros: normalize bare param lists in programmatic macro output.
+        // These shadow the fn/class/type parser keywords for Call(VarRef(...)) nodes.
+        ("fn", "syntax-fn", vec!["p-params", "macro-body"], None),
+        ("class", "syntax-class", vec!["tvars"], None),
+        ("type", "syntax-type", vec!["p-params", "p-body"], None),
     ];
 
-    for (macro_name, fixed_params, variadic_param) in stdlib_macros {
+    for (macro_name, transformer_fn_name, fixed_params, variadic_param) in stdlib_macros {
+        // Look up the transformer function by its export name (may differ from macro name)
         let transformer_thunk = {
             let env_ref = stdlib_env.borrow();
-            env_ref.get(*macro_name)
+            env_ref.get(*transformer_fn_name)
         };
         if let Some(transformer) = transformer_thunk {
             // Build parameter bindings for the LetDecl pattern
@@ -316,7 +318,6 @@ fn register_stdlib_macros_from_env(
                 transformer,
                 params,
                 None,
-                true, // new-style: individual quoted args
                 span,
             );
         }
@@ -476,13 +477,72 @@ fn pre_scan_document(
     Ok(())
 }
 
+/// Follow a `[include %libdir "file.llt"]` call during pre-scan to discover macros
+/// declared inside the included file.
+///
+/// Silently ignores errors (file not found, parse failure, etc.) — the actual error
+/// will surface during eval when the include is executed.
+///
+/// # Infinite-recursion guard
+///
+/// A thread-local set tracks which libdir files are currently being pre-scanned.
+/// If a file is re-encountered (e.g., via `[include %libdir "syntax.llt"]` →
+/// `[include %libdir "ast.llt"]` → `[include %libdir "syntax.llt"]` cycle), the
+/// second encounter is silently skipped.
+fn pre_scan_follow_libdir_include(
+    file_name: &str,
+    env: &mut MacroEnv,
+    ctx: &Rc<EvalContext>,
+    stdlib_env: &Rc<RefCell<Environment>>,
+    _call_span: crate::ast::Span,
+) {
+    std::thread_local! {
+        static PRESCAN_INCLUDE_STACK: RefCell<HashSet<String>> =
+            RefCell::new(HashSet::new());
+    }
+
+    // Guard against recursive includes
+    let already_scanning = PRESCAN_INCLUDE_STACK.with(|s| s.borrow().contains(file_name));
+    if already_scanning {
+        return;
+    }
+
+    // Find libdir and load the file
+    let libdir_path = match crate::find_libdir_path() {
+        Some(p) => p,
+        None => return,
+    };
+    let full_path = libdir_path.join(file_name);
+    let source = match std::fs::read_to_string(&full_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // Parse the file
+    let parsed = match crate::parser::parse(&source) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    // Push this file onto the recursion guard before scanning
+    PRESCAN_INCLUDE_STACK.with(|s| s.borrow_mut().insert(file_name.to_string()));
+
+    // Pre-scan all documents in the parsed file
+    for doc in &parsed.file.node.documents {
+        let _ = pre_scan_document(&doc.node, env, ctx, stdlib_env);
+    }
+
+    // Pop the recursion guard
+    PRESCAN_INCLUDE_STACK.with(|s| s.borrow_mut().remove(file_name));
+}
+
 /// Pre-scan an expression to collect MacroDecl and SyntaxClass nodes.
 ///
 /// When it finds:
 /// - `Expr::MacroDecl`: evaluates the transformer and registers the macro
 /// - `Expr::SyntaxClass`: registers the syntax class (not yet implemented)
-/// - `Expr::Call` to `include` with a bare string literal path: follows the include
-///   and scans the included file recursively
+/// - `Expr::Call` to `include %libdir "file.llt"`: follows the include and scans
+///   the included file recursively for macro declarations
 fn pre_scan_expr(
     expr: &Rc<Spanned<Expr>>,
     env: &mut MacroEnv,
@@ -585,13 +645,12 @@ fn pre_scan_expr(
             let fn_spanned = Spanned::new(fn_expr, expr.span);
             let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
 
-            // Register the macro with its params pattern and inject default (new-style)
+            // Register the macro with its params pattern and inject default
             env.register_macro(
                 name.clone(),
                 Rc::clone(&transformer_value),
                 params.as_ref().clone(),
                 inject_default,
-                true, // new-style: individual positional args per LetDecl binding
                 expr.span,
             )?;
 
@@ -607,23 +666,39 @@ fn pre_scan_expr(
             Ok(())
         }
 
-        // Follow bare string-literal includes
+        // Follow includes to discover macros declared inside included stdlib files.
+        //
+        // Handles two forms:
+        //   [include "file.llt"]           — bare string, 1 arg
+        //   [include %libdir "file.llt"]   — libdir-relative, 2 args (VarRef + string)
+        //
+        // Only libdir-relative includes are followed here (the most common form for
+        // opt-in stdlib modules like syntax.llt). Bare-string includes are left as a
+        // future extension. Errors during include-following are silently ignored to
+        // avoid breaking the expansion of files that include non-existent files
+        // (the actual error will surface during eval).
         Expr::Call {
             func,
             args,
             named_args,
             ..
         } => {
-            // Check if this is an include call with a bare string literal
             if let Expr::VarRef { name, .. } = &func.node {
-                if name == "include" && args.len() == 1 && named_args.is_empty() {
-                    if let Expr::Str(_path_str) = &args[0].node {
-                        // This is a bare string-literal include — follow it
-                        // Use the builtin include mechanism to load and parse the file
-                        // TODO: implement include following for pre-scan
-                        // For now, skip following includes to avoid complexity
-                        // This is a known limitation: macros in included files won't be
-                        // available during pre-scan
+                if name == "include" && named_args.is_empty() {
+                    // Form: [include %libdir "file.llt"]
+                    if args.len() == 2 {
+                        if let (Expr::VarRef { name: cap_name, .. }, Expr::Str(file_name)) =
+                            (&args[0].node, &args[1].node)
+                        {
+                            if cap_name == "%libdir" {
+                                // Follow libdir-relative include: load, parse, and pre-scan.
+                                // AMBIENT-OK: pre-scan runs at compile time; libdir access is
+                                // required to discover macros in opt-in stdlib modules.
+                                pre_scan_follow_libdir_include(
+                                    file_name, env, ctx, stdlib_env, expr.span,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -795,7 +870,6 @@ fn pre_scan_expr(
                 Rc::clone(&transformer_value),
                 (**params).clone(),
                 None,
-                false, // old-style: single args dict
                 expr.span,
             )?;
 
@@ -1481,264 +1555,163 @@ fn expand_macro_call(
     let transformer = macro_metadata.transformer.clone();
     let params_pattern = macro_metadata.params.clone();
     let inject_default = macro_metadata.inject_default.clone();
-    let new_style = macro_metadata.new_style;
 
     let opts = AstToDictOpts::default();
 
     // Build the positional thunks to pass to invoke_function.
-    let result_thunk = if new_style {
-        // ====================================================================
-        // New-style [macro ...] with [let ...] pattern matching.
-        // Each LetDecl binding corresponds to one positional argument.
-        // ====================================================================
+    // Each LetDecl binding corresponds to one positional argument.
+    // Extract bindings from the LetDecl pattern
+    let bindings: Vec<&Spanned<Expr>> = match &params_pattern.node {
+        Expr::LetDecl { bindings } => bindings.iter().collect(),
+        _ => vec![],
+    };
 
-        // Extract bindings from the LetDecl pattern
-        let bindings: Vec<&Spanned<Expr>> = match &params_pattern.node {
-            Expr::LetDecl { bindings } => bindings.iter().collect(),
-            _ => vec![],
-        };
-
-        // Task 3: Validate annotated params (syntax-class check) BEFORE calling the transformer.
-        // Walk through non-variadic params and check their annotations against the args.
-        let mut arg_idx = 0usize;
-        for binding in &bindings {
-            match &binding.node {
-                Expr::Rest(_) => {
-                    // Variadic — consumes all remaining args; no per-arg validation here
-                    break;
-                }
-                Expr::Annotated {
-                    name: param_name,
-                    annotation,
-                } => {
-                    if arg_idx < args.len() {
-                        validate_syntax_class(
-                            &args[arg_idx],
-                            &annotation.node,
-                            param_name,
-                            macro_name,
-                            call_span,
-                        )?;
-                    }
-                    arg_idx += 1;
-                }
-                Expr::VarRef { .. } => {
-                    arg_idx += 1;
-                }
-                _ => {
-                    arg_idx += 1;
-                }
+    // Validate annotated params (syntax-class check) BEFORE calling the transformer.
+    // Walk through non-variadic params and check their annotations against the args.
+    let mut arg_idx = 0usize;
+    for binding in &bindings {
+        match &binding.node {
+            Expr::Rest(_) => {
+                // Variadic — consumes all remaining args; no per-arg validation here
+                break;
             }
-        }
-
-        // Quote each argument individually to an AST dict thunk.
-        // Each quoted arg becomes a separate positional thunk for invoke_function.
-        let mut positional_thunks: Vec<Rc<Thunk>> = Vec::with_capacity(args.len());
-        for arg in args {
-            let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
-            // ARENA BOUNDARY: deep-materialize before crossing
-            let arg_val = eval::materialize(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
-                EvalError::user_error(
-                    format!(
-                        "macro '{}': failed to quote argument for expansion: {}",
-                        macro_name, e.kind
-                    ),
-                    call_span,
-                )
-            })?;
-            let deep_arg_val =
-                eval::deep_materialize(&arg_val, ctx, Some(&call_span)).map_err(|mut e| {
-                    e.push_frame(
-                        format!("deep-materializing argument for macro '{}'", macro_name),
-                        call_span,
-                    );
-                    e
-                })?;
-            positional_thunks.push(Rc::new(Thunk::new_materialized(deep_arg_val, call_span)));
-        }
-
-        // Task 4: Thread inject: binding.
-        // If the macro declares inject:, add the `binding` argument as the last positional.
-        // In dict-key position: use the key name. In expression position: use inject_default.
-        if inject_default.is_some() {
-            let binding_name = dict_key
-                .map(|k| k.to_string())
-                .or_else(|| inject_default.clone())
-                .unwrap_or_default();
-            // Build a VarRef AST node for the binding name
-            let binding_expr = Spanned::new(Expr::var_ref(binding_name.clone()), call_span);
-            let binding_rc = Rc::new(binding_expr);
-            let binding_thunk = ast_to_dict_expr(&binding_rc, &opts, ctx)?;
-            let binding_val =
-                eval::materialize(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
-                    EvalError::user_error(
-                        format!(
-                            "macro '{}': failed to quote binding name '{}': {}",
-                            macro_name, binding_name, e.kind
-                        ),
-                        call_span,
-                    )
-                })?;
-            let deep_binding_val = eval::deep_materialize(&binding_val, ctx, Some(&call_span))
-                .map_err(|mut e| {
-                    e.push_frame(
-                        format!("deep-materializing binding arg for macro '{}'", macro_name),
-                        call_span,
-                    );
-                    e
-                })?;
-            positional_thunks.push(Rc::new(Thunk::new_materialized(
-                deep_binding_val,
-                call_span,
-            )));
-        }
-
-        // Materialize the transformer to get the function value
-        let transformer_val =
-            eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
-                EvalError::user_error(
-                    format!(
-                        "macro '{}' transformer failed to evaluate: {}",
-                        macro_name, e.kind
-                    ),
-                    call_span,
-                )
-            })?;
-
-        match &transformer_val {
-            Value::Function {
-                params,
-                body,
-                env: closure_env,
-                ..
+            Expr::Annotated {
+                name: param_name,
+                annotation,
             } => {
-                use crate::eval_call::{invoke_function, CallContext};
-                let call_ctx = CallContext {
-                    params: params.as_slice(),
-                    body,
-                    positional: &positional_thunks,
-                    named: None,
-                    closure_env,
-                    default_env: closure_env,
-                    ctx,
-                    call_span,
-                    origin: Some(Rc::from(format!("macro:{}", macro_name))),
-                };
-                invoke_function(&call_ctx).map_err(|e| {
-                    EvalError::user_error(
-                        format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
-                        call_span,
-                    )
-                })?
-            }
-            other => {
-                env.leave_expansion(call_site_id);
-                return Err(EvalError::user_error(
-                    format!(
-                        "macro '{}' transformer must be a function, got {}",
+                if arg_idx < args.len() {
+                    validate_syntax_class(
+                        &args[arg_idx],
+                        &annotation.node,
+                        param_name,
                         macro_name,
-                        other.type_name()
-                    ),
-                    call_span,
-                )
-                .into());
+                        call_span,
+                    )?;
+                }
+                arg_idx += 1;
+            }
+            Expr::VarRef { .. } => {
+                arg_idx += 1;
+            }
+            _ => {
+                arg_idx += 1;
             }
         }
-    } else {
-        // ====================================================================
-        // Legacy [defmacro ...] style: all args packed into a single integer-keyed dict
-        // and passed as one positional arg. This branch exists for user-defined `[defmacro
-        // ...]` macros. The stdlib macros (do/tmpl/begin) now use new_style=true.
-        // This branch can be deleted once `[defmacro ...]` is removed from the language.
-        // ====================================================================
-        let mut quoted_args = Vec::with_capacity(args.len());
-        for arg in args {
-            let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
-            quoted_args.push(dict_thunk);
-        }
+    }
 
-        // Build the args list as a Value::Dict with integer keys (tinct list)
-        let mut args_dict = indexmap::IndexMap::new();
-        for (i, thunk) in quoted_args.into_iter().enumerate() {
-            let thunk_id = ctx.alloc_thunk(thunk);
-            args_dict.insert(Key::Int(i as i64), thunk_id);
-        }
-        let args_value = Value::Dict(args_dict);
-
-        // ARENA BOUNDARY: Deep-materialize the input AST dict before passing to the transformer.
-        let deep_args_value =
-            eval::deep_materialize(&args_value, ctx, Some(&call_span)).map_err(|mut e| {
+    // Quote each argument individually to an AST dict thunk.
+    // Each quoted arg becomes a separate positional thunk for invoke_function.
+    let mut positional_thunks: Vec<Rc<Thunk>> = Vec::with_capacity(args.len());
+    for arg in args {
+        let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
+        // ARENA BOUNDARY: deep-materialize before crossing
+        let arg_val = eval::materialize(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "macro '{}': failed to quote argument for expansion: {}",
+                    macro_name, e.kind
+                ),
+                call_span,
+            )
+        })?;
+        let deep_arg_val =
+            eval::deep_materialize(&arg_val, ctx, Some(&call_span)).map_err(|mut e| {
                 e.push_frame(
-                    format!("deep-materializing input to macro '{}'", macro_name),
+                    format!("deep-materializing argument for macro '{}'", macro_name),
                     call_span,
                 );
                 e
             })?;
+        positional_thunks.push(Rc::new(Thunk::new_materialized(deep_arg_val, call_span)));
+    }
 
-        #[cfg(debug_assertions)]
-        debug_assert!(
-            all_thunks_materialized(&deep_args_value, ctx),
-            "macro expansion boundary violated: input contains lazy thunks"
-        );
-
-        let args_thunk = Rc::new(Thunk::new_materialized(deep_args_value, call_span));
-
-        // Materialize the transformer to get the function value
-        let transformer_val =
-            eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
+    // Thread inject: binding.
+    // If the macro declares inject:, add the `binding` argument as the last positional.
+    // In dict-key position: use the key name. In expression position: use inject_default.
+    if inject_default.is_some() {
+        let binding_name = dict_key
+            .map(|k| k.to_string())
+            .or_else(|| inject_default.clone())
+            .unwrap_or_default();
+        // Build a VarRef AST node for the binding name
+        let binding_expr = Spanned::new(Expr::var_ref(binding_name.clone()), call_span);
+        let binding_rc = Rc::new(binding_expr);
+        let binding_thunk = ast_to_dict_expr(&binding_rc, &opts, ctx)?;
+        let binding_val =
+            eval::materialize(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
                 EvalError::user_error(
                     format!(
-                        "macro '{}' transformer failed to evaluate: {}",
-                        macro_name, e.kind
+                        "macro '{}': failed to quote binding name '{}': {}",
+                        macro_name, binding_name, e.kind
                     ),
                     call_span,
                 )
             })?;
-
-        match &transformer_val {
-            Value::Function {
-                params,
-                body,
-                env: closure_env,
-                ..
-            } => {
-                use crate::eval_call::{invoke_function, CallContext};
-                let call_ctx = CallContext {
-                    params: params.as_slice(),
-                    body,
-                    positional: &[args_thunk],
-                    named: None,
-                    closure_env,
-                    default_env: closure_env,
-                    ctx,
+        let deep_binding_val = eval::deep_materialize(&binding_val, ctx, Some(&call_span))
+            .map_err(|mut e| {
+                e.push_frame(
+                    format!("deep-materializing binding arg for macro '{}'", macro_name),
                     call_span,
-                    origin: Some(Rc::from(format!("macro:{}", macro_name))),
-                };
-                invoke_function(&call_ctx).map_err(|e| {
-                    EvalError::user_error(
-                        format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
-                        call_span,
-                    )
-                })?
-            }
-            other => {
-                env.leave_expansion(call_site_id);
-                return Err(EvalError::user_error(
-                    format!(
-                        "macro '{}' transformer must be a function, got {}",
-                        macro_name,
-                        other.type_name()
-                    ),
+                );
+                e
+            })?;
+        positional_thunks.push(Rc::new(Thunk::new_materialized(
+            deep_binding_val,
+            call_span,
+        )));
+    }
+
+    // Materialize the transformer to get the function value
+    let transformer_val = eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "macro '{}' transformer failed to evaluate: {}",
+                macro_name, e.kind
+            ),
+            call_span,
+        )
+    })?;
+
+    let result_thunk = match &transformer_val {
+        Value::Function {
+            params,
+            body,
+            env: closure_env,
+            ..
+        } => {
+            use crate::eval_call::{invoke_function, CallContext};
+            let call_ctx = CallContext {
+                params: params.as_slice(),
+                body,
+                positional: &positional_thunks,
+                named: None,
+                closure_env,
+                default_env: closure_env,
+                ctx,
+                call_span,
+                origin: Some(Rc::from(format!("macro:{}", macro_name))),
+            };
+            invoke_function(&call_ctx).map_err(|e| {
+                EvalError::user_error(
+                    format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
                     call_span,
                 )
-                .into());
-            }
+            })?
+        }
+        other => {
+            env.leave_expansion(call_site_id);
+            return Err(EvalError::user_error(
+                format!(
+                    "macro '{}' transformer must be a function, got {}",
+                    macro_name,
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into());
         }
     };
 
-    // Materialize the result to get the AST dict.
-    // Preserve the full inner error stack so macro expansion bugs in do-fold,
-    // tmpl helpers, etc. are diagnosable without losing the macro wrapper context.
     let result_val = eval::materialize(&result_thunk, Some(&call_span), ctx).map_err(|e| {
         // Build E080 wrapper that names the macro and error kind, then copy all
         // stack frames from the inner error so the full call stack is preserved.
@@ -1822,11 +1795,35 @@ fn validate_syntax_class(
 ) -> EvalResult<()> {
     use crate::ast::Annotation;
 
+    // Known single-variant AST node names that can be validated.
+    // Only these names trigger structural validation; all other annotation names
+    // (e.g., "Expr", "Literal" as a union alias) are treated as documentation
+    // and accepted for any expression type.
+    const SINGLE_VARIANT_NAMES: &[&str] = &[
+        "VarRef",
+        "Literal",
+        "Call",
+        "Dict",
+        "LetDecl",
+        "Fn",
+        "Seq",
+        "Annotated",
+        "Quote",
+        "Unquote",
+        "UnquoteSplice",
+    ];
+
     match annotation {
         Annotation::Simple(name) => {
-            // Simple annotation like @VarRef, @Literal
-            // Check if the arg matches the expected variant
             let expected_variant = name.as_str();
+
+            // Only validate if the annotation names a known single-variant AST node type.
+            // Composite type aliases like "Expr" are used for documentation and accept
+            // any expression variant — skip validation for them.
+            if !SINGLE_VARIANT_NAMES.contains(&expected_variant) {
+                return Ok(());
+            }
+
             let got_variant = match &arg.node {
                 Expr::VarRef { .. } => "VarRef",
                 Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) => "Literal",

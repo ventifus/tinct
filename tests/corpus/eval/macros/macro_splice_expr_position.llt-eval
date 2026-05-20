@@ -1,7 +1,6 @@
 # Task 2: Splice in expression position is an expansion-time error.
 # A macro returning splice cannot be used as a plain expression (only in dict/doc context).
-# Note: Using defmacro because variadic [let ...args] not yet supported in macro params.
-[defmacro two-ints [args]
+[macro two-ints [let ...args]
   [type: "splice"
    forms: [
      [type: "literal"  kind: "int"  value: 10]
@@ -10,6 +9,4 @@
 
 [+ [two-ints] 1]
 === error
-[E012] macro expansion error
-=== warn
 [E012] macro expansion error

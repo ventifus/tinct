@@ -8239,5 +8239,24 @@ Currently `deep_materialize` in `src/eval_deep.rs` traverses `Dict` and `Seq` re
 - [x] Rewrite `do` body to use named `first`/`rest` bindings with new_style=true variadic params; do-fold uses Seq operations instead of integer-key dict indexing (`stdlib/macros.llt`)
 - [x] Rewrite `tmpl` body to use named `template`/`parts` bindings with new_style=true (`stdlib/macros.llt`)
 - [x] Rewrite `begin` body to use named `exprs` binding directly — `[builtin-variant "Sequential" [exprs: exprs]]` (`stdlib/macros.llt`)
-- [ ] Delete `new_style: false` code path from `expand_macro_call` in `src/expand.rs` and the `new_style` field from `MacroMetadata` — blocked on `defmacro-retire` sprint (`src/expand.rs`)
+- [x] Delete `new_style: false` code path from `expand_macro_call` in `src/expand.rs` and the `new_style` field from `MacroMetadata` — completed in `defmacro-retire` sprint (`src/expand.rs`)
 - [x] **BUG FIXED** `begin` macro now calls `[collect exprs]` before passing to `builtin-variant "Sequential"`, matching the pattern used in `tmpl` and `do` (`stdlib/macros.llt:381`)
+
+### defmacro-retire: Retire [defmacro ...] syntax from the language
+
+`[defmacro ...]` is the last caller of `new_style: false`. Four corpus test files still use it (variadic params were previously unsupported in `[macro ...]` but ARE now). Retiring `[defmacro ...]` enables deleting the old single-args-dict expansion path from `expand.rs`.
+
+**Depends on:** `macros-v2-stdlib`
+
+- [x] Migrate 6 corpus test files from `[defmacro ...]` to `[macro ...]` with proper variadic `[let ...]` patterns (`tests/corpus/eval/macros/`)
+- [x] Keep `[defmacro ...]` as deprecated alias — legacy expansion path removed; both forms now use unified new_style expansion (`src/expand.rs`)
+- [x] Delete `new_style` field from `MacroMetadata`; delete `if new_style` branch from `expand_macro_call`; all macros use unified new-style path (`src/expand.rs`)
+- [x] `Expr::DefMacro` pre-scan kept but unified with MacroDecl registration path (both call same code) (`src/expand.rs`)
+- [x] Implement `flatten-args` in `stdlib/ast.llt` — dispatches on Variant tag to re-extract flat element sequence from a parsed bracket expression (`stdlib/ast.llt`)
+- [x] Implement prelude stubs: `span-of` (`[get "span" expr]`), `wrap-in-let` (`builtin-variant "LetDecl" ...`), `let-decl-elems` (`[get "bindings" decl]`), `macro-error` (`[error message]`); all using Variant AST operations (`stdlib/prelude.llt`)
+- [x] Implement fn/class/type let-softening macros — transformers defined in `stdlib/macros.llt` (private dict: `fn-binding-to-param`, `fn-flatten-params`; public: `syntax-fn`, `syntax-class`, `syntax-type`), registered globally via `register_stdlib_macros_from_env` in `src/expand.rs`; `syntax.llt` simplified to no-op include; fixed `@Expr` annotation validation in `validate_syntax_class` to skip unknown annotation names (`stdlib/macros.llt`, `src/expand.rs`, `stdlib/syntax.llt`)
+- [x] Fix pre-scan include-following: `pre_scan_follow_libdir_include` added to `src/expand.rs` to follow `[include %libdir "file.llt"]` during pre-scan, enabling macros declared inside included stdlib files to be registered; includes recursion guard via thread-local set (`src/expand.rs:468`)
+- [x] Verify `just build` passes (zero warnings) and `just test-lib` passes (`tests/`)
+- [x] Remove `STDLIB_MACROS` constant and the old single-args-dict packing branch (`src/expand.rs`) — already done; `register_stdlib_macros_from_env` uses an inline table instead
+- [x] Tests: verify all do/tmpl/begin corpus tests pass with new_style=true calling convention (`tests/corpus/eval/macros/`)
+- [x] Tests: migrated macros pass; stdlib/ast.llt and stdlib/syntax.llt load cleanly (`tests/corpus/eval/macros/`)

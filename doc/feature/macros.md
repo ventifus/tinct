@@ -10,7 +10,7 @@ The macro system unifies tinct's syntactic sugar under a single, user-extensible
 - **Zero-cost abstraction** — macros that expand to inline code avoid thunk creation, eliminating per-call overhead for strict operations
 - **Self-hosting path** — reduces the Rust surface area by expressing syntactic transformations in tinct itself
 
-`defmacro`, `macro-hygiene`, and `macro-integration` are implemented. See TODO.md for open follow-up tasks.
+`[macro ...]` is the primary macro form; `macro-hygiene` and `macro-integration` are implemented. `[defmacro ...]` is retained as a backward-compatible alias. See TODO.md for open follow-up tasks.
 
 ## Interaction with Lazy Evaluation
 
@@ -84,7 +84,7 @@ has-direct-child?: [fn [node]
   ]]]
 
 # The macro: wrap expression in [fn [_] expr] if it has a DIRECT child
-[defmacro desugar-underscore [expr]
+[macro desugar-underscore [let expr]
   [if [has-direct-child? expr]
     [quote [fn [_] [unquote expr]]]
     expr]]
@@ -106,14 +106,17 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
 #   [type: "call"  fn: [type: "var"  name: "f"]  args: [[type: "var"  name: "x"] [type: "var"  name: "y"]]]
 
 # A macro is a function from AST-dict to AST-dict
-[defmacro when [pred-ast body-ast]
+[macro when [let pred-ast body-ast]
   [type: "call"
    fn: [type: "var"  name: "if"]
    args: [pred-ast  body-ast  [type: "literal"  value: []]]]]
 
 # Or with quote/unquote syntax sugar:
-[defmacro when [pred body]
+[macro when [let pred body]
   [quote [if [unquote pred] [unquote body] []]]]
+
+# [defmacro ...] is a legacy alias for [macro ...] and still works:
+# [defmacro when [pred body] [quote [if [unquote pred] [unquote body] []]]]
 ```
 
 ### Expansion Pipeline
@@ -122,7 +125,7 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
 source -> parse -> quote_macros -> expand (call macro fns on quoted AST) -> typecheck -> eval
 ```
 
-- `[defmacro name [params] body]` registers a compile-time function
+- `[macro name [let params] body]` registers a compile-time function (`[defmacro ...]` is a legacy alias)
 - When `[name arg1 arg2 ...]` appears in source, the parser quotes the arguments (converts AST to tinct dicts) and calls the macro function with the quoted forms
 - The macro function returns a tinct dict representing the expanded AST
 - The expander converts the dict back to AST and continues expansion
@@ -170,11 +173,11 @@ Macros defined in an included file are available to the includer. This works bec
 
 ### Parser / Grammar
 
-`src/parser.rs` gains a `defmacro` keyword. `[defmacro name [params] body]` produces a new AST node (`Expr::DefMacro`). Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. One new keyword (`defmacro`), one new AST variant; no change to expression parsing.
+`src/parser.rs` gains a `macro` keyword. `[macro name [let params] body]` produces an AST node (`Expr::MacroDecl`). `[defmacro ...]` is parsed as a backward-compatible alias that produces the same node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
 
 ### AST
 
-`src/parser.rs` (AST types) gains `Expr::DefMacro` and `Expr::Quote`/`Expr::Unquote` variants. `src/ast_dict.rs` defines a stable `Expr -> Value::Dict` projection (`ast_to_dict`) and its inverse (`dict_to_ast`). The schema is a public API surface — schema changes break existing macros.
+`src/parser.rs` (AST types) gains `Expr::MacroDecl` (the primary `[macro ...]` form) and `Expr::DefMacro` (deprecated alias), plus `Expr::Quote`/`Expr::Unquote` variants. `src/ast_dict.rs` defines a stable `Expr -> Value::Variant` projection (`ast_to_dict`) and its inverse (`dict_to_ast`). The schema is a public API surface — schema changes break existing macros.
 
 ### Evaluator
 

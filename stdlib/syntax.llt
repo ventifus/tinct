@@ -1,50 +1,24 @@
-# stdlib/syntax.llt — Let-softening macros for fn/class/type
+# stdlib/syntax.llt — Let-softening for fn/class/type (opt-in module)
 #
-# This opt-in module provides macros that allow writing function, class,
-# and type definitions with softer syntax — bare parameter lists instead
-# of explicit [let ...] declarations.
+# This module is kept for backward compatibility and documentation purposes.
+# The fn, class, and type let-softening macros are now globally registered
+# (like tmpl, do, begin) via stdlib/macros.llt and do not require an explicit
+# include.
 #
-# Usage: [include %libdir "syntax.llt"]
+# Usage (still works, but not required):
+#   [include %libdir "syntax.llt"]
 #
-# With this module loaded:
-#   [fn [x y] body]              works (softened)
-#   [fn [x@Int y@Float] body]    works (softened with annotations)
+# With the macros globally registered:
+#   [fn [x y] body]              works in programmatic (macro-output) contexts
+#   [fn [x@Int y@Float] body]    works in programmatic contexts
 #   [fn [let x y] body]          works (explicit, idempotent)
 #
-# Without this module:
-#   [fn [x y] body]              type error: "parameter list must be [let ...]"
+# Note: The parser already accepts both [fn [x y] body] (old form) and
+# [fn [let x y] body] (new form) for normal source code. The macros only
+# apply when another macro produces Call(VarRef("fn"), ...) nodes.
 #
-# NOTE: These macros are stubs until the MacroDecl expansion pass is implemented
-# (macros-v2-expand sprint). The [macro ...] declarations will be registered
-# but not yet expanded.
+# Implementation: see stdlib/macros.llt for the transformer functions
+# (syntax-fn, syntax-class, syntax-type) and src/expand.rs for registration.
 
-[include %libdir "ast.llt"]
-
-# macro fn — Let-softening for function definitions
-#
-# Wraps non-LetDecl parameter expressions in [let ...] automatically.
-# If the params are already a LetDecl, passes through unchanged.
-#
-# TODO: Implement body once MacroDecl expansion is available
-[macro fn [let params@Expr  body@Expr]
-  [quote [error "fn macro not yet implemented"]]]
-
-# macro class — Let-softening for type class declarations
-#
-# Wraps non-LetDecl type variable lists in [let ...] automatically.
-# Handles both basic form [class tvars methods...] and extended form
-# with structural metadata.
-#
-# TODO: Implement body once MacroDecl expansion and variadic support is available
-# For now, takes only tvars (single param). Full implementation will need variadic params.
-[macro class [let tvars@Expr]
-  [quote [error "class macro not yet implemented"]]]
-
-# macro type — Let-softening for type alias declarations
-#
-# Wraps non-LetDecl parameter lists in [let ...] automatically.
-# Handles both nullary [type body] and parameterized [type params body].
-#
-# TODO: Implement body once MacroDecl expansion is available
-[macro type [let params@Expr  body@Expr]
-  [quote [error "type macro not yet implemented"]]]
+# Empty dict — including this file adds nothing to scope.
+[]
