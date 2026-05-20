@@ -9,21 +9,22 @@ See DONE.md for the full history of completed sprints.
 `macros-v2` accepted 2026-05-17. See `doc/whatif/macros-v2.md`. Unified `macro` form with `[let ...]` patterns, `inject:` for anaphoric binding, `splice` for multi-form output, `syntax-class` for declarative argument validation. Implementation order: macros-v2-ast → macros-v2-expand → macros-v2-inject → macros-v2-stdlib.
 
 - [ ] Cleanup nits (tack onto next macro sprint): stale doc comment in `register_stdlib_macros_from_env`; `"Let"` vs `"LetDecl"` inconsistency in `validate_syntax_class` allowlist; anonymous-Rest edge case in `fn-binding-to-param`; add corpus test for syntax.llt let-softening path; remove syntax.llt no-op stub once let-softening is removed (`src/expand.rs`, `stdlib/syntax.llt`)
+- [ ] `builtin_ast_of` Materialized branch returns `Value::Dict` (with `type:` field) while Unevaluated branch returns `Value::Variant` — inconsistent return type; `[tag-of [ast-of already-forced-val]]` returns empty string not a tag; fix: unify both branches to return Variant (`src/builtins_meta.rs:629-640`)
+- [ ] `gensym` returns String but macros-v2 spec says it should return VarRef AST node — spec divergence; decide whether to change gensym or update the spec (`doc/whatif/macros-v2.md:903`, `src/builtins_meta.rs`)
+- [ ] `ScopeId::fresh()` allocated but unused (`_scope_id`) in expand.rs — placeholder for future scope-set hygiene; remove or implement (`src/expand.rs:1787`)
+- [ ] 6 `do` corpus tests have stale expected output format: `do_minimal.llt-eval` and `do_hardcoded.llt-eval` expect `[Ok 42]` but runtime produces `Variant(Ok, Int(42))`; 4 other do tests (`do_three_step`, `do_nonbinding_step`, `do_no_steps`, `do_err_propagation`) have no `=== out` section at all (`tests/corpus/eval/macros/`)
 
 ---
 
 ## Tooling
 
-### dircap-drop-bare-compat: Remove backward-compat treatment of bare `@DirCap` in caps declarations
+### dircap-cleanup: Cap-fs edge cases and test coverage gaps
 
-Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap` (without a flag list) is temporarily treated as full access during a transition period. All first-party scripts now use explicit flag annotations (e.g. `@[DirCap [Writable]]`). The compat shim should be removed once all call sites are updated.
-
-- [x] Fix Landlock path extraction to strip `:MODE` suffix before constructing PathBuf — applied `rsplit_once(':')` mode-stripping in `run_eval` Landlock block (`src/main.rs:1065-1074`); `run_literate_eval` and `run_literate_weave` do not have Landlock setup (no `no_landlock` param, no `setup_landlock` call) so no fix needed there
-- [x] Restore `--cap-fs docdir=doc/lib:w` in `just docgen` once Landlock path extraction is fixed — restored at `justfile:199`; `just build` and `just test-lib` pass clean
-- [x] Audit all `--- caps:` declarations in `scripts/`, `stdlib/`, and `samples/` for bare `@DirCap` and update to explicit flag lists (`scripts/`, `stdlib/`, `samples/`) — Updated `test_permissions.llt` to use `@[[all DirCap Listable Statable]]`; `scripts/docgen.llt` already has `@[DirCap [Writable]]`; no bare `@DirCap` found in `samples/` or `stdlib/`
-- [ ] Update 7 cli_tests to use explicit `--cap-fs NAME=PATH:MODE` syntax instead of bare `NAME=PATH` — prerequisite to closing the KNOWN ISSUE below (`tests/cli_tests.rs:1636,1671,2182,2215,2248,2285,2331`)
-- [ ] **KNOWN ISSUE**: CLI-level backward-compat at `src/main.rs:1321,2469,2765` — `--cap-fs NAME=PATH` without `:MODE` defaults to `DirPerms::full()`. The type-level compat described in whatif doc lines 107-109 was never implemented. Removing CLI default breaks many tests (`tests/cli_tests.rs:1636,1671,2182,2215,2248,2285,2331`). Blocked on the test suite update above.
-- [x] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
+- [ ] Add guard for empty mode string: `--cap-fs NAME=PATH:` (trailing colon, empty mode) currently produces a zero-permission DirCap silently — add error "mode string is empty" and a test (`src/main.rs`, `tests/cli_tests.rs`)
+- [ ] Fix stale `--cap-file` doc: `dir-cap-permissions.md:166-167` says bare default is read-write full, but implementation is read-only (`doc/whatif/completed/dir-cap-permissions.md`)
+- [ ] Add Literate/Weave coverage for bare cap-fs error path (`tests/cli_tests.rs`)
+- [ ] Extract cap-fs parsing to shared helper: three identical blocks in run_eval/run_literate_eval/run_literate_weave (`src/main.rs`)
+- [ ] Document `_cap_fs` ignored in run_lint: add comment explaining why lint doesn't inject cap-fs DirCaps (`src/main.rs`)
 
 ---
 

@@ -108,9 +108,10 @@ enum Commands {
         libdir_path: Option<String>,
 
         /// Inject a named DirCap into the root environment (may be repeated).
-        /// Format: NAME=PATH — binds %NAME to a DirCap for PATH.
-        /// Example: --cap-fs data=/var/data injects %data as a DirCap for /var/data.
-        #[arg(long, value_name = "NAME=PATH")]
+        /// Format: NAME=PATH:MODE — binds %NAME to a DirCap. MODE is required.
+        /// MODE is one or more of: r (read), w (write), l (list), s (stat).
+        /// Example: docs=/tmp/mydocs:rl injects %docs with read+list access.
+        #[arg(long, value_name = "NAME=PATH:MODE")]
         cap_fs: Vec<String>,
 
         /// Inject a named NetCap into the root environment (may be repeated).
@@ -234,9 +235,10 @@ enum Commands {
         no_fs: bool,
 
         /// Inject a named DirCap into the root environment (may be repeated).
-        /// Format: NAME=PATH — binds %NAME to a DirCap for PATH.
-        /// Example: --cap-fs data=/var/data injects %data as a DirCap for /var/data.
-        #[arg(long, value_name = "NAME=PATH")]
+        /// Format: NAME=PATH:MODE — binds %NAME to a DirCap. MODE is required.
+        /// MODE is one or more of: r (read), w (write), l (list), s (stat).
+        /// Example: docs=/tmp/mydocs:rl injects %docs with read+list access.
+        #[arg(long, value_name = "NAME=PATH:MODE")]
         cap_fs: Vec<String>,
 
         /// Inject a named NetCap into the root environment (may be repeated).
@@ -281,9 +283,9 @@ enum Commands {
         fail_on_errors: bool,
 
         /// Inject a named DirCap into the root environment (may be repeated).
-        /// Format: NAME=PATH:MODE — binds %NAME to a DirCap.
-        /// MODE: r (read-only), w (read-write), rw (read-write). Default: r.
-        /// Example: --cap-fs data=/var/data:r injects %data as a read-only DirCap.
+        /// Format: NAME=PATH:MODE — binds %NAME to a DirCap. MODE is required.
+        /// MODE is one or more of: r (read), w (write), l (list), s (stat).
+        /// Example: docs=/tmp/mydocs:rl injects %docs with read+list access.
         #[arg(long, value_name = "NAME=PATH:MODE")]
         cap_fs: Vec<String>,
 
@@ -1335,8 +1337,11 @@ fn run_eval(
                     perms
                 }
             } else {
-                // No mode specified → full access
-                DirPerms::full()
+                // No mode specified → error (mode is required)
+                return Err(format!(
+                    "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
+                    cap_fs_entry
+                ));
             };
 
             let cap_value = Value::DirCap {
@@ -2503,8 +2508,11 @@ fn run_literate_eval(
                     perms
                 }
             } else {
-                // No mode specified → full access
-                DirPerms::full()
+                // No mode specified → error (mode is required)
+                return Err(format!(
+                    "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
+                    cap_fs_entry
+                ));
             };
 
             let cap_value = Value::DirCap {
@@ -2799,8 +2807,11 @@ fn run_literate_weave(
                     perms
                 }
             } else {
-                // No mode specified → full access
-                DirPerms::full()
+                // No mode specified → error (mode is required)
+                return Err(format!(
+                    "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
+                    cap_fs_entry
+                ));
             };
 
             let cap_value = Value::DirCap {

@@ -8260,3 +8260,14 @@ Currently `deep_materialize` in `src/eval_deep.rs` traverses `Dict` and `Seq` re
 - [x] Remove `STDLIB_MACROS` constant and the old single-args-dict packing branch (`src/expand.rs`) — already done; `register_stdlib_macros_from_env` uses an inline table instead
 - [x] Tests: verify all do/tmpl/begin corpus tests pass with new_style=true calling convention (`tests/corpus/eval/macros/`)
 - [x] Tests: migrated macros pass; stdlib/ast.llt and stdlib/syntax.llt load cleanly (`tests/corpus/eval/macros/`)
+
+### dircap-drop-bare-compat: Remove backward-compat treatment of bare `@DirCap` in caps declarations
+
+Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap` (without a flag list) is temporarily treated as full access during a transition period. All first-party scripts now use explicit flag annotations (e.g. `@[DirCap [Writable]]`). The compat shim should be removed once all call sites are updated.
+
+- [x] Fix Landlock path extraction to strip `:MODE` suffix before constructing PathBuf — applied `rsplit_once(':')` mode-stripping in `run_eval` Landlock block (`src/main.rs:1065-1074`); `run_literate_eval` and `run_literate_weave` do not have Landlock setup (no `no_landlock` param, no `setup_landlock` call) so no fix needed there
+- [x] Restore `--cap-fs docdir=doc/lib:w` in `just docgen` once Landlock path extraction is fixed — restored at `justfile:199`; `just build` and `just test-lib` pass clean
+- [x] Audit all `--- caps:` declarations in `scripts/`, `stdlib/`, and `samples/` for bare `@DirCap` and update to explicit flag lists (`scripts/`, `stdlib/`, `samples/`) — Updated `test_permissions.llt` to use `@[[all DirCap Listable Statable]]`; `scripts/docgen.llt` already has `@[DirCap [Writable]]`; no bare `@DirCap` found in `samples/` or `stdlib/`
+- [x] Update 7 cli_tests to use explicit `--cap-fs NAME=PATH:MODE` syntax instead of bare `NAME=PATH` — updated 9 tests total: `include_with_dircap` (1226), `include_with_hash` (1270), `no_fs_suppresses_cap_fs_injection` (1344), `no_landlock_with_cap_fs_accepted` (1681), `landlock_with_cap_fs_permits_include` (1716), `revocable_and_revoke` (2226), `lines_basic` (2259), `write_basic` (2292), `write_atomic_basic` (2329), `write_and_slurp_roundtrip` (2375) to use `:r` or `:rw` modes (`tests/cli_tests.rs`)
+- [x] **KNOWN ISSUE**: CLI-level backward-compat at `src/main.rs:1321,2469,2765` — `--cap-fs NAME=PATH` without `:MODE` defaults to `DirPerms::full()`. The type-level compat described in whatif doc lines 107-109 was never implemented. Removing CLI default breaks many tests. — **FIXED**: Changed all three locations to return error requiring `:MODE` suffix (`src/main.rs:1338-1342,2506-2510,2802-2806`)
+- [x] Update `doc/whatif/completed/dir-cap-permissions.md` to remove the "backward-compat transition period" note (`doc/whatif/completed/dir-cap-permissions.md:107-109`)
