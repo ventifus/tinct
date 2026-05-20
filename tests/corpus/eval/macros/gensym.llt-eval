@@ -1,4 +1,5 @@
 # gensym generates unique names for macro hygiene. Accessible from user code via prelude wrapper.
-[a: [gensym] b: [gensym] c: [= a b]]
+[a: [gensym]  b: [gensym]]
+[and [starts-with? a ":gensym:"] [not [= a b]]]
 === out
-Dict({"a": String(":gensym:0"), "b": String(":gensym:1"), "c": Bool(false)})
+Bool(true)

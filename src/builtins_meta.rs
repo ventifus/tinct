@@ -396,7 +396,10 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `gensym`: Generate a unique symbol name for macro hygiene.
-/// Returns a string like ":gensym:0", ":gensym:1", etc.
+///
+/// - Zero args: returns `":gensym:N"` where N is a global monotonic counter.
+/// - One arg (prefix string): returns `":prefix:N"` where prefix is the argument.
+///
 /// The `:` prefix ensures these names cannot collide with user-written identifiers
 /// (`:` is not allowed in bare word identifiers).
 pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
@@ -409,18 +412,39 @@ pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         args,
         named,
         call_span,
-        ..
+        ctx,
     } = ctx_arg;
 
-    // Reject any arguments
-    if !args.is_empty() || named.is_some() {
-        return Err(
-            EvalError::user_error("gensym takes no arguments".to_string(), call_span).into(),
-        );
-    }
+    reject_named("gensym", named, call_span)?;
+
+    // Accept 0 or 1 positional arguments
+    let prefix = if args.is_empty() {
+        "gensym".to_string()
+    } else if args.len() == 1 {
+        // Materialize the first argument to get the prefix string
+        let prefix_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        match prefix_val {
+            Value::String { source, start, end } => source[start..end].to_string(),
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "gensym".to_string(),
+                    "String",
+                    prefix_val.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+    } else {
+        return Err(EvalError::user_error(
+            format!("gensym takes 0 or 1 arguments, got {}", args.len()),
+            call_span,
+        )
+        .into());
+    };
 
     let id = GENSYM_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let name = format!(":gensym:{}", id);
+    let name = format!(":{}:{}", prefix, id);
     ok_val(string_val(&name), call_span)
 }
 

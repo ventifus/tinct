@@ -1975,8 +1975,8 @@ mod tests {
         assert!(result.is_err(), "expected error, got Ok: {:?}", result);
         let err = result.unwrap_err();
         assert!(
-            err.contains("do requires at least a monad argument"),
-            "expected 'do requires at least a monad argument' in error, got: {err}"
+            err.contains("missing argument for required parameter 'first'"),
+            "expected 'missing argument for required parameter 'first'' in error, got: {err}"
         );
     }
 

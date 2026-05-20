@@ -44,11 +44,11 @@ Three interlocking changes, implemented as one coherent rewrite:
 
 2. **Native AST Value Types** — `Value::Program(Arc<SurfaceProgram>)`, `Value::Document(Arc<SurfaceDocument>)`, `Value::Expression(Arc<SurfaceNode>)`. Declare `Expression`, `Document`, `Program` as nominal types in prelude; tinct code pattern-matches on `Expression` variants with static typing and lazy field binding. `load` returns `Program`. `expand` takes and returns `Program`. `eval` takes `[Seq Expression]`. `dict_to_file` is never written. `dict_to_ast` is deleted.
 
-3. **Async Runtime** — `eval` and `materialize` become `async fn`. `Rc<T>` → `Arc<T>` throughout; `RefCell<T>` → `RwLock<T>` or `Mutex<T>`; `ThunkState` replaced by an `OnceLock`-based pair. Multi-thread Tokio with work-stealing distributes independent thunks across all cores. `task`/`await`/`channel`/`select` primitives. These are one refactor: every file is touched for the `async fn` contagion anyway; the `Rc`→`Arc` migration is mechanical on top.
+3. **Async Runtime** — `eval` and `materialize` become `async fn`. `Rc<T>` → `Arc<T>` throughout; `RefCell<T>` → `RwLock<T>` or `Mutex<T>`; `ThunkState` replaced by an `OnceCell`-based pair. Multi-thread Tokio with work-stealing distributes independent thunks across all cores. `task`/`await`/`channel`/`select` primitives. These are one refactor: every file is touched for the `async fn` contagion anyway; the `Rc`→`Arc` migration is mechanical on top.
 
 These three parts are inseparable. The `Rc`→`Arc` migration (Part 3) requires all `Value`s to be `Send`; `Value::Expression` wrapping a type with `RefCell` fields is not `Send` — so AST redesign (Part 1) is a prerequisite. The native value types (Part 2) must use `Arc` to be compatible with the parallel runtime; doing them with `Rc` first and migrating later opens the same files twice. The thunk's internal `UnevaluatedState::Expr` stores `CoreExpr` (Part 1), not raw `Expr`. All three parts form one coherent implementation sprint.
 
-**Designed for future distribution.** The design choices here — `Arc`-based thunks, `OnceLock` "evaluate exactly once" semantics, `CoreExpr` as a pure data tree satisfying the serializability invariant, and the capability model that already identifies I/O-free computations — create the conditions under which distributing evaluation across machines becomes tractable.
+**Designed for future distribution.** The design choices here — `Arc`-based thunks, `OnceCell` "evaluate exactly once" semantics, `CoreExpr` as a pure data tree satisfying the serializability invariant, and the capability model that already identifies I/O-free computations — create the conditions under which distributing evaluation across machines becomes tractable.
 
 ---
 
@@ -259,7 +259,26 @@ pub enum CoreExpr {
            named_args: Vec<Spanned<CoreNamedArg>>, implied: bool },
     Fn   { return_ann: Option<Spanned<Annotation>>, params: Vec<Spanned<CoreParam>>,
            body: Arc<Spanned<CoreExpr>>, desugared: bool },
-    // Statically type-checked TypeAssert — resolved_type set from TypeAnnotationTable during lowering
+    // Statically type-checked TypeAssert — resolved_type set from TypeAnnotationTable during lowering.
+    // Runtime behavior: STRUCTURAL check against resolved_type, run once at force time, cached in OnceCell.
+    //
+    //   Primitives (Int, Float, Bool, String, Null):
+    //     In-place check: verify value is the right primitive type.
+    //
+    //   Records (Dict with field annotations):
+    //     In-place check: verify value is a Dict, each annotated field exists and has the correct type.
+    //     O(fields) per TypeAssert. With the current TypeVar-at-recursive-positions mu-type limitation,
+    //     recursive field types stop checking at TypeVar (sound: top level verified, recursive parts
+    //     trusted from the typechecker). When mu-types land, this plugs in as full recursive descent.
+    //
+    //   Functions (Fn types):
+    //     Proxy contract (Findler-Felleisen 2002): wrap the function so future calls validate that
+    //     arguments satisfy the parameter types and the return value satisfies the return type.
+    //     The proxy changes value identity ([@Fn expr] != expr) — accepted cost for higher-order contracts.
+    //
+    // This is NOT type-erased (not TypeScript's `as T`). The `resolved_type: Type` field was designed
+    // specifically to enable structural checking. When well-typed programs run, the check is redundant
+    // (typechecker already verified) but bounded — TypeAssert nodes are authored, not generated in loops.
     TypeAssert { annotation: Spanned<Annotation>, expr: Arc<Spanned<CoreExpr>>,
                  resolved_type: Type },
     // TypeAssert for nodes absent from TypeAnnotationTable (macro-synthesized, bypassed typechecking)
@@ -281,20 +300,43 @@ pub enum CoreExpr {
 }
 ```
 
-**The lowering pass** `lower(node: &Arc<SurfaceNode>, res: &ResolutionTable, types: &TypeAnnotationTable) -> Spanned<CoreExpr>` converts a single expression. It is called **per-thunk** — when a thunk containing a `SurfaceNode` is first forced via the `OnceLock` protocol, it lowers at that moment. Desugaring is part of lowering — `desugar.rs` is deleted; its one responsibility (`Pipe` → `Call`) is handled here:
+**The lowering pass** `lower(node: &Arc<SurfaceNode>, res: &ResolutionTable, types: &TypeAnnotationTable) -> Spanned<CoreExpr>` converts a single expression. It is called **per-thunk** — when a thunk containing a `SurfaceNode` is first forced via the `OnceCell` protocol, it lowers at that moment. The lowering pass handles `Pipe` → `Call` rewriting:
 
 - `SurfaceExpression::Pipe { lhs, rhs }` → `CoreExpr::Call { func: lower(rhs), args: [lower(lhs)], implied: true }` — pipe is syntactic sugar, eliminated before evaluation
-- `SurfaceExpression::Sequential` → `CoreExpr::Sequential` — kept; it carries real let\* semantics for multi-expression fn bodies Lowering is a pure function of `(SurfaceNode, ResolutionTable, TypeAnnotationTable)`; it commutes with evaluation order. Lowering cost is only paid for expressions that are actually evaluated — dead code is never lowered.
+- `SurfaceExpression::Sequential` → `CoreExpr::Sequential` — kept; it carries real let\* semantics for multi-expression fn bodies
+
+Lowering is a pure function of `(SurfaceNode, ResolutionTable, TypeAnnotationTable)`; it commutes with evaluation order. Lowering cost is only paid for expressions that are actually evaluated — dead code is never lowered. **Semantic equivalence invariant:** for all well-typed programs, `eval(lower(s)) = eval_surface(s)` where `eval_surface` is the direct evaluator on `SurfaceExpression`. The Pipe→Call rewrite is trivially equivalence-preserving (syntactic sugar); VarRef→Var via de Bruijn coordinates is equivalence-preserving by construction; TypeAssert→RuntimeTypeCheck for macro-synthesized nodes changes the error-reporting point (dynamic instead of static) but preserves evaluation of the inner expression.
+
+**`$_` implicit lambda desugaring** — `src/desugar.rs` currently has three responsibilities: Pipe → Call (handled above in the lowering pass); `$_` implicit lambda desugaring; and recursive annotation desugaring (`desugar_annotation`, `desugar_param_annotation`) (when `[+ $_ 1]` becomes `[fn [_] [+ _ 1]]`). The `$_` desugaring cannot be expressed as a normal tinct macro because it is ambient — it fires at any expression position without explicit invocation, unlike form-level macros such as the let-softening macros in `stdlib/syntax.llt`. It is implemented as a **surface-to-surface tinct pass** in `stdlib/desugar.llt`, running in the pipeline between `expand` and resolution:
+
+```tinct
+# stdlib/desugar.llt — $_ implicit lambda desugaring
+# Walks the SurfaceExpression tree. If an expression contains $_ (VarRef{name:"_",escaped:true})
+# in non-parameter position, wraps it in [fn [_] ...] and replaces $_ with _.
+# Does not recurse inside Quote nodes. Runs after expand, before resolution.
+#
+# Nesting rule: [outer $_ [inner $_]] — the OUTER containing expression is wrapped,
+# making [fn [_] [outer _ [fn [_] [inner _]]]]. Each $_ wraps its immediately
+# containing non-lambda expression, working inside-out. Compare: Scala wraps each _
+# to the nearest enclosing expression; Haskell sections only apply in operator positions.
+# Users should write [fn [x] [outer x [fn [y] [inner y]]]] for explicit multi-arg lambdas.
+desugar-program: [fn [p@Program]
+  [Program documents: [map desugar-document p.documents]]]
+```
+
+The full implementation walks all Expression variants via match dispatch, analogous to `json-expression` in `stdlib/codecs/json.llt`.
 
 **Phase-ordering invariant:** Both `ResolutionTable` and `TypeAnnotationTable` must be fully populated before any thunk is forced. This is enforced by phase ordering: `expand` → resolution → typecheck → evaluation. Macro expansion and `include` must not synthesize new `SurfaceNode` expressions after typechecking. The tables are immutable once produced; the lowering pass reads but never writes them.
 
 **TypeAssert lowering:** The lowering pass checks `type_table.get(&node_id(&arc))`:
-- **Present** → `CoreExpr::TypeAssert { resolved_type: *ty }` — statically verified
-- **Absent** (macro-synthesized, bypassed typechecking) → `CoreExpr::RuntimeTypeCheck { annotation, default }` — dynamic check, falls back to `default:` if present, raises error otherwise
+- **Present** → `CoreExpr::TypeAssert { resolved_type: *ty }` — structural runtime check against `ty` (see `CoreExpr::TypeAssert` comment above for full protocol: primitives in-place, records in-place, functions via Findler-Felleisen proxy)
+- **Absent** (macro-synthesized, bypassed typechecking) → `CoreExpr::RuntimeTypeCheck { annotation, default }` — uses `annotation` (not a resolved `Type`) for a best-effort check; falls back to `default:` if present, raises error otherwise. Less precise than `TypeAssert` since the annotation hasn't been elaborated by the type checker.
 
 `resolved_type: Option<Type>` does not exist in `CoreExpr` — the two cases are always distinct variants. `None` is not a valid runtime state.
 
-**`CoreExpr::RuntimeTypeCheck` evaluation protocol:** (1) `expr` is forced — this is a materialization point. (2) The materialized value is checked against `annotation` using the same structural validation as the existing `TypeAssert` guard path. (3) If the check passes: return the materialized value. (4) If the check fails and `default` is present: return `default` as an unevaluated thunk (laziness preserved). (5) If the check fails and no `default`: raise `EvalError`. (6) The result (value or error) is cached in the thunk's `OnceLock` — permanently failed thunks do not retry.
+**mu-type note:** When equi-recursive type aliases (mu-types) land, `TypeAssert` structural checking on recursive types like `Expression` will recurse fully into the type structure rather than stopping at `TypeVar`. This plugs in without changing the TypeAssert protocol — only the `Type` values in `TypeAnnotationTable` become more precise.
+
+**`CoreExpr::RuntimeTypeCheck` evaluation protocol:** (1) `expr` is forced — this is a materialization point. (2) The materialized value is checked against `annotation` using the same structural validation as the existing `TypeAssert` guard path. (3) If the check passes: return the materialized value. (4) If the check fails and `default` is present: return `default` as an unevaluated thunk (laziness preserved). (5) If the check fails and no `default`: raise `EvalError`. (6) The result (value or error) is cached in the thunk's `OnceCell` — permanently failed thunks do not retry.
 
 Lowering errors (malformed AST, impossible variant combinations) surface lazily when the thunk is forced — consistent with tinct's lazy semantics generally.
 
@@ -454,7 +496,11 @@ Program: [type [Program
 Declaration: [type
   [TypeAlias   params: [Seq String]  body: Expression]
   [ClassDecl   name: String  params: [Seq String]  ...]
-  [InstanceDecl class-name: String   arms: [Seq [AstInstanceArm pattern: Expression methods: [Seq Entry]]]]
+  [InstanceDecl class-name: String   arms: [Seq InstanceArm]]]
+
+InstanceArm: [type [InstanceArm
+  pattern: Expression
+  methods: [Seq Entry]]]
   [DefMacro    name: String  params: Expression  body: Expression]
   [MacroDecl   name: String  params: Expression  body: Expression]
   [SyntaxClass name: String  pattern: Expression  message: String]
@@ -479,13 +525,13 @@ UnevaluatedState::AstNodeField {
 
 This is especially significant for heavy fields: `args: [Seq Expression]` in a `[Call ...]` arm or `entries: [Seq Entry]` in a `[Dict ...]` arm are never constructed if the arm body doesn't use them.
 
-`Value::Document` and `Value::Program` follow the same protocol with their respective field extractors. `Value::Variant` match is already lazy (payload Dict contains ThunkIds); no change there.
+`Value::Document` and `Value::Program` follow the same protocol with their respective field extractors (`surface_doc_match_view`, `surface_program_match_view`). The match payload for `[Program _]` is the full payload dict `{ documents: [Seq Document] }`; the wildcard `_` discards it entirely, identical to `Value::Variant` wildcard behavior. Named destructuring `[Program documents: docs]` binds `docs` lazily via an `AstNodeField`-equivalent thunk. `Value::Variant` match is already lazy (payload Dict contains ThunkIds); no change there.
 
 **Binding invariant:** Every variable named in the match pattern — regardless of whether the arm body uses it — must receive a binding in the arm environment. This invariant must not be violated as a performance optimisation; skipping thunk creation for "unused" or "cheap" bindings silently drops variables from scope, which is a correctness bug. The implementation has historically suffered from exactly this class of error. All N `Arc<Thunk>` wrappers are created unconditionally at dispatch.
 
-**Performance notes:** The OnceLock Mutex lock (~5–10ns uncontested) is paid on first force of each field. If profiling shows this is a hotspot, the valid optimisation space is in the *forcing mechanism only* — e.g. a `try_lock` fast path or a dedicated `OnceLock<Value>` that bypasses the full thunk machinery — never in skipping binding creation.
+**Performance notes:** The OnceCell Mutex lock (~5–10ns uncontested) is paid on first force of each field. If profiling shows this is a hotspot, the valid optimisation space is in the *forcing mechanism only* — e.g. a `try_lock` fast path or a dedicated `OnceCell<Value>` that bypasses the full thunk machinery — never in skipping binding creation.
 
-`deep-materialize` is **deleted**. It was a no-op for `Expression`/`Document`/`Program` (opaque nominal types), and incomplete for Dict/Seq values containing them (would force the outer structure but silently skip `Expression` entries). Neither behavior is useful. Inspection is done via `match` and field access. The JSON serializer forces thunks internally as it traverses. The OnceLock protocol handles all other forcing. There is no remaining use case for an explicit force-all primitive.
+`deep-materialize` is **deleted**. It was a no-op for `Expression`/`Document`/`Program` (opaque nominal types), and incomplete for Dict/Seq values containing them (would force the outer structure but silently skip `Expression` entries). Neither behavior is useful. Inspection is done via `match` and field access. The JSON serializer forces thunks internally as it traverses. The OnceCell protocol handles all other forcing. There is no remaining use case for an explicit force-all primitive.
 
 ### Field Access on `Value::Expression`
 
@@ -540,7 +586,9 @@ eval-file: [fn@[return: Any] [let ast@Program initial include-dir]
 
 The Rust JSON serializer (`value_to_json` or equivalent) currently has no way to inspect `Value::Expression` internals without calling `ast_to_dict_expr` — which is deleted in this sprint. Instead, the JSON serializer for `Expression` values moves to tinct, using match dispatch the same way formatters and docgen do.
 
-The JSON codec moves to `stdlib/codecs/json.llt` — a new tinct module implementing both serialization (`to-json`) and re-exporting the Rust `from-json` primitive (JSON parsing is a text-encoding task that legitimately belongs in Rust). The full implementation handles all value types including `Expression`, `Document`, and `Program` via match dispatch:
+The JSON codec moves to `stdlib/codecs/json.llt` — a new tinct module implementing both serialization (`to-json`) and re-exporting the Rust `from-json` primitive (JSON parsing is a text-encoding task that legitimately belongs in Rust). The full implementation handles all value types including `Expression`, `Document`, and `Program` via match dispatch.
+
+**`from-json` return type:** `from-json` produces only structural tinct values — `Dict`, `Seq`, `String`, `Int`, `Float`, `Bool`, `[]` (null). The precise return type with BAS union types is `Dict | Seq | String | Int | Float | Bool | Null`, not `Any`/`Unknown`. When mu-type recursive alias expansion lands, a `JsonValue` recursive alias can express this precisely including nested structure. Until then, the flat union is the correct type; schema-directed reconstruction (JSON object → nominal type) is the caller's responsibility per [`schema-directed-from-json.md`](schema-directed-from-json.md). Contrast: TypeScript's `JSON.parse → any` (unsound erasure), Elm's `Json.Decode` (explicit typed decoders required). Tinct's union type is more precise than TypeScript and more convenient than Elm.
 
 ```tinct
 # Serialize an Expression to its JSON representation.
@@ -606,7 +654,7 @@ Two layers implemented in one pass:
 
 **Layer 1 — Async:** `eval` and `materialize` become `async fn`. Every blocking I/O operation yields to the scheduler. Tokio interleaves independent evaluations cooperatively.
 
-**Layer 2 — Parallel:** `Rc<T>` → `Arc<T>` throughout; `RefCell<T>` → `RwLock<T>` or `Mutex<T>`; `ThunkState` replaced by an `OnceLock`-based pair. Multi-thread Tokio with work-stealing distributes independent thunks across cores. Independent dict entries evaluate in parallel automatically.
+**Layer 2 — Parallel:** `Rc<T>` → `Arc<T>` throughout; `RefCell<T>` → `RwLock<T>` or `Mutex<T>`; `ThunkState` replaced by an `OnceCell`-based pair. Multi-thread Tokio with work-stealing distributes independent thunks across cores. Independent dict entries evaluate in parallel automatically.
 
 These are one refactor, not two. Every file is touched for the `async fn` contagion; the `Rc`→`Arc` migration is mechanical on top. Because Part 1 already eliminated all `RefCell` from AST nodes, the migration is clean — no exceptions, no special cases.
 
@@ -616,14 +664,14 @@ These are one refactor, not two. Every file is touched for the `async fn` contag
 |--------|-------|-------|
 | `Rc<Thunk>` | `Arc<Thunk>` | Thunks safely cross thread boundaries |
 | `Rc<RefCell<Environment>>` | `Arc<RwLock<Environment>>` | Write-rarely, read-often |
-| `Rc<RefCell<ThunkState>>` | `OnceLock` pair — see below | |
+| `Rc<RefCell<ThunkState>>` | `OnceCell` pair — see below | |
 | `Rc<EvalConfig>` | `Arc<EvalConfig>` | Already immutable; trivial |
 | `Rc<RefCell<EvalState>>` | `Arc<Mutex<EvalState>>` | Include cache; infrequent access |
 | `Rc<SurfaceProgram/Doc/Expr>` | `Arc<SurfaceProgram/Doc/Expr>` | New variants — Arc from day one |
 
 `Arc` clone costs ~10–50ns vs ~1ns for `Rc`. Thunk evaluation costs microseconds to milliseconds — the overhead is negligible for thunk-forcing workloads. For traversal-heavy workloads (formatters, linters walking large AST trees) that create many `AstNodeField` thunks without forcing them, Arc clone frequency is higher; profile before declaring negligible in those cases.
 
-### The `OnceLock` Thunk
+### The `OnceCell` Thunk
 
 The current `ThunkState` enum inside a `RefCell` is replaced with a write-once pair. `InProgress` is no longer a safe sentinel — a thread could yield while holding `InProgress`, and another task demanding the same thunk would spuriously raise a cycle error.
 
@@ -680,13 +728,37 @@ materialize(thunk):
 
 Every thunk evaluates exactly once regardless of how many tasks demand it simultaneously. The hot path is fully lock-free.
 
+**Cancellation safety — drop guard protocol:** `cancel-task` calls `AbortHandle::abort()`, which drops the task's future at its next `await` point. Without additional protection, the `OnceCell` is never set, and any other task blocked in `result.get_or_init(...).await` hangs forever. The fix is a RAII drop guard placed inside every spawned task future:
+
+```rust
+struct ResultGuard {
+    cell: Arc<OnceCell<Result<Value, Arc<EvalError>>>>,
+}
+impl Drop for ResultGuard {
+    fn drop(&mut self) {
+        // No-op if cell already set (normal completion).
+        // Sets Err(Cancelled) if future was aborted before setting.
+        self.cell.set(Err(EvalError::cancelled())).ok();
+    }
+}
+
+// Inside every tokio::spawn:
+let _guard = ResultGuard { cell: Arc::clone(&thunk.result) };
+let value = evaluate(...).await;
+thunk.result.set(Ok(value)).ok();
+// Guard drops here — set() is a no-op since cell is already populated.
+// If aborted before this line: guard fires and sets Err(Cancelled).
+```
+
+After abort, `[await cancelled-task]` hits the hot path (`result.get() → Some(Err(Cancelled))`) and returns `EvalError::Cancelled` immediately — no hang, clean propagation.
+
 **Cycle detection — hybrid model:** Two layers handle the two distinct cycle classes.
 
 *Intra-task cycles (fast path):* each async task maintains a task-local `HashSet<*const Thunk>` of thunks currently on its own evaluation stack. Demanding a thunk already in this set is an immediate cycle error — same task, no cross-thread coordination, zero overhead on the common path.
 
-*Cross-task cycles (slow path):* two tasks can mutually block on each other's thunks without either appearing in the other's task-local set — both enter `result.get_or_init().await` and suspend forever. A process-global wait-for graph detects this. Before entering the await path, a task records itself in `WAIT_FOR: ConcurrentHashMap<TaskId, *const Thunk>` (which thunk it is blocked on). A DFS over this graph from the current task detects cycles in O(blocked tasks). On detection: raise `EvalError::Cycle` on the waiting task with the thunk's span; the blocked chain unwinds.
+*Cross-task cycles (slow path):* two tasks can mutually block on each other's thunks without either appearing in the other's task-local set — both enter `result.get_or_init().await` and suspend forever. A process-global wait-for graph detects this. `TaskId` is `tokio::task::Id` (available via `tokio::task::id()` inside an async context). Before entering the await path, a task records itself in `WAIT_FOR: DashMap<TaskId, *const Thunk>` (which thunk it is blocked on). A DFS over this graph from the current task detects cycles in O(blocked tasks). On detection: raise `EvalError::Cycle` on the waiting task with the thunk's span; the blocked chain unwinds. Entries are removed from `WAIT_FOR` when the task exits the await path (either receives a result, detects a cycle, or is cancelled) — preventing unbounded map growth in long-running servers.
 
-The wait-for graph is **process-local and never distributed.** Cross-node deadlock cycles are structurally impossible: `remote-task` requires fully materialized environments (the distributable thunk constraint from [`dist-eval.md`](dist-eval.md)) — a remote thunk cannot capture a reference to an in-flight local `Task` handle. The distributable constraint eliminates cross-process cycles at the type level; the process-local graph covers everything that remains. `cluster-local` workers run in the same process and are covered by the same graph.
+The wait-for graph is **process-local and never distributed.** With the basic distributable thunk constraint (`remote-task` requires fully materialized environments — no live thunk or `Task` handle references), cross-node deadlock cycles are structurally impossible and the process-local graph covers everything. `cluster-local` workers run in the same process and are covered by the same graph. Note: `Value::Task` handles are non-distributable (alongside `DirCap`, `NetCap`, `Handle`, `Channel`) — a thunk capturing a `Task` cannot be distributed. If `dist-eval.md` later introduces `GlobalThunkRef` (cross-node lazy references), the cross-node cycle impossibility assumption must be re-evaluated and dist-eval's DSM layer will need its own cycle detection mechanism.
 
 `EvalError` is now `Arc<EvalError>` (was `Box`) for cheap cross-thread clone.
 
@@ -739,7 +811,7 @@ With `Arc` throughout and `tokio::spawn`, independent dict entries evaluate in p
   a:      [fetch cap "https://api1.example.com/"]
   b:      [fetch cap "https://api2.example.com/"]
   c:      [db-query db "SELECT * FROM users"]
-  result: [merge a [merge b c]]   # waits for all three via OnceLock
+  result: [merge a [merge b c]]   # waits for all three via OnceCell
 ]
 ```
 
@@ -853,7 +925,9 @@ stdlib/
                       cancel: [fn [c@CancelHandle] [c.cancel]]   # convenience wrapper
   codecs/
     json.llt        — to-json (full tinct implementation via match dispatch on Expression/Document/Program)
-                      from-json (Rust primitive re-exported; produces Dict/Seq/primitive, not Expression)
+                      from-json (tinct recursive descent parser already implemented in the file;
+                        blocked on str-at/str-slice/str-length being registered — see TODO: strings-char-access;
+                        re-exports Rust primitive as interim fallback)
   datetime.llt      — Timestamp, Duration, formatting/parsing
   regex.llt         — Thompson NFA regex engine
   toml.llt          — complete TOML 1.0 parser
@@ -904,8 +978,8 @@ The `Expression` and supporting type declarations live in `prelude.llt` (not a s
 ### Change `src/ast_dict.rs`
 
 - **Add** `surface_expr_tag(expr: &SurfaceExpression) -> &'static str` — O(1) tag extraction; called by match evaluator for `Value::Expression`
-- **Add** `surface_node_get_field(node: &Arc<SurfaceNode>, field: &str) -> Value` — field extraction for `AstNodeField` thunk evaluation and dot-access; returns `Value::Expression(Arc<SurfaceNode>)` for expression-typed child fields, `Value::Str`/`Value::Bool`/`Value::Int` for primitive fields, `Value::Seq` of `Value::Expression` for sequence fields
-- **Add** analogues `surface_doc_tag`, `surface_doc_get_field`, `surface_file_get_field` for `Value::Document` and `Value::Program`
+- **Add** `surface_node_get_field(node: &Arc<SurfaceNode>, field: &str) -> Value` in `src/surface_fields.rs` — field extraction for `AstNodeField` thunk evaluation and dot-access; returns: `Value::Expression(Arc<SurfaceNode>)` for expression-typed child fields; `Value::Str`/`Value::Bool`/`Value::Int` for primitive fields; `Value::Seq` of `Value::Expression` for sequence fields; `Value::Variant` (matching the tinct type declaration) for `Annotation`, `DotKey`, `Parameter`, `Entry`, `MatchArm` fields
+- **Add** analogues `surface_doc_tag`, `surface_doc_get_field`, `surface_program_get_field` for `Value::Document` and `Value::Program` — also in `src/surface_fields.rs`
 - **Delete** `dict_to_ast` — no remaining callers
 - **Delete** `ast_to_dict_expr` — last caller was JSON output; JSON serializer migrated to tinct (see §JSON Serializer Migration)
 - **Delete** `ast_to_dict`, `document_to_dict` — `load` wraps `SurfaceProgram` directly
@@ -916,9 +990,9 @@ The `Expression` and supporting type declarations live in `prelude.llt` (not a s
 - All functions become `async fn`
 - `eval` pattern-matches on `CoreExpr` (not `Expr`); all arms updated
 - `eval_dict` fans out independent entries via `tokio::task::JoinSet` — automatic parallel evaluation
-- **Add** `Value::Expression`, `Value::Document`, `Value::Program` arms to: match evaluator (calls `surface_expr_tag`, creates `AstNodeField` thunks per pattern-bound variable), dot-access evaluator (calls `surface_node_get_field`), `get`, `has?`, JSON serializer (opaque type marker), `type-of` (returns `"Expression"` / `"Document"` / `"Program"`), `dict?` (returns `false` — nominal types, not plain Dicts)
-- **Delete** `deep_materialize` from `src/eval_deep.rs` — no remaining use case; the JSON serializer forces thunks internally, OnceLock handles all other forcing
-- `materialize` uses the `OnceLock` forcing protocol
+- **Add** `Value::Expression`, `Value::Document`, `Value::Program` arms to: match evaluator (calls `surface_expr_tag`, creates `AstNodeField` thunks per pattern-bound variable), dot-access evaluator (calls `surface_node_get_field`), `get`, `has?`, JSON serializer (opaque type marker), `type-of` (returns `"Expression"` / `"Document"` / `"Program"`), `dict?` (returns `false` — nominal types, not plain Dicts). **The existing `Value::Variant` dot-access path is preserved unchanged** — new arms are added after the `Variant` arm or as separate checks before it, but must not intercept `Value::Variant` dispatch. `[c.cancel]` on a `CancelHandle` (which is `Value::Variant`) must continue to reach the payload dict field lookup.
+- **Delete** `deep_materialize` from `src/eval_deep.rs` — no remaining use case; the JSON serializer forces thunks internally, OnceCell handles all other forcing
+- `materialize` uses the `OnceCell` forcing protocol
 - `EvalContext` gains `cancel: CancellationToken` field
 
 ### Change `src/builtins_meta.rs`
@@ -996,18 +1070,18 @@ SelectSource: [type [t r] [SelectSource
 | `cancelled?` | `[Fn [ctx@Context] Bool]` | True if context cancelled |
 | `with-context` | `[Fn [ctx@Context  f@[Fn [] t]] t]` | Evaluates thunk under given context |
 | `timeout` | `[Fn [dur@Duration  task@[Task t]] [Result t]]` | Awaits task with deadline |
-| `cancel-task` | `[Fn [t@[Task t]] Null]` | Cancel a specific task; abort handle inside Task |
+| `cancel-task` | `[Fn [task@[Task t]] Null]` | Cancel a specific task; abort handle inside Task |
 | `cancel-root` | `Action` | Cancel root token — signals all tasks to stop |
 | `drain` | `Action` | Await until all in-flight tasks finish |
 | `exit-now` | `[Fn [code@Int] Null]` | `process::exit` immediately |
 | `task` | `[Fn [expr@Any] [Task t]]` | Spawn evaluation of expr |
 | `await` | `[Fn [task@[Task t]] t]` | Suspend until task completes |
-| `await-all` | `[Fn [tasks@[Seq [Task t]]] [Seq t]]` | Await all; results in submission order |
+| `await-all` | `[Fn [tasks@[Seq [Task t]]] [Seq t]]` | Await all; results in submission order. **Homogeneous:** all tasks must return type `t` — use separate `await` calls or a nominal sum type for heterogeneous results |
 | `await-any` | `[Fn [tasks@[Seq [Task t]]] t]` | Return first completed; abort rest |
 | `channel` | `[Fn [capacity@Int] [Channel t]]` | Bounded channel; capacity ≥ 1 |
 | `send` | `[Fn [ch@[Channel t]  val@t] Null]` | Send; suspend if buffer full |
 | `recv` | `[Fn [ch@[Channel t]] t]` | Receive; suspend until available |
-| `select-once` | `[Fn [sources@[Seq [SelectSource t r]]] r]` | Wait for first ready channel |
+| `select-once` | `[Fn [sources@[Seq [SelectSource t r]]] r]` | Wait for first ready channel — `t` and `r` are fresh `TypeVar`s instantiated per call site in the Rust primitive registration, not `Unknown` |
 | `par` | `[Fn [expr@Any] t]` | Spawn on thread pool immediately |
 | `par-map` | `[Fn [f@[Fn [a] b]  seq@[Seq a]] [Seq b]]` | Parallel map; results in order |
 | `par-filter` | `[Fn [f@[Fn [a] Bool]  seq@[Seq a]] [Seq a]]` | Parallel filter |
@@ -1023,25 +1097,39 @@ All builtins in this table are Rust primitives **except** `await-all`, `par-map`
 # Fail-fast: routes results through a shared channel so completion order
 # doesn't matter. First error cancels remaining tasks via shared CancelHandle.
 # Results returned in submission order on full success.
+#
+# collect tasks ONCE upfront: (1) forces one-shot Seqs before they're exhausted,
+# (2) gives us the count n, (3) lets us use zip+range for indexed pairs.
+# The outer collect on the map forces ALL task spawns before recv-all blocks —
+# without it, map produces a lazy Seq and no tasks are ever spawned (deadlock).
 await-all: [fn [tasks]
-  [n:          [length [collect tasks]]]
+  [collected:  [collect tasks]]
+  [n:          [length collected]]
   [cancel-h:   [with-cancel [context]]]
   [results-ch: [channel n]]
-  [map-with-index [fn [i t]
-    [with-context cancel-h.child-ctx [task [fn []
-      [match [try [fn [] [await t]]]
-        [Ok v]:   [send results-ch [Ok [i v]]]
-        [Error e]: [cancel cancel-h]
-                  [send results-ch [Error e]]]]]]]
-  tasks]
-  [recv-all results-ch n []]]
+  [collect
+    [map [fn [pair]
+           [i: pair[0]  t: pair[1]]
+           [with-context cancel-h.child-ctx
+             [task [fn []
+               [match [try [fn [] [await t]]]
+                 [Ok v]:   [send results-ch [Ok  [i v]]]
+                 [Error e]: [cancel cancel-h]
+                            [send results-ch [Error e]]]]]]]
+         [zip [range 0 n] collected]]]
+  [recv-all results-ch n]]
 
-recv-all: [fn [ch remaining acc]
-  [if [= remaining 0]
-    [map [fn [p] p[1]] [sort-by [fn [p] p[0]] acc]]
-    [match [recv ch]
-      [Error e]:  [raise e]
-      [Ok [i v]]: [recv-all ch [- remaining 1] [cons [i v] acc]]]]]
+# Use reduce over a range instead of tinct recursion — builtin reduce is a Rust
+# loop and does not consume tinct eval depth, so this works for any n.
+recv-all: [fn [ch n]
+  [pairs: [reduce
+    [fn [acc _]
+      [match [recv ch]
+        [Error e]:   [raise e]
+        [Ok [i v]]:  [cons [i v] acc]]]
+    []
+    [range 0 n]]]
+  [map [fn [p] p[1]] [sort-by [fn [p] p[0]] pairs]]]
 
 # collect forces the lazy map to spawn ALL tasks before any await blocks,
 # ensuring true parallel execution.
@@ -1107,13 +1195,15 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 - `document_to_dict` — gone alongside `ast_to_dict`
 - String-keyed `type:` Dict schema — superseded; no backwards compat
 
-**`src/desugar.rs`** — deleted; `Pipe` → `Call` rewriting moves into the lowering pass in `src/lower.rs`
+**`src/desugar.rs`** — deleted; its two responsibilities split:
+- `Pipe` → `Call`: moves into the lowering pass in `src/lower.rs`
+- `$_` implicit lambda desugaring: moves to `stdlib/desugar.llt` as a tinct surface-to-surface pass; registered in the pipeline between `expand` and resolution
 
 **`src/eval_pipeline.rs`** — entire file deleted
 - `eval_file_with_input`
 - `eval_document` (the let\* loop is extracted into `src/lower.rs` or inline in the evaluator)
-- `eval_file`
-- `run_eval`
+- `eval_file` (public wrapper around `eval_file_with_input`)
+Note: `run_eval` does **not** exist in this file — confirmed by code inspection.
 
 **`src/builtins_meta.rs`**
 - `builtin_eval_ast` — replaced by `eval` on a single-element seq
@@ -1132,7 +1222,7 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 
 **`src/eval.rs` / `src/eval_materialize.rs`**
 - All `Rc<Thunk>` / `Rc<RefCell<Environment>>` usage — replaced by `Arc`
-- `InProgress` / `PendingBuiltin` / `PendingCall` thunk states — replaced by `OnceLock` pair
+- `InProgress` / `PendingBuiltin` / `PendingCall` thunk states — replaced by `OnceCell` pair
 
 **`src/eval_state.rs` or `src/eval.rs`**
 - `EvalState::include_guard: HashSet<(u64, u64)>` — from prerequisite sprint; confirm gone

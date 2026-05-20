@@ -1757,9 +1757,9 @@ impl TypeEnv {
         env.insert(
             "gensym".to_string(),
             Type::Function {
-                params: vec![],
+                params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Str),
-                variadic: true, // 0 or 1 args
+                variadic: true, // 0 or 1 args (optional prefix)
             },
         );
         env.insert(

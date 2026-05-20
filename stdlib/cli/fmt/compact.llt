@@ -87,6 +87,9 @@ format-node: [fn@[return: String  doc: """Main dispatch: format any AST node to 
     "Unquote":        [format-unquote node]
     "UnquoteSplice":  [format-unquote-splice node]
     "DefMacro":       [format-defmacro node]
+    "MacroDecl":      [format-macrodecl node]
+    "Splice":         [format-splice node]
+    "SyntaxClass":    [format-syntax-class node]
     "Match":          [format-match node]
     "ClassDecl":      [format-class node]
     "InstanceDecl":   [format-instance node]
@@ -229,6 +232,15 @@ format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unqu
 
 format-defmacro: [fn@[return: String  doc: """Format defmacro: [defmacro name transformer]"""] [let node]
   [str "[defmacro " [get "name" node] " " [format-node [get "body" node]] "]"]]
+
+format-macrodecl: [fn@[return: String  doc: """Format macro declaration: [macro name params body]"""] [let node]
+  [str "[macro " [get "name" node] " " [format-node [get "params" node]] " " [format-node [get "body" node]] "]"]]
+
+format-splice: [fn@[return: String  doc: """Format splice: [splice form ...]"""] [let node]
+  [str "[splice " [join-strings " " [map-list format-node [get "forms" node]]] "]"]]
+
+format-syntax-class: [fn@[return: String  doc: """Format syntax-class declaration: [syntax-class name pattern]"""] [let node]
+  [str "[syntax-class " [get "name" node] " " [format-node [get "pattern" node]] "]"]]
 
 format-match: [fn@[return: String  doc: """Format match: [match scrutinee pat1: body1 ...]"""] [let node]
   [str

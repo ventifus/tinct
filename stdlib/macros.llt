@@ -2,22 +2,21 @@
 # LLT Standard Library Macros (stdlib/macros.llt)
 # ============================================================================
 #
-# Compile-time AST transformations via macro declarations.
+# Compile-time AST transformations exported as transformer functions.
 #
-# NOTE: All macros in this file use [defmacro ...] instead of [macro ... [let params]]
-# because they require variadic arguments, and variadic [let ...args] patterns are not
-# yet supported in macro parameter lists (as of macros-v2-stdlib sprint).
-# Once variadic support is added, these should be migrated to:
-#   [macro tmpl [let template@Expr ...exprs@[Seq Expr]] ...]
-#   [macro do [let monad@Expr ...steps@[Seq Expr]] ...]
-#   [macro begin [let ...exprs@[Seq Expr]] ...]
+# All macros use new-style argument passing with variadic parameters:
+#   tmpl: [fn [let template ...parts] ...]
+#   do:   [fn [let first ...rest] ...]
+#   begin: [fn [let ...exprs] ...]
 #
-# Each defmacro transformer receives a single `args` parameter (dict with integer
-# keys, one per positional argument at the call site).
+# Each transformer receives individually-quoted AST Variant nodes as arguments.
+# Variadic parameters (e.g., ...parts, ...rest, ...exprs) collect remaining args
+# into a Seq of AST nodes.
 #
-# Loaded automatically via create_stdlib_env(). All prelude functions
-# (str, split, str-slice, str-length, str-contains?, starts-with?,
-#  append, reduce, if, =, +, get, to-int, length) are available here.
+# These functions are exported from the final dict and registered by
+# register_stdlib_macros_from_env() in src/expand.rs with new_style=true.
+#
+# Loaded automatically via create_stdlib_env(). All prelude functions are available.
 #
 # ============================================================================
 # tmpl macro — string interpolation
@@ -290,26 +289,24 @@ do-wrap: [fn [let monad-ast step inner]
       step
       [do-fn-node "_" inner]]]]
 
-# Recursively desugar steps[i..n-1] into nested bind calls.
-# Base case: i == n-1 — return the final step expression as-is.
-# Recursive case: wrap step[i] around the desugaring of step[i+1..n-1].
-do-fold: [fn [let monad-ast steps i n]
-  [if [= i [- n 1]]
-    [get i steps]
-    [do-wrap monad-ast [get i steps] [do-fold monad-ast steps [+ i 1] n]]]]
+# Recursively desugar steps (a Dict of AST nodes with integer keys 0..n-1) into nested bind calls.
+# Base case: single step remaining — return it as-is.
+# Recursive case: wrap first step around the desugaring of the rest.
+do-fold: [fn [let monad-ast steps]
+  [n: [length steps]]
+  [if [= n 1]
+    [get 0 steps]
+    [do-wrap monad-ast [get 0 steps] [do-fold monad-ast [reindex [slice steps 1 n]]]]]]
 
 # Desugar the inferred [do] form: emit bind chain with %do-infer sentinel monad.
-# Called when args[0] is NOT a monad (it's a binding step or other expression).
-# All n args are steps; pass them directly to do-fold starting at index 0.
-# The type checker detects %do-infer, resolves the monad, and wires it to eval.
+# Called when the first arg is NOT a monad (it's a binding step or other expression).
+# All args are steps (passed as a Seq). The type checker detects %do-infer,
+# resolves the monad, and wires it to eval.
 # Returns: [%do-infer.bind step0 [fn [name] [%do-infer.bind step1 [...]]]] or
 #          [%do-infer.bind step0 [fn [name] last-step]] for a 2-step do block.
-#
-# Simpler than building a new-args dict: args already has integer keys 0..n-1
-# for the n steps. do-fold(sentinel, args, 0, n) starts folding from step 0.
-do-desugar-inferred: [fn [let n args]
+do-desugar-inferred: [fn [let steps]
   [sentinel: [do-var-node "%do-infer"]]
-  [do-fold sentinel args 0 n]]
+  [do-fold sentinel steps]]
 
 ]
 
@@ -318,18 +315,24 @@ do-desugar-inferred: [fn [let n args]
 # ============================================================================
 #
 # These are registered by expand_macros via register_stdlib_macros_from_env.
-# Each function receives a single `args` parameter: a dict with integer keys
-# (one per positional argument at the call site) where each value is an AST dict.
+# Each function receives individually-quoted AST Variant nodes as separate positional
+# arguments. Variadic parameters collect remaining args into a Seq.
 
 [
 
 # tmpl macro transformer: string interpolation i"...$var..." syntax
-tmpl: [fn [let args]
-  # args[0] = AST dict for the template string literal
-  # args[1..] = AST dicts for ${N} expression placeholders (if any)
+tmpl: [fn [let template ...parts]
+  # template = AST Variant for the template string literal
+  # parts = Seq of AST Variants for ${N} expression placeholders (if any)
+  # Build a new args dict: {0: template, 1: parts[0], 2: parts[1], ...}
+  # for compatibility with existing tmpl-expand implementation
+  [args-dict: [reduce
+    [fn [let acc i] [set acc [+ i 1] [get i parts]]]
+    [0: template]
+    [range 0 [length parts]]]]
   [tmpl-expand
-    [get "value" [get 0 args]]
-    args]]
+    [get "value" template]
+    args-dict]]
 
 # do macro transformer: monadic do-notation desugaring.
 #
@@ -345,40 +348,36 @@ tmpl: [fn [let args]
 # The macro operates entirely at the AST level: it never accesses the runtime
 # monad dict. The dot-access (m.bind, m.pure) is generated as an AST node and
 # resolved at evaluation time. This avoids any arena-crossing ThunkId issues.
-do: [fn [let args]
-  [n: [length args]]
-  [if [= n 0]
-    # Error: need at least the monad argument
-    [builtin-variant "Call" [fn: [builtin-variant "VarRef" [name: "raise"]]
-                     args: [0: [builtin-variant "Literal" [kind: "str"  value: "do requires at least a monad argument"  bare: false]]]
-                     named-args: []
-                     implied: true]]
-    # Check if args[0] is an inferred-form step (dict binding or other non-monad expression)
-    # vs an explicit monad argument (var reference).
-    # Explicit monad: [tag-of args[0]] == "VarRef" or "DotAccess"
-    # Inferred form: [tag-of args[0]] == "Dict" (binding step) or anything else
-    [if [do-is-inferred-form [get 0 args]]
-      # Inferred [do] form: emit bind chain with %do-infer sentinel.
-      # do-desugar-inferred builds {0:sentinel, 1:step1, ...} and calls do-fold.
-      # The type checker detects %do-infer, resolves the monad, wires it to eval.
-      [do-desugar-inferred n args]
-      [if [= n 1]
-        # [do monad] with no steps → [monad.pure []]
-        [do-call-1
-          [do-access-node [get 0 args] "pure"]
-          [do-empty-dict-node]]
-        # [do monad step1 ... final] → nested bind calls
-        [do-fold
-          [get 0 args]
-          args
-          1
-          n]]]]]
+do: [fn [let first ...rest]
+  # first = first AST arg (Variant node)
+  # rest = Seq of remaining AST args (Variant nodes)
+  # Convert rest Seq to Dict for easier processing
+  [rest-dict: [collect rest]]
+  # Check if first is an inferred-form step (dict binding or other non-monad expression)
+  # vs an explicit monad argument (var reference).
+  # Explicit monad: [tag-of first] == "VarRef" or "DotAccess"
+  # Inferred form: [tag-of first] == "Dict" (binding step) or anything else
+  [if [do-is-inferred-form first]
+    # Inferred [do] form: ALL args are steps (prepend first to rest-dict).
+    # Build steps Dict: cons first onto rest-dict, then call do-desugar-inferred
+    [
+      steps: [cons first rest-dict]
+      result: [do-desugar-inferred steps]
+    ].result
+    # Explicit monad case: first is monad, rest-dict are steps
+    [if [= [length rest-dict] 0]
+      # [do monad] with no steps → [monad.pure []]
+      [do-call-1
+        [do-access-node first "pure"]
+        [do-empty-dict-node]]
+      # [do monad step1 ... final] → nested bind calls
+      # Pass rest-dict (Dict) to do-fold
+      [do-fold first rest-dict]]]]
 
 # begin macro transformer: sequential expression grouping
-begin: [fn [let args]
+begin: [fn [let ...exprs]
   # [begin e1 e2 ...] → Variant("Sequential", {exprs: [e1, e2, ...]})
-  [n: [length args]]
-  [arglist: [reduce [fn [let acc i] [append acc [get i args]]] [] [range 0 n]]]
-  [builtin-variant "Sequential" [exprs: arglist]]]
+  # collect converts the variadic Seq to an integer-keyed Dict for AST field access
+  [builtin-variant "Sequential" [exprs: [collect exprs]]]]
 
 ]

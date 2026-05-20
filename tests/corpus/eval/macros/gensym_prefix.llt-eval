@@ -1,0 +1,5 @@
+# gensym with optional prefix argument — names start with :prefix: and are unique
+[a: [gensym "x"]  b: [gensym "x"]]
+[and [starts-with? a ":x:"] [not [= a b]]]
+=== out
+Bool(true)
