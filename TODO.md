@@ -99,23 +99,6 @@ The fix noted at `coverage.rs:205` ("Future: Type::NominalVariant — not yet in
 - [ ] Add corpus tests: a multi-field nominal variant with exhaustive match (should pass exhaustiveness), and a non-exhaustive match (should warn)
 
 
-### clippy-allow-cleanup: Remove suppressible #[allow] attributes
-
-Two clippy suppressions can be eliminated through refactoring rather than silencing.
-
-**#2 — `type_complexity` in `src/value.rs` (3 occurrences)**
-
-`take_unevaluated()`, `take_pending_builtin()`, and `take_pending_call()` return complex `Option<(Rc<...>, Rc<...>, ...)>` tuples that trip clippy's type-complexity lint. The existing comment claims "a type alias would add indirection without clarity" — the reverse is true.
-
-- [ ] Add type aliases at the top of `src/value.rs` for the three tuple return types: `UnevaluatedData`, `PendingBuiltinData`, `PendingCallData`; update the three method signatures to use them; remove the three `#[allow(clippy::type_complexity)]` attrs (`src/value.rs`)
-
-**#3 — `too_many_arguments` in `src/main.rs` (3 functions) and `src/builtins_io.rs` (1 function)**
-
-`run_literate`, `run_literate_eval`, `run_literate_weave`, and `http_request_h2` all exceed clippy's 7-argument threshold.
-
-- [ ] Introduce `LiterateConfig` struct in `src/main.rs` consolidating the shared parameters across `run_literate` / `run_literate_eval` / `run_literate_weave` (file_path, mode, no_substitute, strict, cap_fs, cap_net, etc.); update all three function signatures and their call sites; remove the three `#[allow(clippy::too_many_arguments)]` attrs (`src/main.rs`)
-- [ ] Introduce `Http2RequestConfig` struct in `src/builtins_io.rs` for `http_request_h2` parameters (client, base_url, method_str, path, headers, body, timeout); update the function signature and its call sites; remove the `#[allow(clippy::too_many_arguments)]` attr (`src/builtins_io.rs`)
-
 ### do-infer-span-hygiene: Fix span collision in do_infer_resolutions
 
 All macro-synthesized `%do-infer` VarRef nodes share `Span::origin()` (no span field in the `do-var-node` dict output). This makes `do_infer_resolutions: HashMap<Span, String>` collide across multiple `[do]` blocks in the same file. Currently harmless (only `result` monad is supported), but will cause incorrect monad resolution when a second monad (Maybe, custom) is added: `[do [x: [Some 1]] [Some x]]` would silently resolve to `result` instead of `maybe` if a previous `[do [y: [Ok 1]] [Ok y]]` was type-checked first.
