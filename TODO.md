@@ -86,18 +86,6 @@ Character-level string access needed to implement `from-json` in tinct (recursiv
 - [ ] Decide names for character-position string parsing: `parse-int`/`parse-float` (new names, used in `codecs/json.llt` deserializer) vs `to-int`/`to-float` (existing builtins). Either add `parse-int`/`parse-float` as aliases or rename all calls in `codecs/json.llt` to use `to-int`/`to-float`.
 - [ ] DESIGN: `str-slice` planned as `(start, len, string)` but existing `builtin-str-slice` is `(string, start, end)` — adding to `strings.llt` would shadow/conflict. Adding the new `str-slice` to `strings.llt` constitutes a breaking change for any file that includes `strings.llt` and calls `[str-slice s start end]`. Decide on naming before implementing: options are (a) use distinct name `str-substr` in `strings.llt`, (b) rename Rust builtin to `str-slice-range` and update all call sites, (c) accept shadowing (only affects files that include `strings.llt`).
 
-### exhaustiveness-multi-field-nominal: Fix exhaustiveness checking for multi-field nominal variant payloads
-
-`coverage.rs:ConstructorSignature::from_union` (line 182–190) builds constructor tags from the field key set of each union member rather than from the declared variant name. For single-field variants (`[Ok T]`, `[Some a]`) this is unambiguous — the single key is the tag. For multi-field named-payload variants (`[IntLiteral value: Int span: AstSpan]`) the combined-key path produces `"span,value"` rather than `"IntLiteral"`, which does not match the `Pattern::Constructor` tag produced by the parser. Exhaustiveness checking silently fails to fire for multi-field nominal variants.
-
-Currently latent — no existing nominal type uses multi-field named payloads. Will be triggered when `AstExpr` is declared (runtime-v2) or when any user-defined multi-field nominal variant is matched.
-
-The fix noted at `coverage.rs:205` ("Future: Type::NominalVariant — not yet in Type enum"): union members need to carry their declared constructor name, not just their field set.
-
-- [ ] Add `Type::NominalVariant { tag: String, fields: Row }` (or equivalent discriminant) to `src/type_def.rs` so union members produced by `[type [Tag field: T ...] ...]` declarations carry the variant name
-- [ ] Update `coverage.rs:ConstructorSignature::from_union` to use the variant name as the constructor tag for nominal variants, falling back to the current field-key path for structural ADTs
-- [ ] Add corpus tests: a multi-field nominal variant with exhaustive match (should pass exhaustiveness), and a non-exhaustive match (should warn)
-
 ---
 
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a`; compare `Mappable` extension vs separate class using `Data.Witherable` as precedent; include instance examples for `Seq` and `Dict` (`doc/whatif/filterable.md`)

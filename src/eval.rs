@@ -596,6 +596,10 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         // Negation: a value matches ~T iff it does NOT match T.
         // This is sound for ground types; RDNF normalization handles compound cases later.
         Type::Negation(inner) => !value_matches_type(value, inner),
+        // NominalVariant: check if value is a Variant with matching tag
+        Type::NominalVariant { tag, .. } => {
+            matches!(value, Value::Variant { tag: v_tag, .. } if v_tag == tag)
+        }
         // Type constructor application and variables: treat like TypeVar (accept any value)
         // The type checker validates these; at runtime they're polymorphic.
         Type::App(_, _) | Type::Operator(_) | Type::TypeStageApp { .. } => true,

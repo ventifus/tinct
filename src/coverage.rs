@@ -56,7 +56,9 @@ pub enum ConstructorTag {
     LiteralInt(i64),
     LiteralBool(bool),
     LiteralStr(String),
-    /// Nominal variant constructor (e.g., `Some`, `None`).
+    /// Nominal variant constructor (e.g., `Some`, `None`, `IntLiteral`).
+    /// Distinct from `DictKey` — nominal variants use their declared constructor name,
+    /// not their field names.
     Variant(String),
     /// Bottom (⊥) — represents a diverging computation.
     /// Wildcards match ⊥; constructors do not.
@@ -202,7 +204,15 @@ impl ConstructorSignature {
                 Type::IntLiteral(n) => {
                     constructors.push((ConstructorTag::LiteralInt(*n), 0));
                 }
-                // Future: Type::NominalVariant — not yet in Type enum
+                Type::NominalVariant { tag, fields } => {
+                    // Nominal variant — use the declared tag as the constructor name.
+                    // Unlike structural dict patterns (which use DictKey with the field name),
+                    // nominal variants use the declared variant name as the constructor (Variant tag)
+                    // because they are nominally typed — [IntLit value: 42] is not a subtype of
+                    // {value: Int}, it is a distinct nominal variant.
+                    // Arity = number of fields in the payload.
+                    constructors.push((ConstructorTag::Variant(tag.clone()), fields.fields.len()));
+                }
                 _ => {
                     // Unknown type variant in union — skip (conservative: don't claim exhaustiveness)
                 }
