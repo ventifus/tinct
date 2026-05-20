@@ -1290,9 +1290,9 @@ The new `ThunkState::Surface` and `ThunkState::AstNodeField` variants use `Arc<S
 
 The design specifies `SurfaceMatchArm { pattern: Arc<SurfaceNode>, ... }` but the current implementation uses `Spanned<Pattern>` for the pattern field, keeping the existing `Pattern` enum intact. The pattern→SurfaceNode migration is deferred — it would require adding Pattern variants to SurfaceExpression or converting Pattern to use Arc<SurfaceNode>.
 
-### `SurfaceExpression` is not `Send+Sync` in Sprint 1
+### `SurfaceExpression` is not `Send+Sync` in Sprint 1 — fixed at Part E
 
-`Annotation::PropertyDict(Vec<Spanned<Entry>>)` where `Entry.value: Rc<Spanned<Expr>>` makes `SurfaceExpression` (which contains `Spanned<Annotation>`) non-Send. Full Send+Sync requires migrating `Annotation` to use `Arc<SurfaceNode>` instead of `Rc<Spanned<Expr>>`. Deferred to the expander migration (Part B full).
+`Annotation::PropertyDict(Vec<Spanned<Entry>>)` where `Entry.value: Rc<Spanned<Expr>>` makes `SurfaceExpression` (which contains `Spanned<Annotation>`) non-Send. This is fixed at **Part E** — the one atomic cutover that deletes `Expr`, `Entry`, `File`, and `Document`. At that point, `Annotation::PropertyDict` must hold `Vec<Spanned<SurfaceEntry>>` (where `SurfaceEntry.value: Arc<SurfaceNode>`), making `Annotation` Arc-safe and `SurfaceExpression` Send+Sync. There is no separate migration step — it happens as part of the same commit that deletes the old types.
 
 ### `builtin_load` stays returning `Value::Dict` until Part G
 
