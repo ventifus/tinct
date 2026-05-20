@@ -103,8 +103,13 @@ struct MacroMetadata {
     params: Spanned<Expr>,
     /// Optional inject: default name for anaphoric macros.
     inject_default: Option<String>,
-    /// True for `[macro ...]` (macros-v2 pattern-matching style),
-    /// false for `[defmacro ...]` (old single-args-dict style).
+    /// True for `[macro ...]` (macros-v2 pattern-matching style): each argument is quoted
+    /// individually and passed as a separate positional thunk to the transformer function.
+    /// False for `[defmacro ...]` (legacy style): all args are packed into a single integer-keyed
+    /// dict and passed as one positional thunk. The `[defmacro ...]` path remains for user-defined
+    /// macros; `do`/`tmpl`/`begin` in stdlib now use `new_style=true` via
+    /// `register_stdlib_macros_from_env`. This field can be removed once `[defmacro ...]` is
+    /// either migrated or removed from the language.
     new_style: bool,
 }
 
@@ -277,29 +282,41 @@ fn register_stdlib_macros_from_env(
     stdlib_env: &Rc<RefCell<Environment>>,
     span: Span,
 ) {
-    // Known stdlib macros and their transformer function names.
-    // Future: could auto-discover by scanning for functions with a special naming pattern.
-    const STDLIB_MACROS: &[&str] = &["tmpl", "do", "begin"];
+    // Known stdlib macros with their transformer function names and parameter patterns.
+    // Each macro is registered with new-style argument passing (individual quoted args).
+    let stdlib_macros: &[(&str, Vec<&str>, Option<&str>)] = &[
+        // (name, non-variadic params, variadic param)
+        ("tmpl", vec!["template"], Some("parts")),
+        ("do", vec!["first"], Some("rest")),
+        ("begin", vec![], Some("exprs")),
+    ];
 
-    for macro_name in STDLIB_MACROS {
+    for (macro_name, fixed_params, variadic_param) in stdlib_macros {
         let transformer_thunk = {
             let env_ref = stdlib_env.borrow();
-            env_ref.get(macro_name)
+            env_ref.get(*macro_name)
         };
         if let Some(transformer) = transformer_thunk {
-            // Old-style defmacro — uses single "args" parameter, no pattern matching
-            let dummy_params = Spanned::new(
-                Expr::LetDecl {
-                    bindings: vec![Spanned::new(Expr::var_ref("args".to_string()), span)],
-                },
-                span,
-            );
+            // Build parameter bindings for the LetDecl pattern
+            let mut bindings = Vec::new();
+            for param_name in fixed_params {
+                bindings.push(Spanned::new(Expr::var_ref(param_name.to_string()), span));
+            }
+            if let Some(variadic_name) = variadic_param {
+                bindings.push(Spanned::new(
+                    Expr::Rest(Some(variadic_name.to_string())),
+                    span,
+                ));
+            }
+
+            let params = Spanned::new(Expr::LetDecl { bindings }, span);
+
             let _ = env_macro.register_macro(
                 (*macro_name).to_string(),
                 transformer,
-                dummy_params,
+                params,
                 None,
-                false, // old-style: single args dict
+                true, // new-style: individual quoted args
                 span,
             );
         }
@@ -1471,7 +1488,7 @@ fn expand_macro_call(
     // Build the positional thunks to pass to invoke_function.
     let result_thunk = if new_style {
         // ====================================================================
-        // Task 1: New-style [macro ...] with [let ...] pattern matching.
+        // New-style [macro ...] with [let ...] pattern matching.
         // Each LetDecl binding corresponds to one positional argument.
         // ====================================================================
 
@@ -1629,7 +1646,10 @@ fn expand_macro_call(
         }
     } else {
         // ====================================================================
-        // Old-style [defmacro ...]: single args dict passed as one positional arg.
+        // Legacy [defmacro ...] style: all args packed into a single integer-keyed dict
+        // and passed as one positional arg. This branch exists for user-defined `[defmacro
+        // ...]` macros. The stdlib macros (do/tmpl/begin) now use new_style=true.
+        // This branch can be deleted once `[defmacro ...]` is removed from the language.
         // ====================================================================
         let mut quoted_args = Vec::with_capacity(args.len());
         for arg in args {

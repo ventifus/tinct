@@ -8215,3 +8215,29 @@ Currently `deep_materialize` in `src/eval_deep.rs` traverses `Dict` and `Seq` re
 - [x] Fix stale module doc comment in `src/ast_dict.rs:4` — wrong path and wrong type name (pre-existing nit found during typed-expr-constructors review) (`src/ast_dict.rs`) — already correct from prior sprint
 - [x] Fix `UnquoteSplice` type annotation mismatch in `stdlib/ast.llt:53` — field type doesn't match emitted schema (`stdlib/ast.llt`)
 - [x] Fix stale `Call` comment in `stdlib/ast.llt:36` — says "simplified: ignores named_args, implied flag" but is now accurate enough to remove the caveat (`stdlib/ast.llt`)
+
+### macros-v2-cleanup: Delete new_style dead code and STDLIB_MACROS constant
+
+- [x] Audited `new_style: false` usage — only remaining caller is the `Expr::DefMacro` path in `pre_scan_expr_spanned` (user-defined `[defmacro ...]`); stdlib macros `do`/`tmpl`/`begin` already registered via `register_stdlib_macros_from_env` with `new_style=true`; the `else` branch in `expand_macro_call` retained for `[defmacro ...]` compat with improved doc comments (`src/expand.rs`)
+- [x] Confirmed `STDLIB_MACROS` constant already removed in prior sprint (DONE.md:7004); no further action required (`src/expand.rs`)
+- [x] Updated `new_style` field doc comment in `MacroMetadata` to explain the intended removal path (`src/expand.rs:106-113`)
+- [x] Removed stale "Task 1" label from `expand_macro_call` new-style branch comment (`src/expand.rs`)
+- [x] Updated TODO.md: marked item 26 (STDLIB_MACROS) `[x]`; clarified items 22-25 to distinguish registration-complete from body-rewrite-pending; clarified that `new_style: false` deletion is blocked on `[defmacro ...]` removal from the language
+- [x] `just build` zero warnings; `just test-lib` exit code 0
+
+### macros-v2-stdlib: Migrate defmacro, add stdlib/ast.llt and stdlib/syntax.llt
+
+**Depends on:** `macros-v2-expand`, `typed-expr-constructors`, `deep-materialize-variant`
+
+- [x] Migrate 11 corpus test files from `defmacro` to `macro`; 4 kept as defmacro (variadic params not yet supported in macro keyword) (`tests/corpus/eval/macros/`)
+- [x] Migrate stdlib/macros.llt — tmpl/do/begin kept as defmacro (require variadic args); documented migration path (`stdlib/macros.llt`)
+- [x] Update gensym API: now accepts optional prefix arg `[gensym]` or `[gensym "prefix"]` returning `":prefix:N"` (`src/builtins_meta.rs`, `src/type_env.rs`, `stdlib/prelude.llt`)
+- [x] Add `stdlib/ast.llt` — ~130 lines with Entry/Annotation/Expr nominal types; flatten-args and ident stubs (`stdlib/ast.llt`)
+- [x] Add `stdlib/syntax.llt` — macro fn/class/type let-softening stubs; opt-in via include (`stdlib/syntax.llt`)
+- [x] Add prelude helpers: span-of, wrap-in-let, let-decl-elems (stubs); first-or (implemented); macro-error (stub) (`stdlib/prelude.llt`)
+- [x] Migrate `ast_to_dict` output from string `type:` fields to typed `Expr` variant values — completed in `typed-expr-constructors` sprint (`src/ast_dict.rs`)
+- [x] Rewrite `do` body to use named `first`/`rest` bindings with new_style=true variadic params; do-fold uses Seq operations instead of integer-key dict indexing (`stdlib/macros.llt`)
+- [x] Rewrite `tmpl` body to use named `template`/`parts` bindings with new_style=true (`stdlib/macros.llt`)
+- [x] Rewrite `begin` body to use named `exprs` binding directly — `[builtin-variant "Sequential" [exprs: exprs]]` (`stdlib/macros.llt`)
+- [ ] Delete `new_style: false` code path from `expand_macro_call` in `src/expand.rs` and the `new_style` field from `MacroMetadata` — blocked on `defmacro-retire` sprint (`src/expand.rs`)
+- [x] **BUG FIXED** `begin` macro now calls `[collect exprs]` before passing to `builtin-variant "Sequential"`, matching the pattern used in `tmpl` and `do` (`stdlib/macros.llt:381`)

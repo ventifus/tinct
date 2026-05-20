@@ -2142,10 +2142,17 @@ Note: Takes a quoted AST and evaluates it in the current environment.
 gensym: [fn@[return: String  doc: """
 Generate a unique symbol name.
 
-Example: [gensym] => "__g0"
+Args:
+  prefix: String? — Optional prefix for the generated name (default: "gensym")
+
+Examples:
+  [gensym]        => ":gensym:0"
+  [gensym "foo"]  => ":foo:1"
 
 Note: Used by macros to create hygienic bindings. Each call produces a unique identifier.
-"""] [let] [builtin-gensym]]
+The counter is global and monotonically increasing.
+"""] [let ...args]
+  [if [empty? args] [builtin-gensym] [builtin-gensym [get 0 args]]]]
 
 macro-injects: [fn@[return: String  doc: """
 Get the inject: default name for a macro.

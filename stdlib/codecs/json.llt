@@ -2,14 +2,20 @@
 #
 # Public API (second dict):
 #   to-json:   tinct value → compact JSON string
-#   from-json: JSON string → tinct value (Rust primitive, re-exported)
+#   from-json: JSON string → structural tinct value
 #
-# Expression, Document, and Program values serialize via match dispatch on
-# their nominal variants — no ast_to_dict_expr, no string-keyed type: fields.
-# Output uses the Variant encoding: {"Var": {"name": "x", ...}}.
+# Assumes str-at/str-slice/str-length in strings.llt (see TODO: strings-char-access).
+# from-json produces only: Dict, Seq, String, Int, Float, Bool, [] (null).
+# Not every tinct type round-trips through JSON — Expression/Program/Document/Fn/
+# Handle/Task/etc. have no JSON representation. Schema-directed reconstruction
+# (JSON → nominal type) is the caller's responsibility.
+
+[include %libdir "strings.llt"]
 
 # ---- Internal helpers ----
 [
+
+# ---- Serializer helpers ----
 
 json-escape: [fn [s@String]
   [str-replace "\\" "\\\\"
@@ -81,110 +87,49 @@ json-expression: [fn [expr@Expression]
     [FloatLiteral value: v  span: s]: [json-variant "FloatLiteral" [value: v  span: [json-span s]]]
     [BoolLiteral  value: v  span: s]: [json-variant "BoolLiteral"  [value: v  span: [json-span s]]]
     [StrLiteral   value: v  span: s]: [json-variant "StrLiteral"   [value: v  span: [json-span s]]]
-
     [Var name: n  escaped: e  span: s]:
       [json-variant "Var" [name: n  escaped: e  span: [json-span s]]]
-
     [DotAccess target: t  field: f  span: s]:
       [json-variant "DotAccess"
-        [target: [json-expression t]
-         field:  [json-dotkey f]
-         span:   [json-span s]]]
-
+        [target: [json-expression t]  field: [json-dotkey f]  span: [json-span s]]]
     [Pipe lhs: l  rhs: r  span: s]:
-      [json-variant "Pipe"
-        [lhs: [json-expression l]
-         rhs: [json-expression r]
-         span: [json-span s]]]
-
+      [json-variant "Pipe" [lhs: [json-expression l]  rhs: [json-expression r]  span: [json-span s]]]
     [Sequential exprs: es  span: s]:
-      [json-variant "Sequential"
-        [exprs: [to-json-seq [map json-expression es]]
-         span:  [json-span s]]]
-
+      [json-variant "Sequential" [exprs: [to-json-seq [map json-expression es]]  span: [json-span s]]]
     [Dict entries: es  span: s]:
-      [json-variant "Dict"
-        [entries: [to-json-seq [map json-entry es]]
-         span:    [json-span s]]]
-
+      [json-variant "Dict" [entries: [to-json-seq [map json-entry es]]  span: [json-span s]]]
     [Call fn: f  args: a  named: na  implied: impl  span: s]:
       [json-variant "Call"
-        [fn:      [json-expression f]
-         args:    [to-json-seq [map json-expression a]]
-         named:   [to-json-seq [map json-named-arg na]]
-         implied: impl
-         span:    [json-span s]]]
-
+        [fn: [json-expression f]  args: [to-json-seq [map json-expression a]]
+         named: [to-json-seq [map json-named-arg na]]  implied: impl  span: [json-span s]]]
     [Fn params: ps  body: b  return-ann: ann  desugared: d  span: s]:
       [json-variant "Fn"
-        [params:     [to-json-seq [map json-parameter ps]]
-         body:       [json-expression b]
-         return-ann: [json-annotation ann]
-         desugared:  d
-         span:       [json-span s]]]
-
+        [params: [to-json-seq [map json-parameter ps]]  body: [json-expression b]
+         return-ann: [json-annotation ann]  desugared: d  span: [json-span s]]]
     [TypeAssert annotation: ann  expr: e  span: s]:
-      [json-variant "TypeAssert"
-        [annotation: [json-annotation ann]
-         expr:       [json-expression e]
-         span:       [json-span s]]]
-
+      [json-variant "TypeAssert" [annotation: [json-annotation ann]  expr: [json-expression e]  span: [json-span s]]]
     [Annotated name: n  annotation: ann  span: s]:
-      [json-variant "Annotated"
-        [name:       n
-         annotation: [json-annotation ann]
-         span:       [json-span s]]]
-
+      [json-variant "Annotated" [name: n  annotation: [json-annotation ann]  span: [json-span s]]]
     [Rest name: n  span: s]:
       [json-variant "Rest" [name: n  span: [json-span s]]]
-
     [Match scrutinee: e  arms: as  span: s]:
-      [json-variant "Match"
-        [scrutinee: [json-expression e]
-         arms:      [to-json-seq [map json-match-arm as]]
-         span:      [json-span s]]]
-
+      [json-variant "Match" [scrutinee: [json-expression e]  arms: [to-json-seq [map json-match-arm as]]  span: [json-span s]]]
     [Quote         expr: e  span: s]: [json-variant "Quote"         [expr: [json-expression e]  span: [json-span s]]]
     [Unquote       expr: e  span: s]: [json-variant "Unquote"       [expr: [json-expression e]  span: [json-span s]]]
     [UnquoteSplice expr: e  span: s]: [json-variant "UnquoteSplice" [expr: [json-expression e]  span: [json-span s]]]
-
     [TypeApp fn: f  arg: a  span: s]:
       [json-variant "TypeApp" [fn: [json-expression f]  arg: [json-expression a]  span: [json-span s]]]
-
     [PatternDecl bindings: bs  span: s]:
       [json-variant "PatternDecl" [bindings: [to-json-seq [map json-expression bs]]  span: [json-span s]]]
     [LetDecl     bindings: bs  span: s]:
       [json-variant "LetDecl"     [bindings: [to-json-seq [map json-expression bs]]  span: [json-span s]]]
-
     [CaseArm pattern: p  body: b  span: s]:
       [json-variant "CaseArm" [pattern: [json-expression p]  body: [json-expression b]  span: [json-span s]]]
-
     [Placeholder  span: s]: [json-variant "Placeholder" [span: [json-span s]]]
     [Error        span: s]: [json-variant "Error"        [span: [json-span s]]]
-
-    [DefMacro name: n  params: p  body: b  span: s]:
-      [json-variant "DefMacro"
-        [name:   n
-         params: [json-expression p]
-         body:   [json-expression b]
-         span:   [json-span s]]]
-
-    [MacroDecl name: n  params: p  body: b  span: s]:
-      [json-variant "MacroDecl"
-        [name:   n
-         params: [json-expression p]
-         body:   [json-expression b]
-         span:   [json-span s]]]
-
-    [Splice forms: fs  span: s]:
-      [json-variant "Splice" [forms: [to-json-seq [map json-expression fs]]  span: [json-span s]]]
-
-    [SyntaxClass name: n  pattern: p  message: m  span: s]:
-      [json-variant "SyntaxClass"
-        [name:    n
-         pattern: [json-expression p]
-         message: m
-         span:    [json-span s]]]]]
+    # DefMacro, MacroDecl, Splice, SyntaxClass are Declaration forms —
+    # they appear in Document.declarations, not expressions. See json-declaration.
+    ]]
 
 json-declaration: [fn [d@Declaration]
   [match d
@@ -193,14 +138,11 @@ json-declaration: [fn [d@Declaration]
     [ClassDecl name: n  params: ps  superclasses: sc  methods: ms
                determines: ds  resolver: r  resolver-injective: ri]:
       [json-variant "ClassDecl"
-        [name:               n
-         params:             [to-json ps]
-         superclasses:       [to-json sc]
-         resolver-injective: ri]]
+        [name: n  params: [to-json ps]  superclasses: [to-json sc]  resolver-injective: ri]]
     [InstanceDecl class-name: cn  arms: as]:
       [json-variant "InstanceDecl" [class-name: cn]]
-    [DefMacro name: n  params: p  body: b]:
-      [json-variant "DefMacro" [name: n  params: [json-expression p]  body: [json-expression b]]]
+    [DefMacro  name: n  params: p  body: b]:
+      [json-variant "DefMacro"  [name: n  params: [json-expression p]  body: [json-expression b]]]
     [MacroDecl name: n  params: p  body: b]:
       [json-variant "MacroDecl" [name: n  params: [json-expression p]  body: [json-expression b]]]
     [Splice forms: fs]:
@@ -216,10 +158,8 @@ json-document: [fn [d@Document]
      declarations: [to-json-seq [map json-declaration d.declarations]]]]]
 
 json-program: [fn [p@Program]
-  [to-json-dict
-    [documents: [to-json-seq [map json-document p.documents]]]]]
+  [to-json-dict [documents: [to-json-seq [map json-document p.documents]]]]]
 
-# Dispatch on nominal types via match; primitives via cond.
 to-json-primitive: [fn [v]
   [cond
     [[= v []]     "null"]
@@ -232,16 +172,164 @@ to-json-primitive: [fn [v]
     [[dict?  v]   [to-json-dict v]]
     [true         "null"]]]
 
+# ---- Deserializer helpers ----
+# Requires str-at/str-slice/str-length (see TODO: strings-char-access).
+# Each json-parse-* function takes remaining input and returns [value: v  rest: r].
+
+json-ws?: [fn [c@String]
+  [or [= c " "] [or [= c "\t"] [or [= c "\n"] [= c "\r"]]]]]
+
+json-skip-ws: [fn [s@String]
+  [if [or [= [str-length s] 0] [not [json-ws? [str-at 0 s]]]]
+    s
+    [json-skip-ws [str-slice 1 [- [str-length s] 1] s]]]]
+
+json-parsed: [fn [value rest@String]
+  [value: value  rest: rest]]
+
+json-rest: [fn [s@String n@Int]
+  [str-slice n [- [str-length s] n] s]]
+
+json-starts-with: [fn [prefix@String s@String]
+  [if [< [str-length s] [str-length prefix]]
+    false
+    [= [str-slice 0 [str-length prefix] s] prefix]]]
+
+json-parse-null: [fn [s@String]
+  [if [json-starts-with "null" s]
+    [json-parsed [] [json-rest s 4]]
+    [raise "JSON: expected 'null'"]]]
+
+json-parse-true: [fn [s@String]
+  [if [json-starts-with "true" s]
+    [json-parsed true [json-rest s 4]]
+    [raise "JSON: expected 'true'"]]]
+
+json-parse-false: [fn [s@String]
+  [if [json-starts-with "false" s]
+    [json-parsed false [json-rest s 5]]
+    [raise "JSON: expected 'false'"]]]
+
+json-digit?: [fn [c@String]
+  [and [>= c "0"] [<= c "9"]]]
+
+json-num-char?: [fn [c@String]
+  [or [json-digit? c]
+      [or [= c "."] [or [= c "e"] [or [= c "E"]
+      [or [= c "-"] [= c "+"]]]]]]]
+
+json-scan-num: [fn [s@String i@Int]
+  [if [or [>= i [str-length s]] [not [json-num-char? [str-at i s]]]]
+    i
+    [json-scan-num s [+ i 1]]]]
+
+json-parse-number: [fn [s@String]
+  [len:     [json-scan-num s 0]]
+  [num-str: [str-slice 0 len s]]
+  [rest:    [json-rest s len]]
+  [float?:  [or [str-contains? "." num-str]
+                [or [str-contains? "e" num-str]
+                    [str-contains? "E" num-str]]]]
+  [json-parsed
+    [if float? [parse-float num-str] [parse-int num-str]]
+    rest]]
+
+json-unescape: [fn [c@String]
+  [cond
+    [[= c "\""] "\""]
+    [[= c "\\"] "\\"]
+    [[= c "/"]  "/"]
+    [[= c "n"]  "\n"]
+    [[= c "r"]  "\r"]
+    [[= c "t"]  "\t"]
+    [[= c "b"]  "\b"]
+    [[= c "f"]  "\f"]
+    [true [raise [str "JSON: unknown escape \\" c]]]]]
+
+json-parse-string-body: [fn [s@String acc@String]
+  [if [= [str-length s] 0]
+    [raise "JSON: unterminated string"]
+    [c: [str-at 0 s]]
+    [cond
+      [[= c "\""]
+       [json-parsed acc [json-rest s 1]]]
+      [[= c "\\"]
+       [if [< [str-length s] 2]
+         [raise "JSON: incomplete escape"]
+         [json-parse-string-body
+           [json-rest s 2]
+           [str acc [json-unescape [str-at 1 s]]]]]]
+      [true
+       [json-parse-string-body [json-rest s 1] [str acc c]]]]]]
+
+json-parse-string: [fn [s@String]
+  # s starts with "
+  [json-parse-string-body [json-rest s 1] ""]]
+
+json-parse-array-items: [fn [s@String i@Int acc@Dict]
+  [item:  [json-parse-value s]]
+  [acc:   [merge acc [[i]: item.value]]]
+  [s:     [json-skip-ws item.rest]]
+  [c:     [str-at 0 s]]
+  [cond
+    [[= c "]"] [json-parsed acc [json-rest s 1]]]
+    [[= c ","] [json-parse-array-items [json-skip-ws [json-rest s 1]] [+ i 1] acc]]
+    [true [raise "JSON: expected ',' or ']' in array"]]]]
+
+json-parse-array: [fn [s@String]
+  # s starts with [
+  [s: [json-skip-ws [json-rest s 1]]]
+  [if [= [str-at 0 s] "]"]
+    [json-parsed [] [json-rest s 1]]
+    [json-parse-array-items s 0 []]]]
+
+json-parse-object-pairs: [fn [s@String acc@Dict]
+  [if [not [= [str-at 0 s] "\""]]
+    [raise "JSON: expected string key in object"]
+    [k:    [json-parse-string s]]
+    [s:    [json-skip-ws k.rest]]
+    [if [not [= [str-at 0 s] ":"]]
+      [raise "JSON: expected ':' after object key"]
+      [v:   [json-parse-value [json-skip-ws [json-rest s 1]]]]
+      [acc: [merge acc [[k.value]: v.value]]]
+      [s:   [json-skip-ws v.rest]]
+      [c:   [str-at 0 s]]
+      [cond
+        [[= c "}"] [json-parsed acc [json-rest s 1]]]
+        [[= c ","] [json-parse-object-pairs [json-skip-ws [json-rest s 1]] acc]]
+        [true [raise "JSON: expected ',' or '}' in object"]]]]]]
+
+json-parse-object: [fn [s@String]
+  # s starts with {
+  [s: [json-skip-ws [json-rest s 1]]]
+  [if [= [str-at 0 s] "}"]
+    [json-parsed [] [json-rest s 1]]
+    [json-parse-object-pairs s []]]]
+
+json-parse-value: [fn [s@String]
+  [s: [json-skip-ws s]]
+  [if [= [str-length s] 0]
+    [raise "JSON: unexpected end of input"]
+    [c: [str-at 0 s]]
+    [cond
+      [[= c "n"]  [json-parse-null s]]
+      [[= c "t"]  [json-parse-true s]]
+      [[= c "f"]  [json-parse-false s]]
+      [[= c "\""] [json-parse-string s]]
+      [[= c "["]  [json-parse-array s]]
+      [[= c "{"]  [json-parse-object s]]
+      [[or [= c "-"] [json-digit? c]] [json-parse-number s]]
+      [true [raise [str "JSON: unexpected character: " c]]]]]]
+
 ]
 
 # ---- Public API ----
 [
 
 to-json@[doc: "Serialize any tinct value to a compact JSON string.
-Expression, Document, and Program values serialize via match dispatch
-on their nominal variants using the Variant encoding {\"Tag\": {fields}}.
-Primitive types (Int, Float, Bool, String, Dict, Seq) serialize directly.
-from-json round-trips produce plain Dicts, not Expression/Document/Program."]:
+Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
+Primitive types serialize directly. Not every tinct type is serializable to JSON —
+Fn, Handle, Task, Channel etc. produce null."]:
   [fn [v]
     [match v
       [Program  _]:   [json-program v]
@@ -249,17 +337,9 @@ from-json round-trips produce plain Dicts, not Expression/Document/Program."]:
       [Expression _]: [json-expression v]
       _:              [to-json-primitive v]]]
 
-# from-json: JSON string → structural tinct value.
-#
-# Produces only: Dict (object), Seq (array), String, Int, Float, Bool, [] (null).
-# This is intentional — not every tinct type round-trips through JSON.
-# Expression/Document/Program/Fn/Handle/Task/etc. have no JSON representation;
-# you get them through their own mechanisms (load, task, open, ...).
-# Schema-directed reconstruction (JSON object → nominal type) is a caller concern,
-# not this function's responsibility. See doc/whatif/schema-directed-from-json.md.
-#
-# Currently re-exported from the Rust primitive. Will move to a tinct recursive
-# descent parser once str-at/str-slice/str-length are added to strings.llt.
+# from-json: Temporarily re-exported from the Rust primitive until str-at/parse-int/parse-float
+# are available (see TODO: strings-char-access). The pure-tinct implementation above
+# (json-parse-value etc.) is correct once those dependencies land.
 from-json: from-json
 
 ]

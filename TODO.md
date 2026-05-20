@@ -8,23 +8,24 @@ See DONE.md for the full history of completed sprints.
 
 `macros-v2` accepted 2026-05-17. See `doc/whatif/macros-v2.md`. Unified `macro` form with `[let ...]` patterns, `inject:` for anaphoric binding, `splice` for multi-form output, `syntax-class` for declarative argument validation. Implementation order: macros-v2-ast → macros-v2-expand → macros-v2-inject → macros-v2-stdlib.
 
-### macros-v2-stdlib: Migrate defmacro, add stdlib/ast.llt and stdlib/syntax.llt
+### defmacro-retire: Retire [defmacro ...] syntax from the language
 
-**Depends on:** `macros-v2-expand`, `typed-expr-constructors`, `deep-materialize-variant`
+`[defmacro ...]` is the last caller of `new_style: false`. Four corpus test files still use it (variadic params were previously unsupported in `[macro ...]` but ARE now). Retiring `[defmacro ...]` enables deleting the old single-args-dict expansion path from `expand.rs`.
 
-- [x] Migrate 11 corpus test files from `defmacro` to `macro`; 4 kept as defmacro (variadic params not yet supported in macro keyword) (`tests/corpus/eval/macros/`)
-- [x] Migrate stdlib/macros.llt — tmpl/do/begin kept as defmacro (require variadic args); documented migration path (`stdlib/macros.llt`)
-- [ ] Update gensym API: change from zero-arg String return (`[gensym]` → `:gensym:0`) to one-arg `[gensym prefix@Str]` returning `VarRef(name: ":prefix:N")` — required for `[unquote (gensym "name")]` hygiene in quasiquote positions; migrate all `[gensym]` call sites to `[gensym "name"]`; update corpus tests; see `doc/whatif/macros-v2.md:903` (`stdlib/prelude.llt`, `src/builtins.rs`, corpus tests)
-- [x] Add `stdlib/ast.llt` — ~130 lines with Entry/Annotation/Expr nominal types; flatten-args and ident stubs (`stdlib/ast.llt`)
-- [x] Add `stdlib/syntax.llt` — macro fn/class/type let-softening stubs; opt-in via include (`stdlib/syntax.llt`)
-- [x] Add prelude helpers: span-of, wrap-in-let, let-decl-elems (stubs); first-or (implemented); macro-error (stub) (`stdlib/prelude.llt`)
-- [ ] Migrate `ast_to_dict` output from string `type:` fields to typed `Expr` variant values — blocked on typed Expr variant constructors (`src/builtins_meta.rs`, `stdlib/`)
-- [ ] Migrate `do` from `[fn [let args] ...]` (new_style=false) to `[macro do [let monad ...steps] body]` (new_style=true): rewrite body using named `monad` and `steps` bindings directly, eliminating `do-fold`'s `[get i args]` integer-key indexing into the packed args dict; requires ast_to_dict typed Expr output above (`stdlib/macros.llt`)
-- [ ] Migrate `tmpl` from `[fn [let args] ...]` to `[macro tmpl [let template ...parts] body]`: rewrite using named bindings; requires typed Expr output (`stdlib/macros.llt`)
-- [ ] Migrate `begin` from `[fn [let args] ...]` to `[macro begin [let ...exprs] [type: "sequential" exprs: exprs]]`: straightforward once variadic `[macro ...]` and typed Expr output are in place (`stdlib/macros.llt`)
-- [ ] Delete `new_style: false` code path from `expand_macro_call` in `src/expand.rs` and `register_stdlib_macros_from_env` once do/tmpl/begin are migrated; remove the `new_style` field from `MacroMetadata` entirely (`src/expand.rs`)
-- [ ] Remove `STDLIB_MACROS` constant and the old single-args-dict packing branch (`src/expand.rs`)
-- [ ] Tests: verify all do/tmpl/begin corpus tests pass with new_style=true calling convention (`tests/corpus/eval/macros/`)
+**Depends on:** `macros-v2-stdlib`
+
+- [ ] Migrate 4 corpus test files from `[defmacro ...]` to `[macro ...]` with proper variadic `[let ...]` patterns (`tests/corpus/eval/macros/`)
+- [ ] Remove `[defmacro ...]` from the parser as a first-class form — emit a parse warning or error suggesting `[macro ...]` instead; or keep as deprecated alias that desugars to `[macro ...]` (`src/parser.rs`, `src/lexer.rs`)
+- [ ] Delete `new_style: false` code path from `expand_macro_call` and `new_style` field from `MacroMetadata` (`src/expand.rs`)
+- [ ] Delete the `Expr::DefMacro` pre-scan path in `pre_scan_expr_spanned` that registers macros with `new_style: false` (`src/expand.rs`)
+- [ ] Implement `flatten-args` in `stdlib/ast.llt` — currently a stub that returns input unchanged; can now dispatch on Variant tags to re-extract the flat element sequence from a parsed bracket expression (`stdlib/ast.llt`)
+- [ ] Implement prelude stubs added in macros-v2-stdlib: `span-of`, `wrap-in-let`, `let-decl-elems`, `macro-error` (all are stubs returning `[]`); implement using Variant AST operations (`stdlib/prelude.llt`)
+- [ ] Implement `stdlib/syntax.llt:fn` macro stub — let-soften function parameter lists: if params is not a LetDecl, wrap in `[let ...]`; requires Variant AST dispatch (`stdlib/syntax.llt:29-30`)
+- [ ] Implement `stdlib/syntax.llt:class` macro stub — let-soften type class tvar lists; requires Variant AST dispatch and variadic params support (`stdlib/syntax.llt:40-41`)
+- [ ] Implement `stdlib/syntax.llt:type` macro stub — let-soften type alias parameter lists; requires Variant AST dispatch (`stdlib/syntax.llt:49-50`)
+- [ ] Verify `just test` passes after all changes (`tests/`)
+- [x] Remove `STDLIB_MACROS` constant and the old single-args-dict packing branch (`src/expand.rs`) — already done; `register_stdlib_macros_from_env` uses an inline table instead
+- [x] Tests: verify all do/tmpl/begin corpus tests pass with new_style=true calling convention (`tests/corpus/eval/macros/`)
 - [x] Tests: migrated macros pass; stdlib/ast.llt and stdlib/syntax.llt load cleanly (`tests/corpus/eval/macros/`)
 
 ---
@@ -96,23 +97,23 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 
 - [ ] Run `/review-whatif include-decomposition` — verify all sprints complete, implementation matches spec, `doc/08-evaluation.md` and `doc/09-documents.md` updated to describe self-hosted pipeline in present tense, no stubs or de-scoped features — **SKIPPED**: blocked: requires include-decomp-prelude complete
 
-### runtime-v2-type-prereqs: Type system prerequisites for runtime-v2
-
-**Whatif:** `runtime-v2`
-**Depends on:** `include-decomposition-review`
-
-The runtime-v2 whatif introduces `Task@t`, `Channel@t`, `Signal`, `CancelHandle`, and `SelectSource@t@r` as first-class tinct types. The type system needs corresponding support before the runtime-v2 sprint can be approved.
-
-- [ ] Add `Type::Task(Box<Type>)` to `src/type_def.rs`; add arms to `unify`, `is_subtype`, `apply`, `occurs_in`, `collect_type_vars`, `display` — mirrors `Type::Seq` exactly (`src/type_def.rs`, `src/type_unify.rs`, `src/type_env.rs`)
-- [ ] Add `Type::Channel(Box<Type>)` with same full handling (`src/type_def.rs` et al.)
-- [ ] Add inference rules in `src/typecheck.rs`: `task` infers `Task(body_type)` from body; `await` unifies `Task(?t)` → `?t`; `send`/`recv` unify channel element type; `select-once` checks handler arity against channel element type
-- [ ] Declare `Signal`, `Action`, `CancelHandle`, `SelectSource` as prelude type aliases/declarations (`stdlib/prelude.llt`)
-- [ ] Corpus tests for `task`/`await` type inference; `channel`/`send`/`recv` element-type checking (`tests/corpus/`)
-- [ ] Verify `just test` passes
-
 ---
 
 ## Codebase Health
+
+### strings-char-access: Add str-at, str-slice, str-length to strings.llt
+
+Character-level string access needed to implement `from-json` in tinct (recursive descent JSON parser). Currently `from-json` is a Rust primitive; once these are available it moves to `stdlib/codecs/json.llt`.
+
+- [ ] `str-at@[Fn [n@Int s@String] String]` — character at position `n` (single-char string); negative indices count from end
+- [ ] `str-slice@[Fn [start@Int len@Int s@String] String]` — substring starting at `start` of length `len`
+- [ ] `str-length@[Fn [s@String] Int]` — length in characters (codepoint count, not bytes; tinct strings are UTF-8)
+- [ ] Add to `strings.llt` alongside existing `str-find`, `str-split`, etc.
+- [ ] Audit all of `strings.llt`: Rust built-ins (`%rust.*`) are only accessible to prelude. Any function in `strings.llt` that currently calls Rust built-ins directly must be rewritten using prelude wrappers. `strings.llt` is a stdlib module that includes prelude — it must use only prelude-exported functions and its own helpers.
+- [ ] Corpus tests covering empty string, out-of-bounds, multi-byte codepoints
+- [ ] Once available: migrate `from-json` from Rust primitive to tinct in `stdlib/codecs/json.llt`
+- [ ] Decide names for character-position string parsing: `parse-int`/`parse-float` (new names, used in `codecs/json.llt` deserializer) vs `to-int`/`to-float` (existing builtins). Either add `parse-int`/`parse-float` as aliases or rename all calls in `codecs/json.llt` to use `to-int`/`to-float`.
+- [ ] DESIGN: `str-slice` planned as `(start, len, string)` but existing `builtin-str-slice` is `(string, start, end)` — adding to `strings.llt` would shadow/conflict. Adding the new `str-slice` to `strings.llt` constitutes a breaking change for any file that includes `strings.llt` and calls `[str-slice s start end]`. Decide on naming before implementing: options are (a) use distinct name `str-substr` in `strings.llt`, (b) rename Rust builtin to `str-slice-range` and update all call sites, (c) accept shadowing (only affects files that include `strings.llt`).
 
 ### exhaustiveness-multi-field-nominal: Fix exhaustiveness checking for multi-field nominal variant payloads
 

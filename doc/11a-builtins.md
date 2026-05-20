@@ -180,17 +180,19 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `gensym` | 0-1 | `() or S → V` | String | Generate a unique symbol string; optional prefix arg for debugging (e.g., `[gensym "tmp"]` → `"tmp_42"`) |
+| `gensym` | 0-1 | `() or S → V` | String | Generate a unique symbol string; optional prefix arg (e.g., `[gensym "tmp"]` → `":tmp:0"`, `[gensym]` → `":gensym:0"`) |
+| `macro-injects` | 1 | `S → V` | String or Null | Given a macro name, return its `inject:` default binding name if declared, or `null` if not. Reflection primitive for anaphoric macros (e.g., `[macro-injects "aif"]` → `"it"`). |
 | `llt-repr` | 1 | `S → V` | String | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
 | `ast-of` | 1 | `T → V` | Dict (Unknown) | Return the AST dict without forcing the argument. Thunk-aware: inspects thunk state without materializing. Materialized → AST of the value (`Value::Function` → `[type: "fn" ...]`, `Value::Builtin` → `[type: "builtin" ...]`, other → `[type: type-of(val)]`); Unevaluated → AST of the expression via `ast_to_dict_expr` (doc annotations visible); Pending → `[type: "pending"]` descriptor. See `doc/feature/runtime-reflection.md`. |
 | `eval-ast` | 1 | `S → V` | Any | Evaluate an AST dict in the stdlib environment and return the resulting value. |
 | `str` | variadic | `S... → V` | String | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
 
 **Error cases:**
-- `gensym`: None
+- `gensym`: None (accepts 0 or 1 args; non-String arg produces type error)
 - `llt-repr`: None (all values have a repr)
 - `ast-of`: None (all values return a dict)
 - `eval-ast`: Dict does not conform to AST schema; free variables not in stdlib
+- `macro-injects`: Arity mismatch (requires exactly 1 arg); non-String argument produces type error
 
 ## Variant Construction
 
