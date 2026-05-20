@@ -30,8 +30,6 @@ use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
     Annotation, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span, Spanned,
 };
-use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
-
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
@@ -1721,22 +1719,23 @@ fn eval_quote(
 
 /// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
 ///
-/// Preprocesses the expression tree to handle nested unquotes, then converts to dict AST.
+/// Preprocesses the expression tree to handle nested unquotes, then converts to
+/// `Value::Expression(Arc<SurfaceNode>)` — the runtime-v2 representation.
 fn eval_quote_walk(
     expr: &Expr,
     span: Span,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
-    // Preprocess to handle nested unquotes
+    // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
     let processed_expr = eval_quote_preprocess(expr, span, &env, ctx)?;
 
-    // Convert the preprocessed AST to dict
-    let opts = AstToDictOpts {
-        source: None,
-        comments: None,
-    };
-    ast_to_dict_expr(&processed_expr, &opts, ctx)
+    // runtime-v2: return Value::Expression (was: ast_to_dict_expr returning Value::Dict)
+    let surface_node = crate::ast_convert::expr_to_surface_node(&processed_expr);
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Expression(surface_node),
+        span,
+    )))
 }
 
 /// Convert a runtime Value back to an Expr AST node for unquoting.
@@ -1752,6 +1751,10 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Rc<EvalContext>) -> EvalResult
             Expr::Str(source[*start..*end].to_string()),
             span,
         )),
+        // runtime-v2: Value::Expression is the native AST type; convert back to old Expr via bridge
+        Value::Expression(node) => {
+            Ok(crate::ast_convert::surface_node_to_expr(node))
+        }
         Value::Variant { .. } => {
             // Variant form of an AST node — use dict_to_ast directly
             crate::ast_dict::dict_to_ast(value, ctx).map_err(|err| {
@@ -2965,6 +2968,11 @@ fn match_pattern(
             {
                 // Unit variant: match by tag name, not by type_name() (which returns "Variant")
                 variant_tag == tag
+            } else if let Value::Expression(node) = value {
+                // Expression: match by surface tag (e.g., "IntLiteral", "Var", "Call")
+                // or by the type name "Expression" itself
+                let surf_tag = crate::surface_fields::surface_expr_tag(&node.expr);
+                tag == surf_tag || tag == "Expression"
             } else {
                 type_name == tag
             };
@@ -3147,6 +3155,43 @@ fn match_pattern(
                         (None, Some(_)) => {
                             // Pattern expects no payload but variant has one
                             Ok(None)
+                        }
+                    }
+                }
+                // runtime-v2: match on Value::Expression by surface tag
+                Value::Expression(node) => {
+                    let expr_tag = crate::surface_fields::surface_expr_tag(&node.expr);
+                    if tag.as_str() != expr_tag {
+                        return Ok(None);
+                    }
+                    match binding {
+                        None => Ok(Some(Rc::clone(env))),
+                        Some(payload_pattern) => {
+                            // Build a payload Dict from the Expression's fields for pattern binding.
+                            // Fields are primitive-typed only (no sequence fields yet — Part E).
+                            // This is not lazy; full AstNodeField lazy dispatch comes in Part E.
+                            let field_names =
+                                crate::surface_fields::surface_expr_field_names(&node.expr);
+                            let mut payload_map = indexmap::IndexMap::new();
+                            for field_name in field_names {
+                                let val = crate::surface_fields::surface_node_get_field(
+                                    &node,
+                                    field_name,
+                                );
+                                let thunk_id = ctx.alloc_thunk(Rc::new(
+                                    Thunk::new_materialized(val, *value_span),
+                                ));
+                                payload_map
+                                    .insert(Key::String((*field_name).to_string()), thunk_id);
+                            }
+                            let payload_val = Value::Dict(payload_map);
+                            match_pattern(
+                                &payload_pattern.node,
+                                &payload_val,
+                                env,
+                                &payload_pattern.span,
+                                ctx,
+                            )
                         }
                     }
                 }
