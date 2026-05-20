@@ -1223,7 +1223,7 @@ fn include_with_dircap() {
             "run",
             "-o",
             "json",
-            &format!("--cap-fs=cap={}", dir.path().display()),
+            &format!("--cap-fs=cap={}:r", dir.path().display()),
             dir.path().join("main.llt").to_str().unwrap(),
         ])
         .output()
@@ -1267,7 +1267,7 @@ fn include_with_dircap_and_hash() {
             "run",
             "-o",
             "json",
-            &format!("--cap-fs=cap={}", dir.path().display()),
+            &format!("--cap-fs=cap={}:r", dir.path().display()),
             dir.path().join("main.llt").to_str().unwrap(),
         ])
         .output()
@@ -1338,16 +1338,22 @@ fn no_fs_suppresses_pwd_injection() {
 #[test]
 fn no_fs_suppresses_cap_fs_injection() {
     // --no-fs must suppress --cap-fs injection: even if the operator passes
-    // --cap-fs d=., the %d capability must NOT be injected when --no-fs is set.
+    // --cap-fs d=.:r, the %d capability must NOT be injected when --no-fs is set.
     let (path, _dir) = write_temp_llt("no_fs_suppresses_cap_fs", "%d");
     let output = Command::new(tinct_bin())
-        .args(["run", "--no-fs", "--cap-fs", "d=.", path.to_str().unwrap()])
+        .args([
+            "run",
+            "--no-fs",
+            "--cap-fs",
+            "d=.:r",
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 
     assert!(
         !output.status.success(),
-        "expected failure when --no-fs suppresses --cap-fs d=. injection, stderr: {}",
+        "expected failure when --no-fs suppresses --cap-fs d=.:r injection, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1365,7 +1371,7 @@ fn no_fs_suppresses_cap_fs_injection() {
 // Filesystem access is controlled via the object capability model:
 //   - %pwd (injected automatically, suppress with --no-pwd)
 //   - %libdir (injected automatically, suppress with --no-libdir)
-//   - --cap-fs NAME=PATH (injects %NAME as a DirCap)
+//   - --cap-fs NAME=PATH:MODE (injects %NAME as a DirCap)
 // Each DirCap is backed by cap-std RESOLVE_BENEATH enforcement.
 // Landlock is auto-triggered from --cap-fs entries (unless --no-landlock is set).
 
@@ -1678,7 +1684,7 @@ fn no_landlock_with_cap_fs_accepted() {
             "json",
             "--no-landlock",
             "--cap-fs",
-            &format!("data={}", dir_str),
+            &format!("data={}:r", dir_str),
             main.to_str().unwrap(),
         ])
         .output()
@@ -1713,7 +1719,7 @@ fn landlock_with_cap_fs_permits_include() {
             "-o",
             "json",
             "--cap-fs",
-            &format!("data={}", dir_str),
+            &format!("data={}:r", dir_str),
             main.to_str().unwrap(),
         ])
         .output()
@@ -1826,6 +1832,26 @@ fn cap_fs_read_write_permits_writable() {
         output.status.success(),
         "cap injection with rw perms should succeed; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cap_fs_bare_no_mode_errors() {
+    // --cap-fs NAME=PATH without :MODE must error after dircap-drop-bare-compat.
+    let (path, _dir) = write_temp_llt("cap_fs_bare_no_mode", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "--cap-fs", "d=.", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+    assert!(
+        !output.status.success(),
+        "--cap-fs d=. (no mode) should error; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires mode suffix"),
+        "expected 'requires mode suffix' in error, got: {stderr}"
     );
 }
 
@@ -2223,7 +2249,7 @@ content
             "run",
             "-o",
             "json",
-            &format!("--cap-fs=cap={}", dir.path().display()),
+            &format!("--cap-fs=cap={}:r", dir.path().display()),
             path.to_str().unwrap(),
         ])
         .output()
@@ -2256,7 +2282,7 @@ fn lines_basic() {
             "run",
             "-o",
             "json",
-            &format!("--cap-fs=cap={}", dir.path().display()),
+            &format!("--cap-fs=cap={}:r", dir.path().display()),
             path.to_str().unwrap(),
         ])
         .output()
@@ -2289,7 +2315,7 @@ fn write_basic() {
             "run",
             "-o",
             "json",
-            &format!("--cap-fs=cap={}", dir.path().display()),
+            &format!("--cap-fs=cap={}:rw", dir.path().display()),
             path.to_str().unwrap(),
         ])
         .output()
@@ -2326,7 +2352,7 @@ fn write_atomic_basic() {
             "run",
             "-o",
             "json",
-            &format!("--cap-fs=cap={}", dir.path().display()),
+            &format!("--cap-fs=cap={}:rw", dir.path().display()),
             path.to_str().unwrap(),
         ])
         .output()
@@ -2372,7 +2398,7 @@ fn write_and_slurp_roundtrip() {
             "run",
             "-o",
             "json",
-            &format!("--cap-fs=cap={}", dir.path().display()),
+            &format!("--cap-fs=cap={}:rw", dir.path().display()),
             path.to_str().unwrap(),
         ])
         .output()

@@ -157,7 +157,7 @@ path root without changing which operation flags are held.
 ### `src/main.rs` — CLI parsing
 
 **`--cap-fs`:** Parse optional `:MODE` suffix by splitting on the last `:` via
-`rsplit_once`. No `:` → full access (`DirPerms::full()`). If mode starts with `[`,
+`rsplit_once`. No `:` → startup error (mode is required). If mode starts with `[`,
 parse as extended capability list (`[Readable Statable Writable]`). Otherwise parse
 as letter sequence (each letter adds its bundle). Unknown names or letters are a
 startup error.
