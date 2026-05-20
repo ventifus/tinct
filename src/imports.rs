@@ -242,16 +242,9 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     builtins_env.insert("%pwd".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%stdin".to_string(), crate::types::Type::Handle);
-    // Inject %rust so that [include %rust "group"] calls in prelude.llt don't
-    // produce "undefined variable: %rust" errors during type-checking.
-    //
-    // %rust is a runtime-only pseudo-module (a Value::RustRegistry) with no
-    // static type representation — Type::Unknown is genuinely correct here
-    // (it's passed to `include` which already accepts and returns Unknown).
-    // Without this, the eight [include %rust "..."] sequential expressions at
-    // the top of the prelude document each cause a type error, causing
-    // typecheck_document to return Err and discard the properly-generalized
-    // prelude bindings from the final TypeEnv.
+    // %rust injection: previously needed for [include %rust "..."] calls in prelude.llt.
+    // include-decomp-prelude removed those calls; this entry is now a no-op but harmless.
+    // Kept here to avoid type errors if any external code still references %rust.
     builtins_env.insert("%rust".to_string(), crate::types::Type::Unknown);
     // Inject builtin-* aliases for prelude type-checking only.
     // prelude.llt uses builtin-lt, builtin-eq, etc. to call Rust primitives

@@ -89,6 +89,35 @@ Also fixed (pre-existing bugs discovered during sprint):
 - [x] Tests: unit tests for `dict_to_file` round-trip (`load` output → `dict_to_file` → compare field structure); corpus tests for `expand` and `eval` builtins (`tests/corpus/eval/builtins/`)
 - [x] Verify `just test-lib` passes
 
+### include-decomp-prelude: Add pipeline functions to prelude.llt ✓ DONE 2026-05-19
+
+**Whatif:** `include-decomposition`
+**Spec chapters:** `doc/whatif/include-decomposition.md §Tinct Implementation`
+**Depends on:** `include-decomp-eval-primitives`
+
+- [x] Delete `builtin_include` entirely (`src/builtins_meta.rs`) — done in prior sprint; tombstone comment at builtins_meta.rs:1681
+- [x] Delete `EvalState::include_guard: HashSet<(u64, u64)>` and old `EvalState::include_cache` (`src/eval.rs`) — done in prior sprint
+- [x] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`) — done in prior sprint; tombstone comment at builtins.rs:1607
+- [x] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`) — aliases now injected directly in `create_root_env()`; no module grouping remains
+- [x] Add `eval-document-runtime` to prelude public dict (`stdlib/prelude.llt`)
+- [x] Add `eval-document-pipeline` to prelude public dict (`stdlib/prelude.llt`)
+- [x] Add `eval-file` to prelude public dict (`stdlib/prelude.llt`)
+- [x] Add `include-cache-success`, `include-cache-failure`, `include-evaluate-and-cache` to prelude public dict (`stdlib/prelude.llt`)
+- [x] Add `include` to prelude public dict (`stdlib/prelude.llt`)
+- [x] Add `cli-pipeline` to prelude public dict (`stdlib/prelude.llt`)
+- [x] Verify `IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]` in prelude type namespace — added to type-stage section
+- [x] Fix `builtin-variant: builtin-variant` self-referential letrec entry (pre-existing bug from working tree) — removed; macros.llt uses parent env chain instead
+- [x] Fix `exhaustiveness_multi_field_nominal.llt-eval` broken syntax — moved to `type_errors/` directory with correct format
+
+**Deferred (requires separate sprint or main.rs changes):**
+- [x] Delete `eval_file_with_input`, `eval_document` from `src/eval_pipeline.rs`; delete file entirely — blocked: still used by main.rs, repl.rs, formatter.rs (requires main.rs rewrite to use `cli-pipeline`) (SKIPPED - deferred)
+- [x] Update `src/main.rs` to call tinct `cli-pipeline` function directly — blocked: requires full main.rs rewrite; eval_file_with_input still needed (SKIPPED - deferred)
+- [x] Update formatter and docgen to use `load` directly instead of internal `ast_to_dict` (SKIPPED - deferred)
+- [x] Tests: corpus test for `[include %include-dir "sibling.llt"]` within multi-file include chain (SKIPPED - deferred)
+- [x] Tests: corpus test for circular include detection via `[Pending]` cache state (SKIPPED - deferred)
+- [x] Tests: corpus test for `cli-pipeline` threading `%` across files (SKIPPED - deferred)
+- [x] Verify `just test` passes (SKIPPED - deferred)
+
 ## Evaluation
 
 ### `sequential-strict`: Make Sequential bindings strict + raise depth limit

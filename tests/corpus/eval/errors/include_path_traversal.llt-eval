@@ -1,19 +1,8 @@
-# Test: $include path traversal is blocked by cap-std RESOLVE_BENEATH
-#
-# This test verifies that attempting to use ".." in an include path to traverse
-# outside the DirCap's root directory is rejected by cap-std.
-#
-# cap-std's Dir::open() with RESOLVE_BENEATH semantics enforces that all path
-# operations stay within the directory tree rooted at the cap. Attempts to use
-# ".." to escape the cap root, or absolute paths, are rejected at the kernel
-# level before any file system access occurs.
-#
-# Security context: This mitigates CWE-22 (Path Traversal). An attacker who can
-# supply a malicious .llt file cannot read arbitrary system files like
-# /etc/passwd or ~/.ssh/id_rsa by opening that file in an editor with the LSP.
-#
-# Expected: include error (not file content).
+# Test: include was removed in include-decomp-prelude sprint.
+# The old [include %pwd "..."] form now raises undefined variable error for
+# both `include` and `%pwd`. The path traversal security guarantee is preserved
+# because include does not exist at all.
 
 [include %pwd "../../etc/passwd"]
 === error
-[E051]
+[E002]

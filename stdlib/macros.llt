@@ -46,8 +46,8 @@
 #
 # ============================================================================
 
-# Include meta builtins (builtin-variant, tag-of, etc.) for AST construction
-[include %rust "meta"]
+# Meta builtins (builtin-variant, tag-of, etc.) are pre-injected into the
+# bootstrap env by create_stdlib_env_inner() — no [include %rust "meta"] needed.
 
 # Private helpers (first dict — not exported as public bindings)
 

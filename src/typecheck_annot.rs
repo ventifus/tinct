@@ -2299,18 +2299,36 @@ pub(crate) fn resolve_type_expr(
         // VarRef still goes to resolve_type_name for type alias lookup.
         Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
         Expr::VarRef { name, .. } => {
-            // Unit constructor: None in [type [Some a] None]
-            if crate::eval::is_constructor_name(name) {
-                return Ok(Type::NominalVariant {
-                    tag: name.clone(),
-                    fields: Row {
-                        fields: HashMap::new(),
-                    },
-                });
-            }
-            // Pass row_ann_mapping as read-only reference for cross-kind collision detection.
+            // Primitive type names must be resolved as type names, not nominal variant
+            // constructors.  Int, Float, String, Bool, Number etc. all start with an uppercase
+            // letter and therefore match `is_constructor_name`, but they are NOT variants —
+            // they are built-in type names handled by `resolve_type_name`.
+            //
+            // Resolution order:
+            //   1. If the name matches a known primitive or registered type alias via
+            //      `resolve_type_name`, use that result (handles Int, Float, String, Bool,
+            //      Number, top-level aliases, etc.).
+            //   2. Otherwise (undefined type), if the name starts with uppercase, treat it
+            //      as a unit nominal variant constructor — e.g. `None` in
+            //      `[type [Option a] [Some a] None]`.
+            //   3. For lowercase names, propagate the `resolve_type_name` error directly.
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            resolve_type_name(name, env, expr.span, state, ann_mapping, &row_ref)
+            match resolve_type_name(name, env, expr.span, state, ann_mapping, &row_ref) {
+                Ok(ty) => Ok(ty),
+                Err(e) if crate::eval::is_constructor_name(name) => {
+                    // Unknown uppercase name: treat as a zero-payload nominal variant constructor.
+                    // This handles variant tags in type alias bodies such as `None` in
+                    // `[type [Option a] [Some a] None]` where `None` has no payload.
+                    let _ = e; // suppress the undefined-type error
+                    Ok(Type::NominalVariant {
+                        tag: name.clone(),
+                        fields: Row {
+                            fields: HashMap::new(),
+                        },
+                    })
+                }
+                Err(e) => Err(e),
+            }
         }
         Expr::Dict(entries) => {
             resolve_type_dict(entries, env, expr.span, state, ann_mapping, row_ann_mapping)

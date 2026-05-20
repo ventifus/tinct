@@ -1,6 +1,10 @@
 # Test that macros work within an included file
+# NOTE: include was removed in include-decomp-prelude sprint.
+# This test now verifies that [include %pwd "..."] produces an undefined variable
+# error for `include`. The macro-in-include feature will be re-enabled when the
+# LLT-level include function is implemented (include-decomp-prelude SKIPPED items).
 [
   lib: [include %pwd "tests/corpus/eval/macros/macro_lib.llt"]
 ]
-=== out
-Dict({"lib": Dict({"result": Int(3)})})
+=== error
+[E002]

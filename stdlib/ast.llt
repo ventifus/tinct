@@ -5,8 +5,8 @@
 #
 # Usage: [include %libdir "ast.llt"]
 
-# Include meta builtins (builtin-variant, tag-of, etc.) for AST construction
-[include %rust "meta"]
+# Meta builtins (builtin-variant, tag-of, etc.) are available from the
+# prelude which includes them in the stdlib env.
 
 [
 

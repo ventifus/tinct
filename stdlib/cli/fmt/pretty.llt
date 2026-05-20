@@ -4,7 +4,7 @@
 # Layout: single-line if dict has <=4 entries AND rendered width <=80 chars;
 # multi-line with 2-space indentation otherwise. Comments and blank lines preserved.
 
-[include %rust "core"]
+# Builtins (if, =, +, -, *, <, length, merge, etc.) are provided via the stdlib env.
 
 [
 

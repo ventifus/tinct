@@ -2356,20 +2356,7 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // include: accepts 2–3 positional args (runtime: builtins_meta.rs:builtin_include).
-        //   [include $cap "path"]          — 2 args: DirCap + path
-        //   [include $cap "path" "hash"]   — 3 args: DirCap + path + hash
-        // First arg is Unknown because it accepts DirCap or RustRegistry (%rust virtual module).
-        // Return is genuinely unknown: the included file type is not knowable at compile time
-        // without reading and type-checking the included file.
-        env.insert(
-            "include".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Unknown)], // Genuinely unknown: DirCap or RustRegistry
-                ret: Box::new(Type::Unknown),        // Genuinely unknown: included file type
-                variadic: true,
-            },
-        );
+        // include was removed in include-decomp-prelude sprint. No type entry needed.
 
         // Sequences: primitives (registered as builtin-NAME; prelude exports unwrapped names)
         env.insert(
