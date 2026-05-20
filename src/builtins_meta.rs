@@ -806,21 +806,13 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let dict_entries = match &*state {
         crate::value::ThunkState::Materialized(val) => {
-            // Value is already materialized — inspect it
+            // Value is already materialized — return Variant(type_name, payload_dict),
+            // mirroring the Unevaluated branch which returns Variant(ast_tag, Dict(fields)).
             match val {
                 crate::value::Value::Function {
                     params, annotation, ..
                 } => {
                     let mut entries = IndexMap::new();
-
-                    // Add type field
-                    entries.insert(
-                        crate::value::Key::String("type".into()),
-                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                            string_val("function"),
-                            call_span,
-                        ))),
-                    );
 
                     // Add params field as a list of param names
                     let param_names: Vec<ThunkId> = params
@@ -862,18 +854,33 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         }
                     }
 
-                    entries
+                    let payload_thunk =
+                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            crate::value::Value::Dict(entries),
+                            call_span,
+                        )));
+                    return ok_val(
+                        crate::value::Value::Variant {
+                            tag: "Function".to_string(),
+                            payload: Some(payload_thunk),
+                        },
+                        call_span,
+                    );
                 }
                 other => {
-                    let mut entries = IndexMap::new();
-                    entries.insert(
-                        crate::value::Key::String("type".into()),
+                    // For all other materialized types, return Variant(type_name, empty_dict)
+                    let payload_thunk =
                         ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                            string_val(other.type_name()),
+                            crate::value::Value::Dict(IndexMap::new()),
                             call_span,
-                        ))),
+                        )));
+                    return ok_val(
+                        crate::value::Value::Variant {
+                            tag: other.type_name().to_string(),
+                            payload: Some(payload_thunk),
+                        },
+                        call_span,
                     );
-                    entries
                 }
             }
         }

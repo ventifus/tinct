@@ -1596,7 +1596,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("expand", builtin_expand, [Strictness::Seq]),
         builtin!("eval", builtin_eval, [Strictness::Seq]),
         builtin!("eval-types", builtin_eval_types, [Strictness::Seq]),
-        builtin!("gensym", builtin_gensym),
+        builtin!("builtin-gensym", builtin_gensym),
         builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
         builtin!("variant", builtin_variant), // Variadic: 1 arg (unit) or 2 args (tag + payload)
@@ -1661,7 +1661,7 @@ pub fn rust_module(name: &str) -> Result<Rc<RefCell<Environment>>, String> {
             insert(&env, "deep-materialize");
             insert(&env, "apply");
             insert(&env, "eval-ast");
-            insert(&env, "gensym");
+            insert(&env, "builtin-gensym");
             // Type predicates
             insert(&env, "int?");
             insert(&env, "float?");
@@ -6668,7 +6668,7 @@ mod tests {
         // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
         // are now in standard_builtins and accessible only via %rust "meta" module.
         assert_eq!(
-            count, 190,
+            count, 193,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6903,8 +6903,8 @@ mod tests {
         );
         assert_eq!(
             names.len(),
-            190,
-            "expected 190 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects; 5 new include-decomp primitives: blake3, cap-identity, load, include-cache-get, include-cache-put)",
+            193,
+            "expected 193 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, builtin-gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects; 5 new include-decomp primitives: blake3, cap-identity, load, include-cache-get, include-cache-put)",
             names.len()
         );
     }

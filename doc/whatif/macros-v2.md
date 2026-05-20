@@ -123,14 +123,13 @@ Variant names match their keywords. `Macro.params` and `Fn.params` are both type
 
 `flatten-args` belongs in `stdlib/ast.llt` because it depends on the `Expr` type. It is ordinary tinct code — not Rust infrastructure. Any user can write their own version.
 
-**`gensym`** takes a prefix string and returns a `VarRef` — a genuine `Expr` identifier variant. The generated name uses `:` as the separator (a character in the lexer's denylist that cannot appear in user-written identifiers), guaranteeing structural impossibility of collision (Kohlbecker 1986):
+**`gensym`** takes a prefix string and returns a `String` in `:prefix:N` format — the `:` separator is in the lexer's denylist, guaranteeing structural impossibility of collision (Kohlbecker 1986). Callers construct a `VarRef` AST node from the string using `do-var-node` or equivalent when an identifier is needed:
 
 ```tinct
-[gensym "counter"]   # → VarRef(name: ":counter:42")
-[gensym "tmp"]       # → VarRef(name: ":tmp:43")
+[gensym "counter"]   # → ":counter:42"  (String)
+[gensym "tmp"]       # → ":tmp:43"      (String)
+[do-var-node [gensym "tmp"]]  # → VarRef(name: ":tmp:43")
 ```
-
-`[unquote (gensym "x")]` in a quasiquote splices a fresh `VarRef` identifier directly in any AST position — binding or reference. No special primitive needed.
 
 ---
 
@@ -263,7 +262,7 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 # :tmp:42 can never be written by the user (: is in the denylist)
 ```
 
-`tmp` is gensym'd — macro-introduced, named `:tmp:42`. `a` and `b` are from the `[let ...]` pattern — user-provided. `gensym` returns `VarRef(name: ":tmp:42")`, so `[unquote tmp]` splices the fresh identifier directly in binding position and reference position.
+`tmp` is gensym'd — macro-introduced, named `:tmp:42`. `a` and `b` are from the `[let ...]` pattern — user-provided. `gensym` returns the String `":tmp:42"`; `do-var-node` wraps it in a `VarRef` AST node so `[unquote tmp]` splices the fresh identifier directly in binding position and reference position.
 
 **Hygiene is complete without scope sets.** In tinct's macro system, every name in a macro body is either (a) pattern-bound from user input — inherently in user scope, never capturing anything — or (b) gensym'd with `:prefix:N` naming — structurally unforgeable, never written by users. There is no third category where a macro could accidentally introduce a name that captures user scope. Scope sets (Flatt 2016) solve that third-category problem; tinct's design eliminates the category. Manual gensym with unforgeable names is both necessary and sufficient.
 
@@ -380,7 +379,7 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 [first-or xs default]    # first element, or default if empty
 
 # Gensym and error
-[gensym prefix@Str]      # returns VarRef(name: ":prefix:N") — structurally unforgeable fresh identifier
+[gensym prefix@Str]      # returns String ":prefix:N" — structurally unforgeable fresh name; wrap with do-var-node for VarRef
 [macro-error span msg]   # terminate transformation with MacroError at span (expansion-time, not type-check-time)
 
 # Stdlib helpers
@@ -572,8 +571,8 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 
 ```tinct
 [macro with-tmp [let expr body]
-  [tmp: [gensym "tmp"]]
-  # gensym returns a var-ref node — [unquote tmp] splices it as an identifier
+  [tmp: [do-var-node [gensym "tmp"]]]
+  # gensym returns String ":tmp:42"; do-var-node wraps it in a VarRef AST node
   [quote [let [[[unquote tmp]: [unquote expr]]] [unquote body]]]]
 ```
 
@@ -582,7 +581,7 @@ The pass runs to fixpoint. The depth limit (100) guards against infinite recursi
 # → [let [[:tmp:42: [expensive-computation]]] [+ :tmp:42 1]]
 ```
 
-`gensym` returns `VarRef(name: ":tmp:42")` — a genuine `Expr` variant. `[unquote tmp]` splices it directly as an identifier wherever it appears: in binding position, in reference position, anywhere. No special splicing primitive needed.
+`gensym` returns the String `":tmp:42"`; `do-var-node` wraps it in a `VarRef` AST node. `[unquote tmp]` splices the fresh identifier directly as an identifier wherever it appears: in binding position, in reference position, anywhere. No special splicing primitive needed.
 
 **Edge case — user variable named `tmp`:** Without gensym, the macro would introduce `tmp` and shadow the user's own `tmp`. Gensym produces a node whose name contains `:` (a character in the lexer's denylist that cannot appear in user-written tinct identifiers), so the user's `tmp` is unaffected.
 
@@ -900,7 +899,7 @@ Add `ErrorKind::MacroError { span: Span, message: String }` — distinct from `E
 Add: `span-of`, `wrap-in-let`, `let-decl-elems`, `first-or` (sequence helpers).
 Add: `macro-error` as a Rust builtin.
 Add: `macro-injects` as a Rust builtin — takes a macro name (`Str`), returns the `inject:` default name (`Str`) or `Null` if the macro uses only gensym hygiene.
-**`gensym` API change:** The existing zero-arg `gensym` (returns a plain string like `:gensym:0`) is replaced by a one-arg `gensym prefix` that returns `VarRef(name: ":prefix:N")` — a genuine `Expr` variant. The `:` separator is in the lexer's denylist (structurally unforgeable). All call sites of `[gensym]` migrate to `[gensym "name"]`. The existing corpus tests for `gensym` migrate accordingly.
+**`gensym` API:** Zero-arg form returns `":gensym:N"` (String); one-arg form `[gensym "prefix"]` returns `":prefix:N"` (String). The `:` separator is in the lexer's denylist (structurally unforgeable), making the name collision-free. The String return is intentional: callers use `[do-var-node [gensym "prefix"]]` (or equivalent) to construct a VarRef AST node from the string when an identifier is needed. This avoids making gensym AST-aware. All call sites pass the gensym result to `do-var-node` or equivalent.
 **`macro` keyword:** `macro` becomes a reserved keyword. The existing 27 corpus test files in `tests/corpus/eval/macros/` using `defmacro` migrate to `macro`.
 
 ### `src/ast.rs` — `Expr::SyntaxClass`

@@ -2152,7 +2152,7 @@ Examples:
 Note: Used by macros to create hygienic bindings. Each call produces a unique identifier.
 The counter is global and monotonically increasing.
 """] [let ...args]
-  [if [empty? args] [builtin-gensym] [builtin-gensym [get 0 args]]]]
+  [if [empty? args] [builtin-gensym] [builtin-gensym [head args]]]]
 
 macro-injects: [fn@[return: String  doc: """
 Get the inject: default name for a macro.

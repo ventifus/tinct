@@ -3,7 +3,7 @@
   [x: [Ok 1]]
   [y: [Error "fail"]]
   [Ok [+ x y]]]
----
-[Error "fail"]
+=== out
+Variant(Error, String("fail"))
 === warn
 undefined variable: result

@@ -29,6 +29,18 @@ scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
 
 ## Macros
 
+### `macros-v2-nits`: Fix accumulated macro system nits
+
+- [x] Cleanup stale doc comment in `register_stdlib_macros_from_env`; fix `"Let"` vs `"LetDecl"` inconsistency in `validate_syntax_class` allowlist; fix anonymous-Rest edge case in `fn-binding-to-param`; add corpus test for syntax.llt let-softening path; remove syntax.llt no-op stub (`src/expand.rs`, `stdlib/syntax.llt`)
+- [x] Fix `builtin_ast_of` Materialized branch: returns `Value::Dict` instead of `Value::Variant`; unify both branches to return Variant (`src/builtins_meta.rs:629-640`)
+- [x] `gensym` spec divergence: update `doc/whatif/macros-v2.md:903` to say gensym returns String (not VarRef) — the current String return is correct and convenient (`doc/whatif/macros-v2.md`)
+- [x] Remove unused `_scope_id` in expand.rs:1787 — delete `let _scope_id = ScopeId::fresh();` entirely; scope-set hygiene deferred indefinitely (`src/expand.rs`)
+- [x] Fix 6 stale do corpus tests: update `do_minimal` and `do_hardcoded` to expect `Variant(Ok, Int(42))`; add `=== out` sections to `do_three_step`, `do_nonbinding_step`, `do_no_steps`, `do_err_propagation` (`tests/corpus/eval/macros/`)
+
+Also fixed (pre-existing bugs discovered during sprint):
+- [x] `builtin-gensym` name mismatch: prelude's `gensym` wrapper called `builtin-gensym` but the Rust builtin was registered as `gensym`; renamed registration to `builtin-gensym`, fixed `[get 0 args]` → `[head args]` for variadic Seq (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [x] `standard_builtins_count` and `standard_builtins_contains_all` count assertions stale at 190; actual count is 193 (`src/builtins.rs`)
+
 ### `tmpl-macro`: Migrate `i"..."` string interpolation from parser to `[defmacro tmpl]`
 
 `desugar_interpolated_string()` in `src/parser.rs` has been replaced by `emit_tmpl_call()`, which emits `[tmpl "raw-template" expr0 ...]`. The expansion logic lives in `stdlib/macros.llt` as `tmpl-transformer`, pre-registered as the `tmpl` macro by `expand_macros` before processing user code. See `doc/whatif/completed/macro-rewrite.md` for the design.
