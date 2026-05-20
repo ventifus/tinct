@@ -77,9 +77,6 @@
 # flatten-args recovers the flat sequence [x, y, z] that let-softening
 # macros need to wrap in [let ...].
 #
-# NOTE: This is a placeholder implementation until ast_to_dict produces
-# typed Expr variants (macros-v2 design §ast_to_dict migration).
-# Currently returns the input unchanged.
 flatten-args: [fn@[return: Unknown  doc: """
 Re-extract the flat element sequence from a parsed bracket expression.
 
@@ -87,19 +84,30 @@ Used by let-softening macros (fn, class, type) that need to recover
 the original bracket elements after the parser has applied implied-call
 or other structural interpretations.
 
-TODO: Implement variant matching once ast_to_dict produces typed Expr variants.
-Currently returns input unchanged.
+When the parser processes [x y z], it applies implied-call semantics:
+  [x y z] -> Call(VarRef("x"), [VarRef("y"), VarRef("z")])
 
-Examples (when implemented):
-  [flatten-args [Call f [x y]]]    => [f x y]
-  [flatten-args [Let [x y]]]       => [x y]
-  [flatten-args [Seq [x y]]]       => [x y]
-  [flatten-args [Dict []]]         => []
-  [flatten-args [VarRef "x"]]      => [x]
+flatten-args recovers the integer-indexed dict [x, y, z] from the Variant.
+
+Recognized forms:
+  LetDecl { bindings }         — return the bindings list directly
+  Call { fn: f, args: [...] } — prepend f to args (recovers [f arg1 arg2])
+  Dict { entries: [...] }     — extract the value from each entry
+  VarRef / anything else      — wrap in a single-element list
+
+Examples:
+  Call node for [f x y]:  => {0: f, 1: x, 2: y}   (prepend fn to args)
+  LetDecl node:            => bindings dict
+  Dict node:               => expr values from each entry
+  VarRef node:             => {0: node}             (single element)
+  any other node:          => {0: node}             (fallback: wrap in list)
 """] [let node]
-  # TODO: Implement variant dispatch once Expr types exist
-  # For now, return input unchanged
-  node]
+  [match [tag-of node]
+    "Call":    [concat [0: [get "fn" node]] [get "args" node]]
+    "LetDecl": [get "bindings" node]
+    "Dict":    [map [fn [let e] [get "value" e]] [get "entries" node]]
+    "VarRef":  [0: node]
+    _:         [0: node]]]
 
 # ident — construct a VarRef from a string name
 #

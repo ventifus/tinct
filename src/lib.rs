@@ -2113,6 +2113,79 @@ mod tests {
         // If we reach here without IO side-effects, the test passes.
         // (Capturing stdout in a unit test would require infrastructure not worth adding.)
     }
+
+    // --- syntax.llt macro tests ---
+
+    /// syntax.llt fn macro: including syntax.llt does not break normal fn usage.
+    ///
+    /// The fn macro in syntax.llt is only triggered in programmatic macro-output
+    /// contexts (when another macro produces Call(VarRef("fn"), ...)). Normal
+    /// parser-level [fn [let x y] body] produces Expr::Fn directly and is unaffected.
+    #[test]
+    fn test_syntax_llt_fn_no_break() {
+        let result = eval_source(
+            r#"[include %libdir "syntax.llt"]
+[f: [fn [let x y] [+ x y]]]
+[f 3 4]"#,
+        );
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output, "Int(7)", "expected Int(7), got: {output}");
+    }
+
+    /// syntax.llt fn macro: triggered when another macro produces Call(fn, ...) with
+    /// non-LetDecl params. The fn macro normalizes Call(x, [y]) → proper Fn params.
+    #[test]
+    fn test_syntax_llt_fn_macro_triggered() {
+        // wrap-fn macro emits a legacy-dict Call to "fn"; the fn macro from syntax.llt
+        // intercepts it and normalizes the Call-form params to a proper Fn node.
+        // The result is stored in add-fn and then called with 3 4.
+        let result = eval_source(
+            r#"[include %libdir "syntax.llt"]
+[macro wrap-fn [let p-params p-body]
+  [type: "call"  implied: false  fn: [type: "var" name: "fn"]
+   args: [0: p-params  1: p-body]  named-args: []]]
+[add-fn: [wrap-fn [x y] [+ x y]]]
+[add-fn 3 4]"#,
+        );
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output, "Int(7)", "expected Int(7), got: {output}");
+    }
+
+    /// syntax.llt fn macro: single-param case — VarRef params form.
+    /// wrap-fn passes a single VarRef node as params; fn macro wraps it in a singleton list.
+    #[test]
+    fn test_syntax_llt_fn_single_param() {
+        let result = eval_source(
+            r#"[include %libdir "syntax.llt"]
+[macro wrap-fn [let p-params p-body]
+  [type: "call"  implied: false  fn: [type: "var" name: "fn"]
+   args: [0: p-params  1: p-body]  named-args: []]]
+[sq: [wrap-fn x [* x x]]]
+[sq 5]"#,
+        );
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output, "Int(25)", "expected Int(25), got: {output}");
+    }
+
+    /// syntax.llt fn macro: idempotent when params is already a LetDecl.
+    /// wrap-fn passes a LetDecl node as params; fn macro extracts bindings and converts correctly.
+    #[test]
+    fn test_syntax_llt_fn_already_let_decl() {
+        let result = eval_source(
+            r#"[include %libdir "syntax.llt"]
+[macro wrap-fn [let p-params p-body]
+  [type: "call"  implied: false  fn: [type: "var" name: "fn"]
+   args: [0: p-params  1: p-body]  named-args: []]]
+[add-fn: [wrap-fn [let x y] [+ x y]]]
+[add-fn 10 20]"#,
+        );
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output, "Int(30)", "expected Int(30), got: {output}");
+    }
 }
 
 /// Resolve the stdlib directory path from the binary location.

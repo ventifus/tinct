@@ -2228,41 +2228,36 @@ Extract the source span from an AST expression node.
 Returns the span metadata (start/end positions) associated with an Expr node.
 Used in macro bodies for precise error reporting via macro-error.
 
-Example:
-  [span-of some-expr]  => Span { start: ..., end: ... }
+Every AST Expr Variant carries a "span" field in its payload dict.
+The builtin-get auto-unpacks the Variant payload to access it.
 
-Note: TODO — requires builtin-span-of. Returns empty dict until implemented.
+Example:
+  [span-of some-expr]  => [start: [line: 1  col: 5]  end: [line: 1  col: 10]]
 """] [let expr]
-  # TODO: [builtin-span-of expr]
-  []]
+  [get "span" expr]]
 
 wrap-in-let: [fn@[return: Unknown  doc: """
 Wrap a list of expressions in a LetDecl AST node.
 
-Constructs [let ...elems] as an Expr variant. Used by let-softening macros
-to convert flat parameter lists into binding declarations.
+Constructs a LetDecl Variant with the given bindings dict.
+Used by let-softening macros to convert flat parameter lists into
+binding declarations.
 
 Example:
-  [wrap-in-let [x y z]]  => LetDecl(bindings: [x, y, z])
-
-Note: TODO — requires builtin-wrap-in-let or Expr variant constructor. Returns empty dict until implemented.
+  [wrap-in-let [0: x-node  1: y-node]]  => LetDecl(bindings: {0: x, 1: y})
 """] [let elems]
-  # TODO: [builtin-wrap-in-let elems]
-  []]
+  [builtin-variant "LetDecl" [bindings: elems]]]
 
 let-decl-elems: [fn@[return: Unknown  doc: """
 Extract the bindings sequence from a LetDecl AST node.
 
-Inverse of wrap-in-let. Returns the list of binding expressions from
-a [let ...] declaration node.
+Inverse of wrap-in-let. Returns the integer-indexed dict of binding
+expressions from a LetDecl Variant.
 
 Example:
-  [let-decl-elems [LetDecl bindings: [x y z]]]  => [x y z]
-
-Note: TODO — requires builtin-let-decl-elems or field accessor. Returns empty list until implemented.
+  [let-decl-elems let-decl-node]  => {0: first-binding, 1: second-binding, ...}
 """] [let decl]
-  # TODO: [builtin-let-decl-elems decl]
-  []]
+  [get "bindings" decl]]
 
 first-or: [fn@[return: a  doc: """
 Return the first element of a sequence, or a default value if empty.
@@ -2282,16 +2277,14 @@ Note: Works with both Dict and Seq. For Dict, returns first value by insertion o
 macro-error: [fn@[return: Never  doc: """
 Signal a compile-time macro expansion error.
 
-Terminates macro expansion with a MacroError at the given span,
-reporting the message to the user. Used by macro bodies for validation
-and structured error reporting.
+Terminates macro expansion with an error, reporting the message to the user.
+The span argument is accepted for API consistency (used by macro bodies for
+precise error location), but currently the runtime error does not attach span
+position information. A future builtin-macro-error will use it.
 
 Example:
   [macro-error [span-of bad-arg] "expected a literal value"]
-
-Note: TODO — requires builtin-macro-error. Calls error until implemented.
 """] [let span message@String]
-  # TODO: [builtin-macro-error span message]
   [error message]]
 
 ]

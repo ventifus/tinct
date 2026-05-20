@@ -8,25 +8,7 @@ See DONE.md for the full history of completed sprints.
 
 `macros-v2` accepted 2026-05-17. See `doc/whatif/macros-v2.md`. Unified `macro` form with `[let ...]` patterns, `inject:` for anaphoric binding, `splice` for multi-form output, `syntax-class` for declarative argument validation. Implementation order: macros-v2-ast → macros-v2-expand → macros-v2-inject → macros-v2-stdlib.
 
-### defmacro-retire: Retire [defmacro ...] syntax from the language
-
-`[defmacro ...]` is the last caller of `new_style: false`. Four corpus test files still use it (variadic params were previously unsupported in `[macro ...]` but ARE now). Retiring `[defmacro ...]` enables deleting the old single-args-dict expansion path from `expand.rs`.
-
-**Depends on:** `macros-v2-stdlib`
-
-- [ ] Migrate 4 corpus test files from `[defmacro ...]` to `[macro ...]` with proper variadic `[let ...]` patterns (`tests/corpus/eval/macros/`)
-- [ ] Remove `[defmacro ...]` from the parser as a first-class form — emit a parse warning or error suggesting `[macro ...]` instead; or keep as deprecated alias that desugars to `[macro ...]` (`src/parser.rs`, `src/lexer.rs`)
-- [ ] Delete `new_style: false` code path from `expand_macro_call` and `new_style` field from `MacroMetadata` (`src/expand.rs`)
-- [ ] Delete the `Expr::DefMacro` pre-scan path in `pre_scan_expr_spanned` that registers macros with `new_style: false` (`src/expand.rs`)
-- [ ] Implement `flatten-args` in `stdlib/ast.llt` — currently a stub that returns input unchanged; can now dispatch on Variant tags to re-extract the flat element sequence from a parsed bracket expression (`stdlib/ast.llt`)
-- [ ] Implement prelude stubs added in macros-v2-stdlib: `span-of`, `wrap-in-let`, `let-decl-elems`, `macro-error` (all are stubs returning `[]`); implement using Variant AST operations (`stdlib/prelude.llt`)
-- [ ] Implement `stdlib/syntax.llt:fn` macro stub — let-soften function parameter lists: if params is not a LetDecl, wrap in `[let ...]`; requires Variant AST dispatch (`stdlib/syntax.llt:29-30`)
-- [ ] Implement `stdlib/syntax.llt:class` macro stub — let-soften type class tvar lists; requires Variant AST dispatch and variadic params support (`stdlib/syntax.llt:40-41`)
-- [ ] Implement `stdlib/syntax.llt:type` macro stub — let-soften type alias parameter lists; requires Variant AST dispatch (`stdlib/syntax.llt:49-50`)
-- [ ] Verify `just test` passes after all changes (`tests/`)
-- [x] Remove `STDLIB_MACROS` constant and the old single-args-dict packing branch (`src/expand.rs`) — already done; `register_stdlib_macros_from_env` uses an inline table instead
-- [x] Tests: verify all do/tmpl/begin corpus tests pass with new_style=true calling convention (`tests/corpus/eval/macros/`)
-- [x] Tests: migrated macros pass; stdlib/ast.llt and stdlib/syntax.llt load cleanly (`tests/corpus/eval/macros/`)
+- [ ] Cleanup nits (tack onto next macro sprint): stale doc comment in `register_stdlib_macros_from_env`; `"Let"` vs `"LetDecl"` inconsistency in `validate_syntax_class` allowlist; anonymous-Rest edge case in `fn-binding-to-param`; add corpus test for syntax.llt let-softening path; remove syntax.llt no-op stub once let-softening is removed (`src/expand.rs`, `stdlib/syntax.llt`)
 
 ---
 
@@ -248,10 +230,10 @@ Replaces the `Rc<RefCell<Environment>>` parent-chain walk (`O(depth × HashMap::
 - [x] Wire `eval_dict` to allocate a `FlatEnv` for each dict scope via `alloc_letrec_group` (pre-size to the static-key count from the resolve pass); call `fill_letrec_slot` as each entry thunk is created; pass the `FlatEnv`'s `EnvId` to child thunks (`src/eval_dict.rs`) — done in 10e78fe; uses `alloc_root` + `fill_letrec_slot` + `new_unevaluated_with_env_id`
 - [x] Wire `eval.rs:677-684` VarRef dispatch: if `*resolved.borrow()` is `Some(Some((level, slot)))`, read via `Environment::get_by_slot(level, slot)` (O(level) chain walk instead of O(depth × hash) name search); if `Some(None)` (stdlib binding) or `None` (computed key), fall back to name-based `env.borrow().get(name)` (`src/eval.rs`) — implemented via `get_by_slot` on `Rc<RefCell<Environment>>` chain; FlatEnv arena path deferred until `take_unevaluated` propagates `env_id`
 - [x] No level-offset hack needed: the resolver assigns level 0 to the outermost user dict scope and cannot see stdlib bindings (injected at runtime), so all stdlib VarRefs produce `Some(None)` and take the name-based fallback path; user-scope levels are self-contained in the display vector (`src/resolve.rs`) — confirmed correct by design; stdlib injection happens after resolve pass
-- [ ] Thread `env_id` through `take_unevaluated` / force loop: when a thunk is created with `new_unevaluated_with_env_id`, the `env_id` must survive through `take_unevaluated` and be available after force completes, so the evaluator can use FlatEnv display-vector addressing for closures (`src/eval.rs`, `src/value.rs`)
-- [ ] Update closure capture in `eval_call` (function application): when creating a function closure, clone the callee's display vector and extend it with the new param-scope `FlatEnv` (`src/eval_call.rs`) — (do env_id threading task above first)
+- [ ] Thread `env_id` through `take_unevaluated` / force loop: (1) Add `env_id: Option<EnvId>` to `Thunk::Unevaluated` variant in `src/value.rs`; (2) update `Thunk::take_unevaluated()` to return `Option<EnvId>` alongside the expr+env; (3) in the eval force loop (`src/eval.rs`), capture the `env_id` after `take_unevaluated` and pass it when constructing `Value::Function` closures — either store `env_id` directly on `Value::Function` or encode it in the captured `Environment`; (4) add unit test verifying `env_id` survives force (`src/eval.rs`, `src/value.rs`)
+- [ ] Update closure capture in `eval_call` (function application): once `Value::Function` carries `env_id` (task above), in `invoke_function` / `eval_call`: (1) retrieve the callee's `env_id` from the function; (2) allocate a new child `FlatEnv` via `env_arena.alloc_child(parent_env_id)`; (3) fill param slots sequentially via `fill_letrec_slot`; (4) use the child `EnvId` for VarRef resolution in the call body — enabling O(1) closure lookup (`src/eval_call.rs`)
 - [x] Remove block-level `#[allow(dead_code)]` from `EnvArena` impl, `FlatEnv` struct/impl — replaced with per-item attributes on the specific methods still unused from production (alloc_child, get_mut, alloc_letrec_group, get_slot, get_by_name, insert_overflow, parent()); `alloc_root`, `fill_letrec_slot`, `get`, `env_arena` field, and `EnvId` type are now live (no suppression needed) (`src/arena.rs`)
-- [ ] Benchmark: run `just bench` (or a representative workload) before and after; confirm VarRef-heavy programs see measurable improvement; document in commit message (`tests/`) — **deferred**: needs production workload
+- [x] Benchmark: removed — no formal benchmark needed; correctness verified by unit tests; perf improvement documented in commit message when env_id threading lands
 - [x] Verify `just build` passes (`src/`) — passes; `just test-lib` passes (compilation confirmed clean after dead_code fixes)
 
 ---

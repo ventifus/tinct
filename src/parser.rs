@@ -2960,7 +2960,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::InterpolatedString(parts) => {
-                // Emit [tmpl "raw-template"] call; the [defmacro tmpl] in stdlib/macros.llt
+                // Emit [tmpl "raw-template"] call; the [tmpl] macro registered from stdlib/macros.llt
                 // expands this to [str segment1 var1 segment2 ...] at compile time.
                 let expr = emit_tmpl_call(parts, span)?;
                 if let Err(push_err) =

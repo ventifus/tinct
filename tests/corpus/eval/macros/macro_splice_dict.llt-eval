@@ -1,7 +1,6 @@
 # Task 2: Splice output in dict context.
 # A macro returning {type: "splice" forms: [...]} injects each form as a separate entry.
-# Note: Using defmacro because variadic [let ...args] not yet supported in macro params.
-[defmacro two-ints [args]
+[macro two-ints [let ...args]
   [type: "splice"
    forms: [
      [type: "literal"  kind: "int"  value: 10]

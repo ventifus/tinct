@@ -1,26 +1,26 @@
 # Test macro that generates a function with explicit params
-[
-  [defmacro make-adder [macro-args]
-    [
-      type: "fn"
-      params: [
-        [name: "a" annotation: [] variadic: false]
-        [name: "b" annotation: [] variadic: false]
+[macro make-adder [let ...macro-args]
+  [
+    type: "fn"
+    params: [
+      [name: "a" annotation: [] variadic: false]
+      [name: "b" annotation: [] variadic: false]
+    ]
+    body: [
+      type: "call"
+      implied: true
+      fn: [type: "var" name: "+"]
+      args: [
+        [type: "var" name: "a"]
+        [type: "var" name: "b"]
       ]
-      body: [
-        type: "call"
-        implied: true
-        fn: [type: "var" name: "+"]
-        args: [
-          [type: "var" name: "a"]
-          [type: "var" name: "b"]
-        ]
-        named-args: []
-      ]
-      return-ann: []
-      desugared: false
-    ]]
+      named-args: []
+    ]
+    return-ann: []
+    desugared: false
+  ]]
 
+[
   add: [make-adder]
   result: [add 3 5]
 ]
