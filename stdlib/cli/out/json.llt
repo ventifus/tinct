@@ -1,83 +1,12 @@
-# JSON Compact Formatter
-# Convert a tinct value to compact JSON string
+# JSON Compact Formatter — delegates to stdlib/codecs/json.llt (runtime-v2)
+#
+# This file was previously a standalone JSON serializer. It now delegates
+# to codecs/json.llt which uses Value::Expression match dispatch for
+# Program/Document/Expression values, and handles all other types via
+# to-json-primitive fallback.
+#
+# The old standalone implementation is deleted; codecs/json.llt is canonical.
 
-[
-# Internal: escape a string for JSON
-# Escapes: " \ newline tab carriage-return
-json-escape: [fn@String [let s@String]
-  [replace "\r" "\\r"
-    [replace "\t" "\\t"
-      [replace "\n" "\\n"
-        [replace "\"" "\\\""
-          [replace "\\" "\\\\" $s]]]]]]
+[include %libdir "codecs/json.llt"]
 
-# Internal: quote and escape a string for JSON
-json-quote: [fn@String [let s@String]
-  [str "\"" [json-escape $s] "\""]]
-
-# Internal: check if dict is list-shaped (sequential integer keys 0..n-1)
-is-list?: [fn [let d@Dict]
-  [if [empty? $d]
-    true
-    [is-list-impl? $d [keys $d] 0]]]
-
-is-list-impl?: [fn [let d@Dict ks@Dict i@Int]
-  [if [>= $i [length $ks]]
-    true
-    [if [and [int? [get $i $ks]] [= [get $i $ks] $i]]
-      [is-list-impl? $d $ks [+ $i 1]]
-      false]]]
-
-# Internal: format a single value to JSON
-json-value: [fn@String [let val@Any]
-  [cond [
-    [[null? $val] "null"]
-    [[bool? $val] [if $val "true" "false"]]
-    [[int? $val] [str $val]]
-    [[float? $val] [str $val]]
-    [[str? $val] [json-quote $val]]
-    [[seq? $val] [error "cannot serialize Seq to JSON — use | collect for JSON array output"]]
-    [[dict? $val]
-      [if [is-list? $val]
-        [json-array-body $val]
-        [json-dict-body $val]]]
-    [true [error [str "cannot serialize " [type-of $val] " to JSON"]]]
-  ]]]
-
-# Internal: format dict as JSON array
-json-array-body: [fn@String [let d@Dict]
-  [if [empty? $d]
-    "[]"
-    [str "[" [json-array-items $d 0] "]"]]]
-
-json-array-items: [fn@String [let d@Dict i@Int]
-  [if [>= $i [length $d]]
-    ""
-    [str
-      [json-value [get $i $d]]
-      [if [< [+ $i 1] [length $d]] "," ""]
-      [json-array-items $d [+ $i 1]]]]]
-
-# Internal: format dict as JSON object
-json-dict-body: [fn@String [let d@Dict]
-  [if [empty? $d]
-    "{}"
-    [str "{" [json-dict-entries $d [keys $d] 0] "}"]]]
-
-json-dict-entries: [fn@String [let d@Dict ks@Dict i@Int]
-  [if [>= $i [length $ks]]
-    ""
-    [str
-      [json-quote [str [get $i $ks]]]
-      ":"
-      [json-value [get [get $i $ks] $d]]
-      [if [< [+ $i 1] [length $ks]] "," ""]
-      [json-dict-entries $d $ks [+ $i 1]]]]]
-
-# Public API: format value to compact JSON (returns String)
-json@[doc: "Convert value to compact JSON string"]: [fn@String [let val@Any]
-  [json-value $val]]
-
-# When used as a formatter pipeline stage: emit the result
-[emit [json %]]
-]
+[emit [to-json %]]
