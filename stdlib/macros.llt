@@ -298,14 +298,17 @@ do-fold: [fn [let monad-ast steps]
     [get 0 steps]
     [do-wrap monad-ast [get 0 steps] [do-fold monad-ast [reindex [slice steps 1 n]]]]]]
 
-# Desugar the inferred [do] form: emit bind chain with %do-infer sentinel monad.
+# Desugar the inferred [do] form: emit bind chain with unique sentinel monad.
 # Called when the first arg is NOT a monad (it's a binding step or other expression).
-# All args are steps (passed as a Seq). The type checker detects %do-infer,
+# All args are steps (passed as a Seq). The type checker detects the sentinel,
 # resolves the monad, and wires it to eval.
-# Returns: [%do-infer.bind step0 [fn [name] [%do-infer.bind step1 [...]]]] or
-#          [%do-infer.bind step0 [fn [name] last-step]] for a 2-step do block.
+# Sentinel name uses gensym for uniqueness: `:do-infer:0`, `:do-infer:1`, etc.
+# This avoids span collision in do_infer_resolutions HashMap (all sentinels
+# would share Span::origin() if we used a fixed "%do-infer" name).
+# Returns: [`:do-infer:N`.bind step0 [fn [name] [`:do-infer:N`.bind step1 [...]]]] or
+#          [`:do-infer:N`.bind step0 [fn [name] last-step]] for a 2-step do block.
 do-desugar-inferred: [fn [let steps]
-  [sentinel: [do-var-node "%do-infer"]]
+  [sentinel: [do-var-node [gensym "do-infer"]]]
   [do-fold sentinel steps]]
 
 # ============================================================================

@@ -1948,28 +1948,21 @@ fn infer_expr(
                 }
             }
 
-            // Special case: `%do-infer.bind` sentinel — inferred [do] form monad resolution.
-            // The `do` macro emits `[%do-infer.bind e [fn [x] ...]]` when no explicit monad
-            // is provided. The type checker detects this DotAccess pattern and resolves the
-            // monad from the enclosing function's expected return type (Rule 1) or the first
-            // binding's inferred type (Rule 2). The resolved monad name is stored in
-            // state.do_infer_resolutions keyed by the call-site span for eval wiring.
+            // Special case: do-infer sentinel — inferred [do] form monad resolution.
+            // The `do` macro emits `[`:do-infer:N`.bind e [fn [x] ...]]` when no explicit monad
+            // is provided (N is a gensym counter). The type checker detects this DotAccess pattern
+            // and resolves the monad from the enclosing function's expected return type (Rule 1) or
+            // the first binding's inferred type (Rule 2). The resolved monad name is stored in
+            // state.do_infer_resolutions keyed by the sentinel VarRef name for eval wiring.
             if let Expr::DotAccess {
                 expr: da_target,
                 field: da_field,
             } = &func.node
             {
                 if let Expr::VarRef { name, .. } = &da_target.node {
-                    if name == "%do-infer" && named_args.is_empty() {
+                    if name.starts_with(":do-infer:") && named_args.is_empty() {
                         return check_do_infer(
-                            da_field,
-                            da_target.span,
-                            args,
-                            named_args,
-                            env,
-                            expr.span,
-                            state,
-                            type_map,
+                            da_field, name, args, named_args, env, expr.span, state, type_map,
                         );
                     }
                 }
@@ -3522,14 +3515,14 @@ fn check_get_in(
     }
 }
 
-/// Type check an inferred `[do]` form — the `%do-infer.bind` / `%do-infer.pure` sentinel.
+/// Type check an inferred `[do]` form — the do-infer sentinel (e.g., `:do-infer:0.bind`).
 ///
-/// The `do` macro emits `[%do-infer.bind e [fn [x] ...]]` when no explicit monad is provided.
+/// The `do` macro emits `[`:do-infer:N`.bind e [fn [x] ...]]` when no explicit monad is provided.
 /// This function:
 ///   1. Resolves the monad variable name (Rule 1: from `state.expected_return`, Rule 2: from
 ///      the first arg's inferred type, AST fallback: from syntactic constructor pattern,
 ///      Rule 3: emit TypeError).
-///   2. Records `sentinel_span → monad_name` in `state.do_infer_resolutions` so the evaluator
+///   2. Records `sentinel_name → monad_name` in `state.do_infer_resolutions` so the evaluator
 ///      can substitute the sentinel with the concrete monad dict at runtime.
 ///   3. Infers all argument expressions for type-map population and side effects.
 ///   4. Returns the expected return type (if available) or a fresh TypeVar.
@@ -3546,7 +3539,7 @@ fn check_get_in(
 #[allow(clippy::too_many_arguments)] // Signature matches check_call pattern
 fn check_do_infer(
     method: &crate::ast::DotKey,
-    sentinel_span: Span,
+    sentinel_name: &str,
     args: &[Rc<Spanned<Expr>>],
     named_args: &[Spanned<NamedArg>],
     env: &Rc<TypeEnv>,
@@ -3558,21 +3551,34 @@ fn check_do_infer(
         crate::ast::DotKey::Ident(s) => s.as_str(),
         crate::ast::DotKey::Int(n) => {
             return Err(vec![TypeError::new(
-                format!("inferred [do]: unexpected integer method index {n} on %do-infer"),
+                format!("inferred [do]: unexpected integer method index {n} on {sentinel_name}"),
                 call_span,
             )]);
         }
     };
 
     // Step 1: Resolve the monad name from context.
-    //
-    // NOTE: The fast path `state.do_infer_resolutions.get(&sentinel_span)` was removed because
-    // all macro-synthesized `%do-infer` VarRef nodes share `Span::origin()` (the do-var-node
-    // helper emits no span field, so ast_dict.rs assigns Span::origin() = 0:0:0-0:0:0). This
-    // makes `do_infer_resolutions` collide across multiple `[do]` blocks in the same file.
-    // The full resolution logic (Rules 1/2/2b) is idempotent for a given monad context, so
-    // removing the fast path is safe. The insert at Step 2 remains for evaluator wiring.
-    // See TODO.md §do-infer-span-hygiene for the long-term fix.
+    // Check if we've already resolved this sentinel (fast path).
+    if let Some(_existing) = state.do_infer_resolutions.get(sentinel_name) {
+        // Already resolved — infer remaining args for side effects and return the expected type.
+        for arg in args {
+            let _ = infer_expr(arg, env, state, type_map);
+        }
+        for na in named_args {
+            let _ = infer_expr(&na.node.value, env, state, type_map);
+        }
+        let ret = match method_str {
+            "bind" | "pure" => {
+                if let Some(ret_ty) = state.expected_return.clone() {
+                    state.subst.apply(&ret_ty)
+                } else {
+                    state.fresh_type_var()
+                }
+            }
+            _ => state.fresh_type_var(),
+        };
+        return Ok(ret);
+    }
 
     // Rule 1: Check state.expected_return for a Result-like type.
     let resolved = if let Some(ret_ty) = state.expected_return.clone() {
@@ -3625,10 +3631,10 @@ fn check_do_infer(
         }
     };
 
-    // Step 2: Record sentinel_span → monad_name for eval wiring.
+    // Step 2: Record sentinel_name → monad_name for eval wiring.
     state
         .do_infer_resolutions
-        .insert(sentinel_span, monad_name.clone());
+        .insert(sentinel_name.to_string(), monad_name.clone());
 
     // Step 3: Infer all remaining args for type-map population and side effects.
     // Skip the first arg if Rule 2 already inferred it (avoid double-inference side effects).
@@ -3708,15 +3714,21 @@ fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
                 None
             }
         }
-        // Union — check if any member looks like a monad return type
+        // Union — check if all members that resolve to a monad agree on the same one
         Type::Union(members) => {
-            // All members must agree on a monad (or any member suffices for heuristic)
+            let mut resolved = None;
             for m in members {
                 if let Some(name) = resolve_monad_from_type(m, _state) {
-                    return Some(name);
+                    if let Some(ref prev) = resolved {
+                        if prev != &name {
+                            return None; // disagreement
+                        }
+                    } else {
+                        resolved = Some(name);
+                    }
                 }
             }
-            None
+            resolved
         }
         // Seq — could be seq monad, but no dict var exists yet
         // Type::Seq(_) => Some("seq-monad".to_string()),

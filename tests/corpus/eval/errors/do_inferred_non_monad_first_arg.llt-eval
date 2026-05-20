@@ -1,0 +1,6 @@
+# Inferred [do] with non-constructor first binding — should fail
+# The first binding's RHS is a plain variable (not a monad constructor or monad-typed value),
+# so monad inference should fail with T_DO_INFER.
+[do [x: some_var] [Ok x]]
+=== error
+T_DO_INFER

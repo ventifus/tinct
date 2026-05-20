@@ -99,15 +99,6 @@ The fix noted at `coverage.rs:205` ("Future: Type::NominalVariant — not yet in
 - [ ] Add corpus tests: a multi-field nominal variant with exhaustive match (should pass exhaustiveness), and a non-exhaustive match (should warn)
 
 
-### do-infer-span-hygiene: Fix span collision in do_infer_resolutions
-
-All macro-synthesized `%do-infer` VarRef nodes share `Span::origin()` (no span field in the `do-var-node` dict output). This makes `do_infer_resolutions: HashMap<Span, String>` collide across multiple `[do]` blocks in the same file. Currently harmless (only `result` monad is supported), but will cause incorrect monad resolution when a second monad (Maybe, custom) is added: `[do [x: [Some 1]] [Some x]]` would silently resolve to `result` instead of `maybe` if a previous `[do [y: [Ok 1]] [Ok y]]` was type-checked first.
-
-- [ ] Fix span collision: choose one of (a) propagate macro call-site span into `do-var-node` dict output; (b) fix up `Span::origin()` nodes in expand.rs after macro expansion; (c) replace span key with monotonic sentinel ID embedded in the VarRef name (`%do-infer-0`, `%do-infer-1`) (`stdlib/macros.llt`, `src/expand.rs`, `src/typecheck.rs`, `src/eval.rs`)
-- [ ] Tighten lib.rs inferred-form do assertions: `output.contains("Ok")` → `output.contains("Variant(Ok,")` (avoids false positives) (`src/lib.rs:2001,2021`)
-- [ ] Add corpus test for non-constructor first binding failure: `[do [x: some_var] [Ok x]]` → T_DO_INFER error (`tests/corpus/eval/errors/`)
-- [ ] Fix `resolve_monad_from_type` Union branch: require unanimous monad agreement instead of first-match (harmless now, but wrong when a second monad is added) (`src/typecheck.rs:3699-3706`)
-
 ### cap-std-pervasive: Replace ambient std::fs calls and constrain open_ambient_dir usage
 
 **Security audit 2026-05-18** found 5 `std::fs` violations in production code paths (bypassing cap_std), and several `open_ambient_dir` usages in LSP code that open `/`, `/tmp`, `/var/tmp` as fallbacks — defeating the RESOLVE_BENEATH confinement model. The LSP `no_fs=true` guard prevents eval-time `$include` execution but not the filesystem reads that use the ambient Dir itself.
