@@ -3167,18 +3167,18 @@ fn match_pattern(
                         None => Ok(Some(Rc::clone(env))),
                         Some(payload_pattern) => {
                             // Build a payload Dict from the Expression's fields for pattern binding.
-                            // Fields are primitive-typed only (no sequence fields yet — Part E).
-                            // This is not lazy; full AstNodeField lazy dispatch comes in Part E.
+                            // Each field is a lazy AstNodeField thunk — only forced when demanded.
+                            // Binding invariant: ALL field names get thunks, even if unused by arm body.
                             let field_names =
                                 crate::surface_fields::surface_expr_field_names(&node.expr);
                             let mut payload_map = indexmap::IndexMap::new();
                             for field_name in field_names {
-                                let val = crate::surface_fields::surface_node_get_field(
-                                    &node,
-                                    field_name,
-                                );
                                 let thunk_id = ctx.alloc_thunk(Rc::new(
-                                    Thunk::new_materialized(val, *value_span),
+                                    Thunk::new_ast_node_field(
+                                        std::sync::Arc::clone(&node),
+                                        field_name,
+                                        *value_span,
+                                    ),
                                 ));
                                 payload_map
                                     .insert(Key::String((*field_name).to_string()), thunk_id);
