@@ -95,17 +95,27 @@ pub fn format_source_tinct_with_dir(
             script_path.display()
         )
     })?;
-    let mut formatter_file =
+    let formatter_parsed =
         parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
 
-    // Desugar, resolve, typecheck the formatter program.
-    desugar::desugar_file(&mut formatter_file.file.node);
-    resolve::resolve_file(&formatter_file.file.node);
-    let _ = typecheck::typecheck_file(&formatter_file.file.node);
+    // Macro-expand the formatter program (required to convert [fn [let x] body] forms).
+    // Without expand_macros, fn params using [let ...] form produce 2-arg Calls, not Fn nodes.
+    let expand_result = crate::expand::expand_macros(
+        formatter_parsed.file,
+        ctx.config.no_fs,
+        &ctx.config.base_dir,
+    )
+    .map_err(|e| format!("formatter expand error: {e}"))?;
+    let mut formatter_file = expand_result.file;
+
+    // Desugar, resolve, typecheck the expanded formatter program.
+    desugar::desugar_file(&mut formatter_file.node);
+    resolve::resolve_file(&formatter_file.node);
+    let _ = typecheck::typecheck_file(&formatter_file.node);
 
     // Evaluate formatter with AST as % (pipeline input).
     let formatter_thunk = eval::eval_file_with_input(
-        &formatter_file.file.node,
+        &formatter_file.node,
         Rc::clone(&env),
         &ctx,
         Some(ast_thunk),

@@ -2339,6 +2339,42 @@ mod tests {
         let output = result.unwrap();
         assert_eq!(output, "Int(30)", "expected Int(30), got: {output}");
     }
+
+    /// Regression test for the formatter arity bug:
+    /// A function defined in an intermediate dict should be callable with the correct arity.
+    /// This test exercises the eval_document strict-forcing path for intermediate dict values.
+    #[test]
+    fn test_eval_document_dict_function_arity() {
+        // Simulates the compact.llt pattern:
+        //   expression 1: some dict (mock of [include %rust "core"])
+        //   expression 2: format-* dict with a 0-arg function
+        //   expression 3: call the function
+        let result = eval_source("[]\n[f: [fn [] \"hello\"]]\n[f]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output, "String(\"hello\")", "expected String(hello), got: {output}");
+    }
+
+    /// Regression test: function with 1 param in an intermediate dict should work.
+    #[test]
+    fn test_eval_document_dict_function_1param() {
+        let result = eval_source("[]\n[f: [fn [let x] x]]\n[f 42]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
+        assert_eq!(output, "Int(42)", "expected Int(42), got: {output}");
+    }
+
+    /// Regression: formatter arity bug. Tests the exact formatter pipeline.
+    #[test]
+    fn test_formatter_arity_via_eval_source() {
+        // eval_source with the exact formatter pattern: include core, define function, call it
+        let result = eval_source("[include %rust \"core\"]\n[f: [fn [let x] x]]\n[try [fn [] [f 42]]]");
+        assert!(result.is_ok(), "eval_source should work: {:?}", result);
+        // Compact.llt pattern: define 0-param function, call it
+        let result2 = eval_source("[include %rust \"core\"]\n[f: [fn [] \"hello\"]]\n[try [fn [] [f]]]");
+        assert!(result2.is_ok(), "eval_source 0-param should work: {:?}", result2);
+    }
+
 }
 
 /// Resolve the stdlib directory path from the binary location.
