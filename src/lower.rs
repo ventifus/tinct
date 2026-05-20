@@ -1,4 +1,6 @@
 //! Lowering pass: converts `SurfaceExpression` to `CoreExpr` for the evaluator.
+// Functions are wired into eval_materialize.rs in Sprint 1 Part E.
+#![allow(dead_code)]
 //!
 //! `lower()` is called per-thunk when a `Surface` thunk is first forced.
 //! It is a pure function of `(SurfaceNode, ResolutionTable, TypeAnnotationTable)`.
@@ -224,8 +226,8 @@ pub fn lower_document_exprs<'a>(
 /// need runtime lowering — this function exists for completeness.
 pub fn lower_annotation(
     ann: &Annotation,
-    res: &ResolutionTable,
-    types: &TypeAnnotationTable,
+    _res: &ResolutionTable,
+    _types: &TypeAnnotationTable,
 ) -> Annotation {
     match ann {
         Annotation::Simple(_) | Annotation::Annotated(_, _) => ann.clone(),
