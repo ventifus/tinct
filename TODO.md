@@ -48,22 +48,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Codebase Health
-
-### strings-char-access: Add str-at, str-slice, str-length to strings.llt
-
-Character-level string access needed to implement `from-json` in tinct (recursive descent JSON parser). Currently `from-json` is a Rust primitive; once these are available it moves to `stdlib/codecs/json.llt`.
-
-- [ ] `str-at@[Fn [n@Int s@String] String]` — character at position `n` (single-char string); negative indices count from end
-- [ ] `str-slice@[Fn [start@Int len@Int s@String] String]` — substring starting at `start` of length `len`
-- [ ] `str-length@[Fn [s@String] Int]` — length in characters (codepoint count, not bytes; tinct strings are UTF-8)
-- [ ] Add to `strings.llt` alongside existing `str-find`, `str-split`, etc.
-- [ ] Audit all of `strings.llt`: Rust built-ins (`%rust.*`) are only accessible to prelude. Any function in `strings.llt` that currently calls Rust built-ins directly must be rewritten using prelude wrappers. `strings.llt` is a stdlib module that includes prelude — it must use only prelude-exported functions and its own helpers.
-- [ ] Corpus tests covering empty string, out-of-bounds, multi-byte codepoints
-- [ ] Once available: migrate `from-json` from Rust primitive to tinct in `stdlib/codecs/json.llt`
-- [ ] Decide names for character-position string parsing: `parse-int`/`parse-float` (new names, used in `codecs/json.llt` deserializer) vs `to-int`/`to-float` (existing builtins). Either add `parse-int`/`parse-float` as aliases or rename all calls in `codecs/json.llt` to use `to-int`/`to-float`.
-- [ ] DESIGN: `str-slice` planned as `(start, len, string)` but existing `builtin-str-slice` is `(string, start, end)` — adding to `strings.llt` would shadow/conflict. Adding the new `str-slice` to `strings.llt` constitutes a breaking change for any file that includes `strings.llt` and calls `[str-slice s start end]`. Decide on naming before implementing: options are (a) use distinct name `str-substr` in `strings.llt`, (b) rename Rust builtin to `str-slice-range` and update all call sites, (c) accept shadowing (only affects files that include `strings.llt`).
-
 ## Known Bugs (Type Checker)
 
 - [ ] `typecheck::tests::test_dot_access_intersection_found` — Intersection type unification bug: `typecheck_document_simple` returns error "cannot unify [x: [Int]] & [y: [String]] with [x: 1 y: \"hello\"]"; marked `#[ignore]` in `src/typecheck.rs:5517`

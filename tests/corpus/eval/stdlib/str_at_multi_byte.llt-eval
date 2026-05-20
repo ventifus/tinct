@@ -1,0 +1,7 @@
+# str-at: multi-byte UTF-8 — index counts codepoints not bytes
+# "café" = c(0) a(1) f(2) é(3)
+[include %libdir "strings.llt"]
+---
+[call %.str-at 3 "café"]
+=== out
+String("é")

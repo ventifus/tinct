@@ -1,0 +1,6 @@
+# str-length: basic codepoint count
+[include %libdir "strings.llt"]
+---
+[call %.str-length "hello"]
+=== out
+Int(5)

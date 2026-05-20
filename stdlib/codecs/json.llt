@@ -4,7 +4,9 @@
 #   to-json:   tinct value → compact JSON string
 #   from-json: JSON string → structural tinct value
 #
-# Assumes str-at/str-slice/str-length in strings.llt (see TODO: strings-char-access).
+# str-at/str-length come from strings.llt (included above). str-slice comes from
+# prelude (builtin-str-slice alias, (string, start, end) semantics). The dead-code
+# parser below uses builtin-str-slice directly for clarity.
 # from-json produces only: Dict, Seq, String, Int, Float, Bool, [] (null).
 # Not every tinct type round-trips through JSON — Expression/Program/Document/Fn/
 # Handle/Task/etc. have no JSON representation. Schema-directed reconstruction
@@ -168,12 +170,15 @@ to-json-primitive: [fn [v]
     [[float? v]   [str v]]
     [[str?   v]   [json-string v]]
     [[seq?   v]   [to-json-seq v]]
-    [[variant? v] [json-variant [tag-of v] [to-json [payload-of v]]]]
     [[dict?  v]   [to-json-dict v]]
+    # Variant values (Program/Document/Expression) are handled by the match dispatch in
+    # to-json above. All other variant values (user-defined, Ok/Error, etc.) produce "null"
+    # here — payload-of is not yet in prelude so structured serialization is deferred.
+    # TODO: once payload-of/tag-of are accessible, serialize as {"Tag": payload}.
     [true         "null"]]]
 
 # ---- Deserializer helpers ----
-# Requires str-at/str-slice/str-length (see TODO: strings-char-access).
+# Uses str-at/str-length from strings.llt and builtin-str-slice from prelude.
 # Each json-parse-* function takes remaining input and returns [value: v  rest: r].
 
 json-ws?: [fn [c@String]
@@ -182,18 +187,18 @@ json-ws?: [fn [c@String]
 json-skip-ws: [fn [s@String]
   [if [or [= [str-length s] 0] [not [json-ws? [str-at 0 s]]]]
     s
-    [json-skip-ws [str-slice 1 [- [str-length s] 1] s]]]]
+    [json-skip-ws [builtin-str-slice s 1 [str-length s]]]]]
 
 json-parsed: [fn [value rest@String]
   [value: value  rest: rest]]
 
 json-rest: [fn [s@String n@Int]
-  [str-slice n [- [str-length s] n] s]]
+  [builtin-str-slice s n [str-length s]]]
 
 json-starts-with: [fn [prefix@String s@String]
   [if [< [str-length s] [str-length prefix]]
     false
-    [= [str-slice 0 [str-length prefix] s] prefix]]]
+    [= [builtin-str-slice s 0 [str-length prefix]] prefix]]]
 
 json-parse-null: [fn [s@String]
   [if [json-starts-with "null" s]
@@ -225,13 +230,13 @@ json-scan-num: [fn [s@String i@Int]
 
 json-parse-number: [fn [s@String]
   [len:     [json-scan-num s 0]]
-  [num-str: [str-slice 0 len s]]
+  [num-str: [builtin-str-slice s 0 len]]
   [rest:    [json-rest s len]]
   [float?:  [or [str-contains? "." num-str]
                 [or [str-contains? "e" num-str]
                     [str-contains? "E" num-str]]]]
   [json-parsed
-    [if float? [parse-float num-str] [parse-int num-str]]
+    [if float? [to-float num-str] [to-int num-str]]
     rest]]
 
 json-unescape: [fn [c@String]
@@ -337,9 +342,10 @@ Fn, Handle, Task, Channel etc. produce null."]:
       [Expression _]: [json-expression v]
       _:              [to-json-primitive v]]]
 
-# from-json: Temporarily re-exported from the Rust primitive until str-at/parse-int/parse-float
-# are available (see TODO: strings-char-access). The pure-tinct implementation above
-# (json-parse-value etc.) is correct once those dependencies land.
+# from-json: Re-exported from the Rust primitive. The pure-tinct implementation
+# (json-parse-value etc.) is available above but migration is deferred — the Rust
+# builtin provides better error messages and performance. To switch, replace with:
+#   from-json: [fn [s] [json-parse-value [json-skip-ws s]].value]
 from-json: from-json
 
 ]

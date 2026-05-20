@@ -1,0 +1,6 @@
+# str-at: negative index counts from end (-1 is last character)
+[include %libdir "strings.llt"]
+---
+[call %.str-at -1 "hello"]
+=== out
+String("o")
