@@ -4,13 +4,20 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## runtime-v2-rebase: Manually land runtime-v2 types onto main
+## runtime-v2-rebase: Land runtime-v2 Part A types onto main
 
 **Branch source:** `runtime-v2` (1 unique commit: `036a9704` — TODO.md description + lib.rs whitespace only)
-**Strategy:** Fail-forward. main has completed `include-decomp` (the critical runtime-v2 prerequisite). Keep main's working include pipeline; add runtime-v2's new AST/value types additively. Defer API-breaking changes (`builtin_load → Value::Program`) to Part G sprint — that change must land atomically with the prelude pipeline update.
+**Plan:** `doc/whatif/plans/runtime-v2-plan.md` — **this rebase covers Plan Part A only** (new type hierarchy added alongside existing types; `Expr`/`File` NOT deleted). Parts B–E are the next atomic sprint.
+**Prerequisites confirmed complete on main:** `exhaustiveness-multi-field-nominal` ✅, `include-decomp-eval-primitives` ✅, `include-decomp-prelude` ✅, `include-decomp-review` ✅
 **Test command:** `just test`
 
-⚠️ **Key incompatibility:** runtime-v2 changed `builtin_load → Value::Program` and `builtin_expand → identity stub` **before** main rewrote the prelude include pipeline. Main's prelude calls `[load file]` and expects a Dict back. These two changes must be REVERTED during the rebase and re-done in Part G (together with the prelude update).
+**Why the Dict-based `builtin_load/expand/eval` interface is kept:** Per the plan, `include-decomp-prelude` establishes the Dict→Dict pipeline as an explicit intermediate step. `runtime-v2-plan.md` lists it as a prerequisite: *"`include-decomp-prelude` — Self-hosted pipeline in prelude; `expand` signature is `Dict→Dict` at this point."* The API changes (`load → Program`, `expand → Program`, `eval → [Seq Expression]`) are staged in Plan Part F, after Part E deletes the old types. The runtime-v2 branch made these changes out of order (before Parts B–E); we defer them to their correct position in Sprint 1F.
+
+**What the rebase does NOT do (deferred per plan):**
+- Part B: Parser returns `SurfaceProgram`; typechecker walks `SurfaceProgram`; expander migrates — atomic with Part E
+- Part E: Delete `Expr`/`File`/`Document`; evaluator uses `CoreExpr` — first `cargo check` checkpoint per plan
+- Part F: `builtin_load → Value::Program`, `builtin_expand → Value::Program`, `builtin_eval → [Seq Expression]`
+- Part G: Prelude pipeline updated to use `Program`/`Document` types (structure unchanged; `eval-file` gains `ast@Program`, `doc.name` becomes `DocumentName` match)
 
 ### Phase 1 — Git rebase
 
@@ -74,15 +81,15 @@ Keep all existing `resolve_file()` — it remains the primary path until Part E.
 
 ### Phase 8 — src/builtins_meta.rs: Selective merge
 
-KEEP main's: `builtin_eval`, `builtin_eval_types`, `builtin_expand` (Dict→Dict interface, compatible with main's include pipeline).
-REVERT runtime-v2's: `builtin_load → Value::Program` and `builtin_expand → identity stub` (breaks prelude; deferred to Part G sprint).
-ADD runtime-v2's: `builtin_ast_of` returning `Value::Expression` (+ registration fix).
+KEEP main's: `builtin_eval`, `builtin_eval_types`, `builtin_expand` (Dict→Dict interface — this is the planned intermediate state per `runtime-v2-plan.md` prerequisite chain).
+DEFER per plan: `builtin_load → Value::Program`, `builtin_expand → Value::Program`, `builtin_eval → [Seq Expression]` — these belong in Sprint 1 Part F (after Part E deletes old types).
+ADD runtime-v2's: `builtin_ast_of` returning `Value::Expression` (+ registration fix — this is Part F, but safe to add early since it's additive).
 
-- [ ] Verify `builtin_load` returns `Value::Dict` (ast dict schema) — if runtime-v2 changed it to `Value::Program`, revert to main's implementation (`src/builtins_meta.rs`)
+- [ ] Verify `builtin_load` still returns `Value::Dict` (the plan's explicit intermediate state); runtime-v2 branch made this change out of order — do NOT apply it; keep main's implementation (`src/builtins_meta.rs`)
 - [ ] Change `builtin_ast_of` to return `Value::Expression(Arc<SurfaceNode>)` instead of `Value::Variant`; convert `Unevaluated` and `Materialized` branches to build a `SurfaceNode` via `ast_convert` (`src/builtins_meta.rs`)
 - [ ] Register `builtin_ast_of` in `standard_builtins()` — **fixes the integration bug from Health Review #22** (`src/builtins.rs`)
 - [ ] Update the 3 `ast_of_*.llt-eval` corpus tests that currently assert `undefined variable: ast-of` — they should now succeed and return `Value::Expression` (`tests/corpus/eval/builtins/`)
-- [ ] Verify `builtin_expand` is still the Dict→Dict implementation from main; if runtime-v2 replaced it with an identity stub, revert (`src/builtins_meta.rs`)
+- [ ] Verify `builtin_expand` is still the Dict→Dict implementation from main; runtime-v2 replaced it with an identity stub out of order — do NOT apply that change; keep main's implementation (`src/builtins_meta.rs`)
 
 ### Phase 9 — stdlib/prelude.llt: Add type declarations
 
@@ -112,57 +119,67 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 
 ---
 
-## runtime-v2 — Sprint 1 (continued): Complete the Surface/Core migration
+## runtime-v2 — Sprint 1 (continued): Parts B–G
 
 **Branch:** `main` (post-rebase)
 **Depends on:** `runtime-v2-rebase` complete
 **Plan:** `doc/whatif/plans/runtime-v2-plan.md`
 
-⚠️ Parts A–D, F (partial) done in rebase. Parts B (typechecker + expander) and E (full cutover) remain. Part G Phase 2 (builtin_load → Value::Program + prelude update) blocked on Part E.
+⚠️ **Parts B–E are one atomic compilation unit** (per plan). Part B migrates the parser to return `SurfaceProgram`; this breaks all downstream code until Part E provides the new evaluator. No `cargo check` checkpoint until Part E is complete. First `cargo check` = after Part E. `just test` = after Part G.
 
-### Part B (continued) — Typechecker + Expander migration
+Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) already exist from runtime-v2 branch. Parts B+E still needed.
+
+### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC)
+
+**Parser** (`src/parser.rs`): ❌ NOT STARTED
+- [ ] Change `parse()` return type from `File` to `SurfaceProgram`; every `Rc::new(spanned_expr)` → `Arc::new(SurfaceNode { expr, span })`; declaration forms route to `SurfaceItem::Decl`, expression forms to `SurfaceItem::Expr` (`src/parser.rs`)
+
+**Resolver** (`src/resolve.rs`): Part B resolver done in rebase (SurfaceResolver added); remaining:
+- [ ] Route all callers of `resolve_file()` to `resolve_surface_program()` — once parser returns SurfaceProgram (`src/resolve.rs`, `src/lib.rs`, `src/main.rs`)
 
 **Typechecker** (`src/typecheck.rs`): ❌ NOT STARTED
 - [ ] Walk `SurfaceProgram` instead of `File`; produce `TypeAnnotationTable` instead of mutating `TypeAssert.resolved_type: RefCell<...>` (`src/typecheck.rs`)
 
 **Expander** (`src/expand.rs`): ❌ NOT STARTED
 - [ ] Change all `Expr::Variant` match arms → `SurfaceExpression::Variant` (`src/expand.rs`)
-- [ ] `expand_document()` walks `SurfaceDocument.items` (`src/expand.rs`)
+- [ ] `expand_document()` walks `SurfaceDocument.items`; `SurfaceDeclaration::Splice` flattened to `SurfaceItem::Expr` (`src/expand.rs`)
 - [ ] Macro round-trip: `ast_to_dict_expr` → `surface_expr_tag` + `surface_node_get_field` (`src/expand.rs`)
-- [ ] `surface_node_from_value(v: &Value) -> Result<Arc<SurfaceNode>, MacroError>` — macro output reconstruction (`src/surface_fields.rs`)
+- [ ] `surface_node_from_value(v: &Value, ctx: &Arc<EvalContext>) -> Result<Arc<SurfaceNode>, MacroError>` in `src/surface_fields.rs` — macro output reconstruction (`src/surface_fields.rs`)
 
-### Part D (remaining) — Surface fields
+**Part D remaining** (`src/surface_fields.rs`):
+- [ ] Sequence fields in `surface_node_get_field()` — `[Seq Expression]` results (needs ThunkId allocation available in Part E env) (`src/surface_fields.rs`)
+- [ ] `span_to_value()` with full Span Dict encoding (`src/surface_fields.rs`)
 
-- [ ] `surface_node_from_value()` — macro output reconstruction; blocked on expander migration in Part B (`src/surface_fields.rs`)
-- [ ] Sequence fields in `surface_node_get_field()` — blocked on ThunkId allocation in Part E (`src/surface_fields.rs`)
-- [ ] `span_to_value()` with full Span Dict encoding — blocked on ThunkId allocation in Part E (`src/surface_fields.rs`)
+**Part E — Evaluator cutover + delete old types + Rc→Arc:**
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell`; `Annotation::PropertyDict` → `Vec<Spanned<SurfaceEntry>>`; `SurfaceMatchArm.pattern` → `Arc<SurfaceNode>` (`src/ast.rs`)
+- [ ] Update all eval files to use `CoreExpr` (not `Expr`): `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs`; add `CoreExpr::FreeVar` arm (name-based env lookup); add `CoreExpr::RuntimeTypeCheck` arm (`src/`)
+- [ ] Delete: `src/eval_pipeline.rs`, `src/eval_deep.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge) (`src/`)
+- [ ] Update `IncludeCacheEntry::Cached` to carry `Arc<ResolutionTable>` + `Arc<TypeAnnotationTable>` — needed by Part F `builtin_eval` to retrieve tables for `Surface` thunks (`src/imports.rs`)
+- [ ] Rc→Arc migration: `Rc<Thunk>` → `Arc<Thunk>`, `Rc<RefCell<Environment>>` → `Arc<RwLock<Environment>>`, `Rc<EvalConfig>` → `Arc<EvalConfig>`, `ThunkState` → `(Mutex<Option<UnevaluatedState>>, OnceCell<Result<Value, Arc<EvalError>>>)` pair; add tokio dependency (`Cargo.toml`, all src/ files)
+- [ ] **`cargo check` clean after Part E** — first checkpoint per plan
 
-### Part E — Evaluator cutover; delete old types
+### Part F — Update builtins to use Program/Expression types
 
-**Depends on:** Part B complete
+**Depends on:** Part E complete
 
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell` (`src/ast.rs`)
-- [ ] `Annotation::PropertyDict` → `Vec<Spanned<SurfaceEntry>>` (makes SurfaceExpression Send+Sync) (`src/ast.rs`)
-- [ ] `SurfaceMatchArm.pattern` → `Arc<SurfaceNode>` (currently `Spanned<Pattern>`) (`src/ast.rs`)
-- [ ] Update all eval files to use `CoreExpr`: `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs`; delete `eval_pipeline.rs`, `eval_deep.rs` (`src/`)
-- [ ] `CoreExpr::FreeVar` evaluation in `eval.rs` (name-based env lookup) (`src/eval.rs`)
-- [ ] `CoreExpr::RuntimeTypeCheck` evaluation in `eval.rs` (`src/eval.rs`)
-- [ ] Update `IncludeCacheEntry::Cached` to carry `Arc<ResolutionTable>` + `Arc<TypeAnnotationTable>` (`src/imports.rs`)
-- [ ] Delete `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge gone) (`src/`)
-- [ ] Migrate all `resolve_file()` callers to `resolve_surface_program()` (`src/`)
-- [ ] `cargo check` clean after cutover
+- [ ] `builtin_load` → parse → `SurfaceProgram` → `Value::Program` (`src/builtins_meta.rs`)
+- [ ] `builtin_expand` → unwrap `Value::Program` → run expansion → wrap `Value::Program` (`src/builtins_meta.rs`)
+- [ ] `builtin_eval` → iterate `[Seq Expression]`; per `Value::Expression(node)`: get `(res, types)` from `IncludeCacheEntry`; create `UnevaluatedState::Surface`; return lazy thunks (`src/builtins_meta.rs`)
+- [ ] `builtin_eval_types` → same as `eval` but uses `ctx.config.type_stage_env` as base env (`src/builtins_meta.rs`)
+- [ ] Delete `eval-ast` builtin and `builtin_eval_ast` (`src/builtins_meta.rs`)
+- [ ] `Value::Task`, `Value::Channel`, `Value::Context` — add to `src/value.rs` (Sprint 2 dependency; skeleton now)
 
-### Part F (remaining) + Part G Phase 2 — API cutover + prelude update
+### Part G — Prelude pipeline update + type declarations
 
-**Depends on:** Part E complete. Land atomically: `builtin_load` change + prelude pipeline update together.
+**Depends on:** Part F complete. **Structure unchanged; types updated** (per `runtime-v2.md §Updated Include-Decomp Tinct Code`).
 
-- [ ] `builtin_load` → `Value::Program` (`src/builtins_meta.rs`)
-- [ ] `builtin_expand` → unwrap/wrap `Value::Program` (full macro expansion, replacing the identity stub) (`src/builtins_meta.rs`)
-- [ ] `builtin_eval` → iterate `[Seq Expression]`, create `ThunkState::Surface` per node (`src/builtins_meta.rs`)
-- [ ] Update `stdlib/prelude.llt` include pipeline to use `Value::Program`: `eval-file`, `eval-document-pipeline`, `eval-document-runtime`, `include` — all updated atomically (`stdlib/prelude.llt`)
-- [ ] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — update to Expression match dispatch (formatter bug must be fixed first or accept broken formatter tests) (`stdlib/cli/fmt/`)
-- [ ] `Pattern` type declaration in `stdlib/prelude.llt` — deferred: `Pattern: Expression` alias causes prelude dict shape issues; investigate post-Part E (`stdlib/prelude.llt`)
-- [ ] `Value::Task`, `Value::Channel`, `Value::Context` (Sprint 2 prerequisite, plan here)
+- [ ] `eval-file`: annotation `ast@Dict` → `ast@Program` (`stdlib/prelude.llt`)
+- [ ] `eval-document-runtime`: `doc.name` → `DocumentName` match (`[match doc.name [Named n]: ... Unnamed: ...]`); `doc.expressions` is now `[Seq Expression]` passed directly to `eval` builtin; `doc.stage` matched as `Runtime`/`Type` Variants (`stdlib/prelude.llt`)
+- [ ] `eval-document-pipeline`: annotation `docs@[Seq Document]`; `doc.stage` match as Variants (`stdlib/prelude.llt`)
+- [ ] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — update to Expression match dispatch; formatter bug fix is prerequisite OR accept broken formatter tests (`stdlib/cli/fmt/`)
+- [ ] `Pattern` type declaration in prelude — `Pattern: Expression` alias; investigate dict shape issues post-Part E before adding (`stdlib/prelude.llt`)
+- [ ] Create `stdlib/codecs/json.llt` final version if not already migrated — verify `to-json` Expression match dispatch works end-to-end (`stdlib/codecs/json.llt`)
+- [ ] **`just test` after Part G** — highest-risk: corpus tests for `load`/`expand`/`eval` may fail on type changes; fix as found
 
 ---
 
