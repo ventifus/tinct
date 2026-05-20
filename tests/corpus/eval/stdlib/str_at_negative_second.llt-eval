@@ -1,0 +1,6 @@
+# str-at: negative index -2 is second-to-last character
+[include %libdir "strings.llt"]
+---
+[call %.str-at -2 "hello"]
+=== out
+String("l")

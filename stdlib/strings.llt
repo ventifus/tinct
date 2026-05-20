@@ -2,19 +2,28 @@
 # LLT String Utilities (stdlib/strings.llt)
 # ============================================================================
 #
-# Pure-tinct string manipulation functions that build on Rust-native builtins.
+# Pure-tinct string manipulation functions that build on prelude wrappers.
 #
-# Available Rust builtins used here:
-#   String:      str, split, str-slice, str-contains?, length
-#   Arithmetic:  builtin-add, builtin-sub, builtin-mul, builtin-div
-#   Comparison:  builtin-lt, builtin-eq
-#   Control:     builtin-if
-#   Sequences:   range
-#   Dict:        keys
+# This file is loaded via [include %libdir "strings.llt"]. The stdlib env
+# (prelude output) is available as the parent scope, providing access to:
+#   String:      str, str-slice (builtin, (string,start,end) semantics), str-length, replace, join
+#   Arithmetic:  +, -, builtin-add, builtin-sub
+#   Comparison:  <, =, >=, builtin-lt, builtin-eq
+#   Control:     if, builtin-if
+#   Sequences:   range, reduce
+#   Dict:        length, keys
+#
+# Do NOT add [include %rust "..."] here — strings.llt uses prelude wrappers
+# only. Prelude aliases (builtin-if, builtin-add, etc.) are available via
+# the scope chain without explicit Rust module imports.
 #
 # Naming conventions:
-#   str-*     String operations (e.g., str-repeat, str-reverse)
+#   str-*     String operations (e.g., str-at, str-length)
 #   pad-*     Padding operations (left/right)
+#
+# str-slice is NOT exported from strings.llt. The prelude exports str-slice as
+# an alias for builtin-str-slice with (string, start, end) semantics. If a
+# length-based form is ever needed, it will be named str-substr (deferred).
 #
 # Structure: two-expression document.  The first dict holds private -impl/-check
 # helpers; the second dict holds the public API.  eval_document materialises the
@@ -23,21 +32,21 @@
 # are NOT exported to callers (only the second dict's entries are returned).
 # ============================================================================
 
-# Phase 2 (bootstrap env): import the Rust primitives used by this module.
-# - core: builtin-if, builtin-lt, builtin-add, builtin-sub used in private helpers
-# - string: str-map-chars, str-to-upper-char, str-to-lower-char, str-slice, str-length
-[include %rust "core"]
-[include %rust "string"]
-
 # ============================================================================
 # Private helpers (not exported)
 # ============================================================================
 
 [
 
+# str-at-impl: extract single character at char-index `n` from string `s`.
+# Uses builtin-str-slice (raw Rust primitive with (string, start, end) semantics).
+# Precondition: n is already a valid non-negative character index.
+str-at-impl: [fn@String [let s@String n@Int]
+    [builtin-str-slice s n [builtin-add n 1]]]
+
 str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
     [builtin-if [builtin-lt i len]
-        [str-reverse-impl s [builtin-add i 1] len [str [str-slice s i [builtin-add i 1]] acc]]
+        [str-reverse-impl s [builtin-add i 1] len [str [builtin-str-slice s i [builtin-add i 1]] acc]]
         acc]]
 
 ]
@@ -49,20 +58,45 @@ str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
 [
 
 # ============================================================================
+# Character-Level Access
+# ============================================================================
+
+# str-at: extract the character at position n (0-based).
+# Negative indices count from the end: -1 is the last character, -2 second-to-last, etc.
+# Returns a single-character String. Raises an error if n is out of bounds.
+# Type: (Int -> String -> String)
+# Example: [str-at 0 "hello"] => "h"
+# Example: [str-at 4 "hello"] => "o"
+# Example: [str-at -1 "hello"] => "o"
+# Example: [str-at 3 "cafe"] => "e"  (multi-byte UTF-8 counts codepoints, not bytes)
+str-at@[doc: "Character at position n (0-based; negative counts from end). Raises error if out of bounds."]: [fn@String [let n@Int s@String]
+    [len: [str-length s]]
+    [idx: [if [>= n 0] n [+ len n]]]
+    [if [or [< idx 0] [>= idx len]]
+        [raise [str "str-at: index " n " out of bounds for string of length " len]]
+        [str-at-impl s idx]]]
+
+# str-length: number of Unicode codepoints in a string.
+# Re-exported here for callers that include strings.llt (prelude also exports it).
+# Type: (String -> Int)
+# Example: [str-length "hello"] => 5
+# Example: [str-length ""] => 0
+# Example: [str-length "cafe"] => 4  (counts codepoints, not bytes)
+str-length: str-length
+
+# ============================================================================
 # Case Conversion
 # ============================================================================
 
 # Convert a string to uppercase by mapping str-to-upper-char over each character.
 # Type: (String -> String)
 # Example: [upper "hello"] => "HELLO"
-# Example: [upper "café"] => "CAFÉ"
 upper@[doc: "Convert a string to uppercase"]: [fn@String [s@String]
     [str-map-chars [fn [c] [str-to-upper-char c]] s]]
 
 # Convert a string to lowercase by mapping str-to-lower-char over each character.
 # Type: (String -> String)
 # Example: [lower "HELLO"] => "hello"
-# Example: [lower "CAFÉ"] => "café"
 lower@[doc: "Convert a string to lowercase"]: [fn@String [s@String]
     [str-map-chars [fn [c] [str-to-lower-char c]] s]]
 
@@ -77,8 +111,8 @@ lower@[doc: "Convert a string to lowercase"]: [fn@String [s@String]
 # Example: [pad-left "hello" 3 " "] => "hello"
 # Example: [pad-left "x" 4 "0"] => "000x"
 pad-left@[doc: "Left-pad a string to a target width with a padding character"]: [fn@String [s@String width@Int pad-char@String]
-    [builtin-if [builtin-lt [length s] width]
-        [str [str-repeat pad-char [builtin-sub width [length s]]] s]
+    [if [< [str-length s] width]
+        [str [str-repeat pad-char [- width [str-length s]]] s]
         s]]
 
 # Right-pad a string to a target width with a padding character.
@@ -88,8 +122,8 @@ pad-left@[doc: "Left-pad a string to a target width with a padding character"]: 
 # Example: [pad-right "hello" 3 " "] => "hello"
 # Example: [pad-right "x" 4 "0"] => "x000"
 pad-right@[doc: "Right-pad a string to a target width with a padding character"]: [fn@String [s@String width@Int pad-char@String]
-    [builtin-if [builtin-lt [length s] width]
-        [str s [str-repeat pad-char [builtin-sub width [length s]]]]
+    [if [< [str-length s] width]
+        [str s [str-repeat pad-char [- width [str-length s]]]]
         s]]
 
 # ============================================================================
@@ -101,12 +135,26 @@ pad-right@[doc: "Right-pad a string to a target width with a padding character"]
 # Example: [str-reverse "hello"] => "olleh"
 # Example: [str-reverse ""] => ""
 # Example: [str-reverse "a"] => "a"
-#
-# Implementation strategy:
-# - Build a dict of characters by extracting single-char substrings
-# - Reverse the dict using the builtin reverse function
-# - Concatenate the reversed characters back into a string
 str-reverse@[doc: "Reverse a string by characters"]: [fn@String [s@String]
-    [str-reverse-impl s 0 [length s] ""]]
+    [str-reverse-impl s 0 [str-length s] ""]]
+
+# ============================================================================
+# Aliases for codecs/json.llt and other consumers
+# ============================================================================
+
+# str-replace: alias for prelude's `replace` with (pattern replacement input) semantics.
+# Provided here so that files including strings.llt can call str-replace without
+# needing to know the prelude exports `replace` under a different name.
+# Type: (String -> String -> String -> String)
+# Example: [str-replace "l" "r" "hello"] => "herro"
+str-replace@[doc: "Replace all occurrences of pattern with replacement in input"]: [fn@String [let pattern@String replacement@String input@String]
+    [replace pattern replacement input]]
+
+# str-join: alias for prelude's `join`.
+# Provided here for symmetry with str-replace and for codecs/json.llt.
+# Type: (String -> [Dict|Seq] -> String)
+# Example: [str-join "," ["a" "b" "c"]] => "a,b,c"
+str-join@[doc: "Join collection elements as strings with a separator"]: [fn@String [let sep@String xs]
+    [join sep xs]]
 
 ]

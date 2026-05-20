@@ -1,0 +1,6 @@
+# str-slice: full string (string, start=0, end=5) => "hello"
+[include %libdir "strings.llt"]
+---
+[str-slice "hello" 0 5]
+=== out
+String("hello")

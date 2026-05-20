@@ -1,0 +1,6 @@
+# str-at: index out of bounds raises a user-friendly error naming str-at
+[include %libdir "strings.llt"]
+---
+[call %.str-at 10 "hello"]
+=== error
+[E080] str-at: index 10 out of bounds for string of length 5

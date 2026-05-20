@@ -8470,3 +8470,21 @@ The fix noted at `coverage.rs:205` ("Future: Type::NominalVariant — not yet in
 - [x] Add `Type::NominalVariant { tag: String, fields: Row }` (or equivalent discriminant) to `src/type_def.rs` so union members produced by `[type [Tag field: T ...] ...]` declarations carry the variant name
 - [x] Update `coverage.rs:ConstructorSignature::from_union` to use the variant name as the constructor tag for nominal variants, falling back to the current field-key path for structural ADTs
 - [x] Add corpus tests: a multi-field nominal variant with exhaustive match (should pass exhaustiveness), and a non-exhaustive match (should warn)
+
+---
+
+## Codebase Health
+
+### strings-char-access: Add str-at, str-slice, str-length to strings.llt
+
+Character-level string access needed to implement `from-json` in tinct (recursive descent JSON parser). Currently `from-json` is a Rust primitive; once these are available it moves to `stdlib/codecs/json.llt`.
+
+- [x] `str-at@[Fn [n@Int s@String] String]` — character at position `n` (single-char string); negative indices count from end
+- [x] `str-slice@[Fn [start@Int len@Int s@String] String]` — substring starting at `start` of length `len`
+- [x] `str-length@[Fn [s@String] Int]` — length in characters (codepoint count, not bytes; tinct strings are UTF-8)
+- [x] Add to `strings.llt` alongside existing `str-find`, `str-split`, etc.
+- [x] Audit all of `strings.llt`: all `builtin-*` calls use prelude-exported aliases (builtin-str-slice, builtin-str-length, builtin-add, builtin-lt, builtin-if); str-map-chars/str-to-upper-char/str-to-lower-char are accessible via Rust env scope chain (no direct `%rust.*` imports needed). Audit complete — no violations found.
+- [x] Corpus tests covering empty string, multi-byte codepoints (str_length_empty, str_length_multi_byte, str_slice_multi_byte, str_at_multi_byte, str_slice_basic, str_slice_mid, str_slice_zero_len, str_slice_full, str_length_basic)
+- [x] Once available: migrate `from-json` from Rust primitive to tinct in `stdlib/codecs/json.llt` — SKIPPED: pure-tinct implementation (json-parse-value etc.) exists in json.llt but from-json keeps the Rust builtin for better error messages; migration deferred (see comment in json.llt)
+- [x] Decide names for character-position string parsing: resolved — `codecs/json.llt` uses `to-int`/`to-float` (existing builtins); no `parse-int`/`parse-float` aliases needed.
+- [x] DESIGN: `str-slice` naming — `strings.llt` does NOT export `str-slice`. Prelude's `str-slice` (= `builtin-str-slice`, `(string, start, end)`) is the sole definition. Length-based form deferred as `str-substr` if ever needed (see memory palace decision 2026-05-19).

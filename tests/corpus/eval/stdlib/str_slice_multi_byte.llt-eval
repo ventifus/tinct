@@ -1,0 +1,8 @@
+# str-slice: multi-byte UTF-8 — slice counts codepoints not bytes
+# "café" = c(0) a(1) f(2) é(3) — é is 2 bytes but 1 codepoint
+# (string, start=2, end=4) => "fé"
+[include %libdir "strings.llt"]
+---
+[str-slice "café" 2 4]
+=== out
+String("fé")
