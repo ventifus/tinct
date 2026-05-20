@@ -1856,6 +1856,78 @@ fn cap_fs_bare_no_mode_errors() {
 }
 
 #[test]
+fn cap_fs_empty_mode_errors() {
+    // --cap-fs NAME=PATH: (trailing colon, empty mode) must error.
+    let (path, _dir) = write_temp_llt("cap_fs_empty_mode", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "--cap-fs", "d=.:", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+    assert!(
+        !output.status.success(),
+        "--cap-fs d=.: (empty mode) should error; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("mode string is empty"),
+        "expected 'mode string is empty' in error, got: {stderr}"
+    );
+}
+
+#[test]
+fn cap_fs_bare_literate_eval_errors() {
+    // --cap-fs NAME=PATH without :MODE must error in literate eval.
+    let (path, _dir) = write_temp_llt("cap_fs_bare_literate_eval", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args([
+            "literate",
+            "eval",
+            "--cap-fs",
+            "d=.",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+    assert!(
+        !output.status.success(),
+        "--cap-fs d=. (no mode) should error in literate eval; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires mode suffix"),
+        "expected 'requires mode suffix' in error, got: {stderr}"
+    );
+}
+
+#[test]
+fn cap_fs_bare_literate_weave_errors() {
+    // --cap-fs NAME=PATH without :MODE must error in literate weave.
+    let (path, _dir) = write_temp_llt("cap_fs_bare_literate_weave", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args([
+            "literate",
+            "weave",
+            "--cap-fs",
+            "d=.",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct");
+    assert!(
+        !output.status.success(),
+        "--cap-fs d=. (no mode) should error in literate weave; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires mode suffix"),
+        "expected 'requires mode suffix' in error, got: {stderr}"
+    );
+}
+
+#[test]
 fn cap_file_no_mode_defaults_to_r() {
     // --cap-file cfg=FILE (no :mode suffix) should default to r (readable text).
     // We create a temp file and slurp it.
