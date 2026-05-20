@@ -121,6 +121,9 @@ pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool 
 pub struct EvalConfig {
     pub base_dir: cap_std::fs::Dir,
     pub stdlib_env: Rc<RefCell<Environment>>,
+    /// Type-stage environment containing type-level builtins only (no IO, no caps).
+    /// Built once at startup alongside stdlib_env. Used by the `eval-types` builtin.
+    pub type_stage_env: Option<Rc<RefCell<Environment>>>,
     pub no_fs: bool,
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
@@ -334,6 +337,7 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
+                type_stage_env: None,
                 no_fs,
                 require_integrity: false,
                 macro_injects_map: HashMap::new(),
@@ -375,6 +379,7 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
+                type_stage_env: None,
                 no_fs,
                 require_integrity,
                 macro_injects_map: HashMap::new(),
@@ -425,6 +430,7 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
+                type_stage_env: None,
                 no_fs,
                 require_integrity: false,
                 macro_injects_map,
@@ -467,6 +473,7 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env: Rc::clone(&self.config.stdlib_env),
+                type_stage_env: self.config.type_stage_env.as_ref().map(Rc::clone),
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
                 macro_injects_map: self.config.macro_injects_map.clone(),
@@ -2077,6 +2084,82 @@ fn eval_quote_preprocess(
         // All other expressions don't have child expressions, just clone them
         _ => Ok(Spanned::new(expr.clone(), span)),
     }
+}
+
+/// Evaluate a sequence of expressions with sequential let* scoping.
+///
+/// This is the core sequential evaluation loop extracted from `eval_document`.
+/// Each intermediate expression is materialized and flattened to a Dict; its string-keyed
+/// entries become scope bindings for the next expression. The last expression's result
+/// is returned as a thunk (lazy, any type).
+///
+/// Used by:
+/// - `eval_document` (via this function)
+/// - The `eval` builtin (runtime-stage evaluation)
+/// - The `eval-types` builtin (type-stage evaluation)
+pub fn eval_expressions(
+    exprs: &[Spanned<Expr>],
+    env: Rc<RefCell<Environment>>,
+    ctx: &Rc<EvalContext>,
+) -> EvalResult<Rc<Thunk>> {
+    if exprs.is_empty() {
+        return Ok(Rc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            Span::origin(),
+        )));
+    }
+
+    let mut current_env = env;
+
+    for (i, expr) in exprs.iter().enumerate() {
+        let is_last = i == exprs.len() - 1;
+
+        if is_last {
+            // Last expression: return its thunk as-is (lazy, any type)
+            return eval(Rc::new(expr.clone()), current_env, ctx);
+        }
+
+        // Intermediate expression: materialize and extract dict bindings
+        let thunk = eval(Rc::new(expr.clone()), Rc::clone(&current_env), ctx)?;
+        let value = materialize(&thunk, Some(&expr.span), ctx)?;
+
+        // Flatten Overlay to Dict for scope chain binding.
+        let map = match value {
+            Value::Dict(map) => map,
+            Value::Overlay(l, r) => {
+                crate::builtins::flatten_overlay(&l, &r, "sequential let*", ctx, expr.span)?
+            }
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "sequential let*".to_string(),
+                    "Dict",
+                    value.type_name(),
+                    expr.span,
+                )
+                .into());
+            }
+        };
+
+        let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &current_env,
+        ))));
+        for (key, val_thunk_id) in map {
+            // Only string keys become scope bindings; int keys are positional, not named.
+            // Named bindings are forced to WHNF at binding time — strict let* semantics.
+            if let Key::String(name) = key {
+                let val_thunk = ctx.get_thunk(val_thunk_id);
+                let forced_value = materialize(&val_thunk, Some(&expr.span), ctx)?;
+                let strict_thunk = Rc::new(Thunk::new_materialized(forced_value, expr.span));
+                child_env.borrow_mut().insert(name, strict_thunk);
+            }
+        }
+        current_env = child_env;
+    }
+
+    // INVARIANT: This is unreachable because the loop always returns when
+    // processing the last expression. The loop only terminates naturally
+    // if exprs is empty, but we return early for that case.
+    unreachable!("eval_expressions: loop did not return")
 }
 
 pub fn eval(

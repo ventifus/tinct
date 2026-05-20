@@ -54,6 +54,29 @@ scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
 - [x] Changed `length` parameter type in `type_env.rs` to `Type::Unknown` (`src/type_env.rs`)
 - [x] Corpus tests: `[length "hello"]` and `[length [1 2 3]]` type-check without error (`tests/corpus/eval/builtins/length_string.llt-eval` updated, `tests/corpus/eval/builtins/length_seq.llt-eval` added)
 
+## Primitive Privacy
+
+### include-decomp-eval-primitives: Implement expand/eval/eval-types and delete builtin_include
+
+**Whatif:** `include-decomposition`
+**Spec chapters:** `doc/whatif/include-decomposition.md §What Would Change`
+**Depends on:** `include-decomp-primitives`
+
+- [x] Add `dict_to_file(val: &Value, ctx: &Rc<EvalContext>) -> Result<File, AstError>` to `src/ast_dict.rs` — internal, not a registered builtin; file-level inverse of `ast_to_dict`; reconstructs `File` from schema produced by `document_to_dict` (documents → expressions via `dict_to_ast`, name, stage nominal variant, output-type, expects; caps always `None`)
+- [x] Add `type_stage_env: Rc<RefCell<Environment>>` to `EvalConfig` (`src/eval.rs`); build it once at startup using `build_type_stage_env()` from the typechecker; pass into `EvalConfig::new(...)`
+- [x] Extract `eval_expressions(exprs: &[Spanned<Expr>], env: Rc<RefCell<Environment>>, ctx: &Rc<EvalContext>) -> EvalResult<Rc<Thunk>>` helper from `eval_document` — the sequential let\* loop; reused by the `eval` builtin and the remaining bootstrap prelude-load path
+- [x] Implement `expand` builtin: `dict_to_file` → `crate::expand::expand()` → `ast_to_dict`; schema errors from `dict_to_file` surface as user errors (`src/builtins_meta.rs`)
+- [x] Implement `eval` builtin: deserialize `exprs` (positional Dict) via `dict_to_ast`, build env chain (`stdlib_env` + `env:` entries + `"$"` = `%:` thunk), call `eval_expressions`; `caps:` validation skipped (`src/builtins_meta.rs`)
+- [x] Implement `eval-types` builtin: same as `eval` but uses `ctx.config.type_stage_env` as base env; no `%:` or `env:` parameters (`src/builtins_meta.rs`)
+- [x] Register `expand`, `eval`, `eval-types` in `standard_builtins()` (`src/builtins.rs`)
+- [ ] Delete `builtin_include` entirely (`src/builtins_meta.rs`) — all 350+ lines — **MOVED to include-decomp-prelude** (must be atomic with prelude rewrite; prelude.llt:19 still uses `[include %rust "type-core"]`)
+- [ ] Delete `EvalState::include_guard: HashSet<(u64, u64)>` and old `EvalState::include_cache` (`src/eval.rs`) — **MOVED to include-decomp-prelude**
+- [ ] Delete `Value::RustRegistry`, `rust_module()`, all module grouping logic (`src/value.rs`, `src/builtins.rs`) — **MOVED to include-decomp-prelude**
+- [ ] Delete `builtin-*` aliases from module group setup (`src/builtins.rs`) — **MOVED to include-decomp-prelude**
+- [ ] Delete `eval_file_with_input`, `eval_document`, `run_eval` from `src/eval_pipeline.rs`; delete file entirely once empty — **MOVED to include-decomp-prelude**
+- [x] Tests: unit tests for `dict_to_file` round-trip (`load` output → `dict_to_file` → compare field structure); corpus tests for `expand` and `eval` builtins (`tests/corpus/eval/builtins/`)
+- [x] Verify `just test-lib` passes
+
 ## Evaluation
 
 ### `sequential-strict`: Make Sequential bindings strict + raise depth limit

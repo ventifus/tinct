@@ -393,11 +393,12 @@ pub(crate) use crate::builtins_meta::blake3_hex;
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_bool_check,
-    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_dict_check, builtin_eval,
-    builtin_eval_ast, builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json,
-    builtin_gensym, builtin_include, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_int_check, builtin_llt_repr, builtin_load, builtin_macro_injects, builtin_null_check,
-    builtin_raise, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
+    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_deep_materialize,
+    builtin_dict_check, builtin_eval, builtin_eval_ast, builtin_eval_types, builtin_expand,
+    builtin_float_check, builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
+    builtin_include, builtin_include_cache_get, builtin_include_cache_put, builtin_int_check,
+    builtin_llt_repr, builtin_load, builtin_macro_injects, builtin_null_check, builtin_raise,
+    builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
     builtin_validate, builtin_variant,
 };
 
@@ -1251,7 +1252,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
         // Evaluation control
-        builtin!("deep-materialize", builtin_eval, [Strictness::Seq]),
+        builtin!(
+            "deep-materialize",
+            builtin_deep_materialize,
+            [Strictness::Seq]
+        ),
         builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("raise", builtin_raise, [Strictness::Seq]),
         builtin!("try", builtin_try, [Strictness::Id]),
@@ -1588,6 +1593,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // Meta primitives (exposed via %rust "meta" module)
         builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
+        builtin!("expand", builtin_expand, [Strictness::Seq]),
+        builtin!("eval", builtin_eval, [Strictness::Seq]),
+        builtin!("eval-types", builtin_eval_types, [Strictness::Seq]),
         builtin!("gensym", builtin_gensym),
         builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
@@ -3475,7 +3483,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_int() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
@@ -3486,7 +3494,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_string() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
@@ -3497,7 +3505,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_float() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
@@ -3508,7 +3516,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_bool() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
@@ -3520,7 +3528,7 @@ mod tests {
     #[test]
     fn deep_materialize_empty_dict() {
         let dict = Value::Dict(IndexMap::new());
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(dict)],
             named: no_named(),
             call_span: call_span(),
@@ -3544,7 +3552,7 @@ mod tests {
             },
             &ctx,
         );
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
@@ -3583,7 +3591,7 @@ mod tests {
             &ctx,
         );
 
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[outer_dict],
             named: no_named(),
             call_span: call_span(),
@@ -3626,7 +3634,7 @@ mod tests {
             &ctx,
         );
 
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
@@ -3643,7 +3651,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_arity_error() {
-        let err = builtin_eval(BuiltinArgs {
+        let err = builtin_deep_materialize(BuiltinArgs {
             args: &[],
             named: no_named(),
             call_span: call_span(),
@@ -6222,7 +6230,7 @@ mod tests {
     fn deep_materialize_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_eval(BuiltinArgs {
+        let err = builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: Some(&named),
             call_span: call_span(),

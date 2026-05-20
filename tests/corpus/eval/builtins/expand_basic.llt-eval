@@ -1,0 +1,4 @@
+# expand: round-trip a simple source string through expand, verify the result is a file dict
+[expand [load "42"]].type
+=== out
+String("file")

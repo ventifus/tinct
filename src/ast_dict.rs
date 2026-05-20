@@ -2240,6 +2240,134 @@ fn dict_to_annotation(
     Ok(Spanned::new(ann, span))
 }
 
+/// Converts a dict (from `ast_to_dict`) back to a File AST.
+///
+/// This is the file-level inverse of `ast_to_dict`. It reconstructs a `File` struct
+/// from the schema emitted by `document_to_dict`:
+/// - `documents`: list of document dicts, each containing:
+///   - `expressions`: seq of expression AST dicts (converted via `dict_to_ast`)
+///   - `name`: string or empty dict
+///   - `stage`: `[Runtime]` or `[Type]` nominal variant
+///   - `output-type`, `expects`: annotation dicts or empty dict
+/// - `caps`: always `None` (not serialized by `document_to_dict`)
+/// - Spans recovered from each node's `span:` field via `extract_span`
+///
+/// Used internally by the `expand` builtin for the Dict → File round-trip.
+pub fn dict_to_file(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> Result<File, AstError> {
+    let dict = match val {
+        Value::Dict(d) => d,
+        _ => {
+            return Err(AstError {
+                message: "file must be Dict".into(),
+                field_path: vec![],
+            })
+        }
+    };
+
+    // Get the documents list
+    let documents_val = get_dict_field(dict, "documents", &[], ctx)?;
+    let documents_list = extract_list(&documents_val, &["documents"], ctx)?;
+
+    let mut documents = Vec::new();
+    for (i, doc_val) in documents_list.into_iter().enumerate() {
+        let i_str = i.to_string();
+        let doc_dict = match &doc_val {
+            Value::Dict(d) => d,
+            _ => {
+                return Err(AstError {
+                    message: "document must be Dict".into(),
+                    field_path: vec!["documents".to_string(), i_str],
+                })
+            }
+        };
+
+        // Extract expressions
+        let exprs_val = get_dict_field(doc_dict, "expressions", &["documents", &i_str], ctx)?;
+        let exprs_list = extract_list(&exprs_val, &["documents", &i_str, "expressions"], ctx)?;
+        let mut expressions = Vec::new();
+        for expr_val in exprs_list.into_iter() {
+            let expr = dict_to_ast(&expr_val, ctx)?;
+            expressions.push(Rc::new(expr));
+        }
+
+        // Extract name (string or None if empty dict)
+        let name_val = get_field(doc_dict, "name", &["documents", &i_str], ctx)?;
+        let name = match &name_val {
+            Value::String { source, start, end } => Some(source[*start..*end].to_string()),
+            Value::Dict(d) if d.is_empty() => None,
+            _ => {
+                return Err(AstError {
+                    message: "name must be String or empty Dict".into(),
+                    field_path: vec!["documents".to_string(), i_str, "name".to_string()],
+                })
+            }
+        };
+
+        // Extract stage (nominal variant: [Runtime] or [Type])
+        let stage_val = get_dict_field(doc_dict, "stage", &["documents", &i_str], ctx)?;
+        let stage = match &stage_val {
+            Value::Variant { tag, payload: None } => match tag.as_str() {
+                "Runtime" => Some(Stage::Runtime),
+                "Type" => Some(Stage::Type),
+                _ => {
+                    return Err(AstError {
+                        message: format!("unknown stage variant: {}", tag),
+                        field_path: vec!["documents".to_string(), i_str, "stage".to_string()],
+                    })
+                }
+            },
+            _ => {
+                return Err(AstError {
+                    message: "stage must be Variant with no payload".into(),
+                    field_path: vec!["documents".to_string(), i_str, "stage".to_string()],
+                })
+            }
+        };
+
+        // Extract output-type (annotation or None if empty dict)
+        let output_type_val = get_dict_field(doc_dict, "output-type", &["documents", &i_str], ctx)?;
+        let output_type = match &output_type_val {
+            Value::Dict(d) if d.is_empty() => None,
+            _ => Some(dict_to_annotation(
+                &output_type_val,
+                &["documents", &i_str, "output-type"],
+                ctx,
+            )?),
+        };
+
+        // Extract expects (annotation or None if empty dict)
+        let expects_val = get_dict_field(doc_dict, "expects", &["documents", &i_str], ctx)?;
+        let expects = match &expects_val {
+            Value::Dict(d) if d.is_empty() => None,
+            _ => Some(dict_to_annotation(
+                &expects_val,
+                &["documents", &i_str, "expects"],
+                ctx,
+            )?),
+        };
+
+        // caps is always None (not serialized by document_to_dict)
+        let caps = None;
+
+        // Extract span
+        let span = extract_span(doc_dict, ctx).unwrap_or_else(Span::origin);
+
+        documents.push(Spanned::new(
+            Document {
+                expressions,
+                name,
+                output_type,
+                expects,
+                caps,
+                stage,
+            },
+            span,
+        ));
+    }
+
+    Ok(File { documents })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
