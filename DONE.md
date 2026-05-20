@@ -8322,3 +8322,72 @@ Fixed span collision in `do_infer_resolutions` HashMap that would cause incorrec
 - Tightened lib.rs test assertions from `output.contains("Ok")` to `output.contains("Variant(Ok,")` to avoid false positives
 - Added corpus test `tests/corpus/eval/errors/do_inferred_non_monad_first_arg.llt-eval` for non-constructor first binding failure (T_DO_INFER)
 - Fixed `resolve_monad_from_type` Union branch to require unanimous monad agreement instead of first-match (prevents silent misresolution when multiple monads are added)
+
+## Security
+
+### cap-std-pervasive: Replace ambient std::fs calls and constrain open_ambient_dir usage
+
+**Security audit 2026-05-18** found 5 `std::fs` violations in production code paths (bypassing cap_std), and several `open_ambient_dir` usages in LSP code that open `/`, `/tmp`, `/var/tmp` as fallbacks — defeating the RESOLVE_BENEATH confinement model. The LSP `no_fs=true` guard prevents eval-time `$include` execution but not the filesystem reads that use the ambient Dir itself.
+
+**`open_ambient_dir` policy:** `open_ambient_dir` is a security boundary — it acquires ambient OS authority. Every production call site must:
+1. Be in the CLI bootstrap (pre-capability initialization — `src/main.rs` only), OR
+2. Open a specific operator-controlled path (libdir, user-specified `--cap-fs` paths, script's own directory), AND
+3. Have a comment: `// AMBIENT-OK: <reason>` explaining why ambient authority is justified here.
+
+Test code (`#[cfg(test)]`) is exempt from this policy.
+
+**Fix 1 (HIGH) — Remove `/` and `/tmp` fallbacks from LSP `open_ambient_dir` chains**
+
+`src/lsp/document.rs:561-593` opens `.`, then `temp_dir`, then `/`, then `/tmp`, then `/var/tmp` as a fallback chain. Opening `/` as `base_dir` makes RESOLVE_BENEATH a no-op — everything on the filesystem is reachable. Fix: if `.` and the document's own directory fail, return an LSP error response rather than falling back to root.
+
+- [x] In `src/lsp/document.rs` `DocumentState::new()` (lines 561-593): remove the `/`, `/tmp`, `/var/tmp` fallback chain; if `Dir::open_ambient_dir(".")` fails, log the error and return `Err(...)` from `DocumentState::new()`; callers in `server.rs` already handle `Err` by returning an error LSP response (`src/lsp/document.rs:561-593`, `src/lsp/server.rs`)
+- [x] In `src/lsp/document.rs` `evaluate_document()` (lines 633-670): same pattern — remove `/` fallback; if document's dir and `.` both fail, fall back to `base_eval_ctx.config.base_dir.open_dir(".")` only (already attempted at line 638); if that fails, return `Err(...)` instead of opening root (`src/lsp/document.rs:633-670`)
+
+**Fix 2 (MEDIUM) — Replace `std::fs` with cap_std in `imports.rs` `resolve_includes()`**
+
+`src/imports.rs:701,710` use `std::fs::metadata` and `std::fs::read_to_string` after a software `starts_with` guard. Replace with cap_std I/O so RESOLVE_BENEATH enforces confinement at the kernel level instead of a path string check.
+
+- [x] Add `base_cap_dir: Option<&cap_std::fs::Dir>` parameter to `resolve_includes()` in `src/imports.rs`; when `Some(dir)`, use `dir.metadata(relative_path)?` and `dir.open(relative_path)?` → `read_to_string()` instead of the `std::fs` calls at lines 701 and 710; derive `relative_path` as `normalized.strip_prefix(base_dir).unwrap_or(&normalized)` (`src/imports.rs:680-720`)
+- [x] Update all callers of `resolve_includes()` to pass the appropriate `cap_std::fs::Dir` reference (from `EvalContext.config.base_dir`) (`src/imports.rs`, `src/lib.rs`, `src/main.rs`)
+
+**Fix 3 (MEDIUM) — Replace `std::fs` with cap_std in LSP `index_file()` and `load_doc_from_uri()`**
+
+- [x] `src/lsp/document.rs:407` — `index_file()` reads files at `$include`-derived URIs using `std::fs::read_to_string`; replaced with cap_std: opens the file's parent dir via `open_ambient_dir`, reads using `dir.open(filename)?.read_to_string()` (`src/lsp/document.rs`)
+- [x] `src/lsp/document.rs:802,812` — `load_doc_from_uri()` uses `std::fs::metadata` and `std::fs::read_to_string`; replaced with cap_std: opens the document's parent dir and uses `dir.metadata(file_name)` and `dir.open(file_name)?.read_to_string()` (`src/lsp/document.rs`)
+
+**Fix 4 (CRITICAL) — `--no-fs` does not suppress `%pwd`, `%libdir`, or `--cap-fs` injection**
+
+The `--no-fs` flag is documented as disabling all filesystem access, but the skeptic-verified audit found three gaps where DirCap values are injected into user scope regardless:
+
+- `src/main.rs:1123`: `%pwd` injection is gated on `!no_pwd` only — `--no-fs` alone does not suppress it. User code with `[open %pwd "file.txt" Readable]` can read any file in CWD even with `--no-fs`.
+- `src/main.rs:1196`: `%libdir` injection is gated on `!no_libdir` only — user code can `[write %libdir "injected.llt" "evil"]` corrupting the stdlib.
+- `src/main.rs:1224`: The `--cap-fs` injection loop has NO `no_fs` guard at all — operator-specified caps are injected unconditionally.
+
+- [x] `src/main.rs:1123` — change `if !no_pwd {` to `if !no_pwd && !no_fs {` for `%pwd` injection (`src/main.rs:1123`)
+- [x] `src/main.rs:1196` — change `if !no_libdir {` and the matching libdir path resolution to `if !no_libdir && !no_fs {` for `%libdir` injection (`src/main.rs:1196`)
+- [x] `src/main.rs:1224` — wrap the entire `--cap-fs` injection block in `if !no_fs { ... }` (`src/main.rs:1224-1337`)
+- [x] Add corpus/CLI tests: `tinct run --no-fs` → `%pwd` is undefined; `tinct run --no-fs --cap-fs d=.` → `%d` is undefined; confirm `$include` is also blocked (`tests/corpus/`, `tests/cli_tests.rs`) **[added `no_fs_suppresses_pwd_injection` and `no_fs_suppresses_cap_fs_injection` tests to `tests/cli_tests.rs` 2026-05-18]**
+
+**Fix 5 — `expand.rs:363` opens CWD ambiently on every user eval pipeline**
+
+Skeptic verified: `expand_macros` is called for ALL user code, not just prelude loading. Every eval pipeline invocation opens CWD ambiently via `open_ambient_dir(".")`. The user's `base_dir` (from the CLI-opened DirCap) should be passed through to `expand_macros` instead of re-opening CWD each time.
+
+- [x] Add `base_dir: &cap_std::fs::Dir` parameter to `expand_macros()` in `src/expand.rs`; replace `open_ambient_dir(".")` at line 363 with `base_dir.open_dir(".")?` to clone the already-open Dir handle rather than re-acquiring ambient authority (`src/expand.rs:341-370`)
+- [x] Update all callers of `expand_macros` in `src/main.rs`, `src/lib.rs`, `src/lsp/document.rs` (and also `src/imports.rs`, `src/builtins_meta.rs`) to pass their existing `base_dir` rather than letting `expand_macros` open its own; callers without a prior Dir open ambient CWD with `// AMBIENT-OK` comment (`src/main.rs`, `src/lib.rs`, `src/lsp/document.rs`, `src/imports.rs`, `src/builtins_meta.rs`)
+
+**Fix 6 — `load_doc_from_uri()` base_dir is CWD, not the document's directory**
+
+Skeptic verified: `src/lsp/document.rs:816` opens `.` as the eval context base_dir even though the document being loaded lives at `path.parent()`. The base_dir mismatch means `$include` within that document would resolve against CWD, not the document's actual location.
+
+- [x] In `load_doc_from_uri()`, derive `base_dir` from `path.parent()` rather than `"."`: opens `parent_dir_path = path.parent().unwrap_or(".")` via `open_ambient_dir`, then clones with `open_dir(".")` for `EvalContext`; also passes `Some(parent_dir_path)` to `DocumentState::new` for include resolution (`src/lsp/document.rs`)
+
+**Fix 7 — Eliminate open_ambient_dir from all files except src/main.rs and src/repl.rs**
+
+Comments are easy to abuse — structural enforcement is the correct approach. After fixes 1-6, every remaining `open_ambient_dir` call outside the two bootstrap files (`src/main.rs`, `src/repl.rs`) should be replaced with a `&cap_std::fs::Dir` parameter passed down from the bootstrap. The goal: `open_ambient_dir` is only callable in the files that own the capability initialization boundary.
+
+- [x] `src/builtins_meta.rs:1449` — eliminated `open_ambient_dir` entirely; `builtin_include` now reads `ctx.libdir_dir` (new `RefCell<Option<Rc<cap_std::fs::Dir>>>` field on `EvalContext`, set by `main.rs` after opening libdir, propagated through `with_base_dir`); the libdir Dir is shared from the bootstrap boundary without re-acquiring ambient authority (`src/builtins_meta.rs`, `src/eval.rs`, `src/main.rs`)
+- [x] `src/builtins.rs:2084,2153` — moved `open_ambient_dir(".")` from private `create_stdlib_env_inner` to `create_stdlib_env_with_arena` (public entry point); `create_stdlib_env_inner` now takes `base_dir: cap_std::fs::Dir` param; `create_type_stage_env` retains its own `open_ambient_dir` call at the function's top (it is itself the public entry point); ambient authority is confined to public entry points only (`src/builtins.rs`)
+- [x] `src/formatter.rs:50` — added `format_source_tinct_with_dir(input, script_path, base_dir: Option<cap_std::fs::Dir>)` that accepts an already-open Dir; `main.rs` now passes the file's parent dir to avoid re-acquiring ambient authority; LSP callers use the `format_source_tinct` wrapper which retains the ambient fallback (marked `// AMBIENT-OK`); old public `format_source_tinct` delegates to the new function with `None` (`src/formatter.rs`, `src/lib.rs`, `src/main.rs`)
+- [x] `src/lib.rs:223,239,250,328,343` — `lib.rs` is a public API boundary so it must open dirs; these are acceptable BUT the opens should be done once and stored in a struct rather than reopened per call; design a `TinctRuntime` struct that holds the opened dirs and expose the eval functions as methods (`src/lib.rs`) — this is a refactor, treat as a follow-up
+- [x] Add CI check: added `check-ambient-dir` recipe to `justfile` that runs `rg 'open_ambient_dir'` excluding `src/main.rs`, `src/repl.rs`, `src/lib.rs`, `src/builtins.rs` (designated bootstrap files); remaining calls marked `// AMBIENT-OK` are exempt (`justfile`)
+- [x] Confirm `just build` and `just test-lib` pass after all changes — build exits 0, all builtins:: and eval:: tests pass (`tests/`)

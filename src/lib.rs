@@ -5,6 +5,7 @@
 //! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 //!
 //! Additional public API:
+//! - [`TinctRuntime`] -- pre-initialized runtime for efficient multi-evaluation (opens directories once)
 //! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input (requires EvalContext; `include` uses context base_dir for resolution)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
@@ -137,6 +138,324 @@ pub use lsp::run_lsp;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{ClockCapInner, DirPerms, Environment, Key, NetCapEntry, Thunk, Value};
 
+/// A pre-initialized tinct runtime that can evaluate multiple sources without
+/// re-opening ambient directories or re-creating the stdlib environment.
+///
+/// This struct opens filesystem handles once in [`TinctRuntime::new`] and reuses
+/// them across multiple [`TinctRuntime::eval_source`] calls. This is more efficient
+/// than the free functions (which open ambient dirs on every call) when evaluating
+/// multiple sources in a session.
+///
+/// # Example
+/// ```
+/// use tinct::TinctRuntime;
+/// let runtime = TinctRuntime::new().unwrap();
+/// let result1 = runtime.eval_source("1 + 2").unwrap();
+/// let result2 = runtime.eval_source("[call $type-of 42]").unwrap();
+/// ```
+pub struct TinctRuntime {
+    cwd_dir: cap_std::fs::Dir,
+    base_dir: cap_std::fs::Dir,
+    libdir_dir: Option<cap_std::fs::Dir>,
+}
+
+impl TinctRuntime {
+    /// Create a new tinct runtime by opening ambient directories once.
+    ///
+    /// # Errors
+    /// Returns an error if the current working directory cannot be opened or resolved.
+    pub fn new() -> Result<Self, String> {
+        // AMBIENT-OK: TinctRuntime::new is the single point of ambient directory access.
+        // All subsequent evaluations reuse these pre-opened handles.
+        let cwd_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open CWD: {e}"))?;
+
+        let base_dir_path = std::env::current_dir()
+            .ok()
+            .and_then(|d| d.canonicalize().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+        let base_dir =
+            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
+                .map_err(|e| format!("cannot open base directory: {e}"))?;
+
+        let libdir_dir = find_libdir_path().and_then(|path| {
+            cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority()).ok()
+        });
+
+        Ok(Self {
+            cwd_dir,
+            base_dir,
+            libdir_dir,
+        })
+    }
+
+    /// Parse and evaluate LLT source, returning the result in **LLT display format**.
+    ///
+    /// This is the [`TinctRuntime`] equivalent of the free function [`eval_source`].
+    pub fn eval_source(&self, input: &str) -> Result<String, String> {
+        self.eval_source_with_config(input, false)
+    }
+
+    /// Parse and evaluate LLT source with configurable filesystem access.
+    ///
+    /// This is the [`TinctRuntime`] equivalent of the free function [`eval_source_with_config`].
+    pub fn eval_source_with_config(&self, input: &str, no_fs: bool) -> Result<String, String> {
+        let file = parse(input).map_err(|e| format!("{e}"))?;
+        // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
+        // See also: src/main.rs:234-240 (run_eval pipeline)
+        // Expand macros (pre-desugar AST transformation).
+        let expand_result =
+            expand::expand_macros(file.file, no_fs, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+        let mut file = expand_result.file;
+        let provenance = expand_result.provenance;
+
+        // Helper: attach macro expansion provenance to errors before formatting.
+        // Checks if the error's definition span, materialization span, or any stack
+        // frame span matches a provenance entry from macro expansion.
+        let attach_provenance = |mut e: Box<error::EvalError>| -> String {
+            if e.macro_expansion.is_none() {
+                // Check definition span
+                let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
+                // Check materialization span
+                if found.is_none() {
+                    if let Some(mat_span) = e.materialization_span {
+                        found = provenance.get(&expand::SpanKey::from(mat_span));
+                    }
+                }
+                // Check stack frame spans
+                if found.is_none() {
+                    for frame in &e.stack {
+                        if let Some(prov) = provenance.get(&expand::SpanKey::from(frame.span)) {
+                            found = Some(prov);
+                            break;
+                        }
+                    }
+                }
+                // Check secondary span
+                if found.is_none() {
+                    if let Some((sec_span, _)) = e.secondary_span {
+                        found = provenance.get(&expand::SpanKey::from(sec_span));
+                    }
+                }
+                if let Some(prov) = found {
+                    e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
+                }
+            }
+            format!("{e}")
+        };
+        // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
+        desugar::desugar_file(&mut file.node);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        // Populates VarRef resolved caches with (level, slot) coordinates.
+        resolve::resolve_file(&file.node);
+        // Type errors are advisory; evaluation proceeds regardless.
+        // Use the version that returns InferState so we can extract boundary_guards.
+        let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
+            typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
+                &file.node,
+                crate::imports::build_prelude_env(),
+                false, // disable scheme_map (not needed for eval)
+                false, // not in prelude load
+            );
+        // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
+        // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
+        // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
+        // causing an index-out-of-bounds panic. The shared arena contains all ThunkIds
+        // allocated during prelude and macros.llt loading.
+        let (env, stdlib_arena) =
+            builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        // Create evaluation context (current directory, configurable sandbox)
+        let ctx = eval::EvalContext::new_sharing_arena(
+            self.base_dir
+                .try_clone()
+                .map_err(|e| format!("cannot clone base_dir: {e}"))?,
+            Rc::clone(&env),
+            no_fs,
+            stdlib_arena,
+            expand_result.macro_injects_map,
+        );
+        // Wire boundary guards and do-infer resolutions from type inference to the eval context
+        ctx.set_boundary_guards(infer_state.boundary_guards);
+        ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
+        // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
+        // This allows corpus tests and included files to use cap-qualified includes.
+        if !no_fs {
+            if let Ok(pwd_dir) = self.base_dir.try_clone() {
+                let pwd_val = Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: value::DirPerms::full(),
+                };
+                let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+                env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+            }
+            if let Some(ref libdir_dir) = self.libdir_dir {
+                if let Ok(cloned) = libdir_dir.try_clone() {
+                    let libdir_val = Value::DirCap {
+                        dir: Rc::new(cloned),
+                        perms: value::DirPerms::full(),
+                    };
+                    let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
+                    env.borrow_mut().insert("%libdir".to_string(), libdir_thunk);
+                }
+            }
+        }
+        let thunk =
+            eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
+        let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
+        let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
+        value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
+    }
+
+    /// Parse and evaluate LLT source with optional NetCap injections.
+    ///
+    /// This is the [`TinctRuntime`] equivalent of the free function [`eval_source_with_cap_net`].
+    pub fn eval_source_with_cap_net(
+        &self,
+        input: &str,
+        no_fs: bool,
+        cap_net: &[(String, String)],
+    ) -> Result<String, String> {
+        use std::collections::HashMap;
+
+        // Parse cap_net entries into grouped allowlists
+        let mut grouped: HashMap<String, Vec<crate::value::NetCapEntry>> = HashMap::new();
+        for (name, entry_str) in cap_net {
+            let entry = parse_net_cap_entry(entry_str)
+                .map_err(|e| format!("cap_net directive error: {e}"))?;
+            grouped.entry(name.clone()).or_default().push(entry);
+        }
+
+        // Use the standard config path, then inject caps after env creation
+        let file = parse(input).map_err(|e| format!("{e}"))?;
+        let expand_result =
+            expand::expand_macros(file.file, no_fs, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+        let mut file = expand_result.file;
+        let provenance = expand_result.provenance;
+
+        let attach_provenance = |mut e: Box<error::EvalError>| -> String {
+            if e.macro_expansion.is_none() {
+                let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
+                if found.is_none() {
+                    if let Some(mat_span) = e.materialization_span {
+                        found = provenance.get(&expand::SpanKey::from(mat_span));
+                    }
+                }
+                if let Some(prov) = found {
+                    e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
+                }
+            }
+            format!("{e}")
+        };
+
+        desugar::desugar_file(&mut file.node);
+        resolve::resolve_file(&file.node);
+        // Use the version that returns InferState so we can extract boundary_guards.
+        let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
+            typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
+                &file.node,
+                crate::imports::build_prelude_env(),
+                false, // disable scheme_map (not needed for eval)
+                false, // not in prelude load
+            );
+        let (env, stdlib_arena) =
+            builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+
+        let ctx = eval::EvalContext::new_sharing_arena(
+            self.base_dir
+                .try_clone()
+                .map_err(|e| format!("cannot clone base_dir: {e}"))?,
+            Rc::clone(&env),
+            no_fs,
+            stdlib_arena,
+            expand_result.macro_injects_map,
+        );
+        // Wire boundary guards and do-infer resolutions from type inference to the eval context
+        ctx.set_boundary_guards(infer_state.boundary_guards);
+        ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
+
+        if !no_fs {
+            if let Ok(pwd_dir) = self.base_dir.try_clone() {
+                let pwd_val = Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: value::DirPerms::full(),
+                };
+                let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+                env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+            }
+        }
+
+        // Inject NetCap values for each named cap
+        for (name, entries) in grouped {
+            let cap_val = Value::NetCap(Rc::new(entries));
+            let cap_thunk = Rc::new(Thunk::new_materialized(cap_val, Span::origin()));
+            env.borrow_mut().insert(format!("%{}", name), cap_thunk);
+        }
+
+        let thunk =
+            eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
+        let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
+        let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
+        value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
+    }
+
+    /// Parse and type-check LLT source code.
+    ///
+    /// This is the [`TinctRuntime`] equivalent of the free function [`typecheck_source`].
+    pub fn typecheck_source(&self, input: &str) -> Result<(), String> {
+        let file = parse(input).map_err(|e| format!("{e}"))?;
+        // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
+        // Expand macros (pre-desugar AST transformation).
+        let expand_result =
+            expand::expand_macros(file.file, false, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+        let mut file = expand_result.file;
+        // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
+        desugar::desugar_file(&mut file.node);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        resolve::resolve_file(&file.node);
+        // Type check the file with prelude-seeded environment
+        let env = imports::build_prelude_env();
+        let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck::typecheck_file_with_types_and_env(&file.node, env);
+        if type_errors.is_empty() && diagnostics.is_empty() {
+            Ok(())
+        } else {
+            let mut msgs = Vec::new();
+            for e in &type_errors {
+                msgs.push(format!("{}", e));
+            }
+            for d in &diagnostics {
+                msgs.push(d.message.clone());
+            }
+            Err(msgs.join("\n"))
+        }
+    }
+
+    /// Parse and type-check LLT source code (errors only, no quality diagnostics).
+    ///
+    /// This is the [`TinctRuntime`] equivalent of the free function [`typecheck_source_errors_only`].
+    pub fn typecheck_source_errors_only(&self, input: &str) -> Result<(), String> {
+        let file = parse(input).map_err(|e| format!("{e}"))?;
+        let expand_result =
+            expand::expand_macros(file.file, false, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+        let mut file = expand_result.file;
+        desugar::desugar_file(&mut file.node);
+        resolve::resolve_file(&file.node);
+        let env = imports::build_prelude_env();
+        let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
+            typecheck::typecheck_file_with_types_and_env(&file.node, env);
+        if type_errors.is_empty() {
+            Ok(())
+        } else {
+            let mut msgs = Vec::new();
+            for e in &type_errors {
+                msgs.push(format!("{}", e));
+            }
+            Err(msgs.join("\n"))
+        }
+    }
+}
+
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
 /// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) -- not JSON.
 ///
@@ -144,8 +463,11 @@ pub use value::{ClockCapInner, DirPerms, Environment, Key, NetCapEntry, Thunk, V
 /// The output format recursively materializes all values (including dict entries)
 /// into a readable representation. Primarily used for testing and corpus validation.
 /// For JSON output, use [`value_to_json`] after evaluation instead.
+///
+/// **Note**: This is a convenience wrapper that creates a [`TinctRuntime`] on each call.
+/// For multiple evaluations, create a [`TinctRuntime`] once and reuse it.
 pub fn eval_source(input: &str) -> Result<String, String> {
-    eval_source_with_config(input, false)
+    TinctRuntime::new()?.eval_source(input)
 }
 
 /// Parse and evaluate LLT source with configurable filesystem access.
@@ -153,121 +475,11 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// This is a variant of [`eval_source`] that allows control over the `no_fs` flag.
 /// When `no_fs` is `true`, filesystem operations (like `include`) are disabled.
 /// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
+///
+/// **Note**: This is a convenience wrapper that creates a [`TinctRuntime`] on each call.
+/// For multiple evaluations, create a [`TinctRuntime`] once and reuse it.
 pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
-    let file = parse(input).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
-    // See also: src/main.rs:234-240 (run_eval pipeline)
-    // Expand macros (pre-desugar AST transformation).
-    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
-    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(file.file, no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
-    let mut file = expand_result.file;
-    let provenance = expand_result.provenance;
-
-    // Helper: attach macro expansion provenance to errors before formatting.
-    // Checks if the error's definition span, materialization span, or any stack
-    // frame span matches a provenance entry from macro expansion.
-    let attach_provenance = |mut e: Box<error::EvalError>| -> String {
-        if e.macro_expansion.is_none() {
-            // Check definition span
-            let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
-            // Check materialization span
-            if found.is_none() {
-                if let Some(mat_span) = e.materialization_span {
-                    found = provenance.get(&expand::SpanKey::from(mat_span));
-                }
-            }
-            // Check stack frame spans
-            if found.is_none() {
-                for frame in &e.stack {
-                    if let Some(prov) = provenance.get(&expand::SpanKey::from(frame.span)) {
-                        found = Some(prov);
-                        break;
-                    }
-                }
-            }
-            // Check secondary span
-            if found.is_none() {
-                if let Some((sec_span, _)) = e.secondary_span {
-                    found = provenance.get(&expand::SpanKey::from(sec_span));
-                }
-            }
-            if let Some(prov) = found {
-                e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
-            }
-        }
-        format!("{e}")
-    };
-    // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
-    desugar::desugar_file(&mut file.node);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    // Populates VarRef resolved caches with (level, slot) coordinates.
-    resolve::resolve_file(&file.node);
-    // Type errors are advisory; evaluation proceeds regardless.
-    // Use the version that returns InferState so we can extract boundary_guards.
-    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
-        typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
-            &file.node,
-            crate::imports::build_prelude_env(),
-            false, // disable scheme_map (not needed for eval)
-            false, // not in prelude load
-        );
-    // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
-    // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
-    // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
-    // causing an index-out-of-bounds panic. The shared arena contains all ThunkIds
-    // allocated during prelude and macros.llt loading.
-    let (env, stdlib_arena) =
-        builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
-    // Create evaluation context (current directory, configurable sandbox)
-    let base_dir_path = std::env::current_dir()
-        .ok()
-        .and_then(|d| d.canonicalize().ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx = eval::EvalContext::new_sharing_arena(
-        base_dir,
-        Rc::clone(&env),
-        no_fs,
-        stdlib_arena,
-        expand_result.macro_injects_map,
-    );
-    // Wire boundary guards and do-infer resolutions from type inference to the eval context
-    ctx.set_boundary_guards(infer_state.boundary_guards);
-    ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
-    // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
-    // This allows corpus tests and included files to use cap-qualified includes.
-    if !no_fs {
-        if let Ok(pwd_dir) =
-            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        {
-            let pwd_val = Value::DirCap {
-                dir: Rc::new(pwd_dir),
-                perms: value::DirPerms::full(),
-            };
-            let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        }
-        if let Some(libdir_path) = find_libdir_path() {
-            if let Ok(libdir_dir) =
-                cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority())
-            {
-                let libdir_val = Value::DirCap {
-                    dir: Rc::new(libdir_dir),
-                    perms: value::DirPerms::full(),
-                };
-                let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
-                env.borrow_mut().insert("%libdir".to_string(), libdir_thunk);
-            }
-        }
-    }
-    let thunk = eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
-    let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
-    let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
-    value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
+    TinctRuntime::new()?.eval_source_with_config(input, no_fs)
 }
 
 /// Parse, eval, and materialize LLT source with optional NetCap injections.
@@ -278,100 +490,15 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
 /// and `entry_string` is an allowlist entry string (same format as `--cap-net NAME=ENTRY`).
 ///
 /// Multiple entries with the same name accumulate into one NetCap allowlist.
+///
+/// **Note**: This is a convenience wrapper that creates a [`TinctRuntime`] on each call.
+/// For multiple evaluations, create a [`TinctRuntime`] once and reuse it.
 pub fn eval_source_with_cap_net(
     input: &str,
     no_fs: bool,
     cap_net: &[(String, String)],
 ) -> Result<String, String> {
-    use std::collections::HashMap;
-
-    // Parse cap_net entries into grouped allowlists
-    let mut grouped: HashMap<String, Vec<crate::value::NetCapEntry>> = HashMap::new();
-    for (name, entry_str) in cap_net {
-        let entry =
-            parse_net_cap_entry(entry_str).map_err(|e| format!("cap_net directive error: {e}"))?;
-        grouped.entry(name.clone()).or_default().push(entry);
-    }
-
-    // Use the standard config path, then inject caps after env creation
-    let file = parse(input).map_err(|e| format!("{e}"))?;
-    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
-    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(file.file, no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
-    let mut file = expand_result.file;
-    let provenance = expand_result.provenance;
-
-    let attach_provenance = |mut e: Box<error::EvalError>| -> String {
-        if e.macro_expansion.is_none() {
-            let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
-            if found.is_none() {
-                if let Some(mat_span) = e.materialization_span {
-                    found = provenance.get(&expand::SpanKey::from(mat_span));
-                }
-            }
-            if let Some(prov) = found {
-                e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
-            }
-        }
-        format!("{e}")
-    };
-
-    desugar::desugar_file(&mut file.node);
-    resolve::resolve_file(&file.node);
-    // Use the version that returns InferState so we can extract boundary_guards.
-    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
-        typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
-            &file.node,
-            crate::imports::build_prelude_env(),
-            false, // disable scheme_map (not needed for eval)
-            false, // not in prelude load
-        );
-    let (env, stdlib_arena) =
-        builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
-
-    let base_dir_path = std::env::current_dir()
-        .ok()
-        .and_then(|d| d.canonicalize().ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open base directory: {e}"))?;
-    let ctx = eval::EvalContext::new_sharing_arena(
-        base_dir,
-        Rc::clone(&env),
-        no_fs,
-        stdlib_arena,
-        expand_result.macro_injects_map,
-    );
-    // Wire boundary guards and do-infer resolutions from type inference to the eval context
-    ctx.set_boundary_guards(infer_state.boundary_guards);
-    ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
-
-    if !no_fs {
-        if let Ok(pwd_dir) =
-            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        {
-            let pwd_val = Value::DirCap {
-                dir: Rc::new(pwd_dir),
-                perms: value::DirPerms::full(),
-            };
-            let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        }
-    }
-
-    // Inject NetCap values for each named cap
-    for (name, entries) in grouped {
-        let cap_val = Value::NetCap(Rc::new(entries));
-        let cap_thunk = Rc::new(Thunk::new_materialized(cap_val, Span::origin()));
-        env.borrow_mut().insert(format!("%{}", name), cap_thunk);
-    }
-
-    let thunk = eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
-    let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
-    let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
-    value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
+    TinctRuntime::new()?.eval_source_with_cap_net(input, no_fs, cap_net)
 }
 
 /// Parse a NetCap allowlist entry string (same logic as CLI `--cap-net NAME=ENTRY`).
@@ -418,36 +545,11 @@ fn parse_net_cap_entry(s: &str) -> Result<crate::value::NetCapEntry, String> {
 /// diagnostic messages) and the valid corpus (which asserts zero warnings unless an
 /// `=== warn` section is present). For corpus tests that only care about type *errors*
 /// (not quality diagnostics), use [`typecheck_source_errors_only`] instead.
+///
+/// **Note**: This is a convenience wrapper that creates a [`TinctRuntime`] on each call.
+/// For multiple typechecks, create a [`TinctRuntime`] once and reuse it.
 pub fn typecheck_source(input: &str) -> Result<(), String> {
-    let file = parse(input).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
-    // Expand macros (pre-desugar AST transformation).
-    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
-    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(file.file, false, &expand_base_dir).map_err(|e| format!("{e}"))?;
-    let mut file = expand_result.file;
-    // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
-    desugar::desugar_file(&mut file.node);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    resolve::resolve_file(&file.node);
-    // Type check the file with prelude-seeded environment
-    let env = imports::build_prelude_env();
-    let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck::typecheck_file_with_types_and_env(&file.node, env);
-    if type_errors.is_empty() && diagnostics.is_empty() {
-        Ok(())
-    } else {
-        let mut msgs = Vec::new();
-        for e in &type_errors {
-            msgs.push(format!("{}", e));
-        }
-        for d in &diagnostics {
-            msgs.push(d.message.clone());
-        }
-        Err(msgs.join("\n"))
-    }
+    TinctRuntime::new()?.typecheck_source(input)
 }
 
 /// Parse and type-check LLT source code (errors only, no quality diagnostics).
@@ -458,28 +560,11 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
 /// Used by the typecheck corpus (`tests/corpus/eval/typecheck/`) which validates that
 /// programs type-check without errors but may legitimately contain polymorphic or
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
+///
+/// **Note**: This is a convenience wrapper that creates a [`TinctRuntime`] on each call.
+/// For multiple typechecks, create a [`TinctRuntime`] once and reuse it.
 pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
-    let file = parse(input).map_err(|e| format!("{e}"))?;
-    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
-    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(file.file, false, &expand_base_dir).map_err(|e| format!("{e}"))?;
-    let mut file = expand_result.file;
-    desugar::desugar_file(&mut file.node);
-    resolve::resolve_file(&file.node);
-    let env = imports::build_prelude_env();
-    let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck::typecheck_file_with_types_and_env(&file.node, env);
-    if type_errors.is_empty() {
-        Ok(())
-    } else {
-        let mut msgs = Vec::new();
-        for e in &type_errors {
-            msgs.push(format!("{}", e));
-        }
-        Err(msgs.join("\n"))
-    }
+    TinctRuntime::new()?.typecheck_source_errors_only(input)
 }
 
 // --- Value Serializer Visitor Pattern ---
