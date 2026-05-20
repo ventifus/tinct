@@ -1,6 +1,6 @@
 # What If: Runtime v2 — AST Redesign, Native Value Types, and Async Parallel Evaluation
 
-**State:** Draft — 2026-05-19
+**State:** Accepted — 2026-05-20
 
 **Supersedes:**
 - [`ast-value-types.md`](ast-value-types.md) — fully absorbed
