@@ -430,17 +430,17 @@ fn main() {
             fail_on_errors,
             cap_fs,
             cap_net,
-        } => run_literate(
-            &file,
-            &mode,
+        } => run_literate(&LiterateConfig {
+            file_path: &file,
+            mode: &mode,
             no_substitute,
             strict,
             in_place,
             verify,
             fail_on_errors,
-            &cap_fs,
-            &cap_net,
-        ),
+            cap_fs: &cap_fs,
+            cap_net: &cap_net,
+        }),
     };
 
     match result {
@@ -2264,6 +2264,19 @@ fn read_stdin_json() -> Result<Option<serde_json::Value>, String> {
     Ok(Some(json))
 }
 
+/// Configuration for literate mode operations.
+struct LiterateConfig<'a> {
+    file_path: &'a str,
+    mode: &'a LiterateMode,
+    no_substitute: bool,
+    strict: bool,
+    in_place: bool,
+    verify: bool,
+    fail_on_errors: bool,
+    cap_fs: &'a [String],
+    cap_net: &'a [String],
+}
+
 /// Process a Markdown file in literate mode.
 ///
 /// Extracts ```` ```tinct ```` and ```` ```llt ```` fenced code blocks and
@@ -2273,23 +2286,13 @@ fn read_stdin_json() -> Result<Option<serde_json::Value>, String> {
 /// - **`eval`** — join the blocks, evaluate the resulting pipeline, print JSON.
 /// - **`weave`** — evaluate each block in pipeline order; output the original
 ///   Markdown with the JSON result appended as a comment after each tinct block.
-#[allow(clippy::too_many_arguments)]
-fn run_literate(
-    file_path: &str,
-    mode: &LiterateMode,
-    no_substitute: bool,
-    strict: bool,
-    in_place: bool,
-    verify: bool,
-    fail_on_errors: bool,
-    cap_fs: &[String],
-    cap_net: &[String],
-) -> Result<(), String> {
+fn run_literate(config: &LiterateConfig) -> Result<(), String> {
+    let file_path = config.file_path;
     let markdown = read_source(file_path)?;
     let blocks = literate::extract_code_blocks(&markdown);
 
     if blocks.is_empty() {
-        match mode {
+        match config.mode {
             LiterateMode::Tangle => {
                 // Nothing to print — output empty string (no trailing newline).
                 return Ok(());
@@ -2305,7 +2308,7 @@ fn run_literate(
         }
     }
 
-    match mode {
+    match config.mode {
         LiterateMode::Tangle => {
             let tangled = literate::tangle(blocks);
             println!("{tangled}");
@@ -2314,21 +2317,10 @@ fn run_literate(
 
         LiterateMode::Eval => {
             let tangled = literate::tangle(blocks);
-            run_literate_eval(&tangled, file_path, strict, cap_fs, cap_net)
+            run_literate_eval(&tangled, config)
         }
 
-        LiterateMode::Weave => run_literate_weave(
-            &markdown,
-            &blocks,
-            file_path,
-            no_substitute,
-            strict,
-            in_place,
-            verify,
-            fail_on_errors,
-            cap_fs,
-            cap_net,
-        ),
+        LiterateMode::Weave => run_literate_weave(&markdown, &blocks, config),
     }
 }
 
@@ -2341,14 +2333,11 @@ fn run_literate(
 /// Literate mode always runs with --no-pwd and --no-env (hard-coded).
 /// Capabilities are injected via cap_fs and cap_net. %libdir is always available.
 /// %clock is set to a fixed ClockCap from the markdown file's mtime.
-#[allow(clippy::too_many_arguments)]
-fn run_literate_eval(
-    tangled: &str,
-    markdown_path: &str,
-    strict: bool,
-    cap_fs: &[String],
-    cap_net: &[String],
-) -> Result<(), String> {
+fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), String> {
+    let markdown_path = config.file_path;
+    let strict = config.strict;
+    let cap_fs = config.cap_fs;
+    let cap_net = config.cap_net;
     // Parse the tangled source.
     let ast = parse(tangled).map(|o| o.file).map_err(|e| {
         if strict {
@@ -2584,19 +2573,19 @@ fn run_literate_eval(
 /// - %clock is set to a fixed ClockCap from markdown file mtime
 /// - %libdir is always available
 /// - Capabilities injected via cap_fs and cap_net
-#[allow(clippy::too_many_arguments)]
 fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
-    markdown_path: &str,
-    no_substitute: bool,
-    strict: bool,
-    in_place: bool,
-    verify: bool,
-    fail_on_errors: bool,
-    cap_fs: &[String],
-    cap_net: &[String],
+    config: &LiterateConfig,
 ) -> Result<(), String> {
+    let markdown_path = config.file_path;
+    let no_substitute = config.no_substitute;
+    let strict = config.strict;
+    let in_place = config.in_place;
+    let verify = config.verify;
+    let fail_on_errors = config.fail_on_errors;
+    let cap_fs = config.cap_fs;
+    let cap_net = config.cap_net;
     // Evaluate the pipeline incrementally: process one block at a time, threading
     // % between them. This lets us annotate each block with the result at that point.
     let base_dir_path = if markdown_path == "-" {

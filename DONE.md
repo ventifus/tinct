@@ -8291,3 +8291,20 @@ Per `doc/whatif/completed/dir-cap-permissions.md` lines 107–109, bare `@DirCap
 - [x] Run `just lint-fix` to apply auto-fixable suggestions (covers most of: `redundant_field_names`, `redundant_closure`, `needless_borrow`, `needless_return`, `collapsible_match`, `collapsible_if`, `len_zero`, `useless_format`, `useless_conversion`, `unnecessary_cast`, `unwrap_or_default`, `needless_range_loop`, `while_let_loop`, `single_match`, `match_like_matches_macro`, `manual_map`, `needless_question_mark`, `to_string_in_format_args`, and more)
 - [x] Manually fix remaining warnings that `lint-fix` cannot auto-apply: `type_complexity`, `too_many_arguments`, `box_collection`, `borrowed_box`, `result_large_err`, `mutable_key_type`, `new_without_default`, `enum_variant_names`, `only_used_in_recursion`, `missing_const_for_thread_local`, `doc_lazy_continuation`, `doc_overindented_list_items` — these require design decisions (refactor vs. `#[allow]` with justification)
 - [x] Verify `just lint` passes (exit 0) after both steps
+
+### clippy-allow-cleanup: Remove suppressible #[allow] attributes
+
+Two clippy suppressions can be eliminated through refactoring rather than silencing.
+
+**#2 — `type_complexity` in `src/value.rs` (3 occurrences)**
+
+`take_unevaluated()`, `take_pending_builtin()`, and `take_pending_call()` return complex `Option<(Rc<...>, Rc<...>, ...)>` tuples that trip clippy's type-complexity lint. The existing comment claims "a type alias would add indirection without clarity" — the reverse is true.
+
+- [x] Add type aliases at the top of `src/value.rs` for the three tuple return types: `UnevaluatedData`, `PendingBuiltinData`, `PendingCallData`; update the three method signatures to use them; remove the three `#[allow(clippy::type_complexity)]` attrs (`src/value.rs`)
+
+**#3 — `too_many_arguments` in `src/main.rs` (3 functions) and `src/builtins_io.rs` (1 function)**
+
+`run_literate`, `run_literate_eval`, `run_literate_weave`, and `http_request_h2` all exceed clippy's 7-argument threshold.
+
+- [x] Introduce `LiterateConfig` struct in `src/main.rs` consolidating the shared parameters across `run_literate` / `run_literate_eval` / `run_literate_weave` (file_path, mode, no_substitute, strict, cap_fs, cap_net, etc.); update all three function signatures and their call sites; remove the three `#[allow(clippy::too_many_arguments)]` attrs (`src/main.rs`)
+- [x] Introduce `Http2RequestConfig` struct in `src/builtins_io.rs` for `http_request_h2` parameters (client, base_url, method_str, path, headers, body, timeout); update the function signature and its call sites; remove the `#[allow(clippy::too_many_arguments)]` attr (`src/builtins_io.rs`)

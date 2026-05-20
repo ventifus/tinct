@@ -4395,16 +4395,16 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
             call_span,
             &ctx,
         ),
-        Value::Http2Session { client, base_url } => http_request_h2(
-            client,
-            base_url,
-            method_str,
-            path_str,
-            req_headers,
-            body_str,
-            call_span,
-            &ctx,
-        ),
+        Value::Http2Session { client, base_url } => http_request_h2(&Http2RequestConfig {
+            client: &client,
+            base_url: &base_url,
+            method_str: &method_str,
+            path_str: &path_str,
+            req_headers: &req_headers,
+            body_str: &body_str,
+            span: call_span,
+            ctx: &ctx,
+        }),
         other => Err(EvalError::type_mismatch_ctx(
             "http-request".to_string(),
             "Http2Session or Http3Session",
@@ -4415,31 +4415,41 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     }
 }
 
+/// Configuration for HTTP/2 requests.
+struct Http2RequestConfig<'a> {
+    client: &'a Rc<reqwest::blocking::Client>,
+    base_url: &'a str,
+    method_str: &'a str,
+    path_str: &'a str,
+    req_headers: &'a [(String, String)],
+    body_str: &'a str,
+    span: crate::ast::Span,
+    ctx: &'a crate::eval::EvalContext,
+}
+
 /// Issue an HTTP/2 (or HTTP/1.1) request using a `reqwest::blocking::Client`.
 ///
 /// The client was configured in `builtin_http2_session` to prefer HTTP/2 via ALPN.
 /// Path is resolved relative to `base_url` (the origin stored in the session).
 /// Returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
-#[allow(clippy::too_many_arguments)]
-fn http_request_h2(
-    client: Rc<reqwest::blocking::Client>,
-    base_url: String,
-    method_str: String,
-    path_str: String,
-    req_headers: Vec<(String, String)>,
-    body_str: String,
-    span: crate::ast::Span,
-    ctx: &crate::eval::EvalContext,
-) -> EvalResult<Rc<Thunk>> {
+fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Rc<Thunk>> {
+    let client = config.client;
+    let base_url = config.base_url;
+    let method_str = config.method_str;
+    let path_str = config.path_str;
+    let req_headers = config.req_headers;
+    let body_str = config.body_str;
+    let span = config.span;
+    let ctx = config.ctx;
     // Build the full URL: base_url + path_str.
     // If path_str starts with http:// or https://, use it as-is (absolute URL).
     // Otherwise, join with base_url.
     let url = if path_str.starts_with("http://") || path_str.starts_with("https://") {
-        path_str
+        path_str.to_string()
     } else {
         let base = base_url.trim_end_matches('/');
         let path = if path_str.starts_with('/') {
-            path_str.clone()
+            path_str.to_string()
         } else {
             format!("/{}", path_str)
         };
@@ -4459,11 +4469,11 @@ fn http_request_h2(
     };
 
     let mut builder = client.request(method, &url);
-    for (k, v) in &req_headers {
+    for (k, v) in req_headers {
         builder = builder.header(k.as_str(), v.as_str());
     }
     if !body_str.is_empty() {
-        builder = builder.body(body_str);
+        builder = builder.body(body_str.to_string());
     }
 
     let response = match builder.send() {

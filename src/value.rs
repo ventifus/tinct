@@ -29,6 +29,32 @@ type GuardedData = (
     DefaultFallback,
 );
 
+/// Type alias for take_unevaluated return type
+type UnevaluatedData = (
+    Rc<Spanned<Expr>>,
+    Rc<RefCell<Environment>>,
+    Rc<crate::eval::EvalContext>,
+);
+
+/// Type alias for take_pending_builtin return type
+type PendingBuiltinData = (
+    BuiltinDef,
+    Vec<Rc<Thunk>>,
+    Option<IndexMap<String, Rc<Thunk>>>,
+    Span,
+    Rc<crate::eval::EvalContext>,
+);
+
+/// Type alias for take_pending_call return type
+type PendingCallData = (
+    Rc<Thunk>,
+    Vec<Rc<Thunk>>,
+    Option<IndexMap<String, Rc<Thunk>>>,
+    Span,
+    Rc<RefCell<Environment>>,
+    Rc<crate::eval::EvalContext>,
+);
+
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
 #[derive(Clone, Debug)]
@@ -1060,14 +1086,7 @@ impl Thunk {
 
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
     /// Returns None if the thunk is not in the Unevaluated state.
-    #[allow(clippy::type_complexity)]
-    pub fn take_unevaluated(
-        &self,
-    ) -> Option<(
-        Rc<Spanned<Expr>>,
-        Rc<RefCell<Environment>>,
-        Rc<crate::eval::EvalContext>,
-    )> {
+    pub fn take_unevaluated(&self) -> Option<UnevaluatedData> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Unevaluated {
@@ -1083,18 +1102,7 @@ impl Thunk {
         }
     }
 
-    // Return type is a one-shot destructured tuple only used in materialize();
-    // a type alias would add indirection without clarity.
-    #[allow(clippy::type_complexity)]
-    pub fn take_pending_builtin(
-        &self,
-    ) -> Option<(
-        BuiltinDef,
-        Vec<Rc<Thunk>>,
-        Option<IndexMap<String, Rc<Thunk>>>,
-        Span,
-        Rc<crate::eval::EvalContext>,
-    )> {
+    pub fn take_pending_builtin(&self) -> Option<PendingBuiltinData> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingBuiltin {
@@ -1111,17 +1119,7 @@ impl Thunk {
         }
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn take_pending_call(
-        &self,
-    ) -> Option<(
-        Rc<Thunk>,
-        Vec<Rc<Thunk>>,
-        Option<IndexMap<String, Rc<Thunk>>>,
-        Span,
-        Rc<RefCell<Environment>>,
-        Rc<crate::eval::EvalContext>,
-    )> {
+    pub fn take_pending_call(&self) -> Option<PendingCallData> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingCall {
