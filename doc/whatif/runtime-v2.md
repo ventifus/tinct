@@ -1247,6 +1247,59 @@ Note: `run_eval` does **not** exist in this file — confirmed by code inspectio
 
 ---
 
+## Implementation Notes (Sprint 1, 2026-05-20)
+
+Decisions made during Sprint 1 implementation that refine or supersede the design above.
+
+### Parser bridge approach (Part B)
+
+The internal parser (8182 lines, 391 `Expr::` constructions) was not directly migrated in Sprint 1. Instead, a bridge approach was used:
+- `ParseOutput` gains a `pub program: Spanned<SurfaceProgram>` field populated by calling `file_to_surface_program()` at the final assembly point in `parse()`
+- Internal parser machinery continues building `File`/`Expr` internally
+- `src/ast_convert.rs` provides `file_to_surface_program()`, `expr_to_surface_node()`, and `surface_node_to_expr()` as a transitional bridge
+- This bridge is deleted in Part E when the parser is fully migrated
+
+### Surface thunk evaluation via bridge (Part E)
+
+`ThunkState::Surface` thunks (pre-lowering AST nodes) are evaluated in Sprint 1 by converting the `SurfaceNode` back to old `Expr` via `surface_node_to_expr()`, then evaluating via the existing Expr evaluator. The planned CoreExpr evaluator is not yet written. This bridge path is replaced in Sprint 2 when the Rc→Arc migration enables the full CEK machine rewrite.
+
+### `ast-of` deferred to Part G for Unevaluated thunks
+
+`ast-of` on `ThunkState::Unevaluated` thunks continues returning the old Variant-encoded AST schema (via `ast_to_dict_expr`). Changing it to return `Value::Expression` broke `macros.llt` which uses `[tag-of [ast-of expr]]` expecting a Variant tag string. The migration to returning `Value::Expression` for Unevaluated thunks is deferred to Part G when `macros.llt` is updated to handle `Value::Expression` directly.
+
+`ast-of` on `ThunkState::Surface` and `ThunkState::AstNodeField` thunks DOES return `Value::Expression` — this is the new path for expressions created via the Surface pipeline.
+
+### `tag-of` extended for `Value::Expression`
+
+The `tag-of` builtin was extended to handle `Value::Expression` by returning `surface_expr_tag(&node.expr)` — the same tag string that tinct code sees in pattern matching. This makes `[tag-of [ast-of ...]]` forward-compatible whether the result is an old Variant (from Unevaluated path) or a new Expression (from Surface path).
+
+### `[quote]` stays returning `Value::Dict` until Part G
+
+`[quote expr]` continues returning the old Variant-encoded AST Dict. Changing it to return `Value::Expression` broke the tinct formatter (`stdlib/cli/fmt/compact.llt` and `pretty.llt`) which was written against the Variant Dict schema and uses `[tag-of node]` dispatch. The quote→Expression migration is deferred to Part G alongside the formatter migration.
+
+### ThunkArena/ThunkId architecture (Rc→Arc deferred to Sprint 2)
+
+The codebase uses a `ThunkArena` with `ThunkId(u32)` integer indices rather than raw `Rc<Thunk>` pointers (as assumed by the design). `Value::Dict(IndexMap<Key, ThunkId>)` stores integer indices, not `Rc<Thunk>`. The Rc→Arc migration described in Part E applies to:
+- `Rc<Thunk>` in `BuiltinFn` signatures → `Arc<Thunk>` (Sprint 2)
+- `ThunkArena` contents → `Arc<Thunk>` (Sprint 2)
+- `ThunkState` → `OnceCell` pair (Sprint 2)
+
+The new `ThunkState::Surface` and `ThunkState::AstNodeField` variants use `Arc<SurfaceNode>` for their node fields (since SurfaceNode is Arc-recursive) but `Rc<RefCell<Environment>>` and `Rc<EvalContext>` for their env/ctx fields (to match current non-Arc evaluator). This mixed Arc/Rc state is transitional.
+
+### `SurfaceMatchArm` uses `Spanned<Pattern>` (not `Arc<SurfaceNode>`)
+
+The design specifies `SurfaceMatchArm { pattern: Arc<SurfaceNode>, ... }` but the current implementation uses `Spanned<Pattern>` for the pattern field, keeping the existing `Pattern` enum intact. The pattern→SurfaceNode migration is deferred — it would require adding Pattern variants to SurfaceExpression or converting Pattern to use Arc<SurfaceNode>.
+
+### `SurfaceExpression` is not `Send+Sync` in Sprint 1
+
+`Annotation::PropertyDict(Vec<Spanned<Entry>>)` where `Entry.value: Rc<Spanned<Expr>>` makes `SurfaceExpression` (which contains `Spanned<Annotation>`) non-Send. Full Send+Sync requires migrating `Annotation` to use `Arc<SurfaceNode>` instead of `Rc<Spanned<Expr>>`. Deferred to the expander migration (Part B full).
+
+### `builtin_load` stays returning `Value::Dict` until Part G
+
+Changing `builtin_load` to return `Value::Program` breaks the existing tinct pipeline because `prelude.llt`'s `include`, `eval-file`, and `eval-document-pipeline` functions call `load` and expect a Dict-schema AST. The pipeline migration in Part G (updating these prelude functions to use `Value::Program`) is the correct coordination point for this change.
+
+---
+
 ## Prerequisites
 
 - `include-decomp-primitives` complete (`blake3`, `cap-identity`, `load`, `include-cache-get`, `include-cache-put` registered)
