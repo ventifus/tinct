@@ -1719,26 +1719,25 @@ fn eval_quote(
 
 /// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
 ///
-/// Preprocesses the expression tree to handle nested unquotes, then converts to dict AST.
-/// NOTE: runtime-v2 plan changes quote to return Value::Expression, but this requires
-/// Part G (stdlib/macros migration) — keeping Dict return for now to avoid breaking
-/// the formatter and existing macro code. Migrated in Part G.
+/// Returns `Value::Expression(Arc<SurfaceNode>)` — the runtime-v2 representation.
+/// macros.llt has been updated to handle both Expression (new) and Variant (old) inputs
+/// via dual dispatch (tag-of works on both), so this migration is safe.
 fn eval_quote_walk(
     expr: &Expr,
     span: Span,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
-    use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
-    // Preprocess to handle nested unquotes
+    // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
     let processed_expr = eval_quote_preprocess(expr, span, &env, ctx)?;
 
-    // Convert the preprocessed AST to dict (stays as Dict until Part G migrates stdlib)
-    let opts = AstToDictOpts {
-        source: None,
-        comments: None,
-    };
-    ast_to_dict_expr(&processed_expr, &opts, ctx)
+    // runtime-v2 Part G: return Value::Expression (was: ast_to_dict_expr returning Variant Dict)
+    // macros.llt is dual-dispatch ready (tag-of handles both Expression and Variant).
+    let surface_node = crate::ast_convert::expr_to_surface_node(&processed_expr);
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Expression(surface_node),
+        span,
+    )))
 }
 
 /// Convert a runtime Value back to an Expr AST node for unquoting.
