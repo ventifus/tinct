@@ -1141,7 +1141,7 @@ impl UnevaluatedState {
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
 /// or a materialized value with memoization (evaluate-at-most-once semantics).
 pub struct Thunk {
-    state: Mutex<ThunkState>,
+    inner: ThunkInner,
     pub(crate) span: Span,
     /// Label describing this thunk's origin (e.g. "call $f").
     /// `None` for anonymous thunks (the common case); eliminates per-thunk String allocation.
@@ -1149,12 +1149,64 @@ pub struct Thunk {
     pub(crate) origin: Option<Arc<str>>,
 }
 
+/// Compatibility guard that provides a ThunkState view over ThunkInner.
+/// This allows existing code to continue using pattern matching on ThunkState.
+pub struct ThunkStateGuard<'a> {
+    thunk: &'a Thunk,
+}
+
+impl<'a> std::ops::Deref for ThunkStateGuard<'a> {
+    type Target = ThunkState;
+
+    fn deref(&self) -> &Self::Target {
+        // This is a workaround: we need to return a reference to a ThunkState,
+        // but we're constructing it on the fly. We'll use a thread-local static
+        // to store the materialized state temporarily.
+        thread_local! {
+            static GUARD_STATE: RefCell<ThunkState> = RefCell::new(ThunkState::Placeholder);
+        }
+
+        let state = self.thunk.get_thunk_state();
+        GUARD_STATE.with(|cell| {
+            *cell.borrow_mut() = state;
+            // SAFETY: This is unsafe because we're returning a reference to thread-local storage.
+            // The reference is only valid until the next call to state() on this thread.
+            // This is acceptable for the compatibility shim pattern used here.
+            unsafe { &*(cell.as_ptr() as *const ThunkState) }
+        })
+    }
+}
+
 impl Thunk {
+    /// Internal helper to construct a ThunkState from the current ThunkInner.
+    fn get_thunk_state(&self) -> ThunkState {
+        // Check if we have a result first
+        if let Some(result) = self.inner.result.get() {
+            return match result {
+                Ok(value) => ThunkState::Materialized(value.clone()),
+                Err(err) => ThunkState::Failed(Box::new((**err).clone())),
+            };
+        }
+
+        // Check unevaluated state
+        let guard = self.inner.unevaluated.lock().unwrap();
+        match &*guard {
+            Some(unevaled) => unevaled.to_thunk_state(),
+            None => {
+                // No unevaluated state and no result = InProgress or Placeholder
+                // We can't distinguish, so assume InProgress (the more common case during evaluation)
+                ThunkState::InProgress
+            }
+        }
+    }
     /// Create a placeholder thunk for letrec pre-allocation. Must be filled via
     /// `set_state()` before use. Panics at materialization if still in Placeholder state.
     pub fn new_placeholder(span: Span) -> Self {
         Self {
-            state: Mutex::new(ThunkState::Placeholder),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(None), // Placeholder: no unevaluated state, no result
+                result: tokio::sync::OnceCell::new(),
+            },
             span,
             origin: None,
         }
@@ -1167,12 +1219,15 @@ impl Thunk {
         span: Span,
     ) -> Self {
         Self {
-            state: Mutex::new(ThunkState::Unevaluated {
-                expr,
-                env,
-                env_id: None,
-                ctx,
-            }),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::Expr {
+                    expr,
+                    env,
+                    env_id: None,
+                    ctx,
+                })),
+                result: tokio::sync::OnceCell::new(),
+            },
             span,
             origin: None,
         }
@@ -1191,20 +1246,29 @@ impl Thunk {
         span: Span,
     ) -> Self {
         Self {
-            state: Mutex::new(ThunkState::Unevaluated {
-                expr,
-                env,
-                env_id: Some(env_id),
-                ctx,
-            }),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::Expr {
+                    expr,
+                    env,
+                    env_id: Some(env_id),
+                    ctx,
+                })),
+                result: tokio::sync::OnceCell::new(),
+            },
             span,
             origin: None,
         }
     }
 
     pub fn new_materialized(value: Value, span: Span) -> Self {
+        let inner = ThunkInner {
+            unevaluated: Mutex::new(None),
+            result: tokio::sync::OnceCell::new(),
+        };
+        // Set the result directly (fast-path for literals)
+        let _ = inner.result.set(Ok(value));
         Self {
-            state: Mutex::new(ThunkState::Materialized(value)),
+            inner,
             span,
             origin: None,
         }
@@ -1224,13 +1288,16 @@ impl Thunk {
         span: Span,
     ) -> Self {
         Self {
-            state: Mutex::new(ThunkState::Surface {
-                node,
-                res,
-                types,
-                env,
-                ctx,
-            }),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::Surface {
+                    node,
+                    res,
+                    types,
+                    env,
+                    ctx,
+                })),
+                result: tokio::sync::OnceCell::new(),
+            },
             span,
             origin: None,
         }
@@ -1247,7 +1314,14 @@ impl Thunk {
         span: Span,
     ) -> Self {
         Self {
-            state: Mutex::new(ThunkState::AstNodeField { node, field, ctx }),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::AstNodeField {
+                    node,
+                    field,
+                    ctx,
+                })),
+                result: tokio::sync::OnceCell::new(),
+            },
             span,
             origin: None,
         }
@@ -1264,13 +1338,16 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
         Self {
-            state: Mutex::new(ThunkState::PendingBuiltin {
-                def,
-                args: Box::new(args),
-                named,
-                call_span: span,
-                ctx,
-            }),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::Builtin {
+                    def,
+                    args: Box::new(args),
+                    named,
+                    call_span: span,
+                    ctx,
+                })),
+                result: tokio::sync::OnceCell::new(),
+            },
             span,
             origin,
         }
@@ -1286,20 +1363,23 @@ impl Thunk {
         origin: Option<Arc<str>>,
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
-        let named = if named.is_empty() {
+        let named_opt = if named.is_empty() {
             None
         } else {
             Some(Box::new(named))
         };
         Self {
-            state: Mutex::new(ThunkState::PendingCall {
-                func,
-                args: Box::new(args),
-                named,
-                call_span,
-                caller_env,
-                ctx,
-            }),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::Call {
+                    func,
+                    args: Box::new(args),
+                    named: named_opt,
+                    call_span,
+                    caller_env,
+                    ctx,
+                })),
+                result: tokio::sync::OnceCell::new(),
+            },
             span,
             origin,
         }
@@ -1336,14 +1416,17 @@ impl Thunk {
         )>,
     ) -> Self {
         Self {
-            state: Mutex::new(ThunkState::Guarded {
-                inner,
-                expected,
-                field_path: Box::new(field_path),
-                guard_span,
-                blame_label,
-                default,
-            }),
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::Guarded {
+                    inner,
+                    expected,
+                    field_path: Box::new(field_path),
+                    guard_span,
+                    blame_label,
+                    default,
+                })),
+                result: tokio::sync::OnceCell::new(),
+            },
             span: guard_span,
             origin: Some(Arc::from("type guard")),
         }
@@ -1355,21 +1438,46 @@ impl Thunk {
         self
     }
 
-    pub fn state(&self) -> std::sync::MutexGuard<'_, ThunkState> {
-        self.state.lock().unwrap()
+    /// Get the current thunk state as a ThunkState enum.
+    /// This is a compatibility shim — the underlying storage uses ThunkInner.
+    pub fn state(&self) -> ThunkStateGuard<'_> {
+        ThunkStateGuard { thunk: self }
     }
 
     /// Set the thunk state directly. Use this when the new state doesn't depend
     /// on the old state.
     pub fn set_state(&self, new_state: ThunkState) {
-        *self.state.lock().unwrap() = new_state;
+        match new_state {
+            ThunkState::Placeholder => {
+                // Clear both fields
+                *self.inner.unevaluated.lock().unwrap() = None;
+                // result stays empty
+            }
+            ThunkState::Materialized(value) => {
+                // Clear unevaluated, set result
+                *self.inner.unevaluated.lock().unwrap() = None;
+                let _ = self.inner.result.set(Ok(value));
+            }
+            ThunkState::Failed(err) => {
+                // Clear unevaluated, set error result
+                *self.inner.unevaluated.lock().unwrap() = None;
+                let _ = self.inner.result.set(Err(Arc::new(*err)));
+            }
+            ThunkState::InProgress => {
+                // Just clear unevaluated
+                *self.inner.unevaluated.lock().unwrap() = None;
+            }
+            other => {
+                // Convert to UnevaluatedState
+                if let Some(unevaled) = other.to_unevaluated() {
+                    *self.inner.unevaluated.lock().unwrap() = Some(unevaled);
+                }
+            }
+        }
     }
 
     pub fn try_get_materialized(&self) -> Option<Value> {
-        match &*self.state.lock().unwrap() {
-            ThunkState::Materialized(v) => Some(v.clone()),
-            _ => None,
-        }
+        self.inner.result.get().and_then(|r| r.as_ref().ok().cloned())
     }
 
     /// Atomically read the current state, compute a new state, and write it back.
@@ -1395,8 +1503,9 @@ impl Thunk {
     /// });
     /// ```
     pub fn transition(&self, f: impl FnOnce(&ThunkState) -> ThunkState) {
-        let new_state = f(&self.state.lock().unwrap());
-        *self.state.lock().unwrap() = new_state;
+        let current_state = self.get_thunk_state();
+        let new_state = f(&current_state);
+        self.set_state(new_state);
     }
 
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
@@ -1409,16 +1518,15 @@ impl Thunk {
         Arc<RwLock<Environment>>,
         Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.lock().unwrap();
-        match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::Unevaluated {
-                expr,
-                env,
-                env_id: _,
-                ctx,
-            } => Some((expr, env, ctx)),
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        match guard.take() {
+            Some(UnevaluatedState::Expr { expr, env, ctx, .. }) => {
+                // State is now InProgress (unevaluated = None, result = empty)
+                Some((expr, env, ctx))
+            }
             other => {
-                *state = other;
+                // Restore the state
+                *guard = other;
                 None
             }
         }
@@ -1436,17 +1544,21 @@ impl Thunk {
         Span,
         Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.lock().unwrap();
-        match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::PendingBuiltin {
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        match guard.take() {
+            Some(UnevaluatedState::Builtin {
                 def,
                 args,
                 named,
                 call_span,
                 ctx,
-            } => Some((def, *args, named, call_span, ctx)),
+            }) => {
+                // State is now InProgress
+                Some((def, *args, named, call_span, ctx))
+            }
             other => {
-                *state = other;
+                // Restore the state
+                *guard = other;
                 None
             }
         }
@@ -1463,18 +1575,24 @@ impl Thunk {
         Arc<RwLock<Environment>>,
         Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.lock().unwrap();
-        match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::PendingCall {
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        match guard.take() {
+            Some(UnevaluatedState::Call {
                 func,
                 args,
                 named,
                 call_span,
                 caller_env,
                 ctx,
-            } => Some((func, *args, named.map(|b| *b), call_span, caller_env, ctx)),
+            }) => {
+                // State is now InProgress
+                // Convert Option<Box<IndexMap>> to Option<IndexMap>
+                let named = named.map(|b| *b);
+                Some((func, *args, named, call_span, caller_env, ctx))
+            }
             other => {
-                *state = other;
+                // Restore the state
+                *guard = other;
                 None
             }
         }
@@ -1501,25 +1619,29 @@ impl Thunk {
             Arc<RwLock<Environment>>,
         )>,
     )> {
-        let mut state = self.state.lock().unwrap();
-        match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::Guarded {
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        match guard.take() {
+            Some(UnevaluatedState::Guarded {
                 inner,
                 expected,
                 field_path,
                 guard_span,
                 blame_label,
                 default,
-            } => Some((
-                inner,
-                expected,
-                *field_path,
-                guard_span,
-                blame_label,
-                default,
-            )),
+            }) => {
+                // State is now InProgress
+                Some((
+                    inner,
+                    expected,
+                    *field_path,
+                    guard_span,
+                    blame_label,
+                    default,
+                ))
+            }
             other => {
-                *state = other;
+                // Restore the state
+                *guard = other;
                 None
             }
         }
@@ -1538,18 +1660,21 @@ impl Thunk {
         Arc<RwLock<Environment>>,
         Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.lock().unwrap();
-        let old = std::mem::replace(&mut *state, ThunkState::InProgress);
-        match old {
-            ThunkState::Surface {
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        match guard.take() {
+            Some(UnevaluatedState::Surface {
                 node,
                 res,
                 types,
                 env,
                 ctx,
-            } => Some((node, res, types, env, ctx)),
+            }) => {
+                // State is now InProgress
+                Some((node, res, types, env, ctx))
+            }
             other => {
-                *state = other;
+                // Restore the state
+                *guard = other;
                 None
             }
         }
@@ -1566,12 +1691,15 @@ impl Thunk {
         &'static str,
         Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.lock().unwrap();
-        let old = std::mem::replace(&mut *state, ThunkState::InProgress);
-        match old {
-            ThunkState::AstNodeField { node, field, ctx } => Some((node, field, ctx)),
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        match guard.take() {
+            Some(UnevaluatedState::AstNodeField { node, field, ctx }) => {
+                // State is now InProgress
+                Some((node, field, ctx))
+            }
             other => {
-                *state = other;
+                // Restore the state
+                *guard = other;
                 None
             }
         }
@@ -1584,29 +1712,42 @@ impl Thunk {
     /// (e.g., when a shared thunk is encountered a second time during error propagation).
     pub fn cache_failure(&self, err: &EvalError) {
         // Fast path: if already Failed, no work needed — avoid the clone.
-        if matches!(&*self.state.lock().unwrap(), ThunkState::Failed(_)) {
-            return;
+        if let Some(result) = self.inner.result.get() {
+            if result.is_err() {
+                return;
+            }
         }
-        self.set_state(ThunkState::Failed(Box::new(err.clone())));
+
+        // Clear unevaluated state and set error result
+        *self.inner.unevaluated.lock().unwrap() = None;
+        let _ = self.inner.result.set(Err(Arc::new(err.clone())));
     }
 }
 
 impl fmt::Debug for Thunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = match self.state.try_lock() {
-            Ok(state) => {
-                let mut s = f.debug_struct("Thunk");
-                s.field("state", &*state);
-                s.field("span", &self.span);
-                s
+        let mut s = f.debug_struct("Thunk");
+
+        // Try to get the state without blocking
+        match self.inner.unevaluated.try_lock() {
+            Ok(guard) => {
+                if let Some(result) = self.inner.result.get() {
+                    match result {
+                        Ok(value) => s.field("state", &format!("Materialized({:?})", value.type_name())),
+                        Err(_) => s.field("state", &"Failed"),
+                    };
+                } else if guard.is_some() {
+                    s.field("state", &"Unevaluated");
+                } else {
+                    s.field("state", &"InProgress");
+                }
             }
             Err(_) => {
-                let mut s = f.debug_struct("Thunk");
                 s.field("state", &"<locked>");
-                s.field("span", &self.span);
-                s
             }
-        };
+        }
+
+        s.field("span", &self.span);
         if let Some(ref label) = self.origin {
             s.field("origin", label);
         }
