@@ -54,23 +54,23 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Depends on:** Part E complete
 
-- [ ] `builtin_load` → parse → `SurfaceProgram` → `Value::Program` (`src/builtins_meta.rs`)
-- [ ] `builtin_expand` → unwrap `Value::Program` → run expansion → wrap `Value::Program` (`src/builtins_meta.rs`)
-- [ ] `builtin_eval` → iterate `[Seq Expression]`; per `Value::Expression(node)`: get `(res, types)` from `IncludeCacheEntry`; create `UnevaluatedState::Surface`; return lazy thunks (`src/builtins_meta.rs`)
-- [ ] `builtin_eval_types` → same as `eval` but uses `ctx.config.type_stage_env` as base env (`src/builtins_meta.rs`)
-- [ ] Delete `eval-ast` builtin and `builtin_eval_ast` (`src/builtins_meta.rs`)
-- [ ] `Value::Task`, `Value::Channel`, `Value::Context` — add to `src/value.rs` (Sprint 2 dependency; skeleton now)
+- [x] `builtin_load` → parse → `SurfaceProgram` → `Value::Program` (`src/builtins_meta.rs`) — **DONE (commit 9177848)**
+- [x] `builtin_expand` → unwrap `Value::Program` → run expansion → wrap `Value::Program` (`src/builtins_meta.rs`) — **DONE (commit 9177848)**
+- [x] `builtin_eval` → iterate `[Seq Expression]`; per `Value::Expression(node)`: get `(res, types)` from `IncludeCacheEntry`; create `UnevaluatedState::Surface`; return lazy thunks (`src/builtins_meta.rs`) — **DONE (commit 9177848)**
+- [x] `builtin_eval_types` → same as `eval` but uses `ctx.config.type_stage_env` as base env (`src/builtins_meta.rs`) — **DONE (commit 9177848)**
+- [x] Delete `eval-ast` builtin and `builtin_eval_ast` (`src/builtins_meta.rs`) — **DONE (commit 9177848)**
+- [x] `Value::Task`, `Value::Channel`, `Value::Context` — add to `src/value.rs` (Sprint 2 dependency; skeleton now) — **DONE (commit 9177848)**
 
 ### Part G — Prelude pipeline update + type declarations
 
 **Depends on:** Part F complete. **Structure unchanged; types updated** (per `runtime-v2.md §Updated Include-Decomp Tinct Code`).
 
-- [ ] `eval-file`: annotation `ast@Dict` → `ast@Program` (`stdlib/prelude.llt`)
-- [ ] `eval-document-runtime`: `doc.name` → `DocumentName` match (`[match doc.name [Named n]: ... Unnamed: ...]`); `doc.expressions` is now `[Seq Expression]` passed directly to `eval` builtin; `doc.stage` matched as `Runtime`/`Type` Variants (`stdlib/prelude.llt`)
-- [ ] `eval-document-pipeline`: annotation `docs@[Seq Document]`; `doc.stage` match as Variants (`stdlib/prelude.llt`)
+- [x] `eval-file`: annotation `ast@Dict` → `ast@Program` (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
+- [x] `eval-document-runtime`: `doc.name` → `DocumentName` match (`[match doc.name [Named n]: ... Unnamed: ...]`); `doc.expressions` is now `[Seq Expression]` passed directly to `eval` builtin; `doc.stage` matched as `Runtime`/`Type` Variants (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
+- [x] `eval-document-pipeline`: annotation `docs@[Seq Document]`; `doc.stage` match as Variants (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
 - [ ] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — update to Expression match dispatch; formatter bug fix is prerequisite OR accept broken formatter tests (`stdlib/cli/fmt/`) (16 tests in `tests/formatter_tinct_roundtrip.rs` are marked `#[ignore]` pending this)
-- [ ] `Pattern` type declaration in prelude — `Pattern: Expression` alias; investigate dict shape issues post-Part E before adding (`stdlib/prelude.llt`)
-- [ ] Create `stdlib/codecs/json.llt` final version if not already migrated — verify `to-json` Expression match dispatch works end-to-end (`stdlib/codecs/json.llt`)
+- [x] `Pattern` type declaration in prelude — `Pattern: Expression` alias; investigate dict shape issues post-Part E before adding (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
+- [x] Create `stdlib/codecs/json.llt` final version if not already migrated — verify `to-json` Expression match dispatch works end-to-end (`stdlib/codecs/json.llt`) — **DONE (commit 6151501)**
 - [ ] **`just test` after Part G** — highest-risk: corpus tests for `load`/`expand`/`eval` may fail on type changes; fix as found
 
 ---
