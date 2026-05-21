@@ -2627,6 +2627,25 @@ Security hardening implementation tasks for `$include` file sandbox and integrit
 - [x] Add compile-time assertion `MAX_DOCUMENT_SIZE == MAX_FILE_SIZE` — `const _: () = assert!(MAX_DOCUMENT_SIZE == crate::builtins::MAX_FILE_SIZE as usize, ...)` added to `src/lsp/server.rs:25-29`; ensures LSP and CLI enforce the same 10 MB limit without silent drift. (already done in C96; test updated with compile-time const assert) [Minor, security-expert C97]
 - [x] Fix TOCTOU in `read_source` CLI file size check — `read_source()` at `src/main.rs:360-369` calls `std::fs::metadata(file_path)` then `std::fs::read_to_string(file_path)` in two separate operations. If the file grows between the two calls, `read_to_string` allocates more than `MAX_FILE_SIZE` bytes of heap. Fix: open the file with `File::open()`, call `file.metadata()?` on the open fd, check size, then `read_to_string` on the same fd (or use `file.take(MAX_FILE_SIZE + 1)` to limit reads at the OS level). Same two-op pattern exists in `builtin_include` and is tracked separately under `include-fd-hardening`. (`src/main.rs:360-369`) [Minor, security-expert C76]
 
+## Health Review #22 Findings (2026-05-19)
+
+### type-soundness: Fix type system soundness issues (bas + cs)
+
+- [x] **CRITICAL** `Union vs Union` unification with TypeVars falls through to hard error — add `(Type::Union(m1), Type::Union(m2))` arm before C-Var1 guards in `type_unify.rs` that defers to `state.deferred_equalities` when both have inference vars (`src/type_unify.rs:1989-2090`)
+- [x] Document and guard eval-layer coupling in `normalize()` — add `NormCtxt::allow_eval: bool` flag; set to `false` inside `unify()` at line 1539 to prevent runtime errors from propagating into type inference (`src/type_normalize.rs:344-404`, `src/type_unify.rs:1539`)
+- [x] Extend coverage checking to bare `NominalVariant` scrutinee types (not wrapped in Union) — add `ConstructorSignature::from_nominal_variant()` and call it when scrutinee is a bare NominalVariant (`src/coverage.rs:170-222`, `src/typecheck.rs`)
+- [x] Fix `Showable` constraint for `Seq`/`Map`/`Record` — add these to the Showable match arm in `satisfies_constraint`; they are showable at runtime but the type checker rejects them (`src/type_unify.rs:114-124`)
+- [x] Remove dead `row_vars` parameter from `collect_all_vars`/`collect_all_vars_vec`/`collect_all_vars_check_occurs` — always empty under BAS (`src/type_def.rs:1079,1148,1238`)
+- [x] Fix `check_do_infer` fast-path: return `Type::Unknown` instead of `state.fresh_type_var()` for unknown methods (orphaned TypeVars pollute `state.levels`) (`src/typecheck.rs:3578`)
+- [x] Update `doc/06-type-inference.md` type grammar to include BAS types (Union, Intersection, Negation, Never) in the main grammar — these are user-expressible via annotations (`doc/06-type-inference.md:6-22,27-41`)
+- [x] Fix `doc/07-type-extensions.md:386-407` archived code block confusion — separate BAS `Row` struct from archived RowTail into distinct code blocks (`doc/07-type-extensions.md`)
+- [x] **MAJOR (LIVE BUG)** `rename_single_type_var` missing `NominalVariant` arm — TypeVars inside NominalVariant fields are not renamed during single-var scheme instantiation; two call sites share the same TypeVar, violating freshness invariant; fix: add `NominalVariant { tag, fields }` arm that calls `rename_single_type_var_in_row(fields, ...)` (`src/type_env.rs:148`)
+- [x] **MAJOR (COMPLETENESS BUG)** Match arm narrowing uses `StringLiteral(tag)` for Constructor patterns instead of `NominalVariant{tag, ...}` — intersection with NominalVariant scrutinee collapses to Never, making pattern-bound variables typed `Never`; fix: use `Type::NominalVariant { tag: tag.clone(), fields: Row::empty() }` for both positive narrowing (line 2242) and negation accumulation (line 2291) (`src/typecheck.rs:2238-2295`)
+- [x] **MAJOR (LATENT Phase 2 bug)** Resolver doesn't create scopes for match arm pattern-bound variables — at runtime names are looked up by name (correct in Phase 1) but de Bruijn coordinates are wrong for FlatEnv Phase 2; fix: collect pattern-bound names (Variable, Dict, Seq, Constructor patterns) and enter/exit scope for each arm (`src/resolve.rs:308-315`)
+- [x] **SUPERSEDED** `ScopeId` was dead code pre-runtime-v2; the runtime-v2 merge (PR #1) restored `ScopeId::fresh()` as an atomic counter (`SCOPE_COUNTER: AtomicU32`). Update expand.rs module doc to accurately describe the current simplified hygiene model (scope counter per invocation, not full Flatt 2016 scope sets) (`src/expand.rs:16-55`)
+- [x] `collect_pattern_bindings` gives `Unknown` to Constructor payload binding — should extract field type from matching NominalVariant when scrutinee is a Union containing a matching tag (`src/typecheck.rs:1468-1472`)
+- [x] Exhaustiveness checking only fires for `Type::Union` scrutinee — bare `NominalVariant` scrutinee (not wrapped in Union) skips exhaustiveness entirely; needs type alias registry lookup to get sibling constructors (`src/typecheck.rs:2315`, `src/coverage.rs`)
+
 ## Performance: Stdlib
 
 ### perf-stdlib: Stdlib Rust Reimplementations

@@ -40,6 +40,9 @@ pub struct NormCtxt {
     /// `None` during bootstrap (when the type-stage env is being built) or
     /// when type-stage env creation fails.
     pub type_stage_env: Option<Rc<RefCell<Environment>>>,
+    /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
+    /// Set to false inside unify() to prevent evaluation failures from causing type errors.
+    pub allow_eval: bool,
 }
 
 impl NormCtxt {
@@ -53,6 +56,7 @@ impl NormCtxt {
             call_stack: Vec::new(),
             resolver_cache: HashMap::new(),
             type_stage_env: crate::imports::build_type_stage_env(),
+            allow_eval: true,
         }
     }
 }
@@ -116,21 +120,31 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
                 let result = if let Some(resolved_type) = ctx.resolver_cache.get(&cache_key) {
                     // Cache hit: return the resolved type directly
                     resolved_type.clone()
-                } else if let Some(env) = ctx.type_stage_env.clone() {
-                    // Cache miss — try evaluating user-defined resolver from type-stage env
-                    if let Some(resolved) = evaluate_resolver(fn_name, &normalized_args, &env) {
-                        // Insert into resolver_cache so subsequent calls are fast
-                        ctx.resolver_cache.insert(cache_key, resolved.clone());
-                        resolved
+                } else if ctx.allow_eval {
+                    // allow_eval is true — try evaluating resolver from type-stage env
+                    if let Some(env) = ctx.type_stage_env.clone() {
+                        // Cache miss — try evaluating user-defined resolver from type-stage env
+                        if let Some(resolved) = evaluate_resolver(fn_name, &normalized_args, &env) {
+                            // Insert into resolver_cache so subsequent calls are fast
+                            ctx.resolver_cache.insert(cache_key, resolved.clone());
+                            resolved
+                        } else {
+                            // Resolver evaluation failed — return stuck TypeStageApp
+                            Type::TypeStageApp {
+                                fn_name: fn_name.clone(),
+                                args: normalized_args,
+                            }
+                        }
                     } else {
-                        // Resolver evaluation failed — return stuck TypeStageApp
+                        // No type-stage env available — return stuck TypeStageApp
                         Type::TypeStageApp {
                             fn_name: fn_name.clone(),
                             args: normalized_args,
                         }
                     }
                 } else {
-                    // No type-stage env available — return stuck TypeStageApp
+                    // allow_eval is false (inside unify) — return stuck TypeStageApp to prevent
+                    // runtime errors from propagating into type inference
                     Type::TypeStageApp {
                         fn_name: fn_name.clone(),
                         args: normalized_args,

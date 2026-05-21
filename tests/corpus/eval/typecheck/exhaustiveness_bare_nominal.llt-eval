@@ -1,0 +1,17 @@
+# Exhaustiveness checking for bare NominalVariant scrutinee (Task 11).
+# A single-constructor type declaration produces a bare NominalVariant (not wrapped in Union).
+# Coverage checking must use ConstructorSignature::from_nominal_variant (not from_union).
+# The wildcard arm covers all constructors — no non-exhaustive error should be raised.
+[
+  Tag: [type [MyTag value: Int]]
+
+  extract: [fn [let s@Tag]
+    [match s
+      _: 0
+    ]
+  ]
+
+  result: 42
+]
+=== out
+Dict({"Tag": Dict({}), "extract": Function(s), "result": Int(42)})

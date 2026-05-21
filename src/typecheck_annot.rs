@@ -2249,8 +2249,7 @@ fn resolve_type_dict_with_guard(
             let mut has_shared = false;
             for ty in fields.values() {
                 let mut field_type_vars = std::collections::HashSet::new();
-                let mut field_row_vars = std::collections::HashSet::new();
-                ty.collect_all_vars(&mut field_type_vars, &mut field_row_vars);
+                ty.collect_all_vars(&mut field_type_vars);
                 for v in field_type_vars {
                     if !all_seen.insert(v) {
                         has_shared = true;
@@ -3009,8 +3008,7 @@ pub(crate) fn resolve_type_dict(
         let mut has_shared = false;
         for ty in fields.values() {
             let mut field_type_vars = std::collections::HashSet::new();
-            let mut field_row_vars = std::collections::HashSet::new();
-            ty.collect_all_vars(&mut field_type_vars, &mut field_row_vars);
+            ty.collect_all_vars(&mut field_type_vars);
             for v in field_type_vars {
                 if !all_seen.insert(v) {
                     has_shared = true;

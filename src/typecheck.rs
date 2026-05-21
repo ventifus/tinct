@@ -1410,7 +1410,8 @@ fn infer_if(
 ///   type. Falls back to `Unknown` when the scrutinee type is not a concrete Record
 ///   or the key is absent (open rows may carry the field at runtime).
 /// - `Pattern::Seq { head, tail }`: head gets `Unknown`, tail gets `Seq(Unknown)`.
-/// - `Pattern::Constructor { binding }`: payload gets `Unknown` (no payload narrowing yet).
+/// - `Pattern::Constructor { binding }`: payload gets the field type from the matching NominalVariant
+///   when scrutinee is Union or Intersection containing the tag; falls back to `Unknown`.
 /// - `Pattern::Or(alts)`: collect from the first alternative only (all alts must bind
 ///   the same variable set by parser invariant).
 /// - `Pattern::Wildcard | Literal | TypeTag | Pin`: no bindings.
@@ -1465,10 +1466,78 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
             let tail_ty = Type::Seq(Box::new(elem_ty));
             collect_pattern_bindings(&tail.node, &tail_ty, out);
         }
-        Pattern::Constructor { binding, .. } => {
-            // No payload type narrowing for constructors yet.
+        Pattern::Constructor { tag, binding } => {
+            // Extract the payload type from the scrutinee when it's a Union containing
+            // a NominalVariant with matching tag.
             if let Some(b) = binding {
-                collect_pattern_bindings(&b.node, &Type::Unknown, out);
+                let payload_ty = match scrutinee_ty {
+                    Type::NominalVariant {
+                        tag: variant_tag,
+                        fields,
+                    } if variant_tag == tag => {
+                        // Direct NominalVariant match — use the fields row as payload type
+                        Type::Record(fields.clone())
+                    }
+                    Type::Union(members) => {
+                        // Union: find the NominalVariant member with matching tag
+                        let mut matching_fields = None;
+                        for member in members {
+                            if let Type::NominalVariant {
+                                tag: variant_tag,
+                                fields,
+                            } = member
+                            {
+                                if variant_tag == tag {
+                                    matching_fields = Some(fields.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        matching_fields.map(Type::Record).unwrap_or(Type::Unknown)
+                    }
+                    Type::Intersection(members) => {
+                        // Intersection: produced by I-Case3 narrowing when arm_scrutinee_ty is
+                        // Intersection([Union([Ok_ty, Err_ty]), NominalVariant("Ok", {})]).
+                        // Search members for a Union containing the tag (tried first, type_order=30)
+                        // or a bare NominalVariant (type_order=37, reached only if no Union matches).
+                        let mut payload = Type::Unknown;
+                        // Scan members for the matching constructor's field type.
+                        // Intersection([Union([Ok, Err]), NominalVariant("Ok", {})]) from I-Case3:
+                        // type_order sorts Union (30) before NominalVariant (37), so the Union
+                        // member is reached first and provides the real field types; the bare
+                        // NominalVariant(fields={}) from the narrowing marker is never needed.
+                        'outer: for member in members {
+                            if let Type::NominalVariant {
+                                tag: variant_tag,
+                                fields,
+                            } = member
+                            {
+                                if variant_tag == tag {
+                                    payload = Type::Record(fields.clone());
+                                    break 'outer;
+                                }
+                            }
+                            // Fallback: a Union member that contains the tag
+                            if let Type::Union(union_members) = member {
+                                for um in union_members {
+                                    if let Type::NominalVariant {
+                                        tag: variant_tag,
+                                        fields,
+                                    } = um
+                                    {
+                                        if variant_tag == tag {
+                                            payload = Type::Record(fields.clone());
+                                            break 'outer;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        payload
+                    }
+                    _ => Type::Unknown,
+                };
+                collect_pattern_bindings(&b.node, &payload_ty, out);
             }
         }
         Pattern::Or(alts) => {
@@ -2237,9 +2306,15 @@ fn infer_expr(
                 let arm_scrutinee_ty = match &arm.pattern.node {
                     Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
                         // The arm matches when scrutinee has this constructor tag.
-                        // Intersect remaining_scrutinee with a StringLiteral type for the tag,
-                        // which approximates the nominal tag constraint.
-                        let tag_ty = Type::StringLiteral(tag.clone());
+                        // Intersect remaining_scrutinee with a NominalVariant type for the tag.
+                        // NominalVariant { tag, fields: empty } represents the constructor type
+                        // without payload constraints (matching any payload).
+                        let tag_ty = Type::NominalVariant {
+                            tag: tag.clone(),
+                            fields: crate::type_def::Row {
+                                fields: std::collections::HashMap::new(),
+                            },
+                        };
                         let members = vec![remaining_scrutinee.clone(), tag_ty];
                         Type::normalize_intersection(members)
                     }
@@ -2287,8 +2362,12 @@ fn infer_expr(
                 if arm.guard.is_none() {
                     match &arm.pattern.node {
                         Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
-                            let neg_tag =
-                                Type::Negation(Box::new(Type::StringLiteral(tag.clone())));
+                            let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
+                                tag: tag.clone(),
+                                fields: crate::type_def::Row {
+                                    fields: std::collections::HashMap::new(),
+                                },
+                            }));
                             remaining_scrutinee = Type::normalize_intersection(vec![
                                 remaining_scrutinee.clone(),
                                 neg_tag,
@@ -2305,16 +2384,23 @@ fn infer_expr(
                 }
             }
 
-            // Exhaustiveness checking: when scrutinee type is a union, run the
-            // Maranget (2007) usefulness algorithm over the pattern matrix.
+            // Exhaustiveness checking: when scrutinee type is a union or a bare NominalVariant,
+            // run the Maranget (2007) usefulness algorithm over the pattern matrix.
             //
-            // Coverage is checked only when the scrutinee's type is known to be
-            // a Type::Union — either via TypeAssert annotation or inference.
-            // Without a union type, the match is dynamically correct but
+            // Coverage is checked when the scrutinee's type is either:
+            // - Type::Union (multiple constructors)
+            // - Type::NominalVariant (single constructor, not wrapped in Union)
+            // Without one of these types, the match is dynamically correct but
             // statically unverified (consistent with Karachalias et al. 2015).
-            if let Type::Union(ref members) = scrutinee_ty {
-                let sig = coverage::ConstructorSignature::from_union(members);
+            let sig = match &scrutinee_ty {
+                Type::Union(members) => Some(coverage::ConstructorSignature::from_union(members)),
+                Type::NominalVariant { tag, fields } => Some(
+                    coverage::ConstructorSignature::from_nominal_variant(tag, fields),
+                ),
+                _ => None,
+            };
 
+            if let Some(sig) = sig {
                 // Convert AST patterns to coverage patterns
                 let coverage_patterns: Vec<coverage::CoveragePattern> = arms
                     .iter()
@@ -3572,10 +3658,10 @@ fn check_do_infer(
                 if let Some(ret_ty) = state.expected_return.clone() {
                     state.subst.apply(&ret_ty)
                 } else {
-                    state.fresh_type_var()
+                    Type::Unknown
                 }
             }
-            _ => state.fresh_type_var(),
+            _ => Type::Unknown,
         };
         return Ok(ret);
     }
@@ -12577,8 +12663,8 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_pattern_bindings_constructor() {
-        // Constructor pattern with binding gets Unknown type
+    fn test_collect_pattern_bindings_constructor_unknown_fallback() {
+        // Constructor pattern with Int scrutinee: no matching NominalVariant, falls back to Unknown
         let mut out = Vec::new();
         collect_pattern_bindings(
             &Pattern::Constructor {
@@ -12588,7 +12674,7 @@ mod tests {
                     Span::origin(),
                 ))),
             },
-            &Type::Int, // scrutinee type is ignored for constructor payload
+            &Type::Int, // scrutinee type has no matching NominalVariant — falls back to Unknown
             &mut out,
         );
         assert_eq!(out.len(), 1);
@@ -12596,7 +12682,7 @@ mod tests {
         assert_eq!(
             out[0].1,
             Type::Unknown,
-            "constructor binding should get Unknown type (no payload narrowing yet)"
+            "constructor binding gets Unknown when scrutinee has no matching NominalVariant"
         );
     }
 

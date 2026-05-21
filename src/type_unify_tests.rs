@@ -189,6 +189,67 @@ fn test_promote_literal_label_kind_never_promotes() {
     }
 }
 
+// ============================================================================
+// type-soundness sprint tests
+// ============================================================================
+
+/// Union-vs-Union deferral: when both Unions contain inference vars, the equality
+/// is deferred (not hard-errored) and pushed to state.deferred_equalities.
+/// This covers the arm at type_unify.rs lines 1998-2004.
+#[test]
+fn test_union_vs_union_with_typevars_defers() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Register levels for the type vars
+    state.levels.insert("a".to_string(), 0);
+    state.levels.insert("b".to_string(), 0);
+
+    // Union([Int, TypeVar(a)]) ~ Union([Str, TypeVar(b)])
+    let lhs = Type::Union(vec![Type::Int, Type::TypeVar("a".to_string(), 0)]);
+    let rhs = Type::Union(vec![Type::Str, Type::TypeVar("b".to_string(), 0)]);
+
+    let result = unify(&lhs, &rhs, &mut subst, &mut state, span);
+
+    // Should succeed (not a hard error)
+    assert!(
+        result.is_ok(),
+        "Union-vs-Union with TypeVars should defer, not error: {:?}",
+        result.unwrap_err()
+    );
+    // Should have pushed exactly one deferred equality
+    assert_eq!(
+        state.deferred_equalities.len(),
+        1,
+        "Expected 1 deferred equality, got {}",
+        state.deferred_equalities.len()
+    );
+}
+
+/// Union-vs-Union without inference vars: should not defer, should attempt element unification.
+/// Both Unions are concrete (no TypeVars), so the deferral arm does NOT fire.
+#[test]
+fn test_union_vs_union_concrete_no_deferral() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Union([Int]) ~ Union([Int]) — concrete, no TypeVars
+    let lhs = Type::Union(vec![Type::Int]);
+    let rhs = Type::Union(vec![Type::Int]);
+
+    // This falls through to the generic _ => Err arm (no C-Var1 match either),
+    // not the deferral arm. Deferred_equalities should remain empty.
+    let _ = unify(&lhs, &rhs, &mut subst, &mut state, span);
+
+    assert_eq!(
+        state.deferred_equalities.len(),
+        0,
+        "Concrete Union-vs-Union should NOT push a deferred equality"
+    );
+}
+
 /// chr-normalization: Occurs check for TypeStageApp args
 #[test]
 fn test_unify_type_var_occurs_in_type_stage_app() {

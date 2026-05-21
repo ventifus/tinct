@@ -32,8 +32,7 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // Deduplication is handled by the contains_key guard below: only the first occurrence
     // of each type/row var generates a fresh variable. Subsequent occurrences are skipped.
     let mut type_vars = Vec::new();
-    let mut row_vars = Vec::new(); // always empty under BAS
-    ty.collect_all_vars_vec(&mut type_vars, &mut row_vars);
+    ty.collect_all_vars_vec(&mut type_vars);
 
     // Monomorphic fast-path: if no type vars, return ty directly (saves HashMap allocation)
     if type_vars.is_empty() {
@@ -143,6 +142,10 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
                 .iter()
                 .map(|arg| rename_single_type_var(arg, old_name, fresh_name, level))
                 .collect(),
+        },
+        Type::NominalVariant { tag, fields } => Type::NominalVariant {
+            tag: tag.clone(),
+            fields: rename_single_type_var_in_row(fields, old_name, fresh_name, level),
         },
         // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
@@ -491,8 +494,7 @@ pub fn generalize_with_doc(
     }
 
     let mut all_type_vars = Vec::new();
-    let mut all_row_vars = Vec::new(); // always empty under BAS
-    ty.collect_all_vars_vec(&mut all_type_vars, &mut all_row_vars);
+    ty.collect_all_vars_vec(&mut all_type_vars);
 
     // Filter: keep only vars where levels[var] > level.
     // collect_all_vars_vec may produce duplicates; deduplicate during filter using seen set.

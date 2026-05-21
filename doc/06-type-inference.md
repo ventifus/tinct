@@ -21,6 +21,10 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | α                          type variable
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
+    | Union(τ₁...τₙ)             union type A | B (user-expressible via `@[A B]`)
+    | Intersection(τ₁...τₙ)      intersection type A & B (user-expressible via `@[[all A B]]`)
+    | Negation(τ)                negation type ~A (user-expressible via `@[[without A]]`)
+    | Never                      bottom type ⊥ (uninhabited, user-expressible via `@Never`)
 ```
 
 *Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The Rémy-style row polymorphism notation (`Record(f₁:τ₁...fₙ:τₙ, ρ)` with `ρ ::= Closed | RowVar(r)`) is documented in [Type System Extensions](07-type-extensions.md) Appendix.
@@ -29,10 +33,6 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
 
 | Type | Description |
 |------|-------------|
-| `Union(Vec<Type>)` | BAS union type (A \| B) |
-| `Intersection(Vec<Type>)` | BAS intersection type (A & B) |
-| `Negation(Box<Type>)` | BAS negation type (~A) |
-| `Never` | Bottom type (uninhabited) |
 | `Bytes` | Binary data |
 | `Map(K, V)` | Homogeneous parameterized map |
 | `Timestamp`, `Duration`, `Timezone` | Datetime types |

@@ -1,0 +1,24 @@
+# Constructor payload type precision (Task 10 + I-Case3 interaction fix).
+# When matching on a Union type containing NominalVariants with named fields,
+# the payload variable receives a Record with the correct field type (Int), not Unknown.
+# This verifies the Intersection arm in collect_pattern_bindings:
+# arm_scrutinee_ty for multi-arm matches is Intersection([Union([MyOk,MyErr]),
+# NominalVariant("MyOk", {n:Int})]) — must search members to find the typed payload.
+# If v is Unknown (bug), [+ v 1] would still typecheck (no Addable constraint).
+# If v is Record({n: Int}) (correct), p.n is Int and [+ p.n 1] typechecks without error.
+[
+  Result2: [type [MyOk n: Int] [MyErr msg: Str]]
+
+  # Type-only test: function with typed parameter; we don't call it at runtime.
+  # The type checker must see p.n as Int (not Unknown) for [+ p.n 1] to typecheck.
+  unwrap-ok: [fn [let r@Result2]
+    [match r
+      [MyOk p]: [+ p.n 1]
+      [MyErr _]: 0
+    ]
+  ]
+
+  result: 42
+]
+=== out
+Dict({"Result2": Dict({}), "unwrap-ok": Function(r), "result": Int(42)})

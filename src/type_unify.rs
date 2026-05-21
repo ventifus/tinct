@@ -111,6 +111,7 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
         // have built-in str conversion. Combined with structural propagation above,
         // this means Record([x: Int, y: Str]) satisfies Showable because both Int
         // and Str satisfy Showable and the constraint propagates through all fields.
+        // Seq, Map, and Record are also showable (they have runtime str conversion).
         "Showable" => matches!(
             ty,
             Type::Int
@@ -120,6 +121,9 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
                 | Type::StringLiteral(_)
                 | Type::Bool
                 | Type::Number
+                | Type::Seq(_)
+                | Type::Map(_, _)
+                | Type::Record(_)
         ),
         // Comparable subsumes Equatable via superclass relationship.
         // These are kept hardcoded because they are used in the early stages of type
@@ -1536,7 +1540,11 @@ pub fn unify(
     // Normalize both types (for TypeStageApp reduction)
     // subst is passed explicitly — NormCtxt no longer holds a reference to it, so there is
     // no immutable borrow conflict with the mutable reference used in the match arms below.
+    // allow_eval is set to false inside unify to prevent runtime errors from propagating
+    // into type inference (e.g., a failing resolver should produce a stuck TypeStageApp, not
+    // a type error).
     let mut norm_ctx = crate::type_normalize::NormCtxt::new();
+    norm_ctx.allow_eval = false;
     let a = crate::type_normalize::normalize(&a_substituted, subst, &mut norm_ctx);
     let b = crate::type_normalize::normalize(&b_substituted, subst, &mut norm_ctx);
     drop(norm_ctx);
@@ -1576,9 +1584,8 @@ pub fn unify(
             // over-generalization. E.g., unify(Unknown, Fn(TypeVar("b",3) -> Int))
             // must zero b's level so it won't be generalized.
             let mut type_vars = HashSet::new();
-            let mut row_vars = HashSet::new();
-            other.collect_all_vars(&mut type_vars, &mut row_vars);
-            for var in type_vars.iter().chain(row_vars.iter()) {
+            other.collect_all_vars(&mut type_vars);
+            for var in &type_vars {
                 state.levels.insert(var.clone(), 0);
             }
             Ok(())
@@ -1596,9 +1603,8 @@ pub fn unify(
         }
         (Type::Top, other) | (other, Type::Top) => {
             let mut type_vars = HashSet::new();
-            let mut row_vars = HashSet::new();
-            other.collect_all_vars(&mut type_vars, &mut row_vars);
-            for var in type_vars.iter().chain(row_vars.iter()) {
+            other.collect_all_vars(&mut type_vars);
+            for var in &type_vars {
                 state.levels.insert(var.clone(), 0);
             }
             Ok(())
@@ -1986,6 +1992,19 @@ pub fn unify(
             Ok(())
         }
 
+        // Union vs Union: defer when both sides have inference vars (TypeVars, row vars, TypeStageApp).
+        // This prevents hard errors from Union([Int, TypeVar(a)]) ~ Union([Str, TypeVar(b)]).
+        // Conservative approximation: the constraint is dropped if TypeVars get bound elsewhere
+        // through other unification paths. See `process_deferred_equalities` for future improvement
+        // (currently not called; enabling it requires a stable call site after dict-level inference).
+        (Type::Union(m1), Type::Union(m2))
+            if m1.iter().any(|ty| ty.has_inference_vars())
+                || m2.iter().any(|ty| ty.has_inference_vars()) =>
+        {
+            state.deferred_equalities.push((a.clone(), b.clone()));
+            Ok(())
+        }
+
         // [C-VAR1] (BAS constraint rewriting, conservative):
         // τ₁ ≤ τ₂ ∨ α  →  bind α to the concrete type when the non-var members
         // don't already cover τ₁.
@@ -2106,6 +2125,13 @@ pub fn unify(
 /// This preserves the fixed-point invariant — a single failure mid-iteration must not
 /// abort processing of remaining equalities that might still make progress.
 ///
+/// # Why `#[allow(dead_code)]`
+///
+/// This function is implemented and correct but not yet called. Enabling it requires a stable
+/// call site after dict-level inference completes — the right hook is the end of the
+/// `infer_dict` five-pass loop, after all TypeVars in the dict are bound. Union-vs-Union
+/// deferred equalities (from the arm above) also land here. Tracked in TODO.md under the
+/// future TypeStageApp deferral sprint (doc/06-type-inference.md:884).
 #[allow(dead_code)]
 pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitution, span: Span) {
     let max_iterations = 100;

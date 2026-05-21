@@ -388,21 +388,21 @@ Rows were a **separate sort** from types. A row mapped labels to types with an o
 pub struct Row {
     pub fields: HashMap<String, Type>,
 }
+```
 
-// ARCHIVED (Rémy): The following types no longer exist in the codebase
-// enum RowTail {
-//     Empty,
-//     RowVar(String, u32),  // ρ — row variable (name, Kiselyov generalization level)
-// }
-            _ => false,
-        }
-    }
-}
+**ARCHIVED (Rémy):** The following types no longer exist in the codebase:
 
+```rust
+// Row with extensible tail (Rémy row polymorphism)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub fields: HashMap<String, Type>,   // known fields {l₁: τ₁, l₂: τ₂, ...}
     pub tail: RowTail,                   // Empty (closed) or RowVar(ρ) (open)
+}
+
+enum RowTail {
+    Empty,
+    RowVar(String, u32),  // ρ — row variable (name, Kiselyov generalization level)
 }
 ```
 

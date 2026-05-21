@@ -1073,21 +1073,17 @@ impl Type {
         }
     }
 
-    /// Collect both type variables and row variables in a single tree walk.
-    /// Performance optimization: avoids allocating two HashSets and traversing the type tree twice.
-    #[allow(clippy::only_used_in_recursion)] // row_vars reserved for future row variable collection
-    pub fn collect_all_vars(
-        &self,
-        type_vars: &mut HashSet<String>,
-        row_vars: &mut HashSet<String>,
-    ) {
+    /// Collect type variables in a single tree walk.
+    /// Under BAS, row variables no longer exist (no RowVar nodes), so the  parameter
+    /// has been removed.
+    pub fn collect_all_vars(&self, type_vars: &mut HashSet<String>) {
         match self {
             Type::TypeVar(name, _) => {
                 type_vars.insert(name.clone());
             }
             Type::Record(row) => {
                 for ty in row.fields.values() {
-                    ty.collect_all_vars(type_vars, row_vars);
+                    ty.collect_all_vars(type_vars);
                 }
             }
             Type::Function {
@@ -1096,43 +1092,43 @@ impl Type {
                 variadic: _,
             } => {
                 for (_name, p_ty) in params {
-                    p_ty.collect_all_vars(type_vars, row_vars);
+                    p_ty.collect_all_vars(type_vars);
                 }
-                ret.collect_all_vars(type_vars, row_vars);
+                ret.collect_all_vars(type_vars);
             }
-            Type::Seq(elem) => elem.collect_all_vars(type_vars, row_vars),
+            Type::Seq(elem) => elem.collect_all_vars(type_vars),
             Type::Map(key, val) => {
-                key.collect_all_vars(type_vars, row_vars);
-                val.collect_all_vars(type_vars, row_vars);
+                key.collect_all_vars(type_vars);
+                val.collect_all_vars(type_vars);
             }
             Type::Union(members) => {
                 for member in members {
-                    member.collect_all_vars(type_vars, row_vars);
+                    member.collect_all_vars(type_vars);
                 }
             }
             Type::Intersection(members) => {
                 for member in members {
-                    member.collect_all_vars(type_vars, row_vars);
+                    member.collect_all_vars(type_vars);
                 }
             }
             Type::Negation(inner) => {
-                inner.collect_all_vars(type_vars, row_vars);
+                inner.collect_all_vars(type_vars);
             }
             Type::App(f, a) => {
-                f.collect_all_vars(type_vars, row_vars);
-                a.collect_all_vars(type_vars, row_vars);
+                f.collect_all_vars(type_vars);
+                a.collect_all_vars(type_vars);
             }
             Type::Operator(name) => {
                 type_vars.insert(name.clone());
             }
             Type::TypeStageApp { fn_name: _, args } => {
                 for arg in args {
-                    arg.collect_all_vars(type_vars, row_vars);
+                    arg.collect_all_vars(type_vars);
                 }
             }
             Type::NominalVariant { tag: _, fields } => {
                 for ty in fields.fields.values() {
-                    ty.collect_all_vars(type_vars, row_vars);
+                    ty.collect_all_vars(type_vars);
                 }
             }
             _ => {}
@@ -1140,17 +1136,16 @@ impl Type {
     }
 
     /// Fused occurs check + variable collection: checks whether `occurs_name` appears
-    /// in the type tree and simultaneously collects all type vars and row vars.
+    /// in the type tree and simultaneously collects all type vars.
     /// Returns `true` if `occurs_name` was found (infinite-type guard for U-VAR arms).
     ///
     /// This replaces the double-walk pattern of calling `type_var_occurs()` then
     /// `collect_all_vars()` separately in each U-VAR arm of `unify()`.
-    #[allow(clippy::only_used_in_recursion)] // row_vars reserved for future row variable collection
+    /// Under BAS, row variables no longer exist, so the row_vars parameter has been removed.
     pub fn collect_all_vars_check_occurs(
         &self,
         occurs_name: &str,
         type_vars: &mut HashSet<String>,
-        row_vars: &mut HashSet<String>,
     ) -> bool {
         match self {
             Type::TypeVar(name, _) => {
@@ -1161,7 +1156,7 @@ impl Type {
             Type::Record(row) => {
                 let mut found = false;
                 for ty in row.fields.values() {
-                    found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                    found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
                 found
             }
@@ -1172,39 +1167,37 @@ impl Type {
             } => {
                 let mut found = false;
                 for (_name, p_ty) in params {
-                    found |= p_ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                    found |= p_ty.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
-                found |= ret.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found |= ret.collect_all_vars_check_occurs(occurs_name, type_vars);
                 found
             }
-            Type::Seq(elem) => elem.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars),
+            Type::Seq(elem) => elem.collect_all_vars_check_occurs(occurs_name, type_vars),
             Type::Map(key, val) => {
                 let mut found = false;
-                found |= key.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
-                found |= val.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found |= key.collect_all_vars_check_occurs(occurs_name, type_vars);
+                found |= val.collect_all_vars_check_occurs(occurs_name, type_vars);
                 found
             }
             Type::Union(members) => {
                 let mut found = false;
                 for member in members {
-                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
                 found
             }
             Type::Intersection(members) => {
                 let mut found = false;
                 for member in members {
-                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                    found |= member.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
                 found
             }
-            Type::Negation(inner) => {
-                inner.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars)
-            }
+            Type::Negation(inner) => inner.collect_all_vars_check_occurs(occurs_name, type_vars),
             Type::App(f, a) => {
                 let mut found = false;
-                found |= f.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
-                found |= a.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                found |= f.collect_all_vars_check_occurs(occurs_name, type_vars);
+                found |= a.collect_all_vars_check_occurs(occurs_name, type_vars);
                 found
             }
             Type::Operator(name) => {
@@ -1215,14 +1208,14 @@ impl Type {
             Type::TypeStageApp { fn_name: _, args } => {
                 let mut found = false;
                 for arg in args {
-                    found |= arg.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                    found |= arg.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
                 found
             }
             Type::NominalVariant { tag: _, fields } => {
                 let mut found = false;
                 for ty in fields.fields.values() {
-                    found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars, row_vars);
+                    found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
                 found
             }
@@ -1230,19 +1223,19 @@ impl Type {
         }
     }
 
-    /// Collect type and row variables into Vecs, allowing duplicates. Cheaper than HashSet
+    /// Collect type variables into Vecs, allowing duplicates. Cheaper than HashSet
     /// allocation; callers that need deduplication handle it via seen-set or contains_key guards.
     /// Production callers: `instantiate_at_level` and `generalize`. (The test-only `instantiate()`
     /// uses the HashSet variant `collect_all_vars` instead.)
-    #[allow(clippy::only_used_in_recursion)] // row_vars reserved for future row variable collection
-    pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>, row_vars: &mut Vec<String>) {
+    /// Under BAS, row variables no longer exist, so the row_vars parameter has been removed.
+    pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>) {
         match self {
             Type::TypeVar(name, _) => {
                 type_vars.push(name.clone());
             }
             Type::Record(row) => {
                 for ty in row.fields.values() {
-                    ty.collect_all_vars_vec(type_vars, row_vars);
+                    ty.collect_all_vars_vec(type_vars);
                 }
             }
             Type::Function {
@@ -1251,43 +1244,43 @@ impl Type {
                 variadic: _,
             } => {
                 for (_name, p_ty) in params {
-                    p_ty.collect_all_vars_vec(type_vars, row_vars);
+                    p_ty.collect_all_vars_vec(type_vars);
                 }
-                ret.collect_all_vars_vec(type_vars, row_vars);
+                ret.collect_all_vars_vec(type_vars);
             }
-            Type::Seq(elem) => elem.collect_all_vars_vec(type_vars, row_vars),
+            Type::Seq(elem) => elem.collect_all_vars_vec(type_vars),
             Type::Map(key, val) => {
-                key.collect_all_vars_vec(type_vars, row_vars);
-                val.collect_all_vars_vec(type_vars, row_vars);
+                key.collect_all_vars_vec(type_vars);
+                val.collect_all_vars_vec(type_vars);
             }
             Type::Union(members) => {
                 for member in members {
-                    member.collect_all_vars_vec(type_vars, row_vars);
+                    member.collect_all_vars_vec(type_vars);
                 }
             }
             Type::Intersection(members) => {
                 for member in members {
-                    member.collect_all_vars_vec(type_vars, row_vars);
+                    member.collect_all_vars_vec(type_vars);
                 }
             }
             Type::Negation(inner) => {
-                inner.collect_all_vars_vec(type_vars, row_vars);
+                inner.collect_all_vars_vec(type_vars);
             }
             Type::App(f, a) => {
-                f.collect_all_vars_vec(type_vars, row_vars);
-                a.collect_all_vars_vec(type_vars, row_vars);
+                f.collect_all_vars_vec(type_vars);
+                a.collect_all_vars_vec(type_vars);
             }
             Type::Operator(name) => {
                 type_vars.push(name.clone());
             }
             Type::TypeStageApp { fn_name: _, args } => {
                 for arg in args {
-                    arg.collect_all_vars_vec(type_vars, row_vars);
+                    arg.collect_all_vars_vec(type_vars);
                 }
             }
             Type::NominalVariant { tag: _, fields } => {
                 for ty in fields.fields.values() {
-                    ty.collect_all_vars_vec(type_vars, row_vars);
+                    ty.collect_all_vars_vec(type_vars);
                 }
             }
             _ => {}

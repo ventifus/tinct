@@ -120,6 +120,7 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 ## Known Nits (from eval-hardening-perf panel)
 
 - [ ] `doc/08-evaluation.md:358` — still says `DepthExceeded` "no longer arises from the core materialize/eval loop" and "can only be raised by individual builtins" — contradicts the corrected line 278 (which correctly notes it CAN arise from `check_stack_depth()` inside the CEK loop); fix the same sentence at line 358 (`doc/08-evaluation.md`)
+- [ ] `tests/corpus/eval/typecheck/constructor_payload_type_precision.llt-eval` — corpus test overly loose: `[+ p.n 1]` passes even when `p.n` is `Unknown` (arithmetic on Unknown uses consistency, not subtype); replace with `[@Int p.n]` or `[[fn [x@Int] x] p.n]` which IS rejected when `p.n` is Unknown — ensures regression in `collect_pattern_bindings` Intersection arm would be caught (`tests/corpus/eval/typecheck/constructor_payload_type_precision.llt-eval`)
 - [ ] Two independent `GENSYM_COUNTER` statics with inconsistent `Ordering`: `eval_pipeline.rs:182` uses `Relaxed` but `builtins_meta.rs:446` uses `SeqCst`; standardize to `Relaxed` (counter uniqueness doesn't require cross-thread ordering; `Relaxed` is sufficient) (`src/eval_pipeline.rs:182`, `src/builtins_meta.rs:446`)
 - [ ] `validate_value` silently skips `Value::Seq` for `items` constraints — add a branch to validate Seq elements against the `items` schema entry (`src/builtins_meta.rs:2303-2305`)
 - [ ] Informal `~40% faster` benchmark claim — either add a real criterion.rs benchmark citation or rephrase as "avoids O(n) repeated key collection" (`src/eval_deep.rs:64`)
@@ -169,23 +170,6 @@ The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge
 ---
 
 ## Health Review #22 Findings (2026-05-19)
-
-### type-soundness: Fix type system soundness issues (bas + cs)
-
-- [ ] **CRITICAL** `Union vs Union` unification with TypeVars falls through to hard error — add `(Type::Union(m1), Type::Union(m2))` arm before C-Var1 guards in `type_unify.rs` that defers to `state.deferred_equalities` when both have inference vars (`src/type_unify.rs:1989-2090`)
-- [ ] Document and guard eval-layer coupling in `normalize()` — add `NormCtxt::allow_eval: bool` flag; set to `false` inside `unify()` at line 1539 to prevent runtime errors from propagating into type inference (`src/type_normalize.rs:344-404`, `src/type_unify.rs:1539`)
-- [ ] Extend coverage checking to bare `NominalVariant` scrutinee types (not wrapped in Union) — add `ConstructorSignature::from_nominal_variant()` and call it when scrutinee is a bare NominalVariant (`src/coverage.rs:170-222`, `src/typecheck.rs`)
-- [ ] Fix `Showable` constraint for `Seq`/`Map`/`Record` — add these to the Showable match arm in `satisfies_constraint`; they are showable at runtime but the type checker rejects them (`src/type_unify.rs:114-124`)
-- [ ] Remove dead `row_vars` parameter from `collect_all_vars`/`collect_all_vars_vec`/`collect_all_vars_check_occurs` — always empty under BAS (`src/type_def.rs:1079,1148,1238`)
-- [ ] Fix `check_do_infer` fast-path: return `Type::Unknown` instead of `state.fresh_type_var()` for unknown methods (orphaned TypeVars pollute `state.levels`) (`src/typecheck.rs:3578`)
-- [ ] Update `doc/06-type-inference.md` type grammar to include BAS types (Union, Intersection, Negation, Never) in the main grammar — these are user-expressible via annotations (`doc/06-type-inference.md:6-22,27-41`)
-- [ ] Fix `doc/07-type-extensions.md:386-407` archived code block confusion — separate BAS `Row` struct from archived RowTail into distinct code blocks (`doc/07-type-extensions.md`)
-- [ ] **MAJOR (LIVE BUG)** `rename_single_type_var` missing `NominalVariant` arm — TypeVars inside NominalVariant fields are not renamed during single-var scheme instantiation; two call sites share the same TypeVar, violating freshness invariant; fix: add `NominalVariant { tag, fields }` arm that calls `rename_single_type_var_in_row(fields, ...)` (`src/type_env.rs:148`)
-- [ ] **MAJOR (COMPLETENESS BUG)** Match arm narrowing uses `StringLiteral(tag)` for Constructor patterns instead of `NominalVariant{tag, ...}` — intersection with NominalVariant scrutinee collapses to Never, making pattern-bound variables typed `Never`; fix: use `Type::NominalVariant { tag: tag.clone(), fields: Row::empty() }` for both positive narrowing (line 2242) and negation accumulation (line 2291) (`src/typecheck.rs:2238-2295`)
-- [ ] **MAJOR (LATENT Phase 2 bug)** Resolver doesn't create scopes for match arm pattern-bound variables — at runtime names are looked up by name (correct in Phase 1) but de Bruijn coordinates are wrong for FlatEnv Phase 2; fix: collect pattern-bound names (Variable, Dict, Seq, Constructor patterns) and enter/exit scope for each arm (`src/resolve.rs:308-315`)
-- [ ] **SUPERSEDED** `ScopeId` was dead code pre-runtime-v2; the runtime-v2 merge (PR #1) restored `ScopeId::fresh()` as an atomic counter (`SCOPE_COUNTER: AtomicU32`). Update expand.rs module doc to accurately describe the current simplified hygiene model (scope counter per invocation, not full Flatt 2016 scope sets) (`src/expand.rs:16-55`)
-- [ ] `collect_pattern_bindings` gives `Unknown` to Constructor payload binding — should extract field type from matching NominalVariant when scrutinee is a Union containing a matching tag (`src/typecheck.rs:1468-1472`)
-- [ ] Exhaustiveness checking only fires for `Type::Union` scrutinee — bare `NominalVariant` scrutinee (not wrapped in Union) skips exhaustiveness entirely; needs type alias registry lookup to get sibling constructors (`src/typecheck.rs:2315`, `src/coverage.rs`)
 
 ### grammar-doc-polish: Fix grammar/doc consistency issues
 

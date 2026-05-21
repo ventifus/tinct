@@ -1,0 +1,17 @@
+# Exhaustiveness checking for bare NominalVariant scrutinee via ConstructorSignature::from_nominal_variant.
+# A single-constructor type declaration produces a bare NominalVariant (not wrapped in Union).
+# When the match does not cover the constructor, a non-exhaustive error must be raised.
+# This exercises the from_nominal_variant path (not from_union).
+[
+  MyTag: [type [MyTag value: Int]]
+
+  bad-match: [fn [let s@MyTag]
+    [match s
+      Int: 0
+    ]
+  ]
+
+  result: 42
+]
+=== out
+non-exhaustive match: missing coverage for [MyTag _]

@@ -221,6 +221,17 @@ impl ConstructorSignature {
         ConstructorSignature { constructors }
     }
 
+    /// Create a signature from a bare NominalVariant (not wrapped in Union).
+    /// Extracts a single constructor from the NominalVariant's tag and fields.
+    /// Used when coverage checking a match on a bare variant type.
+    pub fn from_nominal_variant(tag: &str, fields: &crate::type_def::Row) -> Self {
+        let constructors = vec![(
+            ConstructorTag::Variant(tag.to_string()),
+            fields.fields.len(),
+        )];
+        ConstructorSignature { constructors }
+    }
+
     /// Return the arity of a constructor, or 0 if unknown.
     pub fn arity(&self, tag: &ConstructorTag) -> usize {
         self.constructors

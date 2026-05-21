@@ -301,15 +301,30 @@ impl Resolver {
                 self.walk_expr(pattern);
             }
             // Match: resolve variables in scrutinee, guards, and arm bodies.
-            // Patterns don't contain runtime variable references (except Pin patterns,
-            // which we don't support yet).
+            // Create a new scope for each arm to bind pattern-bound variables.
             Expr::Match { scrutinee, arms } => {
                 self.walk_expr(scrutinee);
                 for arm in arms {
+                    // Collect pattern-bound variable names
+                    let mut bound_names = std::collections::HashSet::new();
+                    collect_pattern_variables(&arm.pattern.node, &mut bound_names);
+
+                    // Enter scope for this arm (binds pattern variables)
+                    let bound_vec: Vec<String> = bound_names.into_iter().collect();
+                    if !bound_vec.is_empty() {
+                        self.enter_scope(&bound_vec);
+                    }
+
+                    // Resolve guard and body in arm scope
                     if let Some(guard) = &arm.guard {
                         self.walk_expr(guard);
                     }
                     self.walk_expr(&arm.body);
+
+                    // Exit arm scope
+                    if !bound_vec.is_empty() {
+                        self.exit_scope();
+                    }
                 }
             }
             // ClassDecl: resolve variables in method signatures
@@ -504,7 +519,10 @@ struct SurfaceResolver {
 
 impl SurfaceResolver {
     fn new() -> Self {
-        Self { scopes: Vec::new(), table: ResolutionTable::new() }
+        Self {
+            scopes: Vec::new(),
+            table: ResolutionTable::new(),
+        }
     }
 
     fn enter_scope(&mut self, keys: &[String]) {
@@ -519,7 +537,9 @@ impl SurfaceResolver {
     }
 
     fn exit_scope(&mut self) {
-        self.scopes.pop().expect("exit_scope called with empty stack");
+        self.scopes
+            .pop()
+            .expect("exit_scope called with empty stack");
     }
 
     fn resolve_name(&self, name: &str) -> Option<(u32, u32)> {
@@ -562,15 +582,19 @@ impl SurfaceResolver {
                 self.exit_scope();
             }
 
-            SurfaceExpression::Fn { return_ann: _, params, body, .. } => {
+            SurfaceExpression::Fn {
+                return_ann: _,
+                params,
+                body,
+                ..
+            } => {
                 // Walk param annotations in outer scope
                 for param in params {
                     if let Some(ann) = &param.node.annotation {
                         self.walk_surface_annotation(ann);
                     }
                 }
-                let param_names: Vec<String> =
-                    params.iter().map(|p| p.node.name.clone()).collect();
+                let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
                 self.enter_scope(&param_names);
                 self.walk_surface_node(body);
                 self.exit_scope();
@@ -595,7 +619,12 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::Call { func, args, named_args, .. } => {
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } => {
                 self.walk_surface_node(func);
                 for arg in args {
                     self.walk_surface_node(arg);
@@ -635,7 +664,8 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            SurfaceExpression::PatternDecl { bindings }
+            | SurfaceExpression::LetDecl { bindings } => {
                 for b in bindings {
                     self.walk_surface_node(b);
                 }
@@ -685,7 +715,12 @@ impl SurfaceResolver {
     fn walk_surface_declaration(&mut self, decl: &SurfaceDeclaration) {
         match decl {
             SurfaceDeclaration::TypeAlias { body, .. } => self.walk_surface_node(body),
-            SurfaceDeclaration::ClassDecl { methods, determines, resolver, .. } => {
+            SurfaceDeclaration::ClassDecl {
+                methods,
+                determines,
+                resolver,
+                ..
+            } => {
                 for method in methods {
                     if let Some(key) = &method.node.key {
                         self.walk_surface_node(key);
@@ -729,7 +764,10 @@ impl SurfaceResolver {
     fn walk_surface_document(&mut self, doc: &SurfaceDocument) {
         let mut injected = 0usize;
         let items: Vec<&SurfaceItem> = doc.items.iter().collect();
-        let expr_count = items.iter().filter(|i| matches!(i, SurfaceItem::Expr(_))).count();
+        let expr_count = items
+            .iter()
+            .filter(|i| matches!(i, SurfaceItem::Expr(_)))
+            .count();
         let mut expr_idx = 0usize;
 
         for item in &items {
@@ -800,11 +838,15 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     entries
         .iter()
         .filter_map(|entry| {
-            entry.node.key.as_ref().and_then(|key_node| match &key_node.expr {
-                SurfaceExpression::Str(s) => Some(s.clone()),
-                SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-                _ => None,
-            })
+            entry
+                .node
+                .key
+                .as_ref()
+                .and_then(|key_node| match &key_node.expr {
+                    SurfaceExpression::Str(s) => Some(s.clone()),
+                    SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
         })
         .collect()
 }
@@ -814,6 +856,45 @@ fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
     match &node.expr {
         SurfaceExpression::Dict(entries) => Some(surface_dict_static_keys(entries)),
         _ => None,
+    }
+}
+
+/// Collect all variable names bound by a pattern (for match arm scoping).
+fn collect_pattern_variables(
+    pattern: &crate::ast::Pattern,
+    vars: &mut std::collections::HashSet<String>,
+) {
+    match pattern {
+        crate::ast::Pattern::Variable(name) => {
+            vars.insert(name.clone());
+        }
+        crate::ast::Pattern::Dict { fields, .. } => {
+            for (_, field_pattern) in fields {
+                collect_pattern_variables(&field_pattern.node, vars);
+            }
+        }
+        crate::ast::Pattern::Seq { head, tail } => {
+            collect_pattern_variables(&head.node, vars);
+            collect_pattern_variables(&tail.node, vars);
+        }
+        crate::ast::Pattern::Constructor { binding, .. } => {
+            if let Some(binding_pattern) = binding {
+                collect_pattern_variables(&binding_pattern.node, vars);
+            }
+        }
+        crate::ast::Pattern::Or(patterns) => {
+            // For or-patterns, we only collect from the first branch
+            // (all branches must bind the same variables, verified separately)
+            if let Some(first) = patterns.first() {
+                collect_pattern_variables(&first.node, vars);
+            }
+        }
+        crate::ast::Pattern::Wildcard
+        | crate::ast::Pattern::TypeTag(_)
+        | crate::ast::Pattern::Literal(_)
+        | crate::ast::Pattern::Pin(_) => {
+            // These don't bind variables
+        }
     }
 }
 
