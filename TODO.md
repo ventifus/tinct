@@ -4,10 +4,16 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+⚠️ **Sprint ordering:** Health Review sprints come first — they fix real bugs and are independent of the runtime-v2 migration. The Parts B+E migration (massive compiler rewrite) follows.
+
+---
+
 ## runtime-v2 — Sprint 1 (continued): Parts B–G
 
-**Branch:** `main` (post-rebase)
-**Depends on:** `runtime-v2-rebase` complete
+**PR #1 merged** (2026-05-20, commit 7e34f1cc). Parts A/B(bridge)/D/F/G now on main. Remaining work: Part E (evaluator cutover, delete old Expr/File types, Rc→Arc) and Parts F+G full API cutover.
+
+**Branch:** `main`
+**Depends on:** `runtime-v2-rebase` complete ✅, PR #1 merged ✅
 **Plan:** `doc/whatif/plans/runtime-v2-plan.md`
 
 ⚠️ **Parts B–E are one atomic compilation unit** (per plan). Part B migrates the parser to return `SurfaceProgram`; this breaks all downstream code until Part E provides the new evaluator. No `cargo check` checkpoint until Part E is complete. First `cargo check` = after Part E. `just test` = after Part G.
@@ -130,6 +136,26 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class: `∀f a. Filterable f ⇒ (a → Bool) → f a → f a`; compare `Mappable` extension vs separate class using `Data.Witherable` as precedent; include instance examples for `Seq` and `Dict` (`doc/whatif/filterable.md`)
 - [ ] Accept `doc/whatif/schema-directed-from-json.md` via `/rnd` and create implementation sprint in TODO.md for `from-json @Schema` schema-directed typed parse (`doc/whatif/schema-directed-from-json.md`)
+
+---
+
+## include-decomp Regression (from runtime-v2 merge)
+
+The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge (2026-05-20) reintroduced old code that include-decomp had deleted. Review: `/review-whatif include-decomposition` confirmed these regressions.
+
+### include-decomp-redelete: Re-delete code regressed by runtime-v2 merge
+
+**Whatif:** `include-decomposition`
+**Review:** All include-decomp sprints are DONE but runtime-v2 merge reverted the deletions.
+
+- [ ] Delete `builtin_include` from `src/builtins_meta.rs` (the entire function, ~350+ lines) and remove its registration from `standard_builtins()` (`src/builtins.rs`) — already deleted once in include-decomp-prelude sprint, reintroduced by runtime-v2 merge
+- [ ] Delete `Value::RustRegistry` from `src/value.rs` and all match arms that handle it (`src/value.rs`, `src/lib.rs`, `src/builtins.rs`)
+- [ ] Delete `rust_module()` and all module grouping (`"core"`, `"io"`, `"net"`, etc.) from `src/builtins.rs`
+- [ ] Delete `EvalState::include_guard: HashSet<(u64, u64)>` from `src/eval.rs` (replaced by `[Pending]` cache state in tinct)
+- [ ] Delete old inode-keyed `include_cache` from `src/eval.rs` (replaced by content-addressed cache in tinct)
+- [ ] Delete `src/eval_pipeline.rs` entirely (`eval_file_with_input`, `eval_document`, `run_eval`) and update all callers in `src/main.rs`, `src/lib.rs`, `src/repl.rs`, `src/formatter.rs` to use the tinct `cli-pipeline`/`eval-file` functions via `invoke_function`
+- [ ] Verify `expand` builtin in `src/builtins_meta.rs` performs real macro expansion (currently identity stub) — use `dict_to_file` → `expand()` → `ast_to_dict` round-trip as specified in whatif
+- [ ] After deletions: `just test` must pass; `just test-lib` must pass (`src/builtins_meta.rs`, `src/eval.rs`, `src/main.rs`)
 
 ---
 
