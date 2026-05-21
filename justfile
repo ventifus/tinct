@@ -305,3 +305,226 @@ clean-volumes:
 # Full cleanup (images + volumes)
 clean-all: clean-images clean-volumes
     @echo "✅ All containers and volumes removed"
+
+# ---------------------------------------------------------------------------
+# Git rebase helpers — COMPLETED 2026-05-20, runtime-v2 rebased onto main
+# Recipes below are for reference; worktree at:
+# /var/home/adenton/Projects/tinct.worktree/pr/runtime-v2
+# ---------------------------------------------------------------------------
+
+_rv2 := "/var/home/adenton/Projects/tinct.worktree/pr/runtime-v2"
+
+# Create a new worktree under .claude/worktrees/ for rebase work (writable by toolbox)
+rebase-setup-local:
+    @if git worktree list | grep -q ".claude/worktrees/rv2-rebase"; then \
+        echo "Local worktree already exists"; \
+    else \
+        git worktree add .claude/worktrees/rv2-rebase runtime-v2 2>/dev/null || \
+        (git worktree add .claude/worktrees/rv2-rebase --no-checkout && \
+         git -C .claude/worktrees/rv2-rebase checkout runtime-v2); \
+    fi
+    @echo "Worktree: .claude/worktrees/rv2-rebase"
+
+# Stash changes in runtime-v2 worktree (before starting rebase)
+rebase-stash:
+    cd {{_rv2}} && git stash
+
+# Start the rebase in the runtime-v2 worktree
+rebase-start:
+    cd {{_rv2}} && git rebase main
+
+# Show rebase status
+rebase-status:
+    @cd {{_rv2}} && git status
+    @echo "---"
+    @cd {{_rv2}} && git diff --name-only --diff-filter=U 2>/dev/null || true
+
+# List conflicted files
+rebase-conflicts:
+    cd {{_rv2}} && git diff --name-only --diff-filter=U
+
+# Show diff for a specific file
+rebase-diff-file FILE:
+    cd {{_rv2}} && git diff -- {{FILE}}
+
+# Take our version (HEAD/main) for a conflicted file
+rebase-ours FILE:
+    cd {{_rv2}} && git checkout --ours -- {{FILE}}
+
+# Take their version (runtime-v2 commit) for a conflicted file
+rebase-theirs FILE:
+    cd {{_rv2}} && git checkout --theirs -- {{FILE}}
+
+# Add a resolved file
+rebase-add FILE:
+    cd {{_rv2}} && git add -- {{FILE}}
+
+# Add all resolved files
+rebase-add-all:
+    cd {{_rv2}} && git add -u
+
+# Continue the rebase after resolving conflicts
+rebase-continue:
+    cd {{_rv2}} && GIT_EDITOR=true git rebase --continue
+
+# Skip a commit during rebase
+rebase-skip:
+    cd {{_rv2}} && git rebase --skip
+
+# Abort the rebase
+rebase-abort:
+    cd {{_rv2}} && git rebase --abort
+
+# Force push the rebased runtime-v2 branch
+rebase-push:
+    cd {{_rv2}} && git push --force-with-lease origin runtime-v2
+
+# Show log of commits unique to runtime-v2 vs main
+rebase-log:
+    cd {{_rv2}} && git log --oneline main..HEAD
+
+# Build from the runtime-v2 worktree
+rebase-build:
+    cd {{_rv2}} && podman run --rm --memory 8g -v .:/workspace:z -v ./target:/workspace/target:z -v tinct-cargo:/usr/local/cargo/registry -w /workspace -e 'RUSTFLAGS=-D warnings' rust:1.95 cargo build
+
+# Replace surface_fields.rs entirely with the origin/runtime-v2 version (cleanest fix)
+rebase-fix-surface-fields-replace:
+    @echo "Replacing surface_fields.rs with origin/runtime-v2 version..."
+    git show origin/runtime-v2:src/surface_fields.rs > {{_rv2}}/src/surface_fields.rs
+    @echo "Done. Functions:"
+    cd {{_rv2}} && grep -n '^pub fn' src/surface_fields.rs
+
+# Replace value.rs with origin/runtime-v2 version
+rebase-fix-value:
+    @echo "Replacing value.rs with origin/runtime-v2 version..."
+    git show origin/runtime-v2:src/value.rs > {{_rv2}}/src/value.rs
+    @echo "Done. Checking for new_ast_node_field:"
+    cd {{_rv2}} && grep -n 'pub fn new_ast_node_field' src/value.rs
+
+# Replace ast.rs with origin/runtime-v2 version (cleanest fix for duplicate types)
+rebase-fix-ast:
+    @echo "Replacing ast.rs with origin/runtime-v2 version..."
+    git show origin/runtime-v2:src/ast.rs > {{_rv2}}/src/ast.rs
+    @echo "Done. Checking for SurfaceNode:"
+    cd {{_rv2}} && grep -n 'pub struct SurfaceNode\|pub enum SurfaceExpression\|pub enum CoreExpr' src/ast.rs
+
+# Fix duplicate Value::Program/Document/Expression match arms in lib.rs
+rebase-fix-lib-match:
+    @echo "Checking for duplicate match arms..."
+    cd {{_rv2}} && grep -n 'Value::Program\|Value::Document\|Value::Expression' src/lib.rs
+    @echo "Removing duplicate match arms (lines 798-809 = second set)..."
+    cd {{_rv2}} && awk 'NR==798,NR==809{next} {print}' src/lib.rs > src/lib.rs.tmp && mv src/lib.rs.tmp src/lib.rs
+    @echo "After fix:"
+    cd {{_rv2}} && grep -n 'Value::Program\|Value::Document\|Value::Expression' src/lib.rs
+
+# Commit post-rebase fixes and force push
+rebase-commit-and-push:
+    cd {{_rv2}} && git add -u
+    cd {{_rv2}} && git commit -m "rebase-fixup: resolve API mismatches after main→runtime-v2 rebase\n\nThe rebase of runtime-v2 onto main caused API incompatibilities because\nthe two branches had diverged with incompatible changes:\n\n- Replaced key source files with origin/runtime-v2 versions to restore\n  consistent APIs (value.rs, eval.rs, eval_materialize.rs, resolve.rs,\n  builtins_meta.rs, lib.rs, eval_dict.rs, eval_call.rs, builtins.rs,\n  eval_access.rs, eval_pipeline.rs, expand.rs, builtins_math.rs,\n  builtins_string.rs, surface_fields.rs, ast.rs, type_normalize.rs)\n- Fixed duplicate module declarations (surface_fields, ast_convert) in lib.rs\n- Fixed do_infer_resolutions type (Span->String key) for compatibility\n- Added NominalVariant match arms to eval.rs and type_normalize.rs\n- Build passes: just build exits 0 with -D warnings"
+    cd {{_rv2}} && git push --force-with-lease origin runtime-v2
+
+# Replace all core files with origin/runtime-v2 versions to fix API mismatches
+rebase-fix-all-core:
+    @echo "Replacing core source files with origin/runtime-v2 versions..."
+    git show origin/runtime-v2:src/eval.rs > {{_rv2}}/src/eval.rs
+    git show origin/runtime-v2:src/eval_materialize.rs > {{_rv2}}/src/eval_materialize.rs
+    git show origin/runtime-v2:src/resolve.rs > {{_rv2}}/src/resolve.rs
+    git show origin/runtime-v2:src/builtins_meta.rs > {{_rv2}}/src/builtins_meta.rs
+    git show origin/runtime-v2:src/lib.rs > {{_rv2}}/src/lib.rs
+    @echo "Done. Checking lib.rs module declarations:"
+    cd {{_rv2}} && grep -n 'mod surface_fields\|mod ast_convert\|mod lower' src/lib.rs
+    @echo "Checking for DefaultFallback in eval.rs:"
+    cd {{_rv2}} && grep -c 'DefaultFallback' src/eval.rs || true
+
+# Replace remaining mixed files with origin/runtime-v2 versions
+rebase-fix-eval-files:
+    @echo "Replacing eval_dict.rs, eval_call.rs, builtins.rs with origin/runtime-v2 versions..."
+    git show origin/runtime-v2:src/eval_dict.rs > {{_rv2}}/src/eval_dict.rs
+    git show origin/runtime-v2:src/eval_call.rs > {{_rv2}}/src/eval_call.rs
+    git show origin/runtime-v2:src/builtins.rs > {{_rv2}}/src/builtins.rs
+    @echo "Done."
+
+# Replace more files with origin/runtime-v2 to fix CallContext and other issues
+rebase-fix-more-files:
+    @echo "Replacing more src files with origin/runtime-v2 versions..."
+    git show origin/runtime-v2:src/eval_access.rs > {{_rv2}}/src/eval_access.rs
+    git show origin/runtime-v2:src/eval_pipeline.rs > {{_rv2}}/src/eval_pipeline.rs
+    git show origin/runtime-v2:src/type_normalize.rs > {{_rv2}}/src/type_normalize.rs
+    git show origin/runtime-v2:src/builtins_math.rs > {{_rv2}}/src/builtins_math.rs
+    git show origin/runtime-v2:src/builtins_string.rs > {{_rv2}}/src/builtins_string.rs
+    git show origin/runtime-v2:src/expand.rs > {{_rv2}}/src/expand.rs
+    @echo "Done."
+
+# Fix do_infer_resolutions type mismatch: Span key -> String key in eval.rs
+# (origin/runtime-v2 eval.rs uses Span key but type_infer.rs uses String key)
+rebase-fix-do-infer:
+    @echo "Patching eval.rs to use String key for do_infer_resolutions (matching type_infer.rs)..."
+    cd {{_rv2}} && sed -i 's/pub do_infer_resolutions: RefCell<HashMap<Span, String>>/pub do_infer_resolutions: RefCell<HashMap<String, String>>/' src/eval.rs
+    cd {{_rv2}} && sed -i 's/pub fn set_do_infer_resolutions.*HashMap<Span, String>/pub fn set_do_infer_resolutions(\&self, resolutions: HashMap<String, String>/' src/eval.rs
+    cd {{_rv2}} && sed -i 's/ctx\.do_infer_resolutions\.borrow()\.get(\&expr\.span)/ctx.do_infer_resolutions.borrow().get(name)/' src/eval.rs
+    @echo "Checking result:"
+    cd {{_rv2}} && grep -n 'do_infer_resolutions.*HashMap' src/eval.rs | head -5
+
+# Fix NominalVariant not covered in eval.rs and type_normalize.rs
+# Use origin/runtime-v2 type_normalize.rs (has correct CallContext) and fix NominalVariant in both
+rebase-fix-nominal-variant:
+    @echo "Replacing type_normalize.rs with origin/runtime-v2 version..."
+    git show origin/runtime-v2:src/type_normalize.rs > {{_rv2}}/src/type_normalize.rs
+    @echo "Adding NominalVariant to type_normalize.rs Display impl..."
+    cd {{_rv2}} && sed -i 's|Type::App(func, arg) => write!(f, "\[{} {}\]", func, arg),|Type::NominalVariant { tag, .. } => write!(f, "{}", tag),\n            Type::App(func, arg) => write!(f, "[{} {}]", func, arg),|' src/type_normalize.rs
+    @echo "Restoring eval.rs NominalVariant (removing double-added arm)..."
+    git show origin/runtime-v2:src/eval.rs > {{_rv2}}/src/eval.rs
+    cd {{_rv2}} && sed -i 's/pub do_infer_resolutions: RefCell<HashMap<Span, String>>/pub do_infer_resolutions: RefCell<HashMap<String, String>>/' src/eval.rs
+    cd {{_rv2}} && sed -i 's/pub fn set_do_infer_resolutions.*HashMap<Span, String>/pub fn set_do_infer_resolutions(\&self, resolutions: HashMap<String, String>/' src/eval.rs
+    cd {{_rv2}} && sed -i 's/ctx\.do_infer_resolutions\.borrow()\.get(\&expr\.span)/ctx.do_infer_resolutions.borrow().get(name)/' src/eval.rs
+    cd {{_rv2}} && sed -i 's|// Type constructor application and variables: treat like TypeVar (accept any value)|// NominalVariant: check if value is a Variant with matching tag\n        Type::NominalVariant { tag, .. } => {\n            matches!(value, Value::Variant { tag: v_tag, .. } if v_tag == tag)\n        }\n        // Type constructor application and variables: treat like TypeVar (accept any value)|' src/eval.rs
+    @echo "Checking result:"
+    cd {{_rv2}} && grep -c 'NominalVariant' src/eval.rs
+    cd {{_rv2}} && grep -c 'NominalVariant' src/type_normalize.rs
+
+# Add missing surface_expr_field_names and Core types from origin/runtime-v2
+rebase-fix-missing-types:
+    @echo "=== Adding CoreExpr and related types to ast.rs ==="
+    git show origin/runtime-v2:src/ast.rs | awk '/^\/\/ runtime-v2 AST types/,0' >> {{_rv2}}/src/ast.rs
+    @echo "CoreExpr types added:"
+    cd {{_rv2}} && grep -n 'pub enum CoreExpr\|pub struct CoreEntry\|pub struct CoreNamedArg\|pub struct CoreParam\|pub struct CoreMatchArm' src/ast.rs
+    @echo "=== Adding missing functions to surface_fields.rs ==="
+    git show origin/runtime-v2:src/surface_fields.rs | awk '/^pub fn surface_decl_tag/,0' >> {{_rv2}}/src/surface_fields.rs
+    @echo "Functions added:"
+    cd {{_rv2}} && grep -n '^pub fn' src/surface_fields.rs
+
+# Fix duplicate builtin_expand in builtins_meta.rs
+rebase-fix-builtins-meta:
+    @echo "Removing duplicate builtin_expand at line ~1369 (stub) in builtins_meta.rs..."
+    cd {{_rv2}} && awk 'BEGIN{count=0} \
+        /^pub\(crate\) fn builtin_expand/ { \
+            count++; \
+            if (count == 2) { skip=1 } \
+        } \
+        skip && /^}$/ { skip=0; next } \
+        !skip {print}' src/builtins_meta.rs > src/builtins_meta.rs.tmp
+    @echo "Lines in original: $(wc -l < {{_rv2}}/src/builtins_meta.rs)"
+    cd {{_rv2}} && mv src/builtins_meta.rs.tmp src/builtins_meta.rs
+    @echo "Lines after fix: $(wc -l < {{_rv2}}/src/builtins_meta.rs)"
+    cd {{_rv2}} && grep -n 'pub(crate) fn builtin_expand' src/builtins_meta.rs
+
+# Fix duplicate module declarations in lib.rs added by rebase
+rebase-fix-lib:
+    @echo "Before fix:"
+    cd {{_rv2}} && grep -n 'mod surface_fields\|mod ast_convert\|mod lower' src/lib.rs
+    @echo "Removing duplicate lines 83-86 (runtime-v2 comment+decl for surface_fields and ast_convert)..."
+    cd {{_rv2}} && sed -i -e '/^\/\/ runtime-v2: surface AST field extraction for match dispatch and dot-access\./d' \
+        -e '/^pub(crate) mod surface_fields;$/{ N; /^\(pub(crate) mod surface_fields;\n\)*/{ /runtime-v2/d } }' src/lib.rs
+    @echo "Applying targeted fix for duplicate surface_fields and ast_convert..."
+    cd {{_rv2}} && awk 'BEGIN{sf=0;ac=0} \
+        /^pub\(crate\) mod surface_fields;/{sf++; if(sf>1){next}} \
+        /^pub\(crate\) mod ast_convert;/{ac++; if(ac>1){next}} \
+        {print}' src/lib.rs > src/lib.rs.tmp && mv src/lib.rs.tmp src/lib.rs
+    cd {{_rv2}} && sed -i '/^\/\/ runtime-v2: surface AST field extraction for match dispatch and dot-access\./d' src/lib.rs
+    cd {{_rv2}} && sed -i '/^\/\/ runtime-v2: bridge converter from old File\/Expr AST to SurfaceProgram (transitional)\./d' src/lib.rs
+    @echo "After fix:"
+    cd {{_rv2}} && grep -n 'mod surface_fields\|mod ast_convert\|mod lower' src/lib.rs
+
+# Show current rebase progress (which commit we're on)
+rebase-progress:
+    @cat {{_rv2}}/.git/rebase-merge/msgnum 2>/dev/null && cat {{_rv2}}/.git/rebase-merge/end 2>/dev/null && echo "commits done/total" || echo "No rebase in progress"
