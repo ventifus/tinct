@@ -119,11 +119,11 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 ## Known Nits (from eval-hardening-perf panel)
 
-- [ ] `doc/08-evaluation.md:358` — still says `DepthExceeded` "no longer arises from the core materialize/eval loop" and "can only be raised by individual builtins" — contradicts the corrected line 278 (which correctly notes it CAN arise from `check_stack_depth()` inside the CEK loop); fix the same sentence at line 358 (`doc/08-evaluation.md`)
-- [ ] `tests/corpus/eval/typecheck/constructor_payload_type_precision.llt-eval` — corpus test overly loose: `[+ p.n 1]` passes even when `p.n` is `Unknown` (arithmetic on Unknown uses consistency, not subtype); replace with `[@Int p.n]` or `[[fn [x@Int] x] p.n]` which IS rejected when `p.n` is Unknown — ensures regression in `collect_pattern_bindings` Intersection arm would be caught (`tests/corpus/eval/typecheck/constructor_payload_type_precision.llt-eval`)
-- [ ] Two independent `GENSYM_COUNTER` statics with inconsistent `Ordering`: `eval_pipeline.rs:182` uses `Relaxed` but `builtins_meta.rs:446` uses `SeqCst`; standardize to `Relaxed` (counter uniqueness doesn't require cross-thread ordering; `Relaxed` is sufficient) (`src/eval_pipeline.rs:182`, `src/builtins_meta.rs:446`)
-- [ ] `validate_value` silently skips `Value::Seq` for `items` constraints — add a branch to validate Seq elements against the `items` schema entry (`src/builtins_meta.rs:2303-2305`)
-- [ ] Informal `~40% faster` benchmark claim — either add a real criterion.rs benchmark citation or rephrase as "avoids O(n) repeated key collection" (`src/eval_deep.rs:64`)
+- [x] `doc/08-evaluation.md:358` — **FIXED (commit e169762)**
+- [x] `tests/corpus/eval/typecheck/constructor_payload_type_precision.llt-eval` — **FIXED (commit e169762)**: replaced with `[@Int p.n]`
+- [x] GENSYM_COUNTER ordering — **FIXED (commit e169762)**: standardized to `Relaxed`
+- [x] `validate_value` Seq items validation — **FIXED (commit e169762)**: added `validate_seq_items` branch
+- [x] Benchmark claim — **FIXED (commit e169762)**: replaced with factual description
 
 ---
 

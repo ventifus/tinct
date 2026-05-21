@@ -4428,6 +4428,7 @@ fn pop_last_value_from_frame(
         Some(StackFrame::Call {
             ref mut func,
             ref mut args,
+            ref mut pending_key,
             ..
         }) => {
             if args.is_empty() {
@@ -4445,10 +4446,12 @@ fn pop_last_value_from_frame(
                 CallArg::Positional(expr) => {
                     Ok(Rc::try_unwrap(expr).unwrap_or_else(|rc| (*rc).clone()))
                 }
-                CallArg::Named(name, _expr) => Err(ParseError {
-                    message: format!("dot access cannot operate on named argument '{}'", name),
-                    span: Some(span),
-                }),
+                CallArg::Named(name, expr) => {
+                    // Restore the name as pending_key so the transformed value will be re-associated
+                    // with the same name. This allows `[foo bar: baz.field]` to work correctly.
+                    *pending_key = Some((name, span));
+                    Ok(Rc::try_unwrap(expr).unwrap_or_else(|rc| (*rc).clone()))
+                }
             }
         }
         Some(StackFrame::Fn { ref mut body, .. }) => {
