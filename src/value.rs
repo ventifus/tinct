@@ -928,6 +928,216 @@ pub enum ThunkState {
     },
 }
 
+// ============================================================================
+// Runtime v2 — Sprint 2B: ThunkInner + UnevaluatedState (ADDITIVE)
+// ============================================================================
+
+/// Pre-evaluation state variants for the new ThunkInner structure.
+/// Replaces the current ThunkState enum in Sprint 2B.
+///
+/// This is ADDITIVE — the existing ThunkState enum remains during the transition.
+/// Conversion methods below allow gradual migration.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub enum UnevaluatedState {
+    /// AST expression from the old runtime (CoreExpr will replace this in full runtime-v2).
+    Expr {
+        expr: Rc<Spanned<Expr>>,
+        env: Arc<RwLock<Environment>>,
+        env_id: Option<crate::arena::EnvId>,
+        ctx: Arc<crate::eval::EvalContext>,
+    },
+    /// Pre-lowering Surface thunk — created by the `eval` builtin.
+    Surface {
+        node: Arc<SurfaceNode>,
+        res: Arc<crate::ast::ResolutionTable>,
+        types: Arc<crate::ast::TypeAnnotationTable>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<crate::eval::EvalContext>,
+    },
+    /// Lazy AST node field access via `surface_node_get_field`.
+    AstNodeField {
+        node: Arc<SurfaceNode>,
+        field: &'static str,
+        ctx: Arc<crate::eval::EvalContext>,
+    },
+    /// Deferred builtin call (was PendingBuiltin).
+    Builtin {
+        def: BuiltinDef,
+        args: Box<Vec<Arc<Thunk>>>,
+        named: Option<IndexMap<String, Arc<Thunk>>>,
+        call_span: Span,
+        ctx: Arc<crate::eval::EvalContext>,
+    },
+    /// Deferred function call (was PendingCall).
+    Call {
+        func: Arc<Thunk>,
+        args: Box<Vec<Arc<Thunk>>>,
+        named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
+        call_span: Span,
+        caller_env: Arc<RwLock<Environment>>,
+        ctx: Arc<crate::eval::EvalContext>,
+    },
+    /// Type guard wrapping an inner thunk (was Guarded).
+    Guarded {
+        inner: Arc<Thunk>,
+        expected: Type,
+        field_path: Box<Vec<String>>,
+        guard_span: Span,
+        blame_label: Option<crate::error::BlameLabel>,
+        default: Option<(Rc<Spanned<Expr>>, Arc<RwLock<Environment>>)>,
+    },
+}
+
+/// New thunk structure for async evaluation (Sprint 2B).
+/// Replaces Mutex<ThunkState> with a two-field pair:
+/// - unevaluated: taken (set to None) when evaluation starts
+/// - result: set exactly once when evaluation completes
+///
+/// This is ADDITIVE — Thunk still uses Mutex<ThunkState> during the transition.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct ThunkInner {
+    /// Pre-evaluation state. Set to Some initially, taken (set to None) when evaluation starts.
+    /// Taking this field atomically transitions the thunk to "InProgress" state.
+    pub unevaluated: Mutex<Option<UnevaluatedState>>,
+
+    /// Post-evaluation result. Set exactly once when evaluation completes (success or failure).
+    /// Cycle detection: if unevaluated is None and result is not yet set → circular dependency.
+    pub result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
+}
+
+// Conversion utilities for gradual migration
+impl ThunkState {
+    /// Convert ThunkState to UnevaluatedState if it's a deferred state.
+    /// Returns None for terminal states (Materialized, Failed, InProgress, Placeholder).
+    pub fn to_unevaluated(&self) -> Option<UnevaluatedState> {
+        match self {
+            ThunkState::Unevaluated { expr, env, env_id, ctx } => {
+                Some(UnevaluatedState::Expr {
+                    expr: expr.clone(),
+                    env: env.clone(),
+                    env_id: *env_id,
+                    ctx: ctx.clone(),
+                })
+            }
+            ThunkState::Surface { node, res, types, env, ctx } => {
+                Some(UnevaluatedState::Surface {
+                    node: node.clone(),
+                    res: res.clone(),
+                    types: types.clone(),
+                    env: env.clone(),
+                    ctx: ctx.clone(),
+                })
+            }
+            ThunkState::AstNodeField { node, field, ctx } => {
+                Some(UnevaluatedState::AstNodeField {
+                    node: node.clone(),
+                    field,
+                    ctx: ctx.clone(),
+                })
+            }
+            ThunkState::PendingBuiltin { def, args, named, call_span, ctx } => {
+                Some(UnevaluatedState::Builtin {
+                    def: def.clone(),
+                    args: args.clone(),
+                    named: named.clone(),
+                    call_span: *call_span,
+                    ctx: ctx.clone(),
+                })
+            }
+            ThunkState::PendingCall { func, args, named, call_span, caller_env, ctx } => {
+                Some(UnevaluatedState::Call {
+                    func: func.clone(),
+                    args: args.clone(),
+                    named: named.clone(),
+                    call_span: *call_span,
+                    caller_env: caller_env.clone(),
+                    ctx: ctx.clone(),
+                })
+            }
+            ThunkState::Guarded { inner, expected, field_path, guard_span, blame_label, default } => {
+                Some(UnevaluatedState::Guarded {
+                    inner: inner.clone(),
+                    expected: expected.clone(),
+                    field_path: field_path.clone(),
+                    guard_span: *guard_span,
+                    blame_label: blame_label.clone(),
+                    default: default.clone(),
+                })
+            }
+            // Terminal states have no unevaluated representation
+            ThunkState::Placeholder | ThunkState::InProgress | ThunkState::Materialized(_) | ThunkState::Failed(_) => None,
+        }
+    }
+}
+
+impl UnevaluatedState {
+    /// Convert UnevaluatedState back to ThunkState.
+    /// Used for state restoration on non-cacheable errors.
+    pub fn to_thunk_state(&self) -> ThunkState {
+        match self {
+            UnevaluatedState::Expr { expr, env, env_id, ctx } => {
+                ThunkState::Unevaluated {
+                    expr: expr.clone(),
+                    env: env.clone(),
+                    env_id: *env_id,
+                    ctx: ctx.clone(),
+                }
+            }
+            UnevaluatedState::Surface { node, res, types, env, ctx } => {
+                ThunkState::Surface {
+                    node: node.clone(),
+                    res: res.clone(),
+                    types: types.clone(),
+                    env: env.clone(),
+                    ctx: ctx.clone(),
+                }
+            }
+            UnevaluatedState::AstNodeField { node, field, ctx } => {
+                ThunkState::AstNodeField {
+                    node: node.clone(),
+                    field,
+                    ctx: ctx.clone(),
+                }
+            }
+            UnevaluatedState::Builtin { def, args, named, call_span, ctx } => {
+                ThunkState::PendingBuiltin {
+                    def: def.clone(),
+                    args: args.clone(),
+                    named: named.clone(),
+                    call_span: *call_span,
+                    ctx: ctx.clone(),
+                }
+            }
+            UnevaluatedState::Call { func, args, named, call_span, caller_env, ctx } => {
+                ThunkState::PendingCall {
+                    func: func.clone(),
+                    args: args.clone(),
+                    named: named.clone(),
+                    call_span: *call_span,
+                    caller_env: caller_env.clone(),
+                    ctx: ctx.clone(),
+                }
+            }
+            UnevaluatedState::Guarded { inner, expected, field_path, guard_span, blame_label, default } => {
+                ThunkState::Guarded {
+                    inner: inner.clone(),
+                    expected: expected.clone(),
+                    field_path: field_path.clone(),
+                    guard_span: *guard_span,
+                    blame_label: blame_label.clone(),
+                    default: default.clone(),
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// End Runtime v2 additions
+// ============================================================================
+
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
 /// or a materialized value with memoization (evaluate-at-most-once semantics).
 pub struct Thunk {
