@@ -20,51 +20,36 @@ See DONE.md for the full history of completed sprints.
 
 Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) already exist from runtime-v2 branch. Parts B+E still needed.
 
-### parser-migration-a: Migrate parser literal + simple expression constructions
+### parser-migration-a: Bridge improvements + construction site census ✅ DONE (commit 1e04232)
 
-**Goal:** Change `src/parser.rs` to produce `SurfaceNode`/`SurfaceExpression` instead of `Spanned<Expr>` for simple cases. Unblocks E1-E3 (delete old Expr types).
-**Approach:** Work through parser.rs section by section. Each `Rc::new(Spanned::new(Expr::X, span))` becomes `Arc::new(SurfaceNode { expr: SurfaceExpression::X, span })`.
+- [x] Cache `SurfaceProgram` in `ParseOutput` — computed once at parse time, `as_surface_program()` returns `&SurfaceProgram` (`src/parser.rs`)
+- [x] `PartialEq` derives on all 10 Surface AST types (`src/ast.rs`)
+- [x] 7 new bridge tests covering all simple Expr→SurfaceExpression variants: Float, Bool, Str, escaped VarRef, named rest, anonymous rest, Placeholder (`src/ast_convert.rs`)
+- [x] Construction site census: ~25 sites in parser.rs; verified bridge handles ALL variants correctly
 
-**Simple/literal cases (this sprint):**
-- [ ] Migrate `Expr::Int`, `Expr::Float`, `Expr::Bool`, `Expr::Str` → `SurfaceExpression::Int/Float/Bool/Str` in parser (`src/parser.rs`)
-- [ ] Migrate `Expr::VarRef { name, escaped, resolved }` → `SurfaceExpression::VarRef { name, escaped }` (no resolved field — goes in ResolutionTable) (`src/parser.rs`)
-- [ ] Migrate `Expr::Rest` → `SurfaceExpression::Rest` (`src/parser.rs`)
-- [ ] Migrate `Expr::Placeholder` → `SurfaceExpression::Placeholder` (`src/parser.rs`)
-- [ ] Change `ParseOutput.file: Spanned<File>` to `ParseOutput.program: SurfaceProgram` (or add `program` alongside `file` first as a bridge) (`src/parser.rs`)
-- [ ] Update `ParseOutput::as_surface_program()` to use the native SurfaceProgram field instead of file_to_surface_program bridge (`src/parser.rs`)
-- [ ] `just build` passes after this sprint
+**Key finding:** Parser migration is ONE atomic change, not 4 sequential sprints. The frame stack (`push_value_spanned`, internal expression builders, etc.) all hold `Rc<Spanned<Expr>>`. Changing individual construction sites to `SurfaceExpression` breaks type checking because the container types still expect `Expr`. The real migration must change: frame stack type → all expression builders → output type, all at once.
 
-### parser-migration-b: Migrate parser compound expression constructions
+### parser-migration-full: Atomic parser rewrite to produce SurfaceProgram natively
 
-**Depends on:** parser-migration-a
-- [ ] Migrate `Expr::Call { func, args, named_args, implied }` → `SurfaceExpression::Call { ... }` all `Rc<Spanned<Expr>>` → `Arc<SurfaceNode>` (`src/parser.rs`)
-- [ ] Migrate `Expr::Dict(entries)` → `SurfaceExpression::Dict(Vec<Spanned<SurfaceEntry>>)` (`src/parser.rs`)
-- [ ] Migrate `Expr::Fn { params, body, return_ann, desugared }` → `SurfaceExpression::Fn { ... }` (`src/parser.rs`)
-- [ ] Migrate `Expr::TypeAssert { annotation, expr }` → `SurfaceExpression::TypeAssert { ... }` (no resolved_type field) (`src/parser.rs`)
-- [ ] Migrate `Expr::Annotated { name, annotation }` → `SurfaceExpression::Annotated { ... }` (`src/parser.rs`)
-- [ ] Migrate `Expr::DotAccess { expr, field }` → `SurfaceExpression::DotAccess { ... }` (`src/parser.rs`)
-- [ ] Migrate `Expr::Pipe { lhs, rhs }` → `SurfaceExpression::Pipe { ... }` (`src/parser.rs`)
-- [ ] `just build` passes after this sprint
+**Replaces:** parser-migration-b, parser-migration-c, parser-migration-d (all collapsed into one atomic sprint)
+**Goal:** Change parser.rs to produce `Arc<SurfaceNode>` at every internal expression construction, assembling `SurfaceProgram` directly. Eliminates `ast_convert.rs` bridge.
+**Approach:** This is a LARGE atomic change (~5000 line parser). Work in a feature branch. No intermediate cargo check expected.
 
-### parser-migration-c: Migrate parser structural + quasiquote + pattern forms
+**Phase 1: Change frame stack types** (`src/parser.rs`)
+- [ ] Change `ValueFrame` internal storage from `Vec<CallArg<Rc<Spanned<Expr>>>>` to `Vec<CallArg<Arc<SurfaceNode>>>` — start with the push_value helpers (`src/parser.rs`)
+- [ ] Change `push_value_spanned()`, `push_key_value_spanned()`, `pop_last_value_from_frame()` to operate on `Arc<SurfaceNode>` (`src/parser.rs`)
+- [ ] Change `ParseFrame` variants that hold `Rc<Spanned<Expr>>` (e.g., `ParseFrame::FnBody`, `ParseFrame::Match`, etc.) to hold `Arc<SurfaceNode>` (`src/parser.rs`)
 
-**Depends on:** parser-migration-b
-- [ ] Migrate `Expr::Sequential(exprs)` → `SurfaceExpression::Sequential(Vec<Arc<SurfaceNode>>)` (`src/parser.rs`)
-- [ ] Migrate `Expr::Match { scrutinee, arms }` → `SurfaceExpression::Match { ... }` (`src/parser.rs`)
-- [ ] Migrate `Expr::Quote/Unquote/UnquoteSplice` → `SurfaceExpression::Quote/Unquote/UnquoteSplice` (`src/parser.rs`)
-- [ ] Migrate `Expr::TypeApp { func, arg }` → `SurfaceExpression::TypeApp { ... }` (`src/parser.rs`)
-- [ ] Migrate `Expr::LetDecl/PatternDecl/CaseArm` → `SurfaceExpression::LetDecl/PatternDecl/CaseArm` (`src/parser.rs`)
-- [ ] `just build` passes after this sprint
+**Phase 2: Change all expression construction sites** (`src/parser.rs`)
+- [ ] Migrate all `Expr::Int/Float/Bool/Str/VarRef/Rest/Placeholder` construction sites (~25 sites) → `SurfaceExpression::*` wrapped in `Arc<SurfaceNode { expr, span }>` (`src/parser.rs`)
+- [ ] Migrate all compound forms: `Expr::Call/Dict/Fn/TypeAssert/Annotated/DotAccess/Pipe/Sequential/Match/Quote/Unquote/UnquoteSplice/TypeApp/LetDecl/PatternDecl/CaseArm` → `SurfaceExpression::*` (~50+ sites) (`src/parser.rs`)
+- [ ] Route declaration forms to `SurfaceDeclaration` and wrap in `SurfaceItem::Decl` (`src/parser.rs`)
 
-### parser-migration-d: Migrate declaration forms to SurfaceDeclaration
-
-**Depends on:** parser-migration-c
-- [ ] Route `Expr::TypeAlias`, `Expr::ClassDecl`, `Expr::InstanceDecl` → `SurfaceDeclaration::TypeAlias/ClassDecl/InstanceDecl` wrapped in `SurfaceItem::Decl` (`src/parser.rs`)
-- [ ] Route `Expr::DefMacro`, `Expr::MacroDecl`, `Expr::SyntaxClass` → `SurfaceDeclaration::DefMacro/MacroDecl/SyntaxClass` wrapped in `SurfaceItem::Decl` (`src/parser.rs`)
-- [ ] Route all expression forms → `SurfaceItem::Expr(Arc<SurfaceNode>)` (`src/parser.rs`)
-- [ ] Verify `ParseOutput.program` is fully native (no bridge calls) (`src/parser.rs`)
-- [ ] Update all 15 `expand_macros()` call sites to use `expand_surface_program()` instead (now that parser produces SurfaceProgram natively) (`src/expand.rs`, `src/lib.rs`, `src/main.rs`)
-- [ ] `just build` + `just test` passes after this sprint
+**Phase 3: Change output type**
+- [ ] Change `parse()` return to produce `SurfaceProgram` natively (remove `file: Spanned<File>` from `ParseOutput`, keep `program: SurfaceProgram`) (`src/parser.rs`)
+- [ ] Update all 15 `expand_macros()` call sites to use `expand_surface_program()` (`src/expand.rs`, `src/lib.rs`, `src/main.rs`)
+- [ ] Delete `src/ast_convert.rs` (bridge no longer needed) (`src/`)
+- [ ] `just build` + `just test` passes — this is the true first checkpoint
 
 ### E1-E3-cutover: Delete old Expr types + eval cutover + delete bridge files
 
