@@ -442,7 +442,7 @@ pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .into());
     };
 
-    let id = GENSYM_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format!(":{}:{}", prefix, id);
     ok_val(string_val(&name), call_span)
 }
@@ -1978,7 +1978,43 @@ fn validate_value(
                     }
                 }
                 Value::Seq { .. } => {
-                    // Would need to walk the seq spine; skip for now
+                    // Validate each element of the Seq against the items schema
+                    // Helper closure to recursively walk the Seq spine
+                    fn validate_seq_items(
+                        seq_val: &Value,
+                        items_schema: &IndexMap<Key, ThunkId>,
+                        path: &str,
+                        idx: usize,
+                        violations: &mut Vec<(String, String)>,
+                        ctx: &Rc<crate::eval::EvalContext>,
+                        span: Span,
+                    ) -> EvalResult<()> {
+                        match seq_val {
+                            Value::Seq { head, tail } => {
+                                let head_thunk = ctx.get_thunk(*head);
+                                let head_val = materialize(&head_thunk, Some(&span), &ctx)?;
+                                let item_path = if path.is_empty() {
+                                    format!("[{}]", idx)
+                                } else {
+                                    format!("{}[{}]", path, idx)
+                                };
+                                validate_value(items_schema, &head_val, &item_path, violations, ctx, span)?;
+
+                                let tail_thunk = ctx.get_thunk(*tail);
+                                let tail_val = materialize(&tail_thunk, Some(&span), &ctx)?;
+                                validate_seq_items(&tail_val, items_schema, path, idx + 1, violations, ctx, span)
+                            }
+                            Value::Dict(d) if d.is_empty() => {
+                                // Empty dict is the Seq terminator
+                                Ok(())
+                            }
+                            _ => {
+                                // Malformed Seq (non-empty dict or other value as tail)
+                                Ok(())
+                            }
+                        }
+                    }
+                    validate_seq_items(data, items_schema, path, 0, violations, ctx, span)?;
                 }
                 _ => {}
             }

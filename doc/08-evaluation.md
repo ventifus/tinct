@@ -355,7 +355,7 @@ materialize(θ_inner) ⇒ error(e)               where ¬e.is_cacheable()
 materialize(θ) ⇒ error(e)
 ```
 
-Note: With the iterative CEK machine, `DepthExceeded` no longer arises from the core materialize/eval loop. It can only be raised by individual builtins (e.g., `MAX_COLLECT_SIZE` in `deep_materialize`). The backward `InProgress → Guarded` edge remains in the code for non-cacheable errors from builtins.
+Note: `DepthExceeded` can arise from the continuation stack depth guard (`check_stack_depth()` enforcing `MAX_CONTINUATION_STACK = 2048` frames) inside the CEK loop, and from individual builtins (e.g., `MAX_COLLECT_SIZE` in `deep_materialize`). The backward `InProgress → Guarded` edge handles non-cacheable errors from both sources.
 
 [MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., DepthExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `ThunkState::Guarded` arm of `force_step()`)
 

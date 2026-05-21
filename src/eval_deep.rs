@@ -58,10 +58,10 @@ pub fn deep_materialize(
     deep_materialize_impl(val, ctx, &mut cache, 0, initial_span)
 }
 
-// Benchmark note (iterative-eval-d): The iterative work-stack deep_materialize_impl
+// Implementation note (iterative-eval-d): The iterative work-stack deep_materialize_impl
 // eliminates O(nesting) Rust stack frames. Before: 100-deep dict → 100 recursive calls.
 // After: 100-deep dict → 100 work items processed in a loop (constant Rust stack depth).
-// In release mode, measured improvement: ~40% faster on deeply nested configs (K8s-style).
+// Avoids O(n) repeated key collection by storing Rc<IndexMap> directly in BuildDict.
 // (Formal benchmarks via criterion are tracked as future work in perf-foundations.)
 
 // ---------------------------------------------------------------------------
