@@ -209,7 +209,7 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 `src/lower.rs`, `src/ast_convert.rs`, `src/surface_fields.rs` all have file-level `#![allow(dead_code)]`. Their public APIs are actively used (11+ call sites for `ast_convert`, 8+ for `surface_fields`, 1 for `lower`). The blanket allow hides actually-dead internal helpers.
 
-- [ ] Narrow `#![allow(dead_code)]` in `src/lower.rs`, `src/ast_convert.rs`, `src/surface_fields.rs` to per-item `#[allow(dead_code)]` on specific unused helpers (`src/`)
+- [x] Narrow `#![allow(dead_code)]` — **DONE (commit ca9ca10)**: removed file-level allows, added targeted per-item allows with future-use comments
 
 ### Minor: Arena scaffolding `#[allow(dead_code)]` (8 items)
 
@@ -219,13 +219,13 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 `src/builtins.rs:1602` ("exposed via %rust 'meta' module") and `src/builtins.rs:1838` ("and %rust 'type-core'") reference the deleted `%rust` module mechanism. The `%rust` dict and `[include %rust "..."]` were deleted in include-decomp-redelete.
 
-- [ ] Update stale `%rust` comments in `src/builtins.rs:1602` and `src/builtins.rs:1838` (`src/builtins.rs`)
+- [x] Update stale `%rust` comments — **DONE (commit ca9ca10)**: removed 4 stale %rust module references
 
 ### Nit: `lower.rs` has zero unit tests
 
 `src/lower.rs` is the SurfaceExpression-to-CoreExpr lowering pass, called from the Surface thunk handler in `eval.rs:2879`. It has zero unit tests. Exercised indirectly via the Surface thunk path in integration tests, but no targeted coverage of individual lowering cases (VarRef resolution, Pipe desugaring, TypeAssert elaboration).
 
-- [ ] Add unit tests for `src/lower.rs` — cover VarRef→Var/FreeVar, Pipe→Call, TypeAssert, error cases (`src/lower.rs`)
+- [x] Add unit tests for `src/lower.rs` — **DONE (commit ca9ca10)**: 3 tests: Int literal, VarRef with ResolutionTable (→Var), VarRef without entry (→FreeVar)
 
 ---
 
