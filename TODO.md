@@ -68,7 +68,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `eval-file`: annotation `ast@Dict` → `ast@Program` (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
 - [x] `eval-document-runtime`: `doc.name` → `DocumentName` match (`[match doc.name [Named n]: ... Unnamed: ...]`); `doc.expressions` is now `[Seq Expression]` passed directly to `eval` builtin; `doc.stage` matched as `Runtime`/`Type` Variants (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
 - [x] `eval-document-pipeline`: annotation `docs@[Seq Document]`; `doc.stage` match as Variants (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
-- [ ] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — update to Expression match dispatch; formatter bug fix is prerequisite OR accept broken formatter tests (`stdlib/cli/fmt/`) (16 tests in `tests/formatter_tinct_roundtrip.rs` are marked `#[ignore]` pending this)
+- [x] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — formatter tests fixed: root cause was `try` not creating fn-call-env for zero-param fns (De Bruijn off-by-one) + missing `builtin-str`/`builtin-append`/type-predicate aliases; fixed in `builtins_meta.rs` + `builtins.rs`; all 16 `formatter_tinct_roundtrip` tests pass
 - [x] `Pattern` type declaration in prelude — `Pattern: Expression` alias; investigate dict shape issues post-Part E before adding (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
 - [x] Create `stdlib/codecs/json.llt` final version if not already migrated — verify `to-json` Expression match dispatch works end-to-end (`stdlib/codecs/json.llt`) — **DONE (commit 6151501)**
 - [ ] **`just test` after Part G** — highest-risk: corpus tests for `load`/`expand`/`eval` may fail on type changes; fix as found

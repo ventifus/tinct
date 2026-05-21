@@ -127,10 +127,21 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                 )
                 .into());
             }
-            // Evaluate the body in the closure's environment
+            // Create an empty call environment as a child of the closure env.
+            //
+            // This mirrors what invoke_function/bind_args_thunks does for zero-param
+            // functions: even with no parameters, a new child env is created so that
+            // the De Bruijn (level, slot) coordinates assigned by the resolver match
+            // the runtime env chain. Without this, the resolver's fn-params scope
+            // (which is always pushed, even for empty param lists) would be missing at
+            // runtime, causing all references inside the fn body to resolve to wrong
+            // slots (off-by-one in the parent chain).
+            let call_env = std::sync::Arc::new(std::sync::RwLock::new(
+                crate::value::Environment::with_parent(Arc::clone(&closure_env)),
+            ));
             let body_thunk = Arc::new(Thunk::new_unevaluated(
                 Rc::clone(&body),
-                Arc::clone(&closure_env),
+                call_env,
                 Arc::clone(&ctx),
                 body.span,
             ));

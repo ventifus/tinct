@@ -1124,6 +1124,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-length", builtin_length, [Strictness::Spine]), // Stable alias
         builtin!("merge", builtin_merge),
         builtin!("append", builtin_append, [Strictness::Seq, Strictness::Id]),
+        builtin!("builtin-append", builtin_append, [Strictness::Seq, Strictness::Id]), // Stable alias
         builtin!(
             "builtin-get",
             builtin_get,
@@ -1148,7 +1149,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // Strings
         builtin!("str", builtin_str, [Strictness::Seq]),
+        builtin!("builtin-str", builtin_str, [Strictness::Seq]), // Stable alias
         builtin!("split", builtin_split, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-split", builtin_split, [Strictness::Seq, Strictness::Seq]), // Stable alias
         builtin!(
             "replace",
             builtin_replace,
@@ -1156,11 +1159,17 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("trim", builtin_trim, [Strictness::Seq]),
         builtin!("str-length", builtin_str_length, [Strictness::Seq]),
+        builtin!("builtin-str-length", builtin_str_length, [Strictness::Seq]), // Stable alias
         builtin!(
             "str-slice",
             builtin_str_slice,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
+        builtin!(
+            "builtin-str-slice",
+            builtin_str_slice,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+        ), // Stable alias
         builtin!("str-chars", builtin_str_chars, [Strictness::Seq]),
         builtin!("char-code", builtin_char_code, [Strictness::Seq]),
         builtin!("chr", builtin_chr, [Strictness::Seq]),
@@ -1240,6 +1249,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("float", builtin_float, [Strictness::Seq]),
         // Parsing
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
+        builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]), // Stable alias
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
         // Evaluation control
         builtin!("deep-materialize", builtin_deep_materialize, [Strictness::Seq]),
@@ -1253,16 +1263,24 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
         builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
         builtin!("int?", builtin_int_check, [Strictness::Seq]),
+        builtin!("builtin-int?", builtin_int_check, [Strictness::Seq]), // Stable alias
         builtin!("float?", builtin_float_check, [Strictness::Seq]),
+        builtin!("builtin-float?", builtin_float_check, [Strictness::Seq]), // Stable alias
         // num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
         builtin!("str?", builtin_str_check, [Strictness::Seq]),
+        builtin!("builtin-str?", builtin_str_check, [Strictness::Seq]), // Stable alias
         builtin!("bool?", builtin_bool_check, [Strictness::Seq]),
+        builtin!("builtin-bool?", builtin_bool_check, [Strictness::Seq]), // Stable alias
         builtin!("bytes?", builtin_bytes_check, [Strictness::Seq]),
         builtin!("null?", builtin_null_check, [Strictness::Seq]),
+        builtin!("builtin-null?", builtin_null_check, [Strictness::Seq]), // Stable alias
         builtin!("dict?", builtin_dict_check, [Strictness::Seq]),
+        builtin!("builtin-dict?", builtin_dict_check, [Strictness::Seq]), // Stable alias
         // record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
         builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
+        builtin!("builtin-fn?", builtin_fn_check, [Strictness::Seq]), // Stable alias
         builtin!("seq?", builtin_seq_check, [Strictness::Seq]),
+        builtin!("builtin-seq?", builtin_seq_check, [Strictness::Seq]), // Stable alias
         // Schema validation
         builtin!(
             "validate",
@@ -6276,7 +6294,7 @@ mod tests {
         // are now in standard_builtins and accessible only via %rust "meta" module.
         // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
         assert_eq!(
-            count, 212,
+            count, 226,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
