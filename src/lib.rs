@@ -204,9 +204,8 @@ impl TinctRuntime {
     /// This is the [`TinctRuntime`] equivalent of the free function [`eval_source_with_config`].
     pub fn eval_source_with_config(&self, input: &str, no_fs: bool) -> Result<String, String> {
         let output = parse(input).map_err(|e| format!("{e}"))?;
-        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-        // This will be used by the new evaluator in Part E. For now, the result is unused.
-        let _resolution_table = crate::resolve::resolve_surface_program(&output.as_surface_program());
+        // Note: resolve_surface_program() call deferred to Part E when the parser produces
+        // SurfaceProgram directly. For now, the old File-based pipeline is used.
         // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
         // See also: src/main.rs:234-240 (run_eval pipeline)
         // Expand macros (pre-desugar AST transformation).
@@ -1134,8 +1133,6 @@ pub fn format_with_json_llt(
 
     // Parse json.llt (it's a single dict expression — one document).
     let mut ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
-    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = crate::resolve::resolve_surface_program(&ast.as_surface_program());
     desugar::desugar_file(&mut ast.file.node);
     resolve::resolve_file(&ast.file.node);
     let (_type_errors, _diagnostics) = typecheck::typecheck_file(&ast.file.node);
@@ -1912,8 +1909,6 @@ mod tests {
     fn typecheck_source_resolves_prelude_map() {
         let input = "[call $map [fn [let x] $x] [1 2 3]]";
         let output = parse(input).expect("parse failed");
-        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-        let _resolution_table = crate::resolve::resolve_surface_program(&output.as_surface_program());
         let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("open cwd for test macro expansion");
         let expand_result = expand::expand_macros(output.file, false, &expand_base_dir)
