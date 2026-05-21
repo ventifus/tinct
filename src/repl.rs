@@ -193,7 +193,7 @@ impl ReplSession {
             // Continue evaluation despite parse errors — the AST contains Expr::Error nodes
         }
 
-        let mut file = parse_output.file;
+        let mut file = crate::ast_convert::surface_program_to_file(&parse_output.program);
 
         // Desugar $_ implicit lambdas before evaluation
         crate::desugar::desugar_file(&mut file.node);

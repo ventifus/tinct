@@ -1657,7 +1657,7 @@ fn load_stdlib_module(
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(), Box<crate::error::EvalError>> {
-    let mut file = crate::parser::parse(source).map(|o| o.file).map_err(|e| {
+    let mut file = crate::parser::parse(source).map(|o| crate::ast_convert::surface_program_to_file(&o.program)).map_err(|e| {
         crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
     })?;
 
@@ -1850,7 +1850,7 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     // Parse the prelude source
     let prelude_source = include_str!("../stdlib/prelude.llt");
     let mut file = crate::parser::parse(prelude_source)
-        .map(|o| o.file)
+        .map(|o| crate::ast_convert::surface_program_to_file(&o.program))
         .map_err(|e| {
             crate::error::EvalError::internal(
                 format!("type-stage prelude parse error: {e}"),
@@ -7813,7 +7813,7 @@ mod tests {
     #[test]
     fn prelude_parses_without_error() {
         let prelude_source = include_str!("../stdlib/prelude.llt");
-        match crate::parser::parse(prelude_source).map(|o| o.file) {
+        match crate::parser::parse(prelude_source) {
             Ok(_) => {}
             Err(e) => panic!("prelude parse failed: {e}"),
         }
@@ -7822,7 +7822,7 @@ mod tests {
     #[test]
     fn macros_parses_without_error() {
         let macros_source = include_str!("../stdlib/macros.llt");
-        match crate::parser::parse(macros_source).map(|o| o.file) {
+        match crate::parser::parse(macros_source) {
             Ok(_) => {}
             Err(e) => panic!("macros.llt parse failed: {e}"),
         }

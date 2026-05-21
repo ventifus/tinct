@@ -64,7 +64,7 @@ impl DocumentState {
         let mut ast: Result<Spanned<File>, ParseError> = match parse_result {
             Ok(output) => {
                 parse_errors = output.errors;
-                Ok(output.file)
+                Ok(crate::ast_convert::surface_program_to_file(&output.program))
             }
             Err(err) => Err(err),
         };
@@ -493,7 +493,7 @@ impl DocumentStore {
             stdlib_env,
             base_eval_ctx,
             include_graph: HashMap::new(),
-            prelude_ast: prelude_ast.map(|o| o.file),
+            prelude_ast: prelude_ast.map(|o| crate::ast_convert::surface_program_to_file(&o.program)),
         })
     }
 

@@ -2531,7 +2531,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
 
         // Navigate to the first document's first expression (the dict)
         match thunk.try_get_materialized() {
@@ -2624,7 +2624,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
 
         // Navigate to the key and check bare: false
         match thunk.try_get_materialized() {
@@ -2719,7 +2719,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
 
         // Navigate to the entry and check for leading-comments
         match thunk.try_get_materialized() {
@@ -2834,7 +2834,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
 
         // Navigate to the second entry and check blank-before: true
         match thunk.try_get_materialized() {
@@ -2920,7 +2920,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&parse_output.file.node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
 
         // Navigate to the key and check bare: false (default when source is None)
         match thunk.try_get_materialized() {

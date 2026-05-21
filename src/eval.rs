@@ -9280,7 +9280,7 @@ mod tests {
 ]
         "#;
 
-        let parsed = crate::parse(source).expect("parse should succeed").file;
+        let parsed = crate::ast_convert::surface_program_to_file(&crate::parse(source).expect("parse should succeed").program);
         let thunk = eval_file(&parsed.node, Arc::clone(&env), &ctx)
             .expect("eval_file should succeed (lazy dict construction)");
         // Dict construction is lazy — the cycle is only detected when forcing an entry.
@@ -9346,7 +9346,7 @@ mod tests {
     "#,
                     iterations
                 );
-                let parsed = crate::parse(&source).expect("parse should succeed").file;
+                let parsed = crate::ast_convert::surface_program_to_file(&crate::parse(&source).expect("parse should succeed").program);
                 let mut file = parsed.node;
                 crate::desugar::desugar_file(&mut file);
                 let env = crate::builtins::create_stdlib_env()

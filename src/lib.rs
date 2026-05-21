@@ -172,7 +172,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =
-        expand::expand_macros(file.file, no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
+        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -320,7 +320,7 @@ pub fn eval_source_with_cap_net(
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =
-        expand::expand_macros(file.file, no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
+        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -456,7 +456,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =
-        expand::expand_macros(file.file, false, &expand_base_dir).map_err(|e| format!("{e}"))?;
+        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), false, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
@@ -495,7 +495,7 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =
-        expand::expand_macros(file.file, false, &expand_base_dir).map_err(|e| format!("{e}"))?;
+        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), false, &expand_base_dir).map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
@@ -1052,17 +1052,18 @@ pub fn format_with_json_llt(
     };
 
     // Parse json.llt (it's a single dict expression — one document).
-    let mut ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
-    desugar::desugar_file(&mut ast.file.node);
-    resolve::resolve_file(&ast.file.node);
-    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&ast.file.node);
+    let ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
+    let mut ast_file = ast_convert::surface_program_to_file(&ast.program);
+    desugar::desugar_file(&mut ast_file.node);
+    resolve::resolve_file(&ast_file.node);
+    let (_type_errors, _diagnostics) = typecheck::typecheck_file(&ast_file.node);
 
     // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
     // from the result_thunk are resolvable when the json functions access dict entries.
     // The initial `%` = result_thunk; json.llt's `[emit [json %]]` is a lazy dict
     // entry (auto-index 0) that is never forced here.
     let module_thunk = eval::eval_file_with_input(
-        &ast.file.node,
+        &ast_file.node,
         Arc::clone(&env),
         eval_ctx,
         Some(Arc::clone(&result_thunk)),
@@ -1498,8 +1499,9 @@ mod tests {
         source: &str,
         stdin_json: Option<serde_json::Value>,
     ) -> serde_json::Value {
-        let mut file = parse(source).expect("parse failed");
-        desugar::desugar_file(&mut file.file.node);
+        let parsed = parse(source).expect("parse failed");
+        let mut file = ast_convert::surface_program_to_file(&parsed.program);
+        desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 
@@ -1508,7 +1510,7 @@ mod tests {
                 .expect("json_to_value failed")
         });
 
-        let thunk = eval::eval_file_with_input(&file.file.node, env, &ctx, initial_input)
+        let thunk = eval::eval_file_with_input(&file.node, env, &ctx, initial_input)
             .expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
         value_to_json(&val, &ctx).expect("value_to_json failed")
@@ -1575,11 +1577,12 @@ mod tests {
     #[test]
     fn test_pipeline_deep_materialize() {
         let source = "[a: [b: [c: 42]]]";
-        let mut file = parse(source).expect("parse failed");
-        desugar::desugar_file(&mut file.file.node);
+        let parsed = parse(source).expect("parse failed");
+        let mut file = ast_convert::surface_program_to_file(&parsed.program);
+        desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = eval::eval_file(&file.file.node, env, &ctx).expect("eval failed");
+        let thunk = eval::eval_file(&file.node, env, &ctx).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
         let json = value_to_json(&forced, &ctx).expect("value_to_json failed");
@@ -1589,11 +1592,12 @@ mod tests {
     #[test]
     fn test_pipeline_display_format() {
         let source = "[x: 42]";
-        let mut file = parse(source).expect("parse failed");
-        desugar::desugar_file(&mut file.file.node);
+        let parsed = parse(source).expect("parse failed");
+        let mut file = ast_convert::surface_program_to_file(&parsed.program);
+        desugar::desugar_file(&mut file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = eval::eval_file(&file.file.node, env, &ctx).expect("eval failed");
+        let thunk = eval::eval_file(&file.node, env, &ctx).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
         let display = value_to_display_string(&forced, &ctx).expect("display failed");
@@ -1765,14 +1769,15 @@ mod tests {
         let source = "$undefined_var";
 
         // Parse the source manually to get a real AST with spans.
-        let mut file = parse(source).expect("parse should succeed");
-        desugar::desugar_file(&mut file.file.node);
-        let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.file.node);
+        let parsed = parse(source).expect("parse should succeed");
+        let mut file = ast_convert::surface_program_to_file(&parsed.program);
+        desugar::desugar_file(&mut file.node);
+        let (_type_errors, _diagnostics) = typecheck::typecheck_file(&file.node);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 
         // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result = eval::eval_file(&file.file.node, Arc::clone(&env), &ctx);
+        let eval_result = eval::eval_file(&file.node, Arc::clone(&env), &ctx);
         assert!(
             eval_result.is_err(),
             "expected eval to fail for undefined variable"
@@ -1825,10 +1830,10 @@ mod tests {
     #[test]
     fn typecheck_source_resolves_prelude_map() {
         let input = "[call $map [fn [let x] $x] [1 2 3]]";
-        let file = parse(input).expect("parse failed");
+        let parsed = parse(input).expect("parse failed");
         let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("open cwd for test macro expansion");
-        let expand_result = expand::expand_macros(file.file, false, &expand_base_dir)
+        let expand_result = expand::expand_macros(ast_convert::surface_program_to_file(&parsed.program), false, &expand_base_dir)
             .expect("macro expansion failed");
         let mut file = expand_result.file;
         desugar::desugar_file(&mut file.node);

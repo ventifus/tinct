@@ -90,7 +90,10 @@ fn typecheck_and_merge_stdlib_module(
     _source_path: Option<&str>,
 ) -> Result<InferState, ()> {
     // Parse the module source
-    let mut file = parser::parse(source).map_err(|_| ())?.file;
+    let mut file = {
+        let parsed = parser::parse(source).map_err(|_| ())?;
+        crate::ast_convert::surface_program_to_file(&parsed.program)
+    };
 
     // Skip macro expansion for stdlib modules.
     //
@@ -769,7 +772,7 @@ fn resolve_includes(
         };
 
         // Parse the file
-        let file = match parser::parse(&content).map(|o| o.file) {
+        let file = match parser::parse(&content).map(|o| crate::ast_convert::surface_program_to_file(&o.program)) {
             Ok(f) => f,
             Err(_) => continue, // Skip unparseable files
         };
@@ -1135,7 +1138,7 @@ mod tests {
             [include %pwd "foo.llt"]
             [include %libdir "bar.llt"]
         "#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
         let paths = collect_include_paths(&file.node);
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].1, Some("%pwd".to_string()));
@@ -1149,7 +1152,7 @@ mod tests {
         let source = r#"
             [include [str "foo" ".llt"]]
         "#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
         let paths = collect_include_paths(&file.node);
         // Dynamic include should be skipped
         assert_eq!(paths.len(), 0);
@@ -1198,7 +1201,7 @@ mod tests {
     #[test]
     fn collect_include_paths_finds_explicit_call_form() {
         let source = r#"[call $include %pwd "foo.llt"]"#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
         let paths = collect_include_paths(&file.node);
         assert_eq!(paths.len(), 1, "expected exactly one include path");
         assert_eq!(paths[0].1, Some("%pwd".to_string()));
@@ -1209,7 +1212,7 @@ mod tests {
     #[test]
     fn collect_include_paths_skips_bare_includes() {
         let source = r#"[include "foo.llt"]"#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
         let paths = collect_include_paths(&file.node);
         assert_eq!(paths.len(), 0, "bare includes should be skipped");
     }
@@ -1282,7 +1285,7 @@ mod tests {
         let source = r#"
             [x: 42]
         "#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
 
         // Without any includes, the binding map should be empty
         let (_env, bindings) = build_type_env(&file.node, None);
@@ -1310,7 +1313,7 @@ mod tests {
         // Parse a source with a cap-qualified include call.
         // We use %pwd (cap var) with a path literal "foo.llt".
         let source = r#"[include %pwd "foo.llt"]"#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
 
         // Find the span of the path string argument ("foo.llt") by walking the AST.
         // We need this span as the key into include_bindings.
@@ -1369,7 +1372,7 @@ mod tests {
         use std::collections::HashMap;
 
         let source = r#"[include %pwd "foo.llt"]"#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
 
         let include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
         let mut type_map = TypeMap::new();
@@ -1392,7 +1395,7 @@ mod tests {
 
         // The include call is nested inside a dict entry.
         let source = r#"[io: [include %pwd "io.llt"]]"#;
-        let file = parser::parse(source).unwrap().file;
+        let file = crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
 
         // Find the path-argument span.
         let include_paths = collect_include_paths(&file.node);

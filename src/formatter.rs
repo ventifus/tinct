@@ -83,7 +83,7 @@ pub fn format_source_tinct_with_dir(
     let formatter_parsed =
         parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
     let expand_result = crate::expand::expand_macros(
-        formatter_parsed.file,
+        crate::ast_convert::surface_program_to_file(&formatter_parsed.program),
         false, // formatter always has filesystem access
         &base_dir,
     )
@@ -123,7 +123,7 @@ pub fn format_source_tinct_with_dir(
         }
     };
     let ast_thunk =
-        ast_to_dict(&parse_output.file.node, &opts, &ctx).map_err(|e| format!("{e}"))?;
+        ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).map_err(|e| format!("{e}"))?;
 
     // Evaluate formatter with AST as % (pipeline input).
     let formatter_thunk =
@@ -209,7 +209,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_file(&mut self) {
-        let file = &self.parse_output.file;
+        let file = crate::ast_convert::surface_program_to_file(&self.parse_output.program);
         for (i, doc) in file.node.documents.iter().enumerate() {
             if i > 0 {
                 // Document separator

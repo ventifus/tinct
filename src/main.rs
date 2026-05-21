@@ -1734,7 +1734,7 @@ fn run_eval(
         // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
         let (_type_errors, _type_annotation_table) =
             tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-        let ast = output.file;
+        let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
         // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
         let file_base_dir_path = match stage {
@@ -1991,7 +1991,7 @@ fn run_fmt(
         // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
         let (_type_errors, _type_annotation_table) =
             tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-        let ast = output.file;
+        let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
         // See also: src/lib.rs (typecheck_source pipeline)
@@ -2110,7 +2110,7 @@ fn run_lint(
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
         tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-    let ast = output.file;
+    let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
     // AMBIENT-OK: CLI bootstrap — operator specified this file path.
@@ -2387,7 +2387,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
         tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-    let ast = output.file;
+    let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
     // Expand macros (pre-desugar AST transformation).
     // AMBIENT-OK: CLI bootstrap — operator specified this markdown_path.
@@ -2793,7 +2793,7 @@ fn run_literate_weave(
                 // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
                 let (_type_errors, _type_annotation_table) =
                     tinct::typecheck::typecheck_surface_program(&o.as_surface_program());
-                o.file
+                tinct::ast_convert::surface_program_to_file(&o.program)
             }
             Err(e) => {
                 let error_msg = if strict {
@@ -3304,7 +3304,7 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
         tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-    let ast = output.file;
+    let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
     // AMBIENT-OK: CLI bootstrap — operator specified this file path.

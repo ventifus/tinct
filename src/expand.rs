@@ -752,7 +752,8 @@ fn pre_scan_follow_libdir_include(
     PRESCAN_INCLUDE_STACK.with(|s| s.borrow_mut().insert(file_name.to_string()));
 
     // Pre-scan all documents in the parsed file
-    for doc in &parsed.file.node.documents {
+    let parsed_file = crate::ast_convert::surface_program_to_file(&parsed.program);
+    for doc in &parsed_file.node.documents {
         let _ = pre_scan_document(&doc.node, env, ctx, stdlib_env);
     }
 

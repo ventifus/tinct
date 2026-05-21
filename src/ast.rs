@@ -1013,6 +1013,16 @@ pub enum SurfaceItem {
     Decl(Spanned<SurfaceDeclaration>),
 }
 
+impl SurfaceItem {
+    /// Get the span of this item.
+    pub fn span(&self) -> Span {
+        match self {
+            SurfaceItem::Expr(node) => node.span,
+            SurfaceItem::Decl(decl) => decl.span,
+        }
+    }
+}
+
 /// A document in a SurfaceProgram — one or more items forming a scope chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceDocument {

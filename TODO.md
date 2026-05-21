@@ -274,6 +274,26 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 - [x] `src/builtins_meta.rs:1481` — `builtin_load` pipeline doc comment missing resolve step
 - [x] `stdlib/ast.llt:28-29` — `[Literal ... bare: Bool]` claims bare is always present but only emitted for kind:"str"
 
+### include-decomp-eval-types-fix: Wire type_stage_env into EvalConfig
+
+**Whatif:** `include-decomposition`
+**Depends on:** E1-E3-cutover (EvalConfig refactor)
+**Context:** `builtin_eval_types` at `src/builtins_meta.rs:1636-1638` uses `stdlib_env` as its base instead of the type-stage env, violating the whatif spec ("type-level builtins only, no IO, no caps"). The `create_type_stage_env()` function exists (`src/builtins.rs:1836`) and `build_type_stage_env()` in `src/imports.rs:326` builds it, but neither is wired into `EvalConfig`. The TODO comment at `builtins_meta.rs:1636`: "Use type_stage_env when it's added to EvalConfig (Part E)".
+
+- [ ] Add `type_stage_env: Arc<RwLock<Environment>>` field to `EvalConfig` struct (`src/eval.rs`) — built once at startup via `build_type_stage_env()` from `src/imports.rs:326`; pass alongside `stdlib_env` in all `EvalConfig::new(...)` call sites (`src/main.rs`, `src/lib.rs`, `src/builtins.rs`)
+- [ ] Remove TODO comment and use `ctx.config.type_stage_env` as base env in `builtin_eval_types` (`src/builtins_meta.rs:1636-1638`)
+- [ ] `just test` passes
+
+### include-decomp-reduce-decision: Document or implement lazy reduce accumulator
+
+**Whatif:** `include-decomposition`
+**Context:** The whatif specifies "Delete the `materialize` call on the accumulator between iterations (`builtins_seq_reduce.rs:80-81`). Pass each step result as a thunk directly." The Seq reduce path still eagerly materializes the accumulator (`src/builtins_seq_reduce.rs:101-102`). The computer-scientist re-review (2026-05-18) found this is sound for `eval-document-pipeline` specifically (each step materializes to a shallow dict) but NOT sound for general reduce over >2048 elements (continuation stack limit). Options: (a) keep eager for safety and document, (b) implement lazy accumulator with documented 2048-element limit, (c) tail-call optimization.
+
+- [ ] Decision: choose option (a), (b), or (c) — update this task with rationale
+- [ ] If (a): add a code comment at `src/builtins_seq_reduce.rs:101` explaining the intentional divergence from the whatif and why (continuation stack depth bounds)
+- [ ] If (b): remove the `materialize` call; add a comment at the function documenting the depth limit; add a corpus test for reduce over 100 elements
+- [ ] `just test` passes
+
 ---
 
 ## Known Nits (from eval-hardening-perf panel)
@@ -359,24 +379,6 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 ---
 
-## include-decomp Regression (from runtime-v2 merge)
-
-The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge (2026-05-20) reintroduced old code that include-decomp had deleted. Review: `/review-whatif include-decomposition` confirmed these regressions.
-
-### include-decomp-redelete: Re-delete code regressed by runtime-v2 merge
-
-**Whatif:** `include-decomposition`
-**Review:** All include-decomp sprints are DONE but runtime-v2 merge reverted the deletions.
-
-- [x] Delete `builtin_include` from `src/builtins_meta.rs` — **DONE (commit 114ca2a)**
-- [x] Delete `Value::RustRegistry` from `src/value.rs` — **DONE (commit 114ca2a)**
-- [x] Delete `rust_module()` and all module grouping — **DONE (commit 114ca2a)**
-- [x] Delete `EvalState::include_guard` — **DONE (commit 114ca2a)**
-- [x] Delete old inode-keyed `include_cache` — **DONE (commit 114ca2a)**
-- [x] Delete `src/eval_pipeline.rs` — **kept for test helpers** (eval_file_with_input used by 1900+ unit tests; unused functions deleted)
-- [x] Verify `expand` builtin performs real macro expansion — **DONE (commit 114ca2a)**: dict_to_file → expand_macros → ast_to_dict
-- [x] After deletions: `just build` passes — **DONE (commit 114ca2a)**
-
 ---
 
 ## Health Review #22 Findings (2026-05-19)
@@ -394,3 +396,57 @@ The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge
 
 - [x] Add `clippy.toml` with `disallowed-types` (`std::fs::File`, `std::fs::OpenOptions`, `std::fs::DirEntry`, `std::fs::ReadDir`) and `disallowed-methods` (`std::fs::read`, `std::fs::read_to_string`, `std::fs::write`, `std::fs::metadata`, `std::fs::read_dir`, `std::fs::canonicalize`, `std::fs::remove_file`, `std::fs::create_dir_all`, `cap_std::fs::Dir::open_ambient_dir`) with `reason:` pointing to cap-std alternatives; add `#![deny(clippy::disallowed_types, clippy::disallowed_methods)]` to `src/lib.rs` and `src/main.rs` (`clippy.toml`, `src/lib.rs`, `src/main.rs`)
 - [x] Audit all callsites flagged by the above lints and annotate the bare minimum legitimate ones with `#[allow(clippy::disallowed_methods)]` — all others are regressions to fix (`src/`)
+
+---
+
+## I/O Builtins (cap-std gaps)
+
+### io-cap-std-gaps: Add symlink, copy-file, set-permissions, stat-symlink, exists builtins
+
+Five operations cap-std's `Dir` supports that tinct does not yet expose.
+
+**`symlink`** — create a symbolic link within a DirCap. tinct can read and detect symlinks (`read-link`, `stat` `is-symlink` field) but not create them. Needs a new `Symlinkable` DirCap flag.
+
+- [ ] Add `Symlinkable` to the `DirCapFlags` set in `src/value.rs`; update `narrow` to respect it; update `--cap-fs` CLI parser to accept `y` shorthand or fold into `w` bundle (`src/value.rs`, `src/main.rs`)
+- [ ] Implement `symlink` builtin: `[symlink cap@DirCap target@String link-path@String]` — calls `Dir::symlink_file()` or `Dir::symlink_dir()` depending on target type; requires `Symlinkable`; both paths RESOLVE_BENEATH (`src/builtins_io.rs`)
+- [ ] Register `symlink` in `standard_builtins()` (`src/builtins.rs`)
+
+**`copy-file`** — efficient within-cap file copy via `Dir::copy()` (uses `copy_file_range` on Linux). Currently programs must `slurp` + `write`, allocating the whole file as a String. Requires `Readable` on source cap, `Writable` on destination; no new flag.
+
+- [ ] Implement `copy-file` builtin: `[copy-file src-cap@DirCap src-path@String dst-cap@DirCap dst-path@String]` — calls `src_cap.copy(src_path, &dst_cap, dst_path)` (`src/builtins_io.rs`)
+- [ ] Register `copy-file` in `standard_builtins()` (`src/builtins.rs`)
+
+**`set-permissions`** — chmod via `Dir::set_permissions()`. On Unix, requires the process to own the file or hold `CAP_FOWNER`; cap-std uses `fchmodat(dirfd, path, mode, 0)` which follows symlinks (Linux does not support `AT_SYMLINK_NOFOLLOW` for chmod). Not all filesystems support POSIX permissions (e.g., S3-backed DirCaps, FAT volumes, some FUSE mounts would not).
+
+**Decision:** New `PosixPermissions` DirCap flag — not `Writable`, because write authority and permission-bit authority are orthogonal (you can have a writable DirCap on a filesystem that has no POSIX permission concept). `PosixPermissions` explicitly signals that the underlying filesystem supports POSIX mode bits.
+
+- [ ] Add `PosixPermissions` to the `DirCapFlags` set in `src/value.rs`; update `narrow` to respect it; update `--cap-fs` CLI parser (no shorthand — explicit `[PosixPermissions]` only, since it's filesystem-dependent) (`src/value.rs`, `src/main.rs`)
+- [ ] Implement `set-permissions` builtin: `[set-permissions cap@DirCap path@String mode@Int]` — `mode` is a Unix octal bitmask (e.g., `0o755`); requires `PosixPermissions` flag; calls `Dir::set_permissions()` with the constructed `Permissions`; on non-Unix, raise a clear error ("set-permissions requires a filesystem with POSIX permission support") (`src/builtins_io.rs`)
+- [ ] Register `set-permissions` in `standard_builtins()` (`src/builtins.rs`)
+
+**`stat-symlink`** — lstat equivalent via `Dir::symlink_metadata()`. The existing `stat` follows symlinks; `stat-symlink` does not. Lets programs inspect a broken symlink without error. Same `Statable` flag as `stat`.
+
+- [ ] Implement `stat-symlink` builtin: `[stat-symlink cap@DirCap path@String]` — calls `Dir::symlink_metadata()`; returns same dict schema as `stat` (`name`, `type`, `size`, `mtime`, `is-dir`, `is-file`, `is-symlink`) (`src/builtins_io.rs`)
+- [ ] Register `stat-symlink` in `standard_builtins()` (`src/builtins.rs`)
+
+**`exists`** — existence check via `Dir::try_exists()`. Cheaper than `try`+`stat`; distinguishes "not found" (`false`) from "permission denied" (error). Requires `Statable` flag.
+
+- [ ] Implement `exists` builtin: `[exists cap@DirCap path@String]` — calls `Dir::try_exists()`; returns `true`/`false` or raises on permission error (`src/builtins_io.rs`)
+- [ ] Register `exists` in `standard_builtins()` (`src/builtins.rs`)
+
+**`get-xattr` / `set-xattr` / `remove-xattr` / `list-xattrs`** — POSIX extended attributes. Not part of cap-std's `Dir` API; implemented by opening the file via the DirCap (getting an fd) then calling `fgetxattr`/`fsetxattr`/`fremovexattr`/`flistxattr` on the fd — this preserves the capability model (no ambient path access). Linux only (macOS has xattrs but different syscall convention; Windows has alternate data streams, not xattrs). Requires a new `ExtendedAttributes` DirCap flag following the `PosixPermissions` naming pattern: the flag asserts the underlying filesystem supports xattrs (ext4, btrfs, tmpfs do; FAT, some network filesystems do not).
+
+**Decision:** `ExtendedAttributes` DirCap flag — no shorthand, explicit `[ExtendedAttributes]` only.
+
+- [ ] Add `ExtendedAttributes` to the `DirCapFlags` set in `src/value.rs`; update `narrow` to respect it (`src/value.rs`)
+- [ ] Add `xattr` crate (or use `nix` crate's `fgetxattr`/`fsetxattr` directly) to `Cargo.toml`; gate behind `#[cfg(target_os = "linux")]` (`Cargo.toml`)
+- [ ] Implement `get-xattr` builtin: `[get-xattr cap@DirCap path@String name@String]` — opens file via `cap.open(path)` to get an fd, calls `fgetxattr`; returns `Bytes` if the attribute exists, `[]` if not found (ENODATA/ENOATTR); requires `ExtendedAttributes` flag (`src/builtins_io.rs`)
+- [ ] Implement `set-xattr` builtin: `[set-xattr cap@DirCap path@String name@String value@Bytes]` — calls `fsetxattr`; requires `ExtendedAttributes` + `Writable` flags (`src/builtins_io.rs`)
+- [ ] Implement `remove-xattr` builtin: `[remove-xattr cap@DirCap path@String name@String]` — calls `fremovexattr`; requires `ExtendedAttributes` + `Writable` flags; no-ops gracefully if attribute does not exist (`src/builtins_io.rs`)
+- [ ] Implement `list-xattrs` builtin: `[list-xattrs cap@DirCap path@String]` — calls `flistxattr`; returns `[Seq String]` of attribute names; requires `ExtendedAttributes` flag (`src/builtins_io.rs`)
+- [ ] Register all four in `standard_builtins()` (`src/builtins.rs`)
+
+**Shared finishing tasks:**
+- [ ] Update `doc/11a-builtins.md` §I/O table and §DirCap Permission Flags for all builtins plus `Symlinkable`, `PosixPermissions`, `ExtendedAttributes` (`doc/11a-builtins.md`)
+- [ ] Corpus tests for each builtin (see individual specs above) (`tests/corpus/eval/builtins/`)
+- [ ] `just test` passes

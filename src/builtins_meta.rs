@@ -1340,7 +1340,7 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
     // Macro expansion — use ctx.config.base_dir as the directory context for macro includes.
     let expand_result =
-        crate::expand::expand_macros(parsed.file, ctx.config.no_fs, &ctx.config.base_dir).map_err(
+        crate::expand::expand_macros(crate::ast_convert::surface_program_to_file(&parsed.program), ctx.config.no_fs, &ctx.config.base_dir).map_err(
             |e| {
                 EvalError::include_parse_failed(
                     display_name.to_string(),
@@ -1393,11 +1393,11 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     match val {
         Value::Program { program: surface_program, resolutions: _old_resolutions, types: _old_types } => {
             // Convert SurfaceProgram back to File for macro expansion
-            let file = surface_program_to_file(&surface_program);
+            let spanned_file = crate::ast_convert::surface_program_to_file(&surface_program);
 
             // Run macro expansion
             let expand_result = crate::expand::expand_macros(
-                Spanned::new(file, call_span),
+                spanned_file,
                 ctx.config.no_fs,
                 &ctx.config.base_dir,
             )
@@ -1734,44 +1734,6 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
     }
 
     ok_val(result_seq, call_span)
-}
-
-/// Convert a SurfaceProgram back to the legacy File AST format.
-/// Required for macro expansion which operates on File.
-fn surface_program_to_file(program: &crate::ast::SurfaceProgram) -> crate::ast::File {
-    use crate::ast::{Document, SurfaceItem};
-    use crate::ast_convert::surface_node_to_expr;
-
-    let documents = program
-        .documents
-        .iter()
-        .map(|surface_doc| {
-            let doc_node = &surface_doc.node;
-            // Extract only expression items (skip declarations)
-            let expressions: Vec<std::rc::Rc<crate::ast::Spanned<crate::ast::Expr>>> = doc_node
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    SurfaceItem::Expr(node) => Some(std::rc::Rc::new(surface_node_to_expr(node))),
-                    SurfaceItem::Decl(_) => None,
-                })
-                .collect();
-
-            crate::ast::Spanned::new(
-                Document {
-                    expressions,
-                    name: doc_node.name.clone(),
-                    output_type: doc_node.output_type.clone(),
-                    expects: doc_node.expects.clone(),
-                    caps: doc_node.caps.clone(),
-                    stage: doc_node.stage.clone(),
-                },
-                surface_doc.span,
-            )
-        })
-        .collect();
-
-    crate::ast::File { documents }
 }
 
 /// `include-cache-get`: look up the string-keyed include cache by blake3 key.

@@ -796,6 +796,60 @@ fn match_arm_to_surface(arm: &MatchArm) -> SurfaceMatchArm {
     }
 }
 
+/// Convert a `SurfaceProgram` back to a `Spanned<File>` for compatibility with
+/// passes that still consume the old AST (desugar, resolve, typecheck, eval, expand).
+///
+/// This is the reverse of `file_to_surface_program()`. Deleted in Part E when
+/// all downstream passes are migrated to consume `SurfaceProgram` directly.
+pub fn surface_program_to_file(program: &SurfaceProgram) -> Spanned<File> {
+    use std::rc::Rc;
+
+    let documents = program
+        .documents
+        .iter()
+        .map(|surface_doc| {
+            let doc_node = &surface_doc.node;
+            let expressions: Vec<Rc<Spanned<Expr>>> = doc_node
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    SurfaceItem::Expr(node) => Some(Rc::new(surface_node_to_expr(node))),
+                    SurfaceItem::Decl(_) => None,
+                })
+                .collect();
+
+            Spanned::new(
+                Document {
+                    expressions,
+                    name: doc_node.name.clone(),
+                    output_type: doc_node.output_type.clone(),
+                    expects: doc_node.expects.clone(),
+                    caps: doc_node.caps.clone(),
+                    stage: doc_node.stage.clone(),
+                },
+                surface_doc.span,
+            )
+        })
+        .collect();
+
+    // Use a zero-width span; callers only care about the inner File.
+    Spanned::new(
+        File { documents },
+        crate::ast::Span {
+            start: crate::ast::Position {
+                line: 1,
+                column: 1,
+                offset: 0,
+            },
+            end: crate::ast::Position {
+                line: 1,
+                column: 1,
+                offset: 0,
+            },
+        },
+    )
+}
+
 /// Parse tinct source and return a `SurfaceProgram`.
 ///
 /// This is a temporary bridge until the parser directly produces `SurfaceProgram`.
@@ -805,7 +859,7 @@ pub fn parse_to_surface(
     input: &str,
 ) -> Result<(SurfaceProgram, crate::parser::ParseOutput), crate::parser::ParseError> {
     let output = crate::parser::parse(input)?;
-    let program = file_to_surface_program(&output.file.node);
+    let program = output.program.clone();
     Ok((program, output))
 }
 
@@ -817,7 +871,7 @@ mod tests {
     #[test]
     fn test_convert_empty_file() {
         let output = parse("").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         // Parser always produces one document (may be empty); empty input → one empty doc
         assert_eq!(program.documents.len(), 1);
         assert!(program.documents[0].node.items.is_empty());
@@ -826,7 +880,7 @@ mod tests {
     #[test]
     fn test_convert_int_literal() {
         let output = parse("42").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         assert_eq!(program.documents.len(), 1);
         let doc = &program.documents[0].node;
         assert_eq!(doc.items.len(), 1);
@@ -841,7 +895,7 @@ mod tests {
     #[test]
     fn test_convert_varref() {
         let output = parse("x").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -857,7 +911,7 @@ mod tests {
     #[test]
     fn test_convert_call() {
         let output = parse("[+ 1 2]").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -873,7 +927,7 @@ mod tests {
     #[test]
     fn test_convert_dict() {
         let output = parse("[a: 1  b: 2]").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -889,7 +943,7 @@ mod tests {
     #[test]
     fn test_convert_type_alias_is_decl() {
         let output = parse("[type Int]").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         assert!(matches!(&doc.items[0], SurfaceItem::Decl(_)));
     }
@@ -897,7 +951,7 @@ mod tests {
     #[test]
     fn test_convert_fn() {
         let output = parse("[fn [x y] [+ x y]]").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -913,7 +967,7 @@ mod tests {
     #[test]
     fn test_convert_multi_document() {
         let output = parse("a\n---\nb").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         assert_eq!(program.documents.len(), 2);
     }
 
@@ -922,7 +976,7 @@ mod tests {
     #[test]
     fn test_convert_float_literal() {
         let output = parse("3.14").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -935,7 +989,7 @@ mod tests {
     #[test]
     fn test_convert_bool_literal() {
         let output = parse("true").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -945,7 +999,7 @@ mod tests {
         }
 
         let output = parse("false").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -958,7 +1012,7 @@ mod tests {
     #[test]
     fn test_convert_str_literal() {
         let output = parse(r#""hello world""#).expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -971,7 +1025,7 @@ mod tests {
     #[test]
     fn test_convert_escaped_varref() {
         let output = parse("$escaped-name").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -988,7 +1042,7 @@ mod tests {
     fn test_convert_rest_named() {
         // Rest with a name: `[a: 1 ...rest]`
         let output = parse("[a: 1 ...rest]").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
@@ -1011,7 +1065,7 @@ mod tests {
     fn test_convert_rest_anonymous() {
         // Rest without a name (open row): `[a: 1 ...]`
         let output = parse("[a: 1 ...]").expect("parse failed");
-        let program = file_to_surface_program(&output.file.node);
+        let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
