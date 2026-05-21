@@ -7,5 +7,3 @@
 [pragma "optimize" true]
 === error
 [E012] macro expansion error
-=== warn
-[E012] macro expansion error

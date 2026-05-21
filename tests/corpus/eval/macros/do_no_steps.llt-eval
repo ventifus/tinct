@@ -1,5 +1,8 @@
 # Test do macro with no steps
 # [do monad] with no steps should return [monad.pure []]
+# NOTE: The `=== warn: undefined variable: result` is correct.
+# At typecheck time, `result` is undefined. The do macro expands at eval time,
+# resolving `result` to the monad dictionary via macro expansion.
 
 [do result]
 === out

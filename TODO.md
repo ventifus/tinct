@@ -180,22 +180,6 @@ The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge
 - [ ] `dict_to_file` only accepts `Value::Dict` for file root (not `Value::Variant`) while `dict_to_ast` accepts both — asymmetry is currently correct but undocumented and fragile; add doc comment (`src/ast_dict.rs:2256-2265`)
 - [ ] `do_infer_resolutions` not wired when typecheck is skipped — `[do]` inferred forms fail at runtime with undefined-variable for `:do-infer:N` sentinel; add comment documenting this expected degraded behavior (`src/lib.rs:279-280`, `src/eval.rs:785-800`)
 
-### test-corpus-fixes: Fix broken/stale corpus tests
-
-- [ ] **CRITICAL** Remove stale `=== warn: T010` sections from: `do_minimal.llt-eval:3-5`, `do_hardcoded.llt-eval:4-5`, `list_dir.llt-eval:2-3` — the eval corpus runner calls `typecheck_source_errors_only` which never produces T010 warnings so these never match; causes test failures (`tests/corpus/eval/macros/`, `tests/corpus/eval/builtins/`)
-- [ ] **CRITICAL** `begin_basic.llt-eval:4` has wrong `=== out` format — expected `3` but `DisplayVisitor::visit_int` formats as `Int(3)`; change to `Int(3)` (`tests/corpus/eval/macros/begin_basic.llt-eval`)
-- [ ] **CRITICAL** Remove stale `=== warn` block from `macro_expansion_provenance.llt-eval:13-18` — contains hardcoded builtins.rs span `691:` that drifts; `[E001]` is a runtime error that `typecheck_source_errors_only` cannot produce (`tests/corpus/eval/errors/macro_expansion_provenance.llt-eval`)
-- [ ] **CRITICAL** Remove copypaste `=== warn` sections from `macro_syntax_class_validation.llt-eval:11-12` and `macro_error_provenance_placeholder.llt-eval:21-22` — `[E012]`/`[E080]` are runtime error codes, not typecheck warnings; never match (`tests/corpus/eval/macros/`)
-- [ ] Add `NominalVariant` exhaustive-match happy-path test — create `tests/corpus/eval/typecheck/nominal_variant_exhaustive_match.llt-eval` with a `[type [Circle r: Int] [Square s: Int]]` declaration and fully exhaustive `[match]`; no `=== warn` section asserts zero warnings (`tests/corpus/eval/typecheck/`)
-- [ ] Rename/move `macro_in_include.llt-eval` from `eval/macros/` to `eval/errors/include_removed_gives_e002.llt-eval` — tests that a removed feature errors, not macro behavior (`tests/corpus/eval/macros/`)
-- [ ] Add `[macro]` keyword syntax error tests: `macro_missing_name.llt-eval`, `macro_non_let_pattern.llt-eval`, `macro_missing_body.llt-eval` (`tests/corpus/invalid/syntax_errors/`)
-- [ ] Add `eval/macros/` minimum count to `test_corpus_structure` — add `const EVAL_MACROS_MIN: usize = 40;` (`tests/corpus_tests.rs:229-265`)
-- [ ] Add `eval_error_propagation.llt-eval` and `eval_types_multiple_exprs.llt-eval` — current `eval_basic`/`eval_types_basic` only test trivial integer literal; mutation-blind (`tests/corpus/eval/builtins/`)
-- [ ] Pin `expand_basic.llt-eval` more precisely — currently only checks `.type == "file"`; add a test that accesses the `exprs` field to actually verify expansion result structure (`tests/corpus/eval/builtins/`)
-- [ ] Add comments to `do_three_step`, `do_nonbinding_step`, `do_no_steps` explaining why `=== warn: undefined variable: result` is correct (macro expansion resolves it at eval time) (`tests/corpus/eval/macros/`)
-- [ ] Add span to `ast_of_fn_no_force.llt-eval:7` warning assertion — `undefined variable: ast-of` too loose; add `at 1:9` span (`tests/corpus/eval/builtins/`)
-- [ ] Add legacy comment to `macro_lib.llt:7` — `[defmacro]` is intentional for backward-compatibility regression testing (`tests/corpus/eval/macros/macro_lib.llt`)
-
 ### security-sprint: Fix security regressions from include-decomp
 
 - [ ] **CRITICAL** `--require-integrity` is completely non-functional after include-decomp-prelude deleted `builtin_include` — `EvalError::include_hash_mismatch`/`include_hash_required` exist but are never called; self-hosted `include` in `stdlib/prelude.llt` never checks `ctx.config.require_integrity`; implement integrity checking: add `hash:` named arg to `builtin_load` for the expected blake3 hash, verify in the self-hosted `include` function before returning the cached/evaluated result, raise `EvalError::include_hash_mismatch` on mismatch (`src/builtins_meta.rs:1685-1687`, `stdlib/prelude.llt:2462-2477`)

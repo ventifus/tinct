@@ -1,4 +1,7 @@
 # Test do macro with three binding steps
+# NOTE: The `=== warn: undefined variable: result` is correct.
+# At typecheck time, `result` is undefined. The do macro expands at eval time,
+# resolving `result` to the monad dictionary via macro expansion.
 [do result
   [x: [Ok 1]]
   [y: [Ok 2]]

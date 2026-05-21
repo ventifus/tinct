@@ -1,0 +1,4 @@
+# macro form requires a body expression
+[macro double [let x]]
+=== out
+macro form requires a body expression

@@ -1,0 +1,19 @@
+# Exhaustive match on nominal variant type produces zero warnings
+# This is the happy path — all constructors are covered
+[
+  [type Shape
+    [Circle r: Int]
+    [Square s: Int]
+  ]
+
+  shape: [Circle r: 5]
+
+  area: [match shape
+    [Circle r]: [* 3 [* r r]]
+    [Square s]: [* s s]
+  ]
+
+  area
+]
+=== out
+Int(75)

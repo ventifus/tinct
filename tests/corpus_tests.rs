@@ -231,6 +231,7 @@ fn test_corpus_structure() {
     const EVAL_BUILTINS_MIN: usize = 120;
     const EVAL_STDLIB_MIN: usize = 195;
     const EVAL_ERRORS_MIN: usize = 120;
+    const EVAL_MACROS_MIN: usize = 40;
 
     let laziness_count = find_test_files(&manifest_dir.join("tests/corpus/eval/laziness")).len();
     assert!(
@@ -262,6 +263,14 @@ fn test_corpus_structure() {
         "tests/corpus/eval/errors/ has {} tests, expected at least {}",
         errors_count,
         EVAL_ERRORS_MIN
+    );
+
+    let macros_count = find_test_files(&manifest_dir.join("tests/corpus/eval/macros")).len();
+    assert!(
+        macros_count >= EVAL_MACROS_MIN,
+        "tests/corpus/eval/macros/ has {} tests, expected at least {}",
+        macros_count,
+        EVAL_MACROS_MIN
     );
 }
 

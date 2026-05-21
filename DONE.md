@@ -8697,3 +8697,21 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 - [x] `prelude.llt:1423-1429` — `result-ok` and `and-then` have `fn@[return: Unknown]` annotation; should be `fn@[return: Result]` or similar (`stdlib/prelude.llt`)
 - [x] `prelude.llt:2295-2297` — `first-or` uses `[match [empty? xs] [case true ...]]` boolean dispatch; replace with `[if [empty? xs] default [first xs]]` for consistency with prelude style (`stdlib/prelude.llt:2295-2297`)
 - [x] `strings.llt` — `str-reverse-impl`, `upper`, `lower` use bare annotated params without `[let ...]`; inconsistent with `[fn@T [let ...]]` style used throughout prelude.llt; standardize or document the new-style param choice (`stdlib/strings.llt:47,94,100`)
+
+## Health Review #22 Findings (2026-05-19)
+
+### test-corpus-fixes: Fix broken/stale corpus tests
+
+- [x] **CRITICAL** Remove stale `=== warn: T010` sections from: `do_minimal.llt-eval:3-5`, `do_hardcoded.llt-eval:4-5`, `list_dir.llt-eval:2-3` — the eval corpus runner calls `typecheck_source_errors_only` which never produces T010 warnings so these never match; causes test failures (`tests/corpus/eval/macros/`, `tests/corpus/eval/builtins/`)
+- [x] **CRITICAL** `begin_basic.llt-eval:4` has wrong `=== out` format — expected `3` but `DisplayVisitor::visit_int` formats as `Int(3)`; change to `Int(3)` (`tests/corpus/eval/macros/begin_basic.llt-eval`)
+- [x] **CRITICAL** Remove stale `=== warn` block from `macro_expansion_provenance.llt-eval:13-18` — contains hardcoded builtins.rs span `691:` that drifts; `[E001]` is a runtime error that `typecheck_source_errors_only` cannot produce (`tests/corpus/eval/errors/macro_expansion_provenance.llt-eval`)
+- [x] **CRITICAL** Remove copypaste `=== warn` sections from `macro_syntax_class_validation.llt-eval:11-12` and `macro_error_provenance_placeholder.llt-eval:21-22` — `[E012]`/`[E080]` are runtime error codes, not typecheck warnings; never match (`tests/corpus/eval/macros/`)
+- [x] Add `NominalVariant` exhaustive-match happy-path test — create `tests/corpus/eval/typecheck/nominal_variant_exhaustive_match.llt-eval` with a `[type [Circle r: Int] [Square s: Int]]` declaration and fully exhaustive `[match]`; no `=== warn` section asserts zero warnings (`tests/corpus/eval/typecheck/`)
+- [x] Rename/move `macro_in_include.llt-eval` from `eval/macros/` to `eval/errors/include_removed_gives_e002.llt-eval` — tests that a removed feature errors, not macro behavior (`tests/corpus/eval/macros/`)
+- [x] Add `[macro]` keyword syntax error tests: `macro_missing_name.llt-eval`, `macro_non_let_pattern.llt-eval`, `macro_missing_body.llt-eval` (`tests/corpus/invalid/syntax_errors/`)
+- [x] Add `eval/macros/` minimum count to `test_corpus_structure` — add `const EVAL_MACROS_MIN: usize = 40;` (`tests/corpus_tests.rs:229-265`)
+- [x] Add `eval_error_propagation.llt-eval` and `eval_types_multiple_exprs.llt-eval` — current `eval_basic`/`eval_types_basic` only test trivial integer literal; mutation-blind (`tests/corpus/eval/builtins/`)
+- [x] Pin `expand_basic.llt-eval` more precisely — currently only checks `.type == "file"`; add a test that accesses the `exprs` field to actually verify expansion result structure (`tests/corpus/eval/builtins/`)
+- [x] Add comments to `do_three_step`, `do_nonbinding_step`, `do_no_steps` explaining why `=== warn: undefined variable: result` is correct (macro expansion resolves it at eval time) (`tests/corpus/eval/macros/`)
+- [x] Add span to `ast_of_fn_no_force.llt-eval:7` warning assertion — `undefined variable: ast-of` too loose; add `at 1:9` span (`tests/corpus/eval/builtins/`)
+- [x] Add legacy comment to `macro_lib.llt:7` — `[defmacro]` is intentional for backward-compatibility regression testing (`tests/corpus/eval/macros/macro_lib.llt`)

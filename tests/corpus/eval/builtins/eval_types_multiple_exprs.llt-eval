@@ -1,0 +1,9 @@
+# eval-types evaluates multiple expressions in type-stage environment
+[
+  src: [load "[x: 1] [y: 2]"]
+  exprs: [expand src].exprs
+  results: [collect [eval-types exprs]]
+  [length results]
+]
+=== out
+Int(2)

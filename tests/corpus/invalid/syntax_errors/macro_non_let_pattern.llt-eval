@@ -1,0 +1,4 @@
+# macro pattern must be a [let ...] form
+[macro double x [quote [* 2 [unquote x]]]]
+=== out
+macro pattern must be a [let ...] form

@@ -1,0 +1,10 @@
+# Test that [include] (removed feature) produces undefined variable error
+# NOTE: include was removed in include-decomp-prelude sprint.
+# This test verifies that [include %pwd "..."] produces an undefined variable
+# error for `include`. The LLT-level include function is in stdlib/prelude.llt,
+# but the old [include] special form was removed.
+[
+  lib: [include %pwd "tests/corpus/eval/macros/macro_lib.llt"]
+]
+=== error
+[E002]

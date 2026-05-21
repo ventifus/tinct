@@ -17,5 +17,3 @@
 [will-error dummy]
 === error
 [E080] macro 'will-error' expansion result failed to evaluate
-=== warn
-[E080] macro 'will-error' expansion result failed to evaluate

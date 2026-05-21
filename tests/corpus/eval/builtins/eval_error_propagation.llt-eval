@@ -1,0 +1,4 @@
+# eval propagates errors from evaluated expression
+[eval [load "[/ 1 0]"]]
+=== error
+[E003] division by zero
