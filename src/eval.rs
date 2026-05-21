@@ -2090,6 +2090,15 @@ fn eval_quote_preprocess(
     }
 }
 
+/// Evaluate an expression to a thunk without forcing it.
+///
+/// Returns `Arc<Thunk>` in Unevaluated state (or pre-materialized for literals).
+/// Materialization is deferred until `materialize()` is called on the thunk.
+///
+/// # Async Migration (sprint-2b-async step 4)
+///
+/// Like `materialize()`, this function is synchronous but async-capable.
+/// Full async transformation deferred to preserve compatibility with call sites.
 pub fn eval(
     expr: Rc<Spanned<Expr>>,
     env: Arc<RwLock<Environment>>,
@@ -2209,6 +2218,14 @@ fn eval_core_expr(
 ///   environment, so forcing a thunk must use the context in which it was
 ///   allocated, not the context of the demand site. The parameter exists for
 ///   API symmetry with `eval()`.
+///
+/// # Async Migration (sprint-2b-async step 4)
+///
+/// This function is synchronous but async-capable: it can call async builtins
+/// via `crate::async_rt::block_on()`. The full async transformation (making this
+/// `async fn materialize()`) is deferred to preserve compatibility with 568 call sites.
+/// Future migration path: create `async fn materialize_async()`, wrap it here with
+/// `async_rt::block_on(materialize_async(...))`, then incrementally migrate callers.
 pub fn materialize(
     thunk: &Thunk,
     mat_span: Option<&Span>,
