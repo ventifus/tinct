@@ -323,6 +323,11 @@ impl EvalContext {
     /// Using `new()` or `new_with_options()` in these cases would pull in stale cache contents
     /// and pollute the bootstrap evaluation. Always use `new_empty()` when the stdlib env
     /// being passed is NOT the standard prelude-loaded environment.
+    ///
+    /// **WARNING:** ThunkIds from the stdlib arena (obtained via `new()` or `new_with_options()`)
+    /// are NOT valid in fresh-arena contexts created by `new_empty()`. Attempting to dereference
+    /// a stdlib ThunkId in a fresh arena will panic or return incorrect results. Only use
+    /// `new_empty()` when the environment contains no references to stdlib thunks.
     pub fn new_empty(
         base_dir: cap_std::fs::Dir,
         stdlib_env: Rc<RefCell<Environment>>,
@@ -803,8 +808,7 @@ pub(crate) fn eval_recursive(
             // keyed by this VarRef's span. At runtime, substitute the sentinel with the
             // actual monad dict looked up from the environment by its resolved name.
             if name == "%do-infer" {
-                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(name).cloned()
-                {
+                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(name).cloned() {
                     let found = env.borrow().get(&monad_name);
                     return match found {
                         Some(thunk) => Ok(thunk),
@@ -3100,14 +3104,12 @@ fn match_pattern(
                                 crate::surface_fields::surface_expr_field_names(&node.expr);
                             let mut payload_map = indexmap::IndexMap::new();
                             for field_name in field_names {
-                                let thunk_id = ctx.alloc_thunk(Rc::new(
-                                    Thunk::new_ast_node_field(
-                                        std::sync::Arc::clone(&node),
-                                        field_name,
-                                        Rc::clone(ctx),
-                                        *value_span,
-                                    ),
-                                ));
+                                let thunk_id = ctx.alloc_thunk(Rc::new(Thunk::new_ast_node_field(
+                                    std::sync::Arc::clone(&node),
+                                    field_name,
+                                    Rc::clone(ctx),
+                                    *value_span,
+                                )));
                                 payload_map
                                     .insert(Key::String((*field_name).to_string()), thunk_id);
                             }

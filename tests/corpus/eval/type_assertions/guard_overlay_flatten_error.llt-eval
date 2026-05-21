@@ -1,0 +1,8 @@
+# GuardedValidate overlay-flatten error path: type assertion on $merge with non-dict input.
+# Exercises eval_materialize.rs:1046-1050 — the flatten_overlay Err branch inside
+# Cont::GuardedValidate. from-json returns Unknown so type checker does not warn;
+# at runtime the String causes flatten_overlay to fail with E010 (cacheable, so
+# thunk transitions to Failed via cache_failure rather than remaining InProgress).
+[@[x: Int] [merge [x: 1] [from-json "\"not-a-dict\""]]]
+=== error
+[E010] type guard: expected Dict, got String

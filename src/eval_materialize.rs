@@ -756,9 +756,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     } else if let Some(restore_state) = restore {
                         restore_state.restore(&thunk);
                     }
-                    // Note: every Cont::Memoize push MUST supply restore: Some(...).
-                    // Passing None would leave the thunk permanently stuck in
-                    // InProgress, which is a bug — not an accepted fallback pattern.
+                    // Note: when this Memoize was pushed from GuardedValidate's default
+                    // fallback path, restore is Some — GuardedValidate transferred the
+                    // RestoreState into this Memoize via restore.take() (see the three
+                    // Cont::Memoize pushes in Cont::GuardedValidate). Non-cacheable errors
+                    // from the default expr ARE handled by the else-if branch above when
+                    // restore is Some. restore: None only arises when Memoize was pushed
+                    // from a site where no restore state was available (e.g., top-level
+                    // thunk evaluation without a GuardedValidate ancestor).
                     Action::Continue(Err(e))
                 }
             }
@@ -1040,7 +1045,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 Ok(map) => Value::Dict(map),
                                 Err(e) => {
                                     let e = decorate(e);
-                                    thunk.cache_failure(&e);
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure(&e);
+                                    } else if let Some(r) = restore.take() {
+                                        r.restore(&thunk);
+                                    }
                                     return Action::Continue(Err(e));
                                 }
                             }
@@ -1084,7 +1093,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         };
                                     }
                                     let err = decorate(err);
-                                    thunk.cache_failure(&err);
+                                    if err.kind.is_cacheable() {
+                                        thunk.cache_failure(&err);
+                                    } else if let Some(r) = restore.take() {
+                                        r.restore(&thunk);
+                                    }
                                     Action::Continue(Err(err))
                                 }
                             }
@@ -1130,7 +1143,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 err = err.with_blame(label.clone());
                             }
                             let err = decorate(err.into());
-                            thunk.cache_failure(&err);
+                            if err.kind.is_cacheable() {
+                                thunk.cache_failure(&err);
+                            } else if let Some(r) = restore.take() {
+                                r.restore(&thunk);
+                            }
                             Action::Continue(Err(err))
                         }
                     } else {
@@ -1180,7 +1197,11 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 err = err.with_blame(label.clone());
                             }
                             let err = decorate(err.into());
-                            thunk.cache_failure(&err);
+                            if err.kind.is_cacheable() {
+                                thunk.cache_failure(&err);
+                            } else if let Some(r) = restore.take() {
+                                r.restore(&thunk);
+                            }
                             Action::Continue(Err(err))
                         }
                     }
@@ -1473,12 +1494,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         // runtime-v2: dot-access on native AST value types
                         Value::Expression(node) => {
                             let field_value = crate::surface_fields::surface_node_get_field(
-                                &node,
-                                &field_str,
-                                &ctx,
+                                &node, &field_str, &ctx,
                             );
-                            let thunk =
-                                Rc::new(Thunk::new_materialized(field_value, access_span));
+                            let thunk = Rc::new(Thunk::new_materialized(field_value, access_span));
                             Action::Materialize {
                                 thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),
@@ -1490,8 +1508,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 "documents" => {
                                     let mut map = indexmap::IndexMap::new();
                                     for (i, doc_spanned) in prog.documents.iter().enumerate() {
-                                        let doc_val = Value::Document(std::sync::Arc::new(doc_spanned.node.clone()));
-                                        let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(doc_val, access_span)));
+                                        let doc_val = Value::Document(std::sync::Arc::new(
+                                            doc_spanned.node.clone(),
+                                        ));
+                                        let tid = ctx.alloc_thunk(Rc::new(
+                                            Thunk::new_materialized(doc_val, access_span),
+                                        ));
                                         map.insert(crate::value::Key::Int(i as i64), tid);
                                     }
                                     Value::Dict(map)
@@ -1499,7 +1521,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
                             let thunk = Rc::new(Thunk::new_materialized(val, access_span));
-                            Action::Materialize { thunk, mat_span: outer_mat_span.or(Some(access_span)) }
+                            Action::Materialize {
+                                thunk,
+                                mat_span: outer_mat_span.or(Some(access_span)),
+                            }
                         }
                         Value::Document(doc) => {
                             // Document field access — expressions, declarations, name, etc.
@@ -1508,23 +1533,38 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     let mut map = indexmap::IndexMap::new();
                                     for (i, item) in doc.items.iter().enumerate() {
                                         if let crate::ast::SurfaceItem::Expr(node) = item {
-                                            let expr_val = Value::Expression(std::sync::Arc::clone(node));
-                                            let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(expr_val, access_span)));
+                                            let expr_val =
+                                                Value::Expression(std::sync::Arc::clone(node));
+                                            let tid = ctx.alloc_thunk(Rc::new(
+                                                Thunk::new_materialized(expr_val, access_span),
+                                            ));
                                             map.insert(crate::value::Key::Int(i as i64), tid);
                                         }
                                     }
                                     Value::Dict(map)
                                 }
-                                "name" => {
-                                    match &doc.name {
-                                        Some(n) => Value::Variant { tag: "Named".into(), payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(crate::value::string_val(n), access_span)))) },
-                                        None => Value::Variant { tag: "Unnamed".into(), payload: None },
-                                    }
-                                }
+                                "name" => match &doc.name {
+                                    Some(n) => Value::Variant {
+                                        tag: "Named".into(),
+                                        payload: Some(ctx.alloc_thunk(Rc::new(
+                                            Thunk::new_materialized(
+                                                crate::value::string_val(n),
+                                                access_span,
+                                            ),
+                                        ))),
+                                    },
+                                    None => Value::Variant {
+                                        tag: "Unnamed".into(),
+                                        payload: None,
+                                    },
+                                },
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
                             let thunk = Rc::new(Thunk::new_materialized(val, access_span));
-                            Action::Materialize { thunk, mat_span: outer_mat_span.or(Some(access_span)) }
+                            Action::Materialize {
+                                thunk,
+                                mat_span: outer_mat_span.or(Some(access_span)),
+                            }
                         }
                         other => {
                             // Type mismatch: report definition site and access site.

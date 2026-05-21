@@ -85,49 +85,58 @@ pub(crate) fn eval_dict(
     // (eval_step) will also insert constructors into dict_env — this is consistent
     // with the pre-computed thunks and doesn't cause slot mismatches (IndexMap::insert
     // with an existing key updates in-place without changing the position).
+
+    // Early-exit guard: skip constructor pre-computation if there are no TypeAlias entries.
+    // Most dicts don't have TypeAlias, so avoid the O(n) constructor-building loop below.
+    let has_type_alias = entries
+        .iter()
+        .any(|entry| matches!(&entry.node.value.node, Expr::TypeAlias { .. }));
+
     let mut constructor_precomputed: std::collections::HashMap<String, Rc<Thunk>> =
         std::collections::HashMap::new();
 
-    for entry in entries {
-        if let Expr::TypeAlias { params: _, body } = &entry.node.value.node {
-            let span = entry.node.value.span;
-            for (tag, has_payload) in extract_nominal_constructors(&body.node) {
-                let constructor_value = if has_payload {
-                    let constructor_env =
-                        Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&dict_env))));
-                    constructor_env.borrow_mut().insert(
-                        VARIANT_TAG_MARKER.to_string(),
-                        Rc::new(Thunk::new_materialized(string_val(&tag), span)),
-                    );
-                    let param = Param {
-                        name: "payload".to_string(),
-                        annotation: None,
-                        variadic: false,
-                    };
-                    let body_expr = Rc::new(Spanned::new(
-                        Expr::VarRef {
+    if has_type_alias {
+        for entry in entries {
+            if let Expr::TypeAlias { params: _, body } = &entry.node.value.node {
+                let span = entry.node.value.span;
+                for (tag, has_payload) in extract_nominal_constructors(&body.node) {
+                    let constructor_value = if has_payload {
+                        let constructor_env =
+                            Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&dict_env))));
+                        constructor_env.borrow_mut().insert(
+                            VARIANT_TAG_MARKER.to_string(),
+                            Rc::new(Thunk::new_materialized(string_val(&tag), span)),
+                        );
+                        let param = Param {
                             name: "payload".to_string(),
-                            escaped: false,
-                            resolved: RefCell::new(None),
-                        },
-                        span,
-                    ));
-                    Value::Function {
-                        params: Rc::new(vec![param]),
-                        body: body_expr,
-                        env: constructor_env,
-                        annotation: None,
-                    }
-                } else {
-                    Value::Variant {
-                        tag: tag.clone(),
-                        payload: None,
-                    }
-                };
-                constructor_precomputed.insert(
-                    tag,
-                    Rc::new(Thunk::new_materialized(constructor_value, span)),
-                );
+                            annotation: None,
+                            variadic: false,
+                        };
+                        let body_expr = Rc::new(Spanned::new(
+                            Expr::VarRef {
+                                name: "payload".to_string(),
+                                escaped: false,
+                                resolved: RefCell::new(None),
+                            },
+                            span,
+                        ));
+                        Value::Function {
+                            params: Rc::new(vec![param]),
+                            body: body_expr,
+                            env: constructor_env,
+                            annotation: None,
+                        }
+                    } else {
+                        Value::Variant {
+                            tag: tag.clone(),
+                            payload: None,
+                        }
+                    };
+                    constructor_precomputed.insert(
+                        tag,
+                        Rc::new(Thunk::new_materialized(constructor_value, span)),
+                    );
+                }
             }
         }
     }

@@ -8637,3 +8637,20 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 
 - [x] **BUG** `stdlib/codecs/json.llt:to-json` has dead `[Program _]`/`[Document _]`/`[Expression _]` match arms on current main (those Value variants don't exist in Rust yet); after rebase they activate — add corpus tests: `to_json_expression.llt-eval`, `to_json_program.llt-eval` to verify correct serialization (`tests/corpus/eval/builtins/`)
 - [x] **BUG** `builtin_load` slot indices interaction with Surface thunks: once Part G introduces `ThunkState::Surface`, the pre-resolved VarRef slots in loaded programs become stale in new eval environments; `resolve_surface_program` must be called per eval, not reused from `builtin_load` output; document this constraint in `builtin_load` doc comment and add a TODO guard (`src/builtins_meta.rs`)
+
+### eval-hardening-perf: Fix eval engine correctness + performance issues
+
+- [x] **CRITICAL** `Cont::GuardedValidate` Overlay error path does not check `is_cacheable()` — replace `thunk.cache_failure(&e)` at `src/eval_materialize.rs:1050` with the full `is_cacheable()` guard + `restore.take()` pattern used at line 1198 (`src/eval_materialize.rs`)
+- [x] Fix `work_stack` orphan leak: when `push_structural` fails mid-traversal, partially-pushed `WorkItem::Force` items leak `Rc<Thunk>` references; add `work_stack.clear()` before propagating the error (`src/eval_deep.rs:509-520`)
+- [x] Update `Cont::Memoize` comment at `eval_materialize.rs:760-763` to document that `restore: None` is acceptable in default-fallback paths (not always a bug as comment implies) (`src/eval_materialize.rs`)
+- [x] Add `InProgress → Unevaluated` row to thunk state transition table in `doc/08-evaluation.md:252-265` — this backward edge exists (RestoreState::Unevaluated) but is absent from the table (`doc/08-evaluation.md`)
+- [x] Strengthen `EvalContext::new()` arena comment at `src/eval.rs:358` — warn that stdlib ThunkIds are NOT valid in fresh-arena contexts (`src/eval.rs`)
+- [x] Fix `%_input` synthetic binding name in `wrap_with_nominal_validation` (`src/eval_pipeline.rs:113-158`) — replace with gensym to eliminate collision risk with pathological nesting patterns (`src/eval_pipeline.rs`)
+- [x] `validate_value` enum check is O(n) linear scan — build a hash set from enum values before matching for large-enum performance (`src/builtins_meta.rs:1940`)
+- [x] `builtin_load` slot indices latent bug: `resolve_file` populates VarRef slots for the load-time env, but `builtin_eval` re-uses the AST in a new env where slots may differ — strip resolved slots from `builtin_load` output OR document that `builtin_eval` must re-resolve before arena-phase3 activates; **note:** runtime-v2 Part E will eliminate this entirely (VarRef slots replaced by ResolutionTable keyed by Arc pointer); for now add a doc comment guard (`src/builtins_meta.rs:1548`, `src/ast_dict.rs`)
+- [x] `validate_value` allocates fresh `String` for every schema key lookup — replace 10 `Key::String("...".to_string())` with `StrKey("...")` at `src/builtins_meta.rs:1791-2007` (zero-alloc wrapper already exists)
+- [x] `builtin_until` allocates `IndexMap::new()` twice per iteration — **investigated: already optimal** (`IndexMap::new()` is a const fn with no heap allocation until first insertion; `new_pending_call` internally converts empty IndexMap to None) (`src/builtins_meta.rs`)
+- [x] `eval_dict` allocates `HashMap::new()` for `constructor_precomputed` on every dict — add early-exit guard: only allocate when `has_type_alias` is true (`src/eval_dict.rs:71`)
+- [x] `ast_to_dict` payload dicts have no capacity hints — add `IndexMap::with_capacity(N)` per match arm using statically known field counts (`src/ast_dict.rs:234+`)
+- [x] `deep_materialize` Dict arm allocates `Vec<Key>` scratch — eliminate by passing key count as `usize` into BuildDict and iterating `map.keys()` during assembly (`src/eval_deep.rs:342-358`)
+- [x] `list_to_thunk_id` creates intermediate Vec<ThunkId> — change to accept `impl ExactSizeIterator<Item=ThunkId>` to eliminate the intermediate Vec (`src/ast_dict.rs:99,141,208`)

@@ -165,7 +165,7 @@ pub fn eval_document(
 
 /// Wrap a thunk with nominal type validation for pipeline input contracts.
 ///
-/// This creates a synthetic TypeAssert expression that wraps a variable reference to `%_input`.
+/// This creates a synthetic TypeAssert expression that wraps a gensym'd variable reference.
 /// When evaluated, it will perform the same validation as a regular `[@Type expr]` assertion.
 fn wrap_with_nominal_validation(
     inner: Rc<Thunk>,
@@ -175,12 +175,17 @@ fn wrap_with_nominal_validation(
 ) -> Rc<Thunk> {
     use crate::ast::Expr;
     use std::cell::RefCell;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    // Create a synthetic TypeAssert expression: [@Annotation %_input]
-    // We use %_input as a temporary variable name that won't conflict with user code
+    // Generate a unique variable name to avoid collisions with user code
+    static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let gensym_id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let gensym_name = format!("__nominal_input_{}", gensym_id);
+
+    // Create a synthetic TypeAssert expression: [@Annotation __nominal_input_N]
     let varref_expr = Box::new(crate::ast::Spanned::new(
         Expr::VarRef {
-            name: "%_input".to_string(),
+            name: gensym_name.clone(),
             escaped: false,
             resolved: RefCell::new(None),
         },
@@ -196,11 +201,9 @@ fn wrap_with_nominal_validation(
         validation_span,
     ));
 
-    // Create an environment with %_input bound to the inner thunk
+    // Create an environment with __nominal_input_N bound to the inner thunk
     let validation_env = Rc::new(RefCell::new(Environment::new()));
-    validation_env
-        .borrow_mut()
-        .insert("%_input".to_string(), inner);
+    validation_env.borrow_mut().insert(gensym_name, inner);
 
     // Return an Unevaluated thunk wrapping the TypeAssert expression
     Rc::new(Thunk::new_unevaluated(

@@ -89,7 +89,7 @@ pub fn ast_to_dict(
     );
 
     // documents: list of document dicts
-    let docs = file
+    let docs: Vec<_> = file
         .documents
         .iter()
         .map(|doc| document_to_dict(&doc.node, doc.span, opts, ctx))
@@ -97,7 +97,7 @@ pub fn ast_to_dict(
 
     root.insert(
         Key::String("documents".into()),
-        list_to_thunk_id(docs, span, ctx)?,
+        list_to_thunk_id(docs.into_iter(), span, ctx)?,
     );
 
     root.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
@@ -131,7 +131,7 @@ fn document_to_dict(
     );
 
     // expressions: list of expression dicts
-    let exprs = doc
+    let exprs: Vec<_> = doc
         .expressions
         .iter()
         .map(|e| expr_to_thunk_id(&e.node, e.span, opts, ctx))
@@ -139,7 +139,7 @@ fn document_to_dict(
 
     dict.insert(
         Key::String("expressions".into()),
-        list_to_thunk_id(exprs, span, ctx)?,
+        list_to_thunk_id(exprs.into_iter(), span, ctx)?,
     );
 
     // name: string or []
@@ -204,7 +204,7 @@ fn document_to_dict(
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
-                    list_to_thunk_id(comment_ids, span, ctx)?,
+                    list_to_thunk_id(comment_ids.into_iter(), span, ctx)?,
                 );
             }
         }
@@ -231,7 +231,37 @@ fn expr_to_thunk_id(
     opts: &AstToDictOpts,
     ctx: &Rc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
+    // Pre-compute capacity for the payload dict based on the expression variant.
+    // Most variants have 1-4 fields. Using with_capacity avoids reallocation during insertion.
+    let capacity = match expr {
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) => 2, // kind + value
+        Expr::Str(_) => 3,                                  // kind + value + bare
+        Expr::VarRef { .. } => 1,                           // name
+        Expr::DotAccess { .. } => 2,                        // target + field
+        Expr::Pipe { .. } => 2,                             // lhs + rhs
+        Expr::Sequential(_) => 1,                           // exprs
+        Expr::Dict(_) => 1,                                 // entries
+        Expr::Call { .. } => 4,                             // fn + args + named-args + implied
+        Expr::Fn { .. } => 4,         // params + return-ann + body + desugared
+        Expr::TypeAlias { .. } => 2,  // params + body
+        Expr::TypeAssert { .. } => 2, // expr + type_expr
+        Expr::Annotated { .. } => 2,  // name + annotation
+        Expr::Rest(_) => 1,           // name (optional)
+        Expr::Quote(_) | Expr::Unquote(_) | Expr::UnquoteSplice(_) => 1, // expr
+        Expr::DefMacro { .. } | Expr::MacroDecl { .. } => 3, // name + params + body
+        Expr::Splice(_) => 1,         // forms
+        Expr::SyntaxClass { .. } => 2, // name + fields
+        Expr::Match { .. } => 2,      // scrutinee + arms
+        Expr::ClassDecl { .. } => 4,  // name + params + fields + methods
+        Expr::InstanceDecl { .. } => 2, // class_name + arms
+        Expr::PatternDecl { .. } | Expr::LetDecl { .. } => 1, // bindings
+        Expr::CaseArm { .. } => 2,    // pattern + body
+        Expr::Placeholder => 0,       // no fields
+        Expr::TypeApp { .. } => 2,    // func + arg
+        Expr::Error(_) => 1,          // span
+    };
+
+    let mut dict = IndexMap::with_capacity(capacity);
 
     // Track which Variant tag to use for this Expr type
     let variant_tag: &str;
@@ -352,27 +382,27 @@ fn expr_to_thunk_id(
 
         Expr::Sequential(exprs) => {
             variant_tag = "Sequential";
-            let expr_ids = exprs
+            let expr_ids: Vec<_> = exprs
                 .iter()
                 .map(|e| expr_to_thunk_id(&e.node, e.span, opts, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
 
             dict.insert(
                 Key::String("exprs".into()),
-                list_to_thunk_id(expr_ids, span, ctx)?,
+                list_to_thunk_id(expr_ids.into_iter(), span, ctx)?,
             );
         }
 
         Expr::Dict(entries) => {
             variant_tag = "Dict";
-            let entry_ids = entries
+            let entry_ids: Vec<_> = entries
                 .iter()
                 .map(|e| entry_to_thunk_id(&e.node, e.span, opts, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
 
             dict.insert(
                 Key::String("entries".into()),
-                list_to_thunk_id(entry_ids, span, ctx)?,
+                list_to_thunk_id(entry_ids.into_iter(), span, ctx)?,
             );
         }
 
@@ -389,25 +419,25 @@ fn expr_to_thunk_id(
             );
 
             // args: list of expression dicts
-            let arg_ids = args
+            let arg_ids: Vec<_> = args
                 .iter()
                 .map(|a| expr_to_thunk_id(&a.node, a.span, opts, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
 
             dict.insert(
                 Key::String("args".into()),
-                list_to_thunk_id(arg_ids, span, ctx)?,
+                list_to_thunk_id(arg_ids.into_iter(), span, ctx)?,
             );
 
             // named-args: list of [name: str value: expr] dicts
-            let named_arg_ids = named_args
+            let named_arg_ids: Vec<_> = named_args
                 .iter()
                 .map(|na| named_arg_to_thunk_id(&na.node, na.span, opts, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
 
             dict.insert(
                 Key::String("named-args".into()),
-                list_to_thunk_id(named_arg_ids, span, ctx)?,
+                list_to_thunk_id(named_arg_ids.into_iter(), span, ctx)?,
             );
             dict.insert(
                 Key::String("implied".into()),
@@ -426,14 +456,14 @@ fn expr_to_thunk_id(
         } => {
             variant_tag = "Fn";
             // params: list of param dicts
-            let param_ids = params
+            let param_ids: Vec<_> = params
                 .iter()
                 .map(|p| param_to_thunk_id(&p.node, span, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
 
             dict.insert(
                 Key::String("params".into()),
-                list_to_thunk_id(param_ids, span, ctx)?,
+                list_to_thunk_id(param_ids.into_iter(), span, ctx)?,
             );
 
             // return-ann: annotation or []
@@ -471,7 +501,7 @@ fn expr_to_thunk_id(
                     .collect();
                 dict.insert(
                     Key::String("params".into()),
-                    list_to_thunk_id(params_thunk_ids, span, ctx)?,
+                    list_to_thunk_id(params_thunk_ids.into_iter(), span, ctx)?,
                 );
             }
             dict.insert(
@@ -1170,7 +1200,7 @@ fn entry_to_thunk_id(
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
-                    list_to_thunk_id(comment_ids, span, ctx)?,
+                    list_to_thunk_id(comment_ids.into_iter(), span, ctx)?,
                 );
             }
         }
@@ -1296,7 +1326,7 @@ fn annotation_to_thunk_id(
             );
 
             // Convert entries to thunk IDs - these are annotation entries (simpler than regular entries)
-            let entry_ids = entries
+            let entry_ids: Vec<_> = entries
                 .iter()
                 .map(|e| {
                     let mut entry_dict = IndexMap::new();
@@ -1356,7 +1386,7 @@ fn annotation_to_thunk_id(
 
             dict.insert(
                 Key::String("entries".into()),
-                list_to_thunk_id(entry_ids, span, ctx)?,
+                list_to_thunk_id(entry_ids.into_iter(), span, ctx)?,
             );
         }
     }
@@ -1435,12 +1465,12 @@ fn span_to_thunk_id(span: Span, ctx: &Rc<crate::eval::EvalContext>) -> EvalResul
 
 /// Convert a Vec<ThunkId> to a dict-based list (auto-indexed dict with integer keys).
 fn list_to_thunk_id(
-    items: Vec<ThunkId>,
+    items: impl ExactSizeIterator<Item = ThunkId>,
     span: Span,
     ctx: &Rc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
-    for (i, item) in items.into_iter().enumerate() {
+    let mut dict = IndexMap::with_capacity(items.len());
+    for (i, item) in items.enumerate() {
         dict.insert(Key::Int(i as i64), item);
     }
     Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))

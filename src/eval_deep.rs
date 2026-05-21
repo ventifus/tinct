@@ -96,12 +96,13 @@ enum WorkItem {
         /// call-site span from `deep_materialize` or the thunk's own span.
         mat_span: Span,
     },
-    /// Collect `keys.len()` thunks from `value_stack`, assemble a `Value::Dict`,
+    /// Collect entries from `value_stack`, assemble a `Value::Dict`,
     /// wrap as a `Materialized` thunk, and push onto `value_stack`.
     /// `thunk_ptr` is the original thunk pointer — used to update the sharing
     /// cache after the dict is assembled.
+    /// `dict_map` provides the original IndexMap to extract keys during assembly.
     BuildDict {
-        keys: Vec<Key>,
+        dict_map: Rc<IndexMap<Key, ThunkId>>,
         span: Span,
         /// Original thunk pointer — updated in cache after assembly.
         /// `None` if the dict is a root value (no thunk to cache).
@@ -187,19 +188,20 @@ fn deep_materialize_impl(
                 )?;
             }
             WorkItem::BuildDict {
-                keys,
+                dict_map,
                 span,
                 thunk_ptr,
             } => {
-                let n = keys.len();
+                let key_count = dict_map.len();
                 let stack_len = value_stack.len();
                 debug_assert!(
-                    stack_len >= n,
-                    "BuildDict: expected {n} values on stack, have {stack_len}"
+                    stack_len >= key_count,
+                    "BuildDict: expected {key_count} values on stack, have {stack_len}"
                 );
-                let start = stack_len - n;
-                let mut result: IndexMap<Key, ThunkId> = IndexMap::with_capacity(n);
-                for (key, thunk) in keys.into_iter().zip(value_stack.drain(start..)) {
+                let start = stack_len - key_count;
+                let mut result: IndexMap<Key, ThunkId> = IndexMap::with_capacity(key_count);
+                // Iterate keys from dict_map (which preserves insertion order)
+                for (key, thunk) in dict_map.keys().cloned().zip(value_stack.drain(start..)) {
                     result.insert(key, ctx.alloc_thunk(thunk));
                 }
                 let assembled = Rc::new(Thunk::new_materialized(Value::Dict(result), span));
@@ -339,17 +341,18 @@ fn push_structural(
                 value_stack.push(t);
                 return Ok(());
             }
-            let keys: Vec<Key> = map.keys().cloned().collect();
-            // Collector runs last: push first.
+            // Collector runs last: push first. Store an Rc to the original dict_map
+            // so we can iterate its keys during BuildDict without allocating a Vec.
+            let dict_map_rc = Rc::new(map.clone());
             work_stack.push(WorkItem::BuildDict {
-                keys: keys.clone(),
+                dict_map: Rc::clone(&dict_map_rc),
                 span,
                 thunk_ptr,
             });
             // Push Force items in reverse: first key ends on top → processed
             // first → result deepest on value_stack → collected in order.
-            for key in keys.into_iter().rev() {
-                let entry_thunk = ctx.get_thunk(map[&key]);
+            for key in dict_map_rc.keys().rev() {
+                let entry_thunk = ctx.get_thunk(map[key]);
                 work_stack.push(WorkItem::Force {
                     thunk: entry_thunk,
                     seq_depth: 0, // dict entries reset seq_depth
@@ -516,6 +519,10 @@ fn process_force(
         // Remove the sentinel for this thunk since we failed.
         // (push_structural already cleaned up any sentinels it inserted.)
         cache.remove(&thunk_ptr);
+        // Clear work_stack to avoid leaking WorkItem::Force Rc<Thunk> references.
+        // When push_structural fails mid-traversal, it may have pushed Build* and
+        // Force items that will never be processed. Clearing prevents Rc leak.
+        work_stack.clear();
         e
     })
 }
