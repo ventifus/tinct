@@ -3,4 +3,4 @@
 # Calling with "hello" produces type mismatch (can't add string and int)
 [call [+ _ 1] "hello"]
 === error
-[E010] +/-/*//: expected Int or Float, got String and Int
+[E013] no instance for Addable

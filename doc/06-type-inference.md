@@ -732,7 +732,7 @@ A **constraint** is a pair `(class, var)` where `class` is the type class name (
 ```text
 TypeScheme {
     type_vars: Vec<String>,
-    constraints: Vec<Constraint>,    // NEW: constraints on type_vars
+    constraints: Vec<Constraint>,    // constraints on quantified variables
     doc: Option<String>,
     body: Type,
 }
@@ -1317,7 +1317,7 @@ error: unmatched closing bracket
 
 1. **Constraint generation:** `m@Monad` annotation generates `Monad m` constraint, stored in `state.constraints`.
 2. **TYPE-OPERATOR:** `[m a]` in return annotation resolves to `App(Operator("m"), TypeVar("b"))` via KIND-OPERATOR.
-3. **Constraint checking:** When `m` is instantiated at a call site (e.g., `[fmap inc [result-ok 42]]`), the evaluator infers `target_type = Result` and calls `resolve_instance("Monad", Result, state)`.
+3. **Constraint checking:** When `m` is instantiated at a call site (e.g., `[fmap inc [Ok 42]]`), the evaluator infers `target_type = Result` and calls `resolve_instance("Monad", Result, state)`.
 4. **Instance resolution:** `resolve_instance` finds `[instance [Monad Result] ...]`, freshens its type, unifies `Result` with the target, and returns the instance dict with method types.
 5. **Method dispatch:** The `m.bind` field access resolves to the `bind` method from the MonadResult instance dict.
 

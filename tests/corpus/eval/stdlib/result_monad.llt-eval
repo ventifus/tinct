@@ -1,4 +1,4 @@
-# result: monad dict for Result type (bind: and-then, pure: result-ok)
+# result: monad dict for Result type (bind: and-then, pure: Ok)
 # Basic test: verify the dict structure and that bind/pure work
 [do result
   [x: [Ok 21]]

@@ -1743,7 +1743,6 @@ fn run_eval(
         // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
         let (_type_errors, _type_annotation_table) =
             tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-        let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
         // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
         let file_base_dir_path = match stage {
@@ -1779,16 +1778,16 @@ fn run_eval(
             cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory: {e}"))?;
 
-        // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
-        // See also: src/lib.rs (eval_source_with_config pipeline)
-        // Expand macros (pre-desugar AST transformation).
-        let expand_result =
-            tinct::expand::expand_macros(ast, no_fs, &base_dir).map_err(|e| format!("{e}"))?;
-        let mut ast = expand_result.file;
-        let _provenance = expand_result.provenance;
-
-        // Desugar $_ implicit lambdas (mandatory pre-typecheck AST transformation).
-        tinct::desugar::desugar_file(&mut ast.node);
+        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck -> eval.
+        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+        // See also: src/lib.rs (eval_source_with_config pipeline), src/expand.rs module comment.
+        let mut program = output.program;
+        tinct::expand::expand_surface_program(&mut program, no_fs, &base_dir)
+            .map_err(|e| format!("{e}"))?;
+        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+        tinct::desugar::desugar_surface_program(&mut program);
+        let ast = tinct::ast_convert::surface_program_to_file(&program);
 
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         tinct::resolve::resolve_file(&ast.node);
@@ -2000,10 +1999,9 @@ fn run_fmt(
         // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
         let (_type_errors, _type_annotation_table) =
             tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-        let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
-        // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
-        // See also: src/lib.rs (typecheck_source pipeline)
+        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
+        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         // AMBIENT-OK: CLI bootstrap — operator specified this file path.
         let fmt_base_dir = {
             let p = std::path::Path::new(file_path);
@@ -2014,11 +2012,13 @@ fn run_fmt(
             cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory for fmt: {e}"))?
         };
-        let expand_result =
-            tinct::expand::expand_macros(ast, false, &fmt_base_dir).map_err(|e| format!("{e}"))?;
-        let mut ast = expand_result.file;
-
-        tinct::desugar::desugar_file(&mut ast.node);
+        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+        let mut program = output.program;
+        tinct::expand::expand_surface_program(&mut program, false, &fmt_base_dir)
+            .map_err(|e| format!("{e}"))?;
+        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+        tinct::desugar::desugar_surface_program(&mut program);
+        let ast = tinct::ast_convert::surface_program_to_file(&program);
         tinct::resolve::resolve_file(&ast.node);
 
         let env = tinct::build_prelude_env();
@@ -2119,9 +2119,9 @@ fn run_lint(
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
         tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-    let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
-    // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
+    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
+    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
     // AMBIENT-OK: CLI bootstrap — operator specified this file path.
     let lint_base_dir = {
         let p = std::path::Path::new(file_path);
@@ -2132,11 +2132,13 @@ fn run_lint(
         cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open base directory for lint: {e}"))?
     };
-    let expand_result =
-        tinct::expand::expand_macros(ast, false, &lint_base_dir).map_err(|e| format!("{e}"))?;
-    let mut ast = expand_result.file;
-
-    tinct::desugar::desugar_file(&mut ast.node);
+    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    let mut program = output.program;
+    tinct::expand::expand_surface_program(&mut program, false, &lint_base_dir)
+        .map_err(|e| format!("{e}"))?;
+    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+    tinct::desugar::desugar_surface_program(&mut program);
+    let ast = tinct::ast_convert::surface_program_to_file(&program);
     tinct::resolve::resolve_file(&ast.node);
 
     // Type check with prelude environment
@@ -2396,9 +2398,9 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
         tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-    let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
-    // Expand macros (pre-desugar AST transformation).
+    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
+    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
     // AMBIENT-OK: CLI bootstrap — operator specified this markdown_path.
     let weave_base_dir = {
         let p = std::path::Path::new(markdown_path);
@@ -2409,11 +2411,13 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open base directory for weave: {e}"))?
     };
-    let expand_result =
-        tinct::expand::expand_macros(ast, false, &weave_base_dir).map_err(|e| format!("{e}"))?;
-    let mut ast = expand_result.file;
-
-    tinct::desugar::desugar_file(&mut ast.node);
+    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    let mut program = output.program;
+    tinct::expand::expand_surface_program(&mut program, false, &weave_base_dir)
+        .map_err(|e| format!("{e}"))?;
+    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+    tinct::desugar::desugar_surface_program(&mut program);
+    let ast = tinct::ast_convert::surface_program_to_file(&program);
     tinct::resolve::resolve_file(&ast.node);
     let (type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
 
@@ -2806,7 +2810,7 @@ fn run_literate_weave(
         let code = &block_with_exp.code;
 
         let parse_result = parse(code);
-        let ast = match parse_result {
+        let parsed = match parse_result {
             Ok(o) => {
                 // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
                 let _resolution_table =
@@ -2814,7 +2818,7 @@ fn run_literate_weave(
                 // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
                 let (_type_errors, _type_annotation_table) =
                     tinct::typecheck::typecheck_surface_program(&o.as_surface_program());
-                tinct::ast_convert::surface_program_to_file(&o.program)
+                o
             }
             Err(e) => {
                 let error_msg = if strict {
@@ -2838,30 +2842,36 @@ fn run_literate_weave(
             }
         };
 
-        // Expand macros (pre-desugar AST transformation).
-        let expand_result =
-            match tinct::expand::expand_macros(ast, false, &base_eval_ctx.config.base_dir) {
-                Ok(r) => r,
-                Err(e) => {
-                    let msg = format!("{e}");
-                    if fail_on_errors {
-                        return Err(format!(
-                            "macro expansion error in code block {}: {msg}",
-                            i + 1
-                        ));
-                    }
-                    block_outputs.push(BlockOutput {
-                        out: None,
-                        warn: None,
-                        error: Some(msg),
-                        info: None,
-                    });
-                    continue;
+        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
+        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+        let mut program = parsed.program;
+        match tinct::expand::expand_surface_program(
+            &mut program,
+            false,
+            &base_eval_ctx.config.base_dir,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = format!("{e}");
+                if fail_on_errors {
+                    return Err(format!(
+                        "macro expansion error in code block {}: {msg}",
+                        i + 1
+                    ));
                 }
-            };
-        let mut ast = expand_result.file;
-
-        tinct::desugar::desugar_file(&mut ast.node);
+                block_outputs.push(BlockOutput {
+                    out: None,
+                    warn: None,
+                    error: Some(msg),
+                    info: None,
+                });
+                continue;
+            }
+        }
+        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+        tinct::desugar::desugar_surface_program(&mut program);
+        let ast = tinct::ast_convert::surface_program_to_file(&program);
         tinct::resolve::resolve_file(&ast.node);
         let (type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
 
@@ -3325,9 +3335,9 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
         tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
-    let ast = tinct::ast_convert::surface_program_to_file(&output.program);
 
-    // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
+    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
+    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
     // AMBIENT-OK: CLI bootstrap — operator specified this file path.
     let describe_base_dir = {
         let p = std::path::Path::new(file_path);
@@ -3338,11 +3348,13 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
         cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
             .map_err(|e| format!("cannot open base directory for describe: {e}"))?
     };
-    let expand_result =
-        tinct::expand::expand_macros(ast, false, &describe_base_dir).map_err(|e| format!("{e}"))?;
-    let mut ast = expand_result.file;
-
-    tinct::desugar::desugar_file(&mut ast.node);
+    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    let mut program = output.program;
+    tinct::expand::expand_surface_program(&mut program, false, &describe_base_dir)
+        .map_err(|e| format!("{e}"))?;
+    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+    tinct::desugar::desugar_surface_program(&mut program);
+    let ast = tinct::ast_convert::surface_program_to_file(&program);
     tinct::resolve::resolve_file(&ast.node);
 
     // Type check to get DocMap (for doc strings)

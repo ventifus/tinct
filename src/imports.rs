@@ -90,9 +90,12 @@ fn typecheck_and_merge_stdlib_module(
     _source_path: Option<&str>,
 ) -> Result<InferState, ()> {
     // Parse the module source
-    let mut file = {
+    let file = {
         let parsed = parser::parse(source).map_err(|_| ())?;
-        crate::ast_convert::surface_program_to_file(&parsed.program)
+        let mut program = parsed.program.clone();
+        // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+        desugar::desugar_surface_program(&mut program);
+        crate::ast_convert::surface_program_to_file(&program)
     };
 
     // Skip macro expansion for stdlib modules.
@@ -107,8 +110,7 @@ fn typecheck_and_merge_stdlib_module(
     // The previous code called expand::expand_macros(file, true) here, which
     // recursively built the stdlib just to check for macros that don't exist.
 
-    // Desugar and resolve
-    desugar::desugar_file(&mut file.node);
+    // Resolve (desugar already done above)
     resolve::resolve_file(&file.node);
 
     // Type-check with the parent environment (builtins + prelude), capturing InferState
@@ -772,10 +774,8 @@ fn resolve_includes(
         };
 
         // Parse the file
-        let file = match parser::parse(&content)
-            .map(|o| crate::ast_convert::surface_program_to_file(&o.program))
-        {
-            Ok(f) => f,
+        let parsed = match parser::parse(&content) {
+            Ok(p) => p,
             Err(_) => continue, // Skip unparseable files
         };
 
@@ -794,14 +794,18 @@ fn resolve_includes(
                 &fallback_dir
             }
         };
-        let expand_result = match expand::expand_macros(file, true, expand_dir) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        let mut file = expand_result.file;
+        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve.
+        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+        let mut program = parsed.program;
+        if expand::expand_surface_program(&mut program, true, expand_dir).is_err() {
+            continue;
+        }
+        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+        desugar::desugar_surface_program(&mut program);
+        let file = crate::ast_convert::surface_program_to_file(&program);
 
-        // Desugar and resolve
-        desugar::desugar_file(&mut file.node);
+        // Resolve after desugar
         resolve::resolve_file(&file.node);
 
         // Type-check with the current accumulated environment

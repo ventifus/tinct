@@ -10,7 +10,7 @@ The macro system unifies tinct's syntactic sugar under a single, user-extensible
 - **Zero-cost abstraction** — macros that expand to inline code avoid thunk creation, eliminating per-call overhead for strict operations
 - **Self-hosting path** — reduces the Rust surface area by expressing syntactic transformations in tinct itself
 
-`[macro ...]` is the primary macro form; `macro-hygiene` and `macro-integration` are implemented. `[defmacro ...]` is retained as a backward-compatible alias. See TODO.md for open follow-up tasks.
+`[macro ...]` is the primary macro form. `[defmacro ...]` is retained as a backward-compatible alias.
 
 ## Interaction with Lazy Evaluation
 
@@ -66,24 +66,20 @@ As a procedural macro operating on AST-dicts:
 
 ```tinct
 # DIRECT predicate: is this node _ or an access chain rooted at _?
-# Note: bracket-access removed by accepted access-pipeline whatif;
-# pipe (lhs | rhs) replaces chained dynamic access — check lhs for _.
+# Pipe (lhs | rhs) represents chained dynamic access — check lhs for _.
 direct?: [fn [node]
-  [or
-    [and [= node.type "var"]        [= node.name "_"]]
-    [and [= node.type "dot-access"] [direct? node.target]]
-    [and [= node.type "pipe"]       [direct? node.lhs]]]]
+  [match node
+    [case [let _ : VarRef name: "_"] true]
+    [case [let t : DotAccess]        [direct? t.target]]
+    [case [let t : Pipe]             [direct? t.lhs]]
+    [case [let _]                    false]]]
 
 # Check if any child of a node is DIRECT
 has-direct-child?: [fn [node]
-  [cond [
-    [[= node.type "call"]
-      [any? direct? node.args]]
-    [[= node.type "dict"]
-      [any? [fn [entry] [direct? entry.value]] node.entries]]
-    [true
-      [direct? node]]
-  ]]]
+  [match node
+    [case [let c : Call]  [any? direct? c.args]]
+    [case [let d : Dict]  [any? [fn [entry] [direct? entry.value]] d.entries]]
+    [case [let _]         [direct? node]]]]
 
 # The macro: wrap expression in [fn [_] expr] if it has a DIRECT child
 [macro desugar-underscore [let expr]
@@ -103,28 +99,22 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
 ### Syntax
 
 ```tinct
-# AST is represented as tinct dicts
-# [f x y] is the dict:
-#   [type: "call"  fn: [type: "var"  name: "f"]  args: [[type: "var"  name: "x"] [type: "var"  name: "y"]]]
+# AST is represented as typed Expr variant values.
+# [f x y] is a Call variant: Variant("Call", { fn: Variant("VarRef", {name: "f"}),
+#                                              args: [Variant("VarRef", {name: "x"}), ...] })
+# Macros inspect nodes via variant pattern matching; [quote]/[unquote] build AST output.
 
-# A macro is a function from AST-dict to AST-dict
-[macro when [let pred-ast body-ast]
-  [type: "call"
-   fn: [type: "var"  name: "if"]
-   args: [pred-ast  body-ast  [type: "literal"  value: []]]]]
-
-# Or with quote/unquote syntax sugar:
 [macro when [let pred body]
   [quote [if [unquote pred] [unquote body] []]]]
 
-# [defmacro ...] is a legacy alias for [macro ...] and still works:
-# [defmacro when [pred body] [quote [if [unquote pred] [unquote body] []]]]
+# [defmacro ...] is a legacy alias for [macro ...]:
+# [defmacro when [let pred body] [quote [if [unquote pred] [unquote body] []]]]
 ```
 
 ### Expansion Pipeline
 
 ```text
-source -> parse -> quote_macros -> expand (call macro fns on quoted AST) -> typecheck -> eval
+source → parse → expand_surface_program → desugar → resolve → typecheck → eval
 ```
 
 - `[macro name [let params] body]` registers a compile-time function (`[defmacro ...]` is a legacy alias)
@@ -142,14 +132,16 @@ source -> parse -> quote_macros -> expand (call macro fns on quoted AST) -> type
 
 `gensym` names use a prefix containing `:` (a character forbidden in bare words), making collision structurally impossible: a user cannot write `:gensym:0` as a bare-word identifier in source. Names have the form `:gensym:N` where N is a monotonically increasing integer. The names are unique but not stable across evaluation orders (lazy forcing may invoke `gensym` in any sequence); this is intentional — `gensym` guarantees uniqueness, not reproducibility.
 
-Default hygiene via scope sets (Flatt 2016) is supported. Variables introduced by the macro template are scoped to the macro definition site; variables from the call site are scoped to the caller. An intentional hygiene escape hatch (allowing a macro to inject bindings into the caller's scope) is not provided — it creates an unrestricted scope injection surface for library macros and is not needed for any example in this document.
+Tinct's macro hygiene is complete without scope sets. Every name in a macro body is either (a) pattern-bound from user input via `[let ...]` — inherently in user scope, never capturing anything from the macro body — or (b) gensym'd with `:prefix:N` naming, which is syntactically unforgeable (colon-prefixed identifiers cannot be written in source). No third category exists where a macro could accidentally introduce a name that captures user scope. Scope sets (Flatt 2016) address that third category; tinct's design eliminates it.
+
+`inject:` provides a controlled anaphoric escape hatch: `inject: it: default-expr` deliberately introduces `it` into the caller's scope by convention. The `macro-injects` builtin lets callers reflect on which bindings a macro will inject.
 
 ### AST-as-Dict Representation
 
 The AST enum (`Expr`) is projected into tinct dicts with a stable schema. Changes to the AST break existing macros, so the representation is versioned via a `schema-version` field. Each AST node becomes a dict with a `type` key discriminator. This representation:
 
-- **Uses string `type` discriminator** — `[type: call ...]`, `[type: var ...]`, etc. This is the tagged-union convention already used by `try` results (`[ok: ...]` / `[err: ...]`).
-- **Mirrors the `Expr` enum** — one dict shape per `Expr` variant, with fields matching the Rust struct fields.
+- **Uses typed `Expr` variant values** — `ast_to_dict` wraps each AST node in the corresponding `Expr` variant constructor: `Variant("Call", {...})`, `Variant("VarRef", {...})`, `Variant("Literal", {...})`, etc. Macros inspect nodes via variant pattern matching: `[match node [case [let _ : VarRef] ...] [case [let _ : Call] ...]]`.
+- **Mirrors the `Expr` enum** — one variant shape per `Expr` variant, with fields matching the Rust struct fields.
 - **Includes spans** — macro-generated nodes carry the expansion site's span for error reporting.
 - **Is versionable** — a `version` field on the root if schema changes are needed later.
 
@@ -175,7 +167,7 @@ Macros defined in an included file are available to the includer. This works bec
 
 ### Parser / Grammar
 
-`src/parser.rs` gains a `macro` keyword. `[macro name [let params] body]` produces an AST node (`Expr::MacroDecl`). `[defmacro ...]` is parsed as a backward-compatible form that produces a distinct `Expr::DefMacro` node (serialized with Variant tag "DefMacro"). Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
+`src/parser.rs` recognizes three new keywords: `macro` (produces `Expr::MacroDecl`), `syntax-class` (produces `Expr::SyntaxClass`), and `splice` (produces `Expr::Splice` in dict context). `[defmacro ...]` is a backward-compatible alias producing the same `Expr::MacroDecl` node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
 
 ### AST
 
@@ -183,7 +175,7 @@ Macros defined in an included file are available to the includer. This works bec
 
 ### Evaluator
 
-`src/eval.rs` gains a macro expansion phase between parsing and type checking: `parse -> expand_macros -> typecheck -> eval`. The expander walks the AST top-down, calling macro functions when it encounters registered forms, and recurses into the expansion result until no macros remain (fixpoint). A depth limit prevents infinite expansion. Macro functions run in a separate evaluation context (eagerly, before main evaluation).
+`src/eval.rs` gains a macro expansion phase between parsing and type checking: `parse → expand_surface_program → desugar → resolve → typecheck → eval`. The expander walks the AST top-down, calling macro functions when it encounters registered forms, and recurses into the expansion result until no macros remain (fixpoint). A depth limit prevents infinite expansion. Macro functions run in a separate evaluation context (eagerly, before main evaluation).
 
 ### Type Checker
 

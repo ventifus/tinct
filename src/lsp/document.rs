@@ -61,13 +61,14 @@ impl DocumentState {
         // Use parse() to capture both the AST and any recovered parse errors.
         let parse_result = parse(&text);
         let mut parse_errors = Vec::new();
-        let mut ast: Result<Spanned<File>, ParseError> = match parse_result {
-            Ok(output) => {
-                parse_errors = output.errors;
-                Ok(crate::ast_convert::surface_program_to_file(&output.program))
-            }
-            Err(err) => Err(err),
-        };
+        let surface_parse_result: Result<crate::ast::SurfaceProgram, ParseError> =
+            match parse_result {
+                Ok(output) => {
+                    parse_errors = output.errors;
+                    Ok(output.program)
+                }
+                Err(err) => Err(err),
+            };
         let mut type_errors = Vec::new();
         let mut type_diagnostics: Vec<TypeDiagnostic> = Vec::new();
         let eval_errors = Vec::new();
@@ -75,49 +76,54 @@ impl DocumentState {
         let mut doc_map = DocMap::new();
         let mut scheme_map = SchemeMap::new();
 
-        if let Ok(file) = ast {
-            // PIPELINE INVARIANT: expand_macros → desugar → resolve → typecheck
-            // This order is enforced across all entry points (main.rs, lib.rs, repl.rs).
-            // Macros expand first, then $_ placeholders are desugared to lambdas, then
-            // variable resolution runs, then the type checker sees the fully elaborated AST.
-
-            // Expand macros before desugar: rewrites [defmacro ...] and macro calls.
-            // This matches the pipeline used by all other entry points (main.rs, lib.rs).
-            let mut file = match crate::expand::expand_macros(
-                file,
-                eval_ctx.config.no_fs,
-                &eval_ctx.config.base_dir,
-            ) {
-                Ok(result) => result.file,
-                Err(e) => {
-                    // Macro expansion error — convert to parse error
-                    return Self {
-                        text: text.clone(),
-                        ast: Err(crate::parser::ParseError {
-                            message: format!("macro expansion error: {}", e),
-                            span: None,
-                        }),
-                        parse_errors: vec![crate::parser::ParseError {
-                            message: format!("macro expansion error: {}", e),
-                            span: None,
-                        }],
-                        type_errors: vec![],
-                        type_diagnostics: vec![],
-                        eval_errors: vec![],
-                        type_map: TypeMap::new(),
-                        doc_map: DocMap::new(),
-                        scheme_map: SchemeMap::new(),
-                        literate_blocks: vec![],
-                    };
+        // PIPELINE INVARIANT: expand → desugar → surface_program_to_file → resolve → typecheck
+        // This order is enforced across all entry points (main.rs, lib.rs, repl.rs).
+        // Macros expand first (on SurfaceProgram), then $_ placeholders are desugared,
+        // then the SurfaceProgram is lowered to File, then variable resolution runs,
+        // then the type checker sees the fully elaborated AST.
+        let mut ast: Result<Spanned<File>, ParseError> = match surface_parse_result {
+            Err(e) => Err(e),
+            Ok(mut program) => {
+                // Expand macros on SurfaceProgram (Surface-based API, consistent with all other
+                // production entry points).
+                match crate::expand::expand_surface_program(
+                    &mut program,
+                    eval_ctx.config.no_fs,
+                    &eval_ctx.config.base_dir,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // Macro expansion error — convert to parse error and return early
+                        return Self {
+                            text: text.clone(),
+                            ast: Err(crate::parser::ParseError {
+                                message: format!("macro expansion error: {}", e),
+                                span: None,
+                            }),
+                            parse_errors: vec![crate::parser::ParseError {
+                                message: format!("macro expansion error: {}", e),
+                                span: None,
+                            }],
+                            type_errors: vec![],
+                            type_diagnostics: vec![],
+                            eval_errors: vec![],
+                            type_map: TypeMap::new(),
+                            doc_map: DocMap::new(),
+                            scheme_map: SchemeMap::new(),
+                            literate_blocks: vec![],
+                        };
+                    }
                 }
-            };
 
-            // Desugar before type check and eval: rewrites $_ implicit lambdas to explicit forms.
-            // This matches the pipeline used by all other entry points (main.rs, repl.rs, lib.rs,
-            // builtins.rs). Without this pass the type checker sees VarRef("_") instead of Fn nodes,
-            // producing spurious "undefined variable _" errors for any $_ expression.
-            crate::desugar::desugar_file(&mut file.node);
+                // Desugar $_ implicit lambdas on SurfaceProgram (after expansion).
+                crate::desugar::desugar_surface_program(&mut program);
 
+                // Lower SurfaceProgram to File for the remaining passes.
+                Ok(crate::ast_convert::surface_program_to_file(&program))
+            }
+        };
+
+        if let Ok(file) = ast {
             // Variable resolution pass (Phase 1 of arena allocation strategy).
             crate::resolve::resolve_file(&file.node);
 
@@ -822,9 +828,9 @@ mod tests {
 
     #[test]
     fn test_document_state_underscore_desugared() {
-        // Regression: before the desugar_file fix, $_ was seen by the type checker as VarRef("_"),
-        // producing a spurious "undefined variable _" type error. After the fix, the desugar pass
-        // rewrites $_ to an explicit lambda, so no type error should be emitted.
+        // Regression: before the desugar pass was wired up, $_ was seen by the type checker as
+        // VarRef("_"), producing a spurious "undefined variable _" type error. After the fix, the
+        // desugar pass rewrites $_ to an explicit lambda, so no type error should be emitted.
         let env = test_env();
         let ctx = test_ctx();
         let state = DocumentState::new("[f: $_]".to_string(), &env, &ctx, None);

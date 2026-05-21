@@ -188,7 +188,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `type-of` | **Materializing** — must evaluate to determine type. Returns `"Function"` for both user-defined functions and Rust-native builtins (intentionally indistinguishable to user code). |
 | `assert` | **Materializing** — must evaluate condition |
 | `error` | Structural — constructs error value, not materialized until propagated |
-| `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[Ok value]` on success or `[Err message]` on failure (ADT variants, destructured with `match`). |
+| `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[Ok value]` on success or `[Error message]` on failure (ADT variants, destructured with `match`). |
 
 **Materialization** (runtime-supported):
 
@@ -734,11 +734,10 @@ Instances: `Str`, `[Seq b]`, `Record`.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `and-then` | `fn@Unknown [result f]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Err e]`, propagate the error |
-| `result-map` | `fn@Unknown [f result]` | Map over Result: if `res` is `[Ok v]`, return `[Ok [f v]]`; if `[Err e]`, propagate the error |
-| `result-or` | `fn@Unknown [default result]` | Extract value from Result with fallback: if `res` is `[Ok v]`, return `v`; if `[Err e]`, return `default` |
-| `result-ok` | `fn@Unknown [v]` | Wrap a value in `Ok`: returns `[Ok v]` (the `pure`/`return` operation for the Result monad) |
-| `result` | Dict (monad dict) | Result monad dict with fields: `[bind: and-then  pure: result-ok]` |
+| `and-then` | `fn@Unknown [result f]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Error e]`, propagate the error |
+| `result-map` | `fn@Unknown [f result]` | Map over Result: if `res` is `[Ok v]`, return `[Ok [f v]]`; if `[Error e]`, propagate the error |
+| `result-or` | `fn@Unknown [default result]` | Extract value from Result with fallback: if `res` is `[Ok v]`, return `v`; if `[Error e]`, return `default` |
+| `result` | Dict (monad dict) | Result monad dict with fields: `[bind: and-then  pure: Ok]`. Use `[Ok v]` directly to lift a plain value into Result. |
 
 **Error Handling:**
 

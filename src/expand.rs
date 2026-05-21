@@ -1,6 +1,6 @@
 //! Macro expansion pass for `[macro ...]` and legacy `[defmacro ...]` forms.
 //!
-//! Runs between parse and desugar: `parse -> expand_macros -> desugar -> typecheck -> eval`
+//! Runs between parse and desugar: `parse -> expand_surface_program -> desugar -> typecheck -> eval`
 //!
 //! The expansion loop:
 //! 1. Walk the AST top-down
@@ -258,6 +258,16 @@ pub struct ExpandResult {
     pub macro_injects_map: HashMap<String, String>,
 }
 
+/// Result of surface-program macro expansion.
+pub struct ExpandSurfaceResult {
+    /// Provenance map: generated-node span → expansion origin (for dual-span error reporting).
+    pub provenance: ProvenanceMap,
+    /// Macro inject defaults: `macro_name -> inject_default_name`.
+    /// Populated from all macros with `inject:` declarations encountered during expansion.
+    /// Used by the `macro-injects` builtin for runtime introspection.
+    pub macro_injects_map: HashMap<String, String>,
+}
+
 /// Register stdlib macros by looking up transformer functions in the stdlib environment.
 ///
 /// Stdlib macros are defined in `stdlib/macros.llt` as regular function exports.
@@ -483,7 +493,7 @@ pub fn expand_surface_program(
     program: &mut crate::ast::SurfaceProgram,
     no_fs: bool,
     base_dir: &cap_std::fs::Dir,
-) -> EvalResult<ProvenanceMap> {
+) -> EvalResult<ExpandSurfaceResult> {
     use crate::ast::{SurfaceDeclaration, SurfaceItem};
     use crate::ast_convert::{expr_to_surface_node, surface_node_to_expr};
 
@@ -620,29 +630,13 @@ pub fn expand_surface_program(
                     }
                 }
                 SurfaceItem::Expr(node) => {
-                    // Check if this is a macro call
-                    let is_macro_call =
-                        if let crate::ast::SurfaceExpression::Call { func, .. } = &node.expr {
-                            if let crate::ast::SurfaceExpression::VarRef { name, .. } = &func.expr {
-                                env_macro.is_macro(name)
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                    if is_macro_call {
-                        // Expand the macro call
-                        // Convert to Expr, expand, convert back
-                        let expr = surface_node_to_expr(&node);
-                        let expanded_expr = expand_expr(expr, &mut env_macro, &ctx, &stdlib_env)?;
-                        let expanded_node = expr_to_surface_node(&expanded_expr);
-                        expanded_items.push(SurfaceItem::Expr(expanded_node));
-                    } else {
-                        // Not a macro call — pass through unchanged
-                        expanded_items.push(SurfaceItem::Expr(node));
-                    }
+                    // Always expand via expand_expr so that nested macro calls inside
+                    // dicts, conditionals, and other compound expressions are also expanded.
+                    // expand_expr recurses into all sub-expressions and applies registered macros.
+                    let expr = surface_node_to_expr(&node);
+                    let expanded_expr = expand_expr(expr, &mut env_macro, &ctx, &stdlib_env)?;
+                    let expanded_node = expr_to_surface_node(&expanded_expr);
+                    expanded_items.push(SurfaceItem::Expr(expanded_node));
                 }
             }
         }
@@ -650,7 +644,11 @@ pub fn expand_surface_program(
         doc.items = expanded_items;
     }
 
-    Ok(env_macro.provenance)
+    let macro_injects_map = env_macro.get_inject_map();
+    Ok(ExpandSurfaceResult {
+        provenance: env_macro.provenance,
+        macro_injects_map,
+    })
 }
 
 /// Pre-scan a File AST to collect MacroDecl and SyntaxClass nodes.

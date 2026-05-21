@@ -228,11 +228,11 @@ fn wrap_with_nominal_validation(
 ///
 /// # Precondition
 ///
-/// **`desugar::desugar_file` must be called on the [`File`] before passing it here.**
+/// **Pipeline invariant:** `expand_surface_program` → `desugar_surface_program` →
+/// `surface_program_to_file` must be called before passing the [`File`] here.
 /// The evaluator has no `$_` handling; callers that skip the desugar pass will see
-/// `UndefinedVariable("_")` errors for any `$_` expression. All pipeline entry points
-/// (`eval_source_with_config`, `main.rs::run_eval`, `repl.rs::eval_input`,
-/// `builtins.rs` `$include` handler) already call `desugar_file` first.
+/// `UndefinedVariable("_")` errors for any `$_` expression. Macros must be expanded
+/// before desugaring so that macro-introduced `$_` patterns are also desugared.
 ///
 /// **Note:** Provide an `EvalContext` via `EvalContext::new()` to configure `$include`;
 /// no separate setup call required.
@@ -252,8 +252,8 @@ pub fn eval_file(
 ///
 /// # Precondition
 ///
-/// **`desugar::desugar_file` must be called on the [`File`] before passing it here.**
-/// See [`eval_file`] for details.
+/// **`desugar::desugar_surface_program` must be called on the [`SurfaceProgram`] before
+/// converting to [`File`] and passing it here.** See [`eval_file`] for details.
 ///
 /// **Note:** Provide an `EvalContext` via `EvalContext::new()` to configure `$include`;
 /// no separate setup call required.

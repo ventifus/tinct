@@ -88,12 +88,13 @@ result:
         [Ok [get "host" data]]]]]]]
 ```
 
-`result-ok` and `result-err` extract values from `Ok`/`Error` without `match`:
+`Ok` is the constructor and also serves as `pure`/`return` for the Result monad — use it directly to lift a plain value into a Result chain:
 
 ```tinct
-[result-ok  [Ok 42]]          # → 42
-[result-err [Error "oops"]]     # → "oops"
-[result-ok  [Error "oops"]]     # error — not an Ok
+[Ok 42]              # → [Ok 42]
+[do result
+  [x: [read-file cap "f"]]
+  [Ok [str-length x]]]  # lift plain Int into the chain
 ```
 
 ### Best Practices
@@ -104,7 +105,7 @@ result:
 
 **Use `raise` for invariant violations** — conditions that represent programmer errors or corrupted state. Don't use `error` as a control-flow mechanism.
 
-**Use `Ok`/`Error` for expected failure modes** — functions where "not found" or "invalid" is a normal outcome that callers should handle. Return `Ok`/`Err` instead of raising so callers can choose their response.
+**Use `Ok`/`Error` for expected failure modes** — functions where "not found" or "invalid" is a normal outcome that callers should handle. Return `Ok`/`Error` instead of raising so callers can choose their response.
 
 **Don't `try` the uncatchable.** `DepthExceeded` and `ResourceLimitExceeded` propagate through `try` — they indicate resource exhaustion, not recoverable failures. There is no way to catch them in user code.
 

@@ -214,10 +214,10 @@ args: [5 10]
 **Pipeline placement:**
 
 ```text
-source → parse → desugar_underscores → typecheck → eval
+source → parse → expand → desugar → resolve → typecheck → eval
 ```
 
-The pass operates on `Spanned<File>` (multi-document) and `Spanned<Expr>` (single expression for REPL). Both `eval_source()` and REPL entry points call the desugar pass after parsing.
+The pass operates on `SurfaceProgram` (multi-document) and `Arc<SurfaceNode>` (single expression for REPL). All entry points call `desugar_surface_program()` after `expand_surface_program()` and before `surface_program_to_file()`. The type checker and evaluator receive the already-desugared `File`.
 
 **DIRECT predicate.** Tests whether an expression is `_` or a dot access chain rooted at `_`. Operates on **raw** (pre-desugaring) AST nodes. Dict entry keys are excluded — only the access *target* triggers desugaring:
 
@@ -225,10 +225,11 @@ The pass operates on `Spanned<File>` (multi-document) and `Spanned<Expr>` (singl
 DIRECT(e) = match e with:
   | VarRef("_")              → true
   | DotAccess(e', _)         → DIRECT(e')
+  | Pipe(e', _)              → DIRECT(e')   -- enables WRAP-PIPE on chained pipes: $_ | f | g
   | _                        → false
 ```
 
-Note: `BracketAccess` and `RangeAccess` AST variants do not exist in this language — only dot access chains are supported.
+Note: `BracketAccess` and `RangeAccess` AST variants do not exist in this language — only dot access chains and pipes are supported as DIRECT extensions. The Pipe case allows `$_ | f | g` to be recognized as DIRECT at the outermost level, so WRAP-PIPE fires correctly on chained pipe expressions.
 
 **Rewrite rules.** The pass checks WRAP conditions on **raw** (un-desugared) children *before* recursing. DIRECT subtrees are left as-is inside the generated `Fn` body — they are variable references to the `_` parameter, not candidates for further wrapping. Non-DIRECT children are recursed into at depth+1 (inside the generated lambda, `_` is bound). This avoids the greedy-wrapping problem where naive bottom-up traversal would wrap `_.age` before its enclosing Call could claim it (Visser 1998).
 
@@ -264,6 +265,14 @@ DESUGAR(e, depth) =
   | DotAccess(target, field)
       where DIRECT(target)
       → Fn([_], DotAccess(target, field))                -- [WRAP-DOT]
+
+  -- WRAP-PIPE: pipe with DIRECT lhs wraps the whole pipe chain
+  -- Pipe lowering (Pipe → Call) runs after wrapping, inside RECURSE_CHILDREN
+  | Pipe(lhs, rhs)
+      where DIRECT(lhs)
+      → Fn([_], Pipe(                                    -- [WRAP-PIPE]
+            DESUGAR(lhs, depth + 1),
+            DESUGAR(rhs, depth + 1)))
 
   -- Note: There are no WRAP-BRACKET or WRAP-RANGE rules.
   -- BracketAccess and RangeAccess AST variants do not exist in this language.
@@ -321,22 +330,37 @@ This replaced the eval-time `env.borrow().get("_").is_none()` check with a purel
 **Implementation sketch:**
 
 ```rust
-fn desugar_file(file: &mut File) { /* walk documents/expressions */ }
-fn desugar_expr(expr: &mut Spanned<Expr>) { desugar(expr, 0) }
-
-fn desugar(expr: &mut Spanned<Expr>, depth: usize) {
-    // Check WRAP conditions on raw children BEFORE recursing
-    if depth == 0 {
-        if try_wrap(expr) {
-            return;
+fn desugar_surface_program(program: &mut SurfaceProgram) {
+    for doc in &mut program.documents {
+        for item in &mut doc.node.items {
+            if let SurfaceItem::Expr(node) = item {
+                desugar_surface_node(node, 0);
+            }
         }
     }
+}
+
+// Public entry point — stable API surface; delegates to private impl.
+pub fn desugar_surface_node(node: &mut Arc<SurfaceNode>, depth: usize) {
+    desugar_surface(node, depth);
+}
+
+// Private recursive implementation.
+fn desugar_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
+    // Check WRAP conditions on raw children BEFORE recursing
+    if depth == 0 && try_wrap_surface(node) {
+        // Recurse into the generated lambda body at depth+1
+        if let SurfaceExpression::Fn { body, .. } = &mut Arc::make_mut(node).expr {
+            desugar_surface(body, 1);
+        }
+        return;
+    }
     // At depth > 0 or no WRAP match: recurse into children
-    recurse_children(expr, depth)
+    recurse_children_surface(node, depth);
 }
 ```
 
-**Implementation location.** The desugaring pass lives in `src/desugar.rs`. The entry points are `desugar_file()` for multi-document files and `desugar_expr()` for single expressions (REPL). Unit tests for `_` desugaring call `desugar_expr()` before `eval()`.
+**Implementation location.** The desugaring pass lives in `src/desugar.rs`. The entry points are `desugar_surface_program()` for multi-document programs and `desugar_surface_node()` for single nodes (REPL). Unit tests for `_` desugaring call `desugar_surface_node()` (or `desugar_surface_program()`) before `surface_program_to_file()` and `eval()`.
 
 #### Testing Requirements
 

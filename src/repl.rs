@@ -194,10 +194,10 @@ impl ReplSession {
             // Continue evaluation despite parse errors — the AST contains Expr::Error nodes
         }
 
-        let mut file = crate::ast_convert::surface_program_to_file(&parse_output.program);
-
-        // Desugar $_ implicit lambdas before evaluation
-        crate::desugar::desugar_file(&mut file.node);
+        // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+        let mut program = parse_output.program.clone();
+        crate::desugar::desugar_surface_program(&mut program);
+        let file = crate::ast_convert::surface_program_to_file(&program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         crate::resolve::resolve_file(&file.node);
         // Type errors are advisory; evaluation proceeds regardless.

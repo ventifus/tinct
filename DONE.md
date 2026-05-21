@@ -8814,3 +8814,28 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 - [x] Added 10 unit tests (get_cached_error, is_in_progress, Drop regression) (`src/eval.rs`, `src/eval_materialize.rs`)
 - [x] Corrected misleading comments in `eval_materialize.rs`
 - [x] All 6 specialist agents APPROVE
+
+## runtime-v2 — E2: Desugar Cutover
+
+### E2-desugar-cutover: Rewrite desugar pass for SurfaceExpression + migrate callers
+
+**Depends on:** E1-eval-cutover (eval no longer needs desugared Expr) ✅ done
+**Completed:** 2026-05-21. All 9 specialist agents APPROVE.
+
+- [x] Decide `$_` desugar path — **Option B: Surface-level desugar pass.** Write `desugar_surface_program(program: &mut SurfaceProgram)` and `desugar_surface_node(node: &mut Arc<SurfaceNode>, depth: usize)` in `src/desugar.rs`, with identical DIRECT/WRAP semantics adapted for `SurfaceExpression`/`Arc<SurfaceNode>`. Option (a) parser integration rejected: frame stack is bottom-up but WRAP requires top-down parent context. Option (c) `stdlib/desugar.llt` rejected: circular — typecheck runs before eval, stdlib desugar requires eval to run first. `stdlib/desugar.llt` remains valid as a metaprogramming tool only. See `/rnd` session 2026-05-21.
+
+- [x] **Write Surface desugar functions in `src/desugar.rs`** — add `desugar_surface_program(program: &mut SurfaceProgram)` and `desugar_surface_node(node: &mut Arc<SurfaceNode>, depth: usize)` alongside existing Expr-based functions. Same DIRECT predicate and WRAP-CALL/WRAP-DICT/WRAP-DOT/WRAP-PIPE rules, adapted for `SurfaceExpression` match arms. Use `Arc::make_mut` for in-place mutation. Set `desugared: true` on generated `SurfaceExpression::Fn` nodes. (`src/desugar.rs`)
+
+- [x] **Migrate production callers** — in lib.rs (10), main.rs (6), lsp/analysis.rs + lsp/document.rs (3), builtins.rs (2), imports.rs (2), eval_pipeline.rs (3), builtins_meta.rs (1), formatter.rs (1), repl.rs (1), resolve.rs (1): replace `desugar_file(&mut file.node)` with `desugar_surface_program(&mut output.program)` before `surface_program_to_file()`. Downstream File-based passes receive already-desugared AST; no further changes needed. (`src/`)
+
+- [x] **Migrate typecheck.rs test callers** (41 callers) — test pattern `surface_program_to_file → desugar_file` becomes `desugar_surface_program → surface_program_to_file`; `typecheck_file()` bridge is unchanged and stays. (`src/typecheck.rs`)
+
+- [x] **Migrate eval.rs test callers of `desugar_expr()`** (5 callers) — replace with `desugar_surface_node()`. (`src/eval.rs`)
+
+- [x] **Delete Expr-based functions from `src/desugar.rs`** — remove `desugar_file()`, `desugar_expr()`, `desugar_document()` and all helpers that import `Expr`/`File`/`Document`. File now contains only Surface-based functions and zero old-AST imports. (`src/desugar.rs`)
+
+- [x] **`just build` passes** — checkpoint
+
+- [x] **Verify 22 `$_` corpus tests pass** — confirms Surface desugar is semantically equivalent to old Expr desugar (`tests/corpus/`)
+
+**Summary:** Rewrote `$_` implicit lambda desugaring from Expr-based API (`desugar_file`/`desugar_expr`) to SurfaceExpression-based API (`desugar_surface_program`/`desugar_surface_node`). Migrated 30+ production callers across 13 files and 46 test callers. Deleted all old Expr-based desugar functions. Fixed 3 pipeline bugs discovered during migration. Updated `doc/04-functions.md`, `doc/08-evaluation.md`, `doc/feature/macros.md`, `stdlib/desugar.llt`. All 22 `$_` corpus tests pass; 29 bonus macro tests now pass.

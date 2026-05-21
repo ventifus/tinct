@@ -1,12 +1,11 @@
-# JSON Compact Formatter — delegates to stdlib/codecs/json.llt (runtime-v2)
+# JSON Compact Formatter — uses the Rust-native $builtin-to-json serializer.
 #
-# This file was previously a standalone JSON serializer. It now delegates
-# to codecs/json.llt which uses Value::Expression match dispatch for
-# Program/Document/Expression values, and handles all other types via
-# to-json-primitive fallback.
+# Previously delegated to codecs/json.llt via [include %libdir ...], but the
+# include-decomp sprint broke the [include ...] mechanism for CLI output formatters.
+# This version uses $builtin-to-json (a Rust-native builtin added to fix the regression).
 #
-# The old standalone implementation is deleted; codecs/json.llt is canonical.
+# $builtin-to-json: deep-materializes the value and serializes to compact JSON string.
+# Handles: Int, Float, Bool, String, Dict, Seq (via collect), Null ([]).
+# Errors on: Function, Builtin, NaN/Infinity floats, unserializable values.
 
-[include %libdir "codecs/json.llt"]
-
-[emit [to-json %]]
+[emit [call $builtin-to-json %]]

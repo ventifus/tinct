@@ -40,9 +40,16 @@ pub fn hover_at(
         // doc.type_map is empty for markdown documents (type-checking runs per-block,
         // not at document level). We must re-run here to populate hover type info.
         let block_parsed = crate::parser::parse(&block.code).ok()?;
-        let block_file = crate::ast_convert::surface_program_to_file(&block_parsed.program);
-        let mut block_file_mut = block_file.clone();
-        crate::desugar::desugar_file(&mut block_file_mut.node);
+        // TODO: expand_surface_program should be called here before desugar, matching the
+        // pipeline invariant (expand → desugar → surface_program_to_file). Macros defined
+        // in markdown blocks will not be expanded in hover context until hover_at is updated
+        // to accept an EvalContext (requires threading through server.rs call sites).
+        // Tracked: TODO.md "LSP markdown block paths missing expand_surface_program".
+        // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+        let mut program = block_parsed.program.clone();
+        crate::desugar::desugar_surface_program(&mut program);
+        let block_file = crate::ast_convert::surface_program_to_file(&program);
+        let block_file_mut = block_file.clone();
         crate::resolve::resolve_file(&block_file_mut.node);
         let (seeded_env, _) = crate::imports::build_type_env(&block_file_mut.node, None);
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
@@ -1340,19 +1347,21 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
                     }
 
                     // Type errors
-                    let file = crate::ast_convert::surface_program_to_file(&output.program);
-                    // Desugar (pipeline invariant)
-                    let mut file_mut = file.clone();
-                    crate::desugar::desugar_file(&mut file_mut.node);
-                    crate::resolve::resolve_file(&file_mut.node);
+                    // TODO: expand_surface_program should be called here before desugar, matching
+                    // the pipeline invariant (expand → desugar → surface_program_to_file). Macros
+                    // in markdown blocks will not be expanded for diagnostics until diagnostics_for
+                    // is updated to accept an EvalContext (requires threading through server.rs).
+                    // Tracked: TODO.md "LSP markdown block paths missing expand_surface_program".
+                    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+                    let mut program = output.program.clone();
+                    crate::desugar::desugar_surface_program(&mut program);
+                    let file = crate::ast_convert::surface_program_to_file(&program);
+                    crate::resolve::resolve_file(&file.node);
 
                     // Type check
-                    let (seeded_env, _) = crate::imports::build_type_env(&file_mut.node, None);
+                    let (seeded_env, _) = crate::imports::build_type_env(&file.node, None);
                     let (type_errors, _, _, _, _) =
-                        crate::typecheck::typecheck_file_with_types_and_env(
-                            &file_mut.node,
-                            seeded_env,
-                        );
+                        crate::typecheck::typecheck_file_with_types_and_env(&file.node, seeded_env);
 
                     for err in type_errors {
                         let mut diag = type_error_to_diagnostic(&err, &block.code);

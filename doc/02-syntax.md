@@ -733,10 +733,10 @@ ast.fn                     # → "+"
 
 ### Macro Definition
 
-`[defmacro name [let params] body]` registers a compile-time AST transformation:
+`[macro name [let params] body]` registers a compile-time AST transformation. `[defmacro ...]` is a backward-compatible alias for `[macro ...]`.
 
 ```tinct
-[defmacro my-when [let pred body]
+[macro my-when [let pred body]
   [quote [if [unquote pred] [unquote body] []]]]
 
 [my-when [> x 0] [process x]]  # expands to: [if [> x 0] [process x] []]

@@ -118,11 +118,11 @@ Instances:
 
 ```tinct
 [ApplicativeResult: [instance [Applicative Result]
-  [pure:  result-ok]
+  [pure:  Ok]
   [lift2: [fn [f ra rb]
     [and-then ra [fn [a]
     [and-then rb [fn [b]
-      [result-ok [f a b]]]]]]]]]]
+      [Ok [f a b]]]]]]]]]]
 
 [ApplicativeSeq: [instance [Applicative Seq]
   [pure:  [fn [x] [x]]]

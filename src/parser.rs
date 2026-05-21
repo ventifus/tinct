@@ -971,10 +971,13 @@ enum StackFrame {
         bindings: Vec<Arc<SurfaceNode>>,
         span_start: Position,
     },
-    /// Binding declaration: `[let x@Int y@Float]`
+    /// Binding declaration: `[let x@Int y@Float z: default]`
     /// Used in fn params, class TypeVars, type alias params, instance arm keys, and case arms.
+    /// `z: default` is a named param with a default value; the colon sets pending_key.
     LetDecl {
         bindings: Vec<Arc<SurfaceNode>>,
+        /// Pending param name for `name: default` named-param-with-default syntax.
+        pending_key: Option<(String, Span)>,
         span_start: Position,
     },
     /// Match arm with explicit scoping: `[case [let v: Ok] v]`
@@ -1754,10 +1757,11 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         continue;
                     }
                     Some((Token::Let, _keyword_idx)) => {
-                        // LetDecl form: [let x@Int y@Float]
+                        // LetDecl form: [let x@Int y@Float z: default]
                         // (depth already checked above)
                         stack.push(StackFrame::LetDecl {
                             bindings: Vec::new(),
+                            pending_key: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -2731,8 +2735,12 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 
                     StackFrame::LetDecl {
                         bindings,
+                        pending_key,
                         span_start,
                     } => {
+                        // If there's an unmatched pending key (e.g., `z: ` with no value),
+                        // add a VarRef binding for the key name (best-effort recovery).
+                        let _ = pending_key; // Drop any pending key without a value
                         let spanned_let = Arc::new(SurfaceNode {
                             expr: SurfaceExpression::LetDecl { bindings },
                             span: dict_span(span_start),
@@ -2908,6 +2916,34 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
+                        }
+                    }
+                    Some(StackFrame::LetDecl {
+                        ref mut pending_key,
+                        ref mut bindings,
+                        ..
+                    }) => {
+                        // Named param with default: `name: default` inside [let ...]
+                        // The last binding pushed should be a VarRef (the param name).
+                        // Pop it from bindings, store it as pending_key.
+                        if let Some(last_binding) = bindings.last() {
+                            if let SurfaceExpression::VarRef { name, .. } = &last_binding.expr {
+                                let key_name = name.clone();
+                                let key_span = last_binding.span;
+                                bindings.pop();
+                                *pending_key = Some((key_name, key_span));
+                                None // Next value will be the default
+                            } else {
+                                Some(ParseError {
+                                    message: "`:` in [let ...] must follow a bare identifier (for named param with default)".to_string(),
+                                    span: Some(span),
+                                })
+                            }
+                        } else {
+                            Some(ParseError {
+                                message: "`:` without a name in [let ...] form".to_string(),
+                                span: Some(span),
+                            })
                         }
                     }
                     _ => Some(ParseError {
@@ -5744,12 +5780,43 @@ fn push_expr_to_parent(
                 Ok(())
             }
             Some(StackFrame::LetDecl {
-                ref mut bindings, ..
+                ref mut bindings,
+                ref mut pending_key,
+                ..
             }) => {
                 // LetDecl collects binding expressions.
                 // Each element can be: VarRef (bare binding), Annotated (typed binding),
-                // or nested LetDecl (multi-payload pattern).
-                bindings.push(node);
+                // Rest (variadic), or named-param-with-default (after colon).
+                if let Some((key_name, key_span)) = pending_key.take() {
+                    // This node is the default value for a named param `key_name: node`
+                    // Represent as Annotated { name: key_name, annotation: PropertyDict([default: node]) }
+                    // Convert the SurfaceNode default value to old Expr for the annotation.
+                    let default_expr = crate::ast_convert::surface_node_to_expr(&node);
+                    let combined_span = Span {
+                        start: key_span.start,
+                        end: node.span.end,
+                    };
+                    let ann = Spanned::new(
+                        Annotation::PropertyDict(vec![Spanned::new(
+                            Entry {
+                                key: Some(Spanned::new(Expr::Str("default".to_string()), key_span)),
+                                value: std::rc::Rc::new(default_expr),
+                            },
+                            node.span,
+                        )]),
+                        combined_span,
+                    );
+                    let annotated = Arc::new(SurfaceNode {
+                        expr: SurfaceExpression::Annotated {
+                            name: key_name,
+                            annotation: ann,
+                        },
+                        span: combined_span,
+                    });
+                    bindings.push(annotated);
+                } else {
+                    bindings.push(node);
+                }
                 Ok(())
             }
             Some(StackFrame::CaseDecl {

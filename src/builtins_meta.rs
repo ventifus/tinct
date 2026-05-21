@@ -65,6 +65,42 @@ pub(crate) fn builtin_deep_materialize(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
     ok_val(deep, call_span)
 }
 
+/// `builtin-to-json`: takes 1 arg, deep-materializes it and serializes to a JSON string.
+///
+/// This is the Rust-native JSON serializer used by the CLI output pipeline as a replacement
+/// for the LLT-based codecs/json.llt approach. Avoids the `[include %libdir ...]` dependency
+/// that was broken by the include-decomp sprint.
+///
+/// Returns a String containing the compact JSON representation of the value.
+/// Errors on non-serializable values (Function, Builtin, Seq, NaN/Infinity floats).
+pub(crate) fn builtin_to_json(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    let val = crate::builtins::expect_one_arg("builtin-to-json", args, named, &ctx, call_span)?;
+    // Deep-materialize first so value_to_json can traverse the full structure.
+    let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
+    // LLT null compatibility: [] (empty dict) serializes as JSON null,
+    // matching the behavior of the old codecs/json.llt `null?` check.
+    if let crate::value::Value::Dict(ref map) = deep {
+        if map.is_empty() {
+            return ok_val(crate::value::string_val("null"), call_span);
+        }
+    }
+    // Serialize to JSON using the Rust-native converter.
+    let json_val = crate::value_to_json(&deep, &ctx).map_err(|e| {
+        // Re-wrap the error with the call span for better diagnostics
+        let mut err = *e;
+        err.definition_span = call_span;
+        Box::new(err)
+    })?;
+    let json_str = json_val.to_string();
+    ok_val(crate::value::string_val(&json_str), call_span)
+}
+
 /// `materialize`: takes 1 arg, forces it to WHNF and returns it.
 ///
 /// Gives users explicit control over evaluation order. Equivalent to `$deep-materialize` for
@@ -1337,23 +1373,21 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         EvalError::include_parse_failed(display_name.to_string(), e.to_string(), call_span)
     })?;
 
-    // Macro expansion — use ctx.config.base_dir as the directory context for macro includes.
-    let expand_result = crate::expand::expand_macros(
-        crate::ast_convert::surface_program_to_file(&parsed.program),
-        ctx.config.no_fs,
-        &ctx.config.base_dir,
-    )
-    .map_err(|e| {
-        EvalError::include_parse_failed(
-            display_name.to_string(),
-            format!("macro expansion error: {e}"),
-            call_span,
-        )
-    })?;
-    let mut file = expand_result.file;
-
-    // Desugar $_ implicit lambdas
-    crate::desugar::desugar_file(&mut file.node);
+    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve.
+    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+    let mut program = parsed.program;
+    crate::expand::expand_surface_program(&mut program, ctx.config.no_fs, &ctx.config.base_dir)
+        .map_err(|e| {
+            EvalError::include_parse_failed(
+                display_name.to_string(),
+                format!("macro expansion error: {e}"),
+                call_span,
+            )
+        })?;
+    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+    crate::desugar::desugar_surface_program(&mut program);
+    let file = crate::ast_convert::surface_program_to_file(&program);
 
     // Variable resolution (old path — keeps backward compat with eval_file_with_input)
     crate::resolve::resolve_file(&file.node);
@@ -1378,7 +1412,7 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// For the include-decomp self-hosted pipeline which separates parse/expand/eval
 /// into distinct primitives.
 ///
-/// Pipeline: unwrap Program → convert to File → run expand_macros → wrap back as Program.
+/// Pipeline: unwrap Program → run expand_surface_program → wrap back as Program.
 pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1397,24 +1431,24 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             resolutions: _old_resolutions,
             types: _old_types,
         } => {
-            // Convert SurfaceProgram back to File for macro expansion
-            let spanned_file = crate::ast_convert::surface_program_to_file(&surface_program);
+            // Run macro expansion using expand_surface_program so SurfaceItem::Decl macros are seen.
+            // PIPELINE INVARIANT: expand -> desugar -> resolve (macros can introduce $_ patterns).
+            let mut new_surface_program = (*surface_program).clone();
+            crate::expand::expand_surface_program(
+                &mut new_surface_program,
+                ctx.config.no_fs,
+                &ctx.config.base_dir,
+            )
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("expand: macro expansion error: {}", e.kind),
+                    call_span,
+                )
+            })?;
+            // Desugar $_ patterns introduced by macros.
+            crate::desugar::desugar_surface_program(&mut new_surface_program);
 
-            // Run macro expansion
-            let expand_result =
-                crate::expand::expand_macros(spanned_file, ctx.config.no_fs, &ctx.config.base_dir)
-                    .map_err(|e| {
-                        EvalError::user_error(
-                            format!("expand: macro expansion error: {}", e.kind),
-                            call_span,
-                        )
-                    })?;
-
-            // Convert expanded File back to SurfaceProgram
-            let new_surface_program =
-                crate::ast_convert::file_to_surface_program(&expand_result.file.node);
-
-            // Re-compute resolution table for the expanded program
+            // Re-compute resolution table for the expanded and desugared program
             let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
 
             // Return as Value::Program with fresh resolution table
@@ -1906,8 +1940,10 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Arc<
         .string_include_cache
         .insert(key, entry);
 
-    // Return the stored value (pass-through — the args[1] thunk, not the entry)
-    Ok(Arc::clone(&args[1]))
+    // Return an empty dict [] so that include-cache-put can be used as an intermediate
+    // sequential expression in the scope chain (sequential expressions must return Dict).
+    // The stored value is available via include-cache-get; callers don't need the return.
+    ok_val(Value::Dict(IndexMap::new()), call_span)
 }
 
 // TOMBSTONE: builtin_include deleted in include-decomp-redelete sprint (2026-05-20).

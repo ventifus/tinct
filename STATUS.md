@@ -31,7 +31,7 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 | TLS / HTTPS networking | ✓ Complete — `tls-layer` (Handle upgrade), CA roots (system + Mozilla + custom bundle), mTLS, ALPN, SPKI pinning |
 | Composable networking v2 | ✓ Complete — transport-generic `connect` (Tcp/Udp/UnixStream/UnixDatagram/Icmp), `tls-layer`, QUIC sessions (`quic-session`), HTTP/3 (`http3-session`), HTTP/2 via reqwest (`http2-session`), `http-request` builtin; `protocols/` subdirectory (DNS, WebSocket, SOCKS5, gRPC) |
 | Boolean-Algebraic Subtyping | ✓ Complete — `Union`/`Intersection`/`Negation`/`Never` type algebra; S-RcdTop, S-ClsBot; RDNF simplification; BAS negation narrowing; Rémy row variables removed |
-| Nominal Result type | ✓ Complete — `Ok[T] | Err[String]` via `[type [Ok a] [Err String]]`; `try` returns nominal variants; `and-then`/`result-or`/`result-map`/`result-ok` combinators; `[do result ...]` monad dict |
+| Nominal Result type | ✓ Complete — `Ok[T] | Error[String]` via `[type [Ok a] [Error String]]`; `try` returns nominal variants; `and-then`/`result-or`/`result-map` combinators; `Ok` serves as `pure`; `[do result ...]` monad dict |
 | Record/Map type split | ✓ Complete — `Record` (known-field structural) vs `Map[K V]` (homogeneous); `Dict = Record ∨ Map` BAS union; `get?` (returns `V | Null`); `record?`/`map?` predicates; order-insensitive structural dict equality with cycle detection |
 | Macros | ✓ Complete — `[defmacro]`, quasiquoting `[quote]`/`[unquote]`, string interpolation `i"..."` via `[defmacro tmpl]`, macro hygiene |
 | Constraint annotations | ✓ Complete — `fn@[return: T  constraint: [a: Comparable]  doc: "..."  bind: [a]  kinds: [a: Operator]]` named-key metadata dict; `fn@Type` shorthand permanent |

@@ -387,7 +387,8 @@ pub(crate) use crate::builtins_meta::{
     builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include_cache_get,
     builtin_include_cache_put, builtin_int_check, builtin_llt_repr, builtin_load,
     builtin_macro_injects, builtin_null_check, builtin_raise, builtin_str_check, builtin_tag_of,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_to_json, builtin_try, builtin_type_of, builtin_until, builtin_validate,
+    builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1408,6 +1409,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
+        // Native JSON serializer: deep-materializes and converts to compact JSON string.
+        // Replaces the LLT-based codecs/json.llt include approach for the CLI output pipeline.
+        builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq]),
         // DELETED: builtin!("include", builtin_include, [Strictness::Seq])
         // `include` is now implemented in stdlib/prelude.llt (include-decomp-redelete sprint)
         // Decomposed include primitives (include-decomp-primitives sprint)
@@ -1717,16 +1721,14 @@ fn load_stdlib_module(
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(), Box<crate::error::EvalError>> {
-    let mut file = crate::parser::parse(source)
-        .map(|o| crate::ast_convert::surface_program_to_file(&o.program))
-        .map_err(|e| {
-            crate::error::EvalError::internal(
-                format!("{module_name} parse error: {e}"),
-                Span::origin(),
-            )
-        })?;
+    let parsed = crate::parser::parse(source).map_err(|e| {
+        crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
+    })?;
 
-    crate::desugar::desugar_file(&mut file.node);
+    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+    let mut program = parsed.program.clone();
+    crate::desugar::desugar_surface_program(&mut program);
+    let file = crate::ast_convert::surface_program_to_file(&program);
     crate::resolve::resolve_file(&file.node);
 
     // Type errors are advisory and the result is discarded, so skip the type-check pass
@@ -1914,17 +1916,19 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
 
     // Parse the prelude source
     let prelude_source = include_str!("../stdlib/prelude.llt");
-    let mut file = crate::parser::parse(prelude_source)
-        .map(|o| crate::ast_convert::surface_program_to_file(&o.program))
-        .map_err(|e| {
-            crate::error::EvalError::internal(
-                format!("type-stage prelude parse error: {e}"),
-                Span::origin(),
-            )
-        })?;
+    let parsed = crate::parser::parse(prelude_source).map_err(|e| {
+        crate::error::EvalError::internal(
+            format!("type-stage prelude parse error: {e}"),
+            Span::origin(),
+        )
+    })?;
 
-    // Desugar and resolve
-    crate::desugar::desugar_file(&mut file.node);
+    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+    let mut program = parsed.program.clone();
+    crate::desugar::desugar_surface_program(&mut program);
+    let file = crate::ast_convert::surface_program_to_file(&program);
+
+    // Resolve (desugar already done above)
     crate::resolve::resolve_file(&file.node);
 
     // Create minimal bootstrap env with all builtins
@@ -3172,7 +3176,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_int() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
@@ -3183,7 +3187,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_string() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
@@ -3194,7 +3198,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_float() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
@@ -3205,7 +3209,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_primitive_bool() {
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
@@ -3217,7 +3221,7 @@ mod tests {
     #[test]
     fn deep_materialize_empty_dict() {
         let dict = Value::Dict(IndexMap::new());
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(dict)],
             named: no_named(),
             call_span: call_span(),
@@ -3241,7 +3245,7 @@ mod tests {
             },
             &ctx,
         );
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
@@ -3280,7 +3284,7 @@ mod tests {
             &ctx,
         );
 
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[outer_dict],
             named: no_named(),
             call_span: call_span(),
@@ -3323,7 +3327,7 @@ mod tests {
             &ctx,
         );
 
-        let result = mat(builtin_eval(BuiltinArgs {
+        let result = mat(builtin_deep_materialize(BuiltinArgs {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
@@ -3340,7 +3344,7 @@ mod tests {
 
     #[test]
     fn deep_materialize_arity_error() {
-        let err = builtin_eval(BuiltinArgs {
+        let err = builtin_deep_materialize(BuiltinArgs {
             args: &[],
             named: no_named(),
             call_span: call_span(),
@@ -5919,7 +5923,7 @@ mod tests {
     fn deep_materialize_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_eval(BuiltinArgs {
+        let err = builtin_deep_materialize(BuiltinArgs {
             args: &[thunk(Value::Int(42))],
             named: Some(&named),
             call_span: call_span(),
@@ -6359,7 +6363,7 @@ mod tests {
         // are now in standard_builtins.
         // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
         assert_eq!(
-            count, 227,
+            count, 228,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6467,6 +6471,11 @@ mod tests {
         assert!(
             !names.contains(&"include"),
             "include should NOT be in standard_builtins (deleted in include-decomp sprint)"
+        );
+        // Native JSON serializer for CLI output pipeline (replaces include-based approach)
+        assert!(
+            names.contains(&"builtin-to-json"),
+            "missing builtin-to-json"
         );
         // Sequences (registered as builtin-NAME; prelude exports unwrapped names)
         assert!(names.contains(&"builtin-seq"), "missing builtin-seq");
@@ -6598,8 +6607,8 @@ mod tests {
         );
         assert_eq!(
             names.len(),
-            227,
-            "expected 227 builtins, got {} — update this assertion if adding/removing builtins",
+            228,
+            "expected 228 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

@@ -496,12 +496,11 @@ pub(crate) fn force_step(
             }
         }
 
-        // Handle TypeAssert inline to enable iterative type validation.
-        // eval_core_expr(CoreExpr::TypeAssert) creates an Unevaluated(Expr::TypeAssert) thunk.
-        // Without special handling, force_step would call eval(Expr::TypeAssert) which
-        // creates another Unevaluated(Expr::TypeAssert) → infinite recursion.
-        // Instead, directly push TypeAssertCheck + Memoize continuations and materialize
-        // the inner expression, mirroring what eval_step does for Expr::TypeAssert.
+        // Handle TypeAssert inline to break the infinite recursion that would occur if
+        // eval(Expr::TypeAssert) is called from the generic eval() path below.
+        // eval_core_expr(CoreExpr::TypeAssert) creates Unevaluated(Expr::TypeAssert) thunks.
+        // Without this handler, force_step would call eval(Expr::TypeAssert) → new Unevaluated
+        // → force_step → eval(Expr::TypeAssert) → ... → infinite recursion → DepthExceeded.
         if let Expr::TypeAssert {
             expr: inner,
             annotation,
@@ -529,19 +528,28 @@ pub(crate) fn force_step(
                 };
             let resolved = resolved_type.borrow().clone();
 
-            // Fast path: if there is no type to check, skip type assertion entirely.
+            // Fast path: no type to check → pass inner value through.
+            // has_type is true when there is an actual type assertion to enforce:
+            // - Simple annotation always has a type (the annotation name IS the type)
+            // - PropertyDict: true when any of:
+            //   - has "type:" key (nominal type check via Annotation::get_property("type"))
+            //   - has "default:" key (type check with default fallback)
+            //   - has structural (non-meta) fields (record shape check)
+            // - Annotated: always has a type
             let has_type = match &annotation.node {
                 crate::ast::Annotation::Simple(_) => true,
                 crate::ast::Annotation::PropertyDict(_) => {
-                    annotation
-                        .node
-                        .get_property(crate::eval::DEFAULT_ANNOTATION_KEY)
-                        .is_some()
+                    annotation.node.get_property("type").is_some()
+                        || annotation
+                            .node
+                            .get_property(crate::eval::DEFAULT_ANNOTATION_KEY)
+                            .is_some()
                         || annotation_has_structural_fields(&annotation.node)
                 }
                 crate::ast::Annotation::Annotated(_, _) => true,
             };
 
+            // Push Memoize first so the result gets stored in the outer thunk.
             stack.push(Cont::Memoize(Box::new(MemoizeData {
                 thunk: Arc::clone(thunk),
                 origin,
@@ -552,7 +560,7 @@ pub(crate) fn force_step(
             })));
 
             if resolved.is_none() && !has_type {
-                // No type check needed — just materialize the inner thunk directly.
+                // No type check — just materialize the inner thunk directly.
                 return Action::Materialize {
                     thunk: inner_thunk,
                     mat_span,

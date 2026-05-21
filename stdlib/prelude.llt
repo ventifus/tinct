@@ -1422,12 +1422,12 @@ Note: Wraps the function call in error handling. Returns the function's result i
 Transport: [type [Tcp] [Udp] [UnixStream] [UnixDatagram] [NamedPipe] [Icmp]]
 
 # Re-export transport variant constructors
-Tcp: Tcp
-Udp: Udp
-UnixStream: UnixStream
-UnixDatagram: UnixDatagram
-NamedPipe: NamedPipe
-Icmp: Icmp
+Tcp: [variant "Tcp"]
+Udp: [variant "Udp"]
+UnixStream: [variant "UnixStream"]
+UnixDatagram: [variant "UnixDatagram"]
+NamedPipe: [variant "NamedPipe"]
+Icmp: [variant "Icmp"]
 
 # ============================================================================
 # OpenFlag Type (File Open Mode Variants)
@@ -1446,21 +1446,22 @@ Icmp: Icmp
 OpenFlag: [type [Readable] [Writable] [Binary] [Text] [Seekable]]
 
 # Re-export OpenFlag variant constructors (used as args to [open])
-Readable: Readable
-Writable: Writable
-Binary: Binary
-Text: Text
-Seekable: Seekable
+# These are unit variants: [variant "Name"] creates Value::Variant { tag: "Name", payload: None }
+Readable: [variant "Readable"]
+Writable: [variant "Writable"]
+Binary: [variant "Binary"]
+Text: [variant "Text"]
+Seekable: [variant "Seekable"]
 
 # DirCapFlag type: permission flags passed to the [narrow] builtin.
 # Controls which capabilities a narrowed DirCap inherits from its source.
 DirCapFlag: [type [Statable] [Listable] [Deletable] [Renameable]]
 
 # Re-export DirCapFlag variant constructors
-Statable: Statable
-Listable: Listable
-Deletable: Deletable
-Renameable: Renameable
+Statable: [variant "Statable"]
+Listable: [variant "Listable"]
+Deletable: [variant "Deletable"]
+Renameable: [variant "Renameable"]
 
 # ============================================================================
 # Result Type and Combinators
@@ -1470,10 +1471,10 @@ Renameable: Renameable
 Result: [type [Ok a] [Error String]]
 
 # Re-export Ok constructor: wraps a success value
-Ok: Ok
+Ok: [variant "Ok"]
 
 # Re-export Error constructor: wraps an error message
-Error: Error
+Error: [variant "Error"]
 
 ok?: [fn@[return: Bool  doc: """
 Check if Result is Ok.
@@ -1535,15 +1536,7 @@ Note: Maps a function over the Ok value; passes Error through unchanged.
         [Ok v]: [Ok [f v]]
         [Error msg]: [Error msg]]]
 
-result-ok: [fn@[return: Result  doc: """
-Wrap value in Ok.
-
-Example: [result-ok 42] => [Ok 42]
-
-Note: Monadic pure for Result. Lifts a value into the Result type.
-"""] [let v] [Ok v]]
-
-result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: result-ok]
+result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: Ok]
 
 # ============================================================================
 # Type Class Declarations: Functor, Applicative, Monad, Foldable, Traversable
@@ -1576,11 +1569,11 @@ Applicative@[doc: "Type class for applicative functors"]:
 ApplicativeResult@[doc: "Applicative instance for Result"]:
   [instance Applicative
     [let f@Result]: [
-      pure:  result-ok
+      pure:  Ok
       lift2: [fn [let f ra rb]
         [and-then ra [fn [let a]
         [and-then rb [fn [let b]
-          [result-ok [f a b]]]]]]]]]
+          [Ok [f a b]]]]]]]]]
 
 # Applicative instance for Seq type
 ApplicativeSeq@[doc: "Applicative instance for Seq"]:
@@ -1673,10 +1666,10 @@ TraversableResult@[doc: "Traversable instance for Result"]:
 Maybe: [type [Some a] [None]]
 
 # Re-export Some constructor: wraps a value (present case)
-Some: Some
+Some: [variant "Some"]
 
-# Re-export None constructor: represents absence
-None: None
+# Re-export None constructor: represents absence (unit variant)
+None: [variant "None"]
 
 maybe-map@[doc: "Map over Maybe value"]: [fn [let f ma]
   [match ma
@@ -2455,9 +2448,9 @@ Example:
 IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]
 
 # Re-export IncludeCacheEntry variant constructors
-Missing: Missing
-Pending: Pending
-Cached: Cached
+Missing: [variant "Missing"]
+Pending: [variant "Pending"]
+Cached: [variant "Cached"]
 
 # eval-document-runtime: evaluate one Runtime-stage document, returning updated
 # pipeline state dict {prev: result, named: accumulated-named-sections}.
@@ -2560,9 +2553,9 @@ path:           file path string (for error spans)
 hash:           content cache key (blake3(cap-identity + "|" + source))
 cap:            DirCap — passed as %include-dir; included files start with % = []
 integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-"""] [let source path hash cap integrity-hash: null]
+"""] [let source path hash cap integrity-hash: []]
   [include-cache-put hash Pending]
-  [program: [if [= integrity-hash null]
+  [program: [if [null? integrity-hash]
     [load source name: path]
     [load source name: path hash: integrity-hash]]]
   [match [try [fn [] [eval-file [expand program] [] cap]]]
@@ -2589,7 +2582,7 @@ integrity-hash: optional blake3 hex digest for integrity verification (--require
 Uses content-addressed memoization: blake3(cap-identity + "|" + source).
 Detects circular includes via [Pending] cache state.
 Included files start with % = [] (fresh pipeline input).
-"""] [let cap@DirCap path@String integrity-hash: null]
+"""] [let cap@DirCap path@String integrity-hash: []]
   [source: [slurp [open cap path Readable]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [include-cache-get hash]

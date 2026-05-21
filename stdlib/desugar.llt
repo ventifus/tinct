@@ -5,7 +5,8 @@
 # `$_` in non-parameter positions with implicit lambda functions.
 #
 # The transformation runs after parsing and macro expansion, before resolution and
-# type checking. It's called from main.rs as part of the compilation pipeline.
+# type checking. This file is a standalone metaprogramming tool; the pipeline
+# desugar is implemented in src/desugar.rs.
 #
 # See doc/04-functions.md §`$_` Desugaring for the complete specification.
 
@@ -18,7 +19,7 @@
 # rooted at `$_`. Used by WRAP rules to detect when wrapping is needed.
 is-direct-underscore: [fn [expr@Expression]
   [match expr
-    [Var name: "_" escaped: true span: _]:
+    [Var name: "_" escaped: _ span: _]:
       true
     [DotAccess target: t field: _ span: _]:
       [is-direct-underscore t]

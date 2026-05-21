@@ -218,7 +218,7 @@ impl Resolver {
             Expr::DotAccess { expr, .. } => self.walk_expr(expr),
             Expr::Pipe { .. } => {
                 // Pipe is eliminated by the desugar pass before resolve runs.
-                // desugar::desugar_file is always called before resolve::resolve_file
+                // Pipeline: expand_surface_program → desugar_surface_program → surface_program_to_file → resolve_file
                 // (invariant: lib.rs::eval_source_with_config, main.rs::run_eval).
                 // If this arm is reached, the pipeline contract has been violated.
                 unreachable!("Expr::Pipe should have been eliminated by desugar before resolve");
