@@ -6653,7 +6653,7 @@ mod tests {
         // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
         // are now in standard_builtins and accessible only via %rust "meta" module.
         assert_eq!(
-            count, 190,
+            count, 191,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6888,8 +6888,8 @@ mod tests {
         );
         assert_eq!(
             names.len(),
-            190,
-            "expected 190 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects; 5 new include-decomp primitives: blake3, cap-identity, load, include-cache-get, include-cache-put)",
+            191,
+            "expected 191 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects; 5 new include-decomp primitives: blake3, cap-identity, load, include-cache-get, include-cache-put)",
             names.len()
         );
     }
