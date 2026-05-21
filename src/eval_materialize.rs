@@ -1502,7 +1502,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 mat_span: outer_mat_span.or(Some(access_span)),
                             }
                         }
-                        Value::Program(prog) => {
+                        Value::Program { program: prog, .. } => {
                             // Program.documents → integer-keyed list of Value::Document
                             let val = match field_str.as_str() {
                                 "documents" => {

@@ -180,21 +180,30 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 ## Post-Migration Health Check Findings (2026-05-20)
 
-### MAJOR: `ThunkStateGuard` unsafe aliasing hazard
+### MAJOR: `ThunkStateGuard` unsafe aliasing hazard (PARTIALLY ADDRESSED)
 
 `ThunkStateGuard::deref()` in `src/value.rs:1158-1178` uses `unsafe` to return a reference to thread-local storage that is overwritten on every `.state()` call. If two guards exist simultaneously on the same thread (or any code between guard creation and use calls `.state()` again), the earlier reference silently aliases overwritten data. 66 call sites use `.state()`. This is a latent memory safety bug.
 
-**Fix:** Replace `ThunkStateGuard` with a non-`unsafe` pattern: either return owned `ThunkState` from `.state()` (eliminates zero-cost deref but is correct), or use `take_*` methods that already exist (e.g., `take_surface()`, `take_ast_node_field()`) to avoid `.state()` entirely.
+**Status:** Hazard documented with comprehensive safety comments (lines 1157-1183) and debug assertion added to catch double-guard creation in debug builds (lines 1197-1202). The `Drop` impl (lines 1217-1224) clears the guard flag. This provides detection but NOT prevention of the UB.
 
-- [ ] Eliminate `unsafe` in `ThunkStateGuard::deref` — replace with owned-state return or expand `take_*` pattern to cover all 66 call sites (`src/value.rs`)
+**Remaining work:** Full fix requires migrating all 66 `.state()` call sites to either return owned `ThunkState` or use `take_*` methods directly.
 
-### MAJOR: `builtin_load` discards resolution tables
+- [x] Document the aliasing hazard in `ThunkStateGuard` safety comments (`src/value.rs:1157-1183`)
+- [x] Add debug assertion to detect double-guard creation (`src/value.rs:1197-1202`)
+- [ ] Migrate all 66 `.state()` call sites to owned-state return or `take_*` methods (full fix)
+
+### MAJOR: `builtin_load` discards resolution tables (FIXED)
 
 `builtin_load` in `src/builtins_meta.rs:1369-1370` computes `res_table` and `types_table` but assigns them to `_res_arc`/`_types_arc` (underscore-prefixed), which are immediately dropped. The comment says "Cache the res_table alongside the thunk" but no caching occurs. Downstream, `builtin_eval` in `src/builtins_meta.rs:1551-1552` creates empty tables with a TODO comment. Result: Surface thunks from the `eval` builtin lack resolution data, so `lower()` produces `FreeVar` instead of de Bruijn `Var` for all variable references, causing fallback to name-based chain walks.
 
-**Fix:** Thread resolution/type tables through the `Value::Program` type (add fields to the variant) or via `IncludeCacheEntry::Cached`, so `builtin_eval` can retrieve them.
+**Fix applied:** 
+1. Changed `Value::Program` from tuple variant to struct variant with `program`, `resolutions`, and `types` fields (`src/value.rs:426-432`)
+2. Updated `builtin_load` to store computed tables in the `Value::Program` (`src/builtins_meta.rs:1366-1372`)
+3. Updated `builtin_expand` to extract and re-compute resolution tables (`src/builtins_meta.rs:1394-1430`)
+4. Updated `builtin_eval` to accept optional `program:` named argument and extract tables from it (`src/builtins_meta.rs:1448, 1465-1478, 1560-1577`)
+5. Updated all pattern matches on `Value::Program` in `src/value.rs`, `src/lib.rs`, `src/eval_materialize.rs`, `src/builtins_meta.rs`
 
-- [ ] Thread ResolutionTable + TypeAnnotationTable from `builtin_load` to `builtin_eval` — currently discarded as `_res_arc`/`_types_arc` (`src/builtins_meta.rs`)
+- [x] Thread ResolutionTable + TypeAnnotationTable from `builtin_load` to `builtin_eval` — now stored in `Value::Program` struct fields
 
 ### Minor: Blanket `#![allow(dead_code)]` on 3 files
 

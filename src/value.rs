@@ -425,7 +425,12 @@ pub enum Value {
     // `surface_program_tag()` from `src/surface_fields.rs`.
     /// A complete tinct program — the type returned by `load` and `expand`.
     /// Wraps an Arc<SurfaceProgram> for Send+Sync compatibility (future async runtime).
-    Program(Arc<SurfaceProgram>),
+    /// Also carries resolution and type annotation tables computed during load/expand.
+    Program {
+        program: Arc<SurfaceProgram>,
+        resolutions: Arc<crate::ast::ResolutionTable>,
+        types: Arc<crate::ast::TypeAnnotationTable>,
+    },
 
     /// A single document within a program — accessible via `program.documents`.
     /// Contains expressions and declarations.
@@ -538,7 +543,7 @@ impl Value {
             Value::Http3Session(_) => "Http3Session",
             Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
             Value::DatagramHandle { .. } => "DatagramHandle",
-            Value::Program(_) => "Program",
+            Value::Program { .. } => "Program",
             Value::Document(_) => "Document",
             Value::Expression(_) => "Expression",
             Value::Task => "Task",
@@ -623,7 +628,7 @@ impl fmt::Debug for Value {
             Value::Http3Session(_) => write!(f, "Http3Session"),
             Value::QuicDatagramHandle(_) => write!(f, "QuicDatagramHandle"),
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
-            Value::Program(_) => write!(f, "Program(...)"),
+            Value::Program { .. } => write!(f, "Program(...)"),
             Value::Document(_) => write!(f, "Document(...)"),
             Value::Expression(node) => write!(
                 f,
@@ -714,7 +719,7 @@ impl fmt::Display for Value {
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
             Value::QuicDatagramHandle(_) => write!(f, "<QuicDatagramHandle>"),
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
-            Value::Program(_) => write!(f, "<program>"),
+            Value::Program { .. } => write!(f, "<program>"),
             Value::Document(_) => write!(f, "<document>"),
             Value::Expression(node) => write!(
                 f,
@@ -1149,6 +1154,28 @@ pub struct Thunk {
 
 /// Compatibility guard that provides a ThunkState view over ThunkInner.
 /// This allows existing code to continue using pattern matching on ThunkState.
+///
+/// # Safety Hazard
+///
+/// **ALIASING HAZARD**: This type uses `unsafe` to return references to thread-local storage.
+/// If two `ThunkStateGuard` instances exist simultaneously on the same thread (or any code
+/// between guard creation and use calls `.state()` again), the first guard's reference becomes
+/// dangling — it aliases overwritten memory.
+///
+/// Example of unsound code:
+/// ```ignore
+/// let guard1 = thunk1.state();
+/// let guard2 = thunk2.state(); // Overwrites GUARD_STATE
+/// match &*guard1 { // UB: guard1 now aliases guard2's data
+///     ThunkState::Materialized(_) => { ... }
+/// }
+/// ```
+///
+/// **Mitigation**: A debug assertion catches double-guard creation on the same thread.
+/// This is not a complete fix — the full fix is to migrate all 66 `.state()` call sites
+/// to use `take_*` methods or return owned `ThunkState` instead of references.
+///
+/// Tracked in TODO.md as "MAJOR: ThunkStateGuard unsafe aliasing hazard".
 pub struct ThunkStateGuard<'a> {
     thunk: &'a Thunk,
 }
@@ -1157,21 +1184,54 @@ impl<'a> std::ops::Deref for ThunkStateGuard<'a> {
     type Target = ThunkState;
 
     fn deref(&self) -> &Self::Target {
-        // This is a workaround: we need to return a reference to a ThunkState,
-        // but we're constructing it on the fly. We'll use a thread-local static
-        // to store the materialized state temporarily.
+        // Thread-local storage for the constructed ThunkState and a guard flag
         thread_local! {
             static GUARD_STATE: RefCell<ThunkState> = RefCell::new(ThunkState::Placeholder);
+            static GUARD_ACTIVE: RefCell<bool> = RefCell::new(false);
         }
 
         let state = self.thunk.get_thunk_state();
-        GUARD_STATE.with(|cell| {
-            *cell.borrow_mut() = state;
-            // SAFETY: This is unsafe because we're returning a reference to thread-local storage.
-            // The reference is only valid until the next call to state() on this thread.
-            // This is acceptable for the compatibility shim pattern used here.
-            unsafe { &*(cell.as_ptr() as *const ThunkState) }
+        GUARD_STATE.with(|state_cell| {
+            GUARD_ACTIVE.with(|guard_cell| {
+                // Debug assertion: catch double-guard creation
+                debug_assert!(
+                    !*guard_cell.borrow(),
+                    "ThunkStateGuard aliasing hazard: another guard is already active on this thread. \
+                     This is undefined behavior. Migrate to take_* methods or owned ThunkState."
+                );
+
+                *guard_cell.borrow_mut() = true;
+                *state_cell.borrow_mut() = state;
+
+                // SAFETY: This is unsafe because we're returning a reference to thread-local storage.
+                //
+                // INVARIANT VIOLATION: The returned reference is only valid until:
+                // 1. The next call to `.state()` on this thread (overwrites GUARD_STATE), OR
+                // 2. The guard is dropped (clears GUARD_ACTIVE but doesn't invalidate the pointer)
+                //
+                // This violates Rust's aliasing rules. If two guards exist simultaneously,
+                // the first becomes a dangling reference to overwritten memory.
+                //
+                // The debug assertion above catches this in debug builds, but does NOT prevent
+                // the UB in release builds.
+                //
+                // This is acceptable ONLY as a temporary compatibility shim. The full fix is
+                // to migrate all call sites away from `.state()` to direct `take_*` methods
+                // or return owned `ThunkState` values.
+                unsafe { &*(state_cell.as_ptr() as *const ThunkState) }
+            })
         })
+    }
+}
+
+impl<'a> Drop for ThunkStateGuard<'a> {
+    fn drop(&mut self) {
+        thread_local! {
+            static GUARD_ACTIVE: RefCell<bool> = RefCell::new(false);
+        }
+        GUARD_ACTIVE.with(|cell| {
+            *cell.borrow_mut() = false;
+        });
     }
 }
 

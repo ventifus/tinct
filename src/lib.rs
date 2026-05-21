@@ -686,7 +686,7 @@ pub fn visit_value<V: ValueVisitor>(
                 ast::Span::origin(),
             )))
         }
-        value::Value::Program(_) => Err(Box::new(error::EvalError::value_not_serializable(
+        value::Value::Program { .. } => Err(Box::new(error::EvalError::value_not_serializable(
             "Program".to_string(),
             ast::Span::origin(),
         ))),

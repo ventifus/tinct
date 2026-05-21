@@ -1061,7 +1061,7 @@ fn type_name(val: &Value) -> String {
         Value::Http3Session(_) => "Http3Session",
         Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
         Value::DatagramHandle { .. } => "DatagramHandle",
-        Value::Program(_) => "Program",
+        Value::Program { .. } => "Program",
         Value::Document(_) => "Document",
         Value::Expression(_) => "Expression",
         Value::Task => "Task",
@@ -1361,13 +1361,14 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     // Also populate ResolutionTable for the Surface thunk path.
     let surface_program = crate::ast_convert::file_to_surface_program(&file.node);
     let res_table = crate::resolve::resolve_surface_program(&surface_program);
-    let program_value = Value::Program(std::sync::Arc::new(surface_program));
-    let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
-    // Cache the res_table alongside the thunk (Part E: IncludeCacheEntry::Cached carries tables).
     // The TypeAnnotationTable is empty here because the load builtin does not run the typechecker;
     // typecheck is run separately on the expanded program before eval is called.
-    let _res_arc = std::sync::Arc::new(res_table);
-    let _types_arc = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+    let program_value = Value::Program {
+        program: std::sync::Arc::new(surface_program),
+        resolutions: std::sync::Arc::new(res_table),
+        types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+    };
+    let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
     Ok(thunk)
 }
 
@@ -1390,7 +1391,7 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     let val = materialize(&args[0], Some(&call_span), &ctx)?;
     match val {
-        Value::Program(surface_program) => {
+        Value::Program { program: surface_program, resolutions: _old_resolutions, types: _old_types } => {
             // Convert SurfaceProgram back to File for macro expansion
             let file = surface_program_to_file(&surface_program);
 
@@ -1411,9 +1412,16 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let new_surface_program =
                 crate::ast_convert::file_to_surface_program(&expand_result.file.node);
 
-            // Return as Value::Program
+            // Re-compute resolution table for the expanded program
+            let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
+
+            // Return as Value::Program with fresh resolution table
             ok_val(
-                Value::Program(std::sync::Arc::new(new_surface_program)),
+                Value::Program {
+                    program: std::sync::Arc::new(new_surface_program),
+                    resolutions: std::sync::Arc::new(new_resolutions),
+                    types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                },
                 call_span,
             )
         }
@@ -1438,6 +1446,7 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Named args:
 /// - `env:` (Dict) — bindings added to the base environment (default: empty)
 /// - `%:` (Any) — the pipeline input value, bound as `$` in the environment
+/// - `program:` (Program) — the source Program providing resolution/type tables for the expressions (optional)
 ///
 /// Base environment: stdlib_env (the standard library prelude).
 pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
@@ -1452,20 +1461,21 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
 
-    // Extract optional env: and %: named args
-    let (env_dict, pipeline_input) = if let Some(named_map) = named {
+    // Extract optional env:, %:, and program: named args
+    let (env_dict, pipeline_input, program_opt) = if let Some(named_map) = named {
         // Reject unknown named args
         for key in named_map.keys() {
-            if key != "env" && key != "%" {
+            if key != "env" && key != "%" && key != "program" {
                 return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
             }
         }
 
         let env_dict = named_map.get("env").map(|t| Arc::clone(t));
         let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
-        (env_dict, pipeline_input)
+        let program_opt = named_map.get("program").map(|t| Arc::clone(t));
+        (env_dict, pipeline_input, program_opt)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // Start with stdlib environment
@@ -1545,11 +1555,27 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         }
     }
 
-    // Create empty resolution and type tables
-    // TODO: In a full implementation, these should come from the IncludeCacheEntry
-    // for the file that produced these Expression values. For now, use empty tables.
-    let res_table = std::sync::Arc::new(crate::ast::ResolutionTable::new());
-    let types_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+    // Get resolution and type tables from the program: argument if provided
+    let (res_table, types_table) = if let Some(program_thunk) = program_opt {
+        let program_val = materialize(&program_thunk, Some(&call_span), &ctx)?;
+        match program_val {
+            Value::Program { resolutions, types, .. } => {
+                (Arc::clone(&resolutions), Arc::clone(&types))
+            }
+            _ => return Err(EvalError::type_mismatch_ctx(
+                "eval".to_string(),
+                "Program (for program: argument)",
+                program_val.type_name(),
+                call_span,
+            ).into()),
+        }
+    } else {
+        // No program provided - use empty tables (expressions won't have resolution info)
+        (
+            std::sync::Arc::new(crate::ast::ResolutionTable::new()),
+            std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+        )
+    };
 
     // Create Surface thunks for each expression
     let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
