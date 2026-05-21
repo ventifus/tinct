@@ -342,10 +342,19 @@ Fn, Handle, Task, Channel etc. produce null."]:
       [Expression _]: [json-expression v]
       _:              [to-json-primitive v]]]
 
-# from-json: Re-exported from the Rust primitive. The pure-tinct implementation
-# (json-parse-value etc.) is available above but migration is deferred — the Rust
-# builtin provides better error messages and performance. To switch, replace with:
-#   from-json: [fn [s] [json-parse-value [json-skip-ws s]].value]
-from-json: from-json
+# from-json: Pure-tinct JSON parser implementation.
+# Takes a JSON string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
+# The parser uses str-at/str-length from strings.llt and builtin-str-slice from prelude.
+from-json@[doc: "Parse a JSON string into a tinct value.
+
+Parameters:
+  s@String — JSON string to parse
+
+Returns:
+  Any — Parsed value (Dict, Seq, String, Int, Float, Bool, or [] for null)
+
+Raises error on invalid JSON syntax."]:
+  [fn [s@String]
+    [json-parse-value [json-skip-ws s]].value]
 
 ]
