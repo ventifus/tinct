@@ -1,0 +1,51 @@
+[[disallowed-types]]
+path = "std::fs::File"
+reason = "Use cap_std::fs::File for capability-gated file access"
+
+[[disallowed-types]]
+path = "std::fs::OpenOptions"
+reason = "Use cap_std::fs::OpenOptions for capability-gated file access"
+
+[[disallowed-types]]
+path = "std::fs::DirEntry"
+reason = "Use cap_std::fs::DirEntry for capability-gated directory access"
+
+[[disallowed-types]]
+path = "std::fs::ReadDir"
+reason = "Use cap_std::fs::ReadDir for capability-gated directory access"
+
+[[disallowed-methods]]
+path = "std::fs::read"
+reason = "Use cap_std Dir::read for capability-gated file reading"
+
+[[disallowed-methods]]
+path = "std::fs::read_to_string"
+reason = "Use cap_std Dir::read_to_string for capability-gated file reading"
+
+[[disallowed-methods]]
+path = "std::fs::write"
+reason = "Use cap_std Dir::write for capability-gated file writing"
+
+[[disallowed-methods]]
+path = "std::fs::metadata"
+reason = "Use cap_std Dir::metadata for capability-gated file metadata"
+
+[[disallowed-methods]]
+path = "std::fs::read_dir"
+reason = "Use cap_std Dir::read_dir for capability-gated directory listing"
+
+[[disallowed-methods]]
+path = "std::fs::canonicalize"
+reason = "Use cap_std Dir methods; canonicalize bypasses capability confinement"
+
+[[disallowed-methods]]
+path = "std::fs::remove_file"
+reason = "Use cap_std Dir::remove_file for capability-gated file removal"
+
+[[disallowed-methods]]
+path = "std::fs::create_dir_all"
+reason = "Use cap_std Dir::create_dir_all for capability-gated directory creation"
+
+[[disallowed-methods]]
+path = "cap_std::fs::Dir::open_ambient_dir"
+reason = "open_ambient_dir bypasses all capability confinement; use existing DirCap instead. If truly needed, add // AMBIENT-OK comment"

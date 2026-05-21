@@ -1,5 +1,7 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
+#![deny(clippy::disallowed_types, clippy::disallowed_methods)]
+
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -1468,6 +1470,8 @@ fn run_eval(
 
     // Inject --cap-file NAME=PATH[:MODE] entries into the root environment as `%NAME`.
     // --no-fs suppresses all cap-file entries (filesystem access is blocked globally).
+    // AMBIENT-OK: CLI bootstrap — operator-specified file paths via --cap-file.
+    #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     if !no_fs {
         use std::collections::HashMap;
         use std::io::{BufReader, BufWriter};
@@ -1722,7 +1726,8 @@ fn run_eval(
             }
         })?;
         // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-        let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+        let _resolution_table =
+            tinct::resolve::resolve_surface_program(&output.as_surface_program());
         let ast = output.file;
 
         // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
@@ -1972,10 +1977,11 @@ fn run_fmt(
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let output = parse(&source)
-            .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+        let output =
+            parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
         // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-        let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+        let _resolution_table =
+            tinct::resolve::resolve_surface_program(&output.as_surface_program());
         let ast = output.file;
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
@@ -2063,6 +2069,8 @@ fn run_fmt(
         if file_path == "-" {
             return Err("--in-place cannot be used with stdin".to_string());
         }
+        // AMBIENT-OK: CLI fmt --in-place writing to operator-specified file.
+        #[allow(clippy::disallowed_methods)]
         std::fs::write(file_path, &formatted)
             .map_err(|e| format!("error writing {file_path}: {e}"))?;
         return Ok(());
@@ -2087,8 +2095,7 @@ fn run_lint(
     let source = read_source(file_path)?;
 
     // Parse the file
-    let output = parse(&source)
-        .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+    let output = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
     let ast = output.file;
@@ -2178,6 +2185,8 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
 
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
 /// Used to generate integrity hashes for `$include` second arguments.
+// AMBIENT-OK: CLI hash command on operator-specified file.
+#[allow(clippy::disallowed_types)]
 fn run_hash(file_path: &str) -> Result<(), String> {
     let file = std::fs::File::open(file_path).map_err(|e| format!("error reading file: {e}"))?;
     let metadata = file
@@ -2199,6 +2208,8 @@ fn run_hash(file_path: &str) -> Result<(), String> {
 }
 
 /// Read LLT source from a file path or stdin (when path is `-`).
+// AMBIENT-OK: CLI entry point reading operator-specified file.
+#[allow(clippy::disallowed_types)]
 fn read_source(file_path: &str) -> Result<String, String> {
     if file_path == "-" {
         let mut buf = String::new();
@@ -2344,6 +2355,8 @@ fn run_literate(config: &LiterateConfig) -> Result<(), String> {
 /// Literate mode always runs with --no-pwd and --no-env (hard-coded).
 /// Capabilities are injected via cap_fs and cap_net. %libdir is always available.
 /// %clock is set to a fixed ClockCap from the markdown file's mtime.
+// AMBIENT-OK: CLI literate-eval reading markdown file metadata for mtime.
+#[allow(clippy::disallowed_methods)]
 fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), String> {
     let markdown_path = config.file_path;
     let strict = config.strict;
@@ -2587,6 +2600,8 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
 /// - %clock is set to a fixed ClockCap from markdown file mtime
 /// - %libdir is always available
 /// - Capabilities injected via cap_fs and cap_net
+// AMBIENT-OK: CLI literate-weave reading markdown file metadata for mtime.
+#[allow(clippy::disallowed_methods)]
 fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
@@ -2758,9 +2773,10 @@ fn run_literate_weave(
         let ast = match parse_result {
             Ok(o) => {
                 // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-                let _resolution_table = tinct::resolve::resolve_surface_program(&o.as_surface_program());
+                let _resolution_table =
+                    tinct::resolve::resolve_surface_program(&o.as_surface_program());
                 o.file
-            },
+            }
             Err(e) => {
                 let error_msg = if strict {
                     tinct::format_parse_error(&e, code, &format!("block {}", i + 1))
@@ -3241,6 +3257,8 @@ const SCHEMA_KEYS: &[&str] = &[
 /// and detects schema dicts by heuristic. Outputs a human-readable summary (default)
 /// or machine-readable JSON (`--json`).
 /// Write content to a file atomically using a .tmp file then rename.
+// AMBIENT-OK: CLI literate-weave --in-place writing to operator-specified file.
+#[allow(clippy::disallowed_types, clippy::disallowed_methods)]
 fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
     use std::io::Write;
 

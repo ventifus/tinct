@@ -1019,6 +1019,8 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                 // Get the directory's file descriptor and resolve the full path via /proc/self/fd
                 // This is necessary because Unix domain sockets need an absolute path to connect
+                // AMBIENT-OK: Unix socket connection requires resolving fd path via /proc/self/fd.
+                #[allow(clippy::disallowed_methods)]
                 use std::os::unix::io::AsRawFd;
                 let dir_fd = dir.as_raw_fd();
                 let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
@@ -1182,6 +1184,8 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 }
 
                 // Resolve the full socket path via the DirCap's file descriptor
+                // AMBIENT-OK: Unix datagram socket requires resolving fd path via /proc/self/fd.
+                #[allow(clippy::disallowed_methods)]
                 use std::os::unix::io::AsRawFd;
                 let dir_fd = dir.as_raw_fd();
                 let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));

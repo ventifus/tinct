@@ -70,6 +70,8 @@ pub fn format_source_tinct_with_dir(
     // expand_macros internally calls create_stdlib_env_with_arena(), updating STDLIB_ARENA_CACHE.
     // By expanding first, env+ctx are created from the final cache state, keeping them
     // in the same arena basis and avoiding the "undefined variable: try" regression.
+    // AMBIENT-OK: formatter script loaded from stdlib path.
+    #[allow(clippy::disallowed_methods)]
     let formatter_source = std::fs::read_to_string(script_path).map_err(|e| {
         format!(
             "cannot read formatter script {}: {e}",
@@ -122,13 +124,9 @@ pub fn format_source_tinct_with_dir(
         ast_to_dict(&parse_output.file.node, &opts, &ctx).map_err(|e| format!("{e}"))?;
 
     // Evaluate formatter with AST as % (pipeline input).
-    let formatter_thunk = eval::eval_file_with_input(
-        &formatter_file.node,
-        Rc::clone(&env),
-        &ctx,
-        Some(ast_thunk),
-    )
-    .map_err(|e| format!("formatter eval error: {e}"))?;
+    let formatter_thunk =
+        eval::eval_file_with_input(&formatter_file.node, Rc::clone(&env), &ctx, Some(ast_thunk))
+            .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — should be [Ok String] or [Err msg].
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)

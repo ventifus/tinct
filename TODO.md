@@ -174,11 +174,11 @@ The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge
 ### integration-fixes: Cross-layer integration issues
 
 - [x] **MAJOR** `ast-of` builtin (`builtin_ast_of`) is defined in `src/builtins_meta.rs:790` but NOT registered in `standard_builtins()` — **FIXED by runtime-v2-rebase Phase 8**: now registered, returns `Value::Expression`, corpus tests updated (`src/builtins.rs`, `tests/corpus/eval/builtins/ast_of_*.llt-eval`)
-- [ ] Add `Value::Expression` arm to `value_to_expr` in `src/eval.rs:1787` via `ast_convert::surface_node_to_expr()` — needed for `[unquote (ast-of x)]` to work correctly; currently `Value::Expression` falls through to the Placeholder arm producing `Expr::Placeholder` instead of the wrapped expression (deferred to Part D) (`src/eval.rs:1787`, `src/ast_convert.rs`)
-- [ ] **MAJOR** `dict_to_ast` Variant path calls `try_get_materialized()` on payload thunk — fails for any Variant constructed via `[variant "Tag" payload]` in LLT (payload is lazy); macros producing Variant AST nodes cannot pass them to `eval-ast` until payload is materialized; document this constraint explicitly in `dict_to_ast` doc comment (`src/ast_dict.rs:1468-1486`)
-- [ ] Add RAII depth guard for `EXPAND_MACROS_DEPTH` in `src/expand.rs:378-406` — a panic inside `create_stdlib_env_with_arena()` leaves depth stuck at 1, causing all subsequent `expand_macros` calls to use bare root env silently (`src/expand.rs:381-405`)
-- [ ] `dict_to_file` only accepts `Value::Dict` for file root (not `Value::Variant`) while `dict_to_ast` accepts both — asymmetry is currently correct but undocumented and fragile; add doc comment (`src/ast_dict.rs:2256-2265`)
-- [ ] `do_infer_resolutions` not wired when typecheck is skipped — `[do]` inferred forms fail at runtime with undefined-variable for `:do-infer:N` sentinel; add comment documenting this expected degraded behavior (`src/lib.rs:279-280`, `src/eval.rs:785-800`)
+- [x] Add `Value::Expression` arm to `value_to_expr` — **FIXED (commit ed33064)**
+- [x] `dict_to_ast` Variant payload doc comment — **FIXED (commit ed33064)**
+- [x] RAII depth guard for `EXPAND_MACROS_DEPTH` — **FIXED (commit ed33064)**: `DepthGuard` struct with Drop impl
+- [x] `dict_to_file` doc comment — **FIXED (commit ed33064)**
+- [x] `do_infer_resolutions` degraded behavior doc — **FIXED (commit ed33064)**
 
 ### clippy-cap-std-lints: Enforce cap-std usage via clippy lints
 

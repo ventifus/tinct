@@ -633,6 +633,8 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
 ///
 /// Returns `base_env` unchanged on any IO or parse failure (best-effort approach).
 /// Depth is capped at `MAX_INCLUDE_DEPTH` to prevent runaway recursion.
+// AMBIENT-OK: typecheck-time include resolution falls back to std::fs when cap_dir unavailable.
+#[allow(clippy::disallowed_methods)]
 fn resolve_includes(
     include_paths: &[(Span, Option<String>, String)],
     base_dir: Option<&Path>,

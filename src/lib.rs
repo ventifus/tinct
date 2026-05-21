@@ -16,6 +16,8 @@
 //! - [`MAX_EVAL_DEPTH`] -- recursion limit for evaluation (256)
 //! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
 
+#![deny(clippy::disallowed_types, clippy::disallowed_methods)]
+
 pub(crate) mod arena;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
 pub mod ast;
@@ -1015,6 +1017,8 @@ pub fn format_with_json_llt(
     // Read json.llt source.
     // Use Ok(None) on any read failure (e.g. Landlock blocks access when --allow-path is set).
     // The caller falls back to value_to_json() in that case.
+    // AMBIENT-OK: stdlib bootstrap — reading json.llt from fixed stdlib path.
+    #[allow(clippy::disallowed_methods)]
     let json_llt_source = match std::fs::read_to_string(json_llt_path) {
         Ok(s) => s,
         Err(_) => return Ok(None),
