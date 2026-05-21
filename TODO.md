@@ -178,6 +178,48 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 ---
 
+## Post-Migration Health Check Findings (2026-05-20)
+
+### MAJOR: `ThunkStateGuard` unsafe aliasing hazard
+
+`ThunkStateGuard::deref()` in `src/value.rs:1158-1178` uses `unsafe` to return a reference to thread-local storage that is overwritten on every `.state()` call. If two guards exist simultaneously on the same thread (or any code between guard creation and use calls `.state()` again), the earlier reference silently aliases overwritten data. 66 call sites use `.state()`. This is a latent memory safety bug.
+
+**Fix:** Replace `ThunkStateGuard` with a non-`unsafe` pattern: either return owned `ThunkState` from `.state()` (eliminates zero-cost deref but is correct), or use `take_*` methods that already exist (e.g., `take_surface()`, `take_ast_node_field()`) to avoid `.state()` entirely.
+
+- [ ] Eliminate `unsafe` in `ThunkStateGuard::deref` — replace with owned-state return or expand `take_*` pattern to cover all 66 call sites (`src/value.rs`)
+
+### MAJOR: `builtin_load` discards resolution tables
+
+`builtin_load` in `src/builtins_meta.rs:1369-1370` computes `res_table` and `types_table` but assigns them to `_res_arc`/`_types_arc` (underscore-prefixed), which are immediately dropped. The comment says "Cache the res_table alongside the thunk" but no caching occurs. Downstream, `builtin_eval` in `src/builtins_meta.rs:1551-1552` creates empty tables with a TODO comment. Result: Surface thunks from the `eval` builtin lack resolution data, so `lower()` produces `FreeVar` instead of de Bruijn `Var` for all variable references, causing fallback to name-based chain walks.
+
+**Fix:** Thread resolution/type tables through the `Value::Program` type (add fields to the variant) or via `IncludeCacheEntry::Cached`, so `builtin_eval` can retrieve them.
+
+- [ ] Thread ResolutionTable + TypeAnnotationTable from `builtin_load` to `builtin_eval` — currently discarded as `_res_arc`/`_types_arc` (`src/builtins_meta.rs`)
+
+### Minor: Blanket `#![allow(dead_code)]` on 3 files
+
+`src/lower.rs`, `src/ast_convert.rs`, `src/surface_fields.rs` all have file-level `#![allow(dead_code)]`. Their public APIs are actively used (11+ call sites for `ast_convert`, 8+ for `surface_fields`, 1 for `lower`). The blanket allow hides actually-dead internal helpers.
+
+- [ ] Narrow `#![allow(dead_code)]` in `src/lower.rs`, `src/ast_convert.rs`, `src/surface_fields.rs` to per-item `#[allow(dead_code)]` on specific unused helpers (`src/`)
+
+### Minor: Arena scaffolding `#[allow(dead_code)]` (8 items)
+
+`src/arena.rs` has 8 `#[allow(dead_code)]` annotations on arena-phase3 scaffolding (`alloc_root`, `alloc_letrec_group`, `fill_letrec_slot`, `FlatEnv` fields). These are intentional future-use scaffolding per the arena-phase3 plan. No action needed unless arena-phase3 is abandoned.
+
+### Nit: Stale `%rust` module comments
+
+`src/builtins.rs:1602` ("exposed via %rust 'meta' module") and `src/builtins.rs:1838` ("and %rust 'type-core'") reference the deleted `%rust` module mechanism. The `%rust` dict and `[include %rust "..."]` were deleted in include-decomp-redelete.
+
+- [ ] Update stale `%rust` comments in `src/builtins.rs:1602` and `src/builtins.rs:1838` (`src/builtins.rs`)
+
+### Nit: `lower.rs` has zero unit tests
+
+`src/lower.rs` is the SurfaceExpression-to-CoreExpr lowering pass, called from the Surface thunk handler in `eval.rs:2879`. It has zero unit tests. Exercised indirectly via the Surface thunk path in integration tests, but no targeted coverage of individual lowering cases (VarRef resolution, Pipe desugaring, TypeAssert elaboration).
+
+- [ ] Add unit tests for `src/lower.rs` — cover VarRef→Var/FreeVar, Pipe→Call, TypeAssert, error cases (`src/lower.rs`)
+
+---
+
 ## include-decomp Regression (from runtime-v2 merge)
 
 The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge (2026-05-20) reintroduced old code that include-decomp had deleted. Review: `/review-whatif include-decomposition` confirmed these regressions.
