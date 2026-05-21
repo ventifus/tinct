@@ -437,13 +437,36 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let is_binary = caps.contains_key("Binary");
 
     use std::io::Read;
+    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+
     if is_binary {
-        // Read to bytes
+        // Read to bytes with size limit (check length during read)
         let mut contents = Vec::new();
-        handle
-            .borrow_mut()
-            .read_to_end(&mut contents)
-            .map_err(|e| EvalError::user_error(format!("slurp: read failed: {}", e), call_span))?;
+        const CHUNK_SIZE: usize = 8192;
+        loop {
+            let mut chunk = vec![0u8; CHUNK_SIZE];
+            let n = handle
+                .borrow_mut()
+                .read(&mut chunk)
+                .map_err(|e| EvalError::user_error(format!("slurp: read failed: {}", e), call_span))?;
+
+            if n == 0 {
+                break; // EOF
+            }
+
+            contents.extend_from_slice(&chunk[..n]);
+
+            if contents.len() > MAX_FILE_SIZE as usize {
+                return Err(EvalError::resource_limit_exceeded(
+                    format!(
+                        "slurp: file exceeds maximum size ({} bytes)",
+                        MAX_FILE_SIZE
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+        }
 
         let len = contents.len();
         ok_val(
@@ -455,12 +478,23 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             call_span,
         )
     } else {
-        // Read to string (Text encoding)
+        // Read to string (Text encoding) with size limit
         let mut contents = String::new();
         handle
             .borrow_mut()
             .read_to_string(&mut contents)
             .map_err(|e| EvalError::user_error(format!("slurp: read failed: {}", e), call_span))?;
+
+        if contents.len() > MAX_FILE_SIZE as usize {
+            return Err(EvalError::resource_limit_exceeded(
+                format!(
+                    "slurp: file exceeds maximum size ({} bytes)",
+                    MAX_FILE_SIZE
+                ),
+                call_span,
+            )
+            .into());
+        }
 
         ok_val(string_val(&contents), call_span)
     }

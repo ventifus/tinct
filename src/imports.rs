@@ -812,11 +812,17 @@ fn resolve_includes(
         include_bindings.insert(*span, bindings);
 
         // Recursively resolve includes from this file.
-        // For nested files, we don't pass the cap dir — they resolve against their own
-        // parent directory (a different base), so RESOLVE_BENEATH would need a new Dir
-        // scoped to that parent. Nested includes fall back to std::fs (path-checked above).
+        // Open a new cap-std Dir for the nested file's parent directory to enforce
+        // RESOLVE_BENEATH on nested includes (no std::fs fallback).
         let nested_includes = collect_include_paths(&file.node);
         let parent_dir = normalized.parent();
+        // AMBIENT-OK: Nested include resolution opens parent dir to enforce RESOLVE_BENEATH
+        #[allow(clippy::disallowed_methods)]
+        let nested_cap_dir = if let Some(parent) = parent_dir {
+            cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority()).ok()
+        } else {
+            None
+        };
         let (nested_env, nested_bindings) = resolve_includes(
             &nested_includes,
             parent_dir,
@@ -824,7 +830,7 @@ fn resolve_includes(
             env,
             visited,
             depth + 1,
-            None,
+            nested_cap_dir.as_ref(),
         );
         env = nested_env;
 

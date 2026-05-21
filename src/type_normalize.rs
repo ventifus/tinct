@@ -363,6 +363,8 @@ pub(crate) fn evaluate_resolver(
     // Create a minimal EvalContext for type-stage evaluation.
     // We use new_empty() to avoid inheriting stale stdlib ThunkId caches — the
     // type-stage env was built with its own bootstrap EvalContext and ThunkArena.
+    // AMBIENT-OK: Type-stage evaluation uses CWD as base_dir (no file I/O).
+    #[allow(clippy::disallowed_methods)]
     let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
     let ctx = crate::eval::EvalContext::new_empty(base_dir, Rc::clone(env), false);
 

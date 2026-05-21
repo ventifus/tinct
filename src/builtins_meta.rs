@@ -1251,12 +1251,11 @@ pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 
     #[cfg(not(unix))]
     let identity = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        // On non-Unix, use the Debug representation of the Dir as a stable-ish id.
-        let mut hasher = DefaultHasher::new();
-        format!("{:?}", *dir).hash(&mut hasher);
-        format!("0:{}", hasher.finish())
+        // On non-Unix, use blake3 hash of the Debug representation of the Dir.
+        // This provides a stable, collision-resistant identity across process restarts.
+        let debug_repr = format!("{:?}", *dir);
+        let hash = blake3::hash(debug_repr.as_bytes());
+        format!("0:{}", hash.to_hex())
     };
 
     ok_val(string_val(identity.as_str()), call_span)
@@ -1284,23 +1283,31 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
 
-    // Extract optional name: named arg
-    let name_hint: Option<String> = if let Some(named_map) = named {
+    // Extract optional name: and hash: named args
+    let (name_hint, expected_hash): (Option<String>, Option<String>) = if let Some(named_map) = named {
         // Reject unknown named args
         for key in named_map.keys() {
-            if key != "name" {
+            if key != "name" && key != "hash" {
                 return Err(EvalError::named_arg_rejected("load".to_string(), call_span).into());
             }
         }
-        if let Some(name_thunk) = named_map.get("name") {
+        let name_hint = if let Some(name_thunk) = named_map.get("name") {
             let name_val = materialize(name_thunk, Some(&call_span), &ctx)?;
             let name_str = require_string("load", name_val, name_thunk.span)?;
             Some(name_str)
         } else {
             None
-        }
+        };
+        let expected_hash = if let Some(hash_thunk) = named_map.get("hash") {
+            let hash_val = materialize(hash_thunk, Some(&call_span), &ctx)?;
+            let hash_str = require_string("load", hash_val, hash_thunk.span)?;
+            Some(hash_str)
+        } else {
+            None
+        };
+        (name_hint, expected_hash)
     } else {
-        None
+        (None, None)
     };
 
     // Extract source string
@@ -1309,6 +1316,25 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     // Use name hint for error messages
     let display_name = name_hint.as_deref().unwrap_or("<load>");
+
+    // Integrity hash verification
+    if let Some(expected) = &expected_hash {
+        let actual = blake3_hex(source.as_bytes());
+        if actual != *expected {
+            return Err(EvalError::include_hash_mismatch(
+                display_name.to_string(),
+                expected.clone(),
+                actual,
+                call_span,
+            )
+            .into());
+        }
+    } else if ctx.config.require_integrity {
+        // --require-integrity flag is set but no hash: argument provided
+        return Err(
+            EvalError::include_hash_required(display_name.to_string(), call_span).into()
+        );
+    }
 
     // Parse
     let parsed = crate::parser::parse(&source).map_err(|e| {

@@ -515,6 +515,11 @@ fn pre_scan_follow_libdir_include(
     stdlib_env: &Rc<RefCell<Environment>>,
     _call_span: crate::ast::Span,
 ) {
+    // Guard: do not read files if no_fs is set (LSP security)
+    if ctx.config.no_fs {
+        return;
+    }
+
     std::thread_local! {
         static PRESCAN_INCLUDE_STACK: RefCell<HashSet<String>> =
             RefCell::new(HashSet::new());
@@ -526,13 +531,24 @@ fn pre_scan_follow_libdir_include(
         return;
     }
 
-    // Find libdir and load the file
+    // Find libdir and open it as a DirCap (cap-std RESOLVE_BENEATH enforced)
     let libdir_path = match crate::find_libdir_path() {
         Some(p) => p,
         None => return,
     };
-    let full_path = libdir_path.join(file_name);
-    let source = match std::fs::read_to_string(&full_path) {
+    #[allow(clippy::disallowed_methods)]
+    let libdir = match cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority()) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+
+    // Open and read the file using cap-std (RESOLVE_BENEATH prevents traversal)
+    let source = match libdir.open(file_name).and_then(|mut f| {
+        use std::io::Read;
+        let mut s = String::new();
+        f.read_to_string(&mut s)?;
+        Ok(s)
+    }) {
         Ok(s) => s,
         Err(_) => return,
     };

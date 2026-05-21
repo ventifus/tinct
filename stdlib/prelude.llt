@@ -2551,13 +2551,17 @@ Reset include cache entry on error and re-raise. Internal helper for include.
 include-evaluate-and-cache: [fn@[return: Any  doc: """
 Evaluate a file and update the content-addressed include cache.
 
-source: source text string
-path:   file path string (for error spans)
-hash:   content cache key (blake3(cap-identity + "|" + source))
-cap:    DirCap — passed as %include-dir; included files start with % = []
-"""] [let source path hash cap]
+source:         source text string
+path:           file path string (for error spans)
+hash:           content cache key (blake3(cap-identity + "|" + source))
+cap:            DirCap — passed as %include-dir; included files start with % = []
+integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+"""] [let source path hash cap integrity-hash: null]
   [include-cache-put hash Pending]
-  [match [try [fn [] [eval-file [expand [load source name: path]] [] cap]]]
+  [program: [if [= integrity-hash null]
+    [load source name: path]
+    [load source name: path hash: integrity-hash]]]
+  [match [try [fn [] [eval-file [expand program] [] cap]]]
     [Ok result]: [include-cache-success hash result]
     [Error e]:   [include-cache-failure hash e]]]
 
@@ -2574,19 +2578,20 @@ cap:    DirCap — passed as %include-dir; included files start with % = []
 include: [fn@[return: Any  doc: """
 Load, expand, and evaluate a tinct file from a DirCap.
 
-cap:  DirCap — confines filesystem access; injected as %include-dir
-path: String — file path relative to cap
+cap:            DirCap — confines filesystem access; injected as %include-dir
+path:           String — file path relative to cap
+integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
 
 Uses content-addressed memoization: blake3(cap-identity + "|" + source).
 Detects circular includes via [Pending] cache state.
 Included files start with % = [] (fresh pipeline input).
-"""] [let cap@DirCap path@String]
+"""] [let cap@DirCap path@String integrity-hash: null]
   [source: [slurp [open cap path Readable]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [include-cache-get hash]
     [Cached result]: result
     Pending:         [error [str "circular include: " path]]
-    Missing:         [include-evaluate-and-cache source path hash cap]]]
+    Missing:         [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
 
 # cli-pipeline: multi-file pipeline for `tinct run file1.llt file2.llt ...`.
 #

@@ -2,6 +2,18 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## Security
+
+### security-sprint: Fix security regressions from include-decomp
+
+- [x] **CRITICAL** `--require-integrity` is completely non-functional after include-decomp-prelude deleted `builtin_include` — `EvalError::include_hash_mismatch`/`include_hash_required` exist but are never called; self-hosted `include` in `stdlib/prelude.llt` never checks `ctx.config.require_integrity`; implement integrity checking: add `hash:` named arg to `builtin_load` for the expected blake3 hash, verify in the self-hosted `include` function before returning the cached/evaluated result, raise `EvalError::include_hash_mismatch` on mismatch (`src/builtins_meta.rs:1685-1687`, `stdlib/prelude.llt:2462-2477`)
+- [x] **CRITICAL** Path traversal in macro pre-scan: `pre_scan_follow_libdir_include` reads files via `std::fs::read_to_string(libdir_path.join(file_name))` with no canonicalization or prefix check — `[include %libdir "../../etc/passwd"]` in a defmacro body reads arbitrary files bypassing cap-std; fix: replace `std::fs::read_to_string` with `cap_std::fs::Dir::open()` + `Read::read_to_string()` using the `libdir` DirCap (which enforces `RESOLVE_BENEATH` at the kernel level); also add `if ctx.config.no_fs { return; }` guard before the read (`src/expand.rs:594-602`)
+- [x] `builtin_slurp` has no file size limit — self-hosted include pipeline reads files via `[slurp [open cap path Readable]]`; no MAX_FILE_SIZE enforcement; add `Read::take(MAX_FILE_SIZE + 1)` + length check to both text and binary branches (`src/builtins_io.rs:439-466`)
+- [x] `check-ambient-dir` CI check — rewrite to list all `#[allow(clippy::disallowed` callsites as a human-review reminder (enforcement moves to clippy); remove the `|| true` escape hatch and the `// AMBIENT-OK` filter; also add `#[allow(clippy::disallowed_methods)]` to `src/type_normalize.rs:355` (currently uncaught bare `open_ambient_dir`) (`justfile:294`, `src/type_normalize.rs:355`)
+- [x] Nested includes in `resolve_includes` fall back to `std::fs` + software path check — recursive `resolve_includes` at `src/imports.rs:820-828` passes `None` for `base_cap_dir`, using software `starts_with()` check instead of cap-std kernel-level RESOLVE_BENEATH; fix: open a new `cap_std::fs::Dir` for the nested file's parent and pass it in the recursive call (`src/imports.rs:820-828`)
+- [x] Remove dead `lsp_eval_env` construction block at `src/lsp/document.rs:160-306` — constructs `DirPerms::full()` DirCaps and immediately discards them; misleading dead code; replace with comment explaining LSP eval is intentionally skipped (`src/lsp/document.rs:160-306`)
+- [x] `cap-identity` non-Unix fallback uses `DefaultHasher` (non-stable, randomized per process) — include cache key invalid across restarts; fix: use `blake3::hash(...)` for stable, collision-resistant identity (`src/builtins_meta.rs:1466-1474`)
+
 ## Research
 
 ### `research-parameterized-dict`

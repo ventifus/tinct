@@ -55,7 +55,7 @@ impl DocumentState {
     /// the type environment. Pass `None` for source-only contexts.
     pub fn new(
         text: String,
-        stdlib_env: &Rc<RefCell<Environment>>,
+        _stdlib_env: &Rc<RefCell<Environment>>,
         eval_ctx: &Rc<crate::eval::EvalContext>,
         base_dir: Option<&std::path::Path>,
     ) -> Self {
@@ -157,141 +157,6 @@ impl DocumentState {
             // The type checker gets runtime percent-vars via build_type_env(); we inject
             // real DirCap values here so the evaluator can resolve [include %libdir ...]
             // and [include %pwd ...] without spurious E002 errors.
-            let lsp_eval_env = {
-                use crate::ast::{Annotation, Span};
-                use crate::value::{Thunk, Value};
-                use indexmap::IndexMap;
-
-                // Always create a fresh child env — never mutate the shared stdlib_env.
-                let env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-                    stdlib_env,
-                ))));
-
-                {
-                    let mut e = env.borrow_mut();
-                    let zero = Span::origin();
-
-                    // %libdir — actual stdlib directory (same path build_type_env uses).
-                    if let Some(libdir_path) = crate::find_libdir_path() {
-                        if let Ok(dir) = cap_std::fs::Dir::open_ambient_dir(
-                            &libdir_path,
-                            cap_std::ambient_authority(),
-                        ) {
-                            e.insert(
-                                "%libdir".to_string(),
-                                Rc::new(Thunk::new_materialized(
-                                    Value::DirCap {
-                                        dir: Rc::new(dir),
-                                        perms: crate::value::DirPerms::full(),
-                                    },
-                                    zero,
-                                )),
-                            );
-                        }
-                    }
-
-                    // %pwd — document's directory.
-                    if let Some(pwd_path) = base_dir {
-                        if let Ok(dir) = cap_std::fs::Dir::open_ambient_dir(
-                            pwd_path,
-                            cap_std::ambient_authority(),
-                        ) {
-                            e.insert(
-                                "%pwd".to_string(),
-                                Rc::new(Thunk::new_materialized(
-                                    Value::DirCap {
-                                        dir: Rc::new(dir),
-                                        perms: crate::value::DirPerms::full(),
-                                    },
-                                    zero,
-                                )),
-                            );
-                        }
-                    }
-
-                    // %stdin — stub string; LSP has no real stdin.
-                    let source = Rc::<str>::from("lsp-stub-stdin");
-                    e.insert(
-                        "%stdin".to_string(),
-                        Rc::new(Thunk::new_materialized(
-                            Value::String {
-                                source: Rc::clone(&source),
-                                start: 0,
-                                end: source.len(),
-                            },
-                            zero,
-                        )),
-                    );
-                }
-
-                // Inject stub caps for capabilities declared in `--- caps:` sections.
-                for doc in &file.node.documents {
-                    if let Some(ref caps_ann) = doc.node.caps {
-                        for (cap_name, annotation) in &caps_ann.node {
-                            let full_cap_name = format!("%{}", cap_name);
-
-                            // Skip if already injected above.
-                            if env.borrow().get(&full_cap_name).is_some() {
-                                continue;
-                            }
-
-                            let stub_value = match annotation {
-                                Annotation::Simple(type_name) if type_name == "NetCap" => {
-                                    Value::NetCap(Rc::new(vec![]))
-                                }
-                                Annotation::Simple(type_name) if type_name == "DirCap" => {
-                                    // Try to open a stub directory for DirCap: "." first, then temp_dir.
-                                    // If both fail, fall back to an empty Dict stub. The LSP must never
-                                    // panic on filesystem errors — degraded service is preferable to
-                                    // crashing the editor.
-                                    match cap_std::fs::Dir::open_ambient_dir(
-                                        ".",
-                                        cap_std::ambient_authority(),
-                                    )
-                                    .or_else(|_| {
-                                        cap_std::fs::Dir::open_ambient_dir(
-                                            std::env::temp_dir(),
-                                            cap_std::ambient_authority(),
-                                        )
-                                    }) {
-                                        Ok(stub_dir) => Value::DirCap {
-                                            dir: Rc::new(stub_dir),
-                                            perms: crate::value::DirPerms::full(),
-                                        },
-                                        Err(e) => {
-                                            eprintln!(
-                                                "LSP: warning: failed to open stub dir for DirCap (tried . and temp_dir): {}; using empty Dict stub",
-                                                e
-                                            );
-                                            Value::Dict(IndexMap::new())
-                                        }
-                                    }
-                                }
-                                Annotation::Simple(type_name) if type_name == "Handle" => {
-                                    let source = Rc::<str>::from("lsp-stub-handle");
-                                    Value::String {
-                                        source: Rc::clone(&source),
-                                        start: 0,
-                                        end: source.len(),
-                                    }
-                                }
-                                Annotation::Simple(type_name) if type_name == "ClockCap" => {
-                                    Value::ClockCap(Rc::new(crate::value::ClockCapInner::Fixed(0)))
-                                }
-                                _ => Value::Dict(IndexMap::new()),
-                            };
-
-                            env.borrow_mut().insert(
-                                full_cap_name,
-                                Rc::new(Thunk::new_materialized(stub_value, caps_ann.span)),
-                            );
-                        }
-                    }
-                }
-
-                env
-            };
-
             // Evaluation intentionally skipped in LSP context.
             //
             // The type checker (above) provides everything LSP features need: type_map
@@ -303,7 +168,10 @@ impl DocumentState {
             //
             // If pure-eval diagnostics are added in future, gate them on the document
             // declaring no caps and using no % variables.
-            let _ = lsp_eval_env; // suppress unused-variable warning
+            //
+            // Historical note: Prior to security-sprint, this code constructed DirPerms::full()
+            // DirCaps for %pwd and %libdir, then immediately discarded them. That construction
+            // has been removed — the LSP does not evaluate code, so eval env setup is unnecessary.
 
             ast = Ok(file);
         }
