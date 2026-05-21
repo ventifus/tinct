@@ -461,6 +461,10 @@ Expression: [type
   [Placeholder  span: Span]
   [Error  span: Span]]
 
+# Pattern is an alias for Expression - patterns in match arms are Expression nodes.
+# This alias provides API clarity for function signatures accepting patterns.
+Pattern: Expression
+
 Declaration: [type
   [TypeAlias    params: [Seq String]  body: Expression]
   [ClassDecl    name: String  params: [Seq String]]
@@ -2469,11 +2473,11 @@ eval-document-runtime: [fn@[return: Dict  doc: """
 Evaluate one Runtime-stage document, returning updated pipeline state.
 
 state: {prev: Any, named: Dict} — pipeline state
-doc: document AST dict from load/expand
+doc: Document value from load/expand
 include-dir: DirCap injected as %include-dir
 
 Returns: updated state {prev: result, named: updated-named-sections}
-"""] [let state doc include-dir]
+"""] [let state doc@Document include-dir]
   [prev-val: state.prev]
   [result: [eval
     doc.expressions
@@ -2482,9 +2486,9 @@ Returns: updated state {prev: result, named: updated-named-sections}
            [merge [if [dict? prev-val] prev-val []] state.named]
            ["%include-dir": include-dir]]]]
   [prev:  result
-   named: [if [str? doc.name]
-            [merge state.named [[str "%" doc.name]: result]]
-            state.named]]]
+   named: [match doc.name
+            [Named n]: [merge state.named [[str "%" n]: result]]
+            Unnamed:   state.named]]]
 
 # eval-document-pipeline: thread % through all documents in a file AST dict.
 #
@@ -2499,14 +2503,14 @@ eval-document-pipeline: [fn@[return: Any  doc: """
 Evaluate all documents in a file, threading % and named sections through each.
 
 initial: initial % value ([] for included files, caller % for CLI pipeline)
-docs: positional dict of document AST dicts
+docs: Seq of Document values from Program.documents
 include-dir: DirCap — injected as %include-dir so sub-includes work
 
 Skips [Type] stage documents. Returns the final document's result.
-"""] [let initial docs include-dir]
+"""] [let initial docs@[Seq Document] include-dir]
   [get "prev"
     [reduce
-      [fn@[return: Dict] [let state doc]
+      [fn@[return: Dict] [let state doc@Document]
         [match doc.stage
           Type:    state
           Runtime: [eval-document-runtime state doc include-dir]]]
@@ -2519,14 +2523,14 @@ Skips [Type] stage documents. Returns the final document's result.
 # initial:     initial pipeline input % ([] for included files)
 # include-dir: DirCap for %include-dir (sub-include capability)
 eval-file: [fn@[return: Any  doc: """
-Evaluate a parsed file AST dict.
+Evaluate a parsed file AST Program.
 
-ast: file AST dict from [expand [load source name: path]]
+ast: Program from [expand [load source name: path]]
 initial: initial % value for the first document ([] for includes)
 include-dir: DirCap injected as %include-dir for sub-includes
 
 Returns the last document's result.
-"""] [let ast@Dict initial include-dir]
+"""] [let ast@Program initial include-dir]
   [eval-document-pipeline initial ast.documents include-dir]]
 
 # include-cache-success: store [Cached result] in the cache and return result.
