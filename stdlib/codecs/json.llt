@@ -173,8 +173,8 @@ to-json-primitive: [fn [v]
     [[dict?  v]   [to-json-dict v]]
     # Variant values (Program/Document/Expression) are handled by the match dispatch in
     # to-json above. All other variant values (user-defined, Ok/Error, etc.) produce "null"
-    # here — payload-of is not yet in prelude so structured serialization is deferred.
-    # TODO: once payload-of/tag-of are accessible, serialize as {"Tag": payload}.
+    # here — payload-of is now available in prelude (added in runtime-v2-rebase sprint);
+    # Variant serialization can be improved to use it in a future sprint.
     [true         "null"]]]
 
 # ---- Deserializer helpers ----
@@ -247,8 +247,8 @@ json-unescape: [fn [c@String]
     [[= c "n"]  "\n"]
     [[= c "r"]  "\r"]
     [[= c "t"]  "\t"]
-    [[= c "b"]  "\b"]
-    [[= c "f"]  "\f"]
+    [[= c "b"]  [chr 8]]
+    [[= c "f"]  [chr 12]]
     [true [raise [str "JSON: unknown escape \\" c]]]]]
 
 json-parse-string-body: [fn [s@String acc@String]

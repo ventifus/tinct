@@ -1,7 +1,5 @@
-# ast-of on literal expression returns AST dict of the literal
-[include %rust "meta"]
-[ast-of 42]
+# ast-of on literal expression returns Expression value
+# ast-of is a standard builtin (no include needed)
+[type-of [ast-of 42]]
 === out
-Variant(Literal, Dict({"kind": String("int"), "value": Int(42), "span": Dict({"start": Dict({"line": Int(2), "col": Int(9), "offset": Int(31)}), "end": Dict({"line": Int(2), "col": Int(11), "offset": Int(33)})})}))
-=== warn
-undefined variable: ast-of at 2:2-2:8
+String("Expression")

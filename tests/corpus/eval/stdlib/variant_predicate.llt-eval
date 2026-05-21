@@ -1,0 +1,4 @@
+# variant? returns true for Variant values
+[variant? [variant "Ok" 42]]
+=== out
+Bool(true)

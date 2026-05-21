@@ -100,6 +100,19 @@ pub(crate) enum RestoreState {
         blame_label: Option<crate::error::BlameLabel>,
         default: DefaultFallback,
     },
+    Surface {
+        node: std::sync::Arc<crate::ast::SurfaceNode>,
+        res: std::sync::Arc<crate::ast::ResolutionTable>,
+        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
+        env: Rc<RefCell<Environment>>,
+        env_id: Option<crate::arena::EnvId>,
+        ctx: Rc<EvalContext>,
+    },
+    // TODO (Part D): add RestoreState::AstNodeField when surface_node_get_field can fail.
+    // Currently ThunkState::AstNodeField is handled synchronously and infallibly (stub always
+    // returns empty dict), so no restore state is needed. When Part D implements real field
+    // extraction with error semantics, add:
+    //   AstNodeField { node: Arc<SurfaceNode>, field: &'static str }
 }
 
 impl RestoreState {
@@ -165,6 +178,23 @@ impl RestoreState {
                     guard_span,
                     blame_label,
                     default,
+                });
+            }
+            RestoreState::Surface {
+                node,
+                res,
+                types,
+                env,
+                env_id,
+                ctx,
+            } => {
+                thunk.set_state(ThunkState::Surface {
+                    node,
+                    res,
+                    types,
+                    env,
+                    env_id,
+                    ctx,
                 });
             }
         }
@@ -405,7 +435,9 @@ pub(crate) fn force_step(
             ThunkState::Unevaluated { .. }
             | ThunkState::PendingBuiltin { .. }
             | ThunkState::PendingCall { .. }
-            | ThunkState::Guarded { .. } => {}
+            | ThunkState::Guarded { .. }
+            | ThunkState::Surface { .. }
+            | ThunkState::AstNodeField { .. } => {}
         }
     }
 
@@ -717,11 +749,60 @@ pub(crate) fn force_step(
             thunk: Rc::clone(&inner),
             mat_span,
         }
+    } else if let Some((node, res, types, env, env_id, thunk_ctx)) = thunk.take_surface() {
+        // Surface AST node: convert to Expr, evaluate, and materialize.
+        // This mirrors the old materialize() Surface handler (eval.rs) but in the iterative path.
+        // Bridge implementation: deleted in Sprint 1 Part E.
+        let restore = RestoreState::Surface {
+            node: std::sync::Arc::clone(&node),
+            res: std::sync::Arc::clone(&res),
+            types: std::sync::Arc::clone(&types),
+            env: Rc::clone(&env),
+            env_id,
+            ctx: Rc::clone(&thunk_ctx),
+        };
+        let expr = crate::ast_convert::surface_node_to_expr(&node);
+        match eval(Rc::new(expr), Rc::clone(&env), &thunk_ctx) {
+            Ok(result_thunk) => {
+                stack.push(Cont::Memoize(Box::new(MemoizeData {
+                    thunk: Rc::clone(thunk),
+                    origin,
+                    thunk_span,
+                    mat_span,
+                    restore: Some(restore),
+                    ctx: Rc::clone(&thunk_ctx),
+                })));
+                Action::Materialize {
+                    thunk: result_thunk,
+                    mat_span,
+                }
+            }
+            Err(e) => {
+                let decorated = attach_materialization_context(
+                    e,
+                    mat_span.as_ref(),
+                    origin.as_deref(),
+                    thunk_span,
+                );
+                if decorated.kind.is_cacheable() {
+                    thunk.cache_failure(&decorated);
+                } else {
+                    restore.restore(thunk);
+                }
+                Action::Continue(Err(decorated))
+            }
+        }
+    } else if let Some((node, field, field_ctx)) = thunk.take_ast_node_field() {
+        // AstNodeField: extract the named field from the SurfaceNode lazily.
+        // surface_node_get_field is a stub returning null in this minimal implementation.
+        let value = crate::surface_fields::surface_node_get_field(&node, field, &field_ctx);
+        thunk.set_state(ThunkState::Materialized(value.clone()));
+        Action::Continue(Ok(value))
     } else {
         unreachable!(
             "force_step: all ThunkState variants are handled. \
              Materialized/Failed/InProgress are early-returned at lines 1416-1453, \
-             Unevaluated/PendingBuiltin/PendingCall/Guarded are processed above. \
+             Unevaluated/PendingBuiltin/PendingCall/Guarded/Surface/AstNodeField are processed above. \
              If this fires, a new ThunkState variant was added without updating force_step."
         )
     }
@@ -1480,11 +1561,30 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 }
                             }
                         }
+                        Value::Expression(node) => {
+                            // AST node field access: extract field lazily via AstNodeField thunk.
+                            // Field names are static strings from the SurfaceExpression enum variants.
+                            // surface_node_get_field returns null for unrecognized fields.
+                            // Use a pre-computed static string pool for known field names to avoid
+                            // memory leaks from Box::leak on every DotAccess.
+                            let field_static: &'static str =
+                                crate::surface_fields::intern_field_name(&field_str);
+                            let field_thunk = Rc::new(Thunk::new_ast_node_field(
+                                node.clone(),
+                                field_static,
+                                Rc::clone(&ctx),
+                                access_span,
+                            ));
+                            Action::Materialize {
+                                thunk: field_thunk,
+                                mat_span: outer_mat_span.or(Some(access_span)),
+                            }
+                        }
                         other => {
                             // Type mismatch: report definition site and access site.
                             let mut err = EvalError::type_mismatch_ctx(
                                 "dot access".to_string(),
-                                "Dict, Proxy, or Variant",
+                                "Dict, Proxy, Variant, or Expression",
                                 other.type_name(),
                                 target_def_span,
                             )

@@ -2262,7 +2262,9 @@ pub fn materialize(
             ThunkState::Unevaluated { .. }
             | ThunkState::PendingBuiltin { .. }
             | ThunkState::PendingCall { .. }
-            | ThunkState::Guarded { .. } => {}
+            | ThunkState::Guarded { .. }
+            | ThunkState::Surface { .. }
+            | ThunkState::AstNodeField { .. } => {}
         }
     }
 
@@ -2829,9 +2831,67 @@ pub fn materialize(
                 Err(e)
             }
         }
+    } else if let Some((node, res, types, env, env_id, thunk_ctx)) = thunk.take_surface() {
+        // Surface AST node that needs lowering to CoreExpr before evaluation.
+        // Bridge implementation: convert Surface → Expr → evaluate.
+        // Part E will replace this with direct Surface evaluation.
+        //
+        // NOTE: `res` and `types` (the ResolutionTable and TypeAnnotationTable) are
+        // captured but NOT consulted during bridge evaluation. The bridge calls
+        // `surface_node_to_expr()` which produces fresh `Expr` nodes with
+        // `resolved: RefCell::new(None)` — these nodes bypass de Bruijn slot lookup
+        // and use name-based environment lookup instead. This means:
+        //   1. The O(1) arena-slot lookup path (Part E) cannot be used here.
+        //   2. The bridge-produced Expr nodes must not be resolved via the standard
+        //      VarRef resolution path, which would panic on double-resolution.
+        // `res` and `types` are preserved solely for state restoration on non-cacheable
+        // errors (e.g., DepthExceeded), so the thunk can be re-evaluated at a shallower
+        // depth. They become meaningful only in Part E when the Surface path evaluates
+        // directly using CoreExpr + de Bruijn coordinates.
+        let expr = crate::ast_convert::surface_node_to_expr(&node);
+        let result = eval(Rc::new(expr), Rc::clone(&env), &thunk_ctx)
+            .and_then(|result_thunk| {
+                run(
+                    Action::Materialize {
+                        thunk: result_thunk,
+                        mat_span: mat_span.copied(),
+                    },
+                    &thunk_ctx,
+                )
+            })
+            .map_err(&decorate);
+
+        match result {
+            Ok(value) => {
+                thunk.set_state(ThunkState::Materialized(value.clone()));
+                Ok(value)
+            }
+            Err(e) => {
+                // Restore Surface state for non-cacheable errors (e.g., DepthExceeded)
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                } else {
+                    thunk.set_state(ThunkState::Surface {
+                        node,
+                        res,
+                        types,
+                        env,
+                        env_id,
+                        ctx: thunk_ctx,
+                    });
+                }
+                Err(e)
+            }
+        }
+    } else if let Some((node, field, field_ctx)) = thunk.take_ast_node_field() {
+        // Lazy field extraction from an AST node (for match pattern binding).
+        // Extract the field and materialize directly (field extraction is synchronous).
+        let value = crate::surface_fields::surface_node_get_field(&node, field, &field_ctx);
+        thunk.set_state(ThunkState::Materialized(value.clone()));
+        Ok(value)
     } else {
         unreachable!(
-            "state must be Unevaluated, PendingBuiltin, PendingCall, or Guarded. \
+            "state must be Unevaluated, PendingBuiltin, PendingCall, Guarded, Surface, or AstNodeField. \
              All other ThunkState variants are handled in the early-return section at the \
              top of this function: Materialized returns early, Failed returns early, \
              InProgress returns early and caches circular dependency error."

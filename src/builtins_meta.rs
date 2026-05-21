@@ -783,21 +783,22 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(string_val(name), call_span)
 }
 
-/// `ast-of`: returns metadata about a value's AST or thunk state.
+/// `ast-of`: returns the Surface AST representation of a value or thunk.
 ///
 /// This builtin does NOT materialize its argument, making it safe to use
 /// for introspection of unevaluated expressions.
 ///
-/// - Materialized values → metadata dict based on value type
-/// - Unevaluated thunks → AST dict from stored expression
-/// - PendingCall/PendingBuiltin → descriptor dict
-/// - Other thunk states → descriptor dict with state name
+/// - Unevaluated thunks → Value::Expression (SurfaceNode)
+/// - Materialized values → Placeholder expression
+/// - PendingCall/PendingBuiltin → Placeholder expression
+/// - Other thunk states → Placeholder expression
 pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    use std::sync::Arc;
     let BuiltinArgs {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Reject named args and ensure exactly 1 arg
@@ -811,228 +812,22 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Inspect the thunk state WITHOUT forcing it
     let state = thunk.state();
 
-    let dict_entries = match &*state {
-        crate::value::ThunkState::Materialized(val) => {
-            // Value is already materialized — return Variant(type_name, payload_dict),
-            // mirroring the Unevaluated branch which returns Variant(ast_tag, Dict(fields)).
-            match val {
-                crate::value::Value::Function {
-                    params, annotation, ..
-                } => {
-                    let mut entries = IndexMap::new();
-
-                    // Add params field as a list of param names
-                    let param_names: Vec<ThunkId> = params
-                        .iter()
-                        .map(|p| {
-                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                                string_val(&p.name),
-                                call_span,
-                            )))
-                        })
-                        .collect();
-
-                    if !param_names.is_empty() {
-                        let params_seq = param_names.into_iter().rev().fold(
-                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                                crate::value::Value::Dict(IndexMap::new()),
-                                call_span,
-                            ))),
-                            |tail, head| {
-                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                                    crate::value::Value::Seq { head, tail },
-                                    call_span,
-                                )))
-                            },
-                        );
-                        entries.insert(crate::value::Key::String("params".into()), params_seq);
-                    }
-
-                    // Add doc field if present
-                    if let Some(ann) = annotation {
-                        if let Some(ref doc_str) = ann.doc {
-                            entries.insert(
-                                crate::value::Key::String("doc".into()),
-                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                                    string_val(doc_str),
-                                    call_span,
-                                ))),
-                            );
-                        }
-                    }
-
-                    let payload_thunk =
-                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                            crate::value::Value::Dict(entries),
-                            call_span,
-                        )));
-                    return ok_val(
-                        crate::value::Value::Variant {
-                            tag: "Function".to_string(),
-                            payload: Some(payload_thunk),
-                        },
-                        call_span,
-                    );
-                }
-                other => {
-                    // For all other materialized types, return Variant(type_name, empty_dict)
-                    let payload_thunk =
-                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                            crate::value::Value::Dict(IndexMap::new()),
-                            call_span,
-                        )));
-                    return ok_val(
-                        crate::value::Value::Variant {
-                            tag: other.type_name().to_string(),
-                            payload: Some(payload_thunk),
-                        },
-                        call_span,
-                    );
-                }
-            }
-        }
+    match &*state {
         crate::value::ThunkState::Unevaluated { expr, .. } => {
-            // Thunk contains an unevaluated expression — convert AST to variant WITHOUT evaluating
-            let opts = crate::ast_dict::AstToDictOpts::default();
-            let ast_thunk = crate::ast_dict::ast_to_dict_expr(expr, &opts, &ctx)?;
-            // The ast_to_dict_expr now returns a Variant(tag, Dict), so just return the whole thing
-            match ast_thunk.try_get_materialized() {
-                Some(Value::Variant { .. }) => {
-                    // Return the variant directly (ast-of now returns Variant, not Dict)
-                    return Ok(ast_thunk);
-                }
-                Some(Value::Dict(_)) => {
-                    // Legacy path: if somehow we get a dict, return it
-                    return Ok(ast_thunk);
-                }
-                _ => {
-                    // This shouldn't happen — ast_to_dict_expr always returns Materialized(Variant)
-                    return Err(EvalError::internal(
-                        "ast_to_dict_expr did not return a materialized variant or dict"
-                            .to_string(),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
+            // Thunk contains an unevaluated expression — convert Expr to SurfaceNode
+            let surface_node = crate::ast_convert::expr_to_surface_node(expr);
+            return ok_val(crate::value::Value::Expression(surface_node), call_span);
         }
-        crate::value::ThunkState::PendingBuiltin { def, .. } => {
-            // Pending builtin call — return descriptor
-            let mut entries = IndexMap::new();
-            entries.insert(
-                crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("pending-builtin"),
-                    call_span,
-                ))),
-            );
-            entries.insert(
-                crate::value::Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val(def.name),
-                    call_span,
-                ))),
-            );
-            entries
+        _ => {
+            // For all other states (Materialized, PendingBuiltin, PendingCall, etc.),
+            // return a Placeholder expression
+            let placeholder_node = Arc::new(crate::ast::SurfaceNode {
+                expr: crate::ast::SurfaceExpression::Placeholder,
+                span: call_span,
+            });
+            return ok_val(crate::value::Value::Expression(placeholder_node), call_span);
         }
-        crate::value::ThunkState::PendingCall { .. } => {
-            // Pending function call — return descriptor
-            let mut entries = IndexMap::new();
-            entries.insert(
-                crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("pending-call"),
-                    call_span,
-                ))),
-            );
-            entries
-        }
-        crate::value::ThunkState::Guarded { .. } => {
-            // Type-guarded thunk — return descriptor
-            let mut entries = IndexMap::new();
-            entries.insert(
-                crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span,
-                ))),
-            );
-            entries.insert(
-                crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("guarded"),
-                    call_span,
-                ))),
-            );
-            entries
-        }
-        crate::value::ThunkState::InProgress => {
-            // Circular dependency detected — return descriptor
-            let mut entries = IndexMap::new();
-            entries.insert(
-                crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span,
-                ))),
-            );
-            entries.insert(
-                crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("in-progress"),
-                    call_span,
-                ))),
-            );
-            entries
-        }
-        crate::value::ThunkState::Failed(err) => {
-            // Failed evaluation — return error descriptor
-            let mut entries = IndexMap::new();
-            entries.insert(
-                crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span,
-                ))),
-            );
-            entries.insert(
-                crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("failed"),
-                    call_span,
-                ))),
-            );
-            entries.insert(
-                crate::value::Key::String("error".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val(&err.kind.to_string()),
-                    call_span,
-                ))),
-            );
-            entries
-        }
-        crate::value::ThunkState::Placeholder => {
-            // Placeholder state (should not be observable in user code)
-            let mut entries = IndexMap::new();
-            entries.insert(
-                crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span,
-                ))),
-            );
-            entries.insert(
-                crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
-                    string_val("placeholder"),
-                    call_span,
-                ))),
-            );
-            entries
-        }
-    };
-
-    ok_val(crate::value::Value::Dict(dict_entries), call_span)
+    }
 }
 
 /// `llt-repr`: takes 1 arg, deep-materializes it, returns its LLT display string representation.
@@ -1291,6 +1086,9 @@ fn type_name(val: &Value) -> String {
         Value::Http3Session(_) => "Http3Session",
         Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
         Value::DatagramHandle { .. } => "DatagramHandle",
+        Value::Program(_) => "Program",
+        Value::Document(_) => "Document",
+        Value::Expression(_) => "Expression",
     }
     .to_string()
 }

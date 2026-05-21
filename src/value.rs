@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::{Equivalent, IndexMap};
 
@@ -451,6 +452,12 @@ pub enum Value {
         socket: DatagramSocket,
         creation_span: Span,
     },
+    /// Surface AST program — created by `load`, consumed by `expand`.
+    Program(Arc<crate::ast::SurfaceProgram>),
+    /// Surface AST document — extracted from Program by match dispatch.
+    Document(Arc<crate::ast::SurfaceDocument>),
+    /// Surface AST expression — created by `ast-of`, dot-accessed for fields, matched on.
+    Expression(Arc<crate::ast::SurfaceNode>),
 }
 
 /// State for an HTTP/3 session: the request sender and the background driver task.
@@ -537,6 +544,9 @@ impl Value {
             Value::Http3Session(_) => "Http3Session",
             Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
             Value::DatagramHandle { .. } => "DatagramHandle",
+            Value::Program(_) => "Program",
+            Value::Document(_) => "Document",
+            Value::Expression(_) => "Expression",
         }
     }
 
@@ -616,6 +626,9 @@ impl fmt::Debug for Value {
             Value::Http3Session(_) => write!(f, "Http3Session"),
             Value::QuicDatagramHandle(_) => write!(f, "QuicDatagramHandle"),
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
+            Value::Program(_) => write!(f, "Program"),
+            Value::Document(_) => write!(f, "Document"),
+            Value::Expression(_) => write!(f, "Expression"),
         }
     }
 }
@@ -697,6 +710,9 @@ impl fmt::Display for Value {
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
             Value::QuicDatagramHandle(_) => write!(f, "<QuicDatagramHandle>"),
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
+            Value::Program(_) => write!(f, "<Program>"),
+            Value::Document(_) => write!(f, "<Document>"),
+            Value::Expression(_) => write!(f, "<Expression>"),
         }
     }
 }
@@ -863,6 +879,24 @@ pub enum ThunkState {
     InProgress,
     Materialized(Value),
     Failed(Box<EvalError>),
+    /// Surface AST node waiting to be lowered to Expr (runtime-v2 bridge).
+    /// Deleted in Sprint 1 Part E when evaluator uses Surface directly.
+    Surface {
+        node: Arc<crate::ast::SurfaceNode>,
+        res: Arc<crate::ast::ResolutionTable>,
+        types: Arc<crate::ast::TypeAnnotationTable>,
+        env: Rc<RefCell<Environment>>,
+        env_id: Option<crate::arena::EnvId>,
+        ctx: Rc<crate::eval::EvalContext>,
+    },
+    /// Lazy field extraction from an AST node (for match pattern binding).
+    /// The field name is a static string — one of the known field names for
+    /// the expression variant (e.g. "name", "args", "body").
+    AstNodeField {
+        node: Arc<crate::ast::SurfaceNode>,
+        field: &'static str,
+        ctx: Rc<crate::eval::EvalContext>,
+    },
 }
 
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
@@ -1164,6 +1198,68 @@ impl Thunk {
                 *state = other;
                 None
             }
+        }
+    }
+
+    /// Take ownership of Surface state, atomically setting state to InProgress.
+    /// Returns None if the thunk is not in the Surface state.
+    pub fn take_surface(
+        &self,
+    ) -> Option<(
+        Arc<crate::ast::SurfaceNode>,
+        Arc<crate::ast::ResolutionTable>,
+        Arc<crate::ast::TypeAnnotationTable>,
+        Rc<RefCell<Environment>>,
+        Option<crate::arena::EnvId>,
+        Rc<crate::eval::EvalContext>,
+    )> {
+        let mut state = self.state.borrow_mut();
+        match std::mem::replace(&mut *state, ThunkState::InProgress) {
+            ThunkState::Surface {
+                node,
+                res,
+                types,
+                env,
+                env_id,
+                ctx,
+            } => Some((node, res, types, env, env_id, ctx)),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    /// Take ownership of AstNodeField state, atomically setting state to InProgress.
+    /// Returns None if the thunk is not in the AstNodeField state.
+    pub fn take_ast_node_field(
+        &self,
+    ) -> Option<(
+        Arc<crate::ast::SurfaceNode>,
+        &'static str,
+        Rc<crate::eval::EvalContext>,
+    )> {
+        let mut state = self.state.borrow_mut();
+        match std::mem::replace(&mut *state, ThunkState::InProgress) {
+            ThunkState::AstNodeField { node, field, ctx } => Some((node, field, ctx)),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    /// Create a lazy AST node field thunk (for match pattern binding).
+    pub fn new_ast_node_field(
+        node: Arc<crate::ast::SurfaceNode>,
+        field: &'static str,
+        ctx: Rc<crate::eval::EvalContext>,
+        span: Span,
+    ) -> Self {
+        Self {
+            state: RefCell::new(ThunkState::AstNodeField { node, field, ctx }),
+            span,
+            origin: None,
         }
     }
 

@@ -254,6 +254,14 @@ pub struct ExpandResult {
     /// Populated from all macros with `inject:` declarations encountered during expansion.
     /// Used by the `macro-injects` builtin for runtime introspection.
     pub macro_injects_map: HashMap<String, String>,
+    /// The stdlib environment used during macro expansion.
+    ///
+    /// Callers (e.g., `eval_source_with_config`) can reuse this environment for evaluation
+    /// instead of calling `create_stdlib_env_with_arena()` again, avoiding a redundant
+    /// prelude load. When `None`, the caller must create its own stdlib env (re-entrant path).
+    pub stdlib_env: Option<Rc<std::cell::RefCell<crate::value::Environment>>>,
+    /// The stdlib arena used during macro expansion. Paired with `stdlib_env`.
+    pub(crate) stdlib_arena: Option<Rc<std::cell::RefCell<crate::arena::ThunkArena>>>,
 }
 
 /// Register stdlib macros by looking up transformer functions in the stdlib environment.
@@ -330,6 +338,31 @@ fn register_stdlib_macros_from_env(
 std::thread_local! {
     static EXPAND_MACROS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
+    /// Thread-local cache for the stdlib env used during macro expansion.
+    ///
+    /// Avoids creating a fresh stdlib env (and leaking an Rc cycle) on every call to
+    /// `expand_macros`. The cached env is a stable reference; callers that need to mutate
+    /// the env (e.g., injecting %pwd capabilities) use a child env backed by this parent.
+    ///
+    /// The cache is populated on the first `expand_macros` call (depth 0). Subsequent calls
+    /// return a clone of the cached `Rc<RefCell<Environment>>` backed by the same arena.
+    ///
+    /// **Security / SAFETY INVARIANT**: the cached stdlib env must NEVER be mutated after
+    /// being stored here. All per-eval state (capability injections, %pwd, %stdin, etc.)
+    /// must be placed in child envs backed by this parent. Mutation of the cached env
+    /// would corrupt all subsequent `expand_macros` calls on this thread. Although the
+    /// `Rc<RefCell<Environment>>` type is inherently mutable, no code path may call
+    /// `borrow_mut()` on the cached env directly — only child env creation via
+    /// `EvalContext::new_sharing_arena` is permitted.
+    ///
+    /// **Invalidation**: the cache is thread-local so each thread has its own instance.
+    /// Tests that patch stdlib behavior must clear the cache before use (no flush hook
+    /// currently exists — add one as a test utility in Part G if needed).
+    static EXPAND_STDLIB_CACHE: std::cell::RefCell<Option<(
+        Rc<std::cell::RefCell<crate::value::Environment>>,
+        Rc<std::cell::RefCell<crate::arena::ThunkArena>>,
+    )>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Expand all macros in a File AST.
@@ -375,31 +408,65 @@ pub fn expand_macros(
     //   expand_macros(user_code) → create_stdlib_env() → typecheck calls expand_macros(prelude.llt) →
     //   use create_root_env to break the cycle
     let depth = EXPAND_MACROS_DEPTH.get();
+    // Tracks whether we have a real stdlib env (depth==0) or just a root env (depth>0).
+    // Used to populate ExpandResult.stdlib_env for callers that want to reuse the env.
+    let mut result_stdlib_env: Option<Rc<std::cell::RefCell<crate::value::Environment>>> = None;
+    let mut result_stdlib_arena: Option<Rc<std::cell::RefCell<crate::arena::ThunkArena>>> = None;
+
     let (stdlib_env, ctx) = if depth == 0 {
         // Only call create_stdlib_env at depth 0 (top-level user code).
         // Increment depth to prevent re-entrance.
         EXPAND_MACROS_DEPTH.set(depth + 1);
-        let result = match builtins::create_stdlib_env_with_arena() {
-            Ok((env, arena)) => {
-                // Load stdlib macros from the fully-evaluated stdlib env.
-                // The stdlib defines macros via regular function exports that we
-                // register by looking them up by name after the stdlib is loaded.
-                register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
-                // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
-                // remain valid when transformer functions access them during expansion.
-                let ctx = EvalContext::new_sharing_arena(
-                    base_dir,
-                    Rc::clone(&env),
-                    no_fs,
-                    arena,
-                    HashMap::new(), // No macros registered yet during initial expansion
-                );
-                Ok((env, ctx))
+
+        // Check the thread-local cache first. This avoids creating a fresh stdlib env
+        // (and leaking an Rc cycle) on every expand_macros call. Repeated calls across
+        // corpus tests reuse the same cached prelude environment, reducing memory churn
+        // from ~3 stdlib loads × N tests to a single load amortized across all tests.
+        let cached = EXPAND_STDLIB_CACHE.with(|c| c.borrow().clone());
+        let result = if let Some((cached_env, cached_arena)) = cached {
+            // Cache hit: reuse the cached stdlib env and arena.
+            // The arena is shared so ThunkIds from prelude dicts remain valid.
+            register_stdlib_macros_from_env(&mut env_macro, &cached_env, file.span);
+            let ctx = EvalContext::new_sharing_arena(
+                base_dir,
+                Rc::clone(&cached_env),
+                no_fs,
+                Rc::clone(&cached_arena),
+                HashMap::new(),
+            );
+            result_stdlib_env = Some(Rc::clone(&cached_env));
+            result_stdlib_arena = Some(cached_arena);
+            Ok((cached_env, ctx))
+        } else {
+            // Cache miss: load the stdlib and populate the cache.
+            match builtins::create_stdlib_env_with_arena() {
+                Ok((env, arena)) => {
+                    // Populate the cache for future calls on this thread.
+                    EXPAND_STDLIB_CACHE.with(|c| {
+                        *c.borrow_mut() = Some((Rc::clone(&env), Rc::clone(&arena)));
+                    });
+                    // Load stdlib macros from the fully-evaluated stdlib env.
+                    // The stdlib defines macros via regular function exports that we
+                    // register by looking them up by name after the stdlib is loaded.
+                    register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
+                    // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
+                    // remain valid when transformer functions access them during expansion.
+                    let ctx = EvalContext::new_sharing_arena(
+                        base_dir,
+                        Rc::clone(&env),
+                        no_fs,
+                        Rc::clone(&arena),
+                        HashMap::new(), // No macros registered yet during initial expansion
+                    );
+                    result_stdlib_env = Some(Rc::clone(&env));
+                    result_stdlib_arena = Some(arena);
+                    Ok((env, ctx))
+                }
+                Err(e) => Err(EvalError::internal(
+                    format!("cannot create stdlib env for macro expansion: {e}"),
+                    file.span,
+                )),
             }
-            Err(e) => Err(EvalError::internal(
-                format!("cannot create stdlib env for macro expansion: {e}"),
-                file.span,
-            )),
         };
         // Reset depth after create_stdlib_env completes
         EXPAND_MACROS_DEPTH.set(depth);
@@ -413,6 +480,7 @@ pub fn expand_macros(
         // stdlib, so we need a fresh arena, not one seeded with potentially stale cache contents.
         let env = builtins::create_root_env();
         let ctx = EvalContext::new_empty(base_dir, Rc::clone(&env), no_fs);
+        // result_stdlib_env/arena stay None for the re-entrant path
         (env, ctx)
     };
     let ctx = Rc::new(ctx);
@@ -442,6 +510,8 @@ pub fn expand_macros(
         provenance: env_macro.provenance,
         discovered_macros: env_macro.discovered_macros,
         macro_injects_map,
+        stdlib_env: result_stdlib_env,
+        stdlib_arena: result_stdlib_arena,
     })
 }
 
@@ -524,6 +594,10 @@ pub(crate) fn expand_macros_in_ctx(
         provenance: env_macro.provenance,
         discovered_macros: env_macro.discovered_macros,
         macro_injects_map,
+        // expand_macros_in_ctx uses an existing ctx, so stdlib_env/arena are already
+        // managed by the caller. Don't populate these fields to avoid double-ownership.
+        stdlib_env: None,
+        stdlib_arena: None,
     })
 }
 
