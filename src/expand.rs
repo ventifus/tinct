@@ -417,11 +417,15 @@ pub fn expand_macros(
                 // The stdlib defines macros via regular function exports that we
                 // register by looking them up by name after the stdlib is loaded.
                 register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
+                // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+                let type_stage_env =
+                    crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
                 // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
                 // remain valid when transformer functions access them during expansion.
                 let ctx = EvalContext::new_sharing_arena(
                     base_dir,
                     Arc::clone(&env),
+                    type_stage_env,
                     no_fs,
                     arena,
                     HashMap::new(), // No macros registered yet during initial expansion
@@ -527,9 +531,12 @@ pub fn expand_surface_program(
         match builtins::create_stdlib_env_with_arena() {
             Ok((env, arena)) => {
                 register_stdlib_macros_from_env(&mut env_macro, &env, crate::ast::Span::origin());
+                let type_stage_env =
+                    crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
                 let ctx = EvalContext::new_sharing_arena(
                     base_dir,
                     Arc::clone(&env),
+                    type_stage_env,
                     no_fs,
                     Arc::clone(&arena),
                     HashMap::new(), // macro_injects_map — will be populated during expansion

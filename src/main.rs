@@ -1178,6 +1178,8 @@ fn run_eval(
 
     // Create stdlib environment
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
     // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
     // Auto-triggered when --cap-fs entries are present (unless --no-landlock is set).
@@ -1859,6 +1861,7 @@ fn run_eval(
             let ctx = EvalContext::new_with_options(
                 base_dir,
                 Arc::clone(&env),
+                Arc::clone(&type_stage_env),
                 no_fs,
                 require_integrity,
                 env_allowed.clone(),
@@ -2448,6 +2451,8 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         .map_err(|e| format!("cannot open base directory: {e}"))?;
 
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
     // E1: Inject fixed ClockCap from file mtime for deterministic output
     {
@@ -2561,6 +2566,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     let eval_ctx = EvalContext::new_with_options(
         base_dir,
         Arc::clone(&env),
+        Arc::clone(&type_stage_env),
         false,
         false,
         Some(std::collections::HashSet::new()),
@@ -2668,6 +2674,8 @@ fn run_literate_weave(
     };
 
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
     // E1: Inject fixed ClockCap from file mtime for deterministic weave output
     {
@@ -2789,6 +2797,7 @@ fn run_literate_weave(
     let base_eval_ctx = EvalContext::new_with_options(
         base_dir_initial,
         Arc::clone(&env),
+        Arc::clone(&type_stage_env),
         false,
         false,
         Some(std::collections::HashSet::new()),

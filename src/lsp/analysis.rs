@@ -1591,7 +1591,8 @@ mod tests {
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, test_env(), true)
+        let env = test_env();
+        crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), true)
     }
 
     /// Helper: create an empty include graph for tests.

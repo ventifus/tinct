@@ -121,6 +121,9 @@ pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool 
 pub struct EvalConfig {
     pub base_dir: cap_std::fs::Dir,
     pub stdlib_env: Arc<RwLock<Environment>>,
+    /// Type-stage environment: contains only type-level builtins, no IO/caps/runtime API.
+    /// Used by `builtin_eval_types` to evaluate type-stage documents in isolation.
+    pub type_stage_env: Arc<RwLock<Environment>>,
     pub no_fs: bool,
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
@@ -314,9 +317,10 @@ impl EvalContext {
     pub fn new(
         base_dir: cap_std::fs::Dir,
         stdlib_env: Arc<RwLock<Environment>>,
+        type_stage_env: Arc<RwLock<Environment>>,
         no_fs: bool,
     ) -> Arc<Self> {
-        Self::new_with_options(base_dir, stdlib_env, no_fs, false, None)
+        Self::new_with_options(base_dir, stdlib_env, type_stage_env, no_fs, false, None)
     }
 
     /// Create a new EvalContext with a FRESH EMPTY arena, bypassing `STDLIB_ARENA_CACHE`.
@@ -343,6 +347,7 @@ impl EvalContext {
             config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
+                type_stage_env: Arc::new(RwLock::new(Environment::new())),
                 no_fs,
                 require_integrity: false,
                 macro_injects_map: HashMap::new(),
@@ -369,6 +374,7 @@ impl EvalContext {
     pub fn new_with_options(
         base_dir: cap_std::fs::Dir,
         stdlib_env: Arc<RwLock<Environment>>,
+        type_stage_env: Arc<RwLock<Environment>>,
         no_fs: bool,
         require_integrity: bool,
         env_allowed: Option<HashSet<String>>,
@@ -382,6 +388,7 @@ impl EvalContext {
             config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
+                type_stage_env,
                 no_fs,
                 require_integrity,
                 macro_injects_map: HashMap::new(),
@@ -422,6 +429,7 @@ impl EvalContext {
     pub(crate) fn new_sharing_arena(
         base_dir: cap_std::fs::Dir,
         stdlib_env: Arc<RwLock<Environment>>,
+        type_stage_env: Arc<RwLock<Environment>>,
         no_fs: bool,
         shared_arena: Arc<Mutex<ThunkArena>>,
         macro_injects_map: HashMap<String, String>,
@@ -430,6 +438,7 @@ impl EvalContext {
             config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
+                type_stage_env,
                 no_fs,
                 require_integrity: false,
                 macro_injects_map,
@@ -470,6 +479,7 @@ impl EvalContext {
             config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env: Arc::clone(&self.config.stdlib_env),
+                type_stage_env: Arc::clone(&self.config.type_stage_env),
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
                 macro_injects_map: self.config.macro_injects_map.clone(),
@@ -2886,7 +2896,7 @@ mod tests {
         let env = empty_env();
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        EvalContext::new(base_dir, env, false)
+        EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
     /// Resolve a `ThunkId` from the arena in `ctx` and materialize it.
@@ -8873,10 +8883,12 @@ mod tests {
                 let file = parsed.node;
                 let env = crate::builtins::create_stdlib_env()
                     .expect("stdlib env creation should succeed");
+                let type_stage_env =
+                    crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
                 let base_dir =
                     cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
                         .expect("failed to open test base_dir");
-                let ctx = EvalContext::new(base_dir, Arc::clone(&env), false);
+                let ctx = EvalContext::new(base_dir, Arc::clone(&env), type_stage_env, false);
                 let thunk = eval_file(&file, env, &ctx).expect("eval_file should succeed");
                 let dict_val =
                     materialize(&thunk, None, &ctx).expect("materialization should succeed");
@@ -8934,13 +8946,18 @@ mod tests {
             .expect("failed to open test base_dir");
         let env = empty_env();
 
-        let ctx_with_fs = EvalContext::new(base_dir.try_clone().unwrap(), Arc::clone(&env), false);
+        let ctx_with_fs = EvalContext::new(
+            base_dir.try_clone().unwrap(),
+            Arc::clone(&env),
+            Arc::clone(&env),
+            false,
+        );
         assert!(
             !ctx_with_fs.config.no_fs,
             "no_fs should be false when created with false"
         );
 
-        let ctx_no_fs = EvalContext::new(base_dir, env, true);
+        let ctx_no_fs = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), true);
         assert!(
             ctx_no_fs.config.no_fs,
             "no_fs should be true when created with true"
@@ -8966,9 +8983,11 @@ mod tests {
         let base_dir2 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open base_dir2");
         let env = crate::builtins::create_stdlib_env().expect("stdlib env");
+        let type_stage_env =
+            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
         // ctx1 has no_fs=true
-        let ctx1 = EvalContext::new(base_dir1, env, true);
+        let ctx1 = EvalContext::new(base_dir1, Arc::clone(&env), type_stage_env, true);
         assert!(ctx1.config.no_fs, "ctx1 must have no_fs=true");
 
         // ctx2 shares ctx1's state but has a different base_dir

@@ -2434,7 +2434,7 @@ mod tests {
         let env = Arc::new(RwLock::new(Environment::new()));
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, env, false)
+        crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
     /// Peel a `Value::Variant` to its payload dict.

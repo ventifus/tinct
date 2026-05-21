@@ -2052,7 +2052,8 @@ mod tests {
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, Arc::new(RwLock::new(Environment::new())), false)
+        let env = Arc::new(RwLock::new(Environment::new()));
+        crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
     #[test]
@@ -2522,11 +2523,9 @@ mod tests {
         // Create ctx1 with a distinct base_dir
         let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx1 = crate::eval::EvalContext::new(
-            base_dir1,
-            Arc::new(RwLock::new(Environment::new())),
-            false,
-        );
+        let env1 = Arc::new(RwLock::new(Environment::new()));
+        let ctx1 =
+            crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
 
         // Create a thunk that captures ctx1
         let span = test_span(1, 1, 1, 5);
@@ -2596,11 +2595,9 @@ mod tests {
         // Create ctx1
         let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx1 = crate::eval::EvalContext::new(
-            base_dir1,
-            Arc::new(RwLock::new(Environment::new())),
-            false,
-        );
+        let env1 = Arc::new(RwLock::new(Environment::new()));
+        let ctx1 =
+            crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
 
         let span = test_span(1, 1, 1, 5);
         let dummy_def = BuiltinDef {
@@ -2644,11 +2641,9 @@ mod tests {
         // Create ctx1
         let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx1 = crate::eval::EvalContext::new(
-            base_dir1,
-            Arc::new(RwLock::new(Environment::new())),
-            false,
-        );
+        let env1 = Arc::new(RwLock::new(Environment::new()));
+        let ctx1 =
+            crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
 
         let span = test_span(1, 1, 1, 5);
         let func_thunk = Arc::new(Thunk::new_materialized(
@@ -2893,7 +2888,8 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx = EvalContext::new(base_dir, Arc::new(RwLock::new(Environment::new())), false);
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
         // Create a PendingBuiltin thunk (using a dummy builtin function)
         fn dummy_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Arc<Thunk>> {
@@ -2948,7 +2944,8 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx = EvalContext::new(base_dir, Arc::new(RwLock::new(Environment::new())), false);
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
         fn error_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Arc<Thunk>> {
             Err(Box::new(EvalError::internal(

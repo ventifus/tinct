@@ -83,11 +83,13 @@ fn get_diagnostics_for_source(source: &str) -> Vec<Diagnostic> {
 
     // Create minimal environment for LSP analysis
     let stdlib_env = tinct::create_stdlib_env().expect("Failed to create stdlib environment");
+    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .expect("Failed to open current directory");
     let eval_ctx = tinct::EvalContext::new(
         base_dir,
         Arc::clone(&stdlib_env),
+        type_stage_env,
         true, // no_fs (LSP context should have no_fs=true for security)
     );
 

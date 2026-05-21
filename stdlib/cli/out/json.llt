@@ -7,5 +7,12 @@
 # $builtin-to-json: deep-materializes the value and serializes to compact JSON string.
 # Handles: Int, Float, Bool, String, Dict, Seq (via collect), Null ([]).
 # Errors on: Function, Builtin, NaN/Infinity floats, unserializable values.
+#
+# This dict is the module output. It contains:
+#   json:  the serializer function (for format_with_json_llt in lib.rs/literate eval)
+#   [0]:   the emit side-effect (forces JSON output to stdout)
+#
+# Both the -o json pipeline AND format_with_json_llt rely on this structure.
 
-[emit [call $builtin-to-json %]]
+[json: [fn [let v] [call $builtin-to-json v]]
+ [emit [call $builtin-to-json %]]]

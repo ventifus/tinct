@@ -112,6 +112,7 @@ pub use builtins::{
 /// Import resolution for the type checker.
 pub use imports::{
     apply_include_type_post_pass, build_prelude_env, build_type_env, build_type_env_with_cap,
+    build_type_stage_env,
 };
 
 // Compile-time assertion: LSP MAX_DOCUMENT_SIZE must match builtins MAX_FILE_SIZE
@@ -235,6 +236,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // allocated during prelude and macros.llt loading.
     let (env, stdlib_arena) =
         builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+    let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
     // Create evaluation context (current directory, configurable sandbox)
     let base_dir_path = std::env::current_dir()
         .ok()
@@ -247,6 +250,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let ctx = eval::EvalContext::new_sharing_arena(
         base_dir,
         Arc::clone(&env),
+        type_stage_env,
         no_fs,
         stdlib_arena,
         expand_result.macro_injects_map,
@@ -361,6 +365,8 @@ pub fn eval_source_with_cap_net(
         );
     let (env, stdlib_arena) =
         builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+    let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
     let base_dir_path = std::env::current_dir()
         .ok()
@@ -373,6 +379,7 @@ pub fn eval_source_with_cap_net(
     let ctx = eval::EvalContext::new_sharing_arena(
         base_dir,
         Arc::clone(&env),
+        type_stage_env,
         no_fs,
         stdlib_arena,
         expand_result.macro_injects_map,
@@ -1191,11 +1198,9 @@ mod tests {
     fn test_ctx() -> Arc<eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        eval::EvalContext::new(
-            base_dir,
-            builtins::create_stdlib_env().expect("stdlib failed"),
-            false,
-        )
+        let stdlib_env = builtins::create_stdlib_env().expect("stdlib failed");
+        let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
+        eval::EvalContext::new(base_dir, stdlib_env, type_stage_env, false)
     }
 
     #[test]

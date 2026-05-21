@@ -46,7 +46,18 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
 
 1. Read `TODO.md` to find the target sprint (first unchecked sprint, or the specified sprint-slug). Sprints are `###` headings only — skip `##` design sections entirely when scanning for the next sprint.
 2. Read relevant chapters of `doc/*.md` for design context. If the sprint has a `Spec chapters:` line, read those specific chapters first — they are the authoritative design source for this sprint. If the sprint has a `**Whatif:**` line, also read the referenced whatif (`doc/whatif/**/<name>.md`) for the original design rationale — this is especially useful for understanding *why* specific tasks were scoped the way they were, and for spotting missing tasks that the whatif required but the sprint omitted.
-3. **Design readiness check**: scan the sprint's tasks for unchecked design items — lines matching `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Document ... design`. Also check whether the sprint introduces new language constructs, runtime concepts, or user-facing semantics that lack corresponding coverage in doc/*.md. If the sprint has a `Spec chapters:` reference, verify those sections exist and cover the sprint's scope — a missing section is a design gap. If any unresolved design work exists, **stop immediately** and report: `"NEEDS_DESIGN: [slug] — [list of unresolved design items]"`. Do not proceed to implementation.
+3. **Design readiness check**: NEEDS_DESIGN fires when the **end result is genuinely undefined** — when we haven't decided *what* to build. It does NOT fire because tasks are coarse, the sprint is large, or intermediate steps need elaboration. Those are handled by Step 5 (Decompose hard tasks).
+
+   Specifically, report `"NEEDS_DESIGN: [slug] — [items]"` and stop only if:
+   - The sprint has unchecked `- [ ] Design ...`, `- [ ] Decide ...`, or `- [ ] Research ...` tasks
+   - The sprint introduces a new language construct, runtime concept, or user-facing semantic with **no corresponding coverage in doc/*.md** — a missing spec section means we haven't documented what we're building
+   - The sprint's `**Spec chapters:**` reference points to a doc section that doesn't exist or is placeholder-only
+
+   **Do NOT report NEEDS_DESIGN for:**
+   - Migration or deletion sprints (tasks say: Delete, Remove, Migrate, Replace, Update callers) — these have a clear end result regardless of how many files they touch
+   - Large sprints with coarse task descriptions — Step 5 surveys the code and decomposes
+   - Sprints where tasks are slightly vague but the goal is clear from context or the spec chapter
+   - Any sprint with a `**Spec chapters:**` reference pointing to a real, substantive doc section — that section is the design, and it's done
 4. **Validate sprint scope**: is this sprint appropriately sized? Target is ~25 non-nit, non-doc implementation tasks. If > 30 such tasks exist, split by updating TODO.md with two new sprints (keeping phase-dependency ordering) and proceeding with the first one.
 5. **Decompose hard tasks**: For each task in the sprint, assess whether it's actionable as-is or needs breakdown. A task is TOO LARGE if it touches more than ~3 files or requires coordinated changes across multiple subsystems (parser + evaluator + builtins). A task is BLOCKED if it depends on work not yet done. For each oversized or vague task:
    - **Survey the code**: read the relevant source files to understand the actual scope. Count how many call sites, match arms, or construction sites need changing.

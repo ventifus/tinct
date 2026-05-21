@@ -1209,7 +1209,13 @@ mod tests {
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, create_root_env(), false)
+        let root_env = create_root_env();
+        crate::eval::EvalContext::new(
+            base_dir,
+            Arc::clone(&root_env),
+            Arc::clone(&root_env),
+            false,
+        )
     }
 
     // --- MAX_SAFE_INT boundary ---

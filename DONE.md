@@ -8839,3 +8839,14 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 - [x] **Verify 22 `$_` corpus tests pass** — confirms Surface desugar is semantically equivalent to old Expr desugar (`tests/corpus/`)
 
 **Summary:** Rewrote `$_` implicit lambda desugaring from Expr-based API (`desugar_file`/`desugar_expr`) to SurfaceExpression-based API (`desugar_surface_program`/`desugar_surface_node`). Migrated 30+ production callers across 13 files and 46 test callers. Deleted all old Expr-based desugar functions. Fixed 3 pipeline bugs discovered during migration. Updated `doc/04-functions.md`, `doc/08-evaluation.md`, `doc/feature/macros.md`, `stdlib/desugar.llt`. All 22 `$_` corpus tests pass; 29 bonus macro tests now pass.
+
+## Primitive Privacy
+
+### include-decomp-eval-types-fix: Wire type_stage_env into EvalConfig
+
+**Whatif:** `include-decomposition`
+**Context:** `builtin_eval_types` at `src/builtins_meta.rs:1636-1638` uses `stdlib_env` as its base instead of the type-stage env, violating the whatif spec ("type-level builtins only, no IO, no caps"). The `create_type_stage_env()` function exists (`src/builtins.rs:1836`) and `build_type_stage_env()` in `src/imports.rs:326` builds it, but neither is wired into `EvalConfig`. The TODO comment at `builtins_meta.rs:1636`: "Use type_stage_env when it's added to EvalConfig (Part E)".
+
+- [x] Add `type_stage_env: Arc<RwLock<Environment>>` field to `EvalConfig` struct (`src/eval.rs`) — built once at startup via `build_type_stage_env()` from `src/imports.rs:326`; pass alongside `stdlib_env` in all `EvalConfig::new(...)` call sites (`src/main.rs`, `src/lib.rs`, `src/builtins.rs`)
+- [x] Remove TODO comment and use `ctx.config.type_stage_env` as base env in `builtin_eval_types` (`src/builtins_meta.rs:1636-1638`)
+- [x] `just test` passes

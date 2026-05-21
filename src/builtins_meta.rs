@@ -1689,9 +1689,8 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         (None, None)
     };
 
-    // TODO: Use type_stage_env when it's added to EvalConfig (Part E)
-    // For now, use stdlib_env as the base (same as eval)
-    let base_env = Arc::clone(&ctx.config.stdlib_env);
+    // Use type_stage_env as the base: type-level evaluation builtins only, no IO, no caps, no runtime API.
+    let base_env = Arc::clone(&ctx.config.type_stage_env);
 
     // Add env: dict bindings if provided
     let env_with_bindings = if let Some(env_thunk) = env_dict {

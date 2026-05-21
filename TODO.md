@@ -52,16 +52,63 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_convert.rs` (bridge no longer needed) (`src/`)
 - [ ] `just build` + `just test` passes — this is the true first checkpoint
 
-### E3-bridge-cutover: Delete bridge files + old types from ast.rs
+### E3a-expand-exclusive: Delete expand_macros() — switch all callers to expand_surface_program()
 
-**Depends on:** E2-desugar-cutover
+**Depends on:** E2-desugar-cutover ✅
 
-- [ ] **Delete `src/ast_convert.rs`** — bridge no longer needed after all callers migrated (`src/`)
-- [ ] **Delete `src/ast_dict.rs`** — AST dict schema replaced by SurfaceExpression match dispatch (`src/`)
+`expand_surface_program()` is a full implementation (not a bridge); `lib.rs` already uses it exclusively. Remaining callers of `expand_macros()` are in `formatter.rs`, `imports.rs`, and possibly `main.rs`. Once all callers are switched, the File-based `expand_macros()` path is deleted from `expand.rs`, removing ~173 Expr references.
+
+- [ ] Grep for all `expand_macros(` call sites outside `expand.rs` — confirm the complete list (`src/`)
+- [ ] Switch each remaining caller from `expand_macros()` to `expand_surface_program()` (`src/formatter.rs`, `src/imports.rs`, `src/main.rs`)
+- [ ] Delete `expand_macros()` and all File-based helpers from `src/expand.rs` — keep only `expand_surface_program()` and its dependencies (`src/expand.rs`)
+- [ ] `just build` passes; grep confirms zero production calls to `expand_macros` (`src/`)
+
+### E3b-resolve-typecheck-exclusive: Delete resolve_file() + typecheck_file()
+
+**Depends on:** E3a-expand-exclusive
+
+`resolve_surface_program()` and `typecheck_surface_program()` are full native implementations. `lib.rs` still calls `resolve_file()`; `typecheck_file()` still exists alongside `typecheck_surface_program()`. This sprint makes both exclusively Surface.
+
+- [ ] Switch all `resolve_file()` call sites in `src/lib.rs` and `src/main.rs` to `resolve_surface_program()` exclusively (`src/lib.rs`, `src/main.rs`)
+- [ ] Delete `resolve_file()` and its Expr-based infrastructure from `src/resolve.rs` — removes ~114 Expr refs (`src/resolve.rs`)
+- [ ] Switch all `typecheck_file()` production call sites to `typecheck_surface_program()` exclusively (`src/lib.rs`, `src/main.rs`)
+- [ ] Delete `typecheck_file()` and its test infrastructure from `src/typecheck.rs` — removes the majority of ~300 Expr refs (`src/typecheck.rs`)
+- [ ] `just build` passes; grep confirms zero production calls to `resolve_file` and `typecheck_file` (`src/`)
+
+### E3c-imports-builtins: Migrate imports.rs and builtins to Surface types
+
+**Depends on:** E3b-resolve-typecheck-exclusive
+
+With expand and resolve exclusively Surface, `imports.rs` can use the Surface pipeline end-to-end. `builtins.rs` and `builtins_meta.rs` have AST manipulation code that still uses Expr — migrate to Surface equivalents. Combined ~141 Expr refs across these files.
+
+- [ ] Migrate `src/imports.rs` (79 Expr refs) — replace `expand_macros()` / `resolve_file()` calls with Surface equivalents; switch AST construction to `SurfaceExpression` (`src/imports.rs`)
+- [ ] Migrate `src/builtins.rs` (43 Expr refs) — replace `ast_to_dict` / `dict_to_ast` Expr calls with Surface-aware equivalents; switch any remaining `Expr`-typed locals (`src/builtins.rs`)
+- [ ] Migrate `src/builtins_meta.rs` (19 Expr refs) — same pattern (`src/builtins_meta.rs`)
+- [ ] `just build` passes; `just test` passes
+
+### E3d-formatter-lsp: Migrate formatter.rs and LSP to Surface types
+
+**Depends on:** E3c-imports-builtins
+
+Largest subsystems: `formatter.rs` (128 Expr refs, imports `ast_dict.rs`) and `src/lsp/analysis.rs` (198 Expr refs). `ast_dict.rs` has only 3 importers total (formatter, expand, surface_fields) — once formatter is migrated, `ast_dict.rs` import count drops to 2.
+
+- [ ] Migrate `src/formatter.rs` (128 Expr refs) — switch all `Expr`-typed AST traversal to `SurfaceExpression`; remove `ast_dict.rs` import from formatter (`src/formatter.rs`)
+- [ ] Migrate `src/lsp/analysis.rs` (198 Expr refs) — switch hover, goto-def, completion analysis to Surface types; most analysis already has parallel Surface paths from prior work (`src/lsp/analysis.rs`)
+- [ ] Migrate `src/lsp/document.rs` (1 Expr ref) — trivial (`src/lsp/document.rs`)
+- [ ] `just build` passes; `just test` passes
+
+### E3e-delete-bridge: Delete ast_convert.rs, ast_dict.rs, Expr/File/Document from ast.rs
+
+**Depends on:** E3d-formatter-lsp
+
+With all subsystems migrated, the bridge files and old types are dead code. `ast_convert.rs` has 21 remaining callers (down from 293 after E3a–d migrations); `ast_dict.rs` has 2 remaining importers (expand, surface_fields — both already bridged through the Surface path).
+
+- [ ] **Delete `src/ast_convert.rs`** — verify zero callers remain before deleting (`src/`)
+- [ ] **Delete `src/ast_dict.rs`** — verify zero importers remain before deleting (`src/`)
 - [ ] **Delete `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell`** from `src/ast.rs` (~500 lines) (`src/ast.rs`)
-- [ ] **Migrate remaining Expr users** (expander 147, formatter 114, LSP 185, imports 71, builtins 39, resolve 78) to Surface types — most already have parallel Surface paths; delete the Expr paths (`src/`)
-- [ ] **`cargo check` clean** — this is the true first checkpoint from the original plan (`src/`)
-- [ ] **`just test` passes** — full test suite
+- [ ] Fix any remaining compilation errors from deleted types — update match arms, remove dead imports (`src/`)
+- [ ] **`cargo check` clean** — first true checkpoint: no Expr/File references compile (`src/`)
+- [ ] **`just test` passes** — full test suite green
 
 ### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC)
 
@@ -133,13 +180,15 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Change `Rc<RefCell<EvalState>>` → `Arc<Mutex<EvalState>>` — **DONE**
 - [ ] Change `ThunkState` enum → OnceLock pair — **DEFERRED to sprint-2b** (Rc→Arc done, OnceLock is async-specific)
 - [x] Change `EvalError` — kept as `Box<EvalError>` for now (Arc conversion deferred to sprint-2b when async boundaries exist)
-- [ ] `EvalConfig` gains `type_stage_env` — tracked in `include-decomp-eval-types-fix` (below)
+- [x] `EvalConfig` gains `type_stage_env` — **DONE** (tracked in `include-decomp-eval-types-fix`, now in DONE.md)
 - [x] Add tokio + dashmap dependencies — **DONE**
 - [x] Update `BuiltinFn` to use `Arc<Thunk>` — **DONE**
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
 
 ### sprint-2b-eval-async: Make eval + materialize async fn + finish shim removal
+
+**NEEDS_DESIGN:** Making `materialize()` async breaks all ~190 sync builtins. Sprint expects "many compile errors" but build gate requires pass. Options: (a) `materialize_blocking()` sync shim for incremental migration, (b) combine with builtins-async sprint, (c) other approach. Run `/rnd sprint-2b-eval-async` to resolve.
 
 **Goal:** Make the core evaluation loop async. Every function that calls `materialize()` must also become `async fn` and add `.await`. Also completes the one remaining blocked item from `sprint-2b-shim-removal` (panel: APPROVE 2026-05-21): deleting `ThunkStateGuard`, `get_thunk_state()`, and `ThunkState` enum was blocked because `builtins_meta.rs` used `.state()` for `ast-of` and restore paths used `set_state(ThunkState::X)`. Both of these are resolved naturally as part of the async eval restructuring.
 
@@ -294,15 +343,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] `src/builtins.rs:1869` — stale `create_type_stage_env()` doc comment referencing %rust "type-core"
 - [x] `src/builtins_meta.rs:1481` — `builtin_load` pipeline doc comment missing resolve step
 - [x] `stdlib/ast.llt:28-29` — `[Literal ... bare: Bool]` claims bare is always present but only emitted for kind:"str"
-
-### include-decomp-eval-types-fix: Wire type_stage_env into EvalConfig
-
-**Whatif:** `include-decomposition`
-**Context:** `builtin_eval_types` at `src/builtins_meta.rs:1636-1638` uses `stdlib_env` as its base instead of the type-stage env, violating the whatif spec ("type-level builtins only, no IO, no caps"). The `create_type_stage_env()` function exists (`src/builtins.rs:1836`) and `build_type_stage_env()` in `src/imports.rs:326` builds it, but neither is wired into `EvalConfig`. The TODO comment at `builtins_meta.rs:1636`: "Use type_stage_env when it's added to EvalConfig (Part E)".
-
-- [ ] Add `type_stage_env: Arc<RwLock<Environment>>` field to `EvalConfig` struct (`src/eval.rs`) — built once at startup via `build_type_stage_env()` from `src/imports.rs:326`; pass alongside `stdlib_env` in all `EvalConfig::new(...)` call sites (`src/main.rs`, `src/lib.rs`, `src/builtins.rs`)
-- [ ] Remove TODO comment and use `ctx.config.type_stage_env` as base env in `builtin_eval_types` (`src/builtins_meta.rs:1636-1638`)
-- [ ] `just test` passes
 
 ### reduce-cont-step: Continuation-based reduce — unlimited-depth inputs, no stack cliffs
 

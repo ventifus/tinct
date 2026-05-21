@@ -439,7 +439,7 @@ mod tests {
         let env = Arc::new(std::sync::RwLock::new(Environment::new()));
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx = EvalContext::new(base_dir, env, false);
+        let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
         // Attempt to materialize the placeholder thunk - this should panic
         let _result = materialize(&thunk, None, &ctx);

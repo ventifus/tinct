@@ -1861,6 +1861,7 @@ fn create_stdlib_env_inner(
     // open_ambient_dir to the public entry point.
     // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're BUILDING the stdlib here,
     // so we need a fresh arena, not one seeded with stale cache contents.
+    // Pass bootstrap_env as type_stage_env since we're bootstrapping (no type-stage env exists yet).
     let bootstrap_ctx =
         crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&bootstrap_env), false);
 
@@ -1935,6 +1936,7 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     let bootstrap_env = create_root_env();
 
     // Create a bootstrap EvalContext. bootstrap_base_dir was opened above.
+    // Pass bootstrap_env as type_stage_env since we're bootstrapping (no type-stage env exists yet).
     let bootstrap_ctx =
         crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&bootstrap_env), false);
 
@@ -2018,7 +2020,13 @@ mod tests {
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, create_root_env(), false)
+        let root_env = create_root_env();
+        crate::eval::EvalContext::new(
+            base_dir,
+            Arc::clone(&root_env),
+            Arc::clone(&root_env),
+            false,
+        )
     }
 
     fn mat(result: EvalResult<Arc<Thunk>>) -> Value {

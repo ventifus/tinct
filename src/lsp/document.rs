@@ -462,6 +462,9 @@ impl DocumentStore {
                 Arc::new(std::sync::Mutex::new(crate::arena::ThunkArena::new())),
             )
         });
+        // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+        let type_stage_env =
+            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
         // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
@@ -481,6 +484,7 @@ impl DocumentStore {
         let base_eval_ctx = crate::eval::EvalContext::new_sharing_arena(
             base_dir,
             Arc::clone(&stdlib_env),
+            type_stage_env,
             true, // no_fs=true prevents $include path traversal (CWE-22)
             stdlib_arena,
             std::collections::HashMap::new(), // LSP doesn't track macro injects yet
@@ -699,12 +703,15 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     // Create minimal environment for LSP analysis.
     // base_dir is the document's parent directory (Fix 6: replaces open_ambient_dir(".")).
     let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().ok()?;
+    let type_stage_env =
+        crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
     // Clone the parent_dir handle to give ownership to the EvalContext
     // (open_dir(".") duplicates the fd without acquiring new ambient authority).
     let eval_base_dir = parent_dir.open_dir(".").ok()?;
     let eval_ctx = crate::eval::EvalContext::new_sharing_arena(
         eval_base_dir,
         Arc::clone(&stdlib_env),
+        type_stage_env,
         false,
         stdlib_arena,
         std::collections::HashMap::new(),
@@ -737,11 +744,14 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let (env, arena) = test_env_and_arena();
+        let type_stage_env =
+            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         crate::eval::EvalContext::new_sharing_arena(
             base_dir,
-            env,
+            Arc::clone(&env),
+            type_stage_env,
             false,
             arena,
             std::collections::HashMap::new(),

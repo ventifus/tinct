@@ -107,9 +107,11 @@ pub fn format_source_tinct_with_dir(
     // stored in prelude dicts are looked up in a separate arena vec and may be invalid.
     let (env, stdlib_arena) =
         crate::builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+    let type_stage_env = crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
     let ctx = EvalContext::new_sharing_arena(
         base_dir,
         Arc::clone(&env),
+        type_stage_env,
         false,
         stdlib_arena,
         expand_result.macro_injects_map,

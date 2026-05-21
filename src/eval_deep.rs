@@ -539,11 +539,10 @@ mod tests {
     fn test_ctx() -> Arc<EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        EvalContext::new(
-            base_dir,
-            crate::builtins::create_stdlib_env().expect("stdlib failed"),
-            false,
-        )
+        let stdlib_env = crate::builtins::create_stdlib_env().expect("stdlib failed");
+        let type_stage_env =
+            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
+        EvalContext::new(base_dir, stdlib_env, type_stage_env, false)
     }
 
     #[test]

@@ -147,9 +147,12 @@ impl ReplSession {
         #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .map_err(|e| format!("cannot open current directory: {e}"))?;
+        let type_stage_env =
+            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
         let ctx = crate::eval::EvalContext::new_sharing_arena(
             base_dir,
             Arc::clone(&stdlib_env),
+            type_stage_env,
             false,
             stdlib_arena,
             std::collections::HashMap::new(), // REPL doesn't track macro injects yet

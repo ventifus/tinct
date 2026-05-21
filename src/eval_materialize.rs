@@ -2150,7 +2150,7 @@ mod tests {
         let env = empty_env();
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        EvalContext::new(base_dir, env, false)
+        EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
     #[test]
