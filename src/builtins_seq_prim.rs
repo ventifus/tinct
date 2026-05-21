@@ -4,11 +4,11 @@
 //! sequence type. Extracted from `builtins.rs` to keep that file manageable.
 //!
 //! All five functions follow the standard `BuiltinFn` signature:
-//! `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>`
+//! `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>`
 //!
 //! Registration in `standard_builtins()` remains in `builtins.rs`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -23,7 +23,7 @@ use crate::value::{BuiltinArgs, Key, Thunk, Value};
 /// (fully lazy, no materialization). The tail is NOT validated eagerly -- if it
 /// eventually materializes to a non-Seq/non-empty-dict, that's an error at
 /// materialization time, not construction time.
-pub(crate) fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -35,8 +35,8 @@ pub(crate) fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    let head_id = ctx.alloc_thunk(Rc::clone(&args[0]));
-    let tail_id = ctx.alloc_thunk(Rc::clone(&args[1]));
+    let head_id = ctx.alloc_thunk(Arc::clone(&args[0]));
+    let tail_id = ctx.alloc_thunk(Arc::clone(&args[1]));
     ok_val(
         Value::Seq {
             head: head_id,
@@ -51,7 +51,7 @@ pub(crate) fn builtin_seq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Materializes the argument to verify it's a Seq, then returns the head thunk
 /// directly (lazy -- the head is not materialized). Empty dict (terminal value)
 /// produces a specific error message.
-pub(crate) fn builtin_head(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_head(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -79,7 +79,7 @@ pub(crate) fn builtin_head(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Materializes the argument to verify it's a Seq, then returns the tail thunk
 /// directly (lazy -- the tail is not materialized). Empty dict (terminal value)
 /// produces a specific error message.
-pub(crate) fn builtin_tail(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_tail(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -109,7 +109,7 @@ pub(crate) fn builtin_tail(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// if it's another Seq or the terminal value (empty dict). Terminal condition:
 /// tail materializes to an empty dict (Dict with 0 entries). If tail is anything
 /// other than Seq or empty dict, error. Empty dict as input returns empty dict.
-pub(crate) fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -190,7 +190,7 @@ pub(crate) fn builtin_collect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `seq?`: Type predicate for sequences.
 ///
 /// Returns true if the argument materializes to a Seq, false otherwise.
-pub(crate) fn builtin_seq_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_seq_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,

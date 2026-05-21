@@ -14,8 +14,7 @@
 //! - **I/O**: [`run_repl`] -- uses `rustyline` for line editing (behind the `repl`
 //!   feature flag).
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
@@ -79,11 +78,11 @@ pub fn is_balanced(lines: &[&str]) -> bool {
 /// and always updates `%`.
 pub struct ReplSession {
     /// Current lexical environment. Grows as Dict results add bindings.
-    env: Rc<RefCell<Environment>>,
+    env: Arc<RwLock<Environment>>,
     /// The previous evaluation result, accessible as `%`.
-    prev_result: Rc<Thunk>,
+    prev_result: Arc<Thunk>,
     /// Evaluation context for session (include guard, etc.)
-    ctx: Rc<crate::eval::EvalContext>,
+    ctx: Arc<crate::eval::EvalContext>,
     /// Type information from the most recent type check.
     type_map: TypeMap,
     /// Documentation strings extracted from annotations.
@@ -114,7 +113,7 @@ impl ReplSession {
     /// **Note:** This method relies on `STDLIB_ARENA_CACHE` being populated by a prior
     /// call to `create_stdlib_env()` or `create_stdlib_env_with_arena()`. For explicit
     /// arena control, use `with_env_and_arena()` instead.
-    pub fn with_env(stdlib_env: Rc<RefCell<Environment>>) -> Result<Self, String> {
+    pub fn with_env(stdlib_env: Arc<RwLock<Environment>>) -> Result<Self, String> {
         // Rely on STDLIB_ARENA_CACHE for arena snapshot
         let (_, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
         Self::with_env_and_arena(stdlib_env, stdlib_arena)
@@ -126,28 +125,28 @@ impl ReplSession {
     /// `STDLIB_ARENA_CACHE`. Use this when you've already called
     /// `create_stdlib_env_with_arena()` and want to share the same arena.
     pub(crate) fn with_env_and_arena(
-        stdlib_env: Rc<RefCell<Environment>>,
-        stdlib_arena: Rc<RefCell<crate::arena::ThunkArena>>,
+        stdlib_env: Arc<RwLock<Environment>>,
+        stdlib_arena: Arc<std::sync::Mutex<crate::arena::ThunkArena>>,
     ) -> Result<Self, String> {
         // Create a session env as a child of stdlib, with % = empty dict.
-        let session_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+        let session_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
             &stdlib_env,
         ))));
-        let empty_dict = Rc::new(Thunk::new_materialized(
+        let empty_dict = Arc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
             Span::origin(),
         ));
         // Bind % as the pipeline variable (previous result), initially empty dict.
         session_env
-            .borrow_mut()
-            .insert("%".to_string(), Rc::clone(&empty_dict));
+            .write().unwrap()
+            .insert("%".to_string(), Arc::clone(&empty_dict));
 
         // Create REPL session context (REPL runs in current directory, no sandbox)
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .map_err(|e| format!("cannot open current directory: {e}"))?;
         let ctx = crate::eval::EvalContext::new_sharing_arena(
             base_dir,
-            Rc::clone(&stdlib_env),
+            Arc::clone(&stdlib_env),
             false,
             stdlib_arena,
             std::collections::HashMap::new(), // REPL doesn't track macro injects yet
@@ -213,9 +212,9 @@ impl ReplSession {
         // Delegate to the same eval pipeline used by `llt eval`.
         let result_thunk = eval_file_with_input(
             &file.node,
-            Rc::clone(&self.env),
+            Arc::clone(&self.env),
             &self.ctx,
-            Some(Rc::clone(&self.prev_result)),
+            Some(Arc::clone(&self.prev_result)),
         )
         .map_err(|e| {
             let mut error_str = format!("{e}");
@@ -256,21 +255,21 @@ impl ReplSession {
 
         // If the result is a Dict, extend the session env with its bindings.
         if let Value::Dict(ref map) = val {
-            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&self.env))));
+            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&self.env))));
             child_env
-                .borrow_mut()
-                .insert("%".to_string(), Rc::clone(&self.prev_result));
+                .write().unwrap()
+                .insert("%".to_string(), Arc::clone(&self.prev_result));
             for (key, val_thunk_id) in map {
                 if let Key::String(name) = key {
                     let val_thunk = self.ctx.get_thunk(*val_thunk_id);
-                    child_env.borrow_mut().insert(name.clone(), val_thunk);
+                    child_env.write().unwrap().insert(name.clone(), val_thunk);
                 }
             }
             self.env = child_env;
         } else {
             self.env
-                .borrow_mut()
-                .insert("%".to_string(), Rc::clone(&self.prev_result));
+                .write().unwrap()
+                .insert("%".to_string(), Arc::clone(&self.prev_result));
         }
 
         Ok(display)
@@ -354,7 +353,7 @@ impl ReplSession {
     /// TypeMap if available.
     fn lookup_type(&self, name: &str) -> Option<String> {
         // Try to look up the binding in the environment to get its span
-        let binding = self.env.borrow().get(name)?;
+        let binding = self.env.read().unwrap().get(name)?;
 
         // The thunk has a span we can use to look up the type
         let span = binding.span;
@@ -392,7 +391,7 @@ pub fn run_repl() -> Result<(), String> {
 
     // Create the stdlib env once and share it between the session and $include context.
     let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
-    let mut session = ReplSession::with_env_and_arena(Rc::clone(&stdlib_env), stdlib_arena)?;
+    let mut session = ReplSession::with_env_and_arena(Arc::clone(&stdlib_env), stdlib_arena)?;
 
     // The ReplSession already has an EvalContext set up with CWD as base_dir,
     // so $include will work correctly using the context threading.

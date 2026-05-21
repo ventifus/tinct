@@ -38,6 +38,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -100,7 +101,7 @@ fn check_perm(
 
 /// `emit`: Write a string to stdout.
 /// Takes a String argument, writes it to stdout, returns null (empty dict).
-pub(crate) fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -123,7 +124,7 @@ pub(crate) fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `env`: Read an environment variable by name.
 /// Returns the value as a String, or Null if not set or not allowed.
 /// Gated by ctx.env_allowed: None = all denied, Some(set) = only those allowed.
-pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -169,7 +170,7 @@ pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// At least one flag is required in the new pattern. If neither Readable nor Writable is
 /// specified, an error is returned.
-pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -410,7 +411,7 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `slurp`: Read all bytes from a Handle to a String or Bytes.
 /// Takes a Handle, reads to EOF, returns String (if Text encoding) or Bytes (if Binary encoding).
-pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -509,7 +510,7 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///   - One or more Variant flags to restrict permissions (preserves directory)
 ///
 ///     Returns a new DirCap with the narrowed scope or restricted permissions.
-pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -690,7 +691,7 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `revocable`: Wrap a DirCap in a RevocableDirCap.
 /// Takes a DirCap, returns a RevocableDirCap.
 /// The RevocableDirCap can be revoked later via `revoke-cap`.
-pub(crate) fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -738,7 +739,7 @@ pub(crate) fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `revoke-cap`: Revoke a RevocableDirCap.
 /// Takes a RevocableDirCap, sets its revoked flag to true, returns null.
 /// Future operations on the cap will fail.
-pub(crate) fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -767,7 +768,7 @@ pub(crate) fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 /// Takes a NetCap, hostname String, port Int, and optional Transport variant (default: Tcp).
 /// - `Tcp` (default) → Handle[Binary Readable Writable Stream]
 /// - `Udp` → error "UDP not yet supported, use Tcp" (reserved for Phase 2)
-pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1408,7 +1409,7 @@ fn resolve_hostname_for_cidr(
 /// Takes a Handle, returns a lazy Seq where each element is a line (without newline).
 /// This is a coinductive lazy sequence — each tail force reads the next line.
 /// Errors if the Handle has a Binary cap (lines requires Text encoding).
-pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1457,8 +1458,8 @@ pub(crate) fn builtin_lines_step(
     write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>>,
     caps: HashMap<String, Value>,
     call_span: Span,
-    ctx: Rc<crate::eval::EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    ctx: Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     use std::io::BufRead;
 
     let mut line = String::new();
@@ -1494,13 +1495,13 @@ pub(crate) fn builtin_lines_step(
                 },
                 call_span,
             )?];
-            let tail = Rc::new(Thunk::new_pending_builtin(
+            let tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!("lines", builtin_lines),
                 tail_args,
                 None,
                 call_span,
-                Some(Rc::from("call $lines")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $lines")),
+                Arc::clone(&ctx),
             ));
             let tail_id = ctx.alloc_thunk(tail);
 
@@ -1521,7 +1522,7 @@ pub(crate) fn builtin_lines_step(
 /// `write`: Write a String to a file.
 /// Takes a DirCap, String path, and String content.
 /// Writes content to the file at path (creating or truncating), then returns empty dict `{}`.
-pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1571,7 +1572,7 @@ pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes a DirCap, String path, and String content.
 /// Writes to a temp file in the same directory, then renames to the target path.
 /// This ensures the target file is never partially written.
-pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1663,7 +1664,7 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 /// `cap-data`: Extract capability data from a Handle or WriteHandle.
 /// Takes a Handle/WriteHandle and a capability name (String).
 /// Returns the Value associated with that capability, or Null (empty dict) if the cap is absent.
-pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1709,7 +1710,7 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Checks encoding via Binary cap: if present, content must be Bytes; otherwise String.
 /// Uses `inner.borrow_mut().write_all(bytes)`.
 /// Returns the original handle (WriteHandle or Handle) for chaining.
-pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1848,7 +1849,7 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 
 /// `flush`: Flush a WriteHandle or bidirectional Handle buffer.
 /// Takes a WriteHandle (or Handle with write_inner), flushes it, returns the same handle.
-pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1918,7 +1919,7 @@ pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `close`: Close a WriteHandle or bidirectional Handle.
 /// Takes a WriteHandle (or Handle with write_inner), flushes and returns Null.
 /// The inner writer is dropped when the last Rc is dropped.
-pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1974,7 +1975,7 @@ pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes 2 args: `cap` (DirCap), `path` (String).
 /// Returns a WriteHandle with Writable and Text capabilities.
 /// This is a low-level primitive used to implement higher-level I/O functions in tinct.
-pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2032,7 +2033,7 @@ pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 /// `seek`: Seek to a byte offset from the start of the file.
 /// Takes a Handle and an Int offset, returns the Handle for chaining.
 /// Requires the Seekable capability.
-pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2154,7 +2155,7 @@ pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `seek-end`: Seek to the end of the file.
 /// Takes a Handle, returns the Handle for chaining.
 /// Requires the Seekable capability.
-pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2253,7 +2254,7 @@ pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `position`: Get the current byte offset in the file.
 /// Takes a Handle, returns an Int.
 /// Requires the Seekable capability.
-pub(crate) fn builtin_position(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_position(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2316,7 +2317,7 @@ pub(crate) fn builtin_position(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `list-dir`: List directory entries with metadata.
 /// Takes a DirCap and String path, returns a Seq of metadata Dicts.
 /// Each dict has keys: name, type, size, mtime.
-pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2427,7 +2428,7 @@ pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `stat`: Get metadata for a file or directory.
 /// Takes a DirCap and String path, returns a metadata Dict.
 /// Dict has keys: name, type, size, mtime, mode, is-dir, is-file, is-symlink.
-pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2530,7 +2531,7 @@ pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `make-dir`: Create a directory (and parent directories if needed).
 /// Takes a DirCap and String path, returns Null.
-pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2567,7 +2568,7 @@ pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `remove`: Remove a file or empty directory.
 /// Takes a DirCap and String path, returns Null.
 /// Tries to remove as file first, then as directory.
-pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2608,7 +2609,7 @@ pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `rename`: Rename or move a file or directory.
 /// Takes a DirCap, old path String, and new path String, returns Null.
-pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2651,7 +2652,7 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes a DirCap, source path String, and destination path String, returns Null.
 /// `link`: Create a hard link.
 /// Takes a DirCap, existing path String, and link path String, returns Null.
-pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2693,7 +2694,7 @@ pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `read-link`: Read the target of a symbolic link.
 /// Takes a DirCap and String path, returns the target path as a String.
-pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -2786,7 +2787,7 @@ impl std::io::Write for TlsWriter {
 fn build_tls_config(
     opts_val: &Value,
     opts_span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<rustls::ClientConfig> {
     use rustls::RootCertStore;
 
@@ -3003,7 +3004,7 @@ fn build_tls_config(
 fn extract_alpn_protocols(
     val: &Value,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Vec<Vec<u8>>> {
     let mut protocols = Vec::new();
     let mut current = val.clone();
@@ -3074,7 +3075,7 @@ fn validate_spki_pins(
     conn: &rustls::ClientConnection,
     pins_val: &Value,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<()> {
     // Extract list of pins
     let mut pins = Vec::new();
@@ -3259,7 +3260,7 @@ fn compute_spki_hash(cert_der: &[u8], algorithm: &str, span: Span) -> EvalResult
 fn extract_cert_info(
     cert_der: &rustls::pki_types::CertificateDer,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Value> {
     // For now, return a minimal dict with just the cert bytes
     // Full X.509 parsing would require a crate like x509-parser or rustls-webpki
@@ -3305,7 +3306,7 @@ fn extract_cn(name: &x509_parser::x509::X509Name) -> Option<String> {
 fn extract_sans(
     cert: &x509_parser::certificate::X509Certificate,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Value> {
     use x509_parser::extensions::GeneralName;
 
@@ -3383,7 +3384,7 @@ fn extract_sans(
 /// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
 /// Takes (handle, sni, opts). Extracts raw_tcp from Handle, wraps in TLS, returns new Handle.
 /// Signature: tls-layer handle@Handle sni@String opts@Dict → Handle[... Stream Tls]
-pub(crate) fn builtin_tls_layer(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_tls_layer(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -3560,7 +3561,7 @@ pub(crate) fn builtin_tls_layer(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle.
 /// Requires Handle[... Tls ...].
 /// Returns a dict with: subject, issuer, sans, not-before, not-after, spki-sha256.
-pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -3860,7 +3861,7 @@ impl std::io::Write for QuicSendWriter {
 ///   `mozilla-roots`, `ca-bundle`, `client-cert`, `client-key`, `alpn`, `pins`)
 ///
 /// Returns a `QuicSession` on success.
-pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     use std::net::{SocketAddr, ToSocketAddrs};
     use std::sync::Arc;
 
@@ -4004,7 +4005,7 @@ pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 /// and `Stream` capabilities — the same interface as a TCP Handle.
 ///
 /// Both halves bridge async quinn I/O to synchronous BufRead/Write via block_on.
-pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -4091,7 +4092,7 @@ pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Th
 /// either (a) a new QuicDatagramHandle variant, or (b) async wrapper types.
 /// For now this returns a clear error directing users to `quic-open-stream`
 /// for reliable streaming, which is the common HTTP/3 use case.
-pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -4143,7 +4144,7 @@ pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<
 /// Returns an `Http2Session` wrapping a `reqwest::blocking::Client` configured
 /// to prefer HTTP/2 via ALPN for HTTPS connections. The client reuses the
 /// underlying connection pool across multiple `http-request` calls.
-pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -4270,7 +4271,7 @@ fn parse_origin_host_port(origin: &str, span: Span) -> EvalResult<(String, Optio
 /// Implementation: wraps quinn::Connection in h3_quinn::Connection, then drives
 /// the h3::client handshake via block_on. The returned SendRequest is stored in
 /// the Http3Session value.
-pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -4362,7 +4363,7 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 /// - `Http2Session`: uses reqwest blocking client (HTTP/2 via ALPN)
 /// - `Http3Session`: uses h3 over the existing QUIC connection
 /// - Other: type error (hard error, not Result variant)
-pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -4404,7 +4405,7 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
                     crate::value::Key::String(s) => s.clone(),
                     crate::value::Key::Int(i) => i.to_string(),
                 };
-                let thunk = ctx.thunk_arena.borrow().get(*val_id).clone();
+                let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
                 let val_materialized = materialize(&thunk, Some(&call_span), &ctx)?;
                 let val_str =
                     require_string("http-request header value", val_materialized, call_span)?;
@@ -4470,7 +4471,7 @@ struct Http2RequestConfig<'a> {
 /// The client was configured in `builtin_http2_session` to prefer HTTP/2 via ALPN.
 /// Path is resolved relative to `base_url` (the origin stored in the session).
 /// Returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
-fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Rc<Thunk>> {
+fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Arc<Thunk>> {
     let client = config.client;
     let base_url = config.base_url;
     let method_str = config.method_str;
@@ -4581,7 +4582,7 @@ fn http_request_h3(
     body_str: String,
     span: crate::ast::Span,
     ctx: &crate::eval::EvalContext,
-) -> EvalResult<Rc<Thunk>> {
+) -> EvalResult<Arc<Thunk>> {
     use bytes::Bytes;
 
     // Build the http::Request — body is sent separately as DATA frames.
@@ -4720,7 +4721,7 @@ fn http_request_err_val(
     msg: String,
     span: crate::ast::Span,
     ctx: &crate::eval::EvalContext,
-) -> EvalResult<Rc<Thunk>> {
+) -> EvalResult<Arc<Thunk>> {
     let mut result = IndexMap::new();
     result.insert(
         crate::value::Key::String("err".to_string()),
@@ -4733,7 +4734,7 @@ fn http_request_err_val(
 /// Takes `(cap, host, timeout_ms)`.
 /// Returns `{ok: {latency-ms: Int}}` on success or `{err: String}` on failure.
 /// Uses unprivileged ICMP ping sockets (`SOCK_DGRAM + IPPROTO_ICMP`, Linux 3.11+).
-pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -4803,7 +4804,7 @@ pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// Build a `{err: String}` result dict value.
-fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> EvalResult<Rc<Thunk>> {
+fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> EvalResult<Arc<Thunk>> {
     use crate::value::Key;
     let mut result = IndexMap::new();
     result.insert(
@@ -4818,7 +4819,7 @@ fn icmp_ok_val(
     latency_ms: i64,
     span: Span,
     ctx: &crate::eval::EvalContext,
-) -> EvalResult<Rc<Thunk>> {
+) -> EvalResult<Arc<Thunk>> {
     use crate::value::Key;
     // Inner dict: {latency-ms: Int}
     let mut inner = IndexMap::new();
@@ -4841,7 +4842,7 @@ fn icmp_ping_impl(
     timeout_ms: i64,
     span: Span,
     ctx: &crate::eval::EvalContext,
-) -> EvalResult<Rc<Thunk>> {
+) -> EvalResult<Arc<Thunk>> {
     use std::net::ToSocketAddrs;
 
     // Resolve hostname to IPv4 address
@@ -5073,7 +5074,7 @@ fn icmp_ping_impl(
     _timeout_ms: i64,
     span: Span,
     ctx: &crate::eval::EvalContext,
-) -> EvalResult<Rc<Thunk>> {
+) -> EvalResult<Arc<Thunk>> {
     icmp_err_val(
         "icmp-ping: ICMP ping is not supported on this platform".to_string(),
         span,
@@ -5084,7 +5085,7 @@ fn icmp_ping_impl(
 /// `send-datagram`: Send a message over a DatagramHandle.
 /// Signature: `[send-datagram handle data]` → null
 /// `data` must be a String or Bytes.
-pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -5161,7 +5162,7 @@ pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 /// The socket must have been put into non-blocking mode or have a timeout set
 /// via the underlying OS to avoid blocking forever; this builtin blocks until
 /// a datagram arrives.
-pub(crate) fn builtin_recv_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_recv_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -5174,7 +5175,7 @@ pub(crate) fn builtin_recv_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     use crate::value::Key;
 
     // Helper: build the `{data: Bytes}` result dict from a received byte buffer.
-    let make_data_dict = |buf: Vec<u8>, ctx: &crate::eval::EvalContext| -> EvalResult<Rc<Thunk>> {
+    let make_data_dict = |buf: Vec<u8>, ctx: &crate::eval::EvalContext| -> EvalResult<Arc<Thunk>> {
         let data_len = buf.len();
         let data_bytes = Value::Bytes {
             source: Rc::from(buf.as_slice()),

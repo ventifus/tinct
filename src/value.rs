@@ -1,11 +1,11 @@
 //! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
 
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::{Equivalent, IndexMap};
 
@@ -28,16 +28,16 @@ pub struct FnAnnotation {
 
 /// Arguments passed to built-in functions.
 pub struct BuiltinArgs<'a> {
-    pub args: &'a [Rc<Thunk>],
-    pub named: Option<&'a IndexMap<String, Rc<Thunk>>>,
+    pub args: &'a [Arc<Thunk>],
+    pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
     pub call_span: Span,
-    pub ctx: Rc<crate::eval::EvalContext>,
+    pub ctx: Arc<crate::eval::EvalContext>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
 /// positional args, named args, and call-site span.
-/// Returns an `Rc<Thunk>` to allow builtins to participate in lazy evaluation.
-pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>;
+/// Returns an `Arc<Thunk>` to allow builtins to participate in lazy evaluation.
+pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>;
 
 /// Strictness annotation for builtin argument demand (Wadler & Hughes 1987).
 #[repr(u8)]
@@ -297,7 +297,7 @@ pub enum Value {
     Function {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
-        env: Rc<RefCell<Environment>>,
+        env: Arc<RwLock<Environment>>,
         annotation: Option<Box<FnAnnotation>>,
     },
     /// Rust-native built-in function
@@ -457,7 +457,7 @@ pub struct Http3SessionState {
 /// Both arms expose the same `send`/`recv` API after connection, so dispatch
 /// is done once at construction time and builtins operate uniformly.
 ///
-/// `Clone` is derived — `Rc::clone` is a shallow reference-count increment, not a socket copy.
+/// `Clone` is derived — `Arc::clone` is a shallow reference-count increment, not a socket copy.
 #[derive(Clone, Debug)]
 pub enum DatagramSocket {
     /// UDP socket, connected to a remote address via `UdpSocket::connect`.
@@ -819,33 +819,33 @@ pub enum ThunkState {
     Placeholder,
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
-        env: Rc<RefCell<Environment>>,
+        env: Arc<RwLock<Environment>>,
         /// Optional flat environment ID for O(1) variable lookup (arena-phase3).
         /// None for stdlib thunks or thunks created before flat environment migration.
         /// Some(env_id) for user-scope thunks where the resolver populated VarRef coordinates.
-        /// The Rc<RefCell<Environment>> chain remains as a fallback for stdlib bindings.
+        /// The Arc<RwLock<Environment>> chain remains as a fallback for stdlib bindings.
         env_id: Option<crate::arena::EnvId>,
-        ctx: Rc<crate::eval::EvalContext>,
+        ctx: Arc<crate::eval::EvalContext>,
     },
     PendingBuiltin {
         def: BuiltinDef,
-        args: Box<Vec<Rc<Thunk>>>,
+        args: Box<Vec<Arc<Thunk>>>,
         /// Named args for this builtin call. `None` means no named args (the common case);
         /// avoids allocating an empty `IndexMap` for the many internal `PendingBuiltin`
         /// thunks created by sequence generators and transforms.
-        named: Option<IndexMap<String, Rc<Thunk>>>,
+        named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
-        ctx: Rc<crate::eval::EvalContext>,
+        ctx: Arc<crate::eval::EvalContext>,
     },
     PendingCall {
-        func: Rc<Thunk>,
-        args: Box<Vec<Rc<Thunk>>>,
+        func: Arc<Thunk>,
+        args: Box<Vec<Arc<Thunk>>>,
         /// Named args for this call. `None` means no named args (the common case);
         /// avoids allocating an empty `IndexMap` for positional-only calls.
-        named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
+        named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
         call_span: Span,
-        caller_env: Rc<RefCell<Environment>>,
-        ctx: Rc<crate::eval::EvalContext>,
+        caller_env: Arc<RwLock<Environment>>,
+        ctx: Arc<crate::eval::EvalContext>,
     },
     /// Wraps an inner thunk and validates its materialized value against an expected type.
     /// Carries no `ctx` field because it does not evaluate AST directly; it forces the
@@ -853,14 +853,14 @@ pub enum ThunkState {
     /// `blame_label` tracks the typed/untyped boundary for gradual typing (co-natural strategy).
     /// `default` carries the fallback expression and environment from TypeAssert's `default:` annotation.
     Guarded {
-        inner: Rc<Thunk>,
+        inner: Arc<Thunk>,
         expected: Type,
         field_path: Box<Vec<String>>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<(
             Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
+            Arc<RwLock<Environment>>,
         )>,
     },
     InProgress,
@@ -883,8 +883,8 @@ pub enum ThunkState {
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         res: std::sync::Arc<crate::ast::ResolutionTable>,
         types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
-        env: Rc<RefCell<Environment>>,
-        ctx: Rc<crate::eval::EvalContext>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<crate::eval::EvalContext>,
     },
 
     /// Created by match dispatch on `Value::Expression` — evaluates a single
@@ -897,19 +897,19 @@ pub enum ThunkState {
     AstNodeField {
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         field: &'static str,
-        ctx: Rc<crate::eval::EvalContext>,
+        ctx: Arc<crate::eval::EvalContext>,
     },
 }
 
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
 /// or a materialized value with memoization (evaluate-at-most-once semantics).
 pub struct Thunk {
-    state: RefCell<ThunkState>,
+    state: Mutex<ThunkState>,
     pub(crate) span: Span,
     /// Label describing this thunk's origin (e.g. "call $f").
     /// `None` for anonymous thunks (the common case); eliminates per-thunk String allocation.
     /// Used for stack trace construction when materialization fails.
-    pub(crate) origin: Option<Rc<str>>,
+    pub(crate) origin: Option<Arc<str>>,
 }
 
 impl Thunk {
@@ -917,7 +917,7 @@ impl Thunk {
     /// `set_state()` before use. Panics at materialization if still in Placeholder state.
     pub fn new_placeholder(span: Span) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Placeholder),
+            state: Mutex::new(ThunkState::Placeholder),
             span,
             origin: None,
         }
@@ -925,12 +925,12 @@ impl Thunk {
 
     pub fn new_unevaluated(
         expr: Rc<Spanned<Expr>>,
-        env: Rc<RefCell<Environment>>,
-        ctx: Rc<crate::eval::EvalContext>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Unevaluated {
+            state: Mutex::new(ThunkState::Unevaluated {
                 expr,
                 env,
                 env_id: None,
@@ -944,17 +944,17 @@ impl Thunk {
     /// Create an unevaluated thunk with a flat environment ID for O(1) variable lookup.
     ///
     /// The `env_id` parameter enables the O(1) variable lookup path when the resolver
-    /// has populated VarRef coordinates. The Rc<RefCell<Environment>> chain remains
+    /// has populated VarRef coordinates. The Arc<RwLock<Environment>> chain remains
     /// as a fallback for stdlib bindings and computed keys.
     pub fn new_unevaluated_with_env_id(
         expr: Rc<Spanned<Expr>>,
-        env: Rc<RefCell<Environment>>,
+        env: Arc<RwLock<Environment>>,
         env_id: crate::arena::EnvId,
-        ctx: Rc<crate::eval::EvalContext>,
+        ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Unevaluated {
+            state: Mutex::new(ThunkState::Unevaluated {
                 expr,
                 env,
                 env_id: Some(env_id),
@@ -967,7 +967,7 @@ impl Thunk {
 
     pub fn new_materialized(value: Value, span: Span) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Materialized(value)),
+            state: Mutex::new(ThunkState::Materialized(value)),
             span,
             origin: None,
         }
@@ -980,11 +980,11 @@ impl Thunk {
     pub fn new_ast_node_field(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         field: &'static str,
-        ctx: Rc<crate::eval::EvalContext>,
+        ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::AstNodeField { node, field, ctx }),
+            state: Mutex::new(ThunkState::AstNodeField { node, field, ctx }),
             span,
             origin: None,
         }
@@ -994,14 +994,14 @@ impl Thunk {
     /// thunks); pass `Some(map)` only when named args are actually present.
     pub fn new_pending_builtin(
         def: BuiltinDef,
-        args: Vec<Rc<Thunk>>,
-        named: Option<IndexMap<String, Rc<Thunk>>>,
+        args: Vec<Arc<Thunk>>,
+        named: Option<IndexMap<String, Arc<Thunk>>>,
         span: Span,
-        origin: Option<Rc<str>>,
-        ctx: Rc<crate::eval::EvalContext>,
+        origin: Option<Arc<str>>,
+        ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::PendingBuiltin {
+            state: Mutex::new(ThunkState::PendingBuiltin {
                 def,
                 args: Box::new(args),
                 named,
@@ -1014,14 +1014,14 @@ impl Thunk {
     }
 
     pub fn new_pending_call(
-        func: Rc<Thunk>,
-        args: Vec<Rc<Thunk>>,
-        named: IndexMap<String, Rc<Thunk>>,
+        func: Arc<Thunk>,
+        args: Vec<Arc<Thunk>>,
+        named: IndexMap<String, Arc<Thunk>>,
         call_span: Span,
-        caller_env: Rc<RefCell<Environment>>,
+        caller_env: Arc<RwLock<Environment>>,
         span: Span,
-        origin: Option<Rc<str>>,
-        ctx: Rc<crate::eval::EvalContext>,
+        origin: Option<Arc<str>>,
+        ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
         let named = if named.is_empty() {
             None
@@ -1029,7 +1029,7 @@ impl Thunk {
             Some(Box::new(named))
         };
         Self {
-            state: RefCell::new(ThunkState::PendingCall {
+            state: Mutex::new(ThunkState::PendingCall {
                 func,
                 args: Box::new(args),
                 named,
@@ -1043,7 +1043,7 @@ impl Thunk {
     }
 
     pub fn new_guarded(
-        inner: Rc<Thunk>,
+        inner: Arc<Thunk>,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
@@ -1052,7 +1052,7 @@ impl Thunk {
     }
 
     pub fn new_guarded_with_blame(
-        inner: Rc<Thunk>,
+        inner: Arc<Thunk>,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
@@ -1062,18 +1062,18 @@ impl Thunk {
     }
 
     pub fn new_guarded_full(
-        inner: Rc<Thunk>,
+        inner: Arc<Thunk>,
         expected: Type,
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<(
             Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
+            Arc<RwLock<Environment>>,
         )>,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::Guarded {
+            state: Mutex::new(ThunkState::Guarded {
                 inner,
                 expected,
                 field_path: Box::new(field_path),
@@ -1082,28 +1082,28 @@ impl Thunk {
                 default,
             }),
             span: guard_span,
-            origin: Some(Rc::from("type guard")),
+            origin: Some(Arc::from("type guard")),
         }
     }
 
     /// Set the origin label for this thunk (used in stack traces).
-    pub fn with_origin(mut self, label: Rc<str>) -> Self {
+    pub fn with_origin(mut self, label: Arc<str>) -> Self {
         self.origin = Some(label);
         self
     }
 
-    pub fn state(&self) -> Ref<'_, ThunkState> {
-        self.state.borrow()
+    pub fn state(&self) -> std::sync::MutexGuard<'_, ThunkState> {
+        self.state.lock().unwrap()
     }
 
     /// Set the thunk state directly. Use this when the new state doesn't depend
     /// on the old state.
     pub fn set_state(&self, new_state: ThunkState) {
-        *self.state.borrow_mut() = new_state;
+        *self.state.lock().unwrap() = new_state;
     }
 
     pub fn try_get_materialized(&self) -> Option<Value> {
-        match &*self.state.borrow() {
+        match &*self.state.lock().unwrap() {
             ThunkState::Materialized(v) => Some(v.clone()),
             _ => None,
         }
@@ -1112,12 +1112,12 @@ impl Thunk {
     /// Atomically read the current state, compute a new state, and write it back.
     ///
     /// The closure receives an immutable reference to the current [`ThunkState`].
-    /// The `Ref` from `borrow()` is dropped **before** `borrow_mut()` is called,
-    /// so this avoids the double-borrow panic that occurs when callers hold a
-    /// `state()` borrow while trying to mutate:
+    /// The guard from `lock().unwrap()` is dropped **before** the second `lock().unwrap()` is called,
+    /// so this avoids the double-lock panic that occurs when callers hold a
+    /// `state()` lock while trying to mutate:
     ///
     /// ```ignore
-    /// // BAD: borrow_mut while borrow is live → panic
+    /// // BAD: lock while lock is live → panic
     /// match &*thunk.state() {
     ///     ThunkState::Unevaluated { .. } => { /* mutate thunk here */ }
     /// }
@@ -1132,8 +1132,8 @@ impl Thunk {
     /// });
     /// ```
     pub fn transition(&self, f: impl FnOnce(&ThunkState) -> ThunkState) {
-        let new_state = f(&self.state.borrow());
-        *self.state.borrow_mut() = new_state;
+        let new_state = f(&self.state.lock().unwrap());
+        *self.state.lock().unwrap() = new_state;
     }
 
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
@@ -1143,10 +1143,10 @@ impl Thunk {
         &self,
     ) -> Option<(
         Rc<Spanned<Expr>>,
-        Rc<RefCell<Environment>>,
-        Rc<crate::eval::EvalContext>,
+        Arc<RwLock<Environment>>,
+        Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Unevaluated {
                 expr,
@@ -1168,12 +1168,12 @@ impl Thunk {
         &self,
     ) -> Option<(
         BuiltinDef,
-        Vec<Rc<Thunk>>,
-        Option<IndexMap<String, Rc<Thunk>>>,
+        Vec<Arc<Thunk>>,
+        Option<IndexMap<String, Arc<Thunk>>>,
         Span,
-        Rc<crate::eval::EvalContext>,
+        Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingBuiltin {
                 def,
@@ -1193,14 +1193,14 @@ impl Thunk {
     pub fn take_pending_call(
         &self,
     ) -> Option<(
-        Rc<Thunk>,
-        Vec<Rc<Thunk>>,
-        Option<IndexMap<String, Rc<Thunk>>>,
+        Arc<Thunk>,
+        Vec<Arc<Thunk>>,
+        Option<IndexMap<String, Arc<Thunk>>>,
         Span,
-        Rc<RefCell<Environment>>,
-        Rc<crate::eval::EvalContext>,
+        Arc<RwLock<Environment>>,
+        Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingCall {
                 func,
@@ -1228,17 +1228,17 @@ impl Thunk {
     pub fn take_guarded(
         &self,
     ) -> Option<(
-        Rc<Thunk>,
+        Arc<Thunk>,
         Type,
         Vec<String>,
         Span,
         Option<crate::error::BlameLabel>,
         Option<(
             Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
+            Arc<RwLock<Environment>>,
         )>,
     )> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Guarded {
                 inner,
@@ -1272,10 +1272,10 @@ impl Thunk {
         std::sync::Arc<crate::ast::SurfaceNode>,
         std::sync::Arc<crate::ast::ResolutionTable>,
         std::sync::Arc<crate::ast::TypeAnnotationTable>,
-        Rc<RefCell<Environment>>,
-        Rc<crate::eval::EvalContext>,
+        Arc<RwLock<Environment>>,
+        Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         let old = std::mem::replace(&mut *state, ThunkState::InProgress);
         match old {
             ThunkState::Surface {
@@ -1301,9 +1301,9 @@ impl Thunk {
     ) -> Option<(
         std::sync::Arc<crate::ast::SurfaceNode>,
         &'static str,
-        Rc<crate::eval::EvalContext>,
+        Arc<crate::eval::EvalContext>,
     )> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap();
         let old = std::mem::replace(&mut *state, ThunkState::InProgress);
         match old {
             ThunkState::AstNodeField { node, field, ctx } => Some((node, field, ctx)),
@@ -1321,7 +1321,7 @@ impl Thunk {
     /// (e.g., when a shared thunk is encountered a second time during error propagation).
     pub fn cache_failure(&self, err: &EvalError) {
         // Fast path: if already Failed, no work needed — avoid the clone.
-        if matches!(&*self.state.borrow(), ThunkState::Failed(_)) {
+        if matches!(&*self.state.lock().unwrap(), ThunkState::Failed(_)) {
             return;
         }
         self.set_state(ThunkState::Failed(Box::new(err.clone())));
@@ -1330,7 +1330,7 @@ impl Thunk {
 
 impl fmt::Debug for Thunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = match self.state.try_borrow() {
+        let mut s = match self.state.try_lock() {
             Ok(state) => {
                 let mut s = f.debug_struct("Thunk");
                 s.field("state", &*state);
@@ -1339,7 +1339,7 @@ impl fmt::Debug for Thunk {
             }
             Err(_) => {
                 let mut s = f.debug_struct("Thunk");
-                s.field("state", &"<borrowed>");
+                s.field("state", &"<locked>");
                 s.field("span", &self.span);
                 s
             }
@@ -1379,8 +1379,8 @@ pub struct Environment {
     /// Bindings map from name to thunk. Uses IndexMap to preserve insertion order for
     /// future slot-based O(1) lookup (Phase 2). Phase 1 resolution pass populates VarRef
     /// caches but evaluator still uses name-based lookup.
-    pub(crate) bindings: IndexMap<String, Rc<Thunk>>,
-    pub(crate) parent: Option<Rc<RefCell<Environment>>>,
+    pub(crate) bindings: IndexMap<String, Arc<Thunk>>,
+    pub(crate) parent: Option<Arc<RwLock<Environment>>>,
 }
 
 impl Environment {
@@ -1391,7 +1391,7 @@ impl Environment {
         }
     }
 
-    pub fn with_parent(parent: Rc<RefCell<Environment>>) -> Self {
+    pub fn with_parent(parent: Arc<RwLock<Environment>>) -> Self {
         Self {
             bindings: IndexMap::new(),
             parent: Some(parent),
@@ -1400,33 +1400,33 @@ impl Environment {
 
     /// Look up a binding by name, searching this environment then ancestors.
     ///
-    /// # Borrow safety
+    /// # Lock safety
     ///
-    /// This method calls `borrow()` on each ancestor `RefCell<Environment>` as
-    /// it walks up the scope chain.  Callers **must not** hold a mutable borrow
-    /// (`borrow_mut()`) on any ancestor environment while calling `get()`, or
-    /// the program will panic at runtime.
+    /// This method acquires a read lock on each ancestor `RwLock<Environment>` as
+    /// it walks up the scope chain.  Callers **must not** hold a write lock
+    /// on any ancestor environment while calling `get()`, or
+    /// the program will deadlock.
     ///
     /// The scope chain must form a DAG -- circular parent links will cause an
     /// infinite loop.
-    pub fn get(&self, name: &str) -> Option<Rc<Thunk>> {
+    pub fn get(&self, name: &str) -> Option<Arc<Thunk>> {
         // Check current scope first
         if let Some(thunk) = self.bindings.get(name) {
-            return Some(Rc::clone(thunk));
+            return Some(Arc::clone(thunk));
         }
         // Walk parent chain iteratively
-        let mut current = self.parent.as_ref().map(Rc::clone);
+        let mut current = self.parent.as_ref().map(Arc::clone);
         while let Some(env_rc) = current {
-            let env = env_rc.borrow();
+            let env = env_rc.read().unwrap();
             if let Some(thunk) = env.bindings.get(name) {
-                return Some(Rc::clone(thunk));
+                return Some(Arc::clone(thunk));
             }
-            current = env.parent.as_ref().map(Rc::clone);
+            current = env.parent.as_ref().map(Arc::clone);
         }
         None
     }
 
-    pub fn insert(&mut self, name: String, thunk: Rc<Thunk>) {
+    pub fn insert(&mut self, name: String, thunk: Arc<Thunk>) {
         self.bindings.insert(name, thunk);
     }
 
@@ -1439,33 +1439,33 @@ impl Environment {
     /// `bindings` IndexMap using `get_index` — no name hash, no string comparison.
     ///
     /// For `level > 0`: walks `level` steps up the parent chain, then does the
-    /// slot lookup. Each step costs one `Rc::clone` + `RefCell::borrow`, so the
+    /// slot lookup. Each step costs one `Arc::clone` + `RwLock::read`, so the
     /// total cost is O(level). This is still faster than name-based lookup for
     /// deep environments because we skip the string hash at each level.
     ///
     /// Returns `None` if the level or slot is out of bounds (indicates a resolver
     /// bug; `eval.rs` falls back to name-based lookup when this returns `None`).
-    pub fn get_by_slot(&self, level: u32, slot: u32) -> Option<Rc<Thunk>> {
+    pub fn get_by_slot(&self, level: u32, slot: u32) -> Option<Arc<Thunk>> {
         if level == 0 {
             // Fast path: O(1) index into the current scope's bindings
             return self
                 .bindings
                 .get_index(slot as usize)
-                .map(|(_, thunk)| Rc::clone(thunk));
+                .map(|(_, thunk)| Arc::clone(thunk));
         }
         // Walk `level` steps up the parent chain, then do slot lookup
         let mut steps_remaining = level;
-        let mut current = self.parent.as_ref().map(Rc::clone);
+        let mut current = self.parent.as_ref().map(Arc::clone);
         while let Some(env_rc) = current {
             steps_remaining -= 1;
             if steps_remaining == 0 {
-                let env = env_rc.borrow();
+                let env = env_rc.read().unwrap();
                 return env
                     .bindings
                     .get_index(slot as usize)
-                    .map(|(_, thunk)| Rc::clone(thunk));
+                    .map(|(_, thunk)| Arc::clone(thunk));
             }
-            let next = env_rc.borrow().parent.as_ref().map(Rc::clone);
+            let next = env_rc.read().unwrap().parent.as_ref().map(Arc::clone);
             current = next;
         }
         None
@@ -1483,10 +1483,10 @@ mod tests {
     use super::*;
     use crate::test_util::test_span;
 
-    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new(base_dir, Rc::new(RefCell::new(Environment::new())), false)
+        crate::eval::EvalContext::new(base_dir, Arc::new(RwLock::new(Environment::new())), false)
     }
 
     #[test]
@@ -1545,9 +1545,9 @@ mod tests {
     fn test_value_partial_eq_function_always_false() {
         // Function values are intentionally non-comparable
         let f = Value::Function {
-            params: Rc::new(vec![]),
-            body: Rc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
-            env: Rc::new(RefCell::new(Environment::new())),
+            params: Arc::new(vec![]),
+            body: Arc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
+            env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
         assert_ne!(f.clone(), f);
@@ -1555,8 +1555,8 @@ mod tests {
 
     #[test]
     fn test_value_partial_eq_builtin_always_false() {
-        fn dummy(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn dummy(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(0),
                 ctx.call_span,
             )))
@@ -1574,14 +1574,14 @@ mod tests {
         // BuiltinDef equality is name-based, not function-pointer-based.
         // Two BuiltinDefs with the same name must compare equal regardless of their
         // function pointers; two with different names must compare unequal.
-        fn func_a(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn func_a(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(1),
                 ctx.call_span,
             )))
         }
-        fn func_b(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn func_b(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(2),
                 ctx.call_span,
             )))
@@ -1618,8 +1618,8 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
-            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
+            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -1632,8 +1632,8 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
-            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -1647,8 +1647,8 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
-            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -1662,8 +1662,8 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
-            tail: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
+            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -1675,27 +1675,27 @@ mod tests {
     fn test_environment_get_current_scope() {
         let mut env = Environment::new();
         let span = test_span(1, 1, 1, 5);
-        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
-        env.insert("x".into(), Rc::clone(&thunk));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        env.insert("x".into(), Arc::clone(&thunk));
 
         let found = env.get("x");
         assert!(found.is_some());
-        assert!(Rc::ptr_eq(&found.unwrap(), &thunk));
+        assert!(Arc::ptr_eq(&found.unwrap(), &thunk));
     }
 
     #[test]
     fn test_environment_get_parent_scope() {
         let mut parent = Environment::new();
         let span = test_span(1, 1, 1, 5);
-        let thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
-        parent.insert("y".into(), Rc::clone(&thunk));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
+        parent.insert("y".into(), Arc::clone(&thunk));
 
-        let parent_rc = Rc::new(RefCell::new(parent));
-        let child = Environment::with_parent(Rc::clone(&parent_rc));
+        let parent_rc = Arc::new(RefCell::new(parent));
+        let child = Environment::with_parent(Arc::clone(&parent_rc));
 
         let found = child.get("y");
         assert!(found.is_some());
-        assert!(Rc::ptr_eq(&found.unwrap(), &thunk));
+        assert!(Arc::ptr_eq(&found.unwrap(), &thunk));
     }
 
     #[test]
@@ -1708,18 +1708,18 @@ mod tests {
     fn test_environment_get_shadow() {
         let mut parent = Environment::new();
         let span = test_span(1, 1, 1, 5);
-        let parent_thunk = Rc::new(Thunk::new_materialized(Value::Int(1), span));
-        parent.insert("x".into(), Rc::clone(&parent_thunk));
+        let parent_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span));
+        parent.insert("x".into(), Arc::clone(&parent_thunk));
 
-        let parent_rc = Rc::new(RefCell::new(parent));
+        let parent_rc = Arc::new(RefCell::new(parent));
         let mut child = Environment::with_parent(parent_rc);
-        let child_thunk = Rc::new(Thunk::new_materialized(Value::Int(2), span));
-        child.insert("x".into(), Rc::clone(&child_thunk));
+        let child_thunk = Arc::new(Thunk::new_materialized(Value::Int(2), span));
+        child.insert("x".into(), Arc::clone(&child_thunk));
 
         let found = child.get("x").unwrap();
         // Should find the child's binding, not the parent's
-        assert!(Rc::ptr_eq(&found, &child_thunk));
-        assert!(!Rc::ptr_eq(&found, &parent_thunk));
+        assert!(Arc::ptr_eq(&found, &child_thunk));
+        assert!(!Arc::ptr_eq(&found, &parent_thunk));
     }
 
     #[test]
@@ -1736,8 +1736,8 @@ mod tests {
     #[test]
     fn test_thunk_transition() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let expr = Arc::new(Spanned::new(Expr::Int(0), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
 
         // Verify initial state
@@ -1755,12 +1755,12 @@ mod tests {
     #[test]
     fn test_thunk_debug_borrowed_state() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let expr = Arc::new(Spanned::new(Expr::Int(0), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
 
         // Hold a mutable borrow while formatting Debug
-        let _guard = thunk.state.borrow_mut();
+        let _guard = thunk.state.lock().unwrap();
         let debug_str = format!("{:?}", thunk);
 
         // Should show "<borrowed>" instead of panicking
@@ -1813,11 +1813,11 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         map.insert(
             Key::Int(0),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(2), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let dict = Value::Dict(map);
         assert_eq!(format!("{dict}"), "[x: <thunk> 0: <thunk>]");
@@ -1826,7 +1826,7 @@ mod tests {
     #[test]
     fn test_value_display_function() {
         let span = test_span(1, 1, 1, 5);
-        let params = Rc::new(vec![
+        let params = Arc::new(vec![
             Param {
                 name: "x".into(),
                 annotation: None,
@@ -1838,8 +1838,8 @@ mod tests {
                 variadic: false,
             },
         ]);
-        let body = Rc::new(Spanned::new(Expr::Int(0), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let body = Arc::new(Spanned::new(Expr::Int(0), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let func = Value::Function {
             params,
             body,
@@ -1851,8 +1851,8 @@ mod tests {
 
     #[test]
     fn test_value_display_builtin() {
-        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(0),
                 ctx.call_span,
             )))
@@ -1893,11 +1893,11 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         map.insert(
             Key::Int(0),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(2), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let dict = Value::Dict(map);
         let debug_str = format!("{dict:?}");
@@ -1910,7 +1910,7 @@ mod tests {
     #[test]
     fn test_value_debug_function() {
         let span = test_span(1, 1, 1, 5);
-        let params = Rc::new(vec![
+        let params = Arc::new(vec![
             Param {
                 name: "a".into(),
                 annotation: None,
@@ -1922,8 +1922,8 @@ mod tests {
                 variadic: false,
             },
         ]);
-        let body = Rc::new(Spanned::new(Expr::Int(0), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let body = Arc::new(Spanned::new(Expr::Int(0), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let func = Value::Function {
             params,
             body,
@@ -1935,8 +1935,8 @@ mod tests {
 
     #[test]
     fn test_value_debug_builtin() {
-        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(0),
                 ctx.call_span,
             )))
@@ -1958,16 +1958,16 @@ mod tests {
             .expect("failed to open test base_dir");
         let ctx1 = crate::eval::EvalContext::new(
             base_dir1,
-            Rc::new(RefCell::new(Environment::new())),
+            Arc::new(RwLock::new(Environment::new())),
             false,
         );
 
         // Create a thunk that captures ctx1
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(42), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let expr = Arc::new(Spanned::new(Expr::Int(42), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let thunk =
-            Thunk::new_unevaluated(Rc::clone(&expr), Rc::clone(&env), Rc::clone(&ctx1), span);
+            Thunk::new_unevaluated(Arc::clone(&expr), Arc::clone(&env), Arc::clone(&ctx1), span);
 
         // Verify the thunk captured ctx1 (before materialization)
         {
@@ -1979,9 +1979,9 @@ mod tests {
                     env_id: _,
                     ctx,
                 } => {
-                    // Use Rc::ptr_eq to verify it's the SAME Rc, not just equal content
+                    // Use Arc::ptr_eq to verify it's the SAME Rc, not just equal content
                     assert!(
-                        Rc::ptr_eq(ctx, &ctx1),
+                        Arc::ptr_eq(ctx, &ctx1),
                         "thunk should capture ctx1 before materialization"
                     );
                 }
@@ -2002,7 +2002,7 @@ mod tests {
 
         // Verify the taken ctx is the same Rc as ctx1
         assert!(
-            Rc::ptr_eq(&taken_ctx, &ctx1),
+            Arc::ptr_eq(&taken_ctx, &ctx1),
             "thunk should evaluate using the ctx it captured at creation (ctx1)"
         );
 
@@ -2020,8 +2020,8 @@ mod tests {
 
     #[test]
     fn test_thunk_pending_builtin_preserves_ctx() {
-        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(0),
                 ctx.call_span,
             )))
@@ -2032,7 +2032,7 @@ mod tests {
             .expect("failed to open test base_dir");
         let ctx1 = crate::eval::EvalContext::new(
             base_dir1,
-            Rc::new(RefCell::new(Environment::new())),
+            Arc::new(RwLock::new(Environment::new())),
             false,
         );
 
@@ -2047,14 +2047,14 @@ mod tests {
             vec![],
             None,
             span,
-            Some(Rc::from("test builtin call")),
-            Rc::clone(&ctx1),
+            Some(Arc::from("test builtin call")),
+            Arc::clone(&ctx1),
         );
 
         // Verify the thunk captured ctx1
         match &*thunk.state() {
             ThunkState::PendingBuiltin { ctx, .. } => {
-                assert!(Rc::ptr_eq(ctx, &ctx1), "PendingBuiltin should capture ctx1");
+                assert!(Arc::ptr_eq(ctx, &ctx1), "PendingBuiltin should capture ctx1");
             }
             other => panic!("expected PendingBuiltin state, got {other:?}"),
         }
@@ -2065,7 +2065,7 @@ mod tests {
 
         let (_def, _args, _named, _call_span, taken_ctx) = taken.unwrap();
         assert!(
-            Rc::ptr_eq(&taken_ctx, &ctx1),
+            Arc::ptr_eq(&taken_ctx, &ctx1),
             "PendingBuiltin should evaluate using captured ctx1"
         );
     }
@@ -2077,39 +2077,39 @@ mod tests {
             .expect("failed to open test base_dir");
         let ctx1 = crate::eval::EvalContext::new(
             base_dir1,
-            Rc::new(RefCell::new(Environment::new())),
+            Arc::new(RwLock::new(Environment::new())),
             false,
         );
 
         let span = test_span(1, 1, 1, 5);
-        let func_thunk = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
-                params: Rc::new(vec![]),
-                body: Rc::new(Spanned::new(
+                params: Arc::new(vec![]),
+                body: Arc::new(Spanned::new(
                     crate::ast::Expr::Int(0),
                     test_span(1, 1, 1, 1),
                 )),
-                env: Rc::new(RefCell::new(Environment::new())),
+                env: Arc::new(RwLock::new(Environment::new())),
                 annotation: None,
             },
             span,
         ));
 
         let thunk = Thunk::new_pending_call(
-            Rc::clone(&func_thunk),
+            Arc::clone(&func_thunk),
             vec![],
             IndexMap::new(),
             span,
-            Rc::new(RefCell::new(Environment::new())), // caller_env
+            Arc::new(RwLock::new(Environment::new())), // caller_env
             span,
-            Some(Rc::from("test call")),
-            Rc::clone(&ctx1),
+            Some(Arc::from("test call")),
+            Arc::clone(&ctx1),
         );
 
         // Verify the thunk captured ctx1
         match &*thunk.state() {
             ThunkState::PendingCall { ctx, .. } => {
-                assert!(Rc::ptr_eq(ctx, &ctx1), "PendingCall should capture ctx1");
+                assert!(Arc::ptr_eq(ctx, &ctx1), "PendingCall should capture ctx1");
             }
             other => panic!("expected PendingCall state, got {other:?}"),
         }
@@ -2120,7 +2120,7 @@ mod tests {
 
         let (_func, _args, _named, _call_span, _caller_env, taken_ctx) = taken.unwrap();
         assert!(
-            Rc::ptr_eq(&taken_ctx, &ctx1),
+            Arc::ptr_eq(&taken_ctx, &ctx1),
             "PendingCall should evaluate using captured ctx1"
         );
     }
@@ -2149,7 +2149,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
+            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         assert_eq!(proxy.type_name(), "Proxy");
     }
@@ -2159,7 +2159,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
+            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         let debug_str = format!("{:?}", proxy);
         assert_eq!(debug_str, "Proxy");
@@ -2170,7 +2170,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let proxy = Value::Proxy {
-            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
+            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         let display_str = format!("{}", proxy);
         assert_eq!(display_str, "<proxy>");
@@ -2181,7 +2181,7 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let p = Value::Proxy {
-            handler: ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
+            handler: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
         };
         assert_ne!(p.clone(), p);
     }
@@ -2189,9 +2189,9 @@ mod tests {
     #[test]
     fn test_thunk_new_guarded_state() {
         let span = test_span(1, 1, 1, 5);
-        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
         let thunk = Thunk::new_guarded(
-            Rc::clone(&inner),
+            Arc::clone(&inner),
             Type::Int,
             vec!["field".to_string()],
             span,
@@ -2213,8 +2213,8 @@ mod tests {
     #[test]
     fn test_take_guarded_returns_components() {
         let span = test_span(1, 1, 1, 5);
-        let inner = Rc::new(Thunk::new_materialized(Value::Int(99), span));
-        let thunk = Thunk::new_guarded(Rc::clone(&inner), Type::Int, vec!["x".to_string()], span);
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(99), span));
+        let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec!["x".to_string()], span);
 
         let result = thunk.take_guarded();
         assert!(
@@ -2225,7 +2225,7 @@ mod tests {
         let (taken_inner, taken_expected, taken_path, _taken_span, _blame, taken_default) =
             result.unwrap();
         assert!(
-            Rc::ptr_eq(&taken_inner, &inner),
+            Arc::ptr_eq(&taken_inner, &inner),
             "inner thunk should be the same Rc"
         );
         assert_eq!(taken_expected, Type::Int);
@@ -2265,9 +2265,9 @@ mod tests {
     #[test]
     fn test_thunk_new_guarded_fields() {
         let span = test_span(1, 1, 1, 5);
-        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
-        let thunk = Rc::new(Thunk::new_guarded(
-            Rc::clone(&inner),
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Arc::new(Thunk::new_guarded(
+            Arc::clone(&inner),
             Type::Int,
             vec!["foo".to_string()],
             span,
@@ -2277,7 +2277,7 @@ mod tests {
         let (got_inner, got_type, got_path, _got_span, _blame, _default) = result.unwrap();
         assert_eq!(got_path, vec!["foo".to_string()]);
         assert!(matches!(got_type, Type::Int));
-        assert!(Rc::ptr_eq(&got_inner, &inner));
+        assert!(Arc::ptr_eq(&got_inner, &inner));
     }
 
     #[test]
@@ -2287,8 +2287,8 @@ mod tests {
         // the full guard validation path (parse→eval→materialize) is covered
         // by test_guarded_thunk_preserves_inner_origin in eval.rs.
         let span = test_span(1, 1, 1, 5);
-        let inner = Rc::new(Thunk::new_materialized(Value::Int(100), span));
-        let thunk = Thunk::new_guarded(Rc::clone(&inner), Type::Int, vec![], span);
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(100), span));
+        let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec![], span);
 
         // Verify initial state is Guarded
         {
@@ -2324,12 +2324,12 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx = EvalContext::new(base_dir, Rc::new(RefCell::new(Environment::new())), false);
+        let ctx = EvalContext::new(base_dir, Arc::new(RwLock::new(Environment::new())), false);
 
         // Create a PendingBuiltin thunk (using a dummy builtin function)
-        fn dummy_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Rc<Thunk>> {
+        fn dummy_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Arc<Thunk>> {
             let _ = args; // silence unused warning
-            Ok(Rc::new(Thunk::new_materialized(
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(42),
                 test_span(1, 1, 1, 1),
             )))
@@ -2345,8 +2345,8 @@ mod tests {
             vec![],
             None,
             span,
-            Some(Rc::from("test")),
-            Rc::clone(&ctx),
+            Some(Arc::from("test")),
+            Arc::clone(&ctx),
         );
 
         // Verify initial state is PendingBuiltin
@@ -2379,9 +2379,9 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let ctx = EvalContext::new(base_dir, Rc::new(RefCell::new(Environment::new())), false);
+        let ctx = EvalContext::new(base_dir, Arc::new(RwLock::new(Environment::new())), false);
 
-        fn error_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Rc<Thunk>> {
+        fn error_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Arc<Thunk>> {
             Err(Box::new(EvalError::internal(
                 "test error".into(),
                 args.call_span,
@@ -2398,8 +2398,8 @@ mod tests {
             vec![],
             None,
             span,
-            Some(Rc::from("test")),
-            Rc::clone(&ctx),
+            Some(Arc::from("test")),
+            Arc::clone(&ctx),
         );
 
         // Transition to Failed

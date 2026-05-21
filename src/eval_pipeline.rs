@@ -4,8 +4,8 @@
 //! expression). Files are sequences of documents separated by `---`, with `%` threading
 //! the previous document's output into the next.
 
-use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
@@ -17,8 +17,8 @@ use super::{eval, materialize, EvalContext};
 
 thread_local! {
     /// Cached empty dict thunk used as the default `%` when no stdin is provided.
-    /// Avoids allocating a fresh `Rc<Thunk>` on every `eval_file_with_input` call.
-    static EMPTY_DICT_THUNK: Rc<Thunk> = Rc::new(Thunk::new_materialized(
+    /// Avoids allocating a fresh `Arc<Thunk>` on every `eval_file_with_input` call.
+    static EMPTY_DICT_THUNK: Arc<Thunk> = Arc::new(Thunk::new_materialized(
         Value::Dict(IndexMap::new()),
         Span::origin(),
     ));
@@ -32,13 +32,13 @@ thread_local! {
 /// as-is (lazy, any type). An empty document returns an empty dict.
 pub fn eval_document(
     doc: &Spanned<Document>,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     let exprs = &doc.node.expressions;
 
     if exprs.is_empty() {
-        return Ok(Rc::new(Thunk::new_materialized(
+        return Ok(Arc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
             doc.span,
         )));
@@ -51,7 +51,7 @@ pub fn eval_document(
 
             // Check if capability is present in environment
             let cap_present = {
-                let env_ref = env.borrow();
+                let env_ref = env.read().unwrap();
                 env_ref.get(&full_cap_name).is_some()
             };
 
@@ -115,7 +115,7 @@ pub fn eval_document(
         }
 
         // Intermediate expression: materialize and extract dict bindings
-        let thunk = eval(Rc::clone(expr), Rc::clone(&current_env), ctx)?;
+        let thunk = eval(Rc::clone(expr), Arc::clone(&current_env), ctx)?;
         let value = materialize(&thunk, Some(&expr.span), ctx)?;
 
         // Flatten Overlay to Dict for scope chain binding.
@@ -135,7 +135,7 @@ pub fn eval_document(
             }
         };
         {
-            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
                 &current_env,
             ))));
             for (key, val_thunk_id) in map {
@@ -147,8 +147,8 @@ pub fn eval_document(
                 if let Key::String(name) = key {
                     let val_thunk = ctx.get_thunk(val_thunk_id);
                     let forced_value = materialize(&val_thunk, Some(&expr.span), ctx)?;
-                    let strict_thunk = Rc::new(Thunk::new_materialized(forced_value, expr.span));
-                    child_env.borrow_mut().insert(name, strict_thunk);
+                    let strict_thunk = Arc::new(Thunk::new_materialized(forced_value, expr.span));
+                    child_env.write().unwrap().insert(name, strict_thunk);
                 }
             }
             current_env = child_env;
@@ -168,11 +168,11 @@ pub fn eval_document(
 /// This creates a synthetic TypeAssert expression that wraps a gensym'd variable reference.
 /// When evaluated, it will perform the same validation as a regular `[@Type expr]` assertion.
 fn wrap_with_nominal_validation(
-    inner: Rc<Thunk>,
+    inner: Arc<Thunk>,
     annotation: &crate::ast::Spanned<crate::ast::Annotation>,
     validation_span: Span,
-    ctx: &Rc<EvalContext>,
-) -> Rc<Thunk> {
+    ctx: &Arc<EvalContext>,
+) -> Arc<Thunk> {
     use crate::ast::Expr;
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -202,14 +202,14 @@ fn wrap_with_nominal_validation(
     ));
 
     // Create an environment with __nominal_input_N bound to the inner thunk
-    let validation_env = Rc::new(RefCell::new(Environment::new()));
-    validation_env.borrow_mut().insert(gensym_name, inner);
+    let validation_env = Arc::new(RwLock::new(Environment::new()));
+    validation_env.write().unwrap().insert(gensym_name, inner);
 
     // Return an Unevaluated thunk wrapping the TypeAssert expression
-    Rc::new(Thunk::new_unevaluated(
+    Arc::new(Thunk::new_unevaluated(
         type_assert_expr,
         validation_env,
-        Rc::clone(ctx),
+        Arc::clone(ctx),
         validation_span,
     ))
 }
@@ -238,9 +238,9 @@ fn wrap_with_nominal_validation(
 /// no separate setup call required.
 pub fn eval_file(
     file: &File,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     eval_file_with_input(file, env, ctx, None)
 }
 
@@ -259,14 +259,14 @@ pub fn eval_file(
 /// no separate setup call required.
 pub fn eval_file_with_input(
     file: &File,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-    initial_input: Option<Rc<Thunk>>,
-) -> EvalResult<Rc<Thunk>> {
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    initial_input: Option<Arc<Thunk>>,
+) -> EvalResult<Arc<Thunk>> {
     // % starts as the provided input, or empty dict if none given
-    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Rc::clone(t)));
+    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Arc::clone(t)));
     // Named section accumulator: maps section name → result thunk
-    let mut named: IndexMap<String, Rc<Thunk>> = IndexMap::new();
+    let mut named: IndexMap<String, Arc<Thunk>> = IndexMap::new();
 
     for doc in &file.documents {
         // Skip type-stage documents — they are handled separately by create_type_stage_env()
@@ -275,7 +275,7 @@ pub fn eval_file_with_input(
         }
 
         // Each document gets a fresh scope with % and %name bindings
-        let doc_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
+        let doc_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
 
         // Bind % (pipeline variable)
         // If the document has an expects: annotation, wrap % in a validation thunk
@@ -283,25 +283,25 @@ pub fn eval_file_with_input(
             // Wrap prev_output in a thunk that validates on materialization.
             // We use nominal type checking (like --no-typecheck mode) because we don't
             // have type elaboration here (expects annotations are advisory in typecheck).
-            wrap_with_nominal_validation(Rc::clone(&prev_output), expects_ann, doc.span, ctx)
+            wrap_with_nominal_validation(Arc::clone(&prev_output), expects_ann, doc.span, ctx)
         } else {
-            Rc::clone(&prev_output)
+            Arc::clone(&prev_output)
         };
 
-        doc_env.borrow_mut().insert("%".to_string(), percent_thunk);
+        doc_env.write().unwrap().insert("%".to_string(), percent_thunk);
 
         // Bind all previously named sections as %name
         for (section_name, section_thunk) in &named {
             doc_env
-                .borrow_mut()
-                .insert(format!("%{}", section_name), Rc::clone(section_thunk));
+                .write().unwrap()
+                .insert(format!("%{}", section_name), Arc::clone(section_thunk));
         }
 
         let result = eval_document(doc, doc_env, ctx)?;
 
         // If this document is named, accumulate it in the named map
         if let Some(ref name) = doc.node.name {
-            named.insert(name.clone(), Rc::clone(&result));
+            named.insert(name.clone(), Arc::clone(&result));
         }
 
         prev_output = result; // lazy: no materialization at boundary

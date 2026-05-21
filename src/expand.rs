@@ -34,6 +34,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use crate::ast::{Document, Entry, Expr, File, MatchArm, NamedArg, Param, Span, Spanned};
 use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
@@ -98,7 +99,7 @@ impl From<Span> for SpanKey {
 #[derive(Debug, Clone)]
 struct MacroMetadata {
     /// The transformer function (as a Value::Function thunk).
-    transformer: Rc<Thunk>,
+    transformer: Arc<Thunk>,
     /// The params pattern (LetDecl) for binding arguments.
     params: Spanned<Expr>,
     /// Optional inject: default name for anaphoric macros.
@@ -121,7 +122,7 @@ pub struct MacroEnv {
     pub provenance: ProvenanceMap,
     /// Macros discovered during expansion via `[defmacro ...]` declarations.
     /// Accumulated during expansion, returned in ExpandResult.
-    pub discovered_macros: Vec<(String, Rc<Thunk>)>,
+    pub discovered_macros: Vec<(String, Arc<Thunk>)>,
 }
 
 /// Unique identifier for a macro call site.
@@ -155,7 +156,7 @@ impl MacroEnv {
     fn register_macro(
         &mut self,
         name: String,
-        transformer: Rc<Thunk>,
+        transformer: Arc<Thunk>,
         params: Spanned<Expr>,
         inject_default: Option<String>,
         _span: Span,
@@ -250,7 +251,7 @@ pub struct ExpandResult {
     /// Macros discovered during expansion via `[defmacro ...]` declarations.
     /// Each entry is `(macro_name, transformer_thunk)`.
     /// Used to propagate stdlib macros from macros.llt to user code expansion.
-    pub discovered_macros: Vec<(String, Rc<Thunk>)>,
+    pub discovered_macros: Vec<(String, Arc<Thunk>)>,
     /// Macro inject defaults: `macro_name -> inject_default_name`.
     /// Populated from all macros with `inject:` declarations encountered during expansion.
     /// Used by the `macro-injects` builtin for runtime introspection.
@@ -268,7 +269,7 @@ pub struct ExpandResult {
 /// and we register them here by looking them up by name.
 fn register_stdlib_macros_from_env(
     env_macro: &mut MacroEnv,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    stdlib_env: &Arc<RwLock<Environment>>,
     span: Span,
 ) {
     // Known stdlib macros with their transformer function names and parameter patterns.
@@ -295,7 +296,7 @@ fn register_stdlib_macros_from_env(
     for (macro_name, transformer_fn_name, fixed_params, variadic_param) in stdlib_macros {
         // Look up the transformer function by its export name (may differ from macro name)
         let transformer_thunk = {
-            let env_ref = stdlib_env.borrow();
+            let env_ref = stdlib_env.read().unwrap();
             env_ref.get(*transformer_fn_name)
         };
         if let Some(transformer) = transformer_thunk {
@@ -408,7 +409,7 @@ pub fn expand_macros(
                 // remain valid when transformer functions access them during expansion.
                 let ctx = EvalContext::new_sharing_arena(
                     base_dir,
-                    Rc::clone(&env),
+                    Arc::clone(&env),
                     no_fs,
                     arena,
                     HashMap::new(), // No macros registered yet during initial expansion
@@ -431,7 +432,7 @@ pub fn expand_macros(
         // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're in the middle of building
         // stdlib, so we need a fresh arena, not one seeded with potentially stale cache contents.
         let env = builtins::create_root_env();
-        let ctx = EvalContext::new_empty(base_dir, Rc::clone(&env), no_fs);
+        let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), no_fs);
         (env, ctx)
     };
     let ctx = Rc::new(ctx);
@@ -520,9 +521,9 @@ pub fn expand_surface_program(
                 );
                 let ctx = EvalContext::new_sharing_arena(
                     base_dir,
-                    Rc::clone(&env),
+                    Arc::clone(&env),
                     no_fs,
-                    Rc::clone(&arena),
+                    Arc::clone(&arena),
                     HashMap::new(), // macro_injects_map — will be populated during expansion
                 );
                 (env, ctx)
@@ -531,7 +532,7 @@ pub fn expand_surface_program(
         }
     } else {
         let env = builtins::create_root_env();
-        let ctx = EvalContext::new_empty(base_dir, Rc::clone(&env), no_fs);
+        let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), no_fs);
         (env, ctx)
     };
     let ctx = Rc::new(ctx);
@@ -662,8 +663,8 @@ pub fn expand_surface_program(
 fn pre_scan_file(
     file: &File,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<()> {
     for doc in &file.documents {
         pre_scan_document(&doc.node, env, ctx, stdlib_env)?;
@@ -675,8 +676,8 @@ fn pre_scan_file(
 fn pre_scan_document(
     doc: &Document,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<()> {
     for expr in &doc.expressions {
         pre_scan_expr(expr, env, ctx, stdlib_env)?;
@@ -699,8 +700,8 @@ fn pre_scan_document(
 fn pre_scan_follow_libdir_include(
     file_name: &str,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
     _call_span: crate::ast::Span,
 ) {
     // Guard: do not read files if no_fs is set (LSP security)
@@ -769,8 +770,8 @@ fn pre_scan_follow_libdir_include(
 fn pre_scan_expr(
     expr: &Rc<Spanned<Expr>>,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<()> {
     match &expr.node {
         Expr::MacroDecl { name, params, body } => {
@@ -866,12 +867,12 @@ fn pre_scan_expr(
                 desugared: false,
             };
             let fn_spanned = Spanned::new(fn_expr, expr.span);
-            let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
+            let transformer_value = eval::eval(Rc::new(fn_spanned), Arc::clone(stdlib_env), ctx)?;
 
             // Register the macro with its params pattern and inject default
             env.register_macro(
                 name.clone(),
-                Rc::clone(&transformer_value),
+                Arc::clone(&transformer_value),
                 params.as_ref().clone(),
                 inject_default,
                 expr.span,
@@ -1085,12 +1086,12 @@ fn pre_scan_expr(
             let fn_spanned = Spanned::new(fn_expr, expr.span);
 
             // Evaluate the function in the stdlib environment
-            let transformer_value = eval::eval(Rc::new(fn_spanned), Rc::clone(stdlib_env), ctx)?;
+            let transformer_value = eval::eval(Rc::new(fn_spanned), Arc::clone(stdlib_env), ctx)?;
 
             // Register the macro (params_pattern is the LetDecl directly)
             env.register_macro(
                 name.clone(),
-                Rc::clone(&transformer_value),
+                Arc::clone(&transformer_value),
                 (**params).clone(),
                 None,
                 expr.span,
@@ -1128,8 +1129,8 @@ fn pre_scan_expr(
 fn pre_scan_expr_boxed(
     expr: &Box<Spanned<Expr>>,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<()> {
     pre_scan_expr(&Rc::new(expr.as_ref().clone()), env, ctx, stdlib_env)
 }
@@ -1138,8 +1139,8 @@ fn pre_scan_expr_boxed(
 fn pre_scan_expr_spanned(
     expr: &Spanned<Expr>,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<()> {
     pre_scan_expr(&Rc::new(expr.clone()), env, ctx, stdlib_env)
 }
@@ -1185,8 +1186,8 @@ fn extract_inject_default(params: &Spanned<Expr>) -> Option<String> {
 fn expand_document(
     doc: Document,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<Document> {
     let mut expanded_exprs = Vec::new();
 
@@ -1247,8 +1248,8 @@ fn expand_document(
 fn expand_expr(
     expr: Spanned<Expr>,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<Spanned<Expr>> {
     let ee_depth = EXPAND_EXPR_DEPTH.get();
     if ee_depth > 10_000 {
@@ -1267,8 +1268,8 @@ fn expand_expr(
 fn expand_expr_inner(
     expr: Spanned<Expr>,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<Spanned<Expr>> {
     match &expr.node {
         // DefMacro, MacroDecl, Splice, and SyntaxClass are already handled by pre_scan_file
@@ -1753,8 +1754,8 @@ fn expand_macro_call(
     // None when in expression position.
     dict_key: Option<&str>,
     env: &mut MacroEnv,
-    ctx: &Rc<EvalContext>,
-    stdlib_env: &Rc<RefCell<Environment>>,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<Spanned<Expr>> {
     // Determine call site ID for blackhole detection
     let call_site_id = if call_span == Span::origin() {
@@ -1824,7 +1825,7 @@ fn expand_macro_call(
 
     // Quote each argument individually to an AST dict thunk.
     // Each quoted arg becomes a separate positional thunk for invoke_function.
-    let mut positional_thunks: Vec<Rc<Thunk>> = Vec::with_capacity(args.len());
+    let mut positional_thunks: Vec<Arc<Thunk>> = Vec::with_capacity(args.len());
     for arg in args {
         let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
         // ARENA BOUNDARY: deep-materialize before crossing
@@ -1845,7 +1846,7 @@ fn expand_macro_call(
                 );
                 e
             })?;
-        positional_thunks.push(Rc::new(Thunk::new_materialized(deep_arg_val, call_span)));
+        positional_thunks.push(Arc::new(Thunk::new_materialized(deep_arg_val, call_span)));
     }
 
     // Thread inject: binding.
@@ -1878,7 +1879,7 @@ fn expand_macro_call(
                 );
                 e
             })?;
-        positional_thunks.push(Rc::new(Thunk::new_materialized(
+        positional_thunks.push(Arc::new(Thunk::new_materialized(
             deep_binding_val,
             call_span,
         )));
@@ -1912,7 +1913,7 @@ fn expand_macro_call(
                 default_env: closure_env,
                 ctx,
                 call_span,
-                origin: Some(Rc::from(format!("macro:{}", macro_name))),
+                origin: Some(Arc::from(format!("macro:{}", macro_name).as_str())),
             };
             invoke_function(&call_ctx).map_err(|e| {
                 EvalError::user_error(
@@ -2096,7 +2097,7 @@ pub fn format_provenance(provenance: &ProvenanceMap, span: Span) -> Option<Strin
 /// Used to validate the macro expansion boundary invariant: no lazy thunks cross
 /// from the stdlib arena to the expansion arena or vice versa.
 #[cfg(debug_assertions)]
-fn all_thunks_materialized(val: &Value, ctx: &Rc<EvalContext>) -> bool {
+fn all_thunks_materialized(val: &Value, ctx: &Arc<EvalContext>) -> bool {
     match val {
         Value::Dict(map) => {
             for thunk_id in map.values() {

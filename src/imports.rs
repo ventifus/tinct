@@ -13,6 +13,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use crate::ast::{Expr, File, Span, Spanned};
 use crate::desugar;
@@ -50,7 +51,7 @@ thread_local! {
     ///
     /// Contains type dicts (Int, Str, etc.) and type-level functions (Seq, Map, union, all).
     /// Built once per thread on first access, then reused for annotation resolution.
-    static TYPE_STAGE_ENV_CACHE: RefCell<Option<Rc<RefCell<crate::value::Environment>>>> = const { RefCell::new(None) };
+    static TYPE_STAGE_ENV_CACHE: RefCell<Option<Arc<RwLock<crate::value::Environment>>>> = const { RefCell::new(None) };
 
     /// Recursion guard for type-stage env building (prevents infinite recursion when
     /// type-checking the prelude's type-stage sections).
@@ -322,7 +323,7 @@ pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
 /// Returns None if:
 /// - We are currently building the type-stage env (recursion guard)
 /// - Type-stage env creation fails (graceful degradation)
-pub fn build_type_stage_env() -> Option<Rc<RefCell<crate::value::Environment>>> {
+pub fn build_type_stage_env() -> Option<Arc<RwLock<crate::value::Environment>>> {
     // Check recursion guard first (before cache check, to avoid borrow conflicts)
     let is_building = BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow());
     if is_building {
@@ -334,7 +335,7 @@ pub fn build_type_stage_env() -> Option<Rc<RefCell<crate::value::Environment>>> 
         let mut cache = cache.borrow_mut();
         if let Some(ref env) = *cache {
             // Cache hit: return a clone of the cached environment
-            return Some(Rc::clone(env));
+            return Some(Arc::clone(env));
         }
 
         // Set recursion guard
@@ -343,7 +344,7 @@ pub fn build_type_stage_env() -> Option<Rc<RefCell<crate::value::Environment>>> 
         // Cache miss: build the type-stage environment from scratch
         let result = match crate::builtins::create_type_stage_env() {
             Ok(env) => {
-                *cache = Some(Rc::clone(&env));
+                *cache = Some(Arc::clone(&env));
                 Some(env)
             }
             Err(_) => {

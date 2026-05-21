@@ -158,7 +158,7 @@ impl std::error::Error for MacroConversionError {}
 /// non-AST dicts).
 pub fn surface_node_from_value(
     v: &Value,
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, crate::error::EvalError> {
     use crate::ast_convert::expr_to_surface_node;
     use crate::ast_dict::dict_to_ast;
@@ -207,7 +207,7 @@ use crate::value::{string_val, Key, Value};
 pub fn surface_node_get_field(
     node: &Arc<SurfaceNode>,
     field: &str,
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     // null sentinel — returned for absent optional fields and unrecognized fields
     let null = || Value::Dict(indexmap::IndexMap::new());
@@ -320,13 +320,13 @@ pub fn surface_node_get_field(
 /// Each entry is `Value::Expression(Arc<SurfaceNode>)`, allocated into the arena.
 fn nodes_to_list_dict(
     nodes: &[Arc<SurfaceNode>],
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     let mut map = indexmap::IndexMap::new();
     for (i, node) in nodes.iter().enumerate() {
         use crate::value::Thunk;
-        use std::rc::Rc;
-        let thunk = Rc::new(Thunk::new_materialized(
+    
+        let thunk = Arc::new(Thunk::new_materialized(
             Value::Expression(Arc::clone(node)),
             node.span,
         ));
@@ -339,10 +339,10 @@ fn nodes_to_list_dict(
 /// Build a list Dict from SurfaceEntry nodes (for Dict.entries field).
 fn surface_entries_to_list_dict(
     entries: &[crate::ast::Spanned<crate::ast::SurfaceEntry>],
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::Thunk;
-    use std::rc::Rc;
+
     let mut map = indexmap::IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // Build Entry Variant: {key: Expression, value: Expression, span: []}
@@ -355,20 +355,20 @@ fn surface_entries_to_list_dict(
         let mut payload = indexmap::IndexMap::new();
         payload.insert(
             Key::String("key".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(key_val, entry.span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(key_val, entry.span))),
         );
         payload.insert(
             Key::String("value".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(val_val, entry.span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val_val, entry.span))),
         );
         let entry_variant = Value::Variant {
             tag: "Entry".into(),
-            payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(payload),
                 entry.span,
             )))),
         };
-        let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(entry_variant, entry.span)));
+        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(entry_variant, entry.span)));
         map.insert(Key::Int(i as i64), tid);
     }
     Value::Dict(map)
@@ -377,35 +377,35 @@ fn surface_entries_to_list_dict(
 /// Build a list Dict from SurfaceNamedArg nodes.
 fn named_args_to_list_dict(
     named_args: &[crate::ast::Spanned<crate::ast::SurfaceNamedArg>],
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::Thunk;
-    use std::rc::Rc;
+
     let mut map = indexmap::IndexMap::new();
     for (i, na) in named_args.iter().enumerate() {
         let mut payload = indexmap::IndexMap::new();
         payload.insert(
             Key::String("name".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val(&na.node.name),
                 na.span,
             ))),
         );
         payload.insert(
             Key::String("value".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Expression(Arc::clone(&na.node.value)),
                 na.span,
             ))),
         );
         let na_variant = Value::Variant {
             tag: "NamedArg".into(),
-            payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(payload),
                 na.span,
             )))),
         };
-        let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(na_variant, na.span)));
+        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(na_variant, na.span)));
         map.insert(Key::Int(i as i64), tid);
     }
     Value::Dict(map)
@@ -414,35 +414,35 @@ fn named_args_to_list_dict(
 /// Build a list Dict from SurfaceParam nodes.
 fn params_to_list_dict(
     params: &[crate::ast::Spanned<crate::ast::SurfaceParam>],
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::Thunk;
-    use std::rc::Rc;
+
     let mut map = indexmap::IndexMap::new();
     for (i, p) in params.iter().enumerate() {
         let mut payload = indexmap::IndexMap::new();
         payload.insert(
             Key::String("name".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val(&p.node.name),
                 p.span,
             ))),
         );
         payload.insert(
             Key::String("variadic".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Bool(p.node.variadic),
                 p.span,
             ))),
         );
         let p_variant = Value::Variant {
             tag: "Parameter".into(),
-            payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(payload),
                 p.span,
             )))),
         };
-        let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(p_variant, p.span)));
+        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(p_variant, p.span)));
         map.insert(Key::Int(i as i64), tid);
     }
     Value::Dict(map)
@@ -451,11 +451,11 @@ fn params_to_list_dict(
 /// Build a list Dict from SurfaceMatchArm nodes.
 fn match_arms_to_list_dict(
     arms: &[crate::ast::SurfaceMatchArm],
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::ast::Span;
     use crate::value::Thunk;
-    use std::rc::Rc;
+
     let span = Span::origin();
     let mut map = indexmap::IndexMap::new();
     for (i, arm) in arms.iter().enumerate() {
@@ -467,19 +467,19 @@ fn match_arms_to_list_dict(
         let mut payload = indexmap::IndexMap::new();
         payload.insert(
             Key::String("body".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(body_val, span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(body_val, span))),
         );
         payload.insert(
             Key::String("guard".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(guard_val, span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(guard_val, span))),
         );
         let arm_variant = Value::Variant {
             tag: "MatchArm".into(),
             payload: Some(
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(payload), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(payload), span))),
             ),
         };
-        let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(arm_variant, span)));
+        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(arm_variant, span)));
         map.insert(Key::Int(i as i64), tid);
     }
     Value::Dict(map)
@@ -534,51 +534,51 @@ fn annotation_opt_to_value(ann: Option<&Spanned<Annotation>>) -> Value {
 /// materialized directly (not thunked) since all fields are primitive integers.
 pub fn span_to_value(
     span: &crate::ast::Span,
-    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::Thunk;
-    use std::rc::Rc;
+
 
     let mut map = indexmap::IndexMap::new();
 
     map.insert(
         Key::String("start_line".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.line as i64),
             *span,
         ))),
     );
     map.insert(
         Key::String("start_col".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.column as i64),
             *span,
         ))),
     );
     map.insert(
         Key::String("end_line".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.line as i64),
             *span,
         ))),
     );
     map.insert(
         Key::String("end_col".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.column as i64),
             *span,
         ))),
     );
     map.insert(
         Key::String("start_offset".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.offset as i64),
             *span,
         ))),
     );
     map.insert(
         Key::String("end_offset".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.offset as i64),
             *span,
         ))),

@@ -1,6 +1,6 @@
 //! Byte sequence builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::builtins::{expect_one_arg, ok_val};
 use crate::error::{EvalError, EvalResult};
@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq;
 /// ```llt
 /// (bytes b1 b2 b3)
 /// ```
-pub(crate) fn builtin_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -74,7 +74,7 @@ pub(crate) fn builtin_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// ```llt
 /// (bytes-find haystack needle)  // Returns Int or -1
 /// ```
-pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -160,7 +160,7 @@ pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 /// ```llt
 /// (bytes-of [72 101 108 108 111])  // "Hello" as bytes
 /// ```
-pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -281,7 +281,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// ```llt
 /// (bytes-equal? b1 b2)  // true or false
 /// ```
-pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -355,7 +355,7 @@ pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
 /// ```llt
 /// (ct-equal? secret1 secret2)  // true or false, constant-time
 /// ```
-pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,

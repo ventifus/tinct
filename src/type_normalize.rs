@@ -3,10 +3,10 @@
 //! This module contains normalization logic for union/intersection types
 //! and Display implementations for the Type enum.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
@@ -39,7 +39,7 @@ pub struct NormCtxt {
     ///
     /// `None` during bootstrap (when the type-stage env is being built) or
     /// when type-stage env creation fails.
-    pub type_stage_env: Option<Rc<RefCell<Environment>>>,
+    pub type_stage_env: Option<Arc<RwLock<Environment>>>,
     /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
     /// Set to false inside unify() to prevent evaluation failures from causing type errors.
     pub allow_eval: bool,
@@ -177,8 +177,8 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
 // normalize_union and normalize_intersection moved to impl Type in type_def.rs
 
 /// Helper: allocate a string value as a materialized thunk in `ctx`.
-fn alloc_str(s: &str, ctx: &Rc<crate::eval::EvalContext>) -> crate::arena::ThunkId {
-    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+fn alloc_str(s: &str, ctx: &Arc<crate::eval::EvalContext>) -> crate::arena::ThunkId {
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
         string_val(s),
         crate::ast::Span::origin(),
     )))
@@ -201,7 +201,7 @@ fn alloc_str(s: &str, ctx: &Rc<crate::eval::EvalContext>) -> crate::arena::Thunk
 /// | `Map K V` | `[kind: "map" key: <K> value: <V>]`       |
 ///
 /// Returns `None` if the type cannot be represented as a type-dict (e.g., TypeVar, Error).
-pub(crate) fn type_to_dict(ty: &Type, ctx: &Rc<crate::eval::EvalContext>) -> Option<Value> {
+pub(crate) fn type_to_dict(ty: &Type, ctx: &Arc<crate::eval::EvalContext>) -> Option<Value> {
     let origin = crate::ast::Span::origin();
 
     match ty {
@@ -250,7 +250,7 @@ pub(crate) fn type_to_dict(ty: &Type, ctx: &Rc<crate::eval::EvalContext>) -> Opt
         }
         Type::Seq(elem) => {
             let elem_dict = type_to_dict(elem, ctx)?;
-            let elem_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(elem_dict, origin)));
+            let elem_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(elem_dict, origin)));
             let mut dict = IndexMap::new();
             dict.insert(Key::String("kind".into()), alloc_str("seq", ctx));
             dict.insert(Key::String("element".into()), elem_id);
@@ -259,8 +259,8 @@ pub(crate) fn type_to_dict(ty: &Type, ctx: &Rc<crate::eval::EvalContext>) -> Opt
         Type::Map(k, v) => {
             let k_dict = type_to_dict(k, ctx)?;
             let v_dict = type_to_dict(v, ctx)?;
-            let k_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(k_dict, origin)));
-            let v_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(v_dict, origin)));
+            let k_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(k_dict, origin)));
+            let v_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v_dict, origin)));
             let mut dict = IndexMap::new();
             dict.insert(Key::String("kind".into()), alloc_str("map", ctx));
             dict.insert(Key::String("key".into()), k_id);
@@ -289,7 +289,7 @@ fn string_val(s: &str) -> Value {
 /// `doc/feature/chr-unification.md §Type-Stage Resolvers`.
 ///
 /// Returns `None` if the dict cannot be converted (unknown kind, missing fields, wrong shape).
-pub(crate) fn dict_to_type(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> Option<Type> {
+pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Type> {
     let dict = match val {
         Value::Dict(d) => d,
         _ => return None,
@@ -355,10 +355,10 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> O
 pub(crate) fn evaluate_resolver(
     fn_name: &str,
     args: &[Type],
-    env: &Rc<RefCell<Environment>>,
+    env: &Arc<RwLock<Environment>>,
 ) -> Option<Type> {
     // Look up the resolver function thunk
-    let fn_thunk = env.borrow().get(fn_name)?;
+    let fn_thunk = env.read().unwrap().get(fn_name)?;
 
     // Create a minimal EvalContext for type-stage evaluation.
     // We use new_empty() to avoid inheriting stale stdlib ThunkId caches — the
@@ -366,17 +366,17 @@ pub(crate) fn evaluate_resolver(
     // AMBIENT-OK: Type-stage evaluation uses CWD as base_dir (no file I/O).
     #[allow(clippy::disallowed_methods)]
     let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
-    let ctx = crate::eval::EvalContext::new_empty(base_dir, Rc::clone(env), false);
+    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(env), false);
 
     // Materialize the function value
     let fn_val = crate::eval::materialize(&fn_thunk, None, &ctx).ok()?;
 
     // Convert each Type arg to a type-dict Value
-    let arg_thunks: Vec<Rc<Thunk>> = args
+    let arg_thunks: Vec<Arc<Thunk>> = args
         .iter()
         .map(|ty| {
             let dict_val = type_to_dict(ty, &ctx)?;
-            Some(Rc::new(Thunk::new_materialized(
+            Some(Arc::new(Thunk::new_materialized(
                 dict_val,
                 crate::ast::Span::origin(),
             )))

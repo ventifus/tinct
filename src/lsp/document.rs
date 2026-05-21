@@ -1,8 +1,7 @@
 //! Document storage and incremental re-parsing for the LSP.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use lsp_types::Uri;
 
@@ -55,8 +54,8 @@ impl DocumentState {
     /// the type environment. Pass `None` for source-only contexts.
     pub fn new(
         text: String,
-        _stdlib_env: &Rc<RefCell<Environment>>,
-        eval_ctx: &Rc<crate::eval::EvalContext>,
+        _stdlib_env: &Arc<RwLock<Environment>>,
+        eval_ctx: &Arc<crate::eval::EvalContext>,
         base_dir: Option<&std::path::Path>,
     ) -> Self {
         // Use parse() to capture both the AST and any recovered parse errors.
@@ -197,8 +196,8 @@ impl DocumentState {
     /// pre-aggregated here, so spans can be correctly mapped to markdown coordinates.
     pub fn new_markdown(
         text: String,
-        _stdlib_env: &Rc<RefCell<Environment>>,
-        _eval_ctx: &Rc<crate::eval::EvalContext>,
+        _stdlib_env: &Arc<RwLock<Environment>>,
+        _eval_ctx: &Arc<crate::eval::EvalContext>,
         _base_dir: Option<&std::path::Path>,
     ) -> Self {
         // Extract literate blocks
@@ -261,8 +260,8 @@ pub fn resolve_include_uri(base_uri: &Uri, path: &str) -> Option<Uri> {
 pub fn index_file(
     uri: Uri,
     graph: &mut IncludeGraph,
-    stdlib_env: &Rc<RefCell<Environment>>,
-    eval_ctx: &Rc<crate::eval::EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
+    eval_ctx: &Arc<crate::eval::EvalContext>,
     depth: usize,
 ) -> Result<(), String> {
     const MAX_DEPTH: usize = 16;
@@ -366,8 +365,8 @@ pub fn index_file(
 pub fn invalidate_dependents(
     changed_uri: &Uri,
     graph: &mut IncludeGraph,
-    stdlib_env: &Rc<RefCell<Environment>>,
-    eval_ctx: &Rc<crate::eval::EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
+    eval_ctx: &Arc<crate::eval::EvalContext>,
 ) {
     use std::collections::VecDeque;
     let mut queue = VecDeque::new();
@@ -436,9 +435,9 @@ pub type IncludeGraph = HashMap<Uri, IncludeNode>;
 pub struct DocumentStore {
     docs: HashMap<Uri, DocumentState>,
     /// Cached stdlib environment, created once on construction.
-    stdlib_env: Rc<RefCell<Environment>>,
+    stdlib_env: Arc<RwLock<Environment>>,
     /// Base evaluation context (with "." as base_dir).
-    base_eval_ctx: Rc<crate::eval::EvalContext>,
+    base_eval_ctx: Arc<crate::eval::EvalContext>,
     /// Include dependency graph for cross-file resolution.
     pub include_graph: IncludeGraph,
     /// Parsed prelude AST (for go-to-definition in stdlib functions).
@@ -452,8 +451,8 @@ impl DocumentStore {
         // so the LSP can still provide parsing/type-checking diagnostics.
         let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().unwrap_or_else(|_| {
             (
-                Rc::new(RefCell::new(Environment::new())),
-                Rc::new(RefCell::new(crate::arena::ThunkArena::new())),
+                Arc::new(RwLock::new(Environment::new())),
+                Arc::new(std::sync::Mutex::new(crate::arena::ThunkArena::new())),
             )
         });
         // Create base evaluation context.
@@ -473,7 +472,7 @@ impl DocumentStore {
         };
         let base_eval_ctx = crate::eval::EvalContext::new_sharing_arena(
             base_dir,
-            Rc::clone(&stdlib_env),
+            Arc::clone(&stdlib_env),
             false,
             stdlib_arena,
             std::collections::HashMap::new(), // LSP doesn't track macro injects yet
@@ -691,13 +690,13 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     // Clone the parent_dir handle to give ownership to the EvalContext
     // (open_dir(".") duplicates the fd without acquiring new ambient authority).
     let eval_base_dir = parent_dir.open_dir(".").ok()?;
-    let eval_ctx = Rc::new(crate::eval::EvalContext::new_sharing_arena(
+    let eval_ctx = crate::eval::EvalContext::new_sharing_arena(
         eval_base_dir,
-        Rc::clone(&stdlib_env),
+        Arc::clone(&stdlib_env),
         false,
         stdlib_arena,
         std::collections::HashMap::new(),
-    ));
+    );
 
     // Create document state with the file's directory as base_dir for include resolution
     let is_markdown = uri.as_str().ends_with(".md");
@@ -714,17 +713,17 @@ mod tests {
 
     /// Helper: create a stdlib env and arena for tests.
     fn test_env_and_arena() -> (
-        Rc<RefCell<Environment>>,
-        Rc<RefCell<crate::arena::ThunkArena>>,
+        Arc<RwLock<Environment>>,
+        Arc<std::sync::Mutex<crate::arena::ThunkArena>>,
     ) {
         create_stdlib_env_with_arena().unwrap()
     }
 
-    fn test_env() -> Rc<RefCell<Environment>> {
+    fn test_env() -> Arc<RwLock<Environment>> {
         test_env_and_arena().0
     }
 
-    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let (env, arena) = test_env_and_arena();
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");

@@ -7,7 +7,7 @@
 //!
 //! Registration in `standard_builtins()` remains in `builtins.rs`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -23,7 +23,7 @@ use crate::value::{BuiltinArgs, Thunk, Value};
 ///   (empty if start >= end)
 ///
 /// Both args must be Int. Uses checked_add for overflow detection.
-pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -61,13 +61,13 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             .ok_or_else(|| EvalError::integer_overflow("range".to_string(), call_span))?;
         let head = ok_val(Value::Int(start_int), call_span)?;
         let tail_args = vec![ok_val(Value::Int(next_start), call_span)?];
-        let tail = Rc::new(Thunk::new_pending_builtin(
+        let tail = Arc::new(Thunk::new_pending_builtin(
             builtin!("range", builtin_range),
             tail_args,
             None,
             call_span,
-            Some(Rc::from("call $range")),
-            Rc::clone(&ctx),
+            Some(Arc::from("call $range")),
+            Arc::clone(&ctx),
         ));
         let head_id = ctx.alloc_thunk(head);
         let tail_id = ctx.alloc_thunk(tail);
@@ -106,13 +106,13 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 ok_val(Value::Int(next_start), call_span)?,
                 ok_val(Value::Int(end_int), call_span)?,
             ];
-            let tail = Rc::new(Thunk::new_pending_builtin(
+            let tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!("range", builtin_range),
                 tail_args,
                 None,
                 call_span,
-                Some(Rc::from("call $range")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $range")),
+                Arc::clone(&ctx),
             ));
             let head_id = ctx.alloc_thunk(head);
             let tail_id = ctx.alloc_thunk(tail);
@@ -132,7 +132,7 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `[call $repeat val]` → infinite Seq: val, val, val, ...
 ///
 /// The value is kept as a thunk (fully lazy — never materialized).
-pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -145,15 +145,15 @@ pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
 
-    let head = Rc::clone(&args[0]);
-    let tail_args = vec![Rc::clone(&args[0])];
-    let tail = Rc::new(Thunk::new_pending_builtin(
+    let head = Arc::clone(&args[0]);
+    let tail_args = vec![Arc::clone(&args[0])];
+    let tail = Arc::new(Thunk::new_pending_builtin(
         builtin!("repeat", builtin_repeat),
         tail_args,
         None,
         call_span,
-        Some(Rc::from("call $repeat")),
-        Rc::clone(&ctx),
+        Some(Arc::from("call $repeat")),
+        Arc::clone(&ctx),
     ));
     ok_val(
         Value::Seq {
@@ -168,7 +168,7 @@ pub(crate) fn builtin_repeat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Takes (dict_thunk, index_thunk) where dict is the original collection to cycle
 /// through and index is the current position (wrapped modulo length).
-pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -224,16 +224,16 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 
     // Create tail as PendingBuiltin for next step
     let tail_args = vec![
-        Rc::clone(&args[0]),
+        Arc::clone(&args[0]),
         ok_val(Value::Int(next_idx), call_span)?,
     ];
-    let tail = Rc::new(Thunk::new_pending_builtin(
+    let tail = Arc::new(Thunk::new_pending_builtin(
         builtin!("cycle", builtin_cycle_step),
         tail_args,
         None,
         call_span,
-        Some(Rc::from("call $cycle")),
-        Rc::clone(&ctx),
+        Some(Arc::from("call $cycle")),
+        Arc::clone(&ctx),
     ));
 
     ok_val(
@@ -251,7 +251,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 ///
 /// Materializes xs to verify it's a non-empty Dict, then delegates to
 /// `cycle_step` helper for lazy iteration.
-pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -271,10 +271,10 @@ pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
             // Start cycling from index 0
             builtin_cycle_step(BuiltinArgs {
-                args: &[Rc::clone(&args[0]), ok_val(Value::Int(0), call_span)?],
+                args: &[Arc::clone(&args[0]), ok_val(Value::Int(0), call_span)?],
                 named: None,
                 call_span,
-                ctx: Rc::clone(&ctx),
+                ctx: Arc::clone(&ctx),
             })
         }
         other => Err(EvalError::type_mismatch_ctx(
@@ -293,7 +293,7 @@ pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Both f and x are kept as thunks (fully lazy). The tail contains a PendingCall
 /// for f(x), wrapped in a PendingBuiltin for the next iterate step.
-pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -305,34 +305,34 @@ pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let f = Rc::clone(&args[0]);
-    let x = Rc::clone(&args[1]);
+    let f = Arc::clone(&args[0]);
+    let x = Arc::clone(&args[1]);
 
     // head = x (lazy)
-    let head = Rc::clone(&x);
+    let head = Arc::clone(&x);
 
     // Create f(x) as PendingCall
     // Use stdlib env as caller_env since there's no lexical call site for builtin-internal calls
-    let f_of_x = Rc::new(Thunk::new_pending_call(
-        Rc::clone(&f),
-        vec![Rc::clone(&x)],
+    let f_of_x = Arc::new(Thunk::new_pending_call(
+        Arc::clone(&f),
+        vec![Arc::clone(&x)],
         IndexMap::new(),
         call_span,
-        Rc::clone(&ctx.config.stdlib_env),
+        Arc::clone(&ctx.config.stdlib_env),
         call_span,
-        Some(Rc::from("iterate")),
-        Rc::clone(&ctx),
+        Some(Arc::from("iterate")),
+        Arc::clone(&ctx),
     ));
 
     // tail = iterate(f, f(x))
-    let tail_args = vec![Rc::clone(&f), f_of_x];
-    let tail = Rc::new(Thunk::new_pending_builtin(
+    let tail_args = vec![Arc::clone(&f), f_of_x];
+    let tail = Arc::new(Thunk::new_pending_builtin(
         builtin!("iterate", builtin_iterate),
         tail_args,
         None,
         call_span,
-        Some(Rc::from("call $iterate")),
-        Rc::clone(&ctx),
+        Some(Arc::from("call $iterate")),
+        Arc::clone(&ctx),
     ));
 
     ok_val(
@@ -349,7 +349,7 @@ pub(crate) fn builtin_iterate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes (step_function, seed) and calls step(seed), which should return either:
 /// - A 2-element dict [value next_seed] to continue
 /// - An empty dict [] to terminate
-pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -361,19 +361,19 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let step = Rc::clone(&args[0]);
-    let seed = Rc::clone(&args[1]);
+    let step = Arc::clone(&args[0]);
+    let seed = Arc::clone(&args[1]);
 
     // Call step(seed) as PendingCall, then materialize it
-    let step_result_thunk = Rc::new(Thunk::new_pending_call(
+    let step_result_thunk = Arc::new(Thunk::new_pending_call(
         step.clone(),
         vec![seed],
         IndexMap::new(),
         call_span,
-        Rc::clone(&ctx.config.stdlib_env),
+        Arc::clone(&ctx.config.stdlib_env),
         call_span,
-        Some(Rc::from("unfold")),
-        Rc::clone(&ctx),
+        Some(Arc::from("unfold")),
+        Arc::clone(&ctx),
     ));
     let step_result = materialize(&step_result_thunk, None, &ctx)?;
 
@@ -393,14 +393,14 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
             let head = value_id;
 
             // tail = unfold_step(step, next_seed)
-            let tail_args = vec![step, Rc::clone(&next_seed)];
-            let tail = Rc::new(Thunk::new_pending_builtin(
+            let tail_args = vec![step, Arc::clone(&next_seed)];
+            let tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!("unfold", builtin_unfold_step),
                 tail_args,
                 None,
                 call_span,
-                Some(Rc::from("call $unfold")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $unfold")),
+                Arc::clone(&ctx),
             ));
 
             ok_val(
@@ -438,7 +438,7 @@ pub(crate) fn builtin_unfold_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
 /// or [] to stop.
 ///
 /// Fully lazy — the step function is not called until the result is materialized.
-pub(crate) fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -451,14 +451,14 @@ pub(crate) fn builtin_unfold(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Return PendingBuiltin wrapping unfold_step — fully lazy
-    let tail_args = vec![Rc::clone(&args[0]), Rc::clone(&args[1])];
-    let result = Rc::new(Thunk::new_pending_builtin(
+    let tail_args = vec![Arc::clone(&args[0]), Arc::clone(&args[1])];
+    let result = Arc::new(Thunk::new_pending_builtin(
         builtin!("unfold", builtin_unfold_step),
         tail_args,
         None,
         call_span,
-        Some(Rc::from("call $unfold")),
-        Rc::clone(&ctx),
+        Some(Arc::from("call $unfold")),
+        Arc::clone(&ctx),
     ));
     Ok(result)
 }

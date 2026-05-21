@@ -1,7 +1,7 @@
 //! Rust-native builtin functions for the LLT language. // sprint wave-1 rebuild marker
 //!
 //! All builtins follow the `BuiltinFn` signature:
-//! `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>`
+//! `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>`
 //!
 //! ## Builtin groups
 //!
@@ -18,8 +18,8 @@
 //! **I/O:** `from-json`, `include`
 //! **Sequences:** `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
 
-use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
@@ -85,8 +85,8 @@ pub(crate) const JSON_DEPTH_LIMIT: usize = 128;
 /// Prevents memory exhaustion from adversarial inputs or replacement patterns.
 pub(crate) const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
 
-pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Rc<Thunk>> {
-    Ok(Rc::new(Thunk::new_materialized(v, span)))
+pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
+    Ok(Arc::new(Thunk::new_materialized(v, span)))
 }
 
 /// Convert a `Value::Bytes` slice into a `Value::Seq` of `Value::Int` (one per byte).
@@ -96,12 +96,12 @@ pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Rc<Thunk>> {
 ///
 /// The returned value is a `Value::Seq { head, tail }` if bytes is non-empty, or
 /// `Value::Dict(IndexMap::new())` (the terminal empty-dict sentinel) if empty.
-pub(crate) fn bytes_to_seq(bytes: &[u8], span: Span, ctx: &Rc<crate::eval::EvalContext>) -> Value {
+pub(crate) fn bytes_to_seq(bytes: &[u8], span: Span, ctx: &Arc<crate::eval::EvalContext>) -> Value {
     // Build from the right so we don't need a separate pass.
     let mut acc: Value = Value::Dict(IndexMap::new());
     for &byte in bytes.iter().rev() {
-        let head = Rc::new(Thunk::new_materialized(Value::Int(i64::from(byte)), span));
-        let tail = Rc::new(Thunk::new_materialized(acc, span));
+        let head = Arc::new(Thunk::new_materialized(Value::Int(i64::from(byte)), span));
+        let tail = Arc::new(Thunk::new_materialized(acc, span));
         acc = Value::Seq {
             head: ctx.alloc_thunk(head),
             tail: ctx.alloc_thunk(tail),
@@ -117,9 +117,9 @@ pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 /// and rejecting named arguments. Used by many single-arg builtins.
 pub(crate) fn expect_one_arg(
     name: &str,
-    args: &[Rc<Thunk>],
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Value> {
     if args.len() != 1 {
@@ -147,7 +147,7 @@ pub(crate) fn checked_f64_to_i64(name: &str, f: f64, call_span: Span) -> EvalRes
 ///
 /// Returns an error if `val` is NaN or infinite (overflow, e.g. `1e308 + 1e308`).
 /// Used by float arithmetic builtins to prevent silent NaN/Infinity propagation.
-pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<Arc<Thunk>> {
     if !val.is_finite() {
         Err(EvalError::float_not_finite(op.to_string(), val, span).into())
     } else {
@@ -191,7 +191,7 @@ pub(crate) fn flatten_overlay(
     left: &ThunkId,
     right: &ThunkId,
     name: &str,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     use crate::arena::ThunkId;
@@ -225,7 +225,7 @@ pub(crate) fn flatten_overlay(
     let mut layers: Vec<IndexMap<Key, ThunkId>> = Vec::new();
 
     while let Some(thunk_id) = work_stack.pop() {
-        let thunk = ctx.thunk_arena.borrow().get(thunk_id).clone();
+        let thunk = ctx.thunk_arena.lock().unwrap().get(thunk_id).clone();
         let span = thunk.span;
         let val = materialize(&thunk, Some(&call_span), ctx)?;
         match val {
@@ -272,7 +272,7 @@ pub(crate) fn require_dict(
     name: &str,
     value: Value,
     def_span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     match value {
@@ -334,7 +334,7 @@ pub(crate) fn require_string(name: &str, value: Value, def_span: Span) -> EvalRe
 /// Helper: reject named arguments for multi-arg builtins that don't accept them.
 pub(crate) fn reject_named(
     name: &str,
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
 ) -> EvalResult<()> {
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
@@ -425,11 +425,11 @@ pub(crate) use crate::builtins_uri::{builtin_uri, builtin_url, builtin_urn};
 fn float_to_int_builtin(
     name: &str,
     op: fn(f64) -> f64,
-    args: &[Rc<Thunk>],
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-) -> EvalResult<Rc<Thunk>> {
+) -> EvalResult<Arc<Thunk>> {
     let val = expect_one_arg(name, args, named, ctx, call_span)?;
     match val {
         Value::Int(n) => ok_val(Value::Int(n), call_span),
@@ -459,7 +459,7 @@ fn float_to_int_builtin(
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -476,7 +476,7 @@ fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -491,7 +491,7 @@ fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse integer value.
-fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -516,7 +516,7 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Parses the string as a float via `str::parse::<f64>()`. Returns Float.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse float value.
-fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -590,7 +590,7 @@ pub(crate) use crate::builtins_datetime::{
 /// - String path: O(1) — returns a single-char String slice of the first codepoint.
 /// - Bytes path: O(1) — returns the first byte as Value::Int.
 /// Inherently materializing: must access the value to determine type and extract first element.
-fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -657,7 +657,7 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - String path: O(n) — must walk UTF-8 chars to find the last codepoint.
 /// - Bytes path: O(1) — returns the last byte as Value::Int.
 /// Inherently materializing: must access the value to determine type and extract last element.
-fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -726,7 +726,7 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///   avoids interpreter loop overhead.
 /// Inherently materializing for Dict: must copy all remaining entries.
 /// Lazy for Seq: O(1) tail extraction.
-fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -769,7 +769,7 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///   implementation, but avoids interpreter loop overhead.
 /// Inherently materializing for Dict: must copy all existing entries.
 /// Lazy for Seq: O(1) prepend.
-fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -796,7 +796,7 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let mut result = IndexMap::with_capacity(map.len() + 1);
     // Insert the new element at key 0.
-    let elem_id = ctx.alloc_thunk(Rc::clone(&args[0]));
+    let elem_id = ctx.alloc_thunk(Arc::clone(&args[0]));
     result.insert(Key::Int(0), elem_id);
     // Insert existing entries reindexed as 1..n.
     for (new_idx, (_old_key, thunk_id)) in map.into_iter().enumerate() {
@@ -815,7 +815,7 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///   builds a new dict with dense integer keys 0..n-1.
 /// - O(n) — avoids the recursive LLT accumulator pattern.
 /// Inherently materializing: must know all entries to reverse order.
-fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -898,7 +898,7 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
 /// - Errors on mixed incompatible types when using natural ordering.
 /// - Errors on Seq input (callers must `$collect` first).
 /// Inherently materializing: must inspect all values to determine sort order.
-fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -954,8 +954,8 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
 
             // Create thunks for the two values to pass to the comparator
-            let a_thunk = Rc::new(Thunk::new_materialized(a.clone(), *a_span));
-            let b_thunk = Rc::new(Thunk::new_materialized(b.clone(), *b_span));
+            let a_thunk = Arc::new(Thunk::new_materialized(a.clone(), *a_span));
+            let b_thunk = Arc::new(Thunk::new_materialized(b.clone(), *b_span));
             let pos_args = vec![a_thunk, b_thunk];
 
             // Call the comparator function
@@ -974,7 +974,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         named: None,
                         default_env: closure_env,
                         call_span,
-                        origin: Some(Rc::from("sort")),
+                        origin: Some(Arc::from("sort")),
                         ctx: &ctx,
                     }) {
                         Ok(thunk) => thunk,
@@ -989,7 +989,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         args: &pos_args,
                         named: None,
                         call_span,
-                        ctx: Rc::clone(&ctx),
+                        ctx: Arc::clone(&ctx),
                     };
                     match (def.func)(builtin_args) {
                         Ok(thunk) => thunk,
@@ -1055,14 +1055,14 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
             EvalError::internal("collection index overflow".to_string(), call_span)
         })?);
-        let thunk = Rc::new(Thunk::new_materialized(mat_val, orig_span));
+        let thunk = Arc::new(Thunk::new_materialized(mat_val, orig_span));
         let thunk_id = ctx.alloc_thunk(thunk);
         result.insert(new_key, thunk_id);
     }
     ok_val(Value::Dict(result), call_span)
 }
 
-fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1074,8 +1074,8 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let handler_id = ctx.alloc_thunk(Rc::clone(&args[0]));
-    Ok(Rc::new(Thunk::new_materialized(
+    let handler_id = ctx.alloc_thunk(Arc::clone(&args[0]));
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Proxy {
             handler: handler_id,
         },
@@ -1593,11 +1593,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
 
 /// Create the root environment with all builtins registered as `Value::Builtin`.
 /// Used only by `src/expand.rs` for macro expansion during prelude bootstrap.
-pub(crate) fn create_root_env() -> Rc<RefCell<Environment>> {
-    let env = Rc::new(RefCell::new(Environment::new()));
+pub(crate) fn create_root_env() -> Arc<RwLock<Environment>> {
+    let env = Arc::new(RwLock::new(Environment::new()));
     for def in standard_builtins() {
-        let thunk = Rc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
-        env.borrow_mut().insert(def.name.to_string(), thunk);
+        let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
+        env.write().unwrap().insert(def.name.to_string(), thunk);
     }
 
     // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
@@ -1617,8 +1617,8 @@ pub(crate) fn create_root_env() -> Rc<RefCell<Environment>> {
 fn load_stdlib_module(
     source: &str,
     module_name: &str,
-    env: &Rc<RefCell<Environment>>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(), Box<crate::error::EvalError>> {
     let mut file = crate::parser::parse(source).map(|o| o.file).map_err(|e| {
         crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
@@ -1633,7 +1633,7 @@ fn load_stdlib_module(
     // cost reduction (~5s per call in debug builds). The prelude's types are properly
     // checked in build_prelude_env_inner() via typecheck_and_merge_stdlib_module().
 
-    let thunk = crate::eval::eval_file(&file.node, Rc::clone(env), ctx)?;
+    let thunk = crate::eval::eval_file(&file.node, Arc::clone(env), ctx)?;
     let val = crate::eval::materialize(&thunk, None, ctx)?;
 
     let dict = match val {
@@ -1660,7 +1660,7 @@ fn load_stdlib_module(
             Key::Int(n) => n.to_string(),
         };
         let thunk = ctx.get_thunk(thunk_id);
-        env.borrow_mut().insert(name, thunk);
+        env.write().unwrap().insert(name, thunk);
     }
 
     Ok(())
@@ -1671,22 +1671,22 @@ std::thread_local! {
     static STDLIB_ENV_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// Cache of the stdlib arena so EvalContexts created after create_stdlib_env()
     /// can inherit the stdlib ThunkIds without the caller explicitly threading the arena.
-    static STDLIB_ARENA_CACHE: std::cell::RefCell<Option<Rc<RefCell<crate::arena::ThunkArena>>>> =
+    static STDLIB_ARENA_CACHE: std::cell::RefCell<Option<Arc<Mutex<crate::arena::ThunkArena>>>> =
         std::cell::RefCell::new(None);
 }
 
-/// Return a new ThunkArena pre-populated with the stdlib thunks (via Rc::clone),
+/// Return a new ThunkArena pre-populated with the stdlib thunks (via Arc::clone),
 /// so ThunkIds allocated during stdlib loading are valid in the returned arena.
 /// Returns None if create_stdlib_env has not yet been called on this thread.
-pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Rc<RefCell<crate::arena::ThunkArena>>> {
+pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Arc<Mutex<crate::arena::ThunkArena>>> {
     STDLIB_ARENA_CACHE.with(|c| {
         c.borrow()
             .as_ref()
-            .map(|stdlib_arena| Rc::new(RefCell::new(stdlib_arena.borrow().clone_for_child())))
+            .map(|stdlib_arena| Arc::new(Mutex::new(stdlib_arena.lock().unwrap().clone_for_child())))
     })
 }
 
-pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
+pub fn create_stdlib_env() -> Result<Arc<RwLock<Environment>>, Box<crate::error::EvalError>> {
     let (env, _arena) = create_stdlib_env_with_arena()?;
     // Arena already cached by create_stdlib_env_with_arena
     Ok(env)
@@ -1703,8 +1703,8 @@ pub fn create_stdlib_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error:
 /// `create_stdlib_env_with_arena()`) was used to build the stdlib.
 pub(crate) fn create_stdlib_env_with_arena() -> Result<
     (
-        Rc<RefCell<Environment>>,
-        Rc<RefCell<crate::arena::ThunkArena>>,
+        Arc<RwLock<Environment>>,
+        Arc<Mutex<crate::arena::ThunkArena>>,
     ),
     Box<crate::error::EvalError>,
 > {
@@ -1730,7 +1730,7 @@ pub(crate) fn create_stdlib_env_with_arena() -> Result<
     STDLIB_ENV_DEPTH.set(d);
     // Cache the arena so subsequent EvalContext::new() calls can inherit stdlib ThunkIds.
     if let Ok((_, ref arena)) = result {
-        STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = Some(Rc::clone(arena)));
+        STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = Some(Arc::clone(arena)));
     }
     result
 }
@@ -1739,8 +1739,8 @@ fn create_stdlib_env_inner(
     bootstrap_base_dir: cap_std::fs::Dir,
 ) -> Result<
     (
-        Rc<RefCell<Environment>>,
-        Rc<RefCell<crate::arena::ThunkArena>>,
+        Arc<RwLock<Environment>>,
+        Arc<Mutex<crate::arena::ThunkArena>>,
     ),
     Box<crate::error::EvalError>,
 > {
@@ -1756,12 +1756,12 @@ fn create_stdlib_env_inner(
     // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're BUILDING the stdlib here,
     // so we need a fresh arena, not one seeded with stale cache contents.
     let bootstrap_ctx =
-        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
+        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&bootstrap_env), false);
 
     // Create stdlib env as a child of bootstrap_env.
     // This means: user code (child of stdlib_env) can walk up to bootstrap_env
     // and see all builtins. The prelude acts as the primary scope boundary.
-    let stdlib_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+    let stdlib_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
         &bootstrap_env,
     ))));
 
@@ -1779,8 +1779,8 @@ fn create_stdlib_env_inner(
 
     // Keep the arena alive: bootstrap_ctx is dropped here, but its arena holds all
     // ThunkIds allocated during prelude/macros loading. Callers that need to share
-    // the same ThunkId space (e.g., macro expansion) clone this Rc before returning.
-    let arena = Rc::clone(&bootstrap_ctx.thunk_arena);
+    // the same ThunkId space (e.g., macro expansion) clone this Arc before returning.
+    let arena = Arc::clone(&bootstrap_ctx.thunk_arena);
 
     Ok((stdlib_env, arena))
 }
@@ -1794,8 +1794,8 @@ fn create_stdlib_env_inner(
 /// The type-stage env is separate from the runtime stdlib env — it contains only
 /// the bindings defined in type-stage documents (e.g., `Int`, `Str`, `Seq`, `union`).
 ///
-/// Returns the type-stage environment wrapped in `Rc<RefCell<Environment>>`.
-pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::error::EvalError>> {
+/// Returns the type-stage environment wrapped in `Arc<RwLock<Environment>>`.
+pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::error::EvalError>> {
     // Open CWD at the public entry point to confine open_ambient_dir to this function.
     // The bootstrap context uses only embedded source (include_str!); the dir is required
     // by EvalContext::new_empty but is never accessed for filesystem reads during stdlib loading.
@@ -1827,10 +1827,10 @@ pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::er
 
     // Create a bootstrap EvalContext. bootstrap_base_dir was opened above.
     let bootstrap_ctx =
-        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Rc::clone(&bootstrap_env), false);
+        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&bootstrap_env), false);
 
     // Create type-stage env as a child of bootstrap_env
-    let type_stage_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+    let type_stage_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
         &bootstrap_env,
     ))));
 
@@ -1839,7 +1839,7 @@ pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::er
         if doc.node.stage == Some(crate::ast::Stage::Type) {
             // Evaluate this type-stage document
             let result =
-                crate::eval::eval_document(doc, Rc::clone(&type_stage_env), &bootstrap_ctx)?;
+                crate::eval::eval_document(doc, Arc::clone(&type_stage_env), &bootstrap_ctx)?;
 
             // Materialize and extract bindings
             let val = crate::eval::materialize(&result, None, &bootstrap_ctx)?;
@@ -1868,7 +1868,7 @@ pub fn create_type_stage_env() -> Result<Rc<RefCell<Environment>>, Box<crate::er
                     Key::Int(n) => n.to_string(),
                 };
                 let thunk = bootstrap_ctx.get_thunk(thunk_id);
-                type_stage_env.borrow_mut().insert(name, thunk);
+                type_stage_env.write().unwrap().insert(name, thunk);
             }
         }
     }
@@ -1890,15 +1890,15 @@ mod tests {
     const TEST_STACK_SIZE: usize = 128 * 1024 * 1024; // 128 MB — debug-mode materialize() needs ~100MB at 256 levels
 
     /// Helper: wrap a Value in a materialized Thunk inside an Rc.
-    fn thunk(val: Value) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
+    fn thunk(val: Value) -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
     }
 
-    fn thunk_with_span(val: Value, span: Span) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(val, span))
+    fn thunk_with_span(val: Value, span: Span) -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(val, span))
     }
 
-    fn no_named() -> Option<&'static IndexMap<String, Rc<Thunk>>> {
+    fn no_named() -> Option<&'static IndexMap<String, Arc<Thunk>>> {
         None
     }
 
@@ -1906,13 +1906,13 @@ mod tests {
         test_span(1, 1, 1, 5)
     }
 
-    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         crate::eval::EvalContext::new(base_dir, create_root_env(), false)
     }
 
-    fn mat(result: EvalResult<Rc<Thunk>>) -> Value {
+    fn mat(result: EvalResult<Arc<Thunk>>) -> Value {
         crate::eval::materialize(&result.unwrap(), None, &test_ctx()).unwrap()
     }
 
@@ -1921,7 +1921,7 @@ mod tests {
         Value::Function {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
-            env: Rc::new(RefCell::new(Environment::new())),
+            env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         }
     }
@@ -1940,20 +1940,20 @@ mod tests {
                     .collect(),
             ),
             body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
-            env: Rc::new(RefCell::new(Environment::new())),
+            env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         }
     }
 
     /// Build a materialized dict thunk whose entries are allocated into `ctx`'s arena.
-    /// Accepts `IndexMap<Key, Rc<Thunk>>` (convenient for test construction) and
+    /// Accepts `IndexMap<Key, Arc<Thunk>>` (convenient for test construction) and
     /// stores each as a `ThunkId` in `Value::Dict`, as the runtime requires.
-    fn thunk_dict(map: IndexMap<Key, Rc<Thunk>>, ctx: &Rc<crate::eval::EvalContext>) -> Rc<Thunk> {
+    fn thunk_dict(map: IndexMap<Key, Arc<Thunk>>, ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
         let mut id_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(map.len());
         for (k, v) in map {
             id_map.insert(k, ctx.alloc_thunk(v));
         }
-        Rc::new(Thunk::new_materialized(
+        Arc::new(Thunk::new_materialized(
             Value::Dict(id_map),
             test_span(1, 1, 1, 5),
         ))
@@ -1962,7 +1962,7 @@ mod tests {
     /// Helper: flatten a Value (Dict or Overlay) to an `IndexMap<Key, ThunkId>` for test assertions.
     /// Since `builtin_merge` now returns `Value::Overlay` (lazy), tests that previously
     /// expected `Value::Dict` must use this helper to get the concrete entries.
-    fn flatten_val(val: Value, ctx: &Rc<crate::eval::EvalContext>) -> IndexMap<Key, ThunkId> {
+    fn flatten_val(val: Value, ctx: &Arc<crate::eval::EvalContext>) -> IndexMap<Key, ThunkId> {
         match val {
             Value::Dict(map) => map,
             Value::Overlay(l, r) => {
@@ -1973,19 +1973,19 @@ mod tests {
     }
 
     /// Helper: materialize the thunk identified by `id` in `ctx`'s arena.
-    fn mat_id(id: ThunkId, ctx: &Rc<crate::eval::EvalContext>) -> Value {
+    fn mat_id(id: ThunkId, ctx: &Arc<crate::eval::EvalContext>) -> Value {
         let thunk = ctx.get_thunk(id);
         crate::eval::materialize(&thunk, None, ctx).unwrap()
     }
 
     /// Helper: build a `Value::Seq` with both `head` and `tail` allocated into `ctx`.
-    /// Returns a materialized `Rc<Thunk>` wrapping the `Seq`.
+    /// Returns a materialized `Arc<Thunk>` wrapping the `Seq`.
     fn seq_thunk(
-        head: Rc<Thunk>,
-        tail: Rc<Thunk>,
-        ctx: &Rc<crate::eval::EvalContext>,
-    ) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(
+        head: Arc<Thunk>,
+        tail: Arc<Thunk>,
+        ctx: &Arc<crate::eval::EvalContext>,
+    ) -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(
             Value::Seq {
                 head: ctx.alloc_thunk(head),
                 tail: ctx.alloc_thunk(tail),
@@ -1994,9 +1994,9 @@ mod tests {
         ))
     }
 
-    /// Helper: build an empty dict as a materialized `Rc<Thunk>` (no arena needed — no ThunkId entries).
-    fn empty_dict_thunk() -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(
+    /// Helper: build an empty dict as a materialized `Arc<Thunk>` (no arena needed — no ThunkId entries).
+    fn empty_dict_thunk() -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
             test_span(1, 1, 1, 5),
         ))
@@ -3137,7 +3137,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -3176,7 +3176,7 @@ mod tests {
             args: &[outer_dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(outer_map) => {
@@ -3198,11 +3198,11 @@ mod tests {
         // Create an unevaluated thunk wrapping a literal -- deep-materialize should force it
         let ctx = test_ctx();
         let expr = Rc::new(Spanned::new(Expr::Int(99), test_span(1, 1, 1, 5)));
-        let env = Rc::new(RefCell::new(Environment::new()));
-        let unevaluated = Rc::new(Thunk::new_unevaluated(
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let unevaluated = Arc::new(Thunk::new_unevaluated(
             expr,
             env,
-            Rc::clone(&ctx),
+            Arc::clone(&ctx),
             test_span(1, 1, 1, 5),
         ));
 
@@ -3219,7 +3219,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -3316,7 +3316,7 @@ mod tests {
             args: &[thunk(func)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Variant { tag, payload } => {
@@ -3336,7 +3336,7 @@ mod tests {
             args: &[thunk(func)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Variant { tag, payload } => {
@@ -3357,7 +3357,7 @@ mod tests {
             args: &[thunk(func)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Variant { tag, payload } => {
@@ -3433,7 +3433,7 @@ mod tests {
 
     #[test]
     fn try_with_builtin_success() {
-        fn ok_builtin(_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn ok_builtin(_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             ok_val(Value::Int(99), Span::origin())
         }
         let ctx = test_ctx();
@@ -3446,7 +3446,7 @@ mod tests {
             args: &[thunk(b)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Variant { tag, payload } => {
@@ -3460,7 +3460,7 @@ mod tests {
 
     #[test]
     fn try_with_builtin_failure() {
-        fn err_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn err_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let BuiltinArgs { call_span, .. } = ctx;
             Err(EvalError::internal("builtin error".to_string(), call_span).into())
         }
@@ -3474,7 +3474,7 @@ mod tests {
             args: &[thunk(b)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Variant { tag, payload } => {
@@ -3492,7 +3492,7 @@ mod tests {
         // NOTE: No corpus test exists for this because triggering DepthExceeded
         // reliably requires either a custom builtin (not available in corpus tests)
         // or recursive thunk forcing with 16MB stack (impractical in corpus format).
-        fn depth_exceeded_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn depth_exceeded_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let BuiltinArgs { call_span, .. } = ctx;
             Err(EvalError::depth_exceeded(256, call_span).into())
         }
@@ -3522,7 +3522,7 @@ mod tests {
     #[test]
     fn try_resource_limit_exceeded_not_catchable() {
         // ResourceLimitExceeded errors should NOT be caught by $try - they should propagate
-        fn resource_limit_builtin(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn resource_limit_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let BuiltinArgs { call_span, .. } = ctx;
             Err(EvalError::resource_limit_exceeded(
                 "test: exceeded resource limit (1000000)".to_string(),
@@ -3569,7 +3569,7 @@ mod tests {
             args: &[thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(42));
     }
@@ -3593,7 +3593,7 @@ mod tests {
             args: &[thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(10));
     }
@@ -3617,14 +3617,14 @@ mod tests {
             args: &[thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(20));
     }
 
     #[test]
     fn apply_with_builtin() {
-        fn add_builtin(builtin_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(builtin_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let BuiltinArgs {
                 args,
                 call_span,
@@ -3658,7 +3658,7 @@ mod tests {
             args: &[thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(7));
     }
@@ -3680,7 +3680,7 @@ mod tests {
             args: &[thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .expect("should return thunk");
         let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
@@ -3709,7 +3709,7 @@ mod tests {
             args: &[thunk(Value::Int(42)), args_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .expect("should return thunk");
         let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
@@ -3824,7 +3824,7 @@ mod tests {
 
     #[test]
     fn type_of_builtin_returns_function() {
-        fn dummy(_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn dummy(_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             ok_val(Value::Int(0), Span::origin())
         }
         let builtin = Value::Builtin(crate::value::BuiltinDef {
@@ -3855,7 +3855,7 @@ mod tests {
             args: &[thunk(seq)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, string_val("Seq".into()));
     }
@@ -3952,7 +3952,7 @@ mod tests {
             args: &[thunk(string_val("[1, 2, 3]".into()))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -3975,7 +3975,7 @@ mod tests {
             args: &[thunk(string_val(r#"{"name": "Alice", "age": 30}"#))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -3997,7 +3997,7 @@ mod tests {
             args: &[thunk(string_val(json))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4104,7 +4104,7 @@ mod tests {
             args: &[thunk(string_val(r#"[1, "two", true, null]"#))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4176,7 +4176,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => assert_eq!(map.len(), 0),
@@ -4197,7 +4197,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
@@ -4226,7 +4226,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
@@ -4256,7 +4256,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
@@ -4285,7 +4285,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(keys_map) => {
@@ -4308,7 +4308,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(0));
     }
@@ -4325,7 +4325,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(3));
     }
@@ -4341,7 +4341,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Int(2));
     }
@@ -4360,7 +4360,7 @@ mod tests {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         // builtin_merge now returns Value::Overlay; flatten to verify contents.
         let map = flatten_val(result, &ctx);
@@ -4385,7 +4385,7 @@ mod tests {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 3);
@@ -4407,7 +4407,7 @@ mod tests {
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 0);
@@ -4447,7 +4447,7 @@ mod tests {
             args: &[thunk_dict(IndexMap::new(), &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 1);
@@ -4464,7 +4464,7 @@ mod tests {
             args: &[thunk_dict(left, &ctx), thunk_dict(IndexMap::new(), &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let map = flatten_val(result, &ctx);
         assert_eq!(map.len(), 1);
@@ -4478,19 +4478,19 @@ mod tests {
         // through a lazy overlay by materializing and comparing values.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let left_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
-        let right_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
+        let left_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let right_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
 
         let mut left = IndexMap::new();
-        left.insert(Key::String("a".into()), Rc::clone(&left_thunk));
+        left.insert(Key::String("a".into()), Arc::clone(&left_thunk));
         let mut right = IndexMap::new();
-        right.insert(Key::String("b".into()), Rc::clone(&right_thunk));
+        right.insert(Key::String("b".into()), Arc::clone(&right_thunk));
 
         let result = mat(builtin_merge(BuiltinArgs {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         // Flatten and verify values are preserved correctly through the overlay.
         let map = flatten_val(result, &ctx);
@@ -4512,7 +4512,7 @@ mod tests {
             args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let map = flatten_val(result, &ctx);
         let keys: Vec<&Key> = map.keys().collect();
@@ -4551,7 +4551,7 @@ mod tests {
             args: &[d.clone(), d],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -4585,7 +4585,7 @@ mod tests {
             args: &[d.clone(), d],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -4603,7 +4603,7 @@ mod tests {
             args: &[d],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -4621,7 +4621,7 @@ mod tests {
             args: &[d.clone(), d.clone(), d],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -4770,7 +4770,7 @@ mod tests {
             args: &[thunk(Value::Int(1)), d],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         // builtin_merge itself succeeds — returns Overlay(Int(1), {})
         let overlay_thunk = result.unwrap();
@@ -4804,7 +4804,7 @@ mod tests {
             args: &[d, thunk(string_val("nope".into()))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         let overlay_thunk = result.unwrap();
         let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx).unwrap();
@@ -4835,7 +4835,7 @@ mod tests {
             args: &[empty, thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4858,7 +4858,7 @@ mod tests {
             args: &[dict, thunk(string_val("c".into()))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4881,7 +4881,7 @@ mod tests {
             args: &[dict, thunk(Value::Int(99))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4905,7 +4905,7 @@ mod tests {
             args: &[dict, thunk(Value::Int(60))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4927,7 +4927,7 @@ mod tests {
             args: &[dict, thunk(string_val("second".into()))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4949,10 +4949,10 @@ mod tests {
         let empty = thunk_dict(IndexMap::new(), &ctx);
         let val_thunk = thunk(Value::Int(7));
         let result = mat(builtin_append(BuiltinArgs {
-            args: &[empty, Rc::clone(&val_thunk)],
+            args: &[empty, Arc::clone(&val_thunk)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -4991,7 +4991,7 @@ mod tests {
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -5032,7 +5032,7 @@ mod tests {
             args: &[dict, thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -5127,7 +5127,7 @@ mod tests {
                 let mut m = IndexMap::new();
                 m.insert(
                     Key::String("x".into()),
-                    Rc::new(Thunk::new_materialized(
+                    Arc::new(Thunk::new_materialized(
                         Value::Int(1),
                         test_span(1, 1, 1, 5),
                     )),
@@ -5140,7 +5140,7 @@ mod tests {
             args: &[dict],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, string_val("[x: <thunk>]".into()));
     }
@@ -5204,7 +5204,7 @@ mod tests {
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -5230,7 +5230,7 @@ mod tests {
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -5269,7 +5269,7 @@ mod tests {
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -5291,7 +5291,7 @@ mod tests {
             ],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -5314,7 +5314,7 @@ mod tests {
             args: &[thunk(string_val(",".into())), thunk(string_val("".into()))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -6087,7 +6087,7 @@ mod tests {
             args: &[dict],
             named: Some(&named),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
         assert!(
@@ -7549,8 +7549,8 @@ mod tests {
             Expr::var_ref("nonexistent".to_string()),
             test_span(1, 1, 1, 10),
         ));
-        let env = Rc::new(RefCell::new(Environment::new()));
-        let error_thunk = Rc::new(Thunk::new_unevaluated(
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let error_thunk = Arc::new(Thunk::new_unevaluated(
             error_expr,
             env,
             test_ctx(),
@@ -7573,8 +7573,8 @@ mod tests {
             Expr::var_ref("nonexistent".to_string()),
             test_span(1, 1, 1, 10),
         ));
-        let env = Rc::new(RefCell::new(Environment::new()));
-        let error_thunk = Rc::new(Thunk::new_unevaluated(
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let error_thunk = Arc::new(Thunk::new_unevaluated(
             error_expr,
             env,
             test_ctx(),
@@ -7755,7 +7755,7 @@ mod tests {
     #[test]
     fn create_root_env_has_all_builtins() {
         let env = create_root_env();
-        let env_ref = env.borrow();
+        let env_ref = env.read().unwrap();
         for def in standard_builtins() {
             let name = def.name;
             assert!(
@@ -7791,7 +7791,7 @@ mod tests {
     #[test]
     fn create_stdlib_env_has_builtins_and_prelude() {
         let env = create_stdlib_env().expect("stdlib env creation failed");
-        let env_ref = env.borrow();
+        let env_ref = env.read().unwrap();
         // Should have builtins (via parent chain)
         assert!(env_ref.get("+").is_some(), "missing builtin +");
         assert!(env_ref.get("if").is_some(), "missing builtin if");
@@ -7852,7 +7852,7 @@ mod tests {
             args: &[head_val.clone(), tail_val.clone()],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -7905,12 +7905,12 @@ mod tests {
         // Head can be a thunk wrapping a VarRef to a nonexistent variable.
         // If we tried to materialize this thunk, it would error (undefined variable).
         // But seq construction should succeed because it doesn't materialize args.
-        let undef_thunk = Rc::new(Thunk::new_unevaluated(
+        let undef_thunk = Arc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
                 Expr::var_ref("undefined_var".to_string()),
                 test_span(1, 1, 1, 5),
             )),
-            Rc::new(RefCell::new(Environment::new())),
+            Arc::new(RwLock::new(Environment::new())),
             test_ctx(),
             test_span(1, 1, 1, 5),
         ));
@@ -7938,7 +7938,7 @@ mod tests {
             args: &[seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(result.is_ok());
         let head = mat(result);
@@ -8022,7 +8022,7 @@ mod tests {
             args: &[seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(result.is_ok());
         let tail = mat(result);
@@ -8052,7 +8052,7 @@ mod tests {
             args: &[seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -8074,7 +8074,7 @@ mod tests {
             args: &[seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -8116,7 +8116,7 @@ mod tests {
             args: &[seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(result.is_err());
     }
@@ -8132,7 +8132,7 @@ mod tests {
             args: &[thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap();
 
@@ -8140,7 +8140,7 @@ mod tests {
             args: &[thunk(Value::Int(200)), range_result],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap();
 
@@ -8148,7 +8148,7 @@ mod tests {
             args: &[take_result],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
 
         assert!(
@@ -8191,7 +8191,7 @@ mod tests {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -8202,7 +8202,7 @@ mod tests {
                     args: &[range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 });
 
                 // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
@@ -8238,7 +8238,7 @@ mod tests {
             args: &[seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, Value::Bool(true));
     }
@@ -8275,7 +8275,7 @@ mod tests {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -8331,7 +8331,7 @@ mod tests {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -8355,7 +8355,7 @@ mod tests {
             args: &[thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -8437,7 +8437,7 @@ mod tests {
             args: &[thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -8464,12 +8464,12 @@ mod tests {
     #[test]
     fn repeat_laziness() {
         // Repeat an unevaluated thunk (would error if materialized)
-        let undef_thunk = Rc::new(Thunk::new_unevaluated(
+        let undef_thunk = Arc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
                 Expr::var_ref("undefined_var".to_string()),
                 test_span(1, 1, 1, 5),
             )),
-            Rc::new(RefCell::new(Environment::new())),
+            Arc::new(RwLock::new(Environment::new())),
             test_ctx(),
             test_span(1, 1, 1, 5),
         ));
@@ -8524,7 +8524,7 @@ mod tests {
             args: &[dict_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -8610,7 +8610,7 @@ mod tests {
             args: &[f_thunk, x_thunk.clone()],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -8637,21 +8637,21 @@ mod tests {
     #[test]
     fn iterate_laziness() {
         // iterate doesn't materialize its args
-        let undef_f = Rc::new(Thunk::new_unevaluated(
+        let undef_f = Arc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
                 Expr::var_ref("undefined_f".to_string()),
                 test_span(1, 1, 1, 5),
             )),
-            Rc::new(RefCell::new(Environment::new())),
+            Arc::new(RwLock::new(Environment::new())),
             test_ctx(),
             test_span(1, 1, 1, 5),
         ));
-        let undef_x = Rc::new(Thunk::new_unevaluated(
+        let undef_x = Arc::new(Thunk::new_unevaluated(
             Rc::new(Spanned::new(
                 Expr::var_ref("undefined_x".to_string()),
                 test_span(1, 1, 1, 5),
             )),
-            Rc::new(RefCell::new(Environment::new())),
+            Arc::new(RwLock::new(Environment::new())),
             test_ctx(),
             test_span(1, 1, 1, 5),
         ));
@@ -8730,7 +8730,7 @@ mod tests {
             args: &[thunk(Value::Int(2)), dict_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -8760,7 +8760,7 @@ mod tests {
             args: &[thunk(Value::Int(0)), dict_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -8780,7 +8780,7 @@ mod tests {
             args: &[thunk(Value::Int(-5)), dict_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -8801,7 +8801,7 @@ mod tests {
             args: &[thunk(Value::Int(10)), dict_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) => {
@@ -8824,7 +8824,7 @@ mod tests {
             args: &[thunk(Value::Int(2)), seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Seq { head, tail } => {
@@ -8857,7 +8857,7 @@ mod tests {
             args: &[thunk(Value::Int(0)), seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(map) if map.is_empty() => {} // Success
@@ -8918,7 +8918,7 @@ mod tests {
             args: &[xs, ys],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap();
 
@@ -8969,7 +8969,7 @@ mod tests {
             args: &[xs, ys.clone()],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap();
 
@@ -8994,7 +8994,7 @@ mod tests {
             args: &[xs, ys],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap();
 
@@ -9031,7 +9031,7 @@ mod tests {
             args: &[xs, ys],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
 
         match result {
@@ -9070,7 +9070,7 @@ mod tests {
             args: &[xs, ys],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap_err();
 
@@ -9105,7 +9105,7 @@ mod tests {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -9116,7 +9116,7 @@ mod tests {
                     args: &[thunk(string_val(",")), range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 });
 
                 // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
@@ -9171,7 +9171,7 @@ mod tests {
             args: &[thunk_dict(dict1, &ctx), thunk_dict(dict2, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
 
         match result {
@@ -9203,7 +9203,7 @@ mod tests {
         //
         // The predicate is implemented as a Rust builtin (not an LLT function) to avoid
         // needing a closure env with stdlib builtins.
-        fn pred_eq_299(ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn pred_eq_299(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let val = crate::eval::materialize(&ctx.args[0], None, &ctx.ctx)?;
             ok_val(Value::Bool(matches!(val, Value::Int(299))), Span::origin())
         }
@@ -9218,7 +9218,7 @@ mod tests {
                     args: &[thunk(Value::Int(0)), thunk(Value::Int(300))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -9232,7 +9232,7 @@ mod tests {
                     args: &[pred, range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -9276,7 +9276,7 @@ mod tests {
         // Call builtin_filter with depth near MAX_EVAL_DEPTH (e.g., depth=200).
         // Collect the result via builtin_collect to force materialization.
         // Assert the result is an empty dict (no depth exceeded error).
-        fn pred_always_false(_ctx: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn pred_always_false(_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             ok_val(Value::Bool(false), Span::origin())
         }
 
@@ -9306,7 +9306,7 @@ mod tests {
                     named: no_named(),
 
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx_inner),
+                    ctx: Arc::clone(&ctx_inner),
                 })
                 .unwrap();
 
@@ -9316,7 +9316,7 @@ mod tests {
                     named: no_named(),
 
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx_inner),
+                    ctx: Arc::clone(&ctx_inner),
                 })
                 .unwrap();
 
@@ -9389,7 +9389,7 @@ mod tests {
             args: &[xs, ys],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
 
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
@@ -9421,7 +9421,7 @@ mod tests {
                     args: &[thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -9431,7 +9431,7 @@ mod tests {
                     args: &[thunk(Value::Int(300)), range_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 })
                 .unwrap();
 
@@ -9441,7 +9441,7 @@ mod tests {
                     args: &[take_result],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 });
 
                 assert!(
@@ -9488,7 +9488,7 @@ mod tests {
             args: &[handler.clone()],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         })
         .unwrap();
 
@@ -9585,13 +9585,13 @@ mod tests {
         let seq = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
 
         // Create the PendingBuiltin thunk
-        let pending_thunk = Rc::new(Thunk::new_pending_builtin(
+        let pending_thunk = Arc::new(Thunk::new_pending_builtin(
             builtin!("drop", builtin_drop_seq_step),
             vec![n_remaining, seq],
             None,
             call_span(),
-            Some(Rc::from("test drop_seq_step")),
-            Rc::clone(&ctx),
+            Some(Arc::from("test drop_seq_step")),
+            Arc::clone(&ctx),
         ));
 
         // Materialize it and expect an error
@@ -9687,14 +9687,14 @@ mod tests {
             args: &[thunk(Value::Int(0)), thunk(Value::Int(10))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
 
         let result = mat(builtin_drop(BuiltinArgs {
             args: &[thunk(Value::Int(2)), thunk(seq)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
 
         // Result should be a PendingBuiltin (can't inspect internal state, but can verify it materializes correctly)
@@ -9726,7 +9726,7 @@ mod tests {
             args: &[thunk(add_builtin), thunk(Value::Int(0)), seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
 
         // Result should be 3 (0 + 1 + 2)
@@ -9746,7 +9746,7 @@ mod tests {
             args: &[thunk(string_val(",".into())), seq_val],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
 
         // Result should be "a,b"
@@ -9936,8 +9936,8 @@ mod tests {
     // Unit tests: builtin_rest, builtin_cons, builtin_reverse, builtin_sort
     // -------------------------------------------------------------------------
 
-    fn make_int_dict(vals: &[i64], ctx: &Rc<crate::eval::EvalContext>) -> Value {
-        let mut rc_map: IndexMap<Key, Rc<Thunk>> = IndexMap::new();
+    fn make_int_dict(vals: &[i64], ctx: &Arc<crate::eval::EvalContext>) -> Value {
+        let mut rc_map: IndexMap<Key, Arc<Thunk>> = IndexMap::new();
         for (i, &v) in vals.iter().enumerate() {
             rc_map.insert(Key::Int(i as i64), thunk(Value::Int(v)));
         }
@@ -9951,7 +9951,7 @@ mod tests {
     fn extract_int_at(
         map: &IndexMap<Key, ThunkId>,
         idx: i64,
-        ctx: &Rc<crate::eval::EvalContext>,
+        ctx: &Arc<crate::eval::EvalContext>,
     ) -> i64 {
         let thunk = ctx.get_thunk(*map.get(&Key::Int(idx)).unwrap());
         match crate::eval::materialize(&thunk, None, ctx).unwrap() {
@@ -9967,7 +9967,7 @@ mod tests {
             args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
@@ -9985,7 +9985,7 @@ mod tests {
             args: &[thunk(make_int_dict(&[42], &ctx))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         match result {
             Value::Dict(m) => assert!(m.is_empty()),
@@ -10014,7 +10014,7 @@ mod tests {
             args: &[thunk(Value::Int(0)), thunk(make_int_dict(&[1, 2, 3], &ctx))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
@@ -10033,7 +10033,7 @@ mod tests {
             args: &[thunk(Value::Int(99)), thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
@@ -10050,7 +10050,7 @@ mod tests {
             args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
@@ -10083,7 +10083,7 @@ mod tests {
             args: &[thunk(make_int_dict(&[3, 1, 4, 1, 5], &ctx))],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
@@ -10107,7 +10107,7 @@ mod tests {
             args: &[thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         let m = match result {
             Value::Dict(m) => m,
@@ -10159,7 +10159,7 @@ mod tests {
             args: &[thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         // each returns a Seq — materialize head
         match result {
@@ -10304,7 +10304,7 @@ mod tests {
             args: &[thunk(Value::Int(1)), thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         }));
         assert_eq!(result, string_val("second".into()));
     }
@@ -10319,7 +10319,7 @@ mod tests {
             args: &[thunk(string_val("z".into())), thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(result.is_err());
         let err = result.unwrap_err();

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -28,7 +29,7 @@ use crate::value::{Key, Thunk, ThunkId, Value};
 ///   opaque values, not collections to traverse.
 ///
 /// Cycle detection and sharing preservation are handled via a
-/// `HashMap<*const Thunk, Option<Rc<Thunk>>>` cache; see the
+/// `HashMap<*const Thunk, Option<Arc<Thunk>>>` cache; see the
 /// dual-purpose cache semantics in `force_thunk`.
 ///
 /// `call_site_span` is the span of the call site (e.g., a builtin call) that
@@ -36,7 +37,7 @@ use crate::value::{Key, Thunk, ThunkId, Value};
 /// materialization-site span. If `None`, the thunk's own span is used.
 pub fn deep_materialize(
     val: &Value,
-    ctx: &Rc<EvalContext>,
+    ctx: &Arc<EvalContext>,
     call_site_span: Option<&Span>,
 ) -> EvalResult<Value> {
     // Fast path: primitives and functions need no traversal and no cache allocation.
@@ -53,7 +54,7 @@ pub fn deep_materialize(
         | Value::Variant { payload: None, .. } => return Ok(val.clone()),
         _ => {}
     }
-    let mut cache: HashMap<*const Thunk, Option<Rc<Thunk>>> = HashMap::new();
+    let mut cache: HashMap<*const Thunk, Option<Arc<Thunk>>> = HashMap::new();
     let initial_span = call_site_span.copied().unwrap_or_else(Span::origin);
     deep_materialize_impl(val, ctx, &mut cache, 0, initial_span)
 }
@@ -74,7 +75,7 @@ pub fn deep_materialize(
 ///
 /// - `work_stack`: items to process (LIFO). Items that need results from
 ///   sub-items appear BELOW those sub-items on the stack.
-/// - `value_stack`: completed `Rc<Thunk>` results (LIFO). Each `Force` item
+/// - `value_stack`: completed `Arc<Thunk>` results (LIFO). Each `Force` item
 ///   pushes exactly one result. Each `Build*` collector pops N results and
 ///   pushes one assembled result.
 ///
@@ -90,7 +91,7 @@ enum WorkItem {
     ///   collector onto `work_stack`.  Nothing is pushed to `value_stack`
     ///   immediately; the collector does that after assembling children.
     Force {
-        thunk: Rc<Thunk>,
+        thunk: Arc<Thunk>,
         seq_depth: usize,
         /// The span to use for materialization errors. Either the original
         /// call-site span from `deep_materialize` or the thunk's own span.
@@ -133,8 +134,8 @@ enum WorkItem {
 /// recursion for deeply nested dicts and seq spines.
 fn deep_materialize_impl(
     root_val: &Value,
-    ctx: &Rc<EvalContext>,
-    cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    ctx: &Arc<EvalContext>,
+    cache: &mut HashMap<*const Thunk, Option<Arc<Thunk>>>,
     seq_depth: usize,
     current_span: Span,
 ) -> EvalResult<Value> {
@@ -155,7 +156,7 @@ fn deep_materialize_impl(
     // root value's immediate children.  The root has no thunk pointer in the
     // cache (it was already materialized by the caller).
     let mut work_stack: Vec<WorkItem> = Vec::new();
-    let mut value_stack: Vec<Rc<Thunk>> = Vec::new();
+    let mut value_stack: Vec<Arc<Thunk>> = Vec::new();
 
     push_structural(
         root_val,
@@ -204,9 +205,9 @@ fn deep_materialize_impl(
                 for (key, thunk) in dict_map.keys().cloned().zip(value_stack.drain(start..)) {
                     result.insert(key, ctx.alloc_thunk(thunk));
                 }
-                let assembled = Rc::new(Thunk::new_materialized(Value::Dict(result), span));
+                let assembled = Arc::new(Thunk::new_materialized(Value::Dict(result), span));
                 if let Some(ptr) = thunk_ptr {
-                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                    cache.insert(ptr, Some(Arc::clone(&assembled)));
                 }
                 value_stack.push(assembled);
             }
@@ -219,7 +220,7 @@ fn deep_materialize_impl(
                     .expect("BuildSeq: missing head on value_stack");
                 let head_id = ctx.alloc_thunk(head);
                 let tail_id = ctx.alloc_thunk(tail);
-                let assembled = Rc::new(Thunk::new_materialized(
+                let assembled = Arc::new(Thunk::new_materialized(
                     Value::Seq {
                         head: head_id,
                         tail: tail_id,
@@ -227,7 +228,7 @@ fn deep_materialize_impl(
                     span,
                 ));
                 if let Some(ptr) = thunk_ptr {
-                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                    cache.insert(ptr, Some(Arc::clone(&assembled)));
                 }
                 value_stack.push(assembled);
             }
@@ -236,14 +237,14 @@ fn deep_materialize_impl(
                     .pop()
                     .expect("BuildProxy: missing handler on value_stack");
                 let handler_id = ctx.alloc_thunk(handler);
-                let assembled = Rc::new(Thunk::new_materialized(
+                let assembled = Arc::new(Thunk::new_materialized(
                     Value::Proxy {
                         handler: handler_id,
                     },
                     span,
                 ));
                 if let Some(ptr) = thunk_ptr {
-                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                    cache.insert(ptr, Some(Arc::clone(&assembled)));
                 }
                 value_stack.push(assembled);
             }
@@ -256,7 +257,7 @@ fn deep_materialize_impl(
                     .pop()
                     .expect("BuildVariant: missing payload on value_stack");
                 let payload_id = ctx.alloc_thunk(payload_thunk);
-                let assembled = Rc::new(Thunk::new_materialized(
+                let assembled = Arc::new(Thunk::new_materialized(
                     Value::Variant {
                         tag,
                         payload: Some(payload_id),
@@ -264,7 +265,7 @@ fn deep_materialize_impl(
                     span,
                 ));
                 if let Some(ptr) = thunk_ptr {
-                    cache.insert(ptr, Some(Rc::clone(&assembled)));
+                    cache.insert(ptr, Some(Arc::clone(&assembled)));
                 }
                 value_stack.push(assembled);
             }
@@ -306,14 +307,14 @@ fn deep_materialize_impl(
 #[allow(clippy::too_many_arguments)] // Internal helper for deep_materialize work queue
 fn push_structural(
     val: &Value,
-    cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    cache: &mut HashMap<*const Thunk, Option<Arc<Thunk>>>,
     seq_depth: usize,
     span: Span,
     thunk_ptr: Option<*const Thunk>,
     mat_span: Span,
     work_stack: &mut Vec<WorkItem>,
-    value_stack: &mut Vec<Rc<Thunk>>,
-    ctx: &Rc<EvalContext>,
+    value_stack: &mut Vec<Arc<Thunk>>,
+    ctx: &Arc<EvalContext>,
 ) -> EvalResult<()> {
     match val {
         Value::Overlay(l, r) => {
@@ -334,9 +335,9 @@ fn push_structural(
         Value::Dict(map) => {
             if map.is_empty() {
                 // Empty dict: assemble immediately, no children.
-                let t = Rc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span));
+                let t = Arc::new(Thunk::new_materialized(Value::Dict(IndexMap::new()), span));
                 if let Some(ptr) = thunk_ptr {
-                    cache.insert(ptr, Some(Rc::clone(&t)));
+                    cache.insert(ptr, Some(Arc::clone(&t)));
                 }
                 value_stack.push(t);
                 return Ok(());
@@ -414,7 +415,7 @@ fn push_structural(
                 });
             } else {
                 // Variant without payload: leaf value, no children to traverse
-                let t = Rc::new(Thunk::new_materialized(
+                let t = Arc::new(Thunk::new_materialized(
                     Value::Variant {
                         tag: tag.clone(),
                         payload: None,
@@ -422,16 +423,16 @@ fn push_structural(
                     span,
                 ));
                 if let Some(ptr) = thunk_ptr {
-                    cache.insert(ptr, Some(Rc::clone(&t)));
+                    cache.insert(ptr, Some(Arc::clone(&t)));
                 }
                 value_stack.push(t);
             }
         }
         // Primitives and functions: no children.
         other => {
-            let t = Rc::new(Thunk::new_materialized(other.clone(), span));
+            let t = Arc::new(Thunk::new_materialized(other.clone(), span));
             if let Some(ptr) = thunk_ptr {
-                cache.insert(ptr, Some(Rc::clone(&t)));
+                cache.insert(ptr, Some(Arc::clone(&t)));
             }
             value_stack.push(t);
         }
@@ -450,28 +451,28 @@ fn push_structural(
 /// before propagating to prevent cache poisoning (same as the old
 /// `deep_materialize_thunk`).
 fn process_force(
-    thunk: &Rc<Thunk>,
-    ctx: &Rc<EvalContext>,
-    cache: &mut HashMap<*const Thunk, Option<Rc<Thunk>>>,
+    thunk: &Arc<Thunk>,
+    ctx: &Arc<EvalContext>,
+    cache: &mut HashMap<*const Thunk, Option<Arc<Thunk>>>,
     seq_depth: usize,
     mat_span: Span,
     work_stack: &mut Vec<WorkItem>,
-    value_stack: &mut Vec<Rc<Thunk>>,
+    value_stack: &mut Vec<Arc<Thunk>>,
 ) -> EvalResult<()> {
-    let thunk_ptr = Rc::as_ptr(thunk);
+    let thunk_ptr = Arc::as_ptr(thunk);
 
     // Cache lookup: sharing hit or cycle sentinel.
     match cache.get(&thunk_ptr) {
         Some(Some(cached)) => {
-            value_stack.push(Rc::clone(cached));
+            value_stack.push(Arc::clone(cached));
             return Ok(());
         }
         Some(None) => {
             // Cycle sentinel: return the original thunk unchanged.
-            // Returns Rc::clone(thunk) safely because materialize() has already transitioned
+            // Returns Arc::clone(thunk) safely because materialize() has already transitioned
             // the thunk to Materialized; sub-structure of the returned thunk is not deep-forced
             // (documented behavior for cycles).
-            value_stack.push(Rc::clone(thunk));
+            value_stack.push(Arc::clone(thunk));
             return Ok(());
         }
         None => {}
@@ -519,7 +520,7 @@ fn process_force(
         // Remove the sentinel for this thunk since we failed.
         // (push_structural already cleaned up any sentinels it inserted.)
         cache.remove(&thunk_ptr);
-        // Clear work_stack to avoid leaking WorkItem::Force Rc<Thunk> references.
+        // Clear work_stack to avoid leaking WorkItem::Force Arc<Thunk> references.
         // When push_structural fails mid-traversal, it may have pushed Build* and
         // Force items that will never be processed. Clearing prevents Rc leak.
         work_stack.clear();
@@ -533,9 +534,9 @@ mod tests {
     use crate::ast::{Expr, Spanned};
     use crate::test_util::test_span;
     use crate::value::{Environment, Key, ThunkState};
-    use std::cell::RefCell;
+    use std::sync::RwLock;
 
-    fn test_ctx() -> Rc<EvalContext> {
+    fn test_ctx() -> Arc<EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         EvalContext::new(
@@ -554,11 +555,11 @@ mod tests {
         // Uses `Thunk::new_materialized` to isolate cache-lookup logic from evaluation;
         // real cycles are encountered after `materialize()` has already transitioned the thunk.
         let span = test_span(1, 1, 1, 5);
-        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
 
         // Create a cache and pre-populate it with a None entry for this thunk
         let mut cache = std::collections::HashMap::new();
-        let thunk_ptr = Rc::as_ptr(&thunk);
+        let thunk_ptr = Arc::as_ptr(&thunk);
         cache.insert(thunk_ptr, None);
 
         // Call process_force with the pre-populated cache
@@ -579,7 +580,7 @@ mod tests {
         // The original thunk should have been pushed onto value_stack
         assert_eq!(value_stack.len(), 1);
         assert!(
-            Rc::ptr_eq(&thunk, &value_stack[0]),
+            Arc::ptr_eq(&thunk, &value_stack[0]),
             "process_force must push the original thunk when cycle sentinel (None) is found in cache"
         );
     }
@@ -592,11 +593,11 @@ mod tests {
         // 2. Second encounter returns the cached result
         let span = test_span(1, 1, 1, 5);
         let expr = Rc::new(Spanned::new(Expr::Int(42), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let ctx = test_ctx();
 
         // Create an unevaluated thunk and allocate it once — same ThunkId for both positions
-        let shared_thunk_rc = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+        let shared_thunk_rc = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
         let shared_id = ctx.alloc_thunk(shared_thunk_rc);
 
         // Place the same ThunkId in two positions of a dict
@@ -633,17 +634,17 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
 
         // Create a thunk that will fail with a cacheable error (undefined variable)
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let error_expr = Rc::new(Spanned::new(Expr::var_ref("undefined".into()), span));
-        let error_thunk = Rc::new(Thunk::new_unevaluated(
+        let error_thunk = Arc::new(Thunk::new_unevaluated(
             error_expr,
             env,
-            Rc::clone(&ctx),
+            Arc::clone(&ctx),
             span,
         ));
 
         // Place the error thunk in a dict
-        let error_id = ctx.alloc_thunk(Rc::clone(&error_thunk));
+        let error_id = ctx.alloc_thunk(Arc::clone(&error_thunk));
         let mut map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
         map.insert(Key::String("x".into()), error_id);
         let dict_val = Value::Dict(map);

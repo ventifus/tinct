@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
@@ -36,11 +37,11 @@ fn count_static_keys(entries: &[Spanned<Entry>]) -> usize {
 
 pub(crate) fn eval_dict(
     entries: &[Spanned<Entry>],
-    parent_env: &Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
+    parent_env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
     dict_span: &Span,
-) -> EvalResult<Rc<Thunk>> {
-    let dict_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+) -> EvalResult<Arc<Thunk>> {
+    let dict_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
         parent_env,
     ))));
     let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
@@ -57,7 +58,7 @@ pub(crate) fn eval_dict(
     // env_id is stored in Unevaluated thunks for future use when take_unevaluated is
     // updated to propagate it. For now it acts as scaffolding (the evaluator discards it).
     let static_key_count = count_static_keys(entries);
-    let env_id = ctx.env_arena.borrow_mut().alloc_root(static_key_count);
+    let env_id = ctx.env_arena.lock().unwrap().alloc_root(static_key_count);
 
     // Slot index counter: incremented only for static-key entries (matching resolver logic).
     // Must stay in sync with resolve.rs Resolver::walk_expr Dict arm (Expr::Str | Expr::Annotated).
@@ -92,7 +93,7 @@ pub(crate) fn eval_dict(
         .iter()
         .any(|entry| matches!(&entry.node.value.node, Expr::TypeAlias { .. }));
 
-    let mut constructor_precomputed: std::collections::HashMap<String, Rc<Thunk>> =
+    let mut constructor_precomputed: std::collections::HashMap<String, Arc<Thunk>> =
         std::collections::HashMap::new();
 
     if has_type_alias {
@@ -102,10 +103,10 @@ pub(crate) fn eval_dict(
                 for (tag, has_payload) in extract_nominal_constructors(&body.node) {
                     let constructor_value = if has_payload {
                         let constructor_env =
-                            Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&dict_env))));
-                        constructor_env.borrow_mut().insert(
+                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&dict_env))));
+                        constructor_env.write().unwrap().insert(
                             VARIANT_TAG_MARKER.to_string(),
-                            Rc::new(Thunk::new_materialized(string_val(&tag), span)),
+                            Arc::new(Thunk::new_materialized(string_val(&tag), span)),
                         );
                         let param = Param {
                             name: "payload".to_string(),
@@ -134,7 +135,7 @@ pub(crate) fn eval_dict(
                     };
                     constructor_precomputed.insert(
                         tag,
-                        Rc::new(Thunk::new_materialized(constructor_value, span)),
+                        Arc::new(Thunk::new_materialized(constructor_value, span)),
                     );
                 }
             }
@@ -175,69 +176,69 @@ pub(crate) fn eval_dict(
         let thunk = if let Key::String(ref name) = key {
             if let Some(ctor_thunk) = constructor_precomputed.get(name.as_str()) {
                 // Use the pre-computed materialized constructor thunk directly.
-                Rc::clone(ctor_thunk)
+                Arc::clone(ctor_thunk)
             } else {
                 match &entry.node.value.node {
-                    Expr::Int(n) => Rc::new(Thunk::new_materialized(
+                    Expr::Int(n) => Arc::new(Thunk::new_materialized(
                         Value::Int(*n),
                         entry.node.value.span,
                     )),
-                    Expr::Float(f) => Rc::new(Thunk::new_materialized(
+                    Expr::Float(f) => Arc::new(Thunk::new_materialized(
                         Value::Float(*f),
                         entry.node.value.span,
                     )),
-                    Expr::Bool(b) => Rc::new(Thunk::new_materialized(
+                    Expr::Bool(b) => Arc::new(Thunk::new_materialized(
                         Value::Bool(*b),
                         entry.node.value.span,
                     )),
-                    Expr::Str(s) => Rc::new(Thunk::new_materialized(
+                    Expr::Str(s) => Arc::new(Thunk::new_materialized(
                         string_val(s),
                         entry.node.value.span,
                     )),
-                    _ if is_static_key => Rc::new(Thunk::new_unevaluated_with_env_id(
+                    _ if is_static_key => Arc::new(Thunk::new_unevaluated_with_env_id(
                         Rc::clone(&entry.node.value),
-                        Rc::clone(&dict_env),
+                        Arc::clone(&dict_env),
                         env_id,
-                        Rc::clone(ctx),
+                        Arc::clone(ctx),
                         entry.node.value.span,
                     )),
-                    _ => Rc::new(Thunk::new_unevaluated(
+                    _ => Arc::new(Thunk::new_unevaluated(
                         Rc::clone(&entry.node.value),
-                        Rc::clone(&dict_env),
-                        Rc::clone(ctx),
+                        Arc::clone(&dict_env),
+                        Arc::clone(ctx),
                         entry.node.value.span,
                     )),
                 }
             }
         } else {
             match &entry.node.value.node {
-                Expr::Int(n) => Rc::new(Thunk::new_materialized(
+                Expr::Int(n) => Arc::new(Thunk::new_materialized(
                     Value::Int(*n),
                     entry.node.value.span,
                 )),
-                Expr::Float(f) => Rc::new(Thunk::new_materialized(
+                Expr::Float(f) => Arc::new(Thunk::new_materialized(
                     Value::Float(*f),
                     entry.node.value.span,
                 )),
-                Expr::Bool(b) => Rc::new(Thunk::new_materialized(
+                Expr::Bool(b) => Arc::new(Thunk::new_materialized(
                     Value::Bool(*b),
                     entry.node.value.span,
                 )),
-                Expr::Str(s) => Rc::new(Thunk::new_materialized(
+                Expr::Str(s) => Arc::new(Thunk::new_materialized(
                     string_val(s),
                     entry.node.value.span,
                 )),
-                _ if is_static_key => Rc::new(Thunk::new_unevaluated_with_env_id(
+                _ if is_static_key => Arc::new(Thunk::new_unevaluated_with_env_id(
                     Rc::clone(&entry.node.value),
-                    Rc::clone(&dict_env),
+                    Arc::clone(&dict_env),
                     env_id,
-                    Rc::clone(ctx),
+                    Arc::clone(ctx),
                     entry.node.value.span,
                 )),
-                _ => Rc::new(Thunk::new_unevaluated(
+                _ => Arc::new(Thunk::new_unevaluated(
                     Rc::clone(&entry.node.value),
-                    Rc::clone(&dict_env),
-                    Rc::clone(ctx),
+                    Arc::clone(&dict_env),
+                    Arc::clone(ctx),
                     entry.node.value.span,
                 )),
             }
@@ -250,8 +251,8 @@ pub(crate) fn eval_dict(
         // overwrite the constructor with a self-referential unevaluated thunk.
         if let Key::String(ref name) = key {
             dict_env
-                .borrow_mut()
-                .insert(name.clone(), Rc::clone(&thunk));
+                .write().unwrap()
+                .insert(name.clone(), Arc::clone(&thunk));
         }
 
         // Check for duplicate keys using insert(), which returns Some(old_value) if present.
@@ -272,13 +273,13 @@ pub(crate) fn eval_dict(
         // incremented only for Expr::Str | Expr::Annotated key entries).
         if is_static_key {
             ctx.env_arena
-                .borrow_mut()
+                .lock().unwrap()
                 .fill_letrec_slot(env_id, slot_idx, thunk_id);
             slot_idx += 1;
         }
     }
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Dict(dict_map),
         *dict_span,
     )))
@@ -286,8 +287,8 @@ pub(crate) fn eval_dict(
 
 pub(crate) fn eval_key(
     key_expr: &Spanned<Expr>,
-    parent_env: &Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
+    parent_env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
 ) -> EvalResult<Key> {
     // Fast path for literal keys (avoids creating temporary thunks)
     match &key_expr.node {
@@ -296,7 +297,7 @@ pub(crate) fn eval_key(
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete Key values
-    let thunk = eval(Rc::new(key_expr.clone()), Rc::clone(parent_env), ctx)?;
+    let thunk = eval(Rc::new(key_expr.clone()), Arc::clone(parent_env), ctx)?;
     let value = materialize(&thunk, Some(&key_expr.span), ctx)?;
     value_to_key(&value, &key_expr.span)
 }

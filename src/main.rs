@@ -7,6 +7,7 @@ use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::process;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::str::FromStr;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_with_json_llt, json_to_value,
@@ -1290,8 +1291,8 @@ fn run_eval(
             perms: tinct::DirPerms::full(),
         };
         let pwd_thunk = tinct::Thunk::new_materialized(pwd_value, tinct::Span::origin());
-        env.borrow_mut()
-            .insert("%pwd".to_string(), Rc::new(pwd_thunk));
+        env.write().unwrap()
+            .insert("%pwd".to_string(), Arc::new(pwd_thunk));
     }
 
     // Inject `%stdin` Handle for fd 0 into the root environment only when `-i` is present.
@@ -1318,8 +1319,8 @@ fn run_eval(
             creation_span: tinct::Span::origin(),
         };
         let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
-        env.borrow_mut()
-            .insert("%stdin".to_string(), Rc::new(stdin_thunk));
+        env.write().unwrap()
+            .insert("%stdin".to_string(), Arc::new(stdin_thunk));
     }
 
     // Inject `%libdir` DirCap for the stdlib directory (unless --no-libdir is set).
@@ -1336,23 +1337,25 @@ fn run_eval(
     // libdir_rc_for_ctx: the same Dir is shared with the EvalContext so that
     // `builtin_include` can inject `%libdir` into nested includes without calling
     // open_ambient_dir again. None when --no-libdir or --no-fs is set.
-    let mut libdir_rc_for_ctx: Option<Rc<cap_std::fs::Dir>> = None;
+    let mut libdir_rc_for_ctx: Option<Arc<cap_std::fs::Dir>> = None;
     if !no_libdir && !no_fs {
         use tinct::Value;
         if let Some(ref path) = resolved_libdir_path {
             if let Ok(libdir_std) =
                 cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
             {
-                let libdir_rc = Rc::new(libdir_std);
+                let libdir_arc = Arc::new(libdir_std);
+                // Clone the Dir for the DirCap value (needs Rc<Dir>)
+                let libdir_dir_for_cap = Rc::new(libdir_arc.open_dir(".").expect("failed to dup libdir"));
                 let libdir_value = Value::DirCap {
-                    dir: Rc::clone(&libdir_rc),
+                    dir: libdir_dir_for_cap,
                     perms: tinct::DirPerms::full(),
                 };
                 let libdir_thunk =
                     tinct::Thunk::new_materialized(libdir_value, tinct::Span::origin());
-                env.borrow_mut()
-                    .insert("%libdir".to_string(), Rc::new(libdir_thunk));
-                libdir_rc_for_ctx = Some(libdir_rc);
+                env.write().unwrap()
+                    .insert("%libdir".to_string(), Arc::new(libdir_thunk));
+                libdir_rc_for_ctx = Some(libdir_arc);
             }
             // If the dir can't be opened, silently skip — stdlib is embedded anyway.
         }
@@ -1388,7 +1391,7 @@ fn run_eval(
             } else {
                 format!("%{name}")
             };
-            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
+            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -1432,7 +1435,7 @@ fn run_eval(
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            env.borrow_mut().insert(name, Rc::new(cap_thunk));
+            env.write().unwrap().insert(name, Arc::new(cap_thunk));
         }
     }
 
@@ -1464,8 +1467,8 @@ fn run_eval(
         };
 
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.borrow_mut()
-            .insert("%clock".to_string(), Rc::new(cap_thunk));
+        env.write().unwrap()
+            .insert("%clock".to_string(), Arc::new(cap_thunk));
     }
 
     // Inject --cap-file NAME=PATH[:MODE] entries into the root environment as `%NAME`.
@@ -1674,7 +1677,7 @@ fn run_eval(
             } else {
                 format!("%{name}")
             };
-            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
+            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -1697,12 +1700,12 @@ fn run_eval(
     // via the `%` pipeline variable. We establish one base EvalContext for the first stage,
     // then use `with_base_dir_and_path` for subsequent stages — this creates a new config
     // (different base_dir) while sharing the same arena, state, and stdlib_env.
-    let mut pipeline_input: Option<Rc<Thunk>> = None;
+    let mut pipeline_input: Option<Arc<Thunk>> = None;
 
     let mut thunk = None;
     let mut last_source = String::new();
-    let mut last_eval_ctx: Option<Rc<EvalContext>> = None;
-    let mut base_eval_ctx: Option<Rc<EvalContext>> = None;
+    let mut last_eval_ctx: Option<Arc<EvalContext>> = None;
+    let mut base_eval_ctx: Option<Arc<EvalContext>> = None;
 
     for stage in &pipeline_stages {
         // Read the LLT source (from file or inline expression)
@@ -1847,7 +1850,7 @@ fn run_eval(
         } else {
             let ctx = EvalContext::new_with_options(
                 base_dir,
-                Rc::clone(&env),
+                Arc::clone(&env),
                 no_fs,
                 require_integrity,
                 env_allowed.clone(),
@@ -1855,7 +1858,7 @@ fn run_eval(
             // Share the already-open libdir Dir with the evaluator so that builtin_include
             // can inject %libdir into nested includes without re-acquiring ambient authority.
             if let Some(ref libdir_rc) = libdir_rc_for_ctx {
-                ctx.set_libdir_dir(Rc::clone(libdir_rc));
+                ctx.set_libdir_dir(Arc::clone(&libdir_rc));
             }
             // Convert stdin JSON using this context so ThunkIds go into the shared arena.
             if let Some(ref json) = stdin_json {
@@ -1863,7 +1866,7 @@ fn run_eval(
                     json_to_value(json, 0, Span::origin(), &ctx).map_err(|e| format!("{e}"))?;
                 pipeline_input = Some(thunk_val);
             }
-            base_eval_ctx = Some(Rc::clone(&ctx));
+            base_eval_ctx = Some(Arc::clone(&ctx));
             ctx
         };
 
@@ -1873,7 +1876,7 @@ fn run_eval(
 
         // Evaluate file with pipeline input
         let file_result =
-            eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, pipeline_input).map_err(
+            eval_file_with_input(&ast.node, Arc::clone(&env), &eval_ctx, pipeline_input).map_err(
                 |e| {
                     let mut error_str = format!("{e}");
                     if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
@@ -2463,8 +2466,8 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
             .map_err(|_| "mtime is out of i64 range".to_string())?;
         let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.borrow_mut()
-            .insert("%clock".to_string(), Rc::new(cap_thunk));
+        env.write().unwrap()
+            .insert("%clock".to_string(), Arc::new(cap_thunk));
     }
 
     // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
@@ -2492,7 +2495,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
             } else {
                 format!("%{name}")
             };
-            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
+            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -2533,7 +2536,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            env.borrow_mut().insert(name, Rc::new(cap_thunk));
+            env.write().unwrap().insert(name, Arc::new(cap_thunk));
         }
     }
 
@@ -2541,13 +2544,13 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // env_allowed: Some(empty) = all env vars denied.
     let eval_ctx = EvalContext::new_with_options(
         base_dir,
-        Rc::clone(&env),
+        Arc::clone(&env),
         false,
         false,
         Some(std::collections::HashSet::new()),
     );
 
-    let thunk = eval_file_with_input(&ast.node, Rc::clone(&env), &eval_ctx, None).map_err(|e| {
+    let thunk = eval_file_with_input(&ast.node, Arc::clone(&env), &eval_ctx, None).map_err(|e| {
         let mut msg = format!("{e}");
         if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
             msg.push('\n');
@@ -2571,7 +2574,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     let json_llt_path = find_libdir_path().map(|p| p.join("cli").join("out").join("json.llt"));
 
     let output = if let Some(ref json_llt_path) = json_llt_path {
-        match format_with_json_llt(Rc::clone(&thunk), &eval_ctx, Rc::clone(&env), json_llt_path) {
+        match format_with_json_llt(Arc::clone(&thunk), &eval_ctx, Arc::clone(&env), json_llt_path) {
             Ok(Some(compact_json)) => {
                 let parsed: serde_json::Value =
                     serde_json::from_str(&compact_json).map_err(|e| {
@@ -2674,8 +2677,8 @@ fn run_literate_weave(
             .map_err(|_| "mtime is out of i64 range".to_string())?;
         let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.borrow_mut()
-            .insert("%clock".to_string(), Rc::new(cap_thunk));
+        env.write().unwrap()
+            .insert("%clock".to_string(), Arc::new(cap_thunk));
     }
 
     // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
@@ -2703,7 +2706,7 @@ fn run_literate_weave(
             } else {
                 format!("%{name}")
             };
-            env.borrow_mut().insert(scoped_name, Rc::new(cap_thunk));
+            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -2744,7 +2747,7 @@ fn run_literate_weave(
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            env.borrow_mut().insert(name, Rc::new(cap_thunk));
+            env.write().unwrap().insert(name, Arc::new(cap_thunk));
         }
     }
 
@@ -2760,7 +2763,7 @@ fn run_literate_weave(
     // env_allowed: Some(empty) = all env vars denied.
     let base_eval_ctx = EvalContext::new_with_options(
         base_dir_initial,
-        Rc::clone(&env),
+        Arc::clone(&env),
         false,
         false,
         Some(std::collections::HashSet::new()),
@@ -2768,7 +2771,7 @@ fn run_literate_weave(
 
     // Evaluate each block in turn, passing the previous result as pipeline input.
     // Collect (block_index -> actual output sections) for weaving/verification.
-    let mut pipeline_input: Option<Rc<Thunk>> = None;
+    let mut pipeline_input: Option<Arc<Thunk>> = None;
 
     // Split blocks into code + expectations
     let blocks_with_exp: Vec<_> = blocks
@@ -2879,7 +2882,7 @@ fn run_literate_weave(
 
         let thunk_result = eval_file_with_input(
             &ast.node,
-            Rc::clone(&env),
+            Arc::clone(&env),
             &eval_ctx,
             pipeline_input.clone(),
         );
@@ -2934,7 +2937,7 @@ fn run_literate_weave(
             info: None,
         });
         // Thread the result as pipeline input to the next block.
-        pipeline_input = Some(Rc::clone(&thunk));
+        pipeline_input = Some(Arc::clone(&thunk));
     }
 
     // C3: Verify mode — compare actual output against expected === sections

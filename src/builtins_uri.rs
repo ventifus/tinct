@@ -3,7 +3,7 @@
 //! Implements RFC 3986 (URI) and RFC 8141 (URN) parsing. Uses the `url` crate for
 //! hierarchical URL parsing, with manual fallback for non-hierarchical URIs.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -16,7 +16,7 @@ use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 /// Returns a Dict with: scheme, username, password, host, port, path, query, fragment.
 /// host/port are null for non-hierarchical URIs (mailto:, tel:, urn:, news:).
 /// username/password extracted by splitting userinfo on ":" (RFC 3986 convention).
-pub(crate) fn builtin_uri(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_uri(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -164,7 +164,7 @@ pub(crate) fn builtin_uri(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Parse hierarchical URL → Url dict
 ///
 /// Errors if no authority (no host). Port defaults to scheme default if not specified.
-pub(crate) fn builtin_url(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_url(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -280,7 +280,7 @@ pub(crate) fn builtin_url(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Returns: nid, nss, r-component, q-component, fragment.
 /// Errors if scheme is not "urn".
-pub(crate) fn builtin_urn(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_urn(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,

@@ -17,6 +17,7 @@
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -37,7 +38,7 @@ pub(crate) const MAX_SPLIT_PARTS: usize = 1_000_000;
 /// Materializes each argument and concatenates their string representations.
 /// With zero args, returns an empty string.
 /// Inherently materializing: must inspect values to convert to string representation.
-pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -69,7 +70,7 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Returns a Dict (not Seq) for O(1) indexed access — the dominant use case
 /// is `[get 0 [split sep s]]`. A lazy Seq variant is possible but would make
 /// indexed access O(n).
-pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -128,7 +129,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             .collect();
 
         // First part: empty string at the start
-        let thunk = Rc::new(Thunk::new_materialized(
+        let thunk = Arc::new(Thunk::new_materialized(
             Value::String {
                 source: Rc::clone(&input_source),
                 start: input_start,
@@ -142,7 +143,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         for (i, window) in char_boundaries.windows(2).enumerate() {
             let part_start = input_start + window[0];
             let part_end = input_start + window[1];
-            let thunk = Rc::new(Thunk::new_materialized(
+            let thunk = Arc::new(Thunk::new_materialized(
                 Value::String {
                     source: Rc::clone(&input_source),
                     start: part_start,
@@ -163,7 +164,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
         // Last part: empty string at the end
         let last_idx = char_boundaries.len();
-        let thunk = Rc::new(Thunk::new_materialized(
+        let thunk = Arc::new(Thunk::new_materialized(
             Value::String {
                 source: Rc::clone(&input_source),
                 start: input_end,
@@ -197,7 +198,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // Part before this separator
             let part_start = input_start + last_end;
             let part_end = input_start + match_start;
-            let thunk = Rc::new(Thunk::new_materialized(
+            let thunk = Arc::new(Thunk::new_materialized(
                 Value::String {
                     source: Rc::clone(&input_source),
                     start: part_start,
@@ -229,7 +230,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
         let part_start = input_start + last_end;
         let part_end = input_end;
-        let thunk = Rc::new(Thunk::new_materialized(
+        let thunk = Arc::new(Thunk::new_materialized(
             Value::String {
                 source: Rc::clone(&input_source),
                 start: part_start,
@@ -256,7 +257,7 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes 3 args: `pattern` (String), `replacement` (String), `input` (String).
 /// Returns a new String with all occurrences of `pattern` replaced by `replacement`.
 /// Inherently materializing: must inspect string content to find and replace patterns.
-pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -321,7 +322,7 @@ pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Takes 1 arg (String). Returns the trimmed string.
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
-pub(crate) fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -337,7 +338,7 @@ pub(crate) fn builtin_trim(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Takes 1 arg (String). Returns an Int.
 /// Inherently materializing: must inspect string content to count characters.
-pub(crate) fn builtin_str_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_length(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -361,7 +362,7 @@ pub(crate) fn builtin_str_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 /// Takes 3 args: `input` (String), `start` (Int), `end` (Int).
 /// Returns a zero-copy slice of the input string.
 /// Inherently materializing: must inspect string content to find character boundaries.
-pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -484,7 +485,7 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Returns a lazy Seq where each element is a zero-copy String slice of one Unicode codepoint.
 /// Each slice shares the original Rc<str> source.
 /// Inherently materializing: must inspect string content to identify character boundaries.
-pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -515,13 +516,13 @@ pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
 
     // Build the sequence from the end to the beginning (right-to-left)
-    let mut result = Rc::new(Thunk::new_materialized(
+    let mut result = Arc::new(Thunk::new_materialized(
         Value::Dict(indexmap::IndexMap::new()),
         call_span,
     ));
 
     for (char_start, char_end) in char_ranges.into_iter().rev() {
-        let head = Rc::new(Thunk::new_materialized(
+        let head = Arc::new(Thunk::new_materialized(
             Value::String {
                 source: Rc::clone(&input_source),
                 start: input_start + char_start,
@@ -530,7 +531,7 @@ pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             call_span,
         ));
 
-        result = Rc::new(Thunk::new_materialized(
+        result = Arc::new(Thunk::new_materialized(
             Value::Seq {
                 head: ctx.alloc_thunk(head),
                 tail: ctx.alloc_thunk(result),
@@ -548,7 +549,7 @@ pub(crate) fn builtin_str_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Returns an Int representing the Unicode codepoint of the first character.
 /// Returns an error if the string is empty.
 /// Inherently materializing: must inspect string content to extract the first character.
-pub(crate) fn builtin_char_code(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_char_code(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -588,17 +589,17 @@ mod tests {
     use crate::eval::materialize;
     use crate::test_util::test_span;
     use crate::value::{BuiltinArgs, Thunk, Value};
-    use std::rc::Rc;
+    use std::sync::Arc;
 
-    fn str_thunk(s: &str, span: Span) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(crate::value::string_val(s), span))
+    fn str_thunk(s: &str, span: Span) -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(crate::value::string_val(s), span))
     }
 
     fn call_span() -> Span {
         test_span(1, 1, 1, 5)
     }
 
-    fn no_named() -> Option<&'static IndexMap<String, Rc<Thunk>>> {
+    fn no_named() -> Option<&'static IndexMap<String, Arc<Thunk>>> {
         None
     }
 
@@ -626,7 +627,7 @@ mod tests {
             args: &[str_thunk(",", span), str_thunk("a,b", span)],
             named: no_named(),
             call_span: span,
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(result.is_ok(), "splitting 'a,b' by ',' should succeed");
         let val = materialize(&result.unwrap(), None, &ctx).unwrap();
@@ -646,7 +647,7 @@ mod tests {
             args: &[str_thunk("", span), str_thunk("abc", span)],
             named: no_named(),
             call_span: span,
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(
             result.is_ok(),
@@ -663,12 +664,12 @@ mod tests {
     fn test_str_no_showable_instance_falls_through() {
         let span = call_span();
         let ctx = test_ctx();
-        let int_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let int_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
         let result = builtin_str(BuiltinArgs {
             args: &[int_thunk],
             named: no_named(),
             call_span: span,
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(result.is_ok(), "builtin_str(42) should succeed");
         let val = materialize(&result.unwrap(), None, &ctx).unwrap();
@@ -688,7 +689,7 @@ mod tests {
             args: &[],
             named: no_named(),
             call_span: span,
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         });
         assert!(result.is_ok(), "builtin_str() with 0 args should succeed");
         let val = materialize(&result.unwrap(), None, &ctx).unwrap();
@@ -726,7 +727,7 @@ mod tests {
 /// Returns a String containing the character corresponding to the codepoint.
 /// Returns an error if the codepoint is invalid.
 /// Inherently materializing: must convert the integer to a character.
-pub(crate) fn builtin_chr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_chr(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -766,7 +767,7 @@ pub(crate) fn builtin_chr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// ```llt
 /// (str-bytes "Hello")  // Bytes of UTF-8 encoding
 /// ```
-pub(crate) fn builtin_str_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     use crate::value::bytes_val;
 
     let BuiltinArgs {
@@ -799,7 +800,7 @@ pub(crate) fn builtin_str_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// This primitive uses Rust's O(n) `str::find` (two-way algorithm), replacing the
 /// O(n²) recursive `str-find-impl` that was previously in prelude.
 /// Inherently materializing: must inspect string content to search for substring.
-pub(crate) fn builtin_str_index_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_index_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -834,7 +835,7 @@ pub(crate) fn builtin_str_index_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 ///
 /// Takes 1 arg (String). Returns the string with leading whitespace stripped.
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
-pub(crate) fn builtin_trim_start(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_trim_start(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -850,7 +851,7 @@ pub(crate) fn builtin_trim_start(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 ///
 /// Takes 1 arg (String). Returns the string with trailing whitespace stripped.
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
-pub(crate) fn builtin_trim_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_trim_end(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -872,7 +873,7 @@ pub(crate) fn builtin_trim_end(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// ```llt
 /// (bytes-str some-bytes)  // String if valid UTF-8
 /// ```
-pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     use crate::value::string_val;
 
     let BuiltinArgs {
@@ -910,7 +911,7 @@ pub(crate) fn builtin_bytes_str(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// For multi-char or empty strings, applies to_uppercase() to the whole input.
 /// This is the primitive used by the stdlib `upper` function via `str-map-chars`.
 /// Inherently materializing: must inspect string content to convert case.
-pub(crate) fn builtin_str_to_upper_char(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_to_upper_char(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -929,7 +930,7 @@ pub(crate) fn builtin_str_to_upper_char(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
 /// For multi-char or empty strings, applies to_lowercase() to the whole input.
 /// This is the primitive used by the stdlib `lower` function via `str-map-chars`.
 /// Inherently materializing: must inspect string content to convert case.
-pub(crate) fn builtin_str_to_lower_char(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_to_lower_char(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -948,7 +949,7 @@ pub(crate) fn builtin_str_to_lower_char(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
 /// then concatenates all results into a new string.
 /// The output of `f` need not be a single character — it can be any string.
 /// Inherently materializing: must iterate characters and force each function call.
-pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -977,7 +978,7 @@ pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
     for ch in s.chars() {
         let ch_str = ch.to_string();
         // Wrap each char as a materialized thunk.
-        let char_thunk = Rc::new(Thunk::new_materialized(string_val(&ch_str), call_span));
+        let char_thunk = Arc::new(Thunk::new_materialized(string_val(&ch_str), call_span));
 
         // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin.
         let call_result_thunk = match &func_val {
@@ -987,7 +988,7 @@ pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
                 env: closure_env,
                 ..
             } => {
-                let pos_args = vec![Rc::clone(&char_thunk)];
+                let pos_args = vec![Arc::clone(&char_thunk)];
                 invoke_function(&CallContext {
                     params,
                     body,
@@ -996,16 +997,16 @@ pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
                     named: None,
                     default_env: closure_env,
                     call_span,
-                    origin: Some(Rc::from("str-map-chars")),
+                    origin: Some(Arc::from("str-map-chars")),
                     ctx: &ctx,
                 })?
             }
             Value::Builtin(def) => {
                 let builtin_args = BuiltinArgs {
-                    args: &[Rc::clone(&char_thunk)],
+                    args: &[Arc::clone(&char_thunk)],
                     named: None,
                     call_span,
-                    ctx: Rc::clone(&ctx),
+                    ctx: Arc::clone(&ctx),
                 };
                 (def.func)(builtin_args)?
             }
@@ -1049,7 +1050,7 @@ pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 /// Returns an error if `pattern` is not a valid regex.
 /// Uses the `regex` crate (RE2-compatible, no backtracking).
 /// Inherently materializing: must inspect string content to apply the regex.
-pub(crate) fn builtin_regex_match(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_regex_match(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,

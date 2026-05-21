@@ -54,6 +54,8 @@ rustls-pemfile = "2"  # PEM file parsing for CA bundles and client certificates
 x509-parser = "0.18.1"  # X.509 certificate parsing for tls-peer-cert and SPKI extraction
 reqwest = { version = "0.13", features = ["blocking", "rustls"], default-features = false }  # HTTP client for http-connect/http-get
 tokio = { version = "1", features = ["full"] }  # Async runtime for QUIC/HTTP3 builtins (via async_rt::block_on)
+tokio-util = "0.7"  # Async utilities (CancellationToken, etc.)
+dashmap = "6"  # Concurrent hashmap for parallel evaluation
 quinn = { version = "0.11", default-features = false, features = ["rustls", "ring"] }  # QUIC transport for http3-session
 h3 = "0.0.8"  # HTTP/3 over QUIC (hyperium)
 h3-quinn = "0.0.10"  # Quinn QUIC adapter for h3 (0.0.10+ compatible with quinn 0.11)

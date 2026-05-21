@@ -13,7 +13,7 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -32,7 +32,7 @@ use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 /// - For Seq: eagerly materialized per step (avoids O(N) Rust stack depth from lazy chain forcing).
 ///
 /// Args: (f, init, xs)
-pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -44,8 +44,8 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
 
-    let f_thunk = Rc::clone(&args[0]);
-    let init_thunk = Rc::clone(&args[1]);
+    let f_thunk = Arc::clone(&args[0]);
+    let init_thunk = Arc::clone(&args[1]);
     let xs = materialize(&args[2], None, &ctx)?;
 
     // Flatten Overlay to Dict before dispatch. Bytes → Seq of Int byte values.
@@ -67,15 +67,15 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut acc = init_thunk;
             for (_key, value_thunk_id) in map.iter() {
                 let value_thunk = ctx.get_thunk(*value_thunk_id);
-                let step_thunk = Rc::new(Thunk::new_pending_call(
-                    Rc::clone(&f_thunk),
-                    vec![Rc::clone(&acc), Rc::clone(&value_thunk)],
+                let step_thunk = Arc::new(Thunk::new_pending_call(
+                    Arc::clone(&f_thunk),
+                    vec![Arc::clone(&acc), Arc::clone(&value_thunk)],
                     IndexMap::new(),
                     call_span,
-                    Rc::clone(&ctx.config.stdlib_env),
+                    Arc::clone(&ctx.config.stdlib_env),
                     value_thunk.span,
-                    Some(Rc::from("reduce")),
-                    Rc::clone(&ctx),
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
                 ));
                 acc = step_thunk;
             }
@@ -88,18 +88,18 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut current_head = ctx.get_thunk(head);
             let mut current_tail = ctx.get_thunk(tail);
             loop {
-                let step_thunk = Rc::new(Thunk::new_pending_call(
-                    Rc::clone(&f_thunk),
-                    vec![Rc::clone(&acc), Rc::clone(&current_head)],
+                let step_thunk = Arc::new(Thunk::new_pending_call(
+                    Arc::clone(&f_thunk),
+                    vec![Arc::clone(&acc), Arc::clone(&current_head)],
                     IndexMap::new(),
                     call_span,
-                    Rc::clone(&ctx.config.stdlib_env),
+                    Arc::clone(&ctx.config.stdlib_env),
                     current_head.span,
-                    Some(Rc::from("reduce")),
-                    Rc::clone(&ctx),
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
                 ));
                 let step_val = materialize(&step_thunk, Some(&call_span), &ctx)?;
-                acc = Rc::new(Thunk::new_materialized(step_val, call_span));
+                acc = Arc::new(Thunk::new_materialized(step_val, call_span));
 
                 let tail_val = materialize(&current_tail, Some(&call_span), &ctx)?;
                 match tail_val {
@@ -141,7 +141,7 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// Args: (sep, xs)
 /// Inherently materializing: must inspect and stringify all elements to concatenate.
-pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -279,7 +279,7 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - For Dict: eagerly materialize both dicts and merge them with integer reindexing.
 ///
 /// Args: (xs, ys)
-pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -294,7 +294,7 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let xs_span = args[0].span;
     let ys_span = args[1].span;
     let xs = materialize(&args[0], None, &ctx)?;
-    let ys_thunk = Rc::clone(&args[1]);
+    let ys_thunk = Arc::clone(&args[1]);
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
         Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span)?),
@@ -323,14 +323,14 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
             // ys_thunk is now Materialized (memoized). Build the lazy step chain.
             let tail_thunk = ctx.get_thunk(tail);
-            let step_args = vec![Rc::clone(&tail_thunk), ys_thunk];
-            let result_thunk = Rc::new(Thunk::new_pending_builtin(
+            let step_args = vec![Arc::clone(&tail_thunk), ys_thunk];
+            let result_thunk = Arc::new(Thunk::new_pending_builtin(
                 builtin!("concat", builtin_concat_seq_step),
                 step_args,
                 None,
                 call_span,
-                Some(Rc::from("call $concat")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $concat")),
+                Arc::clone(&ctx),
             ));
             ok_val(
                 Value::Seq {
@@ -417,15 +417,15 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper for concat on Seq: lazily chains xs tail with ys.
 ///
 /// Args: (xs_tail, ys)
-pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         call_span,
         ctx,
         ..
     } = ctx_arg;
-    let xs_tail_thunk = Rc::clone(&args[0]);
-    let ys_thunk = Rc::clone(&args[1]);
+    let xs_tail_thunk = Arc::clone(&args[0]);
+    let ys_thunk = Arc::clone(&args[1]);
     let xs_tail = materialize(&xs_tail_thunk, None, &ctx)?;
 
     match xs_tail {
@@ -438,14 +438,14 @@ pub(crate) fn builtin_concat_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thu
         Value::Seq { head, tail } => {
             // Continue chaining: head from xs, tail is concat(tail, ys)
             let tail_thunk = ctx.get_thunk(tail);
-            let step_args = vec![Rc::clone(&tail_thunk), ys_thunk];
-            let new_tail = Rc::new(Thunk::new_pending_builtin(
+            let step_args = vec![Arc::clone(&tail_thunk), ys_thunk];
+            let new_tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!("concat", builtin_concat_seq_step),
                 step_args,
                 None,
                 call_span,
-                Some(Rc::from("call $concat")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $concat")),
+                Arc::clone(&ctx),
             ));
             ok_val(
                 Value::Seq {

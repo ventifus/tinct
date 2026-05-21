@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -69,8 +70,8 @@ pub struct CommentMaps<'a> {
 pub fn ast_to_dict(
     file: &File,
     opts: &AstToDictOpts,
-    ctx: &Rc<crate::eval::EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     let span = file
         .documents
         .first()
@@ -80,12 +81,12 @@ pub fn ast_to_dict(
 
     root.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("file"), span))),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("file"), span))),
     );
 
     root.insert(
         Key::String("schema-version".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
     );
 
     // documents: list of document dicts
@@ -102,15 +103,15 @@ pub fn ast_to_dict(
 
     root.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
 
-    Ok(Rc::new(Thunk::new_materialized(Value::Dict(root), span)))
+    Ok(Arc::new(Thunk::new_materialized(Value::Dict(root), span)))
 }
 
 /// Converts a single expression to a thunk. Used by quasiquoting.
 pub fn ast_to_dict_expr(
     expr: &Spanned<Expr>,
     opts: &AstToDictOpts,
-    ctx: &Rc<crate::eval::EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     expr_to_thunk(&expr.node, expr.span, opts, ctx)
 }
 
@@ -118,13 +119,13 @@ fn document_to_dict(
     doc: &Document,
     span: Span,
     opts: &AstToDictOpts,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::new();
 
     dict.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val("document"),
             span,
         ))),
@@ -146,8 +147,8 @@ fn document_to_dict(
     dict.insert(
         Key::String("name".into()),
         match &doc.name {
-            Some(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span))),
-            None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -159,7 +160,7 @@ fn document_to_dict(
         Key::String("output-type".into()),
         match &doc.output_type {
             Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
-            None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -171,7 +172,7 @@ fn document_to_dict(
         Key::String("expects".into()),
         match &doc.expects {
             Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
-            None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -185,7 +186,7 @@ fn document_to_dict(
     };
     dict.insert(
         Key::String("stage".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Variant {
                 tag: stage_tag.to_string(),
                 payload: None,
@@ -200,7 +201,7 @@ fn document_to_dict(
             if !comments.is_empty() {
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
-                    .map(|c| ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(c), span))))
+                    .map(|c| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span))))
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
@@ -212,24 +213,24 @@ fn document_to_dict(
 
     dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
 
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 fn expr_to_thunk(
     expr: &Expr,
     span: Span,
     opts: &AstToDictOpts,
-    ctx: &Rc<crate::eval::EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     let id = expr_to_thunk_id(expr, span, opts, ctx)?;
-    Ok(ctx.thunk_arena.borrow().get(id).clone())
+    Ok(ctx.thunk_arena.lock().unwrap().get(id).clone())
 }
 
 fn expr_to_thunk_id(
     expr: &Expr,
     span: Span,
     opts: &AstToDictOpts,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     // Pre-compute capacity for the payload dict based on the expression variant.
     // Most variants have 1-4 fields. Using with_capacity avoids reallocation during insertion.
@@ -271,11 +272,11 @@ fn expr_to_thunk_id(
             variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("int"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("int"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(*n), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(*n), span))),
             );
         }
 
@@ -284,11 +285,11 @@ fn expr_to_thunk_id(
 
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("float"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("float"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Float(*f), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Float(*f), span))),
             );
         }
 
@@ -296,11 +297,11 @@ fn expr_to_thunk_id(
             variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("bool"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("bool"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(*b), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(*b), span))),
             );
         }
 
@@ -308,11 +309,11 @@ fn expr_to_thunk_id(
             variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("str"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("str"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
             );
 
             // bare: true if source text at span start is not a quote
@@ -329,7 +330,7 @@ fn expr_to_thunk_id(
 
             dict.insert(
                 Key::String("bare".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(bare), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(bare), span))),
             );
         }
 
@@ -337,7 +338,7 @@ fn expr_to_thunk_id(
             variant_tag = "VarRef";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
 
@@ -356,13 +357,13 @@ fn expr_to_thunk_id(
                 DotKey::Ident(s) => {
                     dict.insert(
                         Key::String("field".into()),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span))),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
                     );
                 }
                 DotKey::Int(n) => {
                     dict.insert(
                         Key::String("field".into()),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(*n), span))),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(*n), span))),
                     );
                 }
             }
@@ -441,7 +442,7 @@ fn expr_to_thunk_id(
             );
             dict.insert(
                 Key::String("implied".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Bool(*implied),
                     span,
                 ))),
@@ -471,7 +472,7 @@ fn expr_to_thunk_id(
                 Key::String("return-ann".into()),
                 match return_ann {
                     Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
-                    None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(IndexMap::new()),
                         span,
                     ))),
@@ -484,7 +485,7 @@ fn expr_to_thunk_id(
             );
             dict.insert(
                 Key::String("desugared".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Bool(*desugared),
                     span,
                 ))),
@@ -497,7 +498,7 @@ fn expr_to_thunk_id(
                 // Store params as a dict with integer keys (like other lists)
                 let params_thunk_ids: Vec<ThunkId> = params
                     .iter()
-                    .map(|p| ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(p), span))))
+                    .map(|p| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span))))
                     .collect();
                 dict.insert(
                     Key::String("params".into()),
@@ -530,7 +531,7 @@ fn expr_to_thunk_id(
             variant_tag = "Annotated";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
             dict.insert(
                 Key::String("annotation".into()),
@@ -544,9 +545,9 @@ fn expr_to_thunk_id(
                 Key::String("name".into()),
                 match name_opt {
                     Some(s) => {
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(s), span)))
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span)))
                     }
-                    None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(IndexMap::new()),
                         span,
                     ))),
@@ -582,7 +583,7 @@ fn expr_to_thunk_id(
             variant_tag = "DefMacro";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
             // Convert params (now a LetDecl Expr) to dict representation
             dict.insert(
@@ -599,7 +600,7 @@ fn expr_to_thunk_id(
             variant_tag = "MacroDecl";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
             dict.insert(
                 Key::String("params".into()),
@@ -619,7 +620,7 @@ fn expr_to_thunk_id(
             }
             dict.insert(
                 Key::String("forms".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(
                         form_list
                             .into_iter()
@@ -640,7 +641,7 @@ fn expr_to_thunk_id(
             variant_tag = "SyntaxClass";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
             dict.insert(
                 Key::String("pattern".into()),
@@ -649,7 +650,7 @@ fn expr_to_thunk_id(
             if let Some(msg) = message {
                 dict.insert(
                     Key::String("message".into()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(msg), span))),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(msg), span))),
                 );
             }
         }
@@ -679,7 +680,7 @@ fn expr_to_thunk_id(
                         Key::String("body".into()),
                         expr_to_thunk_id(&arm.body.node, arm.body.span, opts, ctx)?,
                     );
-                    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(arm_dict),
                         arm.pattern.span, // Use arm pattern span for the arm dict
                     ))))
@@ -692,7 +693,7 @@ fn expr_to_thunk_id(
                 .collect();
             dict.insert(
                 Key::String("arms".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(arms_dict),
                     span,
                 ))),
@@ -711,7 +712,7 @@ fn expr_to_thunk_id(
             variant_tag = "ClassDecl";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
             // Serialize params as a list
             let params_dict: IndexMap<Key, ThunkId> = params
@@ -720,13 +721,13 @@ fn expr_to_thunk_id(
                 .map(|(i, p)| {
                     (
                         Key::Int(i as i64),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(p), span))),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span))),
                     )
                 })
                 .collect();
             dict.insert(
                 Key::String("params".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(params_dict),
                     span,
                 ))),
@@ -755,7 +756,7 @@ fn expr_to_thunk_id(
                 .collect();
             dict.insert(
                 Key::String("methods".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(methods_dict),
                     span,
                 ))),
@@ -774,7 +775,7 @@ fn expr_to_thunk_id(
                     .collect();
                 dict.insert(
                     Key::String("determines".into()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(determines_dict),
                         span,
                     ))),
@@ -791,7 +792,7 @@ fn expr_to_thunk_id(
             if *resolver_injective {
                 dict.insert(
                     Key::String("injective".into()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(true), span))),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(true), span))),
                 );
             }
         }
@@ -800,7 +801,7 @@ fn expr_to_thunk_id(
             variant_tag = "InstanceDecl";
             dict.insert(
                 Key::String("class".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(class_name),
                     span,
                 ))),
@@ -839,14 +840,14 @@ fn expr_to_thunk_id(
                         .collect();
                     arm_dict.insert(
                         Key::String("methods".into()),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(methods_dict),
                             span,
                         ))),
                     );
                     Some((
                         Key::Int(i as i64),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(arm_dict),
                             span,
                         ))),
@@ -855,7 +856,7 @@ fn expr_to_thunk_id(
                 .collect();
             dict.insert(
                 Key::String("arms".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(arms_dict),
                     span,
                 ))),
@@ -877,7 +878,7 @@ fn expr_to_thunk_id(
                 .collect();
             dict.insert(
                 Key::String("bindings".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(bindings_dict),
                     span,
                 ))),
@@ -899,7 +900,7 @@ fn expr_to_thunk_id(
                 .collect();
             dict.insert(
                 Key::String("bindings".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(bindings_dict),
                     span,
                 ))),
@@ -942,11 +943,11 @@ fn expr_to_thunk_id(
                 span_to_thunk_id(*error_span, ctx)?,
             );
             // Wrap in variant and return early
-            let payload_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(dict),
                 *error_span,
             )));
-            return Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            return Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Variant {
                     tag: variant_tag.to_string(),
                     payload: Some(payload_id),
@@ -960,8 +961,8 @@ fn expr_to_thunk_id(
     dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
 
     // Wrap the dict in a Variant with the tag determined by the Expr variant
-    let payload_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span)));
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span)));
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
         Value::Variant {
             tag: variant_tag.to_string(),
             payload: Some(payload_id),
@@ -974,7 +975,7 @@ fn expr_to_thunk_id(
 fn pattern_to_thunk_id(
     pattern: &crate::ast::Pattern,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     use crate::ast::{LiteralPattern, Pattern};
     let mut dict = IndexMap::new();
@@ -983,7 +984,7 @@ fn pattern_to_thunk_id(
         Pattern::Wildcard => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("wildcard"),
                     span,
                 ))),
@@ -992,43 +993,43 @@ fn pattern_to_thunk_id(
         Pattern::Variable(name) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("variable"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
         Pattern::TypeTag(tag) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("type_tag"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("tag".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(tag), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(tag), span))),
             );
         }
         Pattern::Pin(name) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("pin"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("pin"), span))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
         Pattern::Literal(lit) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("literal"),
                     span,
                 ))),
@@ -1041,13 +1042,13 @@ fn pattern_to_thunk_id(
             };
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(value, span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(value, span))),
             );
         }
         Pattern::Dict { fields, rest } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("dict"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("dict"), span))),
             );
             // Convert fields to a dict
             let mut fields_dict = IndexMap::new();
@@ -1055,7 +1056,7 @@ fn pattern_to_thunk_id(
                 let mut field_dict = IndexMap::new();
                 field_dict.insert(
                     Key::String("key".into()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(key), pat.span))),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(key), pat.span))),
                 );
                 field_dict.insert(
                     Key::String("pattern".into()),
@@ -1063,7 +1064,7 @@ fn pattern_to_thunk_id(
                 );
                 fields_dict.insert(
                     Key::String(i.to_string()),
-                    ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(field_dict),
                         pat.span,
                     ))),
@@ -1071,20 +1072,20 @@ fn pattern_to_thunk_id(
             }
             dict.insert(
                 Key::String("fields".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(fields_dict),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("rest".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(*rest), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(*rest), span))),
             );
         }
         Pattern::Seq { head, tail } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("seq"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("seq"), span))),
             );
             dict.insert(
                 Key::String("head".into()),
@@ -1098,14 +1099,14 @@ fn pattern_to_thunk_id(
         Pattern::Constructor { tag, binding } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("constructor"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("tag".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(tag), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(tag), span))),
             );
             if let Some(pat) = binding {
                 dict.insert(
@@ -1117,7 +1118,7 @@ fn pattern_to_thunk_id(
         Pattern::Or(patterns) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("or"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("or"), span))),
             );
             let pattern_thunks: Vec<_> = patterns
                 .iter()
@@ -1130,7 +1131,7 @@ fn pattern_to_thunk_id(
                 .collect();
             dict.insert(
                 Key::String("patterns".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(patterns_dict),
                     span,
                 ))),
@@ -1138,21 +1139,21 @@ fn pattern_to_thunk_id(
         }
     }
 
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 fn entry_to_thunk_id(
     entry: &Entry,
     entry_span: Span,
     opts: &AstToDictOpts,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     let span = entry.value.span;
     let mut dict = IndexMap::new();
 
     dict.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("entry"), span))),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("entry"), span))),
     );
 
     // key: expression or []
@@ -1160,7 +1161,7 @@ fn entry_to_thunk_id(
         Key::String("key".into()),
         match &entry.key {
             Some(k) => expr_to_thunk_id(&k.node, k.span, opts, ctx)?,
-            None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -1184,7 +1185,7 @@ fn entry_to_thunk_id(
         .unwrap_or(false);
     dict.insert(
         Key::String("blank-before".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Bool(blank_before),
             span,
         ))),
@@ -1196,7 +1197,7 @@ fn entry_to_thunk_id(
             if !comments.is_empty() {
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
-                    .map(|c| ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(c), span))))
+                    .map(|c| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span))))
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
@@ -1209,24 +1210,24 @@ fn entry_to_thunk_id(
         if let Some(comment) = comment_maps.trailing_comments.get(&entry_span.start.offset) {
             dict.insert(
                 Key::String("trailing-comment".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(comment), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(comment), span))),
             );
         }
     }
 
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 fn named_arg_to_thunk_id(
     named_arg: &NamedArg,
     span: Span,
     opts: &AstToDictOpts,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::new();
     dict.insert(
         Key::String("name".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val(&named_arg.name),
             span,
         ))),
@@ -1235,19 +1236,19 @@ fn named_arg_to_thunk_id(
         Key::String("value".into()),
         expr_to_thunk_id(&named_arg.value.node, named_arg.value.span, opts, ctx)?,
     );
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 fn param_to_thunk_id(
     param: &Param,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::new();
 
     dict.insert(
         Key::String("name".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val(&param.name),
             span,
         ))),
@@ -1258,7 +1259,7 @@ fn param_to_thunk_id(
         Key::String("annotation".into()),
         match &param.annotation {
             Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
-            None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
             ))),
@@ -1267,25 +1268,25 @@ fn param_to_thunk_id(
 
     dict.insert(
         Key::String("variadic".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Bool(param.variadic),
             span,
         ))),
     );
 
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 fn annotation_to_thunk_id(
     ann: &Annotation,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::new();
 
     dict.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val("annotation"),
             span,
         ))),
@@ -1295,24 +1296,24 @@ fn annotation_to_thunk_id(
         Annotation::Simple(name) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("simple"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("simple"), span))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
         }
         Annotation::Annotated(name, inner) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("annotated"),
                     span,
                 ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
             );
             dict.insert(
                 Key::String("inner".into()),
@@ -1322,7 +1323,7 @@ fn annotation_to_thunk_id(
         Annotation::PropertyDict(entries) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val("dict"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("dict"), span))),
             );
 
             // Convert entries to thunk IDs - these are annotation entries (simpler than regular entries)
@@ -1332,7 +1333,7 @@ fn annotation_to_thunk_id(
                     let mut entry_dict = IndexMap::new();
                     entry_dict.insert(
                         Key::String("type".into()),
-                        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             string_val("entry"),
                             e.span,
                         ))),
@@ -1341,16 +1342,16 @@ fn annotation_to_thunk_id(
                     // For annotation dicts, keys are always string literals (bare words)
                     let key_id = match &e.node.key {
                         Some(k) => match &k.node {
-                            Expr::Str(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            Expr::Str(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 string_val(s),
                                 k.span,
                             ))),
-                            _ => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                            _ => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 Value::Dict(IndexMap::new()),
                                 k.span,
                             ))),
                         },
-                        None => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(IndexMap::new()),
                             e.span,
                         ))),
@@ -1361,11 +1362,11 @@ fn annotation_to_thunk_id(
                     // Annotation entry values are strings/ints for simple cases,
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
                     let value_id = match &e.node.value.node {
-                        Expr::Str(s) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        Expr::Str(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             string_val(s),
                             e.node.value.span,
                         ))),
-                        Expr::Int(n) => ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                        Expr::Int(n) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Int(*n),
                             e.node.value.span,
                         ))),
@@ -1377,7 +1378,7 @@ fn annotation_to_thunk_id(
                     };
 
                     entry_dict.insert(Key::String("value".into()), value_id);
-                    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(entry_dict),
                         e.span,
                     ))))
@@ -1391,31 +1392,31 @@ fn annotation_to_thunk_id(
         }
     }
 
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
-fn span_to_thunk_id(span: Span, ctx: &Rc<crate::eval::EvalContext>) -> EvalResult<ThunkId> {
+fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::new();
 
     // start position
     let mut start_dict = IndexMap::new();
     start_dict.insert(
         Key::String("line".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.line as i64),
             span,
         ))),
     );
     start_dict.insert(
         Key::String("col".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.column as i64),
             span,
         ))),
     );
     start_dict.insert(
         Key::String("offset".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.offset as i64),
             span,
         ))),
@@ -1425,21 +1426,21 @@ fn span_to_thunk_id(span: Span, ctx: &Rc<crate::eval::EvalContext>) -> EvalResul
     let mut end_dict = IndexMap::new();
     end_dict.insert(
         Key::String("line".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.line as i64),
             span,
         ))),
     );
     end_dict.insert(
         Key::String("col".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.column as i64),
             span,
         ))),
     );
     end_dict.insert(
         Key::String("offset".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.offset as i64),
             span,
         ))),
@@ -1447,33 +1448,33 @@ fn span_to_thunk_id(span: Span, ctx: &Rc<crate::eval::EvalContext>) -> EvalResul
 
     dict.insert(
         Key::String("start".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(start_dict),
             span,
         ))),
     );
     dict.insert(
         Key::String("end".into()),
-        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(end_dict),
             span,
         ))),
     );
 
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 /// Convert a Vec<ThunkId> to a dict-based list (auto-indexed dict with integer keys).
 fn list_to_thunk_id(
     items: impl ExactSizeIterator<Item = ThunkId>,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::with_capacity(items.len());
     for (i, item) in items.enumerate() {
         dict.insert(Key::Int(i as i64), item);
     }
-    Ok(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 /// Converts a tinct dict (materialized Value) back to an `Expr` AST node.
@@ -1490,7 +1491,7 @@ fn list_to_thunk_id(
 /// on the variant before passing it to this function.
 pub fn dict_to_ast(
     val: &Value,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Expr>, AstError> {
     // Accept both Variant (new form) and Dict (legacy form)
     // Strategy: for Variant, recursively call dict_to_ast on the payload
@@ -1539,7 +1540,7 @@ pub fn dict_to_ast(
 fn dict_to_ast_from_dict(
     dict: &IndexMap<Key, ThunkId>,
     type_str: String,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Expr>, AstError> {
     // Extract span (optional — if absent, use synthetic origin span)
     let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
@@ -1923,7 +1924,7 @@ fn get_field(
     dict: &IndexMap<Key, ThunkId>,
     key: &str,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Value, AstError> {
     let thunk_id = dict.get(&Key::String(key.into())).ok_or_else(|| AstError {
         message: format!("missing required field: {}", key),
@@ -1941,7 +1942,7 @@ fn get_string_field(
     dict: &IndexMap<Key, ThunkId>,
     key: &str,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<String, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
@@ -1961,7 +1962,7 @@ fn get_int_field(
     dict: &IndexMap<Key, ThunkId>,
     key: &str,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<i64, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
@@ -1977,7 +1978,7 @@ fn get_float_field(
     dict: &IndexMap<Key, ThunkId>,
     key: &str,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<f64, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
@@ -1993,7 +1994,7 @@ fn get_bool_field(
     dict: &IndexMap<Key, ThunkId>,
     key: &str,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
@@ -2009,7 +2010,7 @@ fn get_dict_field(
     dict: &IndexMap<Key, ThunkId>,
     key: &str,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Value, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
@@ -2024,7 +2025,7 @@ fn get_dict_field(
 fn get_optional_dict_field(
     dict: &IndexMap<Key, ThunkId>,
     key: &str,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Option<Value>, AstError> {
     match dict.get(&Key::String(key.into())) {
         Some(thunk_id) => {
@@ -2039,7 +2040,7 @@ fn is_empty_dict(val: &Value) -> bool {
     matches!(val, Value::Dict(d) if d.is_empty())
 }
 
-fn extract_span(dict: &IndexMap<Key, ThunkId>, ctx: &Rc<crate::eval::EvalContext>) -> Option<Span> {
+fn extract_span(dict: &IndexMap<Key, ThunkId>, ctx: &Arc<crate::eval::EvalContext>) -> Option<Span> {
     let span_thunk_id = dict.get(&Key::String("span".into()))?;
     let span_thunk = ctx.get_thunk(*span_thunk_id);
     let span_val = span_thunk.try_get_materialized()?;
@@ -2063,7 +2064,7 @@ fn extract_span(dict: &IndexMap<Key, ThunkId>, ctx: &Rc<crate::eval::EvalContext
     }
 }
 
-fn extract_position(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> Option<Position> {
+fn extract_position(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Position> {
     match val {
         Value::Dict(dict) => {
             let line_id = dict.get(&Key::String("line".into()))?;
@@ -2100,7 +2101,7 @@ fn extract_position(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> Option<P
 fn extract_list(
     val: &Value,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Vec<Value>, AstError> {
     match val {
         Value::Dict(d) => {
@@ -2131,7 +2132,7 @@ fn extract_list(
 fn dict_to_entry(
     val: &Value,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Entry>, AstError> {
     let dict = match val {
         Value::Dict(d) => d,
@@ -2160,7 +2161,7 @@ fn dict_to_entry(
 fn dict_to_named_arg(
     val: &Value,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<NamedArg>, AstError> {
     let dict = match val {
         Value::Dict(d) => d,
@@ -2184,7 +2185,7 @@ fn dict_to_named_arg(
 fn dict_to_param(
     val: &Value,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Param>, AstError> {
     let dict = match val {
         Value::Dict(d) => d,
@@ -2225,7 +2226,7 @@ fn dict_to_param(
 fn dict_to_annotation(
     val: &Value,
     path: &[&str],
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Annotation>, AstError> {
     let dict = match val {
         Value::Dict(d) => d,
@@ -2294,7 +2295,7 @@ fn dict_to_annotation(
 /// Unlike `dict_to_ast` which accepts both `Dict` and `Variant`, the file root must be a `Dict`
 /// with a `documents` field. This asymmetry is correct: `ast_to_dict` always emits `Dict` for
 /// file roots, never `Variant`, so the round-trip is consistent.
-pub fn dict_to_file(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> Result<File, AstError> {
+pub fn dict_to_file(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Result<File, AstError> {
     let dict = match val {
         Value::Dict(d) => d,
         _ => {
@@ -2414,11 +2415,11 @@ mod tests {
     use super::*;
     use crate::test_util::sp;
 
-    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
         use crate::value::Environment;
-        use std::cell::RefCell;
+        use std::sync::RwLock;
 
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         crate::eval::EvalContext::new(base_dir, env, false)
@@ -2428,7 +2429,7 @@ mod tests {
     /// Panics with a helpful message if the value is not a Variant with a Dict payload.
     fn peel_variant(
         val: Value,
-        ctx: &Rc<crate::eval::EvalContext>,
+        ctx: &Arc<crate::eval::EvalContext>,
     ) -> (String, IndexMap<Key, ThunkId>) {
         match val {
             Value::Variant {

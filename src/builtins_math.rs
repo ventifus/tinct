@@ -12,7 +12,8 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
-use std::rc::Rc;
+
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -56,7 +57,7 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
 /// - `Ok(None)` — no instance registered for these types (caller handles fallthrough)
 /// - `Err(e)` — instance found but method call (or method materialization) failed
 ///
-/// **Laziness note**: `arg_thunks` are passed as-is (already-allocated `Rc<Thunk>`)
+/// **Laziness note**: `arg_thunks` are passed as-is (already-allocated `Arc<Thunk>`)
 /// without re-materializing. The called method decides what to force.
 ///
 /// **Non-recursion guarantee**: arithmetic operators call `builtin-add/mul/…` (pure
@@ -66,14 +67,14 @@ fn try_dispatch_method(
     class_name: &'static str,
     method_name: &str,
     type_tags: Vec<String>,
-    arg_thunks: &[Rc<Thunk>],
-    ctx: &Rc<EvalContext>,
+    arg_thunks: &[Arc<Thunk>],
+    ctx: &Arc<EvalContext>,
     call_span: Span,
-) -> EvalResult<Option<Rc<Thunk>>> {
+) -> EvalResult<Option<Arc<Thunk>>> {
     // Fast-path: skip registry lookup if the class has no instances at all.
     // `registered_classes` is an O(1) HashSet updated in sync with `instance_registry`.
     {
-        let state = ctx.state.borrow();
+        let state = ctx.state.lock().unwrap();
         if !state.registered_classes.contains(class_name) {
             return Ok(None);
         }
@@ -81,7 +82,7 @@ fn try_dispatch_method(
 
     // Look up the instance dict for this (class, type_tags) pair.
     let instance_thunk = {
-        let state = ctx.state.borrow();
+        let state = ctx.state.lock().unwrap();
         state
             .instance_registry
             .get(&(class_name, type_tags.clone()))
@@ -120,7 +121,7 @@ fn try_dispatch_method(
         }
     };
 
-    // Resolve the method ThunkId to Rc<Thunk> via the arena.
+    // Resolve the method ThunkId to Arc<Thunk> via the arena.
     let method_thunk = ctx.get_thunk(method_id);
 
     // Materialize the method itself to dispatch (Function or Builtin).
@@ -141,14 +142,14 @@ fn try_dispatch_method(
             named: None,
             default_env: closure_env,
             call_span,
-            origin: Some(Rc::from(format!("[{class_name}.{method_name} ...]"))),
+            origin: Some(Arc::from(format!("[{class_name}.{method_name} ...]").as_str())),
             ctx,
         })?,
         Value::Builtin(def) => (def.func)(BuiltinArgs {
             args: arg_thunks,
             named: None,
             call_span,
-            ctx: Rc::clone(ctx),
+            ctx: Arc::clone(ctx),
         })?,
         _ => {
             return Err(EvalError::type_mismatch_ctx(
@@ -167,7 +168,7 @@ fn try_dispatch_method(
 /// `builtin-add`: Pure Int/Float addition primitive. No typeclass dispatch.
 /// Dispatch for user-defined numeric types happens at the `+` operator level.
 /// Int + Int -> Int (checked), any Float operand -> Float (auto-promotion).
-pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -185,7 +186,7 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a
             .checked_add(*b)
-            .map(|r| Rc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+            .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span)))
             .ok_or_else(|| EvalError::integer_overflow("+".to_string(), call_span).into()),
         (Value::Float(a), Value::Float(b)) => check_float_result(a + b, "+", call_span),
         (Value::Int(a), Value::Float(b)) => {
@@ -212,7 +213,7 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `builtin-sub`: Pure Int/Float subtraction primitive. No typeclass dispatch.
-pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -230,7 +231,7 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a
             .checked_sub(*b)
-            .map(|r| Rc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+            .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span)))
             .ok_or_else(|| EvalError::integer_overflow("-".to_string(), call_span).into()),
         (Value::Float(a), Value::Float(b)) => check_float_result(a - b, "-", call_span),
         (Value::Int(a), Value::Float(b)) => {
@@ -260,7 +261,7 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `builtin-mul`: Pure Int/Float multiplication primitive. No typeclass dispatch.
-pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -278,7 +279,7 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a
             .checked_mul(*b)
-            .map(|r| Rc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+            .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span)))
             .ok_or_else(|| EvalError::integer_overflow("*".to_string(), call_span).into()),
         (Value::Float(a), Value::Float(b)) => check_float_result(a * b, "*", call_span),
         (Value::Int(a), Value::Float(b)) => {
@@ -309,7 +310,7 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `builtin-div`: Pure Int/Float division primitive. No typeclass dispatch.
 /// Always returns Float (even Int / Int). Division by zero is an error.
-pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -360,7 +361,7 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// promotes Int to Float. Dict/Function/Builtin are never equal (returns false,
 /// not an error).
 /// Inherently materializing: must inspect values to determine equality.
-pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -385,7 +386,7 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     fn values_eq_impl(
         left: &Value,
         right: &Value,
-        ctx: &Rc<EvalContext>,
+        ctx: &Arc<EvalContext>,
         call_span: Span,
         visited: &mut std::collections::HashSet<(usize, usize)>,
     ) -> EvalResult<bool> {
@@ -553,7 +554,7 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 match (payload_a, payload_b) {
                     (None, None) => true,
                     (Some(p1_id), Some(p2_id)) => {
-                        // Resolve ThunkIds to Rc<Thunk> via arena
+                        // Resolve ThunkIds to Arc<Thunk> via arena
                         let p1_thunk = ctx.get_thunk(*p1_id);
                         let p2_thunk = ctx.get_thunk(*p2_id);
                         // Recurse by calling builtin_eq
@@ -561,7 +562,7 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                             args: &[p1_thunk, p2_thunk],
                             named: None,
                             call_span,
-                            ctx: Rc::clone(&ctx),
+                            ctx: Arc::clone(&ctx),
                         })?;
                         let result_val = materialize(&result_thunk, Some(&call_span), &ctx)?;
                         match result_val {
@@ -613,7 +614,7 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Int to Float. String comparison is lexicographic. Bool: false < true.
 /// Incompatible types (e.g. Int vs String) produce a type error.
 /// Inherently materializing: must inspect values to determine ordering.
-pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -700,7 +701,7 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Materializes ONLY the condition, then materializes ONLY the chosen branch.
 /// The unchosen branch's thunk is never materialized -- this preserves lazy
 /// semantics because `eval_call` wraps each arg as a thunk before calling.
-pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -716,8 +717,8 @@ pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let condition = materialize(&args[0], Some(&call_span), &ctx)?;
 
     match condition {
-        Value::Bool(true) => Ok(Rc::clone(&args[1])),
-        Value::Bool(false) => Ok(Rc::clone(&args[2])),
+        Value::Bool(true) => Ok(Arc::clone(&args[1])),
+        Value::Bool(false) => Ok(Arc::clone(&args[2])),
         _ => {
             let mut err = EvalError::type_mismatch_ctx(
                 "if".to_string(),
@@ -740,9 +741,9 @@ pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper to extract one numeric operand and convert to f64.
 fn extract_single_float(
     name: &str,
-    args: &[Rc<Thunk>],
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<f64> {
     if args.len() != 1 {
@@ -766,9 +767,9 @@ fn extract_single_float(
 /// Helper to extract two numeric operands and convert to f64.
 fn extract_two_floats(
     name: &str,
-    args: &[Rc<Thunk>],
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(f64, f64)> {
     if args.len() != 2 {
@@ -811,7 +812,7 @@ fn extract_two_floats(
 
 /// `pow`: Power function. Takes 2 numeric args (base, exponent). Returns Float.
 /// Inherently materializing: must extract numeric values to compute power.
-pub(crate) fn builtin_pow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_pow(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -825,7 +826,7 @@ pub(crate) fn builtin_pow(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `sqrt`: Square root. Takes 1 numeric arg. Returns Float.
 /// Allows NaN results (e.g., sqrt(-1)) for downstream predicates to check.
 /// Inherently materializing: must extract numeric value to compute square root.
-pub(crate) fn builtin_sqrt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_sqrt(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -839,7 +840,7 @@ pub(crate) fn builtin_sqrt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `log`: Natural logarithm (ln). Takes 1 numeric arg. Returns Float.
 /// Allows -Inf results (e.g., log(0)) for downstream predicates to check.
 /// Inherently materializing: must extract numeric value to compute logarithm.
-pub(crate) fn builtin_log(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_log(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -852,7 +853,7 @@ pub(crate) fn builtin_log(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `log2`: Base-2 logarithm. Takes 1 numeric arg. Returns Float.
 /// Inherently materializing: must extract numeric value to compute logarithm.
-pub(crate) fn builtin_log2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_log2(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -865,7 +866,7 @@ pub(crate) fn builtin_log2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `log10`: Base-10 logarithm. Takes 1 numeric arg. Returns Float.
 /// Inherently materializing: must extract numeric value to compute logarithm.
-pub(crate) fn builtin_log10(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_log10(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -878,7 +879,7 @@ pub(crate) fn builtin_log10(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `exp`: Exponential function (e^x). Takes 1 numeric arg. Returns Float.
 /// Inherently materializing: must extract numeric value to compute exponential.
-pub(crate) fn builtin_exp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_exp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -891,7 +892,7 @@ pub(crate) fn builtin_exp(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `sin`: Sine function. Takes 1 numeric arg (radians). Returns Float.
 /// Inherently materializing: must extract numeric value to compute sine.
-pub(crate) fn builtin_sin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_sin(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -904,7 +905,7 @@ pub(crate) fn builtin_sin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `cos`: Cosine function. Takes 1 numeric arg (radians). Returns Float.
 /// Inherently materializing: must extract numeric value to compute cosine.
-pub(crate) fn builtin_cos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_cos(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -917,7 +918,7 @@ pub(crate) fn builtin_cos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `tan`: Tangent function. Takes 1 numeric arg (radians). Returns Float.
 /// Inherently materializing: must extract numeric value to compute tangent.
-pub(crate) fn builtin_tan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_tan(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -930,7 +931,7 @@ pub(crate) fn builtin_tan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `asin`: Arcsine function. Takes 1 numeric arg. Returns Float (radians).
 /// Inherently materializing: must extract numeric value to compute arcsine.
-pub(crate) fn builtin_asin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_asin(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -943,7 +944,7 @@ pub(crate) fn builtin_asin(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `acos`: Arccosine function. Takes 1 numeric arg. Returns Float (radians).
 /// Inherently materializing: must extract numeric value to compute arccosine.
-pub(crate) fn builtin_acos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_acos(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -956,7 +957,7 @@ pub(crate) fn builtin_acos(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `atan`: Arctangent function. Takes 1 numeric arg. Returns Float (radians).
 /// Inherently materializing: must extract numeric value to compute arctangent.
-pub(crate) fn builtin_atan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_atan(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -969,7 +970,7 @@ pub(crate) fn builtin_atan(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `atan2`: Two-argument arctangent (atan2(y, x)). Takes 2 numeric args. Returns Float (radians).
 /// Inherently materializing: must extract numeric values to compute arctangent.
-pub(crate) fn builtin_atan2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_atan2(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -982,7 +983,7 @@ pub(crate) fn builtin_atan2(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `nan?`: Checks if a float is NaN. Takes 1 numeric arg. Returns Bool.
 /// Inherently materializing: must extract numeric value to check for NaN.
-pub(crate) fn builtin_nan_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_nan_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -995,7 +996,7 @@ pub(crate) fn builtin_nan_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `inf?`: Checks if a float is infinite. Takes 1 numeric arg. Returns Bool.
 /// Inherently materializing: must extract numeric value to check for infinity.
-pub(crate) fn builtin_inf_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_inf_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1008,7 +1009,7 @@ pub(crate) fn builtin_inf_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `finite?`: Checks if a float is finite (not NaN or infinite). Takes 1 numeric arg. Returns Bool.
 /// Inherently materializing: must extract numeric value to check for finiteness.
-pub(crate) fn builtin_finite_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_finite_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1022,9 +1023,9 @@ pub(crate) fn builtin_finite_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 /// Helper to extract two Int operands, enforcing arity == 2 and type Int.
 fn extract_int_pair(
     name: &str,
-    args: &[Rc<Thunk>],
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(i64, i64)> {
     if args.len() != 2 {
@@ -1065,7 +1066,7 @@ fn extract_int_pair(
 
 /// `band`: Bitwise AND. Takes 2 Int args. Returns Int.
 /// Inherently materializing: must extract numeric values to compute bitwise AND.
-pub(crate) fn builtin_band(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_band(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1078,7 +1079,7 @@ pub(crate) fn builtin_band(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `bor`: Bitwise OR. Takes 2 Int args. Returns Int.
 /// Inherently materializing: must extract numeric values to compute bitwise OR.
-pub(crate) fn builtin_bor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bor(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1091,7 +1092,7 @@ pub(crate) fn builtin_bor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `bxor`: Bitwise XOR. Takes 2 Int args. Returns Int.
 /// Inherently materializing: must extract numeric values to compute bitwise XOR.
-pub(crate) fn builtin_bxor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bxor(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1104,7 +1105,7 @@ pub(crate) fn builtin_bxor(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `shl`: Left shift. Takes 2 Int args (value, bits). Returns Int.
 /// Inherently materializing: must extract numeric values to compute left shift.
-pub(crate) fn builtin_shl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_shl(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1129,7 +1130,7 @@ pub(crate) fn builtin_shl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `shr`: Logical right shift (zero-fill). Takes 2 Int args (value, bits). Returns Int.
 /// Inherently materializing: must extract numeric values to compute right shift.
-pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1159,7 +1160,7 @@ pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Float → Float: no-op
 /// - Other types → error
 /// Inherently materializing: must inspect value to determine type and perform conversion.
-pub(crate) fn builtin_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_float(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1191,21 +1192,20 @@ mod tests {
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
     use crate::value::{BuiltinArgs, Thunk, Value};
-    use std::rc::Rc;
-
-    fn thunk(val: Value) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
+    
+    fn thunk(val: Value) -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
     }
 
     fn call_span() -> Span {
         test_span(1, 1, 1, 5)
     }
 
-    fn no_named() -> Option<&'static indexmap::IndexMap<String, Rc<Thunk>>> {
+    fn no_named() -> Option<&'static indexmap::IndexMap<String, Arc<Thunk>>> {
         None
     }
 
-    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         crate::eval::EvalContext::new(base_dir, create_root_env(), false)

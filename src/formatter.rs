@@ -6,6 +6,7 @@
 // for error output. This `Formatter` operates on the raw parse output (token spans)
 // to reconstruct well-formatted source, not to describe what an expression means.
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::{Annotation, Document, Entry, Expr, NamedArg, Param, Spanned};
 use crate::parser::{parse, ParseError, ParseOutput};
@@ -101,7 +102,7 @@ pub fn format_source_tinct_with_dir(
         crate::builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
     let ctx = EvalContext::new_sharing_arena(
         base_dir,
-        Rc::clone(&env),
+        Arc::clone(&env),
         false,
         stdlib_arena,
         expand_result.macro_injects_map,
@@ -125,7 +126,7 @@ pub fn format_source_tinct_with_dir(
 
     // Evaluate formatter with AST as % (pipeline input).
     let formatter_thunk =
-        eval::eval_file_with_input(&formatter_file.node, Rc::clone(&env), &ctx, Some(ast_thunk))
+        eval::eval_file_with_input(&formatter_file.node, Arc::clone(&env), &ctx, Some(ast_thunk))
             .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — should be [Ok String] or [Err msg].

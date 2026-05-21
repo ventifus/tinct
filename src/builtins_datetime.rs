@@ -12,6 +12,7 @@ use crate::eval::materialize;
 use crate::value::{string_val, BuiltinArgs, ClockCapInner, Key, Thunk, Value};
 use indexmap::IndexMap;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::str::FromStr;
 
 /// Helper to create a boxed EvalError from a message.
@@ -21,7 +22,7 @@ fn dt_err(msg: impl Into<String>, span: Span) -> Box<EvalError> {
 
 /// Parse an RFC 3339 timestamp string to a Timestamp (i64 nanoseconds).
 /// Errors if the format is invalid or the timestamp overflows i64 nanoseconds.
-pub fn builtin_parse_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_parse_timestamp(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [s_thunk] = args.args else {
         return Err(dt_err(
             "parse-timestamp requires 1 argument",
@@ -41,14 +42,14 @@ pub fn builtin_parse_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Convert to nanoseconds since epoch
     let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Timestamp(nanos),
         args.call_span,
     )))
 }
 
 /// Format a Timestamp as an RFC 3339 string.
-pub fn builtin_format_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_format_timestamp(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err(
             "format-timestamp requires 1 argument",
@@ -74,14 +75,14 @@ pub fn builtin_format_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Format as RFC 3339 string
     let s = ts.to_string();
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         string_val(&s),
         args.call_span,
     )))
 }
 
 /// Convert a Timestamp to Unix seconds (truncating nanoseconds).
-pub fn builtin_timestamp_to_unix(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_to_unix(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err(
             "timestamp->unix requires 1 argument",
@@ -102,14 +103,14 @@ pub fn builtin_timestamp_to_unix(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let seconds = nanos / 1_000_000_000;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(seconds),
         args.call_span,
     )))
 }
 
 /// Convert Unix seconds to a Timestamp.
-pub fn builtin_unix_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_unix_to_timestamp(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [n_thunk] = args.args else {
         return Err(dt_err(
             "unix->timestamp requires 1 argument",
@@ -127,14 +128,14 @@ pub fn builtin_unix_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .checked_mul(1_000_000_000)
         .ok_or_else(|| dt_err("unix->timestamp overflow", args.call_span))?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Timestamp(nanos),
         args.call_span,
     )))
 }
 
 /// Read the current time from a ClockCap.
-pub fn builtin_now(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_now(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [cap_thunk] = args.args else {
         return Err(dt_err("now requires 1 argument", args.call_span));
     };
@@ -154,14 +155,14 @@ pub fn builtin_now(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         ClockCapInner::Fixed(nanos) => *nanos,
     };
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Timestamp(nanos),
         args.call_span,
     )))
 }
 
 /// Create a fixed ClockCap that always returns the given timestamp.
-pub fn builtin_fixed_clock(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_fixed_clock(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err("fixed-clock requires 1 argument", args.call_span));
     };
@@ -172,14 +173,14 @@ pub fn builtin_fixed_clock(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         _ => return Err(dt_err("fixed-clock requires a Timestamp", args.call_span)),
     };
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos))),
         args.call_span,
     )))
 }
 
 /// Add a duration to a timestamp.
-pub fn builtin_timestamp_add(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_add(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk, d_thunk] = args.args else {
         return Err(dt_err("timestamp-add requires 2 arguments", args.call_span));
     };
@@ -211,14 +212,14 @@ pub fn builtin_timestamp_add(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .checked_add(d_nanos)
         .ok_or_else(|| dt_err("timestamp-add overflow", args.call_span))?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Timestamp(result),
         args.call_span,
     )))
 }
 
 /// Compute the duration between two timestamps (t1 - t2).
-pub fn builtin_timestamp_diff(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_diff(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t1_thunk, t2_thunk] = args.args else {
         return Err(dt_err(
             "timestamp-diff requires 2 arguments",
@@ -253,14 +254,14 @@ pub fn builtin_timestamp_diff(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .checked_sub(t2_nanos)
         .ok_or_else(|| dt_err("timestamp-diff overflow", args.call_span))?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Duration(result),
         args.call_span,
     )))
 }
 
 /// Compare two timestamps: t1 < t2
-pub fn builtin_timestamp_lt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_lt(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t1_thunk, t2_thunk] = args.args else {
         return Err(dt_err("timestamp<? requires 2 arguments", args.call_span));
     };
@@ -288,14 +289,14 @@ pub fn builtin_timestamp_lt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Bool(t1_nanos < t2_nanos),
         args.call_span,
     )))
 }
 
 /// Compare two timestamps: t1 > t2
-pub fn builtin_timestamp_gt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_gt(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t1_thunk, t2_thunk] = args.args else {
         return Err(dt_err("timestamp>? requires 2 arguments", args.call_span));
     };
@@ -323,14 +324,14 @@ pub fn builtin_timestamp_gt(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Bool(t1_nanos > t2_nanos),
         args.call_span,
     )))
 }
 
 /// Compare two timestamps for equality: t1 == t2
-pub fn builtin_timestamp_eq(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_eq(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t1_thunk, t2_thunk] = args.args else {
         return Err(dt_err("timestamp=? requires 2 arguments", args.call_span));
     };
@@ -358,14 +359,14 @@ pub fn builtin_timestamp_eq(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Bool(t1_nanos == t2_nanos),
         args.call_span,
     )))
 }
 
 /// Extract the UTC year from a timestamp.
-pub fn builtin_timestamp_year(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_year(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err("timestamp-year requires 1 argument", args.call_span));
     };
@@ -387,14 +388,14 @@ pub fn builtin_timestamp_year(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let year = dt.year() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(year),
         args.call_span,
     )))
 }
 
 /// Extract the UTC month (1-12) from a timestamp.
-pub fn builtin_timestamp_month(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_month(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err(
             "timestamp-month requires 1 argument",
@@ -419,14 +420,14 @@ pub fn builtin_timestamp_month(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let month = dt.month() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(month),
         args.call_span,
     )))
 }
 
 /// Extract the UTC day (1-31) from a timestamp.
-pub fn builtin_timestamp_day(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_day(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err("timestamp-day requires 1 argument", args.call_span));
     };
@@ -443,14 +444,14 @@ pub fn builtin_timestamp_day(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let day = dt.day() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(day),
         args.call_span,
     )))
 }
 
 /// Extract the UTC hour (0-23) from a timestamp.
-pub fn builtin_timestamp_hour(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_hour(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err("timestamp-hour requires 1 argument", args.call_span));
     };
@@ -472,14 +473,14 @@ pub fn builtin_timestamp_hour(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let hour = dt.hour() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(hour),
         args.call_span,
     )))
 }
 
 /// Extract the UTC minute (0-59) from a timestamp.
-pub fn builtin_timestamp_minute(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_minute(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err(
             "timestamp-minute requires 1 argument",
@@ -504,14 +505,14 @@ pub fn builtin_timestamp_minute(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let minute = dt.minute() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(minute),
         args.call_span,
     )))
 }
 
 /// Extract the UTC second (0-59) from a timestamp.
-pub fn builtin_timestamp_second(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_second(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err(
             "timestamp-second requires 1 argument",
@@ -536,14 +537,14 @@ pub fn builtin_timestamp_second(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
     let second = dt.second() as i64;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(second),
         args.call_span,
     )))
 }
 
 /// Extract all UTC components from a timestamp as a dict.
-pub fn builtin_timestamp_parts(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_parts(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk] = args.args else {
         return Err(dt_err(
             "timestamp-parts requires 1 argument",
@@ -570,55 +571,55 @@ pub fn builtin_timestamp_parts(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let mut map = IndexMap::new();
     map.insert(
         Key::String("year".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.year() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("month".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.month() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("day".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.day() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("hour".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.hour() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("minute".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.minute() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("second".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.second() as i64),
             args.call_span,
         ))),
     );
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Dict(map),
         args.call_span,
     )))
 }
 
 /// Create a duration from nanoseconds.
-pub fn builtin_duration_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_duration_nanos(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [n_thunk] = args.args else {
         return Err(dt_err("duration-nanos requires 1 argument", args.call_span));
     };
@@ -629,14 +630,14 @@ pub fn builtin_duration_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         _ => return Err(dt_err("duration-nanos requires an Int", args.call_span)),
     };
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Duration(nanos),
         args.call_span,
     )))
 }
 
 /// Create a duration from seconds.
-pub fn builtin_duration_seconds(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_duration_seconds(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [n_thunk] = args.args else {
         return Err(dt_err(
             "duration-seconds requires 1 argument",
@@ -654,14 +655,14 @@ pub fn builtin_duration_seconds(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .checked_mul(1_000_000_000)
         .ok_or_else(|| dt_err("duration-seconds overflow", args.call_span))?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Duration(nanos),
         args.call_span,
     )))
 }
 
 /// Create a duration from minutes.
-pub fn builtin_duration_minutes(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_duration_minutes(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [n_thunk] = args.args else {
         return Err(dt_err(
             "duration-minutes requires 1 argument",
@@ -680,14 +681,14 @@ pub fn builtin_duration_minutes(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .and_then(|s| s.checked_mul(1_000_000_000))
         .ok_or_else(|| dt_err("duration-minutes overflow", args.call_span))?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Duration(nanos),
         args.call_span,
     )))
 }
 
 /// Create a duration from hours.
-pub fn builtin_duration_hours(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_duration_hours(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [n_thunk] = args.args else {
         return Err(dt_err("duration-hours requires 1 argument", args.call_span));
     };
@@ -703,14 +704,14 @@ pub fn builtin_duration_hours(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .and_then(|s| s.checked_mul(1_000_000_000))
         .ok_or_else(|| dt_err("duration-hours overflow", args.call_span))?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Duration(nanos),
         args.call_span,
     )))
 }
 
 /// Create a duration from days.
-pub fn builtin_duration_days(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_duration_days(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [n_thunk] = args.args else {
         return Err(dt_err("duration-days requires 1 argument", args.call_span));
     };
@@ -726,14 +727,14 @@ pub fn builtin_duration_days(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .and_then(|s| s.checked_mul(1_000_000_000))
         .ok_or_else(|| dt_err("duration-days overflow", args.call_span))?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Duration(nanos),
         args.call_span,
     )))
 }
 
 /// Convert a duration to seconds (truncating nanoseconds).
-pub fn builtin_duration_to_seconds(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_duration_to_seconds(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [d_thunk] = args.args else {
         return Err(dt_err(
             "duration->seconds requires 1 argument",
@@ -754,14 +755,14 @@ pub fn builtin_duration_to_seconds(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     let seconds = nanos / 1_000_000_000;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(seconds),
         args.call_span,
     )))
 }
 
 /// Convert a duration to nanoseconds.
-pub fn builtin_duration_to_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_duration_to_nanos(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [d_thunk] = args.args else {
         return Err(dt_err(
             "duration->nanos requires 1 argument",
@@ -780,14 +781,14 @@ pub fn builtin_duration_to_nanos(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
     };
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Int(nanos),
         args.call_span,
     )))
 }
 
 /// Load a timezone from a zoneinfo directory (via DirCap).
-pub fn builtin_load_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_load_tz(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [dir_thunk, name_thunk] = args.args else {
         return Err(dt_err("load-tz requires 2 arguments", args.call_span));
     };
@@ -836,14 +837,14 @@ pub fn builtin_load_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
     })?;
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Timezone(Rc::new(tz)),
         args.call_span,
     )))
 }
 
 /// Convert a timestamp to local time in a timezone.
-pub fn builtin_timestamp_in_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_timestamp_in_tz(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [t_thunk, tz_thunk] = args.args else {
         return Err(dt_err(
             "timestamp-in-tz requires 2 arguments",
@@ -882,69 +883,69 @@ pub fn builtin_timestamp_in_tz(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let mut map = IndexMap::new();
     map.insert(
         Key::String("year".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.year() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("month".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.month() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("day".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.day() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("hour".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.hour() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("minute".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.minute() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("second".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.second() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("offset-seconds".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(dt.offset().seconds() as i64),
             args.call_span,
         ))),
     );
     map.insert(
         Key::String("tz-name".to_string()),
-        args.ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val(dt.time_zone().iana_name().unwrap_or("Unknown")),
             args.call_span,
         ))),
     );
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Dict(map),
         args.call_span,
     )))
 }
 
 /// Convert local time components to a UTC timestamp in a timezone.
-pub fn builtin_local_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_local_to_timestamp(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.args.len() != 7 {
         return Err(dt_err(
             "local->timestamp requires 7 arguments (year month day hour minute second timezone)",
@@ -1018,14 +1019,14 @@ pub fn builtin_local_to_timestamp(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let ts = zoned.timestamp();
     let nanos = i64::try_from(ts.as_nanosecond()).unwrap_or(i64::MAX);
 
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Timestamp(nanos),
         args.call_span,
     )))
 }
 
 /// Get the local timezone name from the system.
-pub fn builtin_local_tz_name(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub fn builtin_local_tz_name(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let [dir_thunk] = args.args else {
         return Err(dt_err(
             "local-tz-name requires 1 argument (DirCap)",
@@ -1045,7 +1046,7 @@ pub fn builtin_local_tz_name(args: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // 2. Parse TZ environment variable
     // 3. Have platform-specific fallbacks
     // For now, return UTC as a safe default
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         string_val("UTC"),
         args.call_span,
     )))

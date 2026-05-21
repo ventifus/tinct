@@ -93,6 +93,7 @@ pub mod repl;
 pub mod lsp;
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
@@ -238,7 +239,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new_sharing_arena(
         base_dir,
-        Rc::clone(&env),
+        Arc::clone(&env),
         no_fs,
         stdlib_arena,
         expand_result.macro_injects_map,
@@ -260,8 +261,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
                 dir: Rc::new(pwd_dir),
                 perms: value::DirPerms::full(),
             };
-            let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+            let pwd_thunk = Arc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+            env.write().unwrap().insert("%pwd".to_string(), pwd_thunk);
         }
         if let Some(libdir_path) = find_libdir_path() {
             if let Ok(libdir_dir) =
@@ -271,12 +272,12 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
                     dir: Rc::new(libdir_dir),
                     perms: value::DirPerms::full(),
                 };
-                let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
-                env.borrow_mut().insert("%libdir".to_string(), libdir_thunk);
+                let libdir_thunk = Arc::new(Thunk::new_materialized(libdir_val, Span::origin()));
+                env.write().unwrap().insert("%libdir".to_string(), libdir_thunk);
             }
         }
     }
-    let thunk = eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
+    let thunk = eval::eval_file(&file.node, Arc::clone(&env), &ctx).map_err(&attach_provenance)?;
     let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
     let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
     value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
@@ -351,7 +352,7 @@ pub fn eval_source_with_cap_net(
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new_sharing_arena(
         base_dir,
-        Rc::clone(&env),
+        Arc::clone(&env),
         no_fs,
         stdlib_arena,
         expand_result.macro_injects_map,
@@ -372,19 +373,19 @@ pub fn eval_source_with_cap_net(
                 dir: Rc::new(pwd_dir),
                 perms: value::DirPerms::full(),
             };
-            let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+            let pwd_thunk = Arc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+            env.write().unwrap().insert("%pwd".to_string(), pwd_thunk);
         }
     }
 
     // Inject NetCap values for each named cap
     for (name, entries) in grouped {
         let cap_val = Value::NetCap(Rc::new(entries));
-        let cap_thunk = Rc::new(Thunk::new_materialized(cap_val, Span::origin()));
-        env.borrow_mut().insert(format!("%{}", name), cap_thunk);
+        let cap_thunk = Arc::new(Thunk::new_materialized(cap_val, Span::origin()));
+        env.write().unwrap().insert(format!("%{}", name), cap_thunk);
     }
 
-    let thunk = eval::eval_file(&file.node, Rc::clone(&env), &ctx).map_err(&attach_provenance)?;
+    let thunk = eval::eval_file(&file.node, Arc::clone(&env), &ctx).map_err(&attach_provenance)?;
     let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
     let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
     value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
@@ -552,7 +553,7 @@ pub trait ValueVisitor {
 /// Does not panic. All errors are propagated via `Result`.
 pub fn visit_value<V: ValueVisitor>(
     val: &value::Value,
-    ctx: &Rc<eval::EvalContext>,
+    ctx: &Arc<eval::EvalContext>,
     depth: usize,
     visitor: &V,
 ) -> Result<V::Output, Box<error::EvalError>> {
@@ -946,7 +947,7 @@ impl ValueVisitor for DisplayVisitor {
 /// - Exceeding the maximum recursion depth ([`eval::MAX_EVAL_DEPTH`])
 pub fn value_to_json(
     val: &value::Value,
-    ctx: &Rc<eval::EvalContext>,
+    ctx: &Arc<eval::EvalContext>,
 ) -> Result<serde_json::Value, Box<error::EvalError>> {
     let depth = 0;
     // Seq has a span-bearing error; handle before the generic visitor.
@@ -975,7 +976,7 @@ pub fn value_to_json(
 /// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.
 pub fn value_to_display_string(
     val: &value::Value,
-    ctx: &Rc<eval::EvalContext>,
+    ctx: &Arc<eval::EvalContext>,
 ) -> Result<String, Box<error::EvalError>> {
     let depth = 0;
     visit_value(val, ctx, depth, &DisplayVisitor)
@@ -1001,9 +1002,9 @@ pub fn value_to_display_string(
 /// entry is **never forced** by this function — only the `json` key (a function)
 /// is accessed, so no `emit` side-effect fires.
 pub fn format_with_json_llt(
-    result_thunk: Rc<value::Thunk>,
-    eval_ctx: &Rc<eval::EvalContext>,
-    env: Rc<std::cell::RefCell<value::Environment>>,
+    result_thunk: Arc<value::Thunk>,
+    eval_ctx: &Arc<eval::EvalContext>,
+    env: Arc<std::sync::RwLock<value::Environment>>,
     json_llt_path: &std::path::Path,
 ) -> Result<Option<String>, String> {
     use eval_call::{invoke_function, CallContext};
@@ -1036,9 +1037,9 @@ pub fn format_with_json_llt(
     // entry (auto-index 0) that is never forced here.
     let module_thunk = eval::eval_file_with_input(
         &ast.file.node,
-        Rc::clone(&env),
+        Arc::clone(&env),
         eval_ctx,
-        Some(Rc::clone(&result_thunk)),
+        Some(Arc::clone(&result_thunk)),
     )
     .map_err(|e| format!("json.llt: eval error: {e}"))?;
 
@@ -1071,7 +1072,7 @@ pub fn format_with_json_llt(
     let call_span = ast::Span::origin();
     // Bind the positional argument in an explicit local so the slice reference is valid
     // for the entire `call_ctx` lifetime (required by CallContext<'a>).
-    let positional_args = [Rc::clone(&result_thunk)];
+    let positional_args = [Arc::clone(&result_thunk)];
     let result_call_thunk = match &json_fn_val {
         value::Value::Function {
             params,
@@ -1124,18 +1125,17 @@ pub fn format_with_json_llt(
 mod tests {
     use super::*;
     use indexmap::IndexMap;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::RwLock;
     use test_util::test_span;
     use value::{string_val, Environment, Key, Thunk, Value};
 
     /// Helper: wrap a Value in a materialized thunk.
-    fn thunk(val: Value) -> Rc<Thunk> {
-        Rc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 1)))
+    fn thunk(val: Value) -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 1)))
     }
 
     /// Build a `Value::Dict` with entries allocated into `ctx`'s arena.
-    fn make_dict(map: IndexMap<Key, Rc<Thunk>>, ctx: &Rc<eval::EvalContext>) -> Value {
+    fn make_dict(map: IndexMap<Key, Arc<Thunk>>, ctx: &Arc<eval::EvalContext>) -> Value {
         let mut id_map: IndexMap<Key, value::ThunkId> = IndexMap::with_capacity(map.len());
         for (k, v) in map {
             id_map.insert(k, ctx.alloc_thunk(v));
@@ -1143,7 +1143,7 @@ mod tests {
         Value::Dict(id_map)
     }
 
-    fn test_ctx() -> Rc<eval::EvalContext> {
+    fn test_ctx() -> Arc<eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         eval::EvalContext::new(
@@ -1384,11 +1384,11 @@ mod tests {
     fn test_json_seq_error() {
         let ctx = test_ctx();
         let seq = {
-            let head_thunk = Rc::new(Thunk::new_materialized(
+            let head_thunk = Arc::new(Thunk::new_materialized(
                 Value::Int(1),
                 test_span(1, 1, 1, 1),
             ));
-            let tail_thunk = Rc::new(Thunk::new_materialized(
+            let tail_thunk = Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
             ));
@@ -1410,8 +1410,8 @@ mod tests {
 
     #[test]
     fn test_json_builtin_error() {
-        fn dummy(_ctx: value::BuiltinArgs) -> Result<Rc<Thunk>, Box<error::EvalError>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn dummy(_ctx: value::BuiltinArgs) -> Result<Arc<Thunk>, Box<error::EvalError>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(0),
                 ast::Span::origin(),
             )))
@@ -1435,7 +1435,7 @@ mod tests {
     #[test]
     fn test_json_proxy_error() {
         let ctx = test_ctx();
-        let handler_thunk = Rc::new(Thunk::new_materialized(Value::Int(0), ast::Span::origin()));
+        let handler_thunk = Arc::new(Thunk::new_materialized(Value::Int(0), ast::Span::origin()));
         let proxy = Value::Proxy {
             handler: ctx.alloc_thunk(handler_thunk),
         };
@@ -1578,11 +1578,11 @@ mod tests {
     fn test_display_seq() {
         let ctx = test_ctx();
         let seq = {
-            let head_thunk = Rc::new(Thunk::new_materialized(
+            let head_thunk = Arc::new(Thunk::new_materialized(
                 Value::Int(1),
                 test_span(1, 1, 1, 1),
             ));
-            let tail_thunk = Rc::new(Thunk::new_materialized(
+            let tail_thunk = Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 test_span(1, 1, 1, 1),
             ));
@@ -1598,7 +1598,7 @@ mod tests {
     #[test]
     fn test_display_proxy() {
         let ctx = test_ctx();
-        let handler_thunk = Rc::new(Thunk::new_materialized(
+        let handler_thunk = Arc::new(Thunk::new_materialized(
             Value::Int(42),
             test_span(1, 1, 1, 1),
         ));
@@ -1746,7 +1746,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result = eval::eval_file(&file.file.node, Rc::clone(&env), &ctx);
+        let eval_result = eval::eval_file(&file.file.node, Arc::clone(&env), &ctx);
         assert!(
             eval_result.is_err(),
             "expected eval to fail for undefined variable"

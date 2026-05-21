@@ -3,7 +3,7 @@
 //! This module contains `invoke_proxy_handler`, extracted
 //! from `eval.rs` to keep that module focused on the core evaluation loop.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::Span;
 use crate::error::{EvalError, EvalResult};
@@ -13,16 +13,16 @@ use crate::value::{Thunk, Value};
 
 /// Invoke a proxy handler with a key value, returning the result thunk.
 pub(crate) fn invoke_proxy_handler(
-    handler: &Rc<Thunk>,
+    handler: &Arc<Thunk>,
     key_val: Value,
-    ctx: &Rc<EvalContext>,
+    ctx: &Arc<EvalContext>,
     access_span: &Span,
-) -> EvalResult<Rc<Thunk>> {
+) -> EvalResult<Arc<Thunk>> {
     // Performance: handler thunk is memoized by Launchbury sharing, but each
     // access clones the materialized Value. Consider eager materialization in
     // builtin_proxy for hot proxy access.
     let handler_val = materialize(handler, Some(access_span), ctx)?;
-    let key_arg = Rc::new(Thunk::new_materialized(key_val, *access_span));
+    let key_arg = Arc::new(Thunk::new_materialized(key_val, *access_span));
     match handler_val {
         Value::Function {
             params,
@@ -37,16 +37,16 @@ pub(crate) fn invoke_proxy_handler(
             named: None,
             default_env: &closure_env,
             call_span: *access_span,
-            origin: Some(Rc::from("proxy field access")),
+            origin: Some(Arc::from("proxy field access")),
             ctx,
         }),
-        Value::Builtin(def) => Ok(Rc::new(Thunk::new_pending_builtin(
+        Value::Builtin(def) => Ok(Arc::new(Thunk::new_pending_builtin(
             def,
             vec![key_arg],
             None,
             *access_span,
-            Some(Rc::from("proxy field access")),
-            Rc::clone(ctx),
+            Some(Arc::from("proxy field access")),
+            Arc::clone(ctx),
         ))),
         _ => Err(EvalError::type_mismatch(
             "Function or Builtin",

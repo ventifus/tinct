@@ -4,8 +4,8 @@
 //! that materializes thunks without recursion. The CEK machine design is documented
 //! in doc/08-evaluation.md §Iterative Evaluator.
 
-use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
@@ -73,33 +73,33 @@ pub(crate) fn attach_materialization_context(
 pub(crate) enum RestoreState {
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
-        env: Rc<RefCell<Environment>>,
-        ctx: Rc<EvalContext>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<EvalContext>,
     },
     PendingBuiltin {
         def: crate::value::BuiltinDef,
-        args: Box<Vec<Rc<Thunk>>>,
-        named: Option<IndexMap<String, Rc<Thunk>>>,
+        args: Box<Vec<Arc<Thunk>>>,
+        named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
-        ctx: Rc<EvalContext>,
+        ctx: Arc<EvalContext>,
     },
     PendingCall {
-        func: Rc<Thunk>,
-        args: Box<Vec<Rc<Thunk>>>,
-        named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
+        func: Arc<Thunk>,
+        args: Box<Vec<Arc<Thunk>>>,
+        named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
         call_span: Span,
-        caller_env: Rc<RefCell<Environment>>,
-        ctx: Rc<EvalContext>,
+        caller_env: Arc<RwLock<Environment>>,
+        ctx: Arc<EvalContext>,
     },
     Guarded {
-        inner: Rc<Thunk>,
+        inner: Arc<Thunk>,
         expected: Type,
         field_path: Box<Vec<String>>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<(
             Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Rc<RefCell<Environment>>,
+            Arc<RwLock<Environment>>,
         )>,
     },
 }
@@ -170,48 +170,48 @@ impl RestoreState {
 
 /// Payload for Cont::Memoize. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct MemoizeData {
-    pub(crate) thunk: Rc<Thunk>,
-    pub(crate) origin: Option<Rc<str>>,
+    pub(crate) thunk: Arc<Thunk>,
+    pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     // None for paths where restoration is not possible (e.g., default fallback).
     // Some when the original thunk state can be restored on error.
     pub(crate) restore: Option<RestoreState>,
-    pub(crate) ctx: Rc<EvalContext>,
+    pub(crate) ctx: Arc<EvalContext>,
 }
 
 /// Payload for Cont::PendingCallDispatch. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct PendingCallDispatchData {
-    pub(crate) thunk: Rc<Thunk>,
-    pub(crate) func_thunk: Rc<Thunk>,
-    pub(crate) args: Box<Vec<Rc<Thunk>>>,
-    pub(crate) named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
+    pub(crate) thunk: Arc<Thunk>,
+    pub(crate) func_thunk: Arc<Thunk>,
+    pub(crate) args: Box<Vec<Arc<Thunk>>>,
+    pub(crate) named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
     pub(crate) call_span: Span,
-    pub(crate) caller_env: Rc<RefCell<Environment>>,
-    pub(crate) ctx: Rc<EvalContext>,
-    pub(crate) origin: Option<Rc<str>>,
+    pub(crate) caller_env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct GuardedValidateData {
-    pub(crate) thunk: Rc<Thunk>,
+    pub(crate) thunk: Arc<Thunk>,
     pub(crate) expected: Type,
     pub(crate) field_path: Box<Vec<String>>,
     pub(crate) guard_span: Span,
     pub(crate) inner_span: Span,
-    pub(crate) origin: Option<Rc<str>>,
+    pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     /// EvalContext for flattening Value::Overlay results and allocating guard-wrapped field thunks.
     /// Always populated from force_step's ctx parameter (all thunks share one EvalContext).
-    pub(crate) ctx: Rc<EvalContext>,
+    pub(crate) ctx: Arc<EvalContext>,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
     /// Default expression and environment from TypeAssert `default:` annotation.
     pub(crate) default: Option<(
         Rc<crate::ast::Spanned<crate::ast::Expr>>,
-        Rc<RefCell<crate::value::Environment>>,
+        Arc<RwLock<crate::value::Environment>>,
     )>,
     /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
     /// Wrapped in Option to enable .take() when passing to default-fallback Memoize continuations.
@@ -224,19 +224,19 @@ pub(crate) struct TypeAssertCheckData {
     pub(crate) resolved: Box<Option<Type>>,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
-    pub(crate) env: Rc<RefCell<Environment>>,
-    pub(crate) ctx: Rc<EvalContext>,
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
 }
 
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct BuiltinForceArgData {
-    pub(crate) thunk: Rc<Thunk>,
+    pub(crate) thunk: Arc<Thunk>,
     pub(crate) def: crate::value::BuiltinDef,
-    pub(crate) args: Vec<Rc<Thunk>>,
-    pub(crate) named: Option<IndexMap<String, Rc<Thunk>>>,
+    pub(crate) args: Vec<Arc<Thunk>>,
+    pub(crate) named: Option<IndexMap<String, Arc<Thunk>>>,
     pub(crate) call_span: Span,
-    pub(crate) ctx: Rc<EvalContext>,
-    pub(crate) origin: Option<Rc<str>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     pub(crate) arg_idx: usize,
@@ -255,7 +255,7 @@ pub(crate) struct DotAccessForceData {
     /// this is the span where the entire chain was first accessed, not the `.c` access).
     /// Used to provide better error context for chained accesses.
     pub(crate) outer_mat_span: Option<Span>,
-    pub(crate) ctx: Rc<EvalContext>,
+    pub(crate) ctx: Arc<EvalContext>,
 }
 
 /// Continuation variants for iterative materialization. Each represents
@@ -319,7 +319,7 @@ pub(crate) enum Action {
     Continue(EvalResult<Value>),
     /// Force this thunk to a materialized value
     Materialize {
-        thunk: Rc<Thunk>,
+        thunk: Arc<Thunk>,
         mat_span: Option<Span>,
     },
     /// Evaluate an expression to a thunk (wrapping, not forcing).
@@ -327,18 +327,18 @@ pub(crate) enum Action {
     /// Eventually eval() will become a run(Action::Eval) wrapper when fully iterative.
     Eval {
         expr: Rc<Spanned<Expr>>,
-        env: Rc<RefCell<Environment>>,
-        ctx: Rc<EvalContext>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<EvalContext>,
     },
 }
 
 /// Process one thunk and return either a result or a sub-thunk to force.
 /// This mirrors the logic of `materialize()` but pushes continuations instead of recursing.
 pub(crate) fn force_step(
-    thunk: &Rc<Thunk>,
+    thunk: &Arc<Thunk>,
     mat_span: Option<Span>,
     stack: &mut Vec<Cont>,
-    ctx: &Rc<EvalContext>,
+    ctx: &Arc<EvalContext>,
 ) -> Action {
     let thunk_span = thunk.span;
 
@@ -380,7 +380,7 @@ pub(crate) fn force_step(
                 let label = origin.as_deref().unwrap_or("thunk");
 
                 // Capture the eval_stack for cycle path reconstruction
-                let cycle_path = ctx.state.borrow().eval_stack.clone();
+                let cycle_path = ctx.state.lock().unwrap().eval_stack.clone();
 
                 let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
                 if let Some(span) = mat_span {
@@ -410,10 +410,10 @@ pub(crate) fn force_step(
 
     // INVARIANTS verified post-iterative-eval-b4 (2026-04-30):
     //
-    // 1. SHARING PRESERVATION: Rc<Thunk> identity is preserved through Cont dispatch.
+    // 1. SHARING PRESERVATION: Arc<Thunk> identity is preserved through Cont dispatch.
     //    The Cont::Memoize handler (apply_cont, line 724) caches the materialization
     //    result back into the ORIGINAL thunk via thunk.set_state(), not a copy.
-    //    This ensures `Rc::ptr_eq` holds across all references to the same thunk.
+    //    This ensures `Arc::ptr_eq` holds across all references to the same thunk.
     //
     // 2. MONOTONICITY: State transitions are one-way (Unevaluated/PendingBuiltin/
     //    PendingCall/Guarded → InProgress → Materialized/Failed). Exception: DepthExceeded
@@ -436,7 +436,7 @@ pub(crate) fn force_step(
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
-            .borrow_mut()
+            .lock().unwrap()
             .eval_stack
             .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
@@ -453,16 +453,16 @@ pub(crate) fn force_step(
         } = &expr.node
         {
             // Evaluate target expression
-            match eval(Rc::new((**target).clone()), Rc::clone(&env), &thunk_ctx) {
+            match eval(Rc::new((**target).clone()), Arc::clone(&env), &thunk_ctx) {
                 Ok(target_thunk) => {
                     // Push Memoize for the outer thunk (the access result)
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
-                        thunk: Rc::clone(thunk),
+                        thunk: Arc::clone(thunk),
                         origin,
                         thunk_span,
                         mat_span,
                         restore: Some(restore),
-                        ctx: Rc::clone(&thunk_ctx),
+                        ctx: Arc::clone(&thunk_ctx),
                     })));
                     // Push DotAccessForce to handle field lookup after target materializes.
                     // Capture the target thunk's definition span so that key-not-found and
@@ -475,7 +475,7 @@ pub(crate) fn force_step(
                         access_span: expr.span,
                         target_def_span: target_thunk.span,
                         outer_mat_span: mat_span,
-                        ctx: Rc::clone(&thunk_ctx),
+                        ctx: Arc::clone(&thunk_ctx),
                     })));
                     // Force the target
                     return Action::Materialize {
@@ -492,7 +492,7 @@ pub(crate) fn force_step(
                         thunk_span,
                     );
                     // Pop from eval_stack before early return
-                    thunk_ctx.state.borrow_mut().eval_stack.pop();
+                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure(&decorated);
                     } else {
@@ -503,15 +503,15 @@ pub(crate) fn force_step(
             }
         }
 
-        match eval(expr, Rc::clone(&env), &thunk_ctx) {
+        match eval(expr, Arc::clone(&env), &thunk_ctx) {
             Ok(result_thunk) => {
                 stack.push(Cont::Memoize(Box::new(MemoizeData {
-                    thunk: Rc::clone(thunk),
+                    thunk: Arc::clone(thunk),
                     origin,
                     thunk_span,
                     mat_span,
                     restore: Some(restore),
-                    ctx: Rc::clone(&thunk_ctx),
+                    ctx: Arc::clone(&thunk_ctx),
                 })));
                 Action::Materialize {
                     thunk: result_thunk,
@@ -526,7 +526,7 @@ pub(crate) fn force_step(
                     thunk_span,
                 );
                 // Pop from eval_stack before error return
-                thunk_ctx.state.borrow_mut().eval_stack.pop();
+                thunk_ctx.state.lock().unwrap().eval_stack.pop();
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure(&decorated);
                 } else {
@@ -539,7 +539,7 @@ pub(crate) fn force_step(
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
-            .borrow_mut()
+            .lock().unwrap()
             .eval_stack
             .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
@@ -561,9 +561,9 @@ pub(crate) fn force_step(
                     .try_get_materialized()
                     .is_none()
         }) {
-            let arg_thunk = Rc::clone(&args.as_ref().expect("args set above")[arg_idx]);
+            let arg_thunk = Arc::clone(&args.as_ref().expect("args set above")[arg_idx]);
             stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
-                thunk: Rc::clone(thunk),
+                thunk: Arc::clone(thunk),
                 def,
                 args: args.take().expect("args set above"),
                 named: named.take().expect("named set above"),
@@ -586,7 +586,7 @@ pub(crate) fn force_step(
             args: args.as_ref().expect("args set above"),
             named: named.as_ref().expect("named set above").as_ref(),
             call_span,
-            ctx: Rc::clone(&thunk_ctx),
+            ctx: Arc::clone(&thunk_ctx),
         };
 
         match (def.func)(builtin_args) {
@@ -595,7 +595,7 @@ pub(crate) fn force_step(
                 if let Some(value) = result_thunk.try_get_materialized() {
                     // args/named are no longer needed; drop them implicitly.
                     // Pop from eval_stack before fast-path return
-                    thunk_ctx.state.borrow_mut().eval_stack.pop();
+                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
                     thunk.set_state(ThunkState::Materialized(value.clone()));
                     Action::Continue(Ok(value))
                 } else {
@@ -605,15 +605,15 @@ pub(crate) fn force_step(
                         args: Box::new(args.take().expect("args set above")),
                         named: named.take().expect("named set above"),
                         call_span,
-                        ctx: Rc::clone(&thunk_ctx),
+                        ctx: Arc::clone(&thunk_ctx),
                     };
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
-                        thunk: Rc::clone(thunk),
+                        thunk: Arc::clone(thunk),
                         origin,
                         thunk_span,
                         mat_span,
                         restore: Some(restore),
-                        ctx: Rc::clone(&thunk_ctx),
+                        ctx: Arc::clone(&thunk_ctx),
                     })));
                     Action::Materialize {
                         thunk: result_thunk,
@@ -629,7 +629,7 @@ pub(crate) fn force_step(
                     thunk_span,
                 );
                 // Pop from eval_stack before error return
-                thunk_ctx.state.borrow_mut().eval_stack.pop();
+                thunk_ctx.state.lock().unwrap().eval_stack.pop();
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure(&decorated);
                 } else {
@@ -653,14 +653,14 @@ pub(crate) fn force_step(
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
-            .borrow_mut()
+            .lock().unwrap()
             .eval_stack
             .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
         stack.push(Cont::PendingCallDispatch(Box::new(
             PendingCallDispatchData {
-                thunk: Rc::clone(thunk),
-                func_thunk: Rc::clone(&func_thunk),
+                thunk: Arc::clone(thunk),
+                func_thunk: Arc::clone(&func_thunk),
                 args: Box::new(args),
                 named: named.map(Box::new),
                 call_span,
@@ -672,7 +672,7 @@ pub(crate) fn force_step(
             },
         )));
         Action::Materialize {
-            thunk: Rc::clone(&func_thunk),
+            thunk: Arc::clone(&func_thunk),
             mat_span: Some(call_span),
         }
     } else if let Some((inner, expected, field_path, guard_span, blame_label, default_opt)) =
@@ -687,10 +687,10 @@ pub(crate) fn force_step(
         // already-Materialized inner thunks. That caused E099 when a Record guard wrapped a
         // Materialized dict (e.g., the output of $append), because validate_and_wrap_record
         // could not allocate new field-guard thunks without a ctx.
-        let guard_ctx: Rc<EvalContext> = Rc::clone(ctx);
+        let guard_ctx: Arc<EvalContext> = Arc::clone(ctx);
         // Create RestoreState before pushing continuation (for non-cacheable error recovery)
         let restore = RestoreState::Guarded {
-            inner: Rc::clone(&inner),
+            inner: Arc::clone(&inner),
             expected: expected.clone(),
             field_path: Box::new(field_path.clone()),
             guard_span,
@@ -698,7 +698,7 @@ pub(crate) fn force_step(
             default: default_opt.clone(),
         };
         stack.push(Cont::GuardedValidate(Box::new(GuardedValidateData {
-            thunk: Rc::clone(thunk),
+            thunk: Arc::clone(thunk),
             expected: expected.clone(),
             field_path: Box::new(field_path),
             guard_span,
@@ -712,7 +712,7 @@ pub(crate) fn force_step(
             restore: Some(restore),
         })));
         Action::Materialize {
-            thunk: Rc::clone(&inner),
+            thunk: Arc::clone(&inner),
             mat_span,
         }
     } else {
@@ -744,13 +744,13 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
             match decorated_result {
                 Ok(value) => {
                     // Pop from eval_stack on successful materialization
-                    ctx.state.borrow_mut().eval_stack.pop();
+                    ctx.state.lock().unwrap().eval_stack.pop();
                     thunk.set_state(ThunkState::Materialized(value.clone()));
                     Action::Continue(Ok(value))
                 }
                 Err(e) => {
                     // Pop from eval_stack on error (cacheable or not)
-                    ctx.state.borrow_mut().eval_stack.pop();
+                    ctx.state.lock().unwrap().eval_stack.pop();
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else if let Some(restore_state) = restore {
@@ -825,10 +825,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     caller_env,
-                                    ctx: Rc::clone(&thunk_ctx),
+                                    ctx: Arc::clone(&thunk_ctx),
                                 };
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                    thunk: Rc::clone(&thunk),
+                                    thunk: Arc::clone(&thunk),
                                     origin,
                                     thunk_span,
                                     mat_span,
@@ -846,7 +846,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     call_span,
                                 );
                                 // Pop from eval_stack before error return
-                                thunk_ctx.state.borrow_mut().eval_stack.pop();
+                                thunk_ctx.state.lock().unwrap().eval_stack.pop();
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure(&e);
                                 } else {
@@ -890,7 +890,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         if has_strict_unevaluated {
                             // Pop the eval_stack entry pushed by force_step(PendingCall).
                             // force_step(PendingBuiltin) will push a new entry for this thunk.
-                            thunk_ctx.state.borrow_mut().eval_stack.pop();
+                            thunk_ctx.state.lock().unwrap().eval_stack.pop();
                             // Transition thunk from InProgress → PendingBuiltin.
                             // args is Box<Vec<...>> (matches ThunkState::PendingBuiltin.args).
                             // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
@@ -912,7 +912,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 args: args.as_deref().expect("args set above"),
                                 named: named.as_ref().expect("named set above").as_deref(),
                                 call_span,
-                                ctx: Rc::clone(&thunk_ctx),
+                                ctx: Arc::clone(&thunk_ctx),
                             };
                             (def.func)(builtin_args)
                         };
@@ -922,7 +922,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Fast path: builtin result is already materialized.
                                     // args/named are no longer needed; drop them implicitly.
                                     // Pop from eval_stack before fast-path return
-                                    thunk_ctx.state.borrow_mut().eval_stack.pop();
+                                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
                                     thunk.set_state(ThunkState::Materialized(value.clone()));
                                     Action::Continue(Ok(value))
                                 } else {
@@ -933,10 +933,10 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
-                                        ctx: Rc::clone(&thunk_ctx),
+                                        ctx: Arc::clone(&thunk_ctx),
                                     };
                                     stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                        thunk: Rc::clone(&thunk),
+                                        thunk: Arc::clone(&thunk),
                                         origin,
                                         thunk_span,
                                         mat_span,
@@ -951,7 +951,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             }
                             Err(e) => {
                                 // Pop from eval_stack before error return
-                                thunk_ctx.state.borrow_mut().eval_stack.pop();
+                                thunk_ctx.state.lock().unwrap().eval_stack.pop();
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure(&e);
                                 } else {
@@ -977,7 +977,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         );
                         let decorated = decorate(Box::new(err));
                         // Pop from eval_stack before error return
-                        thunk_ctx.state.borrow_mut().eval_stack.pop();
+                        thunk_ctx.state.lock().unwrap().eval_stack.pop();
                         if decorated.kind.is_cacheable() {
                             thunk.cache_failure(&decorated);
                         } else {
@@ -997,7 +997,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Err(e) => {
                     // Function materialization failed
                     // Pop from eval_stack before error return
-                    thunk_ctx.state.borrow_mut().eval_stack.pop();
+                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
@@ -1038,7 +1038,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Ok(value) => {
                     // Flatten Overlay to Dict before record validation.
                     // Value::Overlay is produced by $merge; guard wrapping it needs flattened entries.
-                    // guard_ctx is Rc<EvalContext> (non-optional); destructured directly from the continuation.
+                    // guard_ctx is Arc<EvalContext> (non-optional); destructured directly from the continuation.
                     let value = match value {
                         Value::Overlay(l, r) => {
                             match flatten_overlay(&l, &r, "type guard", &guard_ctx, guard_span) {
@@ -1079,12 +1079,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Guard validation failed - use default if present
                                     if let Some((default_expr, default_env)) = default {
                                         stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                            thunk: Rc::clone(&thunk),
-                                            origin: Some(Rc::from("default fallback")),
+                                            thunk: Arc::clone(&thunk),
+                                            origin: Some(Arc::from("default fallback")),
                                             thunk_span,
                                             mat_span,
                                             restore: restore.take(),
-                                            ctx: Rc::clone(&guard_ctx),
+                                            ctx: Arc::clone(&guard_ctx),
                                         })));
                                         return Action::Eval {
                                             expr: default_expr,
@@ -1105,12 +1105,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // Expected Record but got non-Dict - use default if present
                             if let Some((default_expr, default_env)) = default {
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                    thunk: Rc::clone(&thunk),
-                                    origin: Some(Rc::from("default fallback")),
+                                    thunk: Arc::clone(&thunk),
+                                    origin: Some(Arc::from("default fallback")),
                                     thunk_span,
                                     mat_span,
                                     restore: restore.take(),
-                                    ctx: Rc::clone(&guard_ctx),
+                                    ctx: Arc::clone(&guard_ctx),
                                 })));
                                 return Action::Eval {
                                     expr: default_expr,
@@ -1159,12 +1159,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // Type mismatch for non-Record types - use default if present
                             if let Some((default_expr, default_env)) = default {
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                    thunk: Rc::clone(&thunk),
-                                    origin: Some(Rc::from("default fallback")),
+                                    thunk: Arc::clone(&thunk),
+                                    origin: Some(Arc::from("default fallback")),
                                     thunk_span,
                                     mat_span,
                                     restore: restore.take(),
-                                    ctx: Rc::clone(&guard_ctx),
+                                    ctx: Arc::clone(&guard_ctx),
                                 })));
                                 return Action::Eval {
                                     expr: default_expr,
@@ -1259,7 +1259,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     .is_none()
                         })
                     {
-                        let next_arg = Rc::clone(&args.as_ref().expect("args set above")[next_idx]);
+                        let next_arg = Arc::clone(&args.as_ref().expect("args set above")[next_idx]);
                         stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                             thunk,
                             def,
@@ -1283,14 +1283,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         args: args.as_ref().expect("args set above"),
                         named: named.as_ref().expect("named set above").as_ref(),
                         call_span,
-                        ctx: Rc::clone(&thunk_ctx),
+                        ctx: Arc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args).map_err(&decorate) {
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
                                 // args/named are no longer needed; drop them implicitly.
                                 // Pop from eval_stack before fast-path return
-                                thunk_ctx.state.borrow_mut().eval_stack.pop();
+                                thunk_ctx.state.lock().unwrap().eval_stack.pop();
                                 thunk.set_state(ThunkState::Materialized(value.clone()));
                                 Action::Continue(Ok(value))
                             } else {
@@ -1300,15 +1300,15 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     args: Box::new(args.take().expect("args set above")),
                                     named: named.take().expect("named set above"),
                                     call_span,
-                                    ctx: Rc::clone(&thunk_ctx),
+                                    ctx: Arc::clone(&thunk_ctx),
                                 };
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                    thunk: Rc::clone(&thunk),
+                                    thunk: Arc::clone(&thunk),
                                     origin,
                                     thunk_span,
                                     mat_span,
                                     restore: Some(restore),
-                                    ctx: Rc::clone(&thunk_ctx),
+                                    ctx: Arc::clone(&thunk_ctx),
                                 })));
                                 Action::Materialize {
                                     thunk: result_thunk,
@@ -1318,7 +1318,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         }
                         Err(e) => {
                             // Pop from eval_stack before error return
-                            thunk_ctx.state.borrow_mut().eval_stack.pop();
+                            thunk_ctx.state.lock().unwrap().eval_stack.pop();
                             if e.kind.is_cacheable() {
                                 thunk.cache_failure(&e);
                             } else {
@@ -1338,7 +1338,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Err(e) => {
                     let e = decorate(e);
                     // Pop from eval_stack before error return
-                    thunk_ctx.state.borrow_mut().eval_stack.pop();
+                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
                     if e.kind.is_cacheable() {
                         thunk.cache_failure(&e);
                     } else {
@@ -1468,7 +1468,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                             access_span,
                                             target_def_span,
                                             outer_mat_span,
-                                            ctx: Rc::clone(&ctx),
+                                            ctx: Arc::clone(&ctx),
                                         },
                                     )));
                                     Action::Materialize {
@@ -1496,7 +1496,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             let field_value = crate::surface_fields::surface_node_get_field(
                                 &node, &field_str, &ctx,
                             );
-                            let thunk = Rc::new(Thunk::new_materialized(field_value, access_span));
+                            let thunk = Arc::new(Thunk::new_materialized(field_value, access_span));
                             Action::Materialize {
                                 thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),
@@ -1511,7 +1511,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         let doc_val = Value::Document(std::sync::Arc::new(
                                             doc_spanned.node.clone(),
                                         ));
-                                        let tid = ctx.alloc_thunk(Rc::new(
+                                        let tid = ctx.alloc_thunk(Arc::new(
                                             Thunk::new_materialized(doc_val, access_span),
                                         ));
                                         map.insert(crate::value::Key::Int(i as i64), tid);
@@ -1520,7 +1520,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 }
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
-                            let thunk = Rc::new(Thunk::new_materialized(val, access_span));
+                            let thunk = Arc::new(Thunk::new_materialized(val, access_span));
                             Action::Materialize {
                                 thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),
@@ -1535,7 +1535,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         if let crate::ast::SurfaceItem::Expr(node) = item {
                                             let expr_val =
                                                 Value::Expression(std::sync::Arc::clone(node));
-                                            let tid = ctx.alloc_thunk(Rc::new(
+                                            let tid = ctx.alloc_thunk(Arc::new(
                                                 Thunk::new_materialized(expr_val, access_span),
                                             ));
                                             map.insert(crate::value::Key::Int(i as i64), tid);
@@ -1546,7 +1546,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 "name" => match &doc.name {
                                     Some(n) => Value::Variant {
                                         tag: "Named".into(),
-                                        payload: Some(ctx.alloc_thunk(Rc::new(
+                                        payload: Some(ctx.alloc_thunk(Arc::new(
                                             Thunk::new_materialized(
                                                 crate::value::string_val(n),
                                                 access_span,
@@ -1560,7 +1560,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 },
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
-                            let thunk = Rc::new(Thunk::new_materialized(val, access_span));
+                            let thunk = Arc::new(Thunk::new_materialized(val, access_span));
                             Action::Materialize {
                                 thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),
@@ -1617,7 +1617,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 let default_opt = annotation
                                     .node
                                     .get_property(DEFAULT_ANNOTATION_KEY)
-                                    .map(|expr| (Rc::new(expr.clone()), Rc::clone(&env)));
+                                    .map(|expr| (Rc::new(expr.clone()), Arc::clone(&env)));
                                 match validate_and_wrap_record(
                                     entries,
                                     row.as_ref(),
@@ -1637,7 +1637,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                             Action::Eval {
                                                 expr: default,
                                                 env,
-                                                ctx: Rc::clone(&ctx),
+                                                ctx: Arc::clone(&ctx),
                                             }
                                         } else {
                                             Action::Continue(Err(err))
@@ -1653,7 +1653,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
-                                        ctx: Rc::clone(&ctx),
+                                        ctx: Arc::clone(&ctx),
                                     }
                                 } else {
                                     Action::Continue(Err(EvalError::type_assert_failed(
@@ -1675,7 +1675,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             Action::Eval {
                                 expr: Rc::new(default_expr.clone()),
                                 env,
-                                ctx: Rc::clone(&ctx),
+                                ctx: Arc::clone(&ctx),
                             }
                         } else {
                             Action::Continue(Err(EvalError::type_assert_failed(
@@ -1719,7 +1719,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     return Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
-                                        ctx: Rc::clone(&ctx),
+                                        ctx: Arc::clone(&ctx),
                                     };
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
@@ -1744,7 +1744,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     return Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
-                                        ctx: Rc::clone(&ctx),
+                                        ctx: Arc::clone(&ctx),
                                     };
                                 }
                                 return Action::Continue(Err(EvalError::type_assert_failed(
@@ -1772,8 +1772,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
 /// converting them to push continuations instead of recursing.
 pub(crate) fn eval_step(
     expr: Rc<Spanned<Expr>>,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
     stack: &mut Vec<Cont>,
 ) -> Action {
     // Check continuation stack depth before processing
@@ -1782,7 +1782,7 @@ pub(crate) fn eval_step(
     }
 
     // Helper: wrap a thunk result from helper functions
-    let wrap_thunk = |result: EvalResult<Rc<Thunk>>| -> Action {
+    let wrap_thunk = |result: EvalResult<Arc<Thunk>>| -> Action {
         match result {
             Ok(thunk) => match thunk.try_get_materialized() {
                 Some(value) => Action::Continue(Ok(value)),
@@ -1804,7 +1804,7 @@ pub(crate) fn eval_step(
         Expr::Bool(b) => Action::Continue(Ok(Value::Bool(*b))),
         Expr::Str(s) => Action::Continue(Ok(string_val(s))),
         Expr::VarRef { name, .. } => {
-            let found = env.borrow().get(name);
+            let found = env.read().unwrap().get(name);
             match found {
                 // Return the thunk from the environment without forcing it.
                 // Uses the same fast-path as wrap_thunk: if already materialized,
@@ -1824,10 +1824,10 @@ pub(crate) fn eval_step(
             // Return Unevaluated thunk — force_step handles these iteratively via
             // DotAccessForce continuation
             let span = expr.span;
-            wrap_thunk(Ok(Rc::new(Thunk::new_unevaluated(
+            wrap_thunk(Ok(Arc::new(Thunk::new_unevaluated(
                 Rc::clone(&expr),
-                Rc::clone(&env),
-                Rc::clone(ctx),
+                Arc::clone(&env),
+                Arc::clone(ctx),
                 span,
             ))))
         }
@@ -1840,7 +1840,7 @@ pub(crate) fn eval_step(
             // This still uses eval_recursive because we need a thunk, not a materialized value.
             // The TypeAssertCheck continuation below will materialize it and validate.
             // This is the correct pattern: eval → thunk → push continuation → materialize.
-            let inner_thunk = match eval_recursive(Rc::new((**inner).clone()), Rc::clone(&env), ctx)
+            let inner_thunk = match eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), ctx)
             {
                 Ok(t) => t,
                 Err(e) => return Action::Continue(Err(e)),
@@ -1873,7 +1873,7 @@ pub(crate) fn eval_step(
                 expr_span: expr.span,
                 thunk_span,
                 env,
-                ctx: Rc::clone(ctx),
+                ctx: Arc::clone(ctx),
             })));
             Action::Materialize {
                 thunk: inner_thunk,
@@ -1889,7 +1889,7 @@ pub(crate) fn eval_step(
             Action::Continue(Ok(Value::Function {
                 params: Rc::new(fn_params),
                 body: Rc::new(body.as_ref().clone()),
-                env: Rc::clone(&env),
+                env: Arc::clone(&env),
                 annotation: None,
             }))
         }
@@ -2003,7 +2003,7 @@ pub(crate) fn eval_step(
 /// This would save 1 branch misprediction per tail-call. However, it adds complexity
 /// (need to check stack.is_empty() after each step or pass it in).
 /// DECISION: Defer until profiling shows this is a bottleneck (likely negligible).
-pub(crate) fn run(initial: Action, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
+pub(crate) fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
     let mut stack: Vec<Cont> = Vec::new();
     let mut action = initial;
 
@@ -2036,15 +2036,15 @@ mod tests {
     use crate::test_util::{sp, test_span};
     use crate::value::{Environment, Key, Thunk, ThunkState};
 
-    fn empty_env() -> Rc<RefCell<Environment>> {
-        Rc::new(RefCell::new(Environment::new()))
+    fn empty_env() -> Arc<RwLock<Environment>> {
+        Arc::new(RwLock::new(Environment::new()))
     }
 
-    fn test_env() -> Rc<RefCell<Environment>> {
+    fn test_env() -> Arc<RwLock<Environment>> {
         empty_env()
     }
 
-    fn test_ctx() -> Rc<EvalContext> {
+    fn test_ctx() -> Arc<EvalContext> {
         let env = empty_env();
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
@@ -2053,7 +2053,7 @@ mod tests {
 
     #[test]
     fn test_restore_state_unevaluated() {
-        let expr = Rc::new(sp(Expr::Int(42)));
+        let expr = Arc::new(sp(Expr::Int(42)));
         let env = empty_env();
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
@@ -2085,12 +2085,12 @@ mod tests {
         use crate::value::BuiltinFn;
 
         let span = test_span(1, 1, 1, 10);
-        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
 
         // Create a dummy builtin function
         let dummy_func: BuiltinFn = |_args| {
             let span = test_span(1, 1, 1, 10);
-            Ok(Rc::new(Thunk::new_materialized(Value::Int(99), span)))
+            Ok(Arc::new(Thunk::new_materialized(Value::Int(99), span)))
         };
         let dummy_def = crate::value::BuiltinDef {
             func: dummy_func,
@@ -2098,7 +2098,7 @@ mod tests {
             pos_strictness: &[],
         };
 
-        let args = vec![Rc::clone(&thunk)];
+        let args = vec![Arc::clone(&thunk)];
         let ctx = test_ctx();
 
         let pending_thunk = Thunk::new_pending_builtin(
@@ -2106,7 +2106,7 @@ mod tests {
             args.clone(),
             None,
             span,
-            Some(Rc::from("test_origin")),
+            Some(Arc::from("test_origin")),
             ctx.clone(),
         );
 
@@ -2138,29 +2138,29 @@ mod tests {
         let ctx = test_ctx();
 
         // Create a simple function thunk
-        let func_thunk = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
-                params: Rc::new(vec![]),
-                body: Rc::new(sp(Expr::Int(42))),
+                params: Arc::new(vec![]),
+                body: Arc::new(sp(Expr::Int(42))),
                 env: empty_env(),
                 annotation: None,
             },
             span,
         ));
 
-        let args = vec![Rc::new(Thunk::new_materialized(Value::Int(1), span))];
+        let args = vec![Arc::new(Thunk::new_materialized(Value::Int(1), span))];
         let named = IndexMap::new();
         let caller_env = empty_env();
 
-        let pending_thunk = Rc::new(Thunk::new_pending_call(
-            Rc::clone(&func_thunk),
+        let pending_thunk = Arc::new(Thunk::new_pending_call(
+            Arc::clone(&func_thunk),
             args.clone(),
             named.clone(),
             span,
-            Rc::clone(&caller_env),
+            Arc::clone(&caller_env),
             span,
-            Some(Rc::from("test_pending_call")),
-            Rc::clone(&ctx),
+            Some(Arc::from("test_pending_call")),
+            Arc::clone(&ctx),
         ));
 
         // Take the state (transitions to InProgress)
@@ -2169,7 +2169,7 @@ mod tests {
 
         // Create RestoreState and restore
         let restore = RestoreState::PendingCall {
-            func: Rc::clone(&func_thunk),
+            func: Arc::clone(&func_thunk),
             args: Box::new(args),
             named: if named.is_empty() {
                 None
@@ -2178,7 +2178,7 @@ mod tests {
             },
             call_span: span,
             caller_env,
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         };
         restore.restore(&pending_thunk);
 
@@ -2196,10 +2196,10 @@ mod tests {
         let ctx = test_ctx();
 
         // Create a function thunk
-        let func_thunk = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
-                params: Rc::new(vec![]),
-                body: Rc::new(sp(Expr::Int(42))),
+                params: Arc::new(vec![]),
+                body: Arc::new(sp(Expr::Int(42))),
                 env: empty_env(),
                 annotation: None,
             },
@@ -2208,26 +2208,26 @@ mod tests {
 
         // Create multiple args with different values
         let args = vec![
-            Rc::new(Thunk::new_materialized(Value::Int(1), span)),
-            Rc::new(Thunk::new_materialized(Value::Int(2), span)),
-            Rc::new(Thunk::new_materialized(string_val("test"), span)),
+            Arc::new(Thunk::new_materialized(Value::Int(1), span)),
+            Arc::new(Thunk::new_materialized(Value::Int(2), span)),
+            Arc::new(Thunk::new_materialized(string_val("test"), span)),
         ];
         let mut named = IndexMap::new();
         named.insert(
             "key".to_string(),
-            Rc::new(Thunk::new_materialized(Value::Bool(true), span)),
+            Arc::new(Thunk::new_materialized(Value::Bool(true), span)),
         );
         let caller_env = empty_env();
 
-        let pending_thunk = Rc::new(Thunk::new_pending_call(
-            Rc::clone(&func_thunk),
+        let pending_thunk = Arc::new(Thunk::new_pending_call(
+            Arc::clone(&func_thunk),
             args.clone(),
             named.clone(),
             span,
-            Rc::clone(&caller_env),
+            Arc::clone(&caller_env),
             span,
-            Some(Rc::from("test_preserve_args")),
-            Rc::clone(&ctx),
+            Some(Arc::from("test_preserve_args")),
+            Arc::clone(&ctx),
         ));
 
         // Take the state
@@ -2236,7 +2236,7 @@ mod tests {
 
         // Restore
         let restore = RestoreState::PendingCall {
-            func: Rc::clone(&func_thunk),
+            func: Arc::clone(&func_thunk),
             args: Box::new(args.clone()),
             named: if named.is_empty() {
                 None
@@ -2245,7 +2245,7 @@ mod tests {
             },
             call_span: span,
             caller_env,
-            ctx: Rc::clone(&ctx),
+            ctx: Arc::clone(&ctx),
         };
         restore.restore(&pending_thunk);
 
@@ -2331,7 +2331,7 @@ mod tests {
             span: test_span(5, 1, 5, 3), // Line 5: the value production site
         };
         let value_thunk = crate::value::Thunk::new_unevaluated(
-            Rc::new(value_expr),
+            Arc::new(value_expr),
             test_env(),
             test_ctx(),
             test_span(5, 1, 5, 3),
@@ -2341,7 +2341,7 @@ mod tests {
         let expected_type = Type::Str;
         let guard_span = test_span(10, 1, 10, 20); // Line 10: the assertion site
         let guarded = crate::value::Thunk::new_guarded(
-            Rc::new(value_thunk),
+            Arc::new(value_thunk),
             expected_type,
             Vec::new(),
             guard_span,
@@ -2387,7 +2387,7 @@ mod tests {
             span: same_span,
         };
         let value_thunk = crate::value::Thunk::new_unevaluated(
-            Rc::new(value_expr),
+            Arc::new(value_expr),
             test_env(),
             test_ctx(),
             same_span,
@@ -2395,7 +2395,7 @@ mod tests {
 
         // Create a Guarded thunk with the same span for both guard and inner
         let guarded = crate::value::Thunk::new_guarded(
-            Rc::new(value_thunk),
+            Arc::new(value_thunk),
             Type::Str,
             Vec::new(),
             same_span, // guard_span
@@ -2420,11 +2420,11 @@ mod tests {
         // Create an Unevaluated thunk, force it via the CEK machine (run), and verify
         // it transitions to Materialized state with the correct cached value.
         let span = test_span(1, 1, 1, 10);
-        let expr = Rc::new(sp(Expr::Int(42)));
+        let expr = Arc::new(sp(Expr::Int(42)));
         let env = empty_env();
         let ctx = test_ctx();
 
-        let thunk = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+        let thunk = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
 
         // Verify initial state is Unevaluated
         {
@@ -2438,7 +2438,7 @@ mod tests {
         // Force the thunk via the CEK machine
         let result = run(
             Action::Materialize {
-                thunk: Rc::clone(&thunk),
+                thunk: Arc::clone(&thunk),
                 mat_span: None,
             },
             &ctx,
@@ -2463,7 +2463,7 @@ mod tests {
         // (no re-evaluation)
         let result2 = run(
             Action::Materialize {
-                thunk: Rc::clone(&thunk),
+                thunk: Arc::clone(&thunk),
                 mat_span: None,
             },
             &ctx,
@@ -2480,8 +2480,8 @@ mod tests {
         let env = empty_env();
 
         // Create a thunk that will fail: reference an undefined variable
-        let expr = Rc::new(sp(Expr::var_ref("undefined_var".into())));
-        let thunk = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+        let expr = Arc::new(sp(Expr::var_ref("undefined_var".into())));
+        let thunk = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
 
         // Verify initial state is Unevaluated
         {
@@ -2495,7 +2495,7 @@ mod tests {
         // Force the thunk — should fail with undefined variable error
         let result = run(
             Action::Materialize {
-                thunk: Rc::clone(&thunk),
+                thunk: Arc::clone(&thunk),
                 mat_span: None,
             },
             &ctx,
@@ -2528,7 +2528,7 @@ mod tests {
         // Verify that a second materialization returns the cached error
         let result2 = run(
             Action::Materialize {
-                thunk: Rc::clone(&thunk),
+                thunk: Arc::clone(&thunk),
                 mat_span: None,
             },
             &ctx,
@@ -2555,11 +2555,11 @@ mod tests {
         let env = empty_env();
 
         // Create a dict with an entry that will error when materialized
-        let error_expr = Rc::new(sp(Expr::var_ref("undefined_var".into())));
-        let error_thunk = Rc::new(Thunk::new_unevaluated(
+        let error_expr = Arc::new(sp(Expr::var_ref("undefined_var".into())));
+        let error_thunk = Arc::new(Thunk::new_unevaluated(
             error_expr,
-            Rc::clone(&env),
-            Rc::clone(&ctx),
+            Arc::clone(&env),
+            Arc::clone(&ctx),
             span,
         ));
 
@@ -2567,21 +2567,21 @@ mod tests {
         let mut dict_map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
         dict_map.insert(Key::String("field".into()), error_id);
         let dict_value = Value::Dict(dict_map);
-        let dict_thunk = Rc::new(Thunk::new_materialized(dict_value, span));
+        let dict_thunk = Arc::new(Thunk::new_materialized(dict_value, span));
 
         // Insert the dict into the environment
-        env.borrow_mut().insert("my_dict".into(), dict_thunk);
+        env.write().unwrap().insert("my_dict".into(), dict_thunk);
 
         // Create a dot access expression: my_dict.field
-        let access_expr = Rc::new(sp(Expr::DotAccess {
+        let access_expr = Arc::new(sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("my_dict".into()))),
             field: crate::ast::DotKey::Ident("field".to_string()),
         }));
 
-        let access_thunk = Rc::new(Thunk::new_unevaluated(
+        let access_thunk = Arc::new(Thunk::new_unevaluated(
             access_expr,
             env,
-            Rc::clone(&ctx),
+            Arc::clone(&ctx),
             span,
         ));
 
@@ -2631,10 +2631,10 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: an Int value that satisfies the Int guard.
-        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
 
-        let guarded = Rc::new(Thunk::new_guarded(
-            Rc::clone(&inner),
+        let guarded = Arc::new(Thunk::new_guarded(
+            Arc::clone(&inner),
             Type::Int,
             vec![],
             span,
@@ -2670,30 +2670,30 @@ mod tests {
         let env = empty_env();
 
         // Bind a variable in caller's env so the default expr can reference it.
-        let fallback_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
-        env.borrow_mut()
+        let fallback_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
+        env.write().unwrap()
             .insert("fallback_val".into(), fallback_thunk);
 
         // Inner thunk: a String value — fails the Int guard.
-        let inner = Rc::new(Thunk::new_materialized(
+        let inner = Arc::new(Thunk::new_materialized(
             crate::value::string_val("not an int"),
             span,
         ));
 
         // Default expression: a variable reference to `fallback_val` in caller's env.
-        let default_expr = Rc::new(sp(Expr::VarRef {
+        let default_expr = Arc::new(sp(Expr::VarRef {
             name: "fallback_val".into(),
             escaped: true,
             resolved: std::cell::RefCell::new(None),
         }));
 
-        let guarded = Rc::new(Thunk::new_guarded_full(
-            Rc::clone(&inner),
+        let guarded = Arc::new(Thunk::new_guarded_full(
+            Arc::clone(&inner),
             Type::Int,
             vec![],
             span,
             None,
-            Some((default_expr, Rc::clone(&env))),
+            Some((default_expr, Arc::clone(&env))),
         ));
 
         // Should succeed, returning the default value (99) evaluated in caller's env.
@@ -2731,10 +2731,10 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: a Bool value — fails the Int guard.
-        let inner = Rc::new(Thunk::new_materialized(Value::Bool(true), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Bool(true), span));
 
-        let guarded = Rc::new(Thunk::new_guarded(
-            Rc::clone(&inner),
+        let guarded = Arc::new(Thunk::new_guarded(
+            Arc::clone(&inner),
             Type::Int,
             vec![],
             span,

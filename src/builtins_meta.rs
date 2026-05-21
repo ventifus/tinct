@@ -36,6 +36,7 @@
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -52,7 +53,7 @@ use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 /// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
-pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -69,7 +70,7 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Gives users explicit control over evaluation order. Equivalent to `$deep-materialize` for
 /// flat values, but only forces to weak head normal form (WHNF) — dicts remain
 /// dicts with unforced entries, not deep-forced. Use `$deep-materialize` for deep forcing.
-pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -82,7 +83,7 @@ pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `raise`: takes 1 arg (String message), always raises.
 /// Inherently materializing: constructs concrete error value.
-pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -97,7 +98,7 @@ pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Ok value]`
 /// on success or `[Err message]` on failure.
 /// Inherently materializing: must materialize body to catch errors.
-pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -127,10 +128,10 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 .into());
             }
             // Evaluate the body in the closure's environment
-            let body_thunk = Rc::new(Thunk::new_unevaluated(
+            let body_thunk = Arc::new(Thunk::new_unevaluated(
                 Rc::clone(&body),
-                Rc::clone(&closure_env),
-                Rc::clone(&ctx),
+                Arc::clone(&closure_env),
+                Arc::clone(&ctx),
                 body.span,
             ));
             materialize(&body_thunk, Some(&call_span), &ctx)
@@ -140,7 +141,7 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 args: &[],
                 named: None,
                 call_span,
-                ctx: Rc::clone(&ctx),
+                ctx: Arc::clone(&ctx),
             };
             (def.func)(builtin_args).and_then(|thunk| materialize(&thunk, Some(&call_span), &ctx))
         }
@@ -197,7 +198,7 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// This implementation uses a Rust loop with eager materialization at each step,
 /// avoiding both depth limits and stack overflow from long thunk chains.
-pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -209,21 +210,21 @@ pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
 
-    let pred_thunk = Rc::clone(&args[0]);
-    let f_thunk = Rc::clone(&args[1]);
-    let mut val_thunk = Rc::clone(&args[2]);
+    let pred_thunk = Arc::clone(&args[0]);
+    let f_thunk = Arc::clone(&args[1]);
+    let mut val_thunk = Arc::clone(&args[2]);
 
     loop {
         // Create a pending call to pred(val) and materialize it
-        let pred_result = Rc::new(Thunk::new_pending_call(
-            Rc::clone(&pred_thunk),
-            vec![Rc::clone(&val_thunk)],
+        let pred_result = Arc::new(Thunk::new_pending_call(
+            Arc::clone(&pred_thunk),
+            vec![Arc::clone(&val_thunk)],
             IndexMap::new(),
             call_span,
-            Rc::clone(&ctx.config.stdlib_env),
+            Arc::clone(&ctx.config.stdlib_env),
             val_thunk.span,
-            Some(Rc::from("until")),
-            Rc::clone(&ctx),
+            Some(Arc::from("until")),
+            Arc::clone(&ctx),
         ));
 
         let pred_val = materialize(&pred_result, Some(&call_span), &ctx)?;
@@ -235,21 +236,21 @@ pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             }
             Value::Bool(false) => {
                 // Predicate doesn't hold yet, apply f and materialize to get next value
-                let f_result = Rc::new(Thunk::new_pending_call(
-                    Rc::clone(&f_thunk),
+                let f_result = Arc::new(Thunk::new_pending_call(
+                    Arc::clone(&f_thunk),
                     vec![val_thunk],
                     IndexMap::new(),
                     call_span,
-                    Rc::clone(&ctx.config.stdlib_env),
+                    Arc::clone(&ctx.config.stdlib_env),
                     call_span,
-                    Some(Rc::from("until")),
-                    Rc::clone(&ctx),
+                    Some(Arc::from("until")),
+                    Arc::clone(&ctx),
                 ));
 
                 // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
                 // This breaks the thunk chain and prevents stack overflow
                 let f_val = materialize(&f_result, Some(&call_span), &ctx)?;
-                val_thunk = Rc::new(Thunk::new_materialized(f_val, call_span));
+                val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span));
             }
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -267,7 +268,7 @@ pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper that performs the actual $apply logic after args are pre-materialized.
 /// This is separated from builtin_apply so that builtin_apply can return a
 /// PendingBuiltin thunk, enabling iterative arg materialization via BuiltinForceArg.
-pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -286,8 +287,8 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
     let arg_dict = crate::builtins::require_dict("apply", args_val, args[1].span, &ctx, call_span)?;
 
     // Split dict entries: integer-keyed → positional, string-keyed → named
-    let mut int_entries: Vec<(i64, Rc<Thunk>)> = Vec::with_capacity(arg_dict.len());
-    let mut named_args: IndexMap<String, Rc<Thunk>> = IndexMap::with_capacity(arg_dict.len());
+    let mut int_entries: Vec<(i64, Arc<Thunk>)> = Vec::with_capacity(arg_dict.len());
+    let mut named_args: IndexMap<String, Arc<Thunk>> = IndexMap::with_capacity(arg_dict.len());
     for (key, thunk_id) in &arg_dict {
         let thunk = ctx.get_thunk(*thunk_id);
         match key {
@@ -298,7 +299,7 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
         }
     }
     int_entries.sort_by_key(|(k, _)| *k);
-    let positional: Vec<Rc<Thunk>> = int_entries.into_iter().map(|(_, v)| v).collect();
+    let positional: Vec<Arc<Thunk>> = int_entries.into_iter().map(|(_, v)| v).collect();
 
     match func_val {
         Value::Function {
@@ -319,7 +320,7 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
             default_env: &closure_env,
             ctx: &ctx,
             call_span,
-            origin: Some(Rc::from("apply")),
+            origin: Some(Arc::from("apply")),
         }),
         Value::Builtin(def) => {
             let builtin_args = BuiltinArgs {
@@ -330,7 +331,7 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
                     Some(&named_args)
                 },
                 call_span,
-                ctx: Rc::clone(&ctx),
+                ctx: Arc::clone(&ctx),
             };
             (def.func)(builtin_args)
         }
@@ -345,7 +346,7 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 }
 
 /// `apply`: wrapper that returns a PendingBuiltin thunk for iterative arg materialization.
-pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -363,12 +364,12 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } else {
         Some(named.expect("checked by if condition above").clone())
     };
-    Ok(Rc::new(Thunk::new_pending_builtin(
+    Ok(Arc::new(Thunk::new_pending_builtin(
         builtin!("apply", builtin_apply_impl),
         args.to_vec(),
         named_opt,
         call_span,
-        Some(Rc::from("apply")),
+        Some(Arc::from("apply")),
         ctx,
     )))
 }
@@ -376,7 +377,7 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `eval-ast`: takes 1 arg (Dict from quote), reconstructs AST, evaluates it.
 /// Inherently materializing: must materialize dict to extract AST structure,
 /// then evaluate the reconstructed expression.
-pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -390,7 +391,7 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         .map_err(|e| EvalError::user_error(format!("eval-ast: {}", e), call_span))?;
 
     // Evaluate the reconstructed AST in the stdlib environment
-    let env = Rc::clone(&ctx.config.stdlib_env);
+    let env = Arc::clone(&ctx.config.stdlib_env);
     crate::eval::eval(Rc::new(ast), env, &ctx)
 }
 
@@ -401,7 +402,7 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// The `:` prefix ensures these names cannot collide with user-written identifiers
 /// (`:` is not allowed in bare word identifiers).
-pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Global counter for gensym IDs
@@ -460,7 +461,7 @@ pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///   [macro-injects "swap"]  # → null  (if swap uses only gensym hygiene)
 ///
 /// Non-materializing: only inspects the macro_injects_map from EvalConfig.
-pub(crate) fn builtin_macro_injects(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_macro_injects(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -481,7 +482,7 @@ pub(crate) fn builtin_macro_injects(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
 
 /// `decimal`: Parse a string as an exact base-10 decimal (rust_decimal::Decimal).
 /// Returns Value::Decimal. Error on invalid format.
-pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -512,7 +513,7 @@ pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `big-int`: Convert an Int or String to a BigInt (arbitrary-precision integer).
-pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -546,7 +547,7 @@ pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Returns "Dict" for all dicts, with no distinction between list-like (sequential int keys)
 /// and map-like dicts — the type system does not track key structure at runtime.
 /// Inherently materializing: must inspect value variant to determine type.
-pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -570,7 +571,7 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Unevaluated thunks → AST dict from stored expression
 /// - PendingCall/PendingBuiltin → descriptor dict
 /// - Other thunk states → descriptor dict with state name
-pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -601,7 +602,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     // Add type field
                     entries.insert(
                         crate::value::Key::String("type".into()),
-                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                        ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                             string_val("function"),
                             call_span,
                         ))),
@@ -611,7 +612,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     let param_names: Vec<ThunkId> = params
                         .iter()
                         .map(|p| {
-                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                 string_val(&p.name),
                                 call_span,
                             )))
@@ -620,12 +621,12 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
                     if !param_names.is_empty() {
                         let params_seq = param_names.into_iter().rev().fold(
-                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                 crate::value::Value::Dict(IndexMap::new()),
                                 call_span,
                             ))),
                             |tail, head| {
-                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                     crate::value::Value::Seq { head, tail },
                                     call_span,
                                 )))
@@ -639,7 +640,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                         if let Some(ref doc_str) = ann.doc {
                             entries.insert(
                                 crate::value::Key::String("doc".into()),
-                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                     string_val(doc_str),
                                     call_span,
                                 ))),
@@ -653,7 +654,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     let mut entries = IndexMap::new();
                     entries.insert(
                         crate::value::Key::String("type".into()),
-                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                        ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                             string_val(other.type_name()),
                             call_span,
                         ))),
@@ -668,7 +669,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             // The do-binding-name/do-binding-expr helpers use [get "entries" ...] which now
             // works via surface_node_get_field returning real integer-keyed Dicts.
             let surface_node = crate::ast_convert::expr_to_surface_node(expr);
-            return Ok(Rc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
                 Value::Expression(surface_node),
                 call_span,
             )));
@@ -678,14 +679,14 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("pending-builtin"),
                     call_span,
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("name".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val(def.name),
                     call_span,
                 ))),
@@ -697,7 +698,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("pending-call"),
                     call_span,
                 ))),
@@ -709,14 +710,14 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
                     call_span,
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("guarded"),
                     call_span,
                 ))),
@@ -728,14 +729,14 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
                     call_span,
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("in-progress"),
                     call_span,
                 ))),
@@ -747,21 +748,21 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
                     call_span,
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("failed"),
                     call_span,
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("error".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val(&err.kind.to_string()),
                     call_span,
                 ))),
@@ -773,14 +774,14 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             let mut entries = IndexMap::new();
             entries.insert(
                 crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
                     call_span,
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("placeholder"),
                     call_span,
                 ))),
@@ -789,14 +790,14 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         }
         crate::value::ThunkState::Surface { ref node, .. } => {
             // runtime-v2: Surface thunk — return Value::Expression directly
-            return Ok(Rc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
                 Value::Expression(std::sync::Arc::clone(node)),
                 call_span,
             )));
         }
         crate::value::ThunkState::AstNodeField { ref node, .. } => {
             // runtime-v2: AstNodeField thunk — return the containing SurfaceNode as Expression
-            return Ok(Rc::new(crate::value::Thunk::new_materialized(
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
                 Value::Expression(std::sync::Arc::clone(node)),
                 call_span,
             )));
@@ -809,7 +810,7 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `llt-repr`: takes 1 arg, deep-materializes it, returns its LLT display string representation.
 /// This is the programmatic equivalent of the LLT display format (Int(42), Dict({...}), etc.).
 /// Used by the `-o llt` output formatter.
-pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -826,7 +827,7 @@ pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `tag-of`: Return the tag of a Variant as a String.
-pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -854,7 +855,7 @@ pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Forms:
 /// - `[variant "Tag"]` — unit variant (no payload)
 /// - `[variant "Tag" payload]` — variant with payload (stored as ThunkId)
-pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -903,7 +904,7 @@ pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 } => {
                     let tag = &source[start..end];
                     // Store the payload as a ThunkId (lazy, won't be forced until accessed)
-                    let payload_id = ctx.alloc_thunk(Rc::clone(payload_thunk));
+                    let payload_id = ctx.alloc_thunk(Arc::clone(payload_thunk));
                     ok_val(
                         Value::Variant {
                             tag: tag.to_string(),
@@ -924,7 +925,7 @@ pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `int?`: Return true if the argument is an Int.
-pub(crate) fn builtin_int_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_int_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -936,7 +937,7 @@ pub(crate) fn builtin_int_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `float?`: Return true if the argument is a Float.
-pub(crate) fn builtin_float_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_float_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -950,7 +951,7 @@ pub(crate) fn builtin_float_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
 // num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
 
 /// `str?`: Return true if the argument is a String.
-pub(crate) fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -962,7 +963,7 @@ pub(crate) fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 }
 
 /// `bool?`: Return true if the argument is a Bool.
-pub(crate) fn builtin_bool_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bool_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -974,7 +975,7 @@ pub(crate) fn builtin_bool_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 }
 
 /// `bytes?`: Return true if the argument is Bytes.
-pub(crate) fn builtin_bytes_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_bytes_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -986,7 +987,7 @@ pub(crate) fn builtin_bytes_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>>
 }
 
 /// `null?`: Return true if the argument is Null (represented as an empty Dict).
-pub(crate) fn builtin_null_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_null_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1006,7 +1007,7 @@ pub(crate) fn builtin_null_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 }
 
 /// `dict?`: Return true if the argument is a Dict (including lists and null).
-pub(crate) fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1023,7 +1024,7 @@ pub(crate) fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
 // record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
 
 /// `fn?`: Return true if the argument is callable (Function or Builtin).
-pub(crate) fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1083,8 +1084,8 @@ pub fn json_to_value(
     json: &serde_json::Value,
     depth: usize,
     span: Span,
-    ctx: &Rc<crate::eval::EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     if depth > JSON_DEPTH_LIMIT {
         return Err(EvalError::json_depth_exceeded(JSON_DEPTH_LIMIT, span).into());
     }
@@ -1158,7 +1159,7 @@ pub fn json_to_value(
 
 /// `from-json`: takes 1 arg (String containing JSON), parses into LLT value.
 /// Inherently materializing: must parse entire JSON string to construct value.
-pub(crate) fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1187,7 +1188,7 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
 /// The string is encoded as UTF-8 bytes before hashing.
 ///
 /// Example: `[blake3 "hello"]` → `"ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"`
-pub(crate) fn builtin_blake3(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_blake3(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1208,7 +1209,7 @@ pub(crate) fn builtin_blake3(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// This stable identity can be combined with source text to form a content-addressed
 /// cache key: `blake3(cap-identity + "|" + source)`.
-pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1271,7 +1272,7 @@ pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 ///
 /// This is the primitive underlying the `include` pipeline in the include-decomposition design.
 /// runtime-v2 Part G: changed from Dict schema to Value::Program.
-pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1365,7 +1366,7 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let surface_program = crate::ast_convert::file_to_surface_program(&file.node);
     let res_table = crate::resolve::resolve_surface_program(&surface_program);
     let program_value = Value::Program(std::sync::Arc::new(surface_program));
-    let thunk = Rc::new(Thunk::new_materialized(program_value, call_span));
+    let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
     // Cache the res_table alongside the thunk (Part E: IncludeCacheEntry::Cached carries tables).
     // The TypeAnnotationTable is empty here because the load builtin does not run the typechecker;
     // typecheck is run separately on the expanded program before eval is called.
@@ -1380,7 +1381,7 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// into distinct primitives.
 ///
 /// Pipeline: unwrap Program → convert to File → run expand_macros → wrap back as Program.
-pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1474,7 +1475,7 @@ fn surface_program_to_file(program: &crate::ast::SurfaceProgram) -> crate::ast::
 /// - `[Missing]`       — key not in cache
 /// - `[Pending]`       — key is marked as in-progress (cycle detection)
 /// - `[Cached value]`  — cached result thunk
-pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1484,7 +1485,7 @@ pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
     let val = crate::builtins::expect_one_arg("include-cache-get", args, named, &ctx, call_span)?;
     let key = require_string("include-cache-get", val, args[0].span)?;
 
-    let entry = ctx.state.borrow().string_include_cache.get(&key).cloned();
+    let entry = ctx.state.lock().unwrap().string_include_cache.get(&key).cloned();
 
     match entry {
         None => ok_val(
@@ -1509,7 +1510,7 @@ pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
             call_span,
         ),
         Some(crate::eval::IncludeCacheEntry::Cached(thunk, _res, _types)) => {
-            let payload_id = ctx.alloc_thunk(Rc::clone(&thunk));
+            let payload_id = ctx.alloc_thunk(Arc::clone(&thunk));
             ok_val(
                 Value::Variant {
                     tag: "Cached".to_string(),
@@ -1526,7 +1527,7 @@ pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
 /// Takes 2 positional args: String key and a value.
 /// The value must be a `[Missing]`, `[Pending]`, or `[Cached x]` Variant.
 /// Returns the stored value (pass-through).
-pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1590,12 +1591,12 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
     };
 
     ctx.state
-        .borrow_mut()
+        .lock().unwrap()
         .string_include_cache
         .insert(key, entry);
 
     // Return the stored value (pass-through — the args[1] thunk, not the entry)
-    Ok(Rc::clone(&args[1]))
+    Ok(Arc::clone(&args[1]))
 }
 
 /// `include`: takes 2 or 3 args (DirCap + path, optional hash), evaluates the file,
@@ -1647,7 +1648,7 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
 /// - `enum`: list of allowed values (Seq)
 ///
 /// Returns the data value unchanged on success, throws SchemaViolation with all violations on failure.
-pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -1664,7 +1665,7 @@ pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         Value::Overlay(..) => {
             // Materialize Overlay to Dict before validation
             let schema_thunk_id =
-                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(schema.clone(), call_span)));
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(schema.clone(), call_span)));
             let schema_thunk = ctx.get_thunk(schema_thunk_id);
             let materialized = materialize(&schema_thunk, Some(&call_span), &ctx)?;
             match materialized {
@@ -1692,7 +1693,7 @@ pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
     if violations.is_empty() {
         // Success: return data unchanged
-        Ok(Rc::new(Thunk::new_materialized(data, call_span)))
+        Ok(Arc::new(Thunk::new_materialized(data, call_span)))
     } else {
         // Failure: throw SchemaViolation with all violations
         Err(EvalError::schema_violation(violations, call_span).into())
@@ -1702,9 +1703,9 @@ pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Helper: materialize and extract exactly 2 positional arguments, no named args.
 fn expect_two_args(
     name: &str,
-    args: &[Rc<Thunk>],
-    named: Option<&IndexMap<String, Rc<Thunk>>>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<(Value, Value)> {
     if args.len() != 2 {
@@ -1729,7 +1730,7 @@ fn validate_value(
     data: &Value,
     path: &str,
     violations: &mut Vec<(String, String)>,
-    ctx: &Rc<crate::eval::EvalContext>,
+    ctx: &Arc<crate::eval::EvalContext>,
     span: Span,
 ) -> EvalResult<()> {
     use crate::value::StrKey;
@@ -1994,7 +1995,7 @@ fn validate_value(
                         path: &str,
                         idx: usize,
                         violations: &mut Vec<(String, String)>,
-                        ctx: &Rc<crate::eval::EvalContext>,
+                        ctx: &Arc<crate::eval::EvalContext>,
                         span: Span,
                     ) -> EvalResult<()> {
                         match seq_val {

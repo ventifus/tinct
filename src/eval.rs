@@ -23,6 +23,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
@@ -47,14 +48,14 @@ pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 ///
 /// The resulting [`ThunkState::Guarded`] thunk is lazy — the type check fires
 /// only when the thunk is forced (materialized), not at construction time.
-fn maybe_wrap_guard(thunk: Rc<Thunk>, span: Span, ctx: &Rc<EvalContext>) -> Rc<Thunk> {
+fn maybe_wrap_guard(thunk: Arc<Thunk>, span: Span, ctx: &Arc<EvalContext>) -> Arc<Thunk> {
     // O(1) span lookup in the boundary guard table.
-    let guards = ctx.boundary_guards.borrow();
+    let guards = ctx.boundary_guards.read().unwrap();
     if let Some(expected_type) = guards.get(&span) {
         // Create a guarded thunk wrapping the original. The guard fires lazily
         // when the thunk is forced, validating the runtime value against
         // expected_type and returning EvalError::type_assert_failed on mismatch.
-        Rc::new(Thunk::new_guarded_full(
+        Arc::new(Thunk::new_guarded_full(
             thunk,
             expected_type.clone(),
             Vec::new(), // empty field path for top-level boundary guard
@@ -118,7 +119,7 @@ pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool 
 #[derive(Debug)]
 pub struct EvalConfig {
     pub base_dir: cap_std::fs::Dir,
-    pub stdlib_env: Rc<RefCell<Environment>>,
+    pub stdlib_env: Arc<RwLock<Environment>>,
     pub no_fs: bool,
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
@@ -146,7 +147,7 @@ pub enum IncludeCacheEntry {
     Missing,
     Pending,
     Cached(
-        Rc<Thunk>,
+        Arc<Thunk>,
         std::sync::Arc<crate::ast::ResolutionTable>,
         std::sync::Arc<crate::ast::TypeAnnotationTable>,
     ),
@@ -188,7 +189,7 @@ pub struct EvalState {
     /// Stores materialized method dictionaries for each instance.
     /// class_name is interned via `intern_class_name` (&'static str); type_tags is a
     /// Vec<String> (from Value::type_name() on determining-position args) for MPTC support.
-    pub instance_registry: HashMap<(&'static str, Vec<String>), Rc<Thunk>>,
+    pub instance_registry: HashMap<(&'static str, Vec<String>), Arc<Thunk>>,
     /// O(1) set of class names that have at least one registered instance.
     /// Updated in sync with `instance_registry`. Used by builtins (e.g. `+`, `str`)
     /// to avoid a linear scan over registry keys on every arithmetic/string operation.
@@ -205,7 +206,7 @@ pub struct RuntimeClassDecl {
     pub superclasses: Vec<(String, String)>,
     /// Default method implementations: method_name -> thunk
     /// These are wrapped as thunks to preserve laziness.
-    pub method_defaults: IndexMap<String, Rc<Thunk>>,
+    pub method_defaults: IndexMap<String, Arc<Thunk>>,
     /// Number of determining-position type parameters for MPTC dispatch.
     /// For single-param classes (Equatable, Comparable): 1.
     /// For arithmetic classes (Addable a b c with FD (a,b)→c): 2.
@@ -255,27 +256,27 @@ fn extract_instance_type_tags(pattern_expr: &Spanned<Expr>, num_determining: usi
 
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
-/// Config is immutable (Rc without RefCell); state is mutable (Rc<RefCell>).
-/// Thread as `&Rc<EvalContext>` through eval/materialize; thunks capture `Rc::clone(ctx)`.
+/// Config is immutable (Arc without Mutex); state is mutable (Arc<Mutex>).
+/// Thread as `&Arc<EvalContext>` through eval/materialize; thunks capture `Arc::clone(ctx)`.
 ///
 /// **Phase 2 Arena Migration (Registry Approach):** Arenas act as a GC root / bulk-deallocation
-/// boundary. Thunks are allocated in the arena AND stored as Rc<Thunk> in Value variants.
+/// boundary. Thunks are allocated in the arena AND stored as Arc<Thunk> in Value variants.
 /// This establishes the arena pattern without the massive ThunkId-in-Value refactor.
 /// Full ThunkId migration is deferred to Phase 3.
 #[derive(Debug)]
 pub struct EvalContext {
-    pub config: Rc<EvalConfig>,
-    pub state: Rc<RefCell<EvalState>>,
-    /// Thunk arena registry. Phase 2: stores Vec<Rc<Thunk>> and provides bulk deallocation.
-    /// Thunks are allocated here but Value variants still use Rc<Thunk> directly.
-    /// **Shared ownership:** Rc<RefCell<>> allows child contexts (created via with_base_dir)
+    pub config: Arc<EvalConfig>,
+    pub state: Arc<Mutex<EvalState>>,
+    /// Thunk arena registry. Phase 2: stores Vec<Arc<Thunk>> and provides bulk deallocation.
+    /// Thunks are allocated here but Value variants still use Arc<Thunk> directly.
+    /// **Shared ownership:** Arc<Mutex<>> allows child contexts (created via with_base_dir)
     /// to share the parent's arena, preventing ThunkId index-out-of-bounds panics.
-    pub(crate) thunk_arena: Rc<RefCell<ThunkArena>>,
+    pub(crate) thunk_arena: Arc<Mutex<ThunkArena>>,
     /// Environment arena registry. Phase 3: populated by `eval_dict` (alloc_root +
     /// fill_letrec_slot per dict scope). Full O(1) dispatch deferred until `take_unevaluated`
     /// propagates `env_id` through the force loop.
-    /// **Shared ownership:** Rc<RefCell<>> allows child contexts to share the parent's arena.
-    pub(crate) env_arena: Rc<RefCell<EnvArena>>,
+    /// **Shared ownership:** Arc<Mutex<>> allows child contexts to share the parent's arena.
+    pub(crate) env_arena: Arc<Mutex<EnvArena>>,
     /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
     /// Some(empty) means all denied (--no-env mode).
     pub env_allowed: Option<HashSet<String>>,
@@ -284,35 +285,35 @@ pub struct EvalContext {
     /// or index. Used by contract violation errors to identify the positive party (producer)
     /// per Findler & Felleisen (2002). Avoids a `Value::Tagged` variant which would require
     /// updating all exhaustive `Value` matches.
-    pub blame_map: RefCell<HashMap<ThunkId, String>>,
+    pub blame_map: Mutex<HashMap<ThunkId, String>>,
     /// Boundary guards from type inference: span → expected_param_type.
     /// When an Unknown-typed expression crosses into a concrete-typed context,
     /// the type checker records the boundary. The evaluator checks if a thunk's
     /// span matches a guard and wraps it with a runtime Guarded thunk if so.
     /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
     /// Populated by typecheck_file via set_boundary_guards(), consumed during eval().
-    pub boundary_guards: RefCell<HashMap<Span, Type>>,
+    pub boundary_guards: RwLock<HashMap<Span, Type>>,
     /// Monad resolutions for inferred [do] forms: %do-infer VarRef span → monad variable name.
     /// The type checker records the resolved monad name here (keyed by the span of the
     /// `%do-infer` VarRef in the desugared bind chain). At eval time, when `VarRef("%do-infer")`
     /// is evaluated, the evaluator looks up this map by span and returns the monad dict value.
     /// Parallel to boundary_guards: type-checker-to-evaluator communication via span-keyed side channel.
     /// Populated by typecheck_file via set_do_infer_resolutions(), consumed during eval().
-    pub do_infer_resolutions: RefCell<HashMap<String, String>>,
+    pub do_infer_resolutions: RwLock<HashMap<String, String>>,
     /// Already-open libdir Dir, shared from the bootstrap boundary (main.rs or repl.rs).
     /// Used by `builtin_include` to inject `%libdir` into the included file's environment
     /// without calling `open_ambient_dir` again. `None` in contexts where libdir was not
     /// opened (e.g., --no-libdir, bootstrap contexts, tests).
     /// Propagated through `with_base_dir` so nested includes see the same Dir.
-    pub libdir_dir: RefCell<Option<Rc<cap_std::fs::Dir>>>,
+    pub libdir_dir: Mutex<Option<Arc<cap_std::fs::Dir>>>,
 }
 
 impl EvalContext {
     pub fn new(
         base_dir: cap_std::fs::Dir,
-        stdlib_env: Rc<RefCell<Environment>>,
+        stdlib_env: Arc<RwLock<Environment>>,
         no_fs: bool,
-    ) -> Rc<Self> {
+    ) -> Arc<Self> {
         Self::new_with_options(base_dir, stdlib_env, no_fs, false, None)
     }
 
@@ -333,11 +334,11 @@ impl EvalContext {
     /// `new_empty()` when the environment contains no references to stdlib thunks.
     pub fn new_empty(
         base_dir: cap_std::fs::Dir,
-        stdlib_env: Rc<RefCell<Environment>>,
+        stdlib_env: Arc<RwLock<Environment>>,
         no_fs: bool,
-    ) -> Rc<Self> {
-        Rc::new(Self {
-            config: Rc::new(EvalConfig {
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
                 no_fs,
@@ -345,7 +346,7 @@ impl EvalContext {
                 macro_injects_map: HashMap::new(),
                 source_file: None,
             }),
-            state: Rc::new(RefCell::new(EvalState {
+            state: Arc::new(Mutex::new(EvalState {
                 string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
@@ -353,30 +354,30 @@ impl EvalContext {
                 instance_registry: HashMap::new(),
                 registered_classes: HashSet::new(),
             })),
-            thunk_arena: Rc::new(RefCell::new(ThunkArena::new())),
-            env_arena: Rc::new(RefCell::new(EnvArena::new())),
+            thunk_arena: Arc::new(Mutex::new(ThunkArena::new())),
+            env_arena: Arc::new(Mutex::new(EnvArena::new())),
             env_allowed: None,
-            blame_map: RefCell::new(HashMap::new()),
-            boundary_guards: RefCell::new(HashMap::new()),
-            do_infer_resolutions: RefCell::new(HashMap::new()),
-            libdir_dir: RefCell::new(None),
+            blame_map: Mutex::new(HashMap::new()),
+            boundary_guards: RwLock::new(HashMap::new()),
+            do_infer_resolutions: RwLock::new(HashMap::new()),
+            libdir_dir: Mutex::new(None),
         })
     }
 
     pub fn new_with_options(
         base_dir: cap_std::fs::Dir,
-        stdlib_env: Rc<RefCell<Environment>>,
+        stdlib_env: Arc<RwLock<Environment>>,
         no_fs: bool,
         require_integrity: bool,
         env_allowed: Option<HashSet<String>>,
-    ) -> Rc<Self> {
+    ) -> Arc<Self> {
         // Inherit stdlib ThunkIds: start the arena with a snapshot of stdlib thunks
         // so that ThunkIds stored in prelude dicts (e.g. result.bind) remain valid.
         // Falls back to a fresh empty arena if create_stdlib_env hasn't run yet.
         let thunk_arena = crate::builtins::new_arena_with_stdlib_snapshot()
-            .unwrap_or_else(|| Rc::new(RefCell::new(ThunkArena::new())));
-        Rc::new(Self {
-            config: Rc::new(EvalConfig {
+            .unwrap_or_else(|| Arc::new(Mutex::new(ThunkArena::new())));
+        Arc::new(Self {
+            config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
                 no_fs,
@@ -384,7 +385,7 @@ impl EvalContext {
                 macro_injects_map: HashMap::new(),
                 source_file: None,
             }),
-            state: Rc::new(RefCell::new(EvalState {
+            state: Arc::new(Mutex::new(EvalState {
                 string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
@@ -393,18 +394,18 @@ impl EvalContext {
                 registered_classes: HashSet::new(),
             })),
             thunk_arena,
-            env_arena: Rc::new(RefCell::new(EnvArena::new())),
+            env_arena: Arc::new(Mutex::new(EnvArena::new())),
             env_allowed,
-            blame_map: RefCell::new(HashMap::new()),
-            boundary_guards: RefCell::new(HashMap::new()),
-            do_infer_resolutions: RefCell::new(HashMap::new()),
-            libdir_dir: RefCell::new(None),
+            blame_map: Mutex::new(HashMap::new()),
+            boundary_guards: RwLock::new(HashMap::new()),
+            do_infer_resolutions: RwLock::new(HashMap::new()),
+            libdir_dir: Mutex::new(None),
         })
     }
 
     /// Create a new EvalContext that shares an existing arena.
     ///
-    /// The arena is SHARED via `Rc::clone()` — user thunks allocated through this context
+    /// The arena is SHARED via `Arc::clone()` — user thunks allocated through this context
     /// append to the same backing Vec as the thunks already in the arena. The arena grows
     /// monotonically. This is critical for ThunkId validity: if the arena contains stdlib
     /// thunks (indices 0..N), then ThunkIds stored in prelude dicts (e.g., `result.bind`)
@@ -418,13 +419,13 @@ impl EvalContext {
     /// **Not for:** Bootstrap contexts (use `new_empty()` instead).
     pub(crate) fn new_sharing_arena(
         base_dir: cap_std::fs::Dir,
-        stdlib_env: Rc<RefCell<Environment>>,
+        stdlib_env: Arc<RwLock<Environment>>,
         no_fs: bool,
-        shared_arena: Rc<RefCell<ThunkArena>>,
+        shared_arena: Arc<Mutex<ThunkArena>>,
         macro_injects_map: HashMap<String, String>,
-    ) -> Rc<Self> {
-        Rc::new(Self {
-            config: Rc::new(EvalConfig {
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
                 no_fs,
@@ -432,7 +433,7 @@ impl EvalContext {
                 macro_injects_map,
                 source_file: None,
             }),
-            state: Rc::new(RefCell::new(EvalState {
+            state: Arc::new(Mutex::new(EvalState {
                 string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
@@ -441,12 +442,12 @@ impl EvalContext {
                 registered_classes: HashSet::new(),
             })),
             thunk_arena: shared_arena,
-            env_arena: Rc::new(RefCell::new(EnvArena::new())),
+            env_arena: Arc::new(Mutex::new(EnvArena::new())),
             env_allowed: None,
-            blame_map: RefCell::new(HashMap::new()),
-            boundary_guards: RefCell::new(HashMap::new()),
-            do_infer_resolutions: RefCell::new(HashMap::new()),
-            libdir_dir: RefCell::new(None),
+            blame_map: Mutex::new(HashMap::new()),
+            boundary_guards: RwLock::new(HashMap::new()),
+            do_infer_resolutions: RwLock::new(HashMap::new()),
+            libdir_dir: Mutex::new(None),
         })
     }
 
@@ -458,28 +459,28 @@ impl EvalContext {
     /// Inherits `no_fs` and `require_integrity` from the parent config so that
     /// sandbox restrictions are preserved across directory changes.
     ///
-    /// **Phase 2 Arena Migration (Registry):** SHARES the parent's arenas (Rc::clone).
+    /// **Phase 2 Arena Migration (Registry):** SHARES the parent's arenas (Arc::clone).
     /// This fixes the ThunkId index-out-of-bounds bug: values from the parent context
     /// (including stdlib) carry ThunkIds that index into the parent's arena. The child
     /// context must use the SAME arena to resolve those ThunkIds.
-    pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Rc<Self> {
-        Rc::new(Self {
-            config: Rc::new(EvalConfig {
+    pub fn with_base_dir(&self, base_dir: cap_std::fs::Dir) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::new(EvalConfig {
                 base_dir,
-                stdlib_env: Rc::clone(&self.config.stdlib_env),
+                stdlib_env: Arc::clone(&self.config.stdlib_env),
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
                 macro_injects_map: self.config.macro_injects_map.clone(),
                 source_file: self.config.source_file.clone(),
             }),
-            state: Rc::clone(&self.state),
-            thunk_arena: Rc::clone(&self.thunk_arena),
-            env_arena: Rc::clone(&self.env_arena),
+            state: Arc::clone(&self.state),
+            thunk_arena: Arc::clone(&self.thunk_arena),
+            env_arena: Arc::clone(&self.env_arena),
             env_allowed: self.env_allowed.clone(),
-            blame_map: RefCell::new(self.blame_map.borrow().clone()),
-            boundary_guards: RefCell::new(self.boundary_guards.borrow().clone()),
-            do_infer_resolutions: RefCell::new(self.do_infer_resolutions.borrow().clone()),
-            libdir_dir: RefCell::new(self.libdir_dir.borrow().clone()),
+            blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
+            boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
+            do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
+            libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
         })
     }
 
@@ -490,35 +491,35 @@ impl EvalContext {
         &self,
         base_dir: cap_std::fs::Dir,
         _base_dir_path: Option<std::path::PathBuf>,
-    ) -> Rc<Self> {
+    ) -> Arc<Self> {
         self.with_base_dir(base_dir)
     }
 
     /// Allocate a thunk in the arena and return its ID.
-    pub(crate) fn alloc_thunk(&self, thunk: Rc<Thunk>) -> ThunkId {
-        self.thunk_arena.borrow_mut().alloc(thunk)
+    pub(crate) fn alloc_thunk(&self, thunk: Arc<Thunk>) -> ThunkId {
+        self.thunk_arena.lock().unwrap().alloc(thunk)
     }
 
-    /// Get a cloned Rc<Thunk> from the arena by ID.
-    pub fn get_thunk(&self, id: ThunkId) -> Rc<Thunk> {
-        self.thunk_arena.borrow().get(id).clone()
+    /// Get a cloned Arc<Thunk> from the arena by ID.
+    pub fn get_thunk(&self, id: ThunkId) -> Arc<Thunk> {
+        self.thunk_arena.lock().unwrap().get(id).clone()
     }
 
     /// Record blame provenance for a pipeline `%` thunk at a `---` boundary.
     /// The `label` identifies the producing stage (file path or stage index).
     pub fn record_blame(&self, thunk_id: ThunkId, label: String) {
-        self.blame_map.borrow_mut().insert(thunk_id, label);
+        self.blame_map.lock().unwrap().insert(thunk_id, label);
     }
 
     /// Look up blame provenance for a thunk ID (if recorded at a pipeline boundary).
     pub fn blame_label(&self, thunk_id: ThunkId) -> Option<String> {
-        self.blame_map.borrow().get(&thunk_id).cloned()
+        self.blame_map.lock().unwrap().get(&thunk_id).cloned()
     }
 
     /// Set boundary guards from type inference.
     /// Called after type checking to wire gradual typing runtime checks.
     pub fn set_boundary_guards(&self, guards: HashMap<Span, Type>) {
-        *self.boundary_guards.borrow_mut() = guards;
+        *self.boundary_guards.write().unwrap() = guards;
     }
 
     /// Set do-infer resolutions from type inference.
@@ -526,7 +527,7 @@ impl EvalContext {
     /// The map keys are the spans of `%do-infer` VarRef nodes; values are the monad dict
     /// variable names (e.g., "result") resolved by the type checker.
     pub fn set_do_infer_resolutions(&self, resolutions: HashMap<String, String>) {
-        *self.do_infer_resolutions.borrow_mut() = resolutions;
+        *self.do_infer_resolutions.write().unwrap() = resolutions;
     }
 
     /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
@@ -535,8 +536,8 @@ impl EvalContext {
     /// Called by the capability initialization boundary (main.rs, repl.rs) immediately
     /// after opening the libdir directory and creating the EvalContext. Propagated
     /// through `with_base_dir` to child contexts (nested includes).
-    pub fn set_libdir_dir(&self, dir: Rc<cap_std::fs::Dir>) {
-        *self.libdir_dir.borrow_mut() = Some(dir);
+    pub fn set_libdir_dir(&self, dir: Arc<cap_std::fs::Dir>) {
+        *self.libdir_dir.lock().unwrap() = Some(dir);
     }
 }
 
@@ -690,8 +691,8 @@ pub(crate) fn validate_and_wrap_record(
     field_path: &mut Vec<String>,
     guard_span: Span,
     data_span: Span,
-    ctx: &Rc<EvalContext>,
-    default: Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)>,
+    ctx: &Arc<EvalContext>,
+    default: Option<(Rc<Spanned<Expr>>, Arc<RwLock<Environment>>)>,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -752,7 +753,7 @@ pub(crate) fn validate_and_wrap_record(
             field_path.pop();
 
             let thunk_rc = ctx.get_thunk(thunk_id);
-            let guarded = Rc::new(Thunk::new_guarded_full(
+            let guarded = Arc::new(Thunk::new_guarded_full(
                 thunk_rc,
                 field_type.clone(),
                 nested_path,
@@ -784,20 +785,20 @@ pub(crate) fn validate_and_wrap_record(
 /// (e.g., TypeAssert default branches). It does NOT go through the CEK machine.
 pub(crate) fn eval_recursive(
     expr: Rc<Spanned<Expr>>,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     match &expr.node {
         // Literals and closures are already computed values, so we wrap them in
         // immediately-materialized thunks instead of Unevaluated thunks. This avoids
         // the overhead of wrapping, then unwrapping, then re-evaluating on first access.
-        Expr::Int(n) => Ok(Rc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
-        Expr::Float(f) => Ok(Rc::new(Thunk::new_materialized(
+        Expr::Int(n) => Ok(Arc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
+        Expr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
             Value::Float(*f),
             expr.span,
         ))),
-        Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
-        Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
+        Expr::Bool(b) => Ok(Arc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
+        Expr::Str(s) => Ok(Arc::new(Thunk::new_materialized(string_val(s), expr.span))),
         Expr::VarRef { name, resolved, .. } => {
             // Special case: `%do-infer` sentinel — inferred [do] form monad resolution.
             // The `do` macro emits `[%do-infer.bind ...]` when no explicit monad is given.
@@ -811,8 +812,8 @@ pub(crate) fn eval_recursive(
             // typechecker normally rewrites. Without typecheck, these produce 'undefined
             // variable: %do-infer:N' at eval time. This is expected degraded behavior.
             if name == "%do-infer" {
-                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(name).cloned() {
-                    let found = env.borrow().get(&monad_name);
+                if let Some(monad_name) = ctx.do_infer_resolutions.read().unwrap().get(name).cloned() {
+                    let found = env.read().unwrap().get(&monad_name);
                     return match found {
                         Some(thunk) => Ok(thunk),
                         None => Err(EvalError::undefined_variable(
@@ -838,14 +839,14 @@ pub(crate) fn eval_recursive(
                 // De Bruijn slot-based lookup: level=0 = current scope (same-scope sibling),
                 // level=N = N parent hops. O(1) for level=0, O(level) for outer scopes.
                 // Falls back to name-based lookup if out-of-bounds (defensive).
-                let slot_result = env.borrow().get_by_slot(*level, *slot);
+                let slot_result = env.read().unwrap().get_by_slot(*level, *slot);
                 if slot_result.is_some() {
                     slot_result
                 } else {
-                    env.borrow().get(name)
+                    env.read().unwrap().get(name)
                 }
             } else {
-                env.borrow().get(name)
+                env.read().unwrap().get(name)
             };
             match found {
                 Some(thunk) => Ok(thunk),
@@ -857,10 +858,10 @@ pub(crate) fn eval_recursive(
             // Return Unevaluated thunk — force_step handles these iteratively via
             // DotAccessForce continuation
             let span = expr.span;
-            Ok(Rc::new(Thunk::new_unevaluated(
+            Ok(Arc::new(Thunk::new_unevaluated(
                 expr,
-                Rc::clone(&env),
-                Rc::clone(ctx),
+                Arc::clone(&env),
+                Arc::clone(ctx),
                 span,
             )))
         }
@@ -872,13 +873,13 @@ pub(crate) fn eval_recursive(
             // Each expression's result dict extends the environment for the next.
             // The last expression's value is the overall result.
             if exprs.is_empty() {
-                return Ok(Rc::new(Thunk::new_materialized(
+                return Ok(Arc::new(Thunk::new_materialized(
                     Value::Dict(IndexMap::new()),
                     expr.span,
                 )));
             }
 
-            let mut current_env = Rc::clone(&env);
+            let mut current_env = Arc::clone(&env);
 
             for (i, seq_expr) in exprs.iter().enumerate() {
                 let is_last = i == exprs.len() - 1;
@@ -889,7 +890,7 @@ pub(crate) fn eval_recursive(
                 }
 
                 // Intermediate expression: materialize and extract dict bindings
-                let thunk = eval(Rc::clone(seq_expr), Rc::clone(&current_env), ctx)?;
+                let thunk = eval(Rc::clone(seq_expr), Arc::clone(&current_env), ctx)?;
                 let value = materialize(&thunk, Some(&seq_expr.span), ctx)?;
 
                 // Flatten Overlay to Dict for scope chain binding.
@@ -917,7 +918,7 @@ pub(crate) fn eval_recursive(
                 // Named (string-keyed) bindings are forced to WHNF at binding time —
                 // strict let* semantics. This means dead-but-erroring bindings fail
                 // eagerly rather than being silently ignored.
-                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
                     &current_env,
                 ))));
                 for (key, val_thunk_id) in map {
@@ -925,7 +926,7 @@ pub(crate) fn eval_recursive(
                     if let Key::String(name) = key {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
                         // Insert value as lazy thunk — only keys need to be known for scope chain.
-                        child_env.borrow_mut().insert(name, val_thunk);
+                        child_env.write().unwrap().insert(name, val_thunk);
                     }
                 }
                 current_env = child_env;
@@ -940,7 +941,7 @@ pub(crate) fn eval_recursive(
             annotation,
             resolved_type,
         } => {
-            let thunk = eval_recursive(Rc::new((**inner).clone()), Rc::clone(&env), ctx)?;
+            let thunk = eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), ctx)?;
 
             // Check if elaboration provided a resolved type
             let resolved = resolved_type.borrow().clone();
@@ -971,7 +972,7 @@ pub(crate) fn eval_recursive(
                         let default_opt = annotation
                             .node
                             .get_property(DEFAULT_ANNOTATION_KEY)
-                            .map(|expr| (Rc::new(expr.clone()), Rc::clone(&env)));
+                            .map(|expr| (Rc::new(expr.clone()), Arc::clone(&env)));
 
                         match validate_and_wrap_record(
                             entries,
@@ -982,7 +983,7 @@ pub(crate) fn eval_recursive(
                             ctx,
                             default_opt.clone(),
                         ) {
-                            Ok(new_entries) => Ok(Rc::new(Thunk::new_materialized(
+                            Ok(new_entries) => Ok(Arc::new(Thunk::new_materialized(
                                 Value::Dict(new_entries),
                                 expr.span,
                             ))),
@@ -1018,11 +1019,11 @@ pub(crate) fn eval_recursive(
                             // Type check passed — now check `is:` predicate if present
                             if let Some(is_expr) = annotation.node.get_property("is") {
                                 let pred_thunk =
-                                    eval_recursive(Rc::new(is_expr.clone()), Rc::clone(&env), ctx)?;
+                                    eval_recursive(Rc::new(is_expr.clone()), Arc::clone(&env), ctx)?;
                                 let pred_val = materialize(&pred_thunk, Some(&expr.span), ctx)?;
                                 // Call the predicate with the value
                                 let val_thunk =
-                                    Rc::new(Thunk::new_materialized(value.clone(), thunk.span));
+                                    Arc::new(Thunk::new_materialized(value.clone(), thunk.span));
                                 let result = match &pred_val {
                                     Value::Function {
                                         params,
@@ -1048,7 +1049,7 @@ pub(crate) fn eval_recursive(
                                             args: &[val_thunk],
                                             named: None,
                                             call_span: expr.span,
-                                            ctx: Rc::clone(ctx),
+                                            ctx: Arc::clone(ctx),
                                         };
                                         (def.func)(builtin_args)?
                                     }
@@ -1064,7 +1065,7 @@ pub(crate) fn eval_recursive(
                                 let result_val = materialize(&result, Some(&expr.span), ctx)?;
                                 match result_val {
                                     Value::Bool(true) => {
-                                        Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                                        Ok(Arc::new(Thunk::new_materialized(value, expr.span)))
                                     }
                                     Value::Bool(false) => {
                                         if let Some(default_expr) =
@@ -1095,7 +1096,7 @@ pub(crate) fn eval_recursive(
                                     .into()),
                                 }
                             } else {
-                                Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                                Ok(Arc::new(Thunk::new_materialized(value, expr.span)))
                             }
                         } else {
                             if let Some(default_expr) =
@@ -1168,12 +1169,12 @@ pub(crate) fn eval_recursive(
                     }
                 }
 
-                Ok(Rc::new(Thunk::new_materialized(value, expr.span)))
+                Ok(Arc::new(Thunk::new_materialized(value, expr.span)))
             }
         }
         Expr::Annotated { name, .. } => {
             // Evaluate as the bare string; the type checker (typecheck.rs) interprets annotations.
-            Ok(Rc::new(Thunk::new_materialized(
+            Ok(Arc::new(Thunk::new_materialized(
                 string_val(name),
                 expr.span,
             )))
@@ -1215,11 +1216,11 @@ pub(crate) fn eval_recursive(
                 })
             });
 
-            Ok(Rc::new(Thunk::new_materialized(
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Function {
                     params: Rc::new(fn_params),
                     body: Rc::clone(body),
-                    env: Rc::clone(&env),
+                    env: Arc::clone(&env),
                     annotation,
                 },
                 expr.span,
@@ -1247,10 +1248,10 @@ pub(crate) fn eval_recursive(
                         // Payload constructor: Function with marker in closure env.
                         // invoke_function checks for VARIANT_TAG_MARKER and wraps the payload.
                         let constructor_env =
-                            Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&env))));
-                        constructor_env.borrow_mut().insert(
+                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+                        constructor_env.write().unwrap().insert(
                             VARIANT_TAG_MARKER.to_string(),
-                            Rc::new(Thunk::new_materialized(string_val(&tag), expr.span)),
+                            Arc::new(Thunk::new_materialized(string_val(&tag), expr.span)),
                         );
 
                         let param = Param {
@@ -1282,12 +1283,12 @@ pub(crate) fn eval_recursive(
                     };
 
                     let constructor_thunk =
-                        Rc::new(Thunk::new_materialized(constructor_value, expr.span));
-                    env.borrow_mut().insert(tag, constructor_thunk);
+                        Arc::new(Thunk::new_materialized(constructor_value, expr.span));
+                    env.write().unwrap().insert(tag, constructor_thunk);
                 }
             }
 
-            Ok(Rc::new(Thunk::new_materialized(
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 expr.span,
             )))
@@ -1329,7 +1330,7 @@ pub(crate) fn eval_recursive(
         .into()),
         Expr::Match { scrutinee, arms } => {
             // Evaluate the scrutinee and materialize it
-            let scrutinee_thunk = eval(Rc::new(scrutinee.as_ref().clone()), Rc::clone(&env), ctx)?;
+            let scrutinee_thunk = eval(Rc::new(scrutinee.as_ref().clone()), Arc::clone(&env), ctx)?;
             let scrutinee_value = materialize(&scrutinee_thunk, Some(&scrutinee.span), ctx)?;
 
             // Try each arm in order
@@ -1367,7 +1368,7 @@ pub(crate) fn eval_recursive(
                         // Evaluate the guard expression in the pattern-extended environment
                         let guard_thunk = eval(
                             Rc::new(guard_expr.as_ref().clone()),
-                            Rc::clone(&bound_env),
+                            Arc::clone(&bound_env),
                             ctx,
                         )?;
                         let guard_value = materialize(&guard_thunk, Some(&guard_expr.span), ctx)?;
@@ -1382,7 +1383,7 @@ pub(crate) fn eval_recursive(
                                 ..
                             } => {
                                 // Predicate function style: call pred(scrutinee_value)
-                                let scrutinee_arg = Rc::new(Thunk::new_materialized(
+                                let scrutinee_arg = Arc::new(Thunk::new_materialized(
                                     scrutinee_value.clone(),
                                     scrutinee.span,
                                 ));
@@ -1402,7 +1403,7 @@ pub(crate) fn eval_recursive(
                             }
                             Value::Builtin(def) => {
                                 // Builtin predicate style: call pred(scrutinee_value)
-                                let scrutinee_arg = Rc::new(Thunk::new_materialized(
+                                let scrutinee_arg = Arc::new(Thunk::new_materialized(
                                     scrutinee_value.clone(),
                                     scrutinee.span,
                                 ));
@@ -1410,7 +1411,7 @@ pub(crate) fn eval_recursive(
                                     args: &[scrutinee_arg],
                                     named: None,
                                     call_span: guard_expr.span,
-                                    ctx: Rc::clone(ctx),
+                                    ctx: Arc::clone(ctx),
                                 };
                                 let result_thunk = (def.func)(builtin_args)?;
                                 materialize(&result_thunk, Some(&guard_expr.span), ctx)?
@@ -1462,10 +1463,10 @@ pub(crate) fn eval_recursive(
                     };
 
                     // Wrap the method implementation as an unevaluated thunk (no materialization)
-                    let method_thunk = Rc::new(Thunk::new_unevaluated(
+                    let method_thunk = Arc::new(Thunk::new_unevaluated(
                         Rc::clone(&method_entry.node.value),
-                        Rc::clone(&env),
-                        Rc::clone(ctx),
+                        Arc::clone(&env),
+                        Arc::clone(ctx),
                         method_entry.span,
                     ));
                     method_defaults.insert(method_name, method_thunk);
@@ -1502,12 +1503,12 @@ pub(crate) fn eval_recursive(
             };
 
             ctx.state
-                .borrow_mut()
+                .lock().unwrap()
                 .class_registry
                 .insert(name.clone(), class_decl);
 
             // ClassDecl expressions evaluate to an empty dict (marker value)
-            Ok(Rc::new(Thunk::new_materialized(
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 expr.span,
             )))
@@ -1520,7 +1521,7 @@ pub(crate) fn eval_recursive(
             // with placeholder type tags so they are at least reachable.
 
             if arms.is_empty() {
-                return Ok(Rc::new(Thunk::new_materialized(
+                return Ok(Arc::new(Thunk::new_materialized(
                     Value::Dict(IndexMap::new()),
                     expr.span,
                 )));
@@ -1528,13 +1529,13 @@ pub(crate) fn eval_recursive(
 
             // Look up the class declaration to get default method implementations
             // and the number of determining-position type parameters for dispatch.
-            let class_decl = ctx.state.borrow().class_registry.get(class_name).cloned();
+            let class_decl = ctx.state.lock().unwrap().class_registry.get(class_name).cloned();
 
             // num_determining governs how many type tags go into instance_registry keys.
             // Must match try_dispatch_method's key-building logic exactly.
             let num_determining = class_decl.as_ref().map(|d| d.num_determining).unwrap_or(1);
 
-            let mut last_arm_thunk: Option<Rc<Thunk>> = None;
+            let mut last_arm_thunk: Option<Arc<Thunk>> = None;
 
             for (pattern_expr, methods) in arms.iter() {
                 // Start with class-level defaults for each arm independently.
@@ -1556,24 +1557,24 @@ pub(crate) fn eval_recursive(
                         };
 
                         // Wrap the method implementation as an unevaluated thunk (no materialization)
-                        let method_thunk = Rc::new(Thunk::new_unevaluated(
+                        let method_thunk = Arc::new(Thunk::new_unevaluated(
                             Rc::clone(&method_entry.node.value),
-                            Rc::clone(&env),
-                            Rc::clone(ctx),
+                            Arc::clone(&env),
+                            Arc::clone(ctx),
                             method_entry.span,
                         ));
                         method_dict.insert(method_name, method_thunk);
                     }
                 }
 
-                // Convert IndexMap<String, Rc<Thunk>> to IndexMap<Key, Rc<Thunk>>
+                // Convert IndexMap<String, Arc<Thunk>> to IndexMap<Key, Arc<Thunk>>
                 let mut instance_dict_map = IndexMap::new();
                 for (name, thunk) in method_dict {
                     instance_dict_map.insert(Key::String(name), ctx.alloc_thunk(thunk));
                 }
 
                 // Eagerly materialize the dict for this arm.
-                let arm_dict_thunk = Rc::new(Thunk::new_materialized(
+                let arm_dict_thunk = Arc::new(Thunk::new_materialized(
                     Value::Dict(instance_dict_map),
                     expr.span,
                 ));
@@ -1583,10 +1584,10 @@ pub(crate) fn eval_recursive(
                 // key matches what try_dispatch_method builds (determined params excluded).
                 let type_tags = extract_instance_type_tags(&pattern_expr, num_determining);
                 {
-                    let mut state = ctx.state.borrow_mut();
+                    let mut state = ctx.state.lock().unwrap();
                     state.instance_registry.insert(
                         (intern_class_name(class_name), type_tags),
-                        Rc::clone(&arm_dict_thunk),
+                        Arc::clone(&arm_dict_thunk),
                     );
                     // Keep the O(1) class-name set in sync with instance_registry.
                     state.registered_classes.insert(class_name.clone());
@@ -1597,7 +1598,7 @@ pub(crate) fn eval_recursive(
 
             // Return the last arm's dict as the expression value.
             Ok(last_arm_thunk.unwrap_or_else(|| {
-                Rc::new(Thunk::new_materialized(
+                Arc::new(Thunk::new_materialized(
                     Value::Dict(IndexMap::new()),
                     expr.span,
                 ))
@@ -1732,9 +1733,9 @@ pub(crate) fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
 /// any [unquote ...] or [unquote-splice ...] subexpressions.
 fn eval_quote(
     quoted_expr: &Spanned<Expr>,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     eval_quote_walk(&quoted_expr.node, quoted_expr.span, env, ctx)
 }
 
@@ -1746,16 +1747,16 @@ fn eval_quote(
 fn eval_quote_walk(
     expr: &Expr,
     span: Span,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
     let processed_expr = eval_quote_preprocess(expr, span, &env, ctx)?;
 
     // runtime-v2 Part G: return Value::Expression (was: ast_to_dict_expr returning Variant Dict)
     // macros.llt is dual-dispatch ready (tag-of handles both Expression and Variant).
     let surface_node = crate::ast_convert::expr_to_surface_node(&processed_expr);
-    Ok(Rc::new(Thunk::new_materialized(
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Expression(surface_node),
         span,
     )))
@@ -1765,7 +1766,7 @@ fn eval_quote_walk(
 ///
 /// If the value is a Dict with a `type` field, treat it as an AST dict and use `dict_to_ast`.
 /// Otherwise, convert the value to its literal Expr representation.
-fn value_to_expr(value: &Value, span: Span, ctx: &Rc<EvalContext>) -> EvalResult<Spanned<Expr>> {
+fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResult<Spanned<Expr>> {
     match value {
         Value::Int(n) => Ok(Spanned::new(Expr::Int(*n), span)),
         Value::Float(f) => Ok(Spanned::new(Expr::Float(*f), span)),
@@ -1825,8 +1826,8 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Rc<EvalContext>) -> EvalResult
 fn eval_quote_preprocess(
     expr: &Expr,
     span: Span,
-    env: &Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
 ) -> EvalResult<Spanned<Expr>> {
     match expr {
         Expr::Unquote(inner) => {
@@ -2090,9 +2091,9 @@ fn eval_quote_preprocess(
 
 pub fn eval(
     expr: Rc<Spanned<Expr>>,
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
     let span = expr.span;
     let thunk = eval_recursive(expr, env, ctx)?;
     // If the type checker recorded a boundary guard for this expression's span,
@@ -2100,7 +2101,7 @@ pub fn eval(
     // when the thunk is forced — so this preserves call-by-need semantics.
     // Fast-path: boundary_guards is empty for programs run without type checking,
     // so the borrow and HashMap lookup add no overhead in the common case.
-    if ctx.boundary_guards.borrow().is_empty() {
+    if ctx.boundary_guards.read().unwrap().is_empty() {
         Ok(thunk)
     } else {
         Ok(maybe_wrap_guard(thunk, span, ctx))
@@ -2142,7 +2143,7 @@ pub fn eval(
 pub fn materialize(
     thunk: &Thunk,
     mat_span: Option<&Span>,
-    _ctx: &Rc<EvalContext>,
+    _ctx: &Arc<EvalContext>,
 ) -> EvalResult<Value> {
     // Read origin before checking state (InProgress may not preserve it)
     let origin = thunk.origin.clone();
@@ -2191,7 +2192,7 @@ pub fn materialize(
                 // immediately cache the error in the Failed state before returning.
                 let label = origin.as_deref().unwrap_or("thunk");
                 // Capture the eval_stack for cycle path reconstruction
-                let cycle_path = _ctx.state.borrow().eval_stack.clone();
+                let cycle_path = _ctx.state.lock().unwrap().eval_stack.clone();
                 let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
                 if let Some(span) = mat_span {
                     err = err.with_materialization_span(*span);
@@ -2222,7 +2223,7 @@ pub fn materialize(
     let decorate = |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span);
 
     if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
-        let result = eval(Rc::clone(&expr), Rc::clone(&env), &thunk_ctx)
+        let result = eval(Rc::clone(&expr), Arc::clone(&env), &thunk_ctx)
             .and_then(|result_thunk| {
                 run(
                     Action::Materialize {
@@ -2262,7 +2263,7 @@ pub fn materialize(
             args: &args,
             named: named.as_ref(),
             call_span,
-            ctx: Rc::clone(&thunk_ctx),
+            ctx: Arc::clone(&thunk_ctx),
         };
         match (def.func)(builtin_args).map_err(&decorate) {
             Ok(result_thunk) => {
@@ -2324,7 +2325,7 @@ pub fn materialize(
         // Materialize the function thunk to determine if it's a Function or Builtin
         let func_value = match run(
             Action::Materialize {
-                thunk: Rc::clone(&func_thunk),
+                thunk: Arc::clone(&func_thunk),
                 mat_span: Some(call_span),
             },
             &thunk_ctx,
@@ -2436,7 +2437,7 @@ pub fn materialize(
                     args: &args,
                     named: named.as_ref(),
                     call_span,
-                    ctx: Rc::clone(&thunk_ctx),
+                    ctx: Arc::clone(&thunk_ctx),
                 };
                 match (def.func)(builtin_args).map_err(&decorate) {
                     Ok(result_thunk) => {
@@ -2523,7 +2524,7 @@ pub fn materialize(
 
         let result = run(
             Action::Materialize {
-                thunk: Rc::clone(&inner),
+                thunk: Arc::clone(&inner),
                 mat_span: mat_span.copied(),
             },
             _ctx,
@@ -2556,7 +2557,7 @@ pub fn materialize(
                                 if let Some((default_expr, default_env)) = default {
                                     let default_thunk = match eval_recursive(
                                         Rc::clone(&default_expr),
-                                        Rc::clone(&default_env),
+                                        Arc::clone(&default_env),
                                         _ctx,
                                     ) {
                                         Ok(t) => t,
@@ -2616,7 +2617,7 @@ pub fn materialize(
                         if let Some((default_expr, default_env)) = default {
                             let default_thunk = match eval_recursive(
                                 Rc::clone(&default_expr),
-                                Rc::clone(&default_env),
+                                Arc::clone(&default_env),
                                 _ctx,
                             ) {
                                 Ok(t) => t,
@@ -2692,7 +2693,7 @@ pub fn materialize(
                         if let Some((default_expr, default_env)) = default {
                             let default_thunk = match eval_recursive(
                                 Rc::clone(&default_expr),
-                                Rc::clone(&default_env),
+                                Arc::clone(&default_env),
                                 _ctx,
                             ) {
                                 Ok(t) => t,
@@ -2787,7 +2788,7 @@ pub fn materialize(
         // then evaluate normally. This is the transitional path; Sprint 2 replaces this
         // with direct CoreExpr evaluation after the full Rc→Arc migration.
         let old_expr = Rc::new(crate::ast_convert::surface_node_to_expr(&node));
-        let result = eval(old_expr.clone(), Rc::clone(&env), &thunk_ctx)
+        let result = eval(old_expr.clone(), Arc::clone(&env), &thunk_ctx)
             .and_then(|result_thunk| {
                 run(
                     Action::Materialize {
@@ -2865,20 +2866,20 @@ fn is_truthy(value: &Value) -> bool {
 fn match_pattern(
     pattern: &Pattern,
     value: &Value,
-    env: &Rc<RefCell<Environment>>,
+    env: &Arc<RwLock<Environment>>,
     value_span: &Span,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Option<Rc<RefCell<Environment>>>> {
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Option<Arc<RwLock<Environment>>>> {
     match pattern {
         Pattern::Wildcard => {
             // Wildcard always matches, no bindings
-            Ok(Some(Rc::clone(env)))
+            Ok(Some(Arc::clone(env)))
         }
         Pattern::Variable(name) => {
             // Variable always matches and binds the value
-            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
-            let value_thunk = Rc::new(Thunk::new_materialized(value.clone(), *value_span));
-            child_env.borrow_mut().insert(name.clone(), value_thunk);
+            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
+            let value_thunk = Arc::new(Thunk::new_materialized(value.clone(), *value_span));
+            child_env.write().unwrap().insert(name.clone(), value_thunk);
             Ok(Some(child_env))
         }
         Pattern::TypeTag(tag) => {
@@ -2914,7 +2915,7 @@ fn match_pattern(
                 type_name == tag
             };
             if matches {
-                Ok(Some(Rc::clone(env)))
+                Ok(Some(Arc::clone(env)))
             } else {
                 Ok(None)
             }
@@ -2936,7 +2937,7 @@ fn match_pattern(
                 _ => false,
             };
             if matches {
-                Ok(Some(Rc::clone(env)))
+                Ok(Some(Arc::clone(env)))
             } else {
                 Ok(None)
             }
@@ -2944,7 +2945,7 @@ fn match_pattern(
         Pattern::Pin(name) => {
             // Pin matches if the variable's value equals the scrutinee value
             let var_thunk = env
-                .borrow()
+                .read().unwrap()
                 .get(name)
                 .ok_or_else(|| EvalError::undefined_variable(name.clone(), *value_span))?;
             let var_value = materialize(&var_thunk, Some(value_span), ctx)?;
@@ -2952,7 +2953,7 @@ fn match_pattern(
             // Compare values for equality
             let matches = values_equal(&var_value, value);
             if matches {
-                Ok(Some(Rc::clone(env)))
+                Ok(Some(Arc::clone(env)))
             } else {
                 Ok(None)
             }
@@ -2964,7 +2965,7 @@ fn match_pattern(
                 Value::Dict(dict_thunk_ids) => {
                     // Start with the current environment
                     let mut result_env =
-                        Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+                        Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
 
                     // Check each pattern field
                     for (key, field_pattern) in fields {
@@ -3034,7 +3035,7 @@ fn match_pattern(
 
                     // Match the head pattern
                     let mut result_env =
-                        Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+                        Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
                     match match_pattern(&head.node, &head_value, &result_env, &head.span, ctx)? {
                         Some(new_env) => {
                             result_env = new_env;
@@ -3083,7 +3084,7 @@ fn match_pattern(
                         }
                         (None, None) => {
                             // Unit constructor - no payload to bind
-                            Ok(Some(Rc::clone(env)))
+                            Ok(Some(Arc::clone(env)))
                         }
                         (Some(_), None) => {
                             // Pattern expects payload but variant has none
@@ -3102,7 +3103,7 @@ fn match_pattern(
                         return Ok(None);
                     }
                     match binding {
-                        None => Ok(Some(Rc::clone(env))),
+                        None => Ok(Some(Arc::clone(env))),
                         Some(payload_pattern) => {
                             // Build a payload Dict from the Expression's fields for pattern binding.
                             // Each field is a lazy AstNodeField thunk — only forced when demanded.
@@ -3111,10 +3112,10 @@ fn match_pattern(
                                 crate::surface_fields::surface_expr_field_names(&node.expr);
                             let mut payload_map = indexmap::IndexMap::new();
                             for field_name in field_names {
-                                let thunk_id = ctx.alloc_thunk(Rc::new(Thunk::new_ast_node_field(
+                                let thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_ast_node_field(
                                     std::sync::Arc::clone(&node),
                                     field_name,
-                                    Rc::clone(ctx),
+                                    Arc::clone(ctx),
                                     *value_span,
                                 )));
                                 payload_map
@@ -3167,10 +3168,10 @@ fn match_pattern(
 /// - Multi-element destructuring
 fn eval_case_arm(
     pattern: &Spanned<Expr>,
-    scrutinee_thunk: &Rc<Thunk>,
-    env: &Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Option<Rc<RefCell<Environment>>>> {
+    scrutinee_thunk: &Arc<Thunk>,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Option<Arc<RwLock<Environment>>>> {
     match &pattern.node {
         Expr::LetDecl { bindings } => {
             // Binding pattern — process each binding
@@ -3178,7 +3179,7 @@ fn eval_case_arm(
         }
         _ => {
             // Exact-value match — evaluate the pattern expression and compare
-            let pattern_thunk = eval(Rc::new(pattern.clone()), Rc::clone(env), ctx)?;
+            let pattern_thunk = eval(Rc::new(pattern.clone()), Arc::clone(env), ctx)?;
             let pattern_value = materialize(&pattern_thunk, Some(&pattern.span), ctx)?;
 
             // Materialize scrutinee for comparison
@@ -3186,7 +3187,7 @@ fn eval_case_arm(
 
             // Compare values
             if values_equal(&pattern_value, &scrutinee_value) {
-                Ok(Some(Rc::clone(env)))
+                Ok(Some(Arc::clone(env)))
             } else {
                 Ok(None) // Soft skip — arm doesn't match
             }
@@ -3212,11 +3213,11 @@ fn eval_case_arm(
 /// - Nested LetDecl patterns
 fn eval_let_pattern(
     bindings: &[Spanned<Expr>],
-    scrutinee_thunk: &Rc<Thunk>,
-    env: &Rc<RefCell<Environment>>,
+    scrutinee_thunk: &Arc<Thunk>,
+    env: &Arc<RwLock<Environment>>,
     pattern_span: &Span,
-    _ctx: &Rc<EvalContext>,
-) -> EvalResult<Option<Rc<RefCell<Environment>>>> {
+    _ctx: &Arc<EvalContext>,
+) -> EvalResult<Option<Arc<RwLock<Environment>>>> {
     // For the initial implementation, keep it simple:
     // Single binding: bind to the whole scrutinee
     if bindings.len() == 1 {
@@ -3224,23 +3225,23 @@ fn eval_let_pattern(
         match &binding.node {
             Expr::VarRef { name, .. } => {
                 // Bind the name to the scrutinee (as a thunk, preserving laziness)
-                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
                 child_env
-                    .borrow_mut()
-                    .insert(name.clone(), Rc::clone(scrutinee_thunk));
+                    .write().unwrap()
+                    .insert(name.clone(), Arc::clone(scrutinee_thunk));
                 Ok(Some(child_env))
             }
             Expr::Annotated { name, .. } => {
                 // Type annotation is compile-time only; bind the name
-                let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(env))));
+                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
                 child_env
-                    .borrow_mut()
-                    .insert(name.clone(), Rc::clone(scrutinee_thunk));
+                    .write().unwrap()
+                    .insert(name.clone(), Arc::clone(scrutinee_thunk));
                 Ok(Some(child_env))
             }
             Expr::Placeholder => {
                 // Wildcard — matches anything, no binding
-                Ok(Some(Rc::clone(env)))
+                Ok(Some(Arc::clone(env)))
             }
             _ => {
                 // Unsupported binding form for now
@@ -3308,11 +3309,11 @@ mod tests {
     use crate::test_util::{rsp, sp, test_span};
     use crate::value::*;
 
-    fn empty_env() -> Rc<RefCell<Environment>> {
-        Rc::new(RefCell::new(Environment::new()))
+    fn empty_env() -> Arc<RwLock<Environment>> {
+        Arc::new(RwLock::new(Environment::new()))
     }
 
-    fn test_ctx() -> Rc<EvalContext> {
+    fn test_ctx() -> Arc<EvalContext> {
         let env = empty_env();
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
@@ -3324,21 +3325,21 @@ mod tests {
     /// Dict values in `Value::Dict` are now `ThunkId` handles into the eval context's arena.
     /// Tests that inspect individual dict entries must resolve them through the same context
     /// that was used during `eval()`.
-    fn mat_id(id: &ThunkId, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
+    fn mat_id(id: &ThunkId, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
         let thunk = ctx.get_thunk(*id);
         materialize(&thunk, None, ctx)
     }
 
-    /// Resolve a `ThunkId` to `Rc<Thunk>` for tests that need direct thunk access
+    /// Resolve a `ThunkId` to `Arc<Thunk>` for tests that need direct thunk access
     /// (e.g. inspecting `ThunkState` or materializing with a custom mat_span).
-    fn get_thunk_rc(id: &ThunkId, ctx: &Rc<EvalContext>) -> Rc<Thunk> {
+    fn get_thunk_rc(id: &ThunkId, ctx: &Arc<EvalContext>) -> Arc<Thunk> {
         ctx.get_thunk(*id)
     }
 
     #[test]
     fn test_eval_int() {
         let expr = sp(Expr::Int(42));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -3346,7 +3347,7 @@ mod tests {
     #[test]
     fn test_eval_float() {
         let expr = sp(Expr::Float(3.14));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Float(3.14));
     }
@@ -3354,7 +3355,7 @@ mod tests {
     #[test]
     fn test_eval_bool() {
         let expr = sp(Expr::Bool(true));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Bool(true));
     }
@@ -3362,7 +3363,7 @@ mod tests {
     #[test]
     fn test_eval_str() {
         let expr = sp(Expr::Str("hello".into()));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, string_val("hello".into()));
     }
@@ -3371,13 +3372,13 @@ mod tests {
     fn test_varref_found() {
         let env = empty_env();
         let span = test_span(1, 1, 1, 5);
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "x".into(),
-            Rc::new(Thunk::new_materialized(Value::Int(99), span)),
+            Arc::new(Thunk::new_materialized(Value::Int(99), span)),
         );
 
         let expr = sp(Expr::var_ref("x".into()));
-        let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), env, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(99));
     }
@@ -3386,14 +3387,14 @@ mod tests {
     fn test_varref_parent_scope() {
         let parent = empty_env();
         let span = test_span(1, 1, 1, 5);
-        parent.borrow_mut().insert(
+        parent.write().unwrap().insert(
             "y".into(),
-            Rc::new(Thunk::new_materialized(Value::Int(77), span)),
+            Arc::new(Thunk::new_materialized(Value::Int(77), span)),
         );
 
-        let child = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&parent))));
+        let child = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&parent))));
         let expr = sp(Expr::var_ref("y".into()));
-        let thunk = eval(Rc::new(expr.clone()), child, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), child, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(77));
     }
@@ -3401,7 +3402,7 @@ mod tests {
     #[test]
     fn test_varref_not_found() {
         let expr = sp(Expr::var_ref("missing".into()));
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("undefined variable: missing"),
             "got: {}",
@@ -3424,7 +3425,7 @@ mod tests {
         ];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         match val {
@@ -3457,7 +3458,7 @@ mod tests {
         ];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         match val {
@@ -3503,7 +3504,7 @@ mod tests {
         ];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         match val {
@@ -3545,7 +3546,7 @@ mod tests {
         ];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         match val {
@@ -3572,7 +3573,7 @@ mod tests {
         ];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         match val {
@@ -3593,7 +3594,7 @@ mod tests {
         })];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         match val {
@@ -3621,7 +3622,7 @@ mod tests {
         })];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         let x_thunk = match val {
@@ -3671,7 +3672,7 @@ mod tests {
         let ctx = test_ctx();
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
 
         let x_thunk = match &dict_val {
@@ -3723,7 +3724,7 @@ mod tests {
         ];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let outer = materialize(&thunk, None, &ctx).unwrap();
 
         match outer {
@@ -3755,7 +3756,7 @@ mod tests {
             }),
         ];
         let expr = sp(Expr::Dict(entries));
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("duplicate key: x"),
             "got: {}",
@@ -3773,10 +3774,10 @@ mod tests {
                 annotation: None,
                 variadic: false,
             })],
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
             desugared: false,
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -3791,9 +3792,9 @@ mod tests {
     fn test_fn_captures_closure_env() {
         // outer: 42 is in env, [fn [] $outer] should capture it
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "outer".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Int(42),
                 test_span(1, 1, 1, 5),
             )),
@@ -3801,16 +3802,16 @@ mod tests {
         let fn_expr = sp(Expr::Fn {
             return_ann: None,
             params: vec![],
-            body: Rc::new(sp(Expr::var_ref("outer".into()))),
+            body: Arc::new(sp(Expr::var_ref("outer".into()))),
             desugared: false,
         });
-        let fn_thunk = eval(Rc::new(fn_expr.clone()), Rc::clone(&env), &test_ctx()).unwrap();
+        let fn_thunk = eval(Arc::new(fn_expr.clone()), Arc::clone(&env), &test_ctx()).unwrap();
         let fn_val = materialize(&fn_thunk, None, &test_ctx()).unwrap();
 
         // Call it: [call $f]
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
@@ -3818,7 +3819,7 @@ mod tests {
             named_args: vec![],
             implied: false,
         });
-        let result_thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let result_thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let result = materialize(&result_thunk, None, &test_ctx()).unwrap();
         assert_eq!(result, Value::Int(42));
     }
@@ -3830,26 +3831,26 @@ mod tests {
         // [call $f 42]
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::Int(42)))],
+            args: vec![Arc::new(sp(Expr::Int(42)))],
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -3860,7 +3861,7 @@ mod tests {
         // [call $f 10 20] → 20
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "a".into(),
                     annotation: None,
@@ -3872,21 +3873,21 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("b".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("b".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::Int(10))), Rc::new(sp(Expr::Int(20)))],
+            args: vec![Arc::new(sp(Expr::Int(10))), Arc::new(sp(Expr::Int(20)))],
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(20));
     }
@@ -3894,9 +3895,9 @@ mod tests {
     #[test]
     fn test_call_on_non_function() {
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "x".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Int(42),
                 test_span(1, 1, 1, 5),
             )),
@@ -3907,7 +3908,7 @@ mod tests {
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
@@ -3928,7 +3929,7 @@ mod tests {
         // [call $f 1] → arity mismatch
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -3940,21 +3941,21 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::Int(1)))],
+            args: vec![Arc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
@@ -3971,18 +3972,18 @@ mod tests {
         // [call $f 1 2] → arity mismatch
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
@@ -3990,7 +3991,7 @@ mod tests {
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
@@ -4010,7 +4011,7 @@ mod tests {
             value: rsp(Expr::Int(99)),
         });
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -4022,22 +4023,22 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("y".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("y".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         // Call without named arg -- y should default to 99
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::Int(1)))],
+            args: vec![Arc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), Rc::clone(&env), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), Arc::clone(&env), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(99));
     }
@@ -4052,7 +4053,7 @@ mod tests {
             value: rsp(Expr::Int(99)),
         });
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -4064,24 +4065,24 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("y".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("y".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::Int(1)))],
+            args: vec![Arc::new(sp(Expr::Int(1)))],
             named_args: vec![sp(NamedArg {
                 name: "y".into(),
                 value: rsp(Expr::Int(42)),
             })],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -4092,29 +4093,29 @@ mod tests {
         // [call $f 1 z: 2] → error: unexpected named argument
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::Int(1)))],
+            args: vec![Arc::new(sp(Expr::Int(1)))],
             named_args: vec![sp(NamedArg {
                 name: "z".into(),
                 value: rsp(Expr::Int(2)),
             })],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
@@ -4134,7 +4135,7 @@ mod tests {
             value: rsp(Expr::Int(99)),
         });
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -4146,13 +4147,13 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("y".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("y".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
@@ -4163,7 +4164,7 @@ mod tests {
             })],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
@@ -4182,7 +4183,7 @@ mod tests {
         // Empty variadic = Dict({}) (nil sentinel); non-empty = Seq { head, tail }.
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -4194,26 +4195,26 @@ mod tests {
                     variadic: true,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("rest".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("rest".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
             args: vec![
-                Rc::new(sp(Expr::Int(1))),
-                Rc::new(sp(Expr::Int(2))),
-                Rc::new(sp(Expr::Int(3))),
+                Arc::new(sp(Expr::Int(1))),
+                Arc::new(sp(Expr::Int(2))),
+                Arc::new(sp(Expr::Int(3))),
             ],
             named_args: vec![],
             implied: false,
         });
         let ctx = test_ctx();
-        let thunk = eval(Rc::new(call_expr.clone()), env, &ctx).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
         // Outer Seq: head = Int(2), tail = Seq(3, {})
         match val {
@@ -4245,7 +4246,7 @@ mod tests {
         // [call $f 1] → rest = Dict({})
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -4257,21 +4258,21 @@ mod tests {
                     variadic: true,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("rest".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("rest".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::Int(1)))],
+            args: vec![Arc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match val {
             Value::Dict(map) => assert_eq!(map.len(), 0),
@@ -4281,12 +4282,12 @@ mod tests {
 
     #[test]
     fn test_call_builtin() {
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, &test_ctx())?;
             let b = materialize(&args[1], None, &test_ctx())?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
                     Value::Int(x + y),
                     test_span(1, 1, 1, 1),
                 ))),
@@ -4294,9 +4295,9 @@ mod tests {
             }
         }
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "add".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Builtin(crate::value::BuiltinDef {
                     func: add_builtin,
                     name: "add",
@@ -4307,11 +4308,11 @@ mod tests {
         );
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("add".into()))),
-            args: vec![Rc::new(sp(Expr::Int(3))), Rc::new(sp(Expr::Int(4)))],
+            args: vec![Arc::new(sp(Expr::Int(3))), Arc::new(sp(Expr::Int(4)))],
             named_args: vec![],
             implied: false,
         });
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(7));
     }
@@ -4322,7 +4323,7 @@ mod tests {
             params: vec![],
             body: Box::new(sp(Expr::var_ref("MyType".into()))),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match val {
             Value::Dict(map) => assert_eq!(map.len(), 0),
@@ -4333,7 +4334,7 @@ mod tests {
     #[test]
     fn test_rest_marker_anonymous_errors() {
         let expr = sp(Expr::Rest(None));
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("rest marker (...) is only valid inside type expressions"),
@@ -4345,7 +4346,7 @@ mod tests {
     #[test]
     fn test_rest_marker_named_errors() {
         let expr = sp(Expr::Rest(Some("x".into())));
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("rest marker (...) is only valid inside type expressions"),
@@ -4359,7 +4360,7 @@ mod tests {
         // $_ alone is just a VarRef, not an implicit lambda
         // It should fail with "undefined variable" if not in scope
         let expr = sp(Expr::var_ref("_".into()));
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("undefined variable: _"),
             "got: {}",
@@ -4384,7 +4385,7 @@ mod tests {
         // Desugar before eval (simulates pipeline integration)
         crate::desugar::desugar_expr(&mut expr, 0);
 
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -4401,23 +4402,23 @@ mod tests {
         // The outer [call ...] contains $_ directly → wraps in [fn [_] [call $f $_]]
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
 
         let mut call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("f".into()))),
-            args: vec![Rc::new(sp(Expr::var_ref("_".into())))],
+            args: vec![Arc::new(sp(Expr::var_ref("_".into())))],
             named_args: vec![],
             implied: false,
         });
@@ -4425,7 +4426,7 @@ mod tests {
         // Desugar before eval
         crate::desugar::desugar_expr(&mut call_expr, 0);
 
-        let thunk = eval(Rc::new(call_expr.clone()), Rc::clone(&env), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), Arc::clone(&env), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -4451,11 +4452,11 @@ mod tests {
         crate::desugar::desugar_expr(&mut getter_expr, 0);
 
         let getter_thunk =
-            eval(Rc::new(getter_expr.clone()), Rc::clone(&env), &test_ctx()).unwrap();
+            eval(Arc::new(getter_expr.clone()), Arc::clone(&env), &test_ctx()).unwrap();
         let getter_val = materialize(&getter_thunk, None, &test_ctx()).unwrap();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "getter".into(),
-            Rc::new(Thunk::new_materialized(getter_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(getter_val, test_span(1, 1, 1, 10))),
         );
 
         // Call it with [name: alice]
@@ -4468,7 +4469,7 @@ mod tests {
             named_args: vec![],
             implied: false,
         });
-        let result_thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let result_thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let result = materialize(&result_thunk, None, &test_ctx()).unwrap();
         assert_eq!(result, string_val("alice".into()));
     }
@@ -4488,7 +4489,7 @@ mod tests {
         // Desugar before eval
         crate::desugar::desugar_expr(&mut expr, 0);
 
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -4505,18 +4506,18 @@ mod tests {
         // Call with $_ in a named arg value should desugar to an implicit lambda
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 10))),
         );
 
         let mut call_expr = sp(Expr::Call {
@@ -4532,7 +4533,7 @@ mod tests {
         // Desugar before eval
         crate::desugar::desugar_expr(&mut call_expr, 0);
 
-        let thunk = eval(Rc::new(call_expr.clone()), Rc::clone(&env), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), Arc::clone(&env), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match val {
             Value::Function { params, .. } => {
@@ -4574,20 +4575,20 @@ mod tests {
         let ctx = test_ctx();
         let dict = dict_with_entries(vec![("name", string_val("hello".into()))]);
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
 
         // Bind the dict to $d in the environment
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "d".into(),
-            Rc::new(Thunk::new_materialized(dict_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(dict_val, test_span(1, 1, 1, 10))),
         );
 
         let expr = sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("d".into()))),
             field: crate::ast::DotKey::Ident("name".into()),
         });
-        let thunk = eval(Rc::new(expr.clone()), env, &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), env, &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
         assert_eq!(val, string_val("hello".into()));
     }
@@ -4596,18 +4597,18 @@ mod tests {
     fn test_dot_access_missing_key() {
         let dict = dict_with_entries(vec![("x", Value::Int(1))]);
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &test_ctx()).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &test_ctx()).unwrap();
         let dict_val = materialize(&dict_thunk, None, &test_ctx()).unwrap();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "d".into(),
-            Rc::new(Thunk::new_materialized(dict_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(dict_val, test_span(1, 1, 1, 10))),
         );
 
         let expr = sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("d".into()))),
             field: crate::ast::DotKey::Ident("missing".into()),
         });
-        let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("key not found: missing"),
@@ -4619,9 +4620,9 @@ mod tests {
     #[test]
     fn test_dot_access_on_non_dict() {
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "x".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Int(42),
                 test_span(1, 1, 1, 5),
             )),
@@ -4631,7 +4632,7 @@ mod tests {
             expr: Box::new(sp(Expr::var_ref("x".into()))),
             field: crate::ast::DotKey::Ident("foo".into()),
         });
-        let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("expected"),
@@ -4656,7 +4657,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -4669,7 +4670,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, string_val("hello".into()));
     }
@@ -4682,7 +4683,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -4695,7 +4696,7 @@ mod tests {
             expr: Box::new(sp(Expr::Float(3.14))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Float(3.14));
     }
@@ -4708,7 +4709,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(None),
         });
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
@@ -4725,7 +4726,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("type assertion failed: expected String, got Int"),
@@ -4742,7 +4743,7 @@ mod tests {
             expr: Box::new(sp(Expr::Bool(true))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Bool(true));
     }
@@ -4759,7 +4760,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -4776,7 +4777,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(None),
         });
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
@@ -4797,7 +4798,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, string_val("hello".into()));
     }
@@ -4820,7 +4821,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -4843,7 +4844,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(0));
     }
@@ -4860,7 +4861,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(None),
         });
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
@@ -4887,7 +4888,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr_pass.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr_pass.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
 
@@ -4907,7 +4908,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("nope".into()))),
             resolved_type: RefCell::new(None),
         });
-        let thunk2 = eval(Rc::new(expr_fail.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk2 = eval(Arc::new(expr_fail.clone()), empty_env(), &test_ctx()).unwrap();
         let val2 = materialize(&thunk2, None, &test_ctx()).unwrap();
         assert_eq!(val2, Value::Int(-1));
     }
@@ -4931,14 +4932,14 @@ mod tests {
             resolved_type: RefCell::new(None),
         });
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "fallback".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Int(99),
                 test_span(1, 1, 1, 1),
             )),
         );
-        let thunk = eval(Rc::new(expr.clone()), Rc::clone(&env), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), Arc::clone(&env), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(99));
     }
@@ -4950,7 +4951,7 @@ mod tests {
             name: "Config".into(),
             annotation: sp(Annotation::Simple("ConfigType".into())),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, string_val("Config".into()));
     }
@@ -4970,11 +4971,11 @@ mod tests {
         })];
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "d".into(),
-            Rc::new(Thunk::new_materialized(dict_val, test_span(1, 1, 1, 10))),
+            Arc::new(Thunk::new_materialized(dict_val, test_span(1, 1, 1, 10))),
         );
 
         // $d.outer.inner
@@ -4985,7 +4986,7 @@ mod tests {
             })),
             field: crate::ast::DotKey::Ident("inner".into()),
         });
-        let thunk = eval(Rc::new(expr.clone()), env, &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), env, &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
         assert_eq!(val, Value::Int(99));
     }
@@ -5000,7 +5001,7 @@ mod tests {
         let ctx = test_ctx();
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
 
         // Extract x's thunk from the dict
@@ -5033,7 +5034,7 @@ mod tests {
         })];
         let ctx = test_ctx();
         let expr = sp(Expr::Dict(entries));
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         match val {
@@ -5057,7 +5058,7 @@ mod tests {
             value: rsp(Expr::Int(1)),
         })];
         let expr = sp(Expr::Dict(entries));
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("type mismatch"),
             "got: {}",
@@ -5083,7 +5084,7 @@ mod tests {
             value: rsp(Expr::Int(1)),
         })];
         let expr = sp(Expr::Dict(entries));
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("type mismatch"),
             "got: {}",
@@ -5115,7 +5116,7 @@ mod tests {
             }),
         ];
         let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(entries)))],
+            expressions: vec![Arc::new(sp(Expr::Dict(entries)))],
             name: None,
             output_type: None,
             expects: None,
@@ -5155,7 +5156,7 @@ mod tests {
             value: rsp(Expr::var_ref("x".into())),
         })]));
         let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            expressions: vec![Arc::new(expr1), Arc::new(expr2)],
             name: None,
             output_type: None,
             expects: None,
@@ -5194,7 +5195,7 @@ mod tests {
             }),
         ]));
         let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            expressions: vec![Arc::new(expr1), Arc::new(expr2)],
             name: None,
             output_type: None,
             expects: None,
@@ -5222,7 +5223,7 @@ mod tests {
             value: rsp(Expr::Int(1)),
         })]));
         let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            expressions: vec![Arc::new(expr1), Arc::new(expr2)],
             name: None,
             output_type: None,
             expects: None,
@@ -5289,7 +5290,7 @@ mod tests {
             }),
         ]));
         let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2), Rc::new(expr3)],
+            expressions: vec![Arc::new(expr1), Arc::new(expr2), Arc::new(expr3)],
             name: None,
             output_type: None,
             expects: None,
@@ -5316,9 +5317,9 @@ mod tests {
         // A document evaluated with a pre-populated parent env.
         // The document's expressions should see the parent's bindings.
         let parent_env = empty_env();
-        parent_env.borrow_mut().insert(
+        parent_env.write().unwrap().insert(
             "external".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Int(999),
                 test_span(1, 1, 1, 5),
             )),
@@ -5329,7 +5330,7 @@ mod tests {
             value: rsp(Expr::var_ref("external".into())),
         })]));
         let doc = sp(Document {
-            expressions: vec![Rc::new(expr)],
+            expressions: vec![Arc::new(expr)],
             name: None,
             output_type: None,
             expects: None,
@@ -5353,7 +5354,7 @@ mod tests {
         // A document with a single Int expression (not a dict).
         // The last expression can be any type.
         let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Int(42)))],
+            expressions: vec![Arc::new(sp(Expr::Int(42)))],
             name: None,
             output_type: None,
             expects: None,
@@ -5389,7 +5390,7 @@ mod tests {
             value: rsp(Expr::Int(99)),
         })]));
         let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            expressions: vec![Arc::new(expr1), Arc::new(expr2)],
             name: None,
             output_type: None,
             expects: None,
@@ -5429,7 +5430,7 @@ mod tests {
             }),
         ]));
         let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
+            expressions: vec![Arc::new(expr1), Arc::new(expr2)],
             name: None,
             output_type: None,
             expects: None,
@@ -5452,7 +5453,7 @@ mod tests {
     fn test_eval_file_single_document() {
         // A file with one document containing [x: 1]. Verify x=1.
         let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::Int(1)),
             })])))],
@@ -5485,7 +5486,7 @@ mod tests {
         // A file with one document containing [prev: %].
         // % is VarRef("%"), should resolve to empty dict for first doc.
         let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("prev".into()))),
                 value: rsp(Expr::var_ref("%".into())),
             })])))],
@@ -5520,7 +5521,7 @@ mod tests {
         // Doc 2: [y: %.x]  (access previous doc's x via %)
         // Verify y=10.
         let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::Int(10)),
             })])))],
@@ -5531,7 +5532,7 @@ mod tests {
             stage: None,
         });
         let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
                 value: rsp(Expr::DotAccess {
                     expr: Box::new(sp(Expr::var_ref("%".into()))),
@@ -5565,7 +5566,7 @@ mod tests {
         // Doc 2: [prev: %]
         // Verify that prev resolves to Int(42).
         let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Int(42)))],
+            expressions: vec![Arc::new(sp(Expr::Int(42)))],
             name: None,
             output_type: None,
             expects: None,
@@ -5573,7 +5574,7 @@ mod tests {
             stage: None,
         });
         let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("prev".into()))),
                 value: rsp(Expr::var_ref("%".into())),
             })])))],
@@ -5607,7 +5608,7 @@ mod tests {
         // Doc 2: [result: %.good]
         // Verify result=1.
         let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![
                 sp(Entry {
                     key: Some(sp(Expr::Str("good".into()))),
                     value: rsp(Expr::Int(1)),
@@ -5624,7 +5625,7 @@ mod tests {
             stage: None,
         });
         let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
                     expr: Box::new(sp(Expr::var_ref("%".into()))),
@@ -5660,7 +5661,7 @@ mod tests {
         // Doc 3: [result: %.b]
         // Verify result=1 (piped through two boundaries).
         let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("a".into()))),
                 value: rsp(Expr::Int(1)),
             })])))],
@@ -5671,7 +5672,7 @@ mod tests {
             stage: None,
         });
         let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![
                 sp(Entry {
                     key: Some(sp(Expr::Str("b".into()))),
                     value: rsp(Expr::DotAccess {
@@ -5691,7 +5692,7 @@ mod tests {
             stage: None,
         });
         let doc3 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
                     expr: Box::new(sp(Expr::var_ref("%".into()))),
@@ -5725,7 +5726,7 @@ mod tests {
         // Doc 1: [x: 42]
         // Doc 2: [y: x]  (NOT %.x, just x -- should fail)
         let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::Int(42)),
             })])))],
@@ -5736,7 +5737,7 @@ mod tests {
             stage: None,
         });
         let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("y".into()))),
                 value: rsp(Expr::var_ref("x".into())),
             })])))],
@@ -5784,16 +5785,16 @@ mod tests {
         // A file evaluated with a pre-populated parent env.
         // Document expressions should see the parent's bindings.
         let parent_env = empty_env();
-        parent_env.borrow_mut().insert(
+        parent_env.write().unwrap().insert(
             "external".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Int(777),
                 test_span(1, 1, 1, 5),
             )),
         );
 
         let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("val".into()))),
                 value: rsp(Expr::var_ref("external".into())),
             })])))],
@@ -5825,7 +5826,7 @@ mod tests {
         // Doc 2 (named "overrides"): [host: "prod"]
         // Doc 3 (anonymous): [port: %defaults.port  host: %overrides.host]
         let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("port".into()))),
                 value: rsp(Expr::Int(8080)),
             })])))],
@@ -5836,7 +5837,7 @@ mod tests {
             stage: None,
         });
         let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("host".into()))),
                 value: rsp(Expr::Str("prod".into())),
             })])))],
@@ -5847,7 +5848,7 @@ mod tests {
             stage: None,
         });
         let doc3 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![
                 sp(Entry {
                     key: Some(sp(Expr::Str("port".into()))),
                     value: rsp(Expr::DotAccess {
@@ -5898,7 +5899,7 @@ mod tests {
         // The forward reference %late inside doc1 should produce UndefinedVariable when doc3
         // forces doc1 to materialize. This proves the no-forward-refs invariant.
         let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("x".into()))),
                 value: rsp(Expr::DotAccess {
                     expr: Box::new(sp(Expr::var_ref("%late".into()))),
@@ -5912,7 +5913,7 @@ mod tests {
             stage: None,
         });
         let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("value".into()))),
                 value: rsp(Expr::Int(42)),
             })])))],
@@ -5925,7 +5926,7 @@ mod tests {
         // Doc 3: references %early.x, which forces doc1's x thunk to materialise.
         // x = %late.value, but %late is not bound in doc1's scope, so this must fail.
         let doc3 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
+            expressions: vec![Arc::new(sp(Expr::Dict(vec![sp(Entry {
                 key: Some(sp(Expr::Str("result".into()))),
                 value: rsp(Expr::DotAccess {
                     expr: Box::new(sp(Expr::var_ref("%early".into()))),
@@ -6014,11 +6015,11 @@ mod tests {
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(
             Key::String("a".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         map.insert(
             Key::String("b".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(2), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let val = Value::Dict(map);
         let result = deep_materialize(&val, &ctx, None).unwrap();
@@ -6041,12 +6042,12 @@ mod tests {
         let mut inner: IndexMap<Key, ThunkId> = IndexMap::new();
         inner.insert(
             Key::String("y".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
         );
         let mut outer: IndexMap<Key, ThunkId> = IndexMap::new();
         outer.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(inner), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(inner), span))),
         );
         let val = Value::Dict(outer);
         let result = deep_materialize(&val, &ctx, None).unwrap();
@@ -6069,9 +6070,9 @@ mod tests {
     fn test_deep_materialize_forces_unevaluated_thunks() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(99), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
-        let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+        let expr = Arc::new(Spanned::new(Expr::Int(99), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let unevaluated = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
 
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(Key::String("val".into()), ctx.alloc_thunk(unevaluated));
@@ -6091,13 +6092,13 @@ mod tests {
     fn test_deep_materialize_function_passthrough() {
         let span = test_span(1, 1, 1, 5);
         let val = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(Spanned::new(Expr::Int(0), span)),
-            env: Rc::new(RefCell::new(Environment::new())),
+            body: Arc::new(Spanned::new(Expr::Int(0), span)),
+            env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
         let result = deep_materialize(&val, &test_ctx(), None).unwrap();
@@ -6113,8 +6114,8 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_builtin_passthrough() {
-        fn dummy(_ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-            Ok(Rc::new(Thunk::new_materialized(
+        fn dummy(_ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+            Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(0),
                 test_span(1, 1, 1, 1),
             )))
@@ -6138,14 +6139,14 @@ mod tests {
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(
             Key::Int(0),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("zero".into()),
                 span,
             ))),
         );
         map.insert(
             Key::Int(1),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("one".into()),
                 span,
             ))),
@@ -6171,15 +6172,15 @@ mod tests {
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(
             Key::String("c".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(3), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(3), span))),
         );
         map.insert(
             Key::String("a".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         map.insert(
             Key::String("b".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(2), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let val = Value::Dict(map);
         let result = deep_materialize(&val, &ctx, None).unwrap();
@@ -6205,19 +6206,19 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
         let func_val = Value::Function {
-            params: Rc::new(vec![]),
-            body: Rc::new(Spanned::new(Expr::Int(0), span)),
-            env: Rc::new(RefCell::new(Environment::new())),
+            params: Arc::new(vec![]),
+            body: Arc::new(Spanned::new(Expr::Int(0), span)),
+            env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(
             Key::String("f".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(func_val, span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(func_val, span))),
         );
         map.insert(
             Key::String("v".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(10), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(10), span))),
         );
         let val = Value::Dict(map);
         let result = deep_materialize(&val, &ctx, None).unwrap();
@@ -6241,17 +6242,17 @@ mod tests {
         let mut level3: IndexMap<Key, ThunkId> = IndexMap::new();
         level3.insert(
             Key::String("c".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(99), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(99), span))),
         );
         let mut level2: IndexMap<Key, ThunkId> = IndexMap::new();
         level2.insert(
             Key::String("b".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(level3), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(level3), span))),
         );
         let mut level1: IndexMap<Key, ThunkId> = IndexMap::new();
         level1.insert(
             Key::String("a".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(level2), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(level2), span))),
         );
         let val = Value::Dict(level1);
 
@@ -6284,9 +6285,9 @@ mod tests {
         // are in the Materialized state (not Unevaluated or PendingBuiltin)
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(7), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
-        let unevaluated = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+        let expr = Arc::new(Spanned::new(Expr::Int(7), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let unevaluated = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
 
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(Key::String("x".into()), ctx.alloc_thunk(unevaluated));
@@ -6311,20 +6312,20 @@ mod tests {
         // Verify that deep_materialize forces both head and tail of Seq
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let head_expr = Rc::new(Spanned::new(Expr::Int(42), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
-        let head_thunk_rc = Rc::new(Thunk::new_unevaluated(
-            Rc::clone(&head_expr),
-            Rc::clone(&env),
-            Rc::clone(&ctx),
+        let head_expr = Arc::new(Spanned::new(Expr::Int(42), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
+        let head_thunk_rc = Arc::new(Thunk::new_unevaluated(
+            Arc::clone(&head_expr),
+            Arc::clone(&env),
+            Arc::clone(&ctx),
             span,
         ));
 
-        let tail_expr = Rc::new(Spanned::new(Expr::Str("tail".into()), span));
-        let tail_thunk_rc = Rc::new(Thunk::new_unevaluated(
+        let tail_expr = Arc::new(Spanned::new(Expr::Str("tail".into()), span));
+        let tail_thunk_rc = Arc::new(Thunk::new_unevaluated(
             tail_expr,
-            Rc::clone(&env),
-            Rc::clone(&ctx),
+            Arc::clone(&env),
+            Arc::clone(&ctx),
             span,
         ));
 
@@ -6364,7 +6365,7 @@ mod tests {
         // new IDs in the output), but value equality must hold.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let shared_thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let shared_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
         // Allocate once; use the same ThunkId for both entries
         let shared_id = ctx.alloc_thunk(shared_thunk);
 
@@ -6396,7 +6397,7 @@ mod tests {
         // Intentionally invalid Seq tail (Int instead of Seq/Dict) — tests value preservation.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let shared_thunk = Rc::new(Thunk::new_materialized(Value::Int(99), span));
+        let shared_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
         let shared_id = ctx.alloc_thunk(shared_thunk);
 
         let seq = Value::Seq {
@@ -6423,17 +6424,17 @@ mod tests {
         // (ThunkId equality not guaranteed in the arena model).
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let shared_rc = Rc::new(Thunk::new_materialized(string_val("shared".into()), span));
+        let shared_rc = Arc::new(Thunk::new_materialized(string_val("shared".into()), span));
         let shared_id = ctx.alloc_thunk(shared_rc);
 
         let mut inner_dict: IndexMap<Key, ThunkId> = IndexMap::new();
         inner_dict.insert(Key::String("x".into()), shared_id);
-        let inner_dict_thunk = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        let inner_dict_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(inner_dict),
             span,
         )));
 
-        let empty_tail_id = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+        let empty_tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
             span,
         )));
@@ -6441,7 +6442,7 @@ mod tests {
             head: shared_id,
             tail: empty_tail_id,
         };
-        let seq_thunk = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(seq_val, span)));
+        let seq_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(seq_val, span)));
 
         let mut outer: IndexMap<Key, ThunkId> = IndexMap::new();
         outer.insert(Key::String("nested".into()), inner_dict_thunk);
@@ -6484,12 +6485,12 @@ mod tests {
         // Test that deep_materialize traverses into the proxy handler thunk
         // and returns a new Proxy with the deep-materialized handler.
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(42), span));
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let expr = Arc::new(Spanned::new(Expr::Int(42), span));
+        let env = Arc::new(RwLock::new(Environment::new()));
         let ctx = test_ctx();
 
         // Create an unevaluated handler thunk
-        let handler_rc = Rc::new(Thunk::new_unevaluated(expr, env, Rc::clone(&ctx), span));
+        let handler_rc = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
         let handler_id = ctx.alloc_thunk(handler_rc);
         let proxy_val = Value::Proxy {
             handler: handler_id,
@@ -6520,21 +6521,21 @@ mod tests {
         let env = empty_env();
         let fn_span = test_span(1, 1, 1, 20);
         let fn_val = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(Spanned::new(
+            body: Arc::new(Spanned::new(
                 Expr::var_ref("missing".into()),
                 test_span(1, 15, 1, 23),
             )),
-            env: Rc::clone(&env),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, fn_span)),
+            Arc::new(Thunk::new_materialized(fn_val, fn_span)),
         );
 
         let call_span = test_span(2, 1, 2, 15);
@@ -6544,14 +6545,14 @@ mod tests {
                     Expr::var_ref("f".into()),
                     test_span(2, 7, 2, 8),
                 )),
-                args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
+                args: vec![Arc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
                 named_args: vec![],
                 implied: false,
             },
             call_span,
         );
 
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("undefined variable: missing"),
@@ -6577,38 +6578,38 @@ mod tests {
 
         // Inner function
         let inner_fn = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(Spanned::new(
+            body: Arc::new(Spanned::new(
                 Expr::var_ref("missing".into()),
                 test_span(1, 20, 1, 28),
             )),
-            env: Rc::clone(&env),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "inner".into(),
-            Rc::new(Thunk::new_materialized(inner_fn, test_span(1, 1, 1, 30))),
+            Arc::new(Thunk::new_materialized(inner_fn, test_span(1, 1, 1, 30))),
         );
 
         // Outer function: body is [call $inner $y]
         let inner_call_span = test_span(2, 15, 2, 30);
         let outer_fn = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "y".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(Spanned::new(
+            body: Arc::new(Spanned::new(
                 Expr::Call {
                     func: Box::new(Spanned::new(
                         Expr::var_ref("inner".into()),
                         test_span(2, 21, 2, 26),
                     )),
-                    args: vec![Rc::new(Spanned::new(
+                    args: vec![Arc::new(Spanned::new(
                         Expr::var_ref("y".into()),
                         test_span(2, 28, 2, 29),
                     ))],
@@ -6617,12 +6618,12 @@ mod tests {
                 },
                 inner_call_span,
             )),
-            env: Rc::clone(&env),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "outer".into(),
-            Rc::new(Thunk::new_materialized(outer_fn, test_span(2, 1, 2, 35))),
+            Arc::new(Thunk::new_materialized(outer_fn, test_span(2, 1, 2, 35))),
         );
 
         // Evaluate [call $outer 1]
@@ -6633,14 +6634,14 @@ mod tests {
                     Expr::var_ref("outer".into()),
                     test_span(3, 7, 3, 12),
                 )),
-                args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(3, 14, 3, 15)))],
+                args: vec![Arc::new(Spanned::new(Expr::Int(1), test_span(3, 14, 3, 15)))],
                 named_args: vec![],
                 implied: false,
             },
             outer_call_span,
         );
 
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(err.to_string().contains("undefined variable: missing"));
 
@@ -6676,20 +6677,20 @@ mod tests {
         let ctx = test_ctx();
         let dict_span = test_span(1, 1, 1, 20);
         let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::new();
-        let bad_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(Spanned::new(
+        let bad_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(Spanned::new(
                 Expr::var_ref("missing".into()),
                 test_span(1, 8, 1, 15),
             )),
-            Rc::clone(&env),
-            Rc::clone(&ctx),
+            Arc::clone(&env),
+            Arc::clone(&ctx),
             test_span(1, 8, 1, 15),
         ));
         dict_map.insert(Key::String("x".into()), ctx.alloc_thunk(bad_thunk));
 
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "a".into(),
-            Rc::new(Thunk::new_materialized(Value::Dict(dict_map), dict_span)),
+            Arc::new(Thunk::new_materialized(Value::Dict(dict_map), dict_span)),
         );
 
         // Now access $a.x -- this should succeed (returns the thunk), but
@@ -6706,7 +6707,7 @@ mod tests {
             access_span,
         );
 
-        let thunk = eval(Rc::new(access_expr.clone()), env, &ctx).unwrap();
+        let thunk = eval(Arc::new(access_expr.clone()), env, &ctx).unwrap();
         let mat_span = test_span(3, 1, 3, 10);
         let err = materialize(&thunk, Some(&mat_span), &ctx).unwrap_err();
         assert!(err.to_string().contains("undefined variable: missing"));
@@ -6731,7 +6732,7 @@ mod tests {
             access_span,
         );
 
-        let thunk = eval(Rc::new(access_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(access_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(err.to_string().contains("undefined variable: nonexistent"));
         // Should have an "accessing .field" frame
@@ -6752,22 +6753,22 @@ mod tests {
         let mut inner_map: IndexMap<Key, ThunkId> = IndexMap::new();
         inner_map.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_unevaluated(
-                Rc::new(Spanned::new(
+            ctx.alloc_thunk(Arc::new(Thunk::new_unevaluated(
+                Arc::new(Spanned::new(
                     Expr::var_ref("missing".into()),
                     test_span(1, 10, 1, 18),
                 )),
-                Rc::clone(&inner_env),
-                Rc::clone(&ctx),
+                Arc::clone(&inner_env),
+                Arc::clone(&ctx),
                 test_span(1, 10, 1, 18),
             ))),
         );
         let inner_dict = Value::Dict(inner_map);
 
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "a".into(),
-            Rc::new(Thunk::new_materialized(inner_dict, test_span(1, 1, 1, 20))),
+            Arc::new(Thunk::new_materialized(inner_dict, test_span(1, 1, 1, 20))),
         );
 
         // Build $a.x access
@@ -6784,7 +6785,7 @@ mod tests {
         );
 
         // Eval returns an Unevaluated thunk wrapping the DotAccess
-        let thunk = eval(Rc::new(access_expr.clone()), Rc::clone(&env), &ctx).unwrap();
+        let thunk = eval(Arc::new(access_expr.clone()), Arc::clone(&env), &ctx).unwrap();
 
         // Materialize with a different span (simulating a reference from $b)
         let b_span = test_span(3, 1, 3, 5);
@@ -6842,10 +6843,10 @@ mod tests {
 
         // Create a thunk whose body is another unevaluated thunk that errors
         let inner_expr = Spanned::new(Expr::var_ref("missing".into()), test_span(1, 1, 1, 8));
-        let inner_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(inner_expr),
-            Rc::clone(&env),
-            Rc::clone(&test_ctx()),
+        let inner_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(inner_expr),
+            Arc::clone(&env),
+            Arc::clone(&test_ctx()),
             test_span(1, 1, 1, 8),
         ));
 
@@ -6867,7 +6868,7 @@ mod tests {
         // Calling a function with wrong arity should include the call site frame
         let env = empty_env();
         let fn_val = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "a".into(),
                     annotation: None,
@@ -6879,13 +6880,13 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::var_ref("a".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("a".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "f".into(),
-            Rc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 20))),
+            Arc::new(Thunk::new_materialized(fn_val, test_span(1, 1, 1, 20))),
         );
 
         // Call with wrong arity: [call $f 1] (needs 2 args)
@@ -6896,14 +6897,14 @@ mod tests {
                     Expr::var_ref("f".into()),
                     test_span(2, 7, 2, 8),
                 )),
-                args: vec![Rc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
+                args: vec![Arc::new(Spanned::new(Expr::Int(1), test_span(2, 10, 2, 11)))],
                 named_args: vec![],
                 implied: false,
             },
             call_span,
         );
 
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(err
@@ -6922,7 +6923,7 @@ mod tests {
         // Calling a builtin that errors should include "call $builtin_name" in the stack.
         // We'll use $type-of with an intentionally broken setup to trigger an error.
         // Actually, let's use a custom failing builtin for clarity.
-        fn failing_builtin(_ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn failing_builtin(_ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             Err(
                 EvalError::internal("test builtin failure".to_string(), test_span(99, 1, 99, 10))
                     .into(),
@@ -6930,9 +6931,9 @@ mod tests {
         }
 
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "fail".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Builtin(crate::value::BuiltinDef {
                     func: failing_builtin,
                     name: "fail",
@@ -6949,7 +6950,7 @@ mod tests {
             implied: false,
         });
 
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(err.to_string().contains("test builtin failure"));
         // The stack should contain "[fail ...]"
@@ -6986,7 +6987,7 @@ mod tests {
 
         // Create a simple addition function
         let add_fn = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -6998,7 +6999,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::Call {
+            body: Arc::new(sp(Expr::Call {
                 func: Box::new(sp(Expr::var_ref("+".into()))),
                 args: vec![
                     rsp(Expr::var_ref("x".into())),
@@ -7007,26 +7008,26 @@ mod tests {
                 named_args: vec![],
                 implied: false,
             })),
-            env: Rc::clone(&env),
+            env: Arc::clone(&env),
             annotation: None,
         };
 
         // Add the builtin $+ to the environment
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, &test_ctx())?;
             let b = materialize(&args[1], None, &test_ctx())?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
                     Value::Int(x + y),
                     test_span(1, 1, 1, 1),
                 ))),
                 _ => panic!("test expects Int args"),
             }
         }
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "+".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Builtin(crate::value::BuiltinDef {
                     func: add_builtin,
                     name: "+",
@@ -7037,12 +7038,12 @@ mod tests {
         );
 
         // Create PendingCall thunk
-        let func_thunk = Rc::new(Thunk::new_materialized(add_fn, test_span(1, 1, 1, 20)));
-        let arg1 = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(add_fn, test_span(1, 1, 1, 20)));
+        let arg1 = Arc::new(Thunk::new_materialized(
             Value::Int(3),
             test_span(1, 21, 1, 22),
         ));
-        let arg2 = Rc::new(Thunk::new_materialized(
+        let arg2 = Arc::new(Thunk::new_materialized(
             Value::Int(4),
             test_span(1, 23, 1, 24),
         ));
@@ -7055,8 +7056,8 @@ mod tests {
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call")),
+            Arc::clone(&test_ctx()),
         );
 
         // Materialize should call the function and return the result
@@ -7067,12 +7068,12 @@ mod tests {
     #[test]
     fn test_pending_call_builtin_function() {
         // Create a PendingCall thunk where the function is a Builtin
-        fn multiply_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn multiply_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, &test_ctx())?;
             let b = materialize(&args[1], None, &test_ctx())?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
                     Value::Int(x * y),
                     test_span(1, 1, 1, 1),
                 ))),
@@ -7080,7 +7081,7 @@ mod tests {
             }
         }
 
-        let func_thunk = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Builtin(crate::value::BuiltinDef {
                 func: multiply_builtin,
                 name: "*",
@@ -7088,11 +7089,11 @@ mod tests {
             }),
             test_span(1, 1, 1, 5),
         ));
-        let arg1 = Rc::new(Thunk::new_materialized(
+        let arg1 = Arc::new(Thunk::new_materialized(
             Value::Int(5),
             test_span(1, 6, 1, 7),
         ));
-        let arg2 = Rc::new(Thunk::new_materialized(
+        let arg2 = Arc::new(Thunk::new_materialized(
             Value::Int(6),
             test_span(1, 8, 1, 9),
         ));
@@ -7105,8 +7106,8 @@ mod tests {
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call")),
+            Arc::clone(&test_ctx()),
         );
 
         // Materialize should call the builtin directly and return the result
@@ -7122,32 +7123,32 @@ mod tests {
         // Create a function that would fail if called twice
         // (we'll verify it's only called once by checking the state)
         let identity_fn = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
 
-        let func_thunk = Rc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
-        let arg = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
+        let arg = Arc::new(Thunk::new_materialized(
             Value::Int(42),
             test_span(1, 11, 1, 13),
         ));
         let call_span = test_span(2, 1, 2, 10);
 
-        let pending = Rc::new(Thunk::new_pending_call(
+        let pending = Arc::new(Thunk::new_pending_call(
             func_thunk,
             vec![arg],
             IndexMap::new(),
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call")),
+            Arc::clone(&test_ctx()),
         ));
 
         // First materialization
@@ -7168,7 +7169,7 @@ mod tests {
     #[test]
     fn test_pending_call_non_function_error() {
         // PendingCall with a non-Function/Builtin value should error
-        let not_a_function = Rc::new(Thunk::new_materialized(
+        let not_a_function = Arc::new(Thunk::new_materialized(
             Value::Int(123),
             test_span(1, 1, 1, 4),
         ));
@@ -7181,8 +7182,8 @@ mod tests {
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call")),
+            Arc::clone(&test_ctx()),
         );
 
         let err = materialize(&pending, None, &test_ctx()).unwrap_err();
@@ -7200,24 +7201,24 @@ mod tests {
         let env = empty_env();
 
         let identity_fn = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("x".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("x".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
 
-        let func_thunk = Rc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
+        let func_thunk = Arc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
 
         // Create an unevaluated arg
-        let arg_expr = Rc::new(sp(Expr::Int(99)));
-        let arg = Rc::new(Thunk::new_unevaluated(
+        let arg_expr = Arc::new(sp(Expr::Int(99)));
+        let arg = Arc::new(Thunk::new_unevaluated(
             arg_expr,
-            Rc::clone(&env),
-            Rc::clone(&test_ctx()),
+            Arc::clone(&env),
+            Arc::clone(&test_ctx()),
             test_span(1, 11, 1, 13),
         ));
 
@@ -7230,8 +7231,8 @@ mod tests {
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call")),
+            Arc::clone(&test_ctx()),
         );
 
         // Materialize should evaluate the arg thunk and return the result
@@ -7245,21 +7246,21 @@ mod tests {
         let env = empty_env();
 
         // Install a built-in add function
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, &test_ctx())?;
             let b = materialize(&args[1], None, &test_ctx())?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
                     Value::Int(x + y),
                     test_span(1, 1, 1, 1),
                 ))),
                 _ => panic!("test expects Int args"),
             }
         }
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "+".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Builtin(crate::value::BuiltinDef {
                     func: add_builtin,
                     name: "+",
@@ -7271,7 +7272,7 @@ mod tests {
 
         // Create a function that takes a mix of positional and named parameters
         let fn_with_named = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "a".into(),
                     annotation: None,
@@ -7286,7 +7287,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::Call {
+            body: Arc::new(sp(Expr::Call {
                 func: Box::new(sp(Expr::var_ref("+".into()))),
                 args: vec![
                     rsp(Expr::var_ref("a".into())),
@@ -7295,17 +7296,17 @@ mod tests {
                 named_args: vec![],
                 implied: false,
             })),
-            env: Rc::clone(&env),
+            env: Arc::clone(&env),
             annotation: None,
         };
 
-        let func_thunk = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(
             fn_with_named,
             test_span(1, 1, 1, 10),
         ));
 
         // Pass first arg positionally, second as named
-        let positional = vec![Rc::new(Thunk::new_materialized(
+        let positional = vec![Arc::new(Thunk::new_materialized(
             Value::Int(5),
             test_span(1, 11, 1, 12),
         ))];
@@ -7313,7 +7314,7 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert(
             "b".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Int(3),
                 test_span(1, 13, 1, 14),
             )),
@@ -7328,8 +7329,8 @@ mod tests {
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call-named")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call-named")),
+            Arc::clone(&test_ctx()),
         );
 
         // Materialize should pass named args through correctly
@@ -7343,21 +7344,21 @@ mod tests {
         let env = empty_env();
 
         // Install a built-in add function
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let crate::value::BuiltinArgs { args, .. } = ctx;
             let a = materialize(&args[0], None, &test_ctx())?;
             let b = materialize(&args[1], None, &test_ctx())?;
             match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Rc::new(Thunk::new_materialized(
+                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
                     Value::Int(x + y),
                     test_span(1, 1, 1, 1),
                 ))),
                 _ => panic!("test expects Int args"),
             }
         }
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "+".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Builtin(crate::value::BuiltinDef {
                     func: add_builtin,
                     name: "+",
@@ -7368,7 +7369,7 @@ mod tests {
         );
 
         let fn_with_default = Value::Function {
-            params: Rc::new(vec![
+            params: Arc::new(vec![
                 Param {
                     name: "x".into(),
                     annotation: None,
@@ -7383,7 +7384,7 @@ mod tests {
                     variadic: false,
                 },
             ]),
-            body: Rc::new(sp(Expr::Call {
+            body: Arc::new(sp(Expr::Call {
                 func: Box::new(sp(Expr::var_ref("+".into()))),
                 args: vec![
                     rsp(Expr::var_ref("x".into())),
@@ -7392,17 +7393,17 @@ mod tests {
                 named_args: vec![],
                 implied: false,
             })),
-            env: Rc::clone(&env),
+            env: Arc::clone(&env),
             annotation: None,
         };
 
-        let func_thunk = Rc::new(Thunk::new_materialized(
+        let func_thunk = Arc::new(Thunk::new_materialized(
             fn_with_default,
             test_span(1, 1, 1, 10),
         ));
 
         // Provide x positionally, omit y so it uses default (10)
-        let positional = vec![Rc::new(Thunk::new_materialized(
+        let positional = vec![Arc::new(Thunk::new_materialized(
             Value::Int(7),
             test_span(1, 11, 1, 12),
         ))];
@@ -7416,8 +7417,8 @@ mod tests {
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call-default")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call-default")),
+            Arc::clone(&test_ctx()),
         );
 
         // Materialize should use default for y (10)
@@ -7438,7 +7439,7 @@ mod tests {
         let ctx = test_ctx();
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
 
         let x_thunk = match &dict_val {
@@ -7489,7 +7490,7 @@ mod tests {
         let ctx = test_ctx();
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
 
         let broken_thunk = match &dict_val {
@@ -7527,30 +7528,30 @@ mod tests {
 
         // Create a function that will fail
         let failing_fn = Value::Function {
-            params: Rc::new(vec![Param {
+            params: Arc::new(vec![Param {
                 name: "x".into(),
                 annotation: None,
                 variadic: false,
             }]),
-            body: Rc::new(sp(Expr::var_ref("nonexistent".into()))),
-            env: Rc::clone(&env),
+            body: Arc::new(sp(Expr::var_ref("nonexistent".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
 
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "bad_fn".into(),
-            Rc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 20))),
+            Arc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 20))),
         );
 
         // Call the failing function
         let call_expr = sp(Expr::Call {
             func: Box::new(sp(Expr::var_ref("bad_fn".into()))),
-            args: vec![Rc::new(sp(Expr::Int(1)))],
+            args: vec![Arc::new(sp(Expr::Int(1)))],
             named_args: vec![],
             implied: false,
         });
 
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
 
         // First materialization: error should have stack frames
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
@@ -7573,15 +7574,15 @@ mod tests {
     #[test]
     fn test_pending_builtin_error_becomes_failed() {
         // When a PendingBuiltin fails, it should transition to Failed state
-        fn failing_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+        fn failing_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let crate::value::BuiltinArgs { call_span, .. } = ctx;
             Err(EvalError::internal("builtin intentionally failed".to_string(), call_span).into())
         }
 
         let env = empty_env();
-        env.borrow_mut().insert(
+        env.write().unwrap().insert(
             "fail".into(),
-            Rc::new(Thunk::new_materialized(
+            Arc::new(Thunk::new_materialized(
                 Value::Builtin(crate::value::BuiltinDef {
                     func: failing_builtin,
                     name: "fail",
@@ -7598,7 +7599,7 @@ mod tests {
             implied: false,
         });
 
-        let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
 
         // First materialization: should fail
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
@@ -7627,24 +7628,24 @@ mod tests {
         let env = empty_env();
 
         let failing_fn = Value::Function {
-            params: Rc::new(vec![]),
-            body: Rc::new(sp(Expr::var_ref("does_not_exist".into()))),
-            env: Rc::clone(&env),
+            params: Arc::new(vec![]),
+            body: Arc::new(sp(Expr::var_ref("does_not_exist".into()))),
+            env: Arc::clone(&env),
             annotation: None,
         };
 
-        let func_thunk = Rc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 10)));
+        let func_thunk = Arc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 10)));
         let call_span = test_span(2, 1, 2, 10);
 
-        let pending = Rc::new(Thunk::new_pending_call(
+        let pending = Arc::new(Thunk::new_pending_call(
             func_thunk,
             vec![],
             IndexMap::new(),
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call")),
+            Arc::clone(&test_ctx()),
         ));
 
         // First materialization: should fail
@@ -7670,22 +7671,22 @@ mod tests {
 
     #[test]
     fn test_pending_call_func_materialization_failure() {
-        let bad_func = Rc::new(Thunk::new_unevaluated(
-            Rc::new(sp(Expr::var_ref("nonexistent_func".into()))),
+        let bad_func = Arc::new(Thunk::new_unevaluated(
+            Arc::new(sp(Expr::var_ref("nonexistent_func".into()))),
             empty_env(),
-            Rc::clone(&test_ctx()),
+            Arc::clone(&test_ctx()),
             test_span(1, 1, 1, 10),
         ));
         let call_span = test_span(2, 1, 2, 10);
-        let pending = Rc::new(Thunk::new_pending_call(
+        let pending = Arc::new(Thunk::new_pending_call(
             bad_func,
             vec![],
             IndexMap::new(),
             call_span,
             empty_env(),
             call_span,
-            Some(Rc::from("test-pending-call")),
-            Rc::clone(&test_ctx()),
+            Some(Arc::from("test-pending-call")),
+            Arc::clone(&test_ctx()),
         ));
 
         // First materialization should fail with undefined variable error
@@ -7716,10 +7717,10 @@ mod tests {
         // When an Unevaluated thunk fails during materialization, it should transition to Failed
         let expr = sp(Expr::var_ref("undefined_var".into()));
         let env = empty_env();
-        let thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(expr),
-            Rc::clone(&env),
-            Rc::clone(&test_ctx()),
+        let thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(expr),
+            Arc::clone(&env),
+            Arc::clone(&test_ctx()),
             test_span(1, 1, 1, 15),
         ));
 
@@ -7754,7 +7755,7 @@ mod tests {
             expr: Box::new(sp(Expr::var_ref("undefined_var".into()))),
             field: crate::ast::DotKey::Ident("field".into()),
         });
-        let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), env, &test_ctx()).unwrap();
 
         // First materialization: error with a specific mat_span
         let mat_span = test_span(10, 5, 10, 15);
@@ -7784,7 +7785,7 @@ mod tests {
             expr: Box::new(sp(Expr::var_ref("undefined_var".into()))),
             field: crate::ast::DotKey::Ident("field".into()),
         });
-        let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), env, &test_ctx()).unwrap();
 
         // First access: None mat_span
         let err1 = materialize(&thunk, None, &test_ctx()).unwrap_err();
@@ -7826,24 +7827,24 @@ mod tests {
                 let env = empty_env();
 
                 let recursive_fn = Value::Function {
-                    params: Rc::new(vec![Param {
+                    params: Arc::new(vec![Param {
                         name: "x".into(),
                         annotation: None,
                         variadic: false,
                     }]),
-                    body: Rc::new(sp(Expr::Call {
+                    body: Arc::new(sp(Expr::Call {
                         func: Box::new(sp(Expr::var_ref("f".into()))),
                         args: vec![rsp(Expr::var_ref("x".into()))],
                         named_args: vec![],
                         implied: false,
                     })),
-                    env: Rc::clone(&env),
+                    env: Arc::clone(&env),
                     annotation: None,
                 };
 
-                env.borrow_mut().insert(
+                env.write().unwrap().insert(
                     "f".into(),
-                    Rc::new(Thunk::new_materialized(
+                    Arc::new(Thunk::new_materialized(
                         recursive_fn,
                         test_span(1, 1, 1, 20),
                     )),
@@ -7851,12 +7852,12 @@ mod tests {
 
                 let call_expr = sp(Expr::Call {
                     func: Box::new(sp(Expr::var_ref("f".into()))),
-                    args: vec![Rc::new(sp(Expr::Int(1)))],
+                    args: vec![Arc::new(sp(Expr::Int(1)))],
                     named_args: vec![],
                     implied: false,
                 });
 
-                let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx()).unwrap();
+                let thunk = eval(Arc::new(call_expr.clone()), env, &test_ctx()).unwrap();
                 materialize(&thunk, None, &test_ctx()).unwrap_err()
             })
             .unwrap()
@@ -7884,7 +7885,7 @@ mod tests {
         let ctx = test_ctx();
         let dict = sp(Expr::Dict(entries));
         let env = empty_env();
-        let dict_thunk = eval(Rc::new(dict.clone()), Rc::clone(&env), &ctx).unwrap();
+        let dict_thunk = eval(Arc::new(dict.clone()), Arc::clone(&env), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
 
         let x_thunk = match &dict_val {
@@ -7960,7 +7961,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(Some(Type::Int)),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
     }
@@ -7973,7 +7974,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(Some(Type::Int)),
         });
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
@@ -7990,7 +7991,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(Some(Type::Str)),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, string_val("hello".into()));
     }
@@ -8003,7 +8004,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("anything".into()))),
             resolved_type: RefCell::new(Some(Type::Top)),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, string_val("anything".into()));
     }
@@ -8016,7 +8017,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(99))),
             resolved_type: RefCell::new(Some(Type::Top)),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(99));
     }
@@ -8047,7 +8048,7 @@ mod tests {
             resolved_type: RefCell::new(Some(record_type)),
         });
 
-        let thunk = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         // Should be a Dict with the expected fields
         match &val {
@@ -8077,7 +8078,7 @@ mod tests {
             resolved_type: RefCell::new(Some(record_type)),
         });
 
-        let err = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("record missing field \"id\""),
             "got: {}",
@@ -8112,7 +8113,7 @@ mod tests {
         });
 
         // BAS: should PASS — extra fields accepted
-        let thunk = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match &val {
             Value::Dict(map) => {
@@ -8144,7 +8145,7 @@ mod tests {
             resolved_type: RefCell::new(Some(record_type)),
         });
 
-        let thunk = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         match &val {
             Value::Dict(map) => {
@@ -8168,7 +8169,7 @@ mod tests {
             resolved_type: RefCell::new(Some(record_type)),
         });
 
-        let err = eval(Rc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(inner_expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string().contains("type assertion failed"),
             "got: {}",
@@ -8185,7 +8186,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(7))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(7));
     }
@@ -8199,7 +8200,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("oops".into()))),
             resolved_type: RefCell::new(None),
         });
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
@@ -8223,7 +8224,7 @@ mod tests {
         });
 
         // eval() returns a Materialized thunk containing the default value
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         assert!(
             matches!(&*thunk.state(), ThunkState::Materialized(_)),
             "TypeAssert with default must eagerly materialize"
@@ -8334,7 +8335,7 @@ mod tests {
             expr: Box::new(sp(Expr::Dict(dict_entries))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert!(
             matches!(val, Value::Dict(_)),
@@ -8355,7 +8356,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
+        let err = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("type assertion failed: expected Record, got Int"),
@@ -8383,7 +8384,7 @@ mod tests {
             expr: Box::new(sp(Expr::Int(42))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert!(
             matches!(val, Value::Dict(_)),
@@ -8404,7 +8405,7 @@ mod tests {
             expr: Box::new(sp(Expr::Str("hello".into()))),
             resolved_type: RefCell::new(None),
         });
-        let thunk = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
+        let thunk = eval(Arc::new(expr.clone()), empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, string_val("hello".into()));
     }
@@ -8528,7 +8529,7 @@ mod tests {
         // Type::Proxy should match Value::Proxy and reject other value kinds
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let handler = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(42), span)));
+        let handler = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span)));
         let proxy_val = Value::Proxy { handler };
 
         assert!(value_matches_type(&proxy_val, &Type::Proxy));
@@ -8617,11 +8618,11 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             Key::String("x".to_string()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         entries.insert(
             Key::String("z".to_string()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Int(99), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(99), span))),
         );
 
         let mut field_path = vec!["config".to_string()];
@@ -8718,14 +8719,14 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             Key::Int(0),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("x".into()),
                 span,
             ))),
         );
         entries.insert(
             Key::String("name".to_string()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("y".into()),
                 span,
             ))),
@@ -8767,14 +8768,14 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             Key::Int(0),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("x".into()),
                 span,
             ))),
         );
         entries.insert(
             Key::String("name".to_string()),
-            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("y".into()),
                 span,
             ))),
@@ -8826,7 +8827,7 @@ mod tests {
         // Pre-failed thunks should return their cached error even at high depth,
         // without hitting the depth check.
         let span = test_span(1, 1, 1, 5);
-        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
 
         // Force it into Failed state with a cached error
         let err = Box::new(EvalError::type_mismatch("String", "Int", span));
@@ -8856,11 +8857,11 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a materialized Int(42) — passes the Int guard.
-        let inner = Rc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
 
         // Wrap it in a Guarded thunk expecting Int.
-        let guarded = Rc::new(Thunk::new_guarded(
-            Rc::clone(&inner),
+        let guarded = Arc::new(Thunk::new_guarded(
+            Arc::clone(&inner),
             Type::Int,
             vec!["value".to_string()],
             span,
@@ -8919,11 +8920,11 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a String value — fails the Int guard.
-        let inner = Rc::new(Thunk::new_materialized(string_val("hello".into()), span));
+        let inner = Arc::new(Thunk::new_materialized(string_val("hello".into()), span));
 
         // Wrap it in a Guarded thunk expecting Int.
-        let guarded = Rc::new(Thunk::new_guarded(
-            Rc::clone(&inner),
+        let guarded = Arc::new(Thunk::new_guarded(
+            Arc::clone(&inner),
             Type::Int,
             vec!["field".to_string()],
             span,
@@ -8979,12 +8980,12 @@ mod tests {
 
         // Create an inner thunk that will produce a type mismatch when wrapped with Guarded
         // (we expect Int but will get String)
-        let inner_expr = Rc::new(sp(Expr::Str("hello".into())));
+        let inner_expr = Arc::new(sp(Expr::Str("hello".into())));
         let ctx = test_ctx();
-        let inner_thunk = Rc::new(Thunk::new_unevaluated(
+        let inner_thunk = Arc::new(Thunk::new_unevaluated(
             inner_expr,
             empty_env(),
-            Rc::clone(&ctx),
+            Arc::clone(&ctx),
             span,
         ));
 
@@ -8992,7 +8993,7 @@ mod tests {
         let guard_span = test_span(2, 1, 2, 10);
         let expected = Type::Int;
         let field_path = vec!["field".to_string()];
-        let guarded = Rc::new(Thunk::new_guarded(
+        let guarded = Arc::new(Thunk::new_guarded(
             inner_thunk,
             expected,
             field_path,
@@ -9031,9 +9032,9 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Base case: Thunk holding Int(chain_len as i64)
-        let base_thunk = Rc::new(Thunk::new_materialized(Value::Int(chain_len as i64), span));
-        env.borrow_mut()
-            .insert("base".into(), Rc::clone(&base_thunk));
+        let base_thunk = Arc::new(Thunk::new_materialized(Value::Int(chain_len as i64), span));
+        env.write().unwrap()
+            .insert("base".into(), Arc::clone(&base_thunk));
 
         // Build a chain of chain_len thunks, each just referencing the previous one
         // var_0 = $base, var_1 = $var_0, ..., var_{chain_len-1} = $var_{chain_len-2}
@@ -9046,18 +9047,18 @@ mod tests {
             let curr_name = format!("var_{}", i);
 
             let expr = sp(Expr::var_ref(prev_name.clone()));
-            let thunk = Rc::new(Thunk::new_unevaluated(
-                Rc::new(expr),
-                Rc::clone(&env),
-                Rc::clone(&ctx),
+            let thunk = Arc::new(Thunk::new_unevaluated(
+                Arc::new(expr),
+                Arc::clone(&env),
+                Arc::clone(&ctx),
                 span,
             ));
-            env.borrow_mut().insert(curr_name, thunk);
+            env.write().unwrap().insert(curr_name, thunk);
         }
 
         // Materialize the outermost thunk — should succeed with iterative implementation
         let final_name = format!("var_{}", chain_len - 1);
-        let final_thunk = env.borrow().get(&final_name).unwrap().clone();
+        let final_thunk = env.read().unwrap().get(&final_name).unwrap().clone();
         let result = materialize(&final_thunk, None, &ctx);
         assert!(
             result.is_ok(),
@@ -9077,25 +9078,25 @@ mod tests {
         // Create a cycle: x references y, y references x
         // x = $y
         let x_expr = sp(Expr::var_ref("y".into()));
-        let x_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(x_expr),
-            Rc::clone(&env),
-            Rc::clone(&ctx),
+        let x_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(x_expr),
+            Arc::clone(&env),
+            Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
         // y = $x
         let y_expr = sp(Expr::var_ref("x".into()));
-        let y_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(y_expr),
-            Rc::clone(&env),
-            Rc::clone(&ctx),
+        let y_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(y_expr),
+            Arc::clone(&env),
+            Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
         // Bind x -> x_thunk, y -> y_thunk in env
-        env.borrow_mut().insert("x".into(), Rc::clone(&x_thunk));
-        env.borrow_mut().insert("y".into(), Rc::clone(&y_thunk));
+        env.write().unwrap().insert("x".into(), Arc::clone(&x_thunk));
+        env.write().unwrap().insert("y".into(), Arc::clone(&y_thunk));
 
         // Materialize x — should detect cycle (2-node cycle)
         let result = materialize(&x_thunk, None, &ctx);
@@ -9111,32 +9112,32 @@ mod tests {
         let env3 = empty_env();
 
         let a_expr = sp(Expr::var_ref("b".into()));
-        let a_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(a_expr),
-            Rc::clone(&env3),
-            Rc::clone(&ctx),
+        let a_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(a_expr),
+            Arc::clone(&env3),
+            Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
         let b_expr = sp(Expr::var_ref("c".into()));
-        let b_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(b_expr),
-            Rc::clone(&env3),
-            Rc::clone(&ctx),
+        let b_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(b_expr),
+            Arc::clone(&env3),
+            Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
         let c_expr = sp(Expr::var_ref("a".into()));
-        let c_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(c_expr),
-            Rc::clone(&env3),
-            Rc::clone(&ctx),
+        let c_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(c_expr),
+            Arc::clone(&env3),
+            Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
-        env3.borrow_mut().insert("a".into(), Rc::clone(&a_thunk));
-        env3.borrow_mut().insert("b".into(), Rc::clone(&b_thunk));
-        env3.borrow_mut().insert("c".into(), Rc::clone(&c_thunk));
+        env3.write().unwrap().insert("a".into(), Arc::clone(&a_thunk));
+        env3.write().unwrap().insert("b".into(), Arc::clone(&b_thunk));
+        env3.write().unwrap().insert("c".into(), Arc::clone(&c_thunk));
 
         let result3 = materialize(&a_thunk, None, &ctx);
         assert!(result3.is_err(), "3-node cycle should be detected");
@@ -9151,16 +9152,16 @@ mod tests {
         let env_self = empty_env();
 
         let self_expr = sp(Expr::var_ref("x".into()));
-        let self_thunk = Rc::new(Thunk::new_unevaluated(
-            Rc::new(self_expr),
-            Rc::clone(&env_self),
-            Rc::clone(&ctx),
+        let self_thunk = Arc::new(Thunk::new_unevaluated(
+            Arc::new(self_expr),
+            Arc::clone(&env_self),
+            Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
         env_self
-            .borrow_mut()
-            .insert("x".into(), Rc::clone(&self_thunk));
+            .write().unwrap()
+            .insert("x".into(), Arc::clone(&self_thunk));
 
         let result_self = materialize(&self_thunk, None, &ctx);
         assert!(result_self.is_err(), "Self-reference should be detected");
@@ -9191,7 +9192,7 @@ mod tests {
         "#;
 
         let parsed = crate::parse(source).expect("parse should succeed").file;
-        let thunk = eval_file(&parsed.node, Rc::clone(&env), &ctx)
+        let thunk = eval_file(&parsed.node, Arc::clone(&env), &ctx)
             .expect("eval_file should succeed (lazy dict construction)");
         // Dict construction is lazy — the cycle is only detected when forcing an entry.
         // Materialize the dict to get the Value::Dict, then force an entry to trigger
@@ -9264,7 +9265,7 @@ mod tests {
                 let base_dir =
                     cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
                         .expect("failed to open test base_dir");
-                let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
+                let ctx = EvalContext::new(base_dir, Arc::clone(&env), false);
                 let thunk = eval_file(&file, env, &ctx).expect("eval_file should succeed");
                 let dict_val =
                     materialize(&thunk, None, &ctx).expect("materialization should succeed");
@@ -9322,7 +9323,7 @@ mod tests {
             .expect("failed to open test base_dir");
         let env = empty_env();
 
-        let ctx_with_fs = EvalContext::new(base_dir.try_clone().unwrap(), Rc::clone(&env), false);
+        let ctx_with_fs = EvalContext::new(base_dir.try_clone().unwrap(), Arc::clone(&env), false);
         assert!(
             !ctx_with_fs.config.no_fs,
             "no_fs should be false when created with false"
@@ -9367,8 +9368,8 @@ mod tests {
             "ctx2 created via with_base_dir() must inherit no_fs=true from ctx1"
         );
         assert!(
-            Rc::ptr_eq(&ctx1.state, &ctx2.state),
-            "ctx2 must share the same state Rc as ctx1"
+            Arc::ptr_eq(&ctx1.state, &ctx2.state),
+            "ctx2 must share the same state Arc as ctx1"
         );
 
         // Exercise the no_fs path: $include must produce IncludeForbidden [E042].
@@ -9376,7 +9377,7 @@ mod tests {
         // any real files on disk.
         let include_expr = sp(crate::ast::Expr::Call {
             func: Box::new(sp(crate::ast::Expr::var_ref("include".into()))),
-            args: vec![Rc::new(sp(crate::ast::Expr::Str(
+            args: vec![Arc::new(sp(crate::ast::Expr::Str(
                 "hypothetical.llt".into(),
             )))],
             named_args: vec![],
@@ -9384,8 +9385,8 @@ mod tests {
         });
 
         let thunk = eval(
-            Rc::new(include_expr.clone()),
-            Rc::clone(&ctx2.config.stdlib_env),
+            Arc::new(include_expr.clone()),
+            Arc::clone(&ctx2.config.stdlib_env),
             &ctx2,
         )
         .expect("eval should succeed (thunk creation does not access filesystem)");
@@ -9412,7 +9413,7 @@ mod tests {
         let parsed = parse_expression(input).expect("parse failed");
         let env = empty_env();
         let ctx = test_ctx();
-        let thunk = eval(Rc::new(parsed.clone()), Rc::clone(&env), &ctx).unwrap();
+        let thunk = eval(Arc::new(parsed.clone()), Arc::clone(&env), &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
 
         // Extract the dict
@@ -9459,7 +9460,7 @@ mod tests {
     /// Helper: create an EvalContext and install a single boundary guard for span `s`
     /// expecting `expected_ty`. Used to simulate what the type checker produces for
     /// gradual-typing boundaries (Unknown arg crossing into a concrete param type).
-    fn ctx_with_guard(s: Span, expected_ty: Type) -> Rc<EvalContext> {
+    fn ctx_with_guard(s: Span, expected_ty: Type) -> Arc<EvalContext> {
         let ctx = test_ctx();
         let mut map = HashMap::new();
         map.insert(s, expected_ty);
@@ -9480,7 +9481,7 @@ mod tests {
         let ctx = ctx_with_guard(guarded_span, Type::Int);
 
         // eval() should wrap the Int thunk in a Guarded thunk.
-        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr), empty_env(), &ctx).unwrap();
 
         // The outer thunk must be Guarded (not yet materialized).
         assert!(
@@ -9508,7 +9509,7 @@ mod tests {
         // Guard expects Int — the String value will fail.
         let ctx = ctx_with_guard(guarded_span, Type::Int);
 
-        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr), empty_env(), &ctx).unwrap();
 
         // The guard must be present.
         assert!(
@@ -9542,7 +9543,7 @@ mod tests {
 
         // Guard is for guarded_span, but expr uses expr_span — no wrap.
         let ctx = ctx_with_guard(guarded_span, Type::Int);
-        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr), empty_env(), &ctx).unwrap();
 
         // Must NOT be Guarded — guard did not match.
         assert!(
@@ -9565,7 +9566,7 @@ mod tests {
         expr.span = guarded_span;
 
         let ctx = ctx_with_guard(guarded_span, Type::Int);
-        let thunk = eval(Rc::new(expr), empty_env(), &ctx).unwrap();
+        let thunk = eval(Arc::new(expr), empty_env(), &ctx).unwrap();
 
         // Thunk must be Guarded (lazy wrap, inner not yet forced).
         assert!(

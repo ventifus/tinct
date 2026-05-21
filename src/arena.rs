@@ -1,15 +1,15 @@
 //! Arena allocation for thunks and environments (Phase 2 of arena allocation strategy).
 //!
 //! This module provides index-based arenas for thunks and environments, replacing the
-//! `Rc<Thunk>` / `Rc<RefCell<Environment>>` model with `ThunkId` / `EnvId` handles
-//! that index into `Vec<Rc<Thunk>>` / `Vec<FlatEnv>` backing stores.
+//! `Arc<Thunk>` / `Arc<RwLock<Environment>>` model with `ThunkId` / `EnvId` handles
+//! that index into `Vec<Arc<Thunk>>` / `Vec<FlatEnv>` backing stores.
 //!
-//! For now (Phase 2), the arena stores `Rc<Thunk>` values — the migration from `Rc`
+//! For now (Phase 2), the arena stores `Arc<Thunk>` values — the migration from `Rc`
 //! to direct ownership happens in Phase 3 (`arena-eval`). This phase establishes the
 //! arena API and the `ThunkId` / `EnvId` handle types.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::value::Thunk;
 
@@ -24,13 +24,13 @@ pub struct ThunkId(u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EnvId(u32);
 
-/// Arena for thunk allocation. Stores `Rc<Thunk>` indexed by `ThunkId`.
+/// Arena for thunk allocation. Stores `Arc<Thunk>` indexed by `ThunkId`.
 ///
-/// Phase 2 API: the arena wraps a `Vec<Rc<Thunk>>`. Phase 3 will migrate to `Vec<Thunk>`
+/// Phase 2 API: the arena wraps a `Vec<Arc<Thunk>>`. Phase 3 will migrate to `Vec<Thunk>`
 /// for direct ownership. All public methods remain the same across phases.
 #[derive(Debug)]
 pub(crate) struct ThunkArena {
-    thunks: Vec<Rc<Thunk>>,
+    thunks: Vec<Arc<Thunk>>,
 }
 
 impl ThunkArena {
@@ -40,7 +40,7 @@ impl ThunkArena {
     }
 
     /// Allocate a thunk in the arena, returning its handle.
-    pub fn alloc(&mut self, thunk: Rc<Thunk>) -> ThunkId {
+    pub fn alloc(&mut self, thunk: Arc<Thunk>) -> ThunkId {
         let len = self.thunks.len();
         assert!(
             len < u32::MAX as usize,
@@ -57,7 +57,7 @@ impl ThunkArena {
     /// # Panics
     ///
     /// Panics if the handle is out of bounds (should never happen if all IDs come from `alloc`).
-    pub fn get(&self, id: ThunkId) -> &Rc<Thunk> {
+    pub fn get(&self, id: ThunkId) -> &Arc<Thunk> {
         &self.thunks[id.0 as usize]
     }
 
@@ -83,12 +83,12 @@ impl ThunkArena {
     /// Create a new arena pre-populated with clones of this arena's entries.
     ///
     /// Used to give each EvalContext its own growable arena while still sharing
-    /// stdlib thunks: the child arena starts with Rc::clone of every thunk in self,
+    /// stdlib thunks: the child arena starts with Arc::clone of every thunk in self,
     /// preserving ThunkId validity (same indices 0..N), then appends its own thunks
     /// starting at N.  Dropping the child does not affect the parent's thunks.
     pub(crate) fn clone_for_child(&self) -> Self {
         Self {
-            thunks: self.thunks.iter().map(Rc::clone).collect(),
+            thunks: self.thunks.iter().map(Arc::clone).collect(),
         }
     }
 
@@ -308,10 +308,10 @@ impl FlatEnv {
 /// directly and have per-section lifetimes (Phase 3, arena-eval sprint).
 ///
 /// **Current Phase 2 behavior:**
-/// - Arena stores `Vec<Rc<Thunk>>` (Rc-wrapped, not direct ownership)
+/// - Arena stores `Vec<Arc<Thunk>>` (Rc-wrapped, not direct ownership)
 /// - Arena persists across `---` boundaries (not dropped per section)
 /// - ThunkIds are stable indices that never invalidate
-/// - `%` pipeline variable passes as `Rc<Thunk>` across documents (lazy, no materialization)
+/// - `%` pipeline variable passes as `Arc<Thunk>` across documents (lazy, no materialization)
 ///
 /// **When migration will be required (Phase 3):**
 /// - Arena stores `Vec<Thunk>` (direct ownership, no Rc wrapper)
@@ -329,7 +329,7 @@ mod tests {
     fn test_thunk_arena_alloc_get() {
         let mut arena = ThunkArena::new();
         let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), test_span()));
-        let id = arena.alloc(Rc::clone(&thunk));
+        let id = arena.alloc(Arc::clone(&thunk));
         assert_eq!(arena.get(id).try_get_materialized(), Some(Value::Int(42)));
     }
 
@@ -688,7 +688,7 @@ mod tests {
         // Test (c): mutating a pre-snapshot thunk's state is visible in the snapshot
         let mut parent = ThunkArena::new();
         let thunk = Rc::new(Thunk::new_placeholder(test_span()));
-        let id = parent.alloc(Rc::clone(&thunk));
+        let id = parent.alloc(Arc::clone(&thunk));
 
         let snapshot = parent.clone_for_child();
 

@@ -1570,14 +1570,13 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &U
 mod tests {
     use super::*;
 
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::{Arc, RwLock};
 
     use crate::builtins::create_stdlib_env;
     use crate::value::Environment;
 
     /// Helper: create a stdlib env for tests.
-    fn test_env() -> Rc<RefCell<Environment>> {
+    fn test_env() -> Arc<RwLock<Environment>> {
         create_stdlib_env().unwrap()
     }
 

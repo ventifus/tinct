@@ -22,7 +22,7 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -35,7 +35,7 @@ use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 /// mapping to the key values (Int keys become Int values, String keys become
 /// String values). Insertion order is preserved.
 /// Inherently materializing: must access IndexMap to enumerate keys.
-pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -57,7 +57,7 @@ pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             Key::Int(n) => Value::Int(*n),
             Key::String(s) => string_val(s),
         };
-        let thunk = Rc::new(Thunk::new_materialized(key_value, origin));
+        let thunk = Arc::new(Thunk::new_materialized(key_value, origin));
         let thunk_id = ctx.alloc_thunk(thunk);
         result.insert(
             Key::Int(i64::try_from(i).map_err(|_| {
@@ -72,7 +72,7 @@ pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `length`: Takes 1 arg (a Dict, String, or Bytes). Returns an Int with the number of entries/characters/bytes.
 /// Dual-dispatch: Dict returns entry count, String returns character count, Bytes returns byte count.
 /// Inherently materializing: must access IndexMap to count entries or count UTF-8 characters or bytes.
-pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -122,7 +122,7 @@ pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Type validation (both args must be Dicts) is also deferred to flatten time,
 /// which means type errors surface at access time rather than at call time.
 /// This is the expected behavior for a lazy overlay.
-pub(crate) fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -135,9 +135,9 @@ pub(crate) fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     // O(1): store thunk pointers without forcing either side.
-    let left_id = ctx.alloc_thunk(Rc::clone(&args[0]));
-    let right_id = ctx.alloc_thunk(Rc::clone(&args[1]));
-    Ok(Rc::new(Thunk::new_materialized(
+    let left_id = ctx.alloc_thunk(Arc::clone(&args[0]));
+    let right_id = ctx.alloc_thunk(Arc::clone(&args[1]));
+    Ok(Arc::new(Thunk::new_materialized(
         Value::Overlay(left_id, right_id),
         call_span,
     )))
@@ -150,7 +150,7 @@ pub(crate) fn builtin_merge(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// This is O(n) for the clone but O(1) amortized for the insert itself,
 /// compared to the old LLT `append` which did a full `merge` (copying the
 /// entire accumulator into a new dict via two-dict iteration).
-pub(crate) fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -163,7 +163,7 @@ pub(crate) fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
     // arg[1] (the value to append) is NOT materialized — it is inserted as a thunk
-    // (Rc::clone at line below), preserving laziness of the appended value.
+    // (Arc::clone at line below), preserving laziness of the appended value.
     let dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
     let mut map = crate::builtins::require_dict("append", dict_val, args[0].span, &ctx, call_span)?;
 
@@ -184,7 +184,7 @@ pub(crate) fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         None => 0,
     };
 
-    let value_id = ctx.alloc_thunk(Rc::clone(&args[1]));
+    let value_id = ctx.alloc_thunk(Arc::clone(&args[1]));
     map.insert(Key::Int(next_idx), value_id);
     ok_val(Value::Dict(map), call_span)
 }
@@ -196,7 +196,7 @@ pub(crate) fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 ///
 /// This is a thin primitive that `get` (in prelude.llt) wraps, following the
 /// same pattern as `builtin-reduce` → `reduce` and `builtin-fold` → `fold`.
-pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -245,7 +245,7 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Look up the key
     match map.get(&key) {
         Some(thunk_id) => {
-            let thunk = ctx.thunk_arena.borrow().get(*thunk_id).clone();
+            let thunk = ctx.thunk_arena.lock().unwrap().get(*thunk_id).clone();
             Ok(thunk)
         }
         None => {
@@ -270,7 +270,7 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// Takes 2 args: a key (Int or String) and a dict.
 /// Returns the value if the key exists, or Value::Dict(empty) (Null) if missing.
 /// NO error on missing key (unlike `builtin-get` which errors).
-pub(crate) fn builtin_get_optional(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_get_optional(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -312,7 +312,7 @@ pub(crate) fn builtin_get_optional(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
     // Look up the key
     match map.get(&key) {
         Some(thunk_id) => {
-            let thunk = ctx.thunk_arena.borrow().get(*thunk_id).clone();
+            let thunk = ctx.thunk_arena.lock().unwrap().get(*thunk_id).clone();
             Ok(thunk)
         }
         None => {
@@ -328,7 +328,7 @@ pub(crate) fn builtin_get_optional(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 /// `Dict a → Seq a`
 ///
 /// This is a Rust builtin because Seq construction is not expressible in tinct.
-pub(crate) fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -366,7 +366,7 @@ pub(crate) fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     } else {
         let (_, head_id) = map.get_index(offset).unwrap();
         let head_id = *head_id;
-        let head = ctx.thunk_arena.borrow().get(head_id).clone();
+        let head = ctx.thunk_arena.lock().unwrap().get(head_id).clone();
 
         // Build tail: if more elements remain, recurse with (same_dict_thunk, offset+1).
         // O(n) design: the same original dict thunk is passed to each recursive call;
@@ -385,14 +385,14 @@ pub(crate) fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
         } else {
             let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
-            let tail_args = vec![Rc::clone(&args[0]), next_offset];
-            let tail = Rc::new(Thunk::new_pending_builtin(
+            let tail_args = vec![Arc::clone(&args[0]), next_offset];
+            let tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
                 tail_args,
                 None,
                 call_span,
-                Some(Rc::from("call $each")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $each")),
+                Arc::clone(&ctx),
             ));
             let tail_id = ctx.alloc_thunk(tail);
             ok_val(
@@ -412,7 +412,7 @@ pub(crate) fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `Dict a → Seq Key`
 ///
 /// This is a Rust builtin because Seq construction is not expressible in tinct.
-pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -469,8 +469,8 @@ pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
         } else {
             let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
-            let tail_args = vec![Rc::clone(&args[0]), next_offset];
-            let tail = Rc::new(Thunk::new_pending_builtin(
+            let tail_args = vec![Arc::clone(&args[0]), next_offset];
+            let tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!(
                     "each-key",
                     builtin_each_key,
@@ -479,8 +479,8 @@ pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tail_args,
                 None,
                 call_span,
-                Some(Rc::from("call $each-key")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $each-key")),
+                Arc::clone(&ctx),
             ));
             let tail_id = ctx.alloc_thunk(tail);
             ok_val(
@@ -501,7 +501,7 @@ pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// `Dict a → Seq [key: Key, value: a]`
 ///
 /// This is a Rust builtin because Seq construction is not expressible in tinct.
-pub(crate) fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -565,8 +565,8 @@ pub(crate) fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
             )
         } else {
             let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
-            let tail_args = vec![Rc::clone(&args[0]), next_offset];
-            let tail = Rc::new(Thunk::new_pending_builtin(
+            let tail_args = vec![Arc::clone(&args[0]), next_offset];
+            let tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!(
                     "each-kv",
                     builtin_each_kv,
@@ -575,8 +575,8 @@ pub(crate) fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 tail_args,
                 None,
                 call_span,
-                Some(Rc::from("call $each-kv")),
-                Rc::clone(&ctx),
+                Some(Arc::from("call $each-kv")),
+                Arc::clone(&ctx),
             ));
             let tail_id = ctx.alloc_thunk(tail);
             ok_val(
