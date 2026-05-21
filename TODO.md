@@ -51,14 +51,46 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_convert.rs` (bridge no longer needed) (`src/`)
 - [ ] `just build` + `just test` passes — this is the true first checkpoint
 
-### E1-E3-cutover: Delete old Expr types + eval cutover + delete bridge files
+### E1-eval-cutover: Migrate evaluator from Expr to CoreExpr (704 Expr refs in 5 eval files)
 
-**Depends on:** parser-migration-d (parser produces SurfaceProgram natively)
-- [ ] Delete `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell` from `src/ast.rs` (`src/ast.rs`)
-- [ ] Update all eval files to use `CoreExpr`: `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` + add `CoreExpr::FreeVar` and `CoreExpr::RuntimeTypeCheck` arms (`src/`)
-- [ ] Delete `src/eval_pipeline.rs` (migrate lib.rs/main.rs/repl.rs callers to tinct `cli-pipeline` via invoke_function) (`src/`)
-- [ ] Delete `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge) (`src/`)
-- [ ] `cargo check` clean — first real checkpoint per plan
+**Survey (2026-05-21):** 2,586 total Expr:: refs in 26 files. Critical path: eval first (704 refs), then desugar deletion (76 callers), then downstream.
+**Depends on:** parser-migration-full ✅ (parser produces SurfaceProgram natively, commit 4dc467a)
+
+The evaluator currently matches `ThunkState::Unevaluated { expr: Spanned<Expr>, ... }` directly. All unevaluated thunks store `Expr`. The Surface path (`ThunkState::Surface` → `lower()` → `eval_core_expr()`) works but has a bridge fallback for complex CoreExpr variants.
+
+**Goal:** Remove ThunkState::Unevaluated entirely. All thunks use ThunkState::Surface. The eval loop only handles CoreExpr.
+
+- [ ] **Remove ThunkState::Unevaluated variant** from `src/value.rs` — all thunks created from expressions now use `ThunkState::Surface { node: Arc<SurfaceNode>, res, types, env, ctx }` (the Surface lowering path) (`src/value.rs`)
+- [ ] **Remove Expr match arms from `src/eval.rs`** (633 refs) — the `Unevaluated { expr, env, ctx }` handler that calls `eval()` recursively on `Expr` variants; after removal, `eval_core_expr()` is the only eval path; implement ALL missing CoreExpr variants natively (without Expr bridge fallback) (`src/eval.rs`)
+- [ ] **Remove Expr match arms from `src/eval_materialize.rs`** (41 refs) — update `force_step()` to not handle old Unevaluated state; update RestoreState to not reference Expr (`src/eval_materialize.rs`)
+- [ ] **Remove Expr match arms from `src/eval_dict.rs`** (20 refs) — `eval_dict` receives `SurfaceExpression::Dict` entries; the `Entry` type no longer used (`src/eval_dict.rs`)
+- [ ] **Remove Expr match arms from `src/eval_call.rs`** (8 refs) — function call dispatch (`src/eval_call.rs`)
+- [ ] **Remove Expr match arms from `src/eval_access.rs`** (4 refs) — property access (`src/eval_access.rs`)
+- [ ] **`just build` passes** — first checkpoint for eval cutover
+
+### E2-desugar-cutover: Delete desugar.rs + migrate 76 callers
+
+**Depends on:** E1-eval-cutover (eval no longer needs desugared Expr)
+
+- [ ] **Delete `src/desugar.rs`** — `$_` desugaring is now done by `stdlib/desugar.llt` (commit f6a41d2) (`src/desugar.rs`)
+- [ ] **Remove `desugar_file()` calls from `src/typecheck.rs`** (41 callers) — typechecker now takes `SurfaceProgram` via `typecheck_surface_program()` exclusively; delete `typecheck_file()` bridge (`src/typecheck.rs`)
+- [ ] **Remove `desugar_file()` calls from `src/lib.rs`** (10 callers) — public API changes to use `SurfaceProgram` directly (`src/lib.rs`)
+- [ ] **Remove `desugar_file()` calls from `src/main.rs`** (6 callers) — CLI commands use `SurfaceProgram` directly (`src/main.rs`)
+- [ ] **Remove `desugar_file()` from `src/lsp/analysis.rs`, `lsp/document.rs`** (3 callers) — LSP uses Surface types (`src/lsp/`)
+- [ ] **Remove `desugar_file()` from remaining callers** (`src/eval_pipeline.rs` 3, `src/builtins.rs` 2, `src/imports.rs` 2, `src/resolve.rs` 1, `src/formatter.rs` 1, `src/repl.rs` 1) (`src/`)
+- [ ] **Delete `src/eval_pipeline.rs`** — migrate lib.rs/main.rs/repl.rs callers to tinct `cli-pipeline` via invoke_function (`src/`)
+- [ ] **`just build` passes** — second checkpoint
+
+### E3-bridge-cutover: Delete bridge files + old types from ast.rs
+
+**Depends on:** E2-desugar-cutover
+
+- [ ] **Delete `src/ast_convert.rs`** — bridge no longer needed after all callers migrated (`src/`)
+- [ ] **Delete `src/ast_dict.rs`** — AST dict schema replaced by SurfaceExpression match dispatch (`src/`)
+- [ ] **Delete `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell`** from `src/ast.rs` (~500 lines) (`src/ast.rs`)
+- [ ] **Migrate remaining Expr users** (expander 147, formatter 114, LSP 185, imports 71, builtins 39, resolve 78) to Surface types — most already have parallel Surface paths; delete the Expr paths (`src/`)
+- [ ] **`cargo check` clean** — this is the true first checkpoint from the original plan (`src/`)
+- [ ] **`just test` passes** — full test suite
 
 ### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC)
 
