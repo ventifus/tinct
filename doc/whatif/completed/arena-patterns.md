@@ -13,6 +13,7 @@ implementing that design.
 ## Current State
 
 Every thunk allocation creates an `Rc<Thunk>` (24 bytes overhead: strong count
+
 + weak count + value pointer) containing a `RefCell<ThunkState>` (8 bytes
 overhead: borrow flag). Every environment is `Rc<RefCell<Environment>>` with
 an `IndexMap<String, Rc<Thunk>>` for bindings and a parent chain for lexical
@@ -75,6 +76,7 @@ Each `Thunk` retains its `RefCell<ThunkState>` for interior mutability. State
 transitions use `thunk.set_state()` / `thunk.transition()` exactly as today.
 
 **Letrec pattern:**
+
 ```rust
 // Step 1: allocate placeholder slots
 let id = arena.alloc(Thunk::placeholder());
@@ -331,50 +333,50 @@ and the rest of the codebase would not change.
 
 ### Prerequisites
 
-- **Phase 1** has no prerequisites — it is a standalone analysis pass.
-- **Phase 2** requires Phase 1 (flat environments need slot indices).
-- **Phase 3** requires Phase 2 (CEK machine operates on arena-allocated
++ **Phase 1** has no prerequisites — it is a standalone analysis pass.
++ **Phase 2** requires Phase 1 (flat environments need slot indices).
++ **Phase 3** requires Phase 2 (CEK machine operates on arena-allocated
   thunks) and the `iterative-eval` sprint's continuation design.
-- **Phase 4** requires Phase 2 (migration translates arena IDs to Rc
++ **Phase 4** requires Phase 2 (migration translates arena IDs to Rc
   pointers for cross-section persistence).
 
 ### Trigger
 
-- When the `iterative-eval` sprint begins (the arena is a core dependency
++ When the `iterative-eval` sprint begins (the arena is a core dependency
   of the CEK machine design)
-- When Rc cycle leaks cause measurable memory growth in multi-document
++ When Rc cycle leaks cause measurable memory growth in multi-document
   pipelines
-- When parent-chain O(depth) lookup becomes a measurable bottleneck in
++ When parent-chain O(depth) lookup becomes a measurable bottleneck in
   deeply nested configurations
 
 ## References
 
-- Tofte, M. & Talpin, J.-P. (1997). "Region-based memory management."
++ Tofte, M. & Talpin, J.-P. (1997). "Region-based memory management."
   *Information and Computation*, 132(2), 109--176. — Arena allocation is a
   simplified instance of region-based memory: each document section is a
   region, bulk deallocation corresponds to region exit.
-- de Bruijn, N.G. (1972). "Lambda calculus notation with nameless dummies."
++ de Bruijn, N.G. (1972). "Lambda calculus notation with nameless dummies."
   *Indagationes Mathematicae*, 34, 381--392. — Flat environments use de Bruijn
   levels (not indices) for O(1) variable lookup without shifting under
   substitution.
-- Yanovski, J. et al. (2021). "GhostCell: Separating Permissions from Data
++ Yanovski, J. et al. (2021). "GhostCell: Separating Permissions from Data
   in Rust." *ICFP '21.* — Zero-cost interior mutability via branded lifetimes.
   Formally verified. Evaluated and rejected: ergonomic cost prohibitive for
   whole-evaluator adoption when RefCell is already correct.
-- Launchbury, J. (1993). "A natural semantics for lazy evaluation." In
++ Launchbury, J. (1993). "A natural semantics for lazy evaluation." In
   *POPL '93*, pp. 144--154. ACM. — The thunk lifecycle (Unevaluated ->
   InProgress -> Materialized) that arena allocation must preserve. Sharing
   preservation is the key invariant: two references to the same ThunkId
   must observe the same materialized value.
-- Manish Goregaokar (2021). "Arenas in Rust." Blog post. — Survey of
++ Manish Goregaokar (2021). "Arenas in Rust." Blog post. — Survey of
   typed-arena, bumpalo, and index-based patterns in the Rust ecosystem.
-- matklad (2018). "Newtype Index Pattern." Blog post. — The `Vec<T>` +
++ matklad (2018). "Newtype Index Pattern." Blog post. — The `Vec<T>` +
   newtype `usize` pattern used by cranelift and rust-analyzer.
-- cranelift `entity` module. — `PrimaryMap<K,V>`, `SecondaryMap<K,V>`,
++ cranelift `entity` module. — `PrimaryMap<K,V>`, `SecondaryMap<K,V>`,
   typed u32 index handles. Production-scale precedent for this exact pattern.
-- Ierusalimschy, R., de Figueiredo, L.H. & Celes, W. (2005). "The implementation of Lua 5.0." *J. Universal Computer Science*, 11(7), pp. 1159–1176. — Flat local variable arrays with upvalue reference cells for closures. Closest precedent for tinct's slot-indexed `FlatEnv`; tinct's letrec model differs by using a shared env rather than per-closure upvalue arrays.
-- Nix evaluator. — Boehm GC, flat Value arrays with de Bruijn levels,
++ Ierusalimschy, R., de Figueiredo, L.H. & Celes, W. (2005). "The implementation of Lua 5.0." *J. Universal Computer Science*, 11(7), pp. 1159–1176. — Flat local variable arrays with upvalue reference cells for closures. Closest precedent for tinct's slot-indexed `FlatEnv`; tinct's letrec model differs by using a shared env rather than per-closure upvalue arrays.
++ Nix evaluator. — Boehm GC, flat Value arrays with de Bruijn levels,
   in-place thunk update. C++ reference implementation for lazy configuration
   language evaluation.
-- Nickel evaluator. — `Rc<RefCell<Closure>>`, same model as tinct's current
++ Nickel evaluator. — `Rc<RefCell<Closure>>`, same model as tinct's current
   approach. No arenas. Rust reference point for the status quo.

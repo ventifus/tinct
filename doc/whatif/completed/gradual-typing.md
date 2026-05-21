@@ -1,4 +1,5 @@
 # What If: Formal Gradual Typing for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to formalize tinct's relationship with gradual typing
@@ -16,9 +17,10 @@ Any <: τ    [S-ANY-BOT]
 This violates antisymmetry (τ <: Any ∧ Any <: τ does not imply τ = Any) and
 makes the subtype relation unsound as a partial order. It is documented as
 intentional for tinct's gradual type system (doc/06-type-inference.md §Subtyping, Limitation
-#5).
+# 5).
 
 `Any` currently serves multiple roles:
+
 1. **Unknown type** — unannotated params, forward references before
    let-generalization
 2. **Untyped values** — return type of builtins that can't be precisely typed
@@ -64,6 +66,7 @@ equivalence (which tinct's `Any`-as-top-and-bottom currently does).
 ### The Gradual Guarantee (Siek et al. 2015)
 
 A gradually typed system satisfies the **gradual guarantee** if:
+
 1. Removing type annotations (replacing with `?`) never causes a program to
    be statically rejected
 2. Adding type annotations never causes a program that was statically
@@ -79,6 +82,7 @@ fail.
 
 Abstracting Gradual Typing provides a systematic method to derive a gradual
 type system from a static one:
+
 1. `?` represents the *set of all types*
 2. Static typing judgments lift to operate on sets of types
 3. A gradual judgment holds if *some* consistent concretization satisfies the
@@ -121,6 +125,7 @@ enum Type {
 ```
 
 Role reclassification:
+
 - Unannotated params: `Unknown` (was `Any`) — "I don't know the type yet"
 - Builtin returns that can't be typed: `Unknown` (was `Any`) — "could be
   anything"
@@ -192,6 +197,7 @@ in a gradually typed program, blame falls on the boundary that introduced the
 well-typed component is never blamed.
 
 Each blame boundary records:
+
 - *Origin span*: where the `Unknown` value was produced (unannotated param
   definition, builtin return site, or untyped caller)
 - *Boundary span*: where the `Unknown` value entered typed territory (TypeAssert
@@ -427,6 +433,7 @@ establishes the rules before any code changes and validates the design
 against Garcia et al.'s systematic derivation.
 
 Deliverables:
+
 - Formal consistency relation for tinct's types (document in doc/06-type-inference.md)
 - Catalog of all `Any` uses with their reclassification (Unknown vs Top)
 - Identification of all blame boundaries in the current codebase

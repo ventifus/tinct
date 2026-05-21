@@ -2,15 +2,11 @@
 
 ### `pi`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `e`
-
-
 
 ```tinct
 (value)
@@ -18,15 +14,11 @@
 
 ### `phi`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `hypot`
-
-
 
 ```tinct
 fn@
@@ -34,15 +26,11 @@ fn@
 
 ### `deg->rad`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `rad->deg`
-
-
 
 ```tinct
 fn@
@@ -50,9 +38,6 @@ fn@
 
 ### `log-base`
 
-
-
 ```tinct
 fn@
 ```
-

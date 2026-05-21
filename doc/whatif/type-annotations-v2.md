@@ -67,6 +67,7 @@ fn@[bind: [a b c]  return: c  constraint: [a: Numeric  b: Numeric  [$Addable a b
 | `doc:` | string literal | Documentation string — LSP hover, not type-checked |
 
 **Processing order** (fixed, source order irrelevant):
+
 1. `bind:` — declares TypeVars in `ann_mapping`
 2. `kinds:` — registers kind constraints on declared TypeVars
 3. `constraint:` keyed entries — class constraints on TypeVars
@@ -93,6 +94,7 @@ add-typed: [fn@[bind: [a b c]  return: c
 ```
 
 Rules:
+
 1. `bind:` registers names as fresh TypeVars in `ann_mapping`; processed first.
 2. `return:`, `type:`, and parameter `@` annotations are reference-only — they look up names already in `ann_mapping`. A name not in `bind:` is a type error.
 3. MPTC positional entries `[$Add a b c]` are purely relational — all names must be in `ann_mapping`.
@@ -122,6 +124,7 @@ constraint: [a: [each Comparable Showable]]   # TypeVar a must satisfy both
 `each` produces `[kind: "inter"  members: [...]]` → `Type::Intersection([...])`. In `constraint:` position, intersection types become multiple `Constraint::Class` entries. In type annotation position, they produce `Type::Intersection`.
 
 Multi-class constraint alternative — `[each ...]` preferred:
+
 ```tinct
 # RETIRED (reads as implied call):
 constraint: [a: [Comparable Showable]]
@@ -186,6 +189,7 @@ constraint: [a: Comparable  b: Showable]  # two TypeVars
 ```
 
 Routing:
+
 - `[kind: "named" name: N]` → `Constraint::Class(N, α)`
 - `[kind: "inter" members: [...]]` → one `Constraint::Class` per member
 - `[kind: "union" members: [...]]` → `Constraint::Any([...])` (rare)
@@ -244,12 +248,15 @@ Separate Env built from `--- stage: type` sections (prelude first, then program)
 ## What Would Change
 
 ### `src/ast.rs` — `Annotation` variants
+
 Add `Annotated(String, Box<Annotation>)` for chained annotations. Already implemented.
 
 ### `src/typecheck_annot.rs` — Annotation resolver
+
 **fn@[...] path:** Inspect PropertyDict for recognized metadata keys (`return:`, `constraint:`, `bind:`, `kinds:`, `doc:`). If any present → `resolve_fn_metadata()`. If all positional → type expression resolved via type-stage Env.
 
 **resolve_fn_metadata processing order:**
+
 1. `bind:` — declare TypeVars in `ann_mapping`
 2. `kinds:` — register kind constraints
 3. `constraint:` keyed entries — `Constraint::Class` per entry
@@ -260,18 +267,23 @@ Add `Annotated(String, Box<Annotation>)` for chained annotations. Already implem
 **Parameter annotations:** When annotation has positional entries and no `type:` key → resolve as type-stage expression (e.g., `@[or Int Null]`). When `type:` key present → evaluate `type:` value as type-stage expression.
 
 ### `src/typecheck.rs` and `stdlib/prelude.llt` — Type prelude
+
 Add `--- stage: type` section to prelude with `or`, `each`, `Seq`, `Map`, `record`, `Fn`, `kind`, `fn` type-stage combinators and ground type dicts for `Int`, `String`, `Bool`, `Null`, `Any`, `Unknown`.
 
 ### `src/type_dict.rs` (new file)
+
 `pub fn type_to_dict(ty: &Type) -> Value` and `pub fn dict_to_type(val: &Value, span: Span) -> Result<Type, TypeError>`. Cover all `Type` variants. `dict_to_type` errors on unknown `kind:` or missing fields.
 
 ### `src/typecheck_annot.rs` — `kinds:` routing
+
 Add `kinds:` as recognized metadata bracket key alongside `constraint:`. Route to `kind_env` after `bind:` processing. Retire `f@Operator` annotation form; `kinds:` is canonical.
 
 ### `src/ast.rs` / `src/parser.rs` — `Expr::ClassDecl` fields
+
 Add `determines: Vec<Spanned<Expr>>` and `resolver: Option<Spanned<Expr>>` to `Expr::ClassDecl` for routing out of the `methods` list. `StackFrame::ClassDecl` gains matching fields.
 
 ### Migration path
+
 1. Retire `@[T1 T2]` positional union → `@[or T1 T2]` (mechanical, 8 corpus files)
 2. Retire `[a: [Comparable Showable]]` → `[a: [each Comparable Showable]]` (mechanical)
 3. Add `bind:` to multi-TypeVar fn annotations in prelude and stdlib

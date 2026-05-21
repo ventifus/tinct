@@ -521,7 +521,6 @@ pub struct InferState {
 
 When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During unification, level lowering mutates `levels[name]` without rebuilding the `Type`. `generalize()` consults `levels` for the authoritative level of each variable. The level embedded in `TypeVar(String, u32)` is the *creation-time* level; `InferState.levels` is the *current* (possibly lowered) level.
 
-
 **Level adjustment during unification (symmetric).** Both branches of type variable unification perform level lowering:
 
 ```
@@ -811,6 +810,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
    ```
 
    Example: unifying `_t0` (with `Numeric _t0`) with `Fn@Int [Int]`:
+
    ```
    satisfies_constraint(Fn@Int [Int], "Numeric") → false
    → TypeError: type Fn@Int [Int] does not satisfy constraint Numeric
@@ -851,6 +851,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 ```
 
 Alternative failing case:
+
 ```tinct
 result: [= [fn [] 1] [fn [] 2]]
 
@@ -875,11 +876,16 @@ Tinct's MPTC/FD system is grounded in **Constraint Handling Rules** (CHRs, Sulzm
 
 **`Type::TypeStageApp` — lazy type-stage application.** When FD improvement fires and the determining positions are not yet ground, the type checker produces `TypeStageApp { fn_name, args }` rather than calling the resolver eagerly. `normalize()` reduces it to a concrete type when args become ground. When any determining position is `Unknown`, the result is `Unknown` directly (not deferred indefinitely).
 
-**FD elaboration into equality goals.** When `[$Addable a b c]` is registered with FD `(a,b)→c` and resolver `AddResult`, `c` is immediately unified with `TypeStageApp("AddResult", [a, b])`. As `a`, `b` become ground, `normalize()` fires the resolver and `c` takes on a concrete type. `c`'s level is set to `max(enclosing_level, max(ℓ_a, ℓ_b))` at constraint-creation time. The FD constraint propagates in the type scheme alongside `c` (Jones 1995 qualified types), so the FD fires correctly at every call site.
+**`NormCtxt` — normalization context.** `normalize()` takes a `NormCtxt` carrying everything needed for a complete reduction pass: the current substitution chain (`subst`), the type-stage environment for calling resolver functions (`type_stage_env`), the alias table (`alias_env`), the current depth and max depth for the step limit, and the in-progress resolver call stack for cycle detection (`call_stack`). A normalization cache (`resolver_cache`) memoizes ground-arg results — same inputs always produce the same output under resolver purity. A fresh `NormCtxt` is constructed from the current `InferState` before every `unify` call.
+
+**FD elaboration into equality goals.** When `[$Addable a b c]` is registered with FD `(a,b)→c` and resolver `AddResult`, `c` is immediately unified with `TypeStageApp("AddResult", [a, b])`. As `a`, `b` become ground, `normalize()` fires the resolver via `improve_functional_dependency` and `c` takes on a concrete type. `c`'s level is set to `max(enclosing_level, max(ℓ_a, ℓ_b))` at constraint-creation time. The FD constraint propagates in the type scheme alongside `c` (Jones 1995 qualified types), so the FD fires correctly at every call site.
+
+**BAS-aware deferral.** `improve_functional_dependency` fires only when all determining positions are atomic named monotypes (`Int`, `Float`, `Str`, etc.). Union, intersection, negation, `Unknown`, and free TypeVars in a determining position defer improvement — the resolver is not called until the position resolves to a concrete ground type. This is the conservative, sound approach under Boolean-Algebraic Subtyping: distributing improvement over union types (e.g., `Add (Int|Float) Int c ⟹ c = Int|Float`) requires proving the resolver is covariant on the subtype lattice and is deferred to future work.
 
 **Arithmetic operators** use `Addable`, `Subtractable`, `Multipliable`, `Divisible` classes with FD `(a,b)→c` and resolver functions (`AddResult`, etc.) declared in `stdlib/prelude.llt`. Instances cover Int/Float combinations. User-defined numeric types add instances — no code change required.
 
 **Deferred equality for non-injective resolvers.** When `unify_normalized` encounters two `TypeStageApp("F", _)` nodes from different elaboration sites, behavior splits on `ClassDecl.resolver_injective` (computed during the batch instance coherence check):
+
 - **Injective F:** unify args pairwise (congruence — sound).
 - **Non-injective F** (all arithmetic classes — `AddResult(Int,Float)=Float=AddResult(Float,Float)`): add `(lhs, rhs)` to `InferState.deferred_equalities`. After each `unify` call, if both sides have reduced to concrete types, fire `unify(concrete_lhs, concrete_rhs)`. This prevents false type errors on `[= [+ 1 2.0] [+ 1.5 2.5]]` (both produce `Float` via different arg types).
 
@@ -1097,9 +1103,9 @@ The explicit `[do monad ...]` form always takes priority and is backward-compati
 
 **Known limitations:**
 
-- Rule 2 (type-level) recognizes structural records (`{ok: x}`) but not nominal variant calls (`[Ok x]`). Full variant typing requires precise constructor types, which are not yet tracked in the type environment.
-- Rule 2b (syntactic fallback) currently only recognizes `Ok` and `Error` constructors for the `result` monad. Once constructor types are tracked, this AST-level fallback can be removed in favor of pure type-level resolution.
-- `Maybe` monad inference and other HKT monads require full `App(m, a)` type constructor tracking. The syntactic fallback could be extended to recognize `Some`/`None` constructors, but this is deferred to a future sprint.
+- Rule 2 (type-level) recognizes structural records (`{ok: x}`) but not nominal variant calls (`[Ok x]`). Nominal variant dispatch requires precise constructor types in the type environment; `[do result ...]` is the workaround for result-monad patterns.
+- Rule 2b (syntactic fallback) recognizes only `Ok` and `Error` constructors for the `result` monad.
+- `Maybe` monad inference and other HKT monads require full `App(m, a)` type constructor tracking; use explicit `[do monad ...]` form for these cases.
 
 ### HasField — Label-Polymorphic Field Access
 

@@ -328,7 +328,7 @@ fn nodes_to_list_dict(
     let mut map = indexmap::IndexMap::new();
     for (i, node) in nodes.iter().enumerate() {
         use crate::value::Thunk;
-    
+
         let thunk = Arc::new(Thunk::new_materialized(
             Value::Expression(Arc::clone(node)),
             node.span,
@@ -478,9 +478,10 @@ fn match_arms_to_list_dict(
         );
         let arm_variant = Value::Variant {
             tag: "MatchArm".into(),
-            payload: Some(
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(payload), span))),
-            ),
+            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Dict(payload),
+                span,
+            )))),
         };
         let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(arm_variant, span)));
         map.insert(Key::Int(i as i64), tid);
@@ -540,7 +541,6 @@ pub fn span_to_value(
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
     use crate::value::Thunk;
-
 
     let mut map = indexmap::IndexMap::new();
 

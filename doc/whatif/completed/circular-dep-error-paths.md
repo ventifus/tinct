@@ -32,15 +32,18 @@ struct EvalState {
 ```
 
 **Push on enter, pop on exit.** When `materialize()` transitions a thunk from `Unevaluated` to `InProgress`:
+
 1. Push `(thunk.origin.to_string(), thunk.span)` onto `eval_stack`
 2. On successful materialization: pop
 3. On `InProgress` detection (cycle): the current `eval_stack` contains the full cycle chain — construct a `CircularDependency` error with the chain
 
 **Precedent survey:**
+
 - **Nix** (`callPackage` cycle errors): Nix's evaluator tracks a `call_stack` (vector of attribute paths) and reports the full chain: `infinite recursion encountered ... callPackage at a.nix:5 → callPackage at b.nix:12 → ...`
 - **GHC** (mutual recursion detection): GHC's typechecker tracks `recursion_stack` for `{-# NOINLINE -#}` cycles; the pattern is identical.
 
 **Error format:**
+
 ```
 [E040] circular dependency detected while evaluating x at 3:5
   cycle: a (1:1) → b (2:3) → x (3:5) → [cycle back to a]

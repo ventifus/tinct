@@ -1,0 +1,1 @@
+/loop 5m What are you working on? What's left to do? Anything you need help with unblocking? Make sure that all blockers/deferred items are tracked in TODO. keep running /cycle until there are no more (non-research) TODO items. If TODO is empty, have the entire agent panel perform a full codebase review.

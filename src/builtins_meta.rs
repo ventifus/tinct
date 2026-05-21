@@ -41,7 +41,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::{Span, Spanned};
+use crate::ast::Span;
 use crate::builtins::{
     builtin, ok_val, reject_named, require_string, JSON_DEPTH_LIMIT, MAX_COLLECT_SIZE,
 };
@@ -1281,31 +1281,32 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
 
     // Extract optional name: and hash: named args
-    let (name_hint, expected_hash): (Option<String>, Option<String>) = if let Some(named_map) = named {
-        // Reject unknown named args
-        for key in named_map.keys() {
-            if key != "name" && key != "hash" {
-                return Err(EvalError::named_arg_rejected("load".to_string(), call_span).into());
+    let (name_hint, expected_hash): (Option<String>, Option<String>) =
+        if let Some(named_map) = named {
+            // Reject unknown named args
+            for key in named_map.keys() {
+                if key != "name" && key != "hash" {
+                    return Err(EvalError::named_arg_rejected("load".to_string(), call_span).into());
+                }
             }
-        }
-        let name_hint = if let Some(name_thunk) = named_map.get("name") {
-            let name_val = materialize(name_thunk, Some(&call_span), &ctx)?;
-            let name_str = require_string("load", name_val, name_thunk.span)?;
-            Some(name_str)
+            let name_hint = if let Some(name_thunk) = named_map.get("name") {
+                let name_val = materialize(name_thunk, Some(&call_span), &ctx)?;
+                let name_str = require_string("load", name_val, name_thunk.span)?;
+                Some(name_str)
+            } else {
+                None
+            };
+            let expected_hash = if let Some(hash_thunk) = named_map.get("hash") {
+                let hash_val = materialize(hash_thunk, Some(&call_span), &ctx)?;
+                let hash_str = require_string("load", hash_val, hash_thunk.span)?;
+                Some(hash_str)
+            } else {
+                None
+            };
+            (name_hint, expected_hash)
         } else {
-            None
+            (None, None)
         };
-        let expected_hash = if let Some(hash_thunk) = named_map.get("hash") {
-            let hash_val = materialize(hash_thunk, Some(&call_span), &ctx)?;
-            let hash_str = require_string("load", hash_val, hash_thunk.span)?;
-            Some(hash_str)
-        } else {
-            None
-        };
-        (name_hint, expected_hash)
-    } else {
-        (None, None)
-    };
 
     // Extract source string
     let source_val = materialize(&args[0], Some(&call_span), &ctx)?;
@@ -1328,9 +1329,7 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         }
     } else if ctx.config.require_integrity {
         // --require-integrity flag is set but no hash: argument provided
-        return Err(
-            EvalError::include_hash_required(display_name.to_string(), call_span).into()
-        );
+        return Err(EvalError::include_hash_required(display_name.to_string(), call_span).into());
     }
 
     // Parse
@@ -1339,16 +1338,18 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     })?;
 
     // Macro expansion — use ctx.config.base_dir as the directory context for macro includes.
-    let expand_result =
-        crate::expand::expand_macros(crate::ast_convert::surface_program_to_file(&parsed.program), ctx.config.no_fs, &ctx.config.base_dir).map_err(
-            |e| {
-                EvalError::include_parse_failed(
-                    display_name.to_string(),
-                    format!("macro expansion error: {e}"),
-                    call_span,
-                )
-            },
-        )?;
+    let expand_result = crate::expand::expand_macros(
+        crate::ast_convert::surface_program_to_file(&parsed.program),
+        ctx.config.no_fs,
+        &ctx.config.base_dir,
+    )
+    .map_err(|e| {
+        EvalError::include_parse_failed(
+            display_name.to_string(),
+            format!("macro expansion error: {e}"),
+            call_span,
+        )
+    })?;
     let mut file = expand_result.file;
 
     // Desugar $_ implicit lambdas
@@ -1391,22 +1392,23 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     let val = materialize(&args[0], Some(&call_span), &ctx)?;
     match val {
-        Value::Program { program: surface_program, resolutions: _old_resolutions, types: _old_types } => {
+        Value::Program {
+            program: surface_program,
+            resolutions: _old_resolutions,
+            types: _old_types,
+        } => {
             // Convert SurfaceProgram back to File for macro expansion
             let spanned_file = crate::ast_convert::surface_program_to_file(&surface_program);
 
             // Run macro expansion
-            let expand_result = crate::expand::expand_macros(
-                spanned_file,
-                ctx.config.no_fs,
-                &ctx.config.base_dir,
-            )
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("expand: macro expansion error: {}", e.kind),
-                    call_span,
-                )
-            })?;
+            let expand_result =
+                crate::expand::expand_macros(spanned_file, ctx.config.no_fs, &ctx.config.base_dir)
+                    .map_err(|e| {
+                        EvalError::user_error(
+                            format!("expand: macro expansion error: {}", e.kind),
+                            call_span,
+                        )
+                    })?;
 
             // Convert expanded File back to SurfaceProgram
             let new_surface_program =
@@ -1488,21 +1490,27 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             Value::Dict(entries) => {
                 // Create child environment with dict entries as bindings
                 let child_env = Arc::new(std::sync::RwLock::new(
-                    crate::value::Environment::with_parent(Arc::clone(&base_env))
+                    crate::value::Environment::with_parent(Arc::clone(&base_env)),
                 ));
                 for (key, thunk_id) in entries.iter() {
                     if let Key::String(name) = key {
-                        child_env.write().unwrap().insert(name.clone(), ctx.get_thunk(*thunk_id));
+                        child_env
+                            .write()
+                            .unwrap()
+                            .insert(name.clone(), ctx.get_thunk(*thunk_id));
                     }
                 }
                 child_env
             }
-            _ => return Err(EvalError::type_mismatch_ctx(
-                "eval".to_string(),
-                "Dict",
-                env_val.type_name(),
-                call_span,
-            ).into()),
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "eval".to_string(),
+                    "Dict",
+                    env_val.type_name(),
+                    call_span,
+                )
+                .into())
+            }
         }
     } else {
         base_env
@@ -1511,9 +1519,12 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     // Add %: (pipeline input) as $ binding if provided
     let final_env = if let Some(input_thunk) = pipeline_input {
         let child_env = Arc::new(std::sync::RwLock::new(
-            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings))
+            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
         ));
-        child_env.write().unwrap().insert("$".to_string(), input_thunk);
+        child_env
+            .write()
+            .unwrap()
+            .insert("$".to_string(), input_thunk);
         child_env
     } else {
         env_with_bindings
@@ -1533,12 +1544,15 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                     Value::Expression(node) => {
                         expression_nodes.push(node);
                     }
-                    _ => return Err(EvalError::type_mismatch_ctx(
-                        "eval".to_string(),
-                        "Seq of Expression",
-                        &format!("Seq containing {}", head_val.type_name()),
-                        call_span,
-                    ).into()),
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "eval".to_string(),
+                            "Seq of Expression",
+                            &format!("Seq containing {}", head_val.type_name()),
+                            call_span,
+                        )
+                        .into())
+                    }
                 }
                 current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx)?;
             }
@@ -1546,12 +1560,15 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                 // Empty dict = end of sequence
                 break;
             }
-            _ => return Err(EvalError::type_mismatch_ctx(
-                "eval".to_string(),
-                "Seq",
-                current.type_name(),
-                call_span,
-            ).into()),
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "eval".to_string(),
+                    "Seq",
+                    current.type_name(),
+                    call_span,
+                )
+                .into())
+            }
         }
     }
 
@@ -1559,15 +1576,18 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let (res_table, types_table) = if let Some(program_thunk) = program_opt {
         let program_val = materialize(&program_thunk, Some(&call_span), &ctx)?;
         match program_val {
-            Value::Program { resolutions, types, .. } => {
-                (Arc::clone(&resolutions), Arc::clone(&types))
+            Value::Program {
+                resolutions, types, ..
+            } => (Arc::clone(&resolutions), Arc::clone(&types)),
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "eval".to_string(),
+                    "Program (for program: argument)",
+                    program_val.type_name(),
+                    call_span,
+                )
+                .into())
             }
-            _ => return Err(EvalError::type_mismatch_ctx(
-                "eval".to_string(),
-                "Program (for program: argument)",
-                program_val.type_name(),
-                call_span,
-            ).into()),
         }
     } else {
         // No program provided - use empty tables (expressions won't have resolution info)
@@ -1622,7 +1642,9 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
     let (env_dict, pipeline_input) = if let Some(named_map) = named {
         for key in named_map.keys() {
             if key != "env" && key != "%" {
-                return Err(EvalError::named_arg_rejected("eval-types".to_string(), call_span).into());
+                return Err(
+                    EvalError::named_arg_rejected("eval-types".to_string(), call_span).into(),
+                );
             }
         }
 
@@ -1643,21 +1665,27 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         match env_val {
             Value::Dict(entries) => {
                 let child_env = Arc::new(std::sync::RwLock::new(
-                    crate::value::Environment::with_parent(Arc::clone(&base_env))
+                    crate::value::Environment::with_parent(Arc::clone(&base_env)),
                 ));
                 for (key, thunk_id) in entries.iter() {
                     if let Key::String(name) = key {
-                        child_env.write().unwrap().insert(name.clone(), ctx.get_thunk(*thunk_id));
+                        child_env
+                            .write()
+                            .unwrap()
+                            .insert(name.clone(), ctx.get_thunk(*thunk_id));
                     }
                 }
                 child_env
             }
-            _ => return Err(EvalError::type_mismatch_ctx(
-                "eval-types".to_string(),
-                "Dict",
-                env_val.type_name(),
-                call_span,
-            ).into()),
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "eval-types".to_string(),
+                    "Dict",
+                    env_val.type_name(),
+                    call_span,
+                )
+                .into())
+            }
         }
     } else {
         base_env
@@ -1666,9 +1694,12 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
     // Add %: (pipeline input) as $ binding if provided
     let final_env = if let Some(input_thunk) = pipeline_input {
         let child_env = Arc::new(std::sync::RwLock::new(
-            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings))
+            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
         ));
-        child_env.write().unwrap().insert("$".to_string(), input_thunk);
+        child_env
+            .write()
+            .unwrap()
+            .insert("$".to_string(), input_thunk);
         child_env
     } else {
         env_with_bindings
@@ -1688,24 +1719,30 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
                     Value::Expression(node) => {
                         expression_nodes.push(node);
                     }
-                    _ => return Err(EvalError::type_mismatch_ctx(
-                        "eval-types".to_string(),
-                        "Seq of Expression",
-                        &format!("Seq containing {}", head_val.type_name()),
-                        call_span,
-                    ).into()),
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "eval-types".to_string(),
+                            "Seq of Expression",
+                            &format!("Seq containing {}", head_val.type_name()),
+                            call_span,
+                        )
+                        .into())
+                    }
                 }
                 current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx)?;
             }
             Value::Dict(ref entries) if entries.is_empty() => {
                 break;
             }
-            _ => return Err(EvalError::type_mismatch_ctx(
-                "eval-types".to_string(),
-                "Seq",
-                current.type_name(),
-                call_span,
-            ).into()),
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "eval-types".to_string(),
+                    "Seq",
+                    current.type_name(),
+                    call_span,
+                )
+                .into())
+            }
         }
     }
 
@@ -1752,7 +1789,13 @@ pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Arc<
     let val = crate::builtins::expect_one_arg("include-cache-get", args, named, &ctx, call_span)?;
     let key = require_string("include-cache-get", val, args[0].span)?;
 
-    let entry = ctx.state.lock().unwrap().string_include_cache.get(&key).cloned();
+    let entry = ctx
+        .state
+        .lock()
+        .unwrap()
+        .string_include_cache
+        .get(&key)
+        .cloned();
 
     match entry {
         None => ok_val(
@@ -1858,7 +1901,8 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Arc<
     };
 
     ctx.state
-        .lock().unwrap()
+        .lock()
+        .unwrap()
         .string_include_cache
         .insert(key, entry);
 
@@ -1866,34 +1910,6 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Arc<
     Ok(Arc::clone(&args[1]))
 }
 
-/// `include`: takes 2 or 3 args (DirCap + path, optional hash), evaluates the file,
-/// returns its result. The capless 1-arg form `[include "path"]` is no longer supported.
-///
-/// Supported forms:
-///   `[include $cap "path"]`           — 2 args: DirCap + path String
-///   `[include $cap "path" "hash"]`    — 3 args: DirCap + path + integrity hash
-///
-/// Path resolution: relative paths are resolved within the provided DirCap (RESOLVE_BENEATH).
-/// Absolute paths are rejected by cap-std. Cycle detection prevents A→B→A
-/// circular includes. The included file gets an empty `%`, the stdlib environment,
-/// plus injected `%libdir` cap so that it can include further files.
-///
-/// ## Argument strictness
-///
-/// - `args[0]`: DirCap — materialized immediately
-/// - `args[1]`: path String — materialized immediately
-/// - `args[2]`: hash String (optional) — materialized immediately
-///
-/// All arguments are forced eagerly; `$include` does not participate in lazy evaluation
-/// of its path. This is intentional: lazily resolving the path would defer filesystem
-/// errors and make cycle detection unreliable.
-///
-/// ## VarRef slot correctness across eval boundaries
-///
-/// **WARNING:** resolve_file populates VarRef slots for the load-time env, but builtin_eval
-/// re-uses the AST in a new env where slots may differ. Runtime-v2 Part E will eliminate
-/// this entirely (VarRef slots replaced by ResolutionTable keyed by Arc pointer). For now,
-/// do NOT rely on slot correctness across eval boundaries.
 // TOMBSTONE: builtin_include deleted in include-decomp-redelete sprint (2026-05-20).
 // The `include` function is now implemented in stdlib/prelude.llt as a self-hosted
 // pipeline using the decomposed primitives: load, expand, eval, blake3, cap-identity,
@@ -2274,11 +2290,26 @@ fn validate_value(
                                 } else {
                                     format!("{}[{}]", path, idx)
                                 };
-                                validate_value(items_schema, &head_val, &item_path, violations, ctx, span)?;
+                                validate_value(
+                                    items_schema,
+                                    &head_val,
+                                    &item_path,
+                                    violations,
+                                    ctx,
+                                    span,
+                                )?;
 
                                 let tail_thunk = ctx.get_thunk(*tail);
                                 let tail_val = materialize(&tail_thunk, Some(&span), &ctx)?;
-                                validate_seq_items(&tail_val, items_schema, path, idx + 1, violations, ctx, span)
+                                validate_seq_items(
+                                    &tail_val,
+                                    items_schema,
+                                    path,
+                                    idx + 1,
+                                    violations,
+                                    ctx,
+                                    span,
+                                )
                             }
                             Value::Dict(d) if d.is_empty() => {
                                 // Empty dict is the Seq terminator

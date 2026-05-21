@@ -156,18 +156,22 @@ Pipeline blame — contract violations identify the producing stage, the consumi
 ## References
 
 **Contract systems:**
+
 - Findler, R.B. & Felleisen, M. (2002). "Contracts for higher-order functions." *ICFP*, pp. 48-59. — Blame assignment theory. Positive/negative party model for identifying which module violated a contract. Directly applicable to tinct's pipeline boundaries.
 - Dimoulas, C. et al. (2011). "Correct blame for contracts." *POPL*, pp. 215-226. — Formal semantics of blame assignment in the presence of higher-order contracts and module boundaries.
 - Wadler, P. & Findler, R.B. (2009). "Well-typed programs can't be blamed." *ESOP*, LNCS 5502, pp. 1-16. — Blame calculus connecting contracts to gradual typing. Relevant if tinct's `Unknown` type interacts with contract boundaries.
 
 **Schema validation:**
+
 - Wright, A. et al. (2022). JSON Schema: A Media Type for Describing JSON Documents. Draft 2020-12. — Schema-as-document validation with `$ref`, `allOf`, `anyOf`, composition.
 - Hickey, R. (2016). "clojure.spec — Rationale and Overview." — Predicate-based validation as composable specs, separate from the type system. `s/keys`, `s/and`, `s/conform` pattern.
 
 **Type-level contracts:**
+
 - Unison. "Ability types and structural contracts." — Types that encode capabilities and constraints in a content-addressed codebase.
 - CUE. "Lattice-based configuration." — Values and constraints unified via lattice operations. Types are values; validation is evaluation.
 
 **Language-specific:**
+
 - Dhall. "Safety guarantees." — Total type system where well-typed programs cannot fail at runtime. Types as complete contracts.
 - NixOS module system. `mkOption`, `types.*` — Typed option declarations with defaults, descriptions, and merge semantics.

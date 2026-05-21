@@ -1,6 +1,7 @@
 # Inference Completeness
 
 > **Supersedes:**
+>
 > - `doc/06-type-inference.md §Limitations` items 2 ("Variadic params typed as Unknown") and 3 ("Nested dicts do not receive full let-polymorphism") — both are removed; the features described here replace them
 > - The [FN] rule's variadic arm in `doc/06-type-inference.md §Inference Judgments` — updated from `Unknown` to `Seq(β)`; formal rules [FN-VARIADIC] and [CALL-VARIADIC] added
 

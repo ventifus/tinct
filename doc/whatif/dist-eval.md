@@ -36,6 +36,7 @@ Concretely:
 The design distinguishes two layers:
 
 **Semantic core** — what the language specifies:
+
 - A `Cluster` is an opaque environment in which computations can be scheduled.
 - `remote-task` submits a thunk to that environment and returns a `Task@T`.
 - `GlobalThunkRef` is a cross-node pointer to a live thunk; free variables in a distributed task's environment may be `GlobalThunkRef` entries resolved lazily by the DSM layer — inputs need not be computed before the dependent task is submitted.
@@ -43,6 +44,7 @@ The design distinguishes two layers:
 - A thunk evaluates exactly once; independent thunks have no ordering constraint; dependent thunks wait. These semantics are identical whether evaluation runs on one core, many cores, or many machines.
 
 **Implementation** — what a specific cluster provides:
+
 - The transport (QUIC, TCP, shared memory, a mounted filesystem).
 - The replication and leader-election mechanism.
 - The storage backend for the result cache.
@@ -241,6 +243,7 @@ The two detectors compose cleanly: local detection catches intra-task cycles at 
 A `Cluster` is not a single coordinator process — it is a **coordinator group**: a set of nodes that replicate state via consensus and elect a leader to serve requests. Any node in the group can act as leader; any node can simultaneously accept work as a worker.
 
 **Homogeneous nodes.** Every node in a tinct cluster runs two components:
+
 - **Worker runtime** — evaluates tasks, the same as a dedicated worker.
 - **Coordinator module** — replicates cluster state, redirects clients, routes tasks when leading.
 
@@ -423,6 +426,7 @@ item: [channel-recv durable-ch]
 ```
 
 **Wire protocol additions:**
+
 ```tinct
 [chan-reg:    chan-id: <hash>  name: <Str>  capacity: <Int>  durable: <Bool>]
 [chan-send:   chan-id: <hash>  value: <TinctWire>  term: <Int>]
@@ -729,6 +733,7 @@ Semantics are identical at every level: a thunk evaluates exactly once; independ
 Tinct-native binary encoding: tag byte dispatch over the value enum, varint integers, length-prefixed strings and collections. `encode(value: &Value) -> Bytes` and `decode(bytes: &[u8]) -> Result<Value, DecodeError>`. No JSON path for distributed tasks.
 
 Four encoding paths:
+
 - **Primitive values** (`Null`, `Bool`, `Int`, `Float`, `String`, `List`, `Dict`, `Error`, `Ref`) — direct encoding.
 - **Thunk/Closure** (`0x08`/`0x09`) — `CoreExpr` encoded by `core_expr_to_wire`; `core_expr_from_wire` decodes on the worker. Environment Dict entries use concrete wire values or `GlobalThunkRef` (tag `0x0E`).
 - **GlobalThunkRef** (`0x0E`) — u32 node-id-string length + UTF-8 bytes + u64 thunk-id. Valid only within a live program run; must not be persisted.
@@ -754,6 +759,7 @@ enum DsmEntry {
 ```
 
 **Public interface:**
+
 - `async fn demand(thunk_ref: GlobalThunkRef, self_thunk_id: LocalThunkId) -> Result<Value, Arc<EvalError>>` — demand-fetch with CMH probe. Returns immediately if the result is already cached.
 - `fn notify_ready(thunk_ref: GlobalThunkRef, result: Result<Value, Arc<EvalError>>)` — called by the transport when a `DemandResponse` arrives; wakes all waiters.
 - `fn notify_node_failed(node_id: NodeId)` — called by the coordinator on heartbeat failure; wakes all waiters for that node's refs with `EvalError::node_failed`.

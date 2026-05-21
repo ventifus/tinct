@@ -1,4 +1,5 @@
 # What If: Constrained Numeric Types for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to add predicate-constrained numeric types —
@@ -13,6 +14,7 @@ tinct has two numeric types:
 - **`Float`** — 64-bit IEEE 754 double (`f64` in Rust)
 
 With a supertype:
+
 - **`Number`** — supertype of `Int` and `Float` in the type hierarchy
 
 Arithmetic promotion: `Int + Float → Float` (Int promotes to Float).
@@ -39,6 +41,7 @@ Cross-type comparison allowed with precision loss warning for integers
 1. **General value constraints via `is:`.** The `is:` annotation key
    accepts any `Fn@Bool [Any]` predicate — ranges, divisibility, sign
    checks, or domain-specific invariants:
+
    ```tinct
    port@[type: Int  is: [between 0 65535]]
    score@[type: Float  is: [between 0.0 100.0]]
@@ -154,6 +157,7 @@ distinct types would require subtype constraints that complicate
 unification (Mitchell, 1991).
 
 For the type checker:
+
 - `Int @[min: 0  max: 65535]` has type `Int`
 - `Decimal @[precision: 2]` has type `Decimal`
 - Unification treats them as their base types
@@ -184,11 +188,13 @@ variable `r` is unaffected by range constraints on specific fields.
 
 JSON numbers (RFC 8259 §6) have no integer/float distinction and no
 width specification. On parsing:
+
 - Integer-valued JSON numbers map to `Int` (i64)
 - Decimal-valued JSON numbers map to `Float` (f64)
 - Numbers exceeding i64 range could map to `BigInt` (Phase 4)
 
 On serialization:
+
 - `BigInt` values serialize as JSON numbers (may exceed recipient's
   parsing range — a known JSON interop issue)
 - `Decimal` values serialize as JSON numbers or JSON strings
@@ -303,6 +309,7 @@ Int64:  [type Int]
 ```
 
 Usage:
+
 ```tinct
 Port:  [type Int@[is: [between 0 65535]]]
 port:  [@Port config.port]   # validates at runtime — error if out of range
@@ -380,6 +387,7 @@ after Phase 3.
 ## References
 
 **Standards:**
+
 - IEEE 754-2019. "IEEE Standard for Floating-Point Arithmetic." —
   Binary64 (f64), binary32 (f32), and decimal128 (d128) formats.
   Governs tinct's current Float and proposed Decimal representation.
@@ -388,6 +396,7 @@ after Phase 3.
   serialization choices for BigInt and Decimal.
 
 **Range types and refinement types:**
+
 - Ada Reference Manual §3.5.4. "Integer Types." — Declarative range
   constraints (`type Port is range 0 .. 65535`) with compiler-chosen
   representation. Direct precedent for tinct's approach.
@@ -402,6 +411,7 @@ after Phase 3.
   than tinct needs — cited to document the design space.
 
 **Arbitrary precision:**
+
 - GMP (GNU Multiple Precision Arithmetic Library). — Standard
   BigInt implementation. Rust's `num-bigint` crate wraps this.
 - Python PEP 237. "Unifying Long Integers and Integers." — Seamless
@@ -409,11 +419,13 @@ after Phase 3.
   tinct's transparent BigInt promotion.
 
 **Decimal arithmetic:**
+
 - Cowlishaw, M. (2003). "Decimal floating-point: algorism for
   computers." *IEEE ARITH*, pp. 104-111. — Decimal arithmetic
   specification underlying IEEE 754 decimal formats.
 
 **Type system interaction:**
+
 - Mitchell, J.C. (1991). "Type inference with simple subtypes."
   *Journal of Functional Programming*, 1(3), 245-285. — Decidability
   of type inference with subtype constraints. Explains why tinct
@@ -421,6 +433,7 @@ after Phase 3.
   them into HM inference.
 
 **Language-specific:**
+
 - doc/03-data-model.md §Numeric Types. — Current Int (i64), Float (f64), Number
   supertype, promotion table.
 - `doc/whatif/structural-contracts.md` — `validate` schema validation,

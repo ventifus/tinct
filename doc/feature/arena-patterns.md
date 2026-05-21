@@ -51,6 +51,7 @@ Each `Thunk` retains its `RefCell<ThunkState>` for interior mutability. State
 transitions use `thunk.set_state()` / `thunk.transition()` exactly as before.
 
 **Letrec pattern:**
+
 ```rust
 // Step 1: allocate placeholder slots
 let id = arena.alloc(Thunk::placeholder());
@@ -217,7 +218,7 @@ not need upvalue arrays: the `FlatEnv` is shared by reference (`EnvId`), and
 slot access directly reaches the correct binding. For outer-scope free
 variables, the `parent` chain (retained for stdlib only) provides the
 additional lookup level, giving at most two hops for user code (current level
-+ stdlib root).
+- stdlib root).
 
 **Migration identity preservation** requires two translation tables
 (doc/08-evaluation.md §Allocation Strategy): `HashMap<ThunkId, Rc<Thunk>>` and

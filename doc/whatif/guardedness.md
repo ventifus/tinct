@@ -123,6 +123,7 @@ The guardedness checker runs as a dedicated pass between resolution (`src/resolv
 The type checker, in `infer_dict`, checks whether each binding's `NodeId` is in `GuardednessErrors`. If so, it pre-seeds that binding's type as `Never` before running the standard inference on its expression. Type inference then proceeds normally: `Never` propagates via BAS unification to every use site, surfacing as a type error wherever the binding is consumed.
 
 **Error reporting.** The `EvalError` produced (or rather, the type error raised) identifies:
+
 1. The binding that is non-productive.
 2. The specific variable reference that is unguarded (with its source span).
 3. The other bindings in the SCC, if it is a multi-node cycle.
@@ -313,6 +314,7 @@ The pass is purely syntactic — it does not depend on types, does not evaluate 
 **Current:** OnceLock blackholing detects cycles at runtime.
 
 **Proposed:** No change. Runtime detection remains for:
+
 - Dynamically-computed binding keys (cannot be statically analyzed)
 - `eval`-produced bindings (runtime-synthesized, not in the AST)
 - Task-body cycles (weakly guarded — runtime error on demand)

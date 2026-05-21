@@ -2,15 +2,11 @@
 
 ### `upper`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `lower`
-
-
 
 ```tinct
 fn@
@@ -18,15 +14,11 @@ fn@
 
 ### `pad-left`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `pad-right`
-
-
 
 ```tinct
 fn@
@@ -34,9 +26,6 @@ fn@
 
 ### `str-reverse`
 
-
-
 ```tinct
 fn@
 ```
-

@@ -288,12 +288,16 @@ pub fn eval_file_with_input(
             Arc::clone(&prev_output)
         };
 
-        doc_env.write().unwrap().insert("%".to_string(), percent_thunk);
+        doc_env
+            .write()
+            .unwrap()
+            .insert("%".to_string(), percent_thunk);
 
         // Bind all previously named sections as %name
         for (section_name, section_thunk) in &named {
             doc_env
-                .write().unwrap()
+                .write()
+                .unwrap()
                 .insert(format!("%{}", section_name), Arc::clone(section_thunk));
         }
 

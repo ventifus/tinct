@@ -46,10 +46,7 @@ pub fn hover_at(
         crate::resolve::resolve_file(&block_file_mut.node);
         let (seeded_env, _) = crate::imports::build_type_env(&block_file_mut.node, None);
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_file_with_types_and_env(
-                &block_file_mut.node,
-                seeded_env,
-            );
+            crate::typecheck::typecheck_file_with_types_and_env(&block_file_mut.node, seeded_env);
 
         // Walk the block's AST with block-local offset
         for document in &block_file.node.documents {
@@ -1582,7 +1579,7 @@ mod tests {
     }
 
     /// Helper: create an EvalContext for tests.
-    fn test_ctx() -> Rc<crate::eval::EvalContext> {
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         crate::eval::EvalContext::new(base_dir, test_env(), true)
@@ -2199,7 +2196,9 @@ mod tests {
 
         // Parse the prelude AST
         let prelude_source = include_str!("../../stdlib/prelude.llt");
-        let prelude_ast = crate::parser::parse(prelude_source).ok().map(|o| crate::ast_convert::surface_program_to_file(&o.program));
+        let prelude_ast = crate::parser::parse(prelude_source)
+            .ok()
+            .map(|o| crate::ast_convert::surface_program_to_file(&o.program));
 
         // Offset 6 is on '$map'
         // "[call $map [fn [x] x] [1 2 3]]"

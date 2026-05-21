@@ -1,6 +1,7 @@
 # Advanced Typeclass Extensions
 
 > **Supersedes:**
+>
 > - `doc/06-type-inference.md §Constrained Type Variables / §Primitive Built-in Constraints` — the "Current Limitations" section is removed; §Multi-Parameter Type Classes replaces it with the MPTC design; §Constraint Propagation over BAS Types replaces the "No constrained row variables" limitation
 > - `doc/07-type-extensions.md §Type System Extension Roadmap` — arithmetic type description updated from `Fn(Number, Number → Number)` to MPTC form
 > - `doc/07-type-extensions.md §Dual-Dispatch Builtins` — user-extensibility via ClassEnv dispatch added

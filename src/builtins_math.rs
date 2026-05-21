@@ -12,7 +12,6 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
-
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -142,7 +141,9 @@ fn try_dispatch_method(
             named: None,
             default_env: closure_env,
             call_span,
-            origin: Some(Arc::from(format!("[{class_name}.{method_name} ...]").as_str())),
+            origin: Some(Arc::from(
+                format!("[{class_name}.{method_name} ...]").as_str(),
+            )),
             ctx,
         })?,
         Value::Builtin(def) => (def.func)(BuiltinArgs {
@@ -1192,7 +1193,7 @@ mod tests {
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
     use crate::value::{BuiltinArgs, Thunk, Value};
-    
+
     fn thunk(val: Value) -> Arc<Thunk> {
         Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
     }

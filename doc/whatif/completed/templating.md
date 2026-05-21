@@ -857,6 +857,7 @@ and structure of an existing target-format file.
 ## References
 
 **Data-first generation:**
+
 - Jsonnet: `std.manifestYamlDoc()`, `std.manifestJson()` — structured
   data serialized at the boundary. stdlib functions later optimized
   in C++ for performance.
@@ -868,6 +869,7 @@ and structure of an existing target-format file.
   rendering escape hatch.
 
 **Template engines:**
+
 - Ronacher, A. (2008). Jinja2. Template inheritance, autoescaping,
   sandboxed execution. — Defines the modern template-polarity model:
   host document in target format, `{{ }}` expression delimiters,
@@ -891,6 +893,7 @@ and structure of an existing target-format file.
   would outperform tinct's data-first model.
 
 **Literate programming:**
+
 - Knuth, D.E. (1984). "Literate programming." *The Computer Journal*,
   27(2), 97-111. — Code in explanation order, extracted by `tangle`.
   tinct's pipeline stages map to Knuth's code chunks. The
@@ -912,12 +915,14 @@ and structure of an existing target-format file.
   first-class feature of the language toolchain, not an external tool.
 
 **Evaluation semantics:**
+
 - Launchbury, J. (1993). "A natural semantics for lazy evaluation."
   *POPL*, pp. 144-154. — Call-by-need semantics. Relevant to `emit`'s
   interaction with lazy evaluation: side effects are only observable
   when thunks are forced.
 
 **Domain-specific language embedding:**
+
 - Hudak, P. (1996). "Building domain-specific embedded languages."
   *ACM Computing Surveys*, 28(4), 196-es. — The EDSL approach: embed
   the domain in the host language rather than the host language in
@@ -930,6 +935,7 @@ and structure of an existing target-format file.
   these concerns; template embedding conflates them.
 
 **Anti-patterns:**
+
 - HashiCorp. "Terraform and Jinja2." — Quoting fragility when
   generating HCL from templates.
 - Ansible community. "YAML + Jinja2 gotchas." — String-vs-structure
@@ -940,6 +946,7 @@ and structure of an existing target-format file.
   of problem entirely.
 
 **Typed template systems:**
+
 - Chlipala, A. (2015). "Ur/Web: A Simple Model for Programming the
   Web." *POPL*, pp. 153-165. — Statically typed web templates with
   full type checking across template boundaries. Demonstrates that
@@ -948,6 +955,7 @@ and structure of an existing target-format file.
   language.
 
 **Cross-references:**
+
 - `doc/whatif/string-interpolation.md` — `i"..."` prefix syntax for
   micro-level template embedding within tinct strings.
 - `doc/whatif/type-predicates.md` — Runtime type tests needed by

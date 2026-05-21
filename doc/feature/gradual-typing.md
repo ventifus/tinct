@@ -34,12 +34,14 @@ Key property: **consistency is not transitive.** `Int ~ ?` and `? ~ String`, but
 ### The Gradual Guarantee (Siek et al. 2015)
 
 A gradually typed system satisfies the **gradual guarantee** if:
+
 1. Removing type annotations (replacing with `?`) never causes a program to be statically rejected
 2. Adding type annotations never causes a program that was statically accepted to be rejected — but may cause runtime failures at typed/untyped boundaries
 
 ### AGT (Garcia et al. 2016)
 
 Abstracting Gradual Typing provides a systematic method to derive a gradual type system from a static one:
+
 1. `?` represents the set of all types
 2. Static typing judgments lift to operate on sets of types
 3. A gradual judgment holds if some consistent concretization satisfies the static judgment
@@ -60,6 +62,7 @@ enum Type {
 ```
 
 Role reclassification:
+
 - Unannotated params: `Unknown` — "I don't know the type yet"
 - Builtin returns that can't be typed: `Unknown` — "could be anything"
 - TypeAssert upper bound `[@Any expr]`: `Top` — "accept any type" (this is a true supertype, not gradual unknown)
@@ -110,6 +113,7 @@ Tinct's TypeAssert proxy contracts (Findler & Felleisen 2002) provide the mechan
 ### Blame Provenance
 
 Each blame boundary records:
+
 - *Origin span*: where the `Unknown` value was produced
 - *Boundary span*: where the `Unknown` value entered typed territory
 - *Polarity*: positive (typed boundary made a promise the `Unknown` value didn't fulfill) or negative (`Unknown` value's provider violated a contract)

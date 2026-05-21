@@ -2,15 +2,11 @@
 
 ### `days-between`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `timestamp-in-range?`
-
-
 
 ```tinct
 fn@
@@ -18,9 +14,6 @@ fn@
 
 ### `format-date`
 
-
-
 ```tinct
 fn@
 ```
-

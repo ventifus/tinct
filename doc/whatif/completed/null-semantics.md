@@ -178,6 +178,7 @@ None. Phase 1 has no dependencies.
 ### Trigger
 
 Phase 1 is already triggered:
+
 - The `type-checker-fixes` sprint requests `"Null"` in `resolve_type_name`
 - I/O builtins (`write`, `emit`, `revoke-cap`) return void and need precise type signatures
 - The formatter should be able to round-trip `fn@Null` annotations

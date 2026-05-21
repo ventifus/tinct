@@ -342,7 +342,9 @@ impl DepthGuard {
     fn new() -> Self {
         let depth = EXPAND_MACROS_DEPTH.get();
         EXPAND_MACROS_DEPTH.set(depth + 1);
-        DepthGuard { original_depth: depth }
+        DepthGuard {
+            original_depth: depth,
+        }
     }
 }
 
@@ -514,11 +516,7 @@ pub fn expand_surface_program(
         let _guard = DepthGuard::new();
         match builtins::create_stdlib_env_with_arena() {
             Ok((env, arena)) => {
-                register_stdlib_macros_from_env(
-                    &mut env_macro,
-                    &env,
-                    crate::ast::Span::origin(),
-                );
+                register_stdlib_macros_from_env(&mut env_macro, &env, crate::ast::Span::origin());
                 let ctx = EvalContext::new_sharing_arena(
                     base_dir,
                     Arc::clone(&env),
@@ -586,7 +584,12 @@ pub fn expand_surface_program(
                             },
                             decl_spanned.span,
                         );
-                        pre_scan_expr_spanned(&syntaxclass_expr, &mut env_macro, &ctx, &stdlib_env)?;
+                        pre_scan_expr_spanned(
+                            &syntaxclass_expr,
+                            &mut env_macro,
+                            &ctx,
+                            &stdlib_env,
+                        )?;
                     }
                     _ => {}
                 }
@@ -618,19 +621,16 @@ pub fn expand_surface_program(
                 }
                 SurfaceItem::Expr(node) => {
                     // Check if this is a macro call
-                    let is_macro_call = if let crate::ast::SurfaceExpression::Call {
-                        func,
-                        ..
-                    } = &node.expr
-                    {
-                        if let crate::ast::SurfaceExpression::VarRef { name, .. } = &func.expr {
-                            env_macro.is_macro(name)
+                    let is_macro_call =
+                        if let crate::ast::SurfaceExpression::Call { func, .. } = &node.expr {
+                            if let crate::ast::SurfaceExpression::VarRef { name, .. } = &func.expr {
+                                env_macro.is_macro(name)
+                            } else {
+                                false
+                            }
                         } else {
                             false
-                        }
-                    } else {
-                        false
-                    };
+                        };
 
                     if is_macro_call {
                         // Expand the macro call
@@ -726,10 +726,11 @@ fn pre_scan_follow_libdir_include(
         None => return,
     };
     #[allow(clippy::disallowed_methods)]
-    let libdir = match cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority()) {
-        Ok(d) => d,
-        Err(_) => return,
-    };
+    let libdir =
+        match cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority()) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
 
     // Open and read the file using cap-std (RESOLVE_BENEATH prevents traversal)
     let source = match libdir.open(file_name).and_then(|mut f| {

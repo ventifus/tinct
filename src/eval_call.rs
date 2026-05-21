@@ -334,7 +334,8 @@ pub(crate) fn bind_args_thunks(
             ))
         });
         call_env
-            .write().unwrap()
+            .write()
+            .unwrap()
             .insert(var_param.name.clone(), seq_thunk);
     }
 
@@ -378,7 +379,7 @@ mod tests {
         let expr = Expr::Fn {
             return_ann: None,
             params: vec![],
-            body: Arc::new(sp(Expr::Int(42))),
+            body: Rc::new(sp(Expr::Int(42))),
             desugared: true,
         };
         let label = func_label(&expr);
@@ -394,7 +395,7 @@ mod tests {
         let expr = Expr::Fn {
             return_ann: None,
             params: vec![],
-            body: Arc::new(sp(Expr::Int(42))),
+            body: Rc::new(sp(Expr::Int(42))),
             desugared: false,
         };
         let label = func_label(&expr);

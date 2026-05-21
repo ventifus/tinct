@@ -23,6 +23,7 @@ Syntactically, `[f x]` is a bracket expression with unkeyed entries (the same pa
 ```
 
 **Edge cases:**
+
 - `[call: something]` — the `:` makes `call` a key, not a keyword. Parsed as `Dict`.
 - `[f]` — zero-argument call to `f` (Lisp-consistent: `(f)` is always application).
 - `[$f]` — data: single-element sequence containing `ref(f)`. The `$` prefix prevents call interpretation.
@@ -48,6 +49,7 @@ named_arg_key = @{ "$" ~ var_ident | bare_word }
 Arity enforcement uses per-parameter coverage, not a simple count — each required parameter (no `default:` annotation) must be covered by either a positional argument at its index or a named argument. Parameters with `default:` annotations are optional. This is enforced at evaluation time, not parse time — the parser recognizes `call` as a keyword (or implied call from bare identifier in head position) and emits a `Call` AST node, but arity checking beyond function-position detection is deferred to the evaluator (which has access to the function's parameter list). See [Call Convention — Formal Specification](#call-convention--formal-specification) for the formal C-COVERAGE, C-PRIORITY, C-NO-OVERLAP, and C-NAMED-VALID constraints.
 
 Examples:
+
 ```tinct
 [f x y]
 [fetch "https://example.com" timeout: 60]
@@ -71,6 +73,7 @@ Examples:
 **Why:** Consistent with dict-first design. Every binding is a key-value pair, no exceptions. Fewer special forms to implement.
 
 **Function annotation forms:** `fn` supports two annotation forms:
+
 - **Shorthand:** `fn@Type` — equivalent to `fn@[return: Type]`
 - **Full metadata dict:** `fn@[return: ... constraint: ... doc: ...]` — all keys optional
 
@@ -97,6 +100,7 @@ variadic_param = @{ "..." ~ param_name }
 **Note:** The `value+` notation indicates that multiple body expressions are allowed. When multiple expressions are provided, they are wrapped in `Expr::Sequential` by the parser — intermediate expressions extend the function's environment, and the final expression is the return value. See `doc/08-evaluation.md` §Laziness Design for `Sequential` semantics.
 
 Examples:
+
 ```tinct
 [fn [x] x]
 [fn@Number [x@Number y@Number] [+ x y]]
@@ -189,6 +193,7 @@ This is useful for creating projection functions in pipelines:
 ```
 
 Desugaring of `[filter [> _.age 30] _]`:
+
 1. Inner `[> _.age 30]` contains `_` → `[fn [_] [> _.age 30]]`
 2. Outer `[filter ... _]` still contains `_` → `[fn [_] [filter [fn [_] [> _.age 30]] _]]`
 3. Each `_` binds to its innermost enclosing lambda (lexical scoping)
@@ -604,9 +609,11 @@ greet: [fn [greeting@[default: "hello"] name sep@[default: " "]]
 ```
 
 **BIND-SPLIT:** `params = [greeting, name, sep]`. No variadic.
+
 - `P = [greeting, name, sep]`, `V = ∅`
 
 **BIND-ARITY:** Required params = `{name (index 1)}`.
+
 - `name`: `1 < |pos|`? No (`|pos| = 0`). `"name" ∈ dom(named)`? Yes. ✓ Covered.
 - Upper bound: `|pos| = 0 ≤ |P| = 3`. ✓
 
@@ -621,6 +628,7 @@ greet: [fn [greeting@[default: "hello"] name sep@[default: " "]]
 Result: `env₃ = {greeting↦"hello", name↦θ_Alice, sep↦" "}`
 
 **BIND-NAMED:** Validate named args.
+
 - `("name", θ_Alice)`: overlap? `∃i < 0` with `pᵢ.name = "name"`? No. ✓ Exists? `name ∈ P`? Yes. ✓
 
 **BIND-VARIADIC:** `V = ∅`, skip.
@@ -636,6 +644,7 @@ To make dict-returning operations lazy, the thunk model gains a new state:
 `PendingCall` represents "apply this function to these arguments when materialized." It enables lazy function application at runtime without constructing AST nodes. When a `PendingCall` thunk is materialized, it calls the function and memoizes the result (transitioning to `Materialized`), just like `PendingBuiltin` does for builtin calls. The full field set (including `named` args, `caller_env`, and `EvalContext`) is specified in [Evaluation](08-evaluation.md) §Thunk Lifecycle, [MATERIALIZE-CALL].
 
 This is different from `PendingBuiltin` in a key way:
+
 - **PendingBuiltin** stores a Rust function pointer (`BuiltinFn`) and its arguments — the builtin runs when materialized
 - **PendingCall** stores a user-defined function thunk, its argument thunks, and a `call_span: Span` (for error reporting) — invokes `invoke_function()` when materialized
 

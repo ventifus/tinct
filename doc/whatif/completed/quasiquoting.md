@@ -281,6 +281,7 @@ Add `quote` keyword to the grammar. `[quote expr]` produces an
 to its dict representation (calling `ast_to_dict`).
 
 No `unquote` yet --- Phase 2 quotes are opaque. Useful for:
+
 - Inspecting AST structure at runtime
 - Testing the AST dict schema
 - Building toward macros incrementally
@@ -298,6 +299,7 @@ execute code programmatically.
 ### Phase 4: Macro Integration
 
 Connect quasiquoting to the macro system (`doc/whatif/macros.md`):
+
 - `[defmacro name [params] body]` registers a compile-time function
 - Macro bodies use `quote`/`unquote` to construct return ASTs
 - Expansion pipeline: `parse -> expand_macros -> typecheck -> eval`

@@ -199,6 +199,7 @@ See `doc/whatif/ast-schema.md` for the complete dict schema.
 **Current:** No tinct formatter programs.
 
 **Proposed:**
+
 - `stdlib/formatter/compact.llt` — compact modes (`--oneline`, `--nospaces`,
   `--minimize`): mechanical rendering with `;` for section headers, no layout
   decisions, no comments

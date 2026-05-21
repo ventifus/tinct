@@ -138,7 +138,8 @@ impl ReplSession {
         ));
         // Bind % as the pipeline variable (previous result), initially empty dict.
         session_env
-            .write().unwrap()
+            .write()
+            .unwrap()
             .insert("%".to_string(), Arc::clone(&empty_dict));
 
         // Create REPL session context (REPL runs in current directory, no sandbox)
@@ -259,7 +260,8 @@ impl ReplSession {
         if let Value::Dict(ref map) = val {
             let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&self.env))));
             child_env
-                .write().unwrap()
+                .write()
+                .unwrap()
                 .insert("%".to_string(), Arc::clone(&self.prev_result));
             for (key, val_thunk_id) in map {
                 if let Key::String(name) = key {
@@ -270,7 +272,8 @@ impl ReplSession {
             self.env = child_env;
         } else {
             self.env
-                .write().unwrap()
+                .write()
+                .unwrap()
                 .insert("%".to_string(), Arc::clone(&self.prev_result));
         }
 

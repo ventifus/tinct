@@ -180,6 +180,7 @@ between: [fn@[return: Fn  doc: "Return a predicate that tests whether a value li
 ```
 
 LSP hover for `between`:
+
 ```
 between: Fn@Fn [lo hi]
 Return a predicate that tests whether a value lies in [lo, hi)

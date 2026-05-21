@@ -223,6 +223,7 @@ Each dual-dispatch builtin (`map`, `filter`, `take`, `drop`, `reduce`, `join`) r
 Extends Launchbury (1993) natural semantics for call-by-need with five additional thunk states (Placeholder, PendingBuiltin, PendingCall, Guarded, Failed) for pre-allocation sentinels, deferred computation, contract validation, and error memoization. PendingBuiltin and PendingCall are defunctionalized continuations (Reynolds 1972; Danvy & Nielsen 2003) — they represent deferred computation as data rather than closures. Guarded implements proxy contracts (Findler & Felleisen 2002) for lazy TypeAssert field validation.
 
 **User-visible states:** As a user, you observe three effective states:
+
 - A thunk is **unevaluated** when first created (you defined a binding; nothing has used it yet).
 - A thunk is **materialized** when first accessed (you used a value; it was computed and cached).
 - A thunk is **failed** when a computation error occurred (the error is cached; re-accessing returns the same error).
@@ -270,6 +271,7 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 The materialization graph (excluding `Placeholder`) has no cycles. Four backward edges exist (InProgress → Unevaluated, InProgress → Guarded, InProgress → PendingBuiltin, InProgress → PendingCall), all acyclic: InProgress cannot cycle back through any of the four deferred states because none of those states transition to InProgress without first transitioning forward to Materialized or Failed on their own path. Each source state (Unevaluated, PendingBuiltin, PendingCall, Guarded) transitions only to InProgress. InProgress transitions only to Materialized or Failed — with one exception: the four backward edges for non-cacheable errors from deferred states (see Exception below); these preserve semantic monotonicity because the thunk's observable meaning is unchanged between retries. Materialized is terminal — no transitions out. Failed has a self-edge for diagnostic refinement (enriching materialization spans and stack frames), but the error's semantic identity is fixed — only diagnostic metadata may be updated. Therefore all transition sequences are finite, and the semantic content of a thunk is monotonically determined. ∎
 
 **Exception — retryable non-cacheable errors:** Four backward edges exist for non-cacheable errors from deferred-computation states:
+
 - `InProgress → Unevaluated`: fires when an Unevaluated thunk's expr evaluation fails with a non-cacheable error; restores the original Unevaluated state for retry.
 - `InProgress → Guarded`: fires when a Guarded thunk's inner materialization fails with a non-cacheable error (see `[MATERIALIZE-GUARD-NONCACHEABLE]`).
 - `InProgress → PendingBuiltin`: fires when a PendingBuiltin's execution raises a non-cacheable error; restores the original PendingBuiltin state for retry.
@@ -288,6 +290,7 @@ Materialization dispatches on the current state to produce a value or error. Rul
 **Depth tracking:** The iterative CEK machine (see §Iterative Evaluator below) has replaced recursive depth tracking with a bounded continuation stack. There is no `MAX_EVAL_DEPTH` check in the core materialization loop — the heap-allocated continuation stack (`Vec<Cont>`) replaces the Rust call stack and is bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs:33`, ~192 KB). Sequence-spine guards in `deep_materialize` use `MAX_COLLECT_SIZE` (1,000,000), a separate constant for preventing unbounded sequence collection.
 
 **[MATERIALIZE-CACHED]**
+
 ```
 θ.state = Materialized(v)
 ───────────────────────────
@@ -295,6 +298,7 @@ materialize(θ) ⇒ v
 ```
 
 **[MATERIALIZE-FAILED]**
+
 ```
 θ.state = Failed(e)
 ───────────────────────────
@@ -304,6 +308,7 @@ materialize(θ) ⇒ error(e')
 The materialization span update has three cases (`eval.rs:876-896`): (1) if e has no materialization span and one is available, set it; (2) if the access span matches the existing materialization span, no-op; (3) if the access span differs and is not already in the stack, add it as a stack frame (preserving the original materialization span). This Failed → Failed diagnostic refinement is an intentional relaxation of strict idempotence at the error-representation level — the error's identity and root cause are fixed, but diagnostic annotations accumulate across access paths.
 
 **[MATERIALIZE-CYCLE]**
+
 ```
 θ.state = InProgress
 ───────────────────────────
@@ -312,10 +317,12 @@ materialize(θ) ⇒ error("circular dependency")
 ```
 
 **Example — cycle detection in practice:**
+
 ```tinct
 [x: x]             # circular dependency: x depends on itself
 [a: b  b: a]       # circular dependency: a and b depend on each other
 ```
+
 The cycle error is discovered lazily — only when something tries to access `x` or `a`, not when the dict is defined. The error message includes a cycle trace: `circular dependency detected: a → b → a`.
 
 **Cycle detection recovery strategy:** When a thunk in `InProgress` state is re-encountered during materialization (indicating a circular dependency), the evaluator constructs a `CircularDependency` error, decorates it with the materialization span (if provided), and transitions the thunk to `Failed` state via `cache_failure()` before propagating the error (in `materialize()` InProgress case in `src/eval.rs`). The `InProgress → Failed` transition is permanent — subsequent access to the same thunk returns the cached error without re-detecting the cycle. The error caching happens *before* propagation to ensure that all references to the cyclic thunk see the same error.
@@ -325,6 +332,7 @@ The cycle error is discovered lazily — only when something tries to access `x`
 **Error propagation path:** After transitioning to `Failed`, the error is returned via `Err(err_boxed)`. Callers higher in the materialization stack see the error and propagate it upward. If the same thunk is accessed from a different call site later, the `Failed` case (in `materialize()` in `src/eval.rs`) fires immediately, returning the cached error (potentially with an updated materialization span for the new access site).
 
 **[MATERIALIZE-GUARD]**
+
 ```
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
@@ -336,6 +344,7 @@ materialize(θ) ⇒ v
 ```
 
 **[MATERIALIZE-GUARD-INNER-ERR]** — inner thunk materialization fails with a cacheable error:
+
 ```
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
@@ -346,6 +355,7 @@ materialize(θ) ⇒ error(e)
 ```
 
 **[MATERIALIZE-GUARD-NONCACHEABLE]** — inner thunk materialization fails with a non-cacheable error (e.g., DepthExceeded from a builtin):
+
 ```
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
@@ -360,6 +370,7 @@ Note: `DepthExceeded` can arise from the continuation stack depth guard (`check_
 [MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., DepthExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `ThunkState::Guarded` arm of `force_step()`)
 
 **[MATERIALIZE-GUARD-TYPE-ERR]** — inner thunk succeeds but value does not inhabit the expected type:
+
 ```
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
@@ -374,6 +385,7 @@ materialize(θ) ⇒ error(e)
 Guarded thunks implement proxy contracts (Findler & Felleisen 2002) for TypeAssert record field validation. The inner thunk is materialized, the result is validated against the expected type τ, and the validated value is memoized. If validation fails, the thunk transitions to Failed with a type assertion error decorated with the field path. Guard memoization ensures each field is validated at most once. Computation errors (inner thunk fails for non-type reasons) propagate directly and are cached; they do not trigger the `default:` fallback — only type assertion failures do. Non-cacheable errors (from builtins) restore the Guarded state instead of transitioning to Failed, since they represent transient resource-bound conditions rather than semantic errors.
 
 **[MATERIALIZE-UNEVALUATED]**
+
 ```
 θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress                          (blackhole)
@@ -387,6 +399,7 @@ materialize(θ) ⇒ v
 `Σ_θ` is the evaluation context captured at thunk construction time. The thunk evaluates in its captured context, not the current materialization context — this ensures that context-dependent state (base directory, include guards) reflects the thunk's definition site.
 
 **[MATERIALIZE-UNEVALUATED-ERR]**
+
 ```
 θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress
@@ -398,6 +411,7 @@ materialize(θ) ⇒ error(e)
 ```
 
 **[MATERIALIZE-BUILTIN]**
+
 ```
 θ.state = PendingBuiltin(f, args, named, cs, Σ_θ)
 θ.state ← InProgress
@@ -411,6 +425,7 @@ materialize(θ) ⇒ v
 The builtin receives `BuiltinArgs { args, named, call_span, ctx }` — no depth parameter. The iterative CEK machine eliminated depth tracking; builtins that need recursion limits use their own constants (e.g., `MAX_COLLECT_SIZE`).
 
 **[MATERIALIZE-CALL]**
+
 ```
 θ.state = PendingCall(f_θ, args, named, cs, caller_env, Σ_θ)
 θ.state ← InProgress
@@ -423,6 +438,7 @@ materialize(θ) ⇒ v
 ```
 
 **[MATERIALIZE-CALL-BUILTIN]**
+
 ```
 θ.state = PendingCall(f_θ, args, named, cs, caller_env, Σ_θ)
 θ.state ← InProgress
@@ -455,7 +471,7 @@ Six properties essential for call-by-need soundness (Launchbury 1993, Ariola & F
 | **Monotonicity** | Satisfied with exceptions | transition graph has four backward edges (`InProgress → Guarded/Unevaluated/PendingBuiltin/PendingCall`) for non-cacheable errors from builtins (retry semantics); Failed self-edge refines diagnostics only (proven above) |
 | **Adequacy** | Holds for extensions | PendingBuiltin/PendingCall are observationally equivalent to Unevaluated (defunctionalization preserves semantics). Guarded is observationally equivalent to an Unevaluated thunk that materializes and validates (proxy contract). Failed extends the codomain from Value⊥ to Value + Error⊥ (absorbing, deterministic) |
 | **Confluence** | Pure subset only | `$include` makes evaluation order observable; in the pure subset, materialization order does not affect final values |
-| **Sharing preservation** | Satisfied | `Rc<Thunk>` ensures identity-based sharing; the CEK machine preserves thunk identity through continuation dispatch |
+| **Sharing preservation** | Satisfied | `Arc<Thunk>` ensures identity-based sharing; the CEK machine preserves thunk identity through continuation dispatch |
 
 ### Semantic Commitments
 
@@ -535,6 +551,7 @@ Each builtin receives a per-argument strictness annotation and a result classifi
 For dual-dispatch builtins, the result classification refers to the more interesting path (typically Seq). Notes indicate when the Dict path differs.
 
 **Derived property:** A builtin's category (§Stdlib Functions) can be approximated from its signature. These are sufficient conditions, not necessary-and-sufficient — builtins that materialize structure while preserving value thunks (e.g., `$merge`, `$collect`) span categories:
+
 - **Structural** — all args are `L` and result preserves input thunks without new computation
 - **Materializing** — all args are `S` and result contains no deferred computation from inputs
 - **Lazy-transforming** — result is `→ LT` (contains new PendingCall/PendingBuiltin thunks)
@@ -679,6 +696,7 @@ Rules use the judgment form `δ(f, [θ₁, ..., θₙ], cs) ⇒ r` where f is th
 **PendingBuiltin construction:** Builtins that defer computation (e.g., `$iterate`, `$map` on Seq, `$filter` step) construct PendingBuiltin thunks that capture the builtin function pointer and argument thunks. These are materialized later by the CEK machine's MATERIALIZE-BUILTIN rule (see §Thunk Lifecycle).
 
 **[DELTA-IF-TRUE]**
+
 ```
 materialize(θ_cond) ⇒ true
 ───────────────────────────
@@ -686,6 +704,7 @@ materialize(θ_cond) ⇒ true
 ```
 
 **[DELTA-IF-FALSE]**
+
 ```
 materialize(θ_cond) ⇒ false
 ───────────────────────────
@@ -695,6 +714,7 @@ materialize(θ_cond) ⇒ false
 **Branch isolation guarantee:** The unchosen branch is never materialized. `θ_then` and `θ_else` are returned via `Rc::clone` — no state transition occurs on the unchosen thunk. This is the foundational selective materialization property from which `$and`, `$or`, `$when`, `$unless`, and `$cond` derive their short-circuit behavior (see Part 5). The chosen branch thunk is returned to the caller; its subsequent materialization happens via MATERIALIZE-BUILTIN in §Thunk Lifecycle, which calls `materialize(θ')` on the builtin's result — the separation between "builtin execution" and "result materialization" is what makes `$if`'s laziness guarantee possible.
 
 **[DELTA-SEQ]**
+
 ```
 ───────────────────────────
 δ(seq, [θ_head, θ_tail], cs) ⇒ Materialized(Seq(Rc::clone(θ_head), Rc::clone(θ_tail)))
@@ -703,6 +723,7 @@ materialize(θ_cond) ⇒ false
 No arguments are materialized. Both pass through as thunks within the Seq value. This is the coinductive guard — `$seq` enables corecursive definitions by deferring evaluation of both head and tail.
 
 **[DELTA-HEAD]**
+
 ```
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 ───────────────────────────
@@ -710,6 +731,7 @@ materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 ```
 
 **[DELTA-TAIL]**
+
 ```
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 ───────────────────────────
@@ -719,6 +741,7 @@ materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 DELTA-HEAD and DELTA-TAIL materialize the container to verify it is a Seq, but return the extracted thunk *without materializing it*. The head/tail thunk retains its original state (Unevaluated, PendingCall, etc.). Empty dict `[]` as input produces a specific error (`"head/tail on empty sequence"`).
 
 **[DELTA-COLLECT-EMPTY]**
+
 ```
 materialize(θ_xs) ⇒ Dict({})
 ───────────────────────────
@@ -726,6 +749,7 @@ materialize(θ_xs) ⇒ Dict({})
 ```
 
 **[DELTA-COLLECT]**
+
 ```
 materialize(θ_xs) ⇒ Seq(θ_h₁, θ_t₁)
 materialize(θ_t₁) ⇒ Seq(θ_h₂, θ_t₂)
@@ -738,6 +762,7 @@ materialize(θ_tₙ) ⇒ Dict({})          (terminal)
 Collect materializes the Seq *spine* (all tail thunks) but head thunks pass through into the result Dict without materializing. This is the key distinction: `$collect` is strict in the structure but lazy in the values.
 
 **[DELTA-ITERATE]**
+
 ```
 ───────────────────────────
 δ(iterate, [θ_f, θ_x], cs) ⇒ Materialized(Seq(
@@ -749,6 +774,7 @@ Collect materializes the Seq *spine* (all tail thunks) but head thunks pass thro
 Fully lazy: neither f nor x is materialized. The result Seq's head is x (unchanged thunk), and the tail is a PendingBuiltin that will produce `iterate(f, f(x))` when materialized. The `f(x)` is itself a PendingCall — computation unfolds one step at a time. When the tail PendingBuiltin is materialized, DELTA-ITERATE applies again with `f(x)` as the new seed, enabling corecursive unfolding of the infinite sequence.
 
 **[DELTA-TRY]**
+
 ```
 materialize(θ_func) ⇒ Function(params, body, env)    where |params| = 0
 eval(body, env) ⇒ θ_body
@@ -766,6 +792,7 @@ materialize(θ_body) ⇒ error(e)
 `$try` materializes the function argument and invokes it. On success, returns `[ok: value]`; on error, returns `[err: message]`. The error is caught — `$try` itself does not propagate errors (it is the catching boundary). Also handles Builtin callees (dispatches with zero args).
 
 **[DELTA-MAP-DICT]**
+
 ```
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 ∀i. θ'ᵢ = PendingCall(θ_f, [θᵢ], ∅, cs)
@@ -776,6 +803,7 @@ materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 `θ_f` is never materialized — it is captured by reference (`Rc::clone`) in each PendingCall. No values are computed; the result Dict is O(n) to construct and O(1) per element access.
 
 **[DELTA-MAP-SEQ]**
+
 ```
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 θ'_h = PendingCall(θ_f, [θ_h], ∅, cs)
@@ -787,6 +815,7 @@ materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 Recursive structure: head is a PendingCall, tail is a PendingBuiltin that will apply DELTA-MAP-DICT or DELTA-MAP-SEQ when materialized.
 
 **[DELTA-FILTER-DICT]**
+
 ```
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 θ_step = PendingBuiltin(filter_dict_step, [θ_pred, θ_xs_mat, θ_keys, θ_idx], ∅, cs)
@@ -798,6 +827,7 @@ materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 The predicate `θ_pred` is not materialized at the top level — it is captured for deferred evaluation in the step function. The step function materializes one element at a time, applies the predicate, and either includes or skips it. Returns a Seq (not a Dict) because filtered keys are unpredictable.
 
 **[DELTA-FILTER-SEQ]**
+
 ```
 materialize(θ_xs) ⇒ Seq(_, _)
 θ_step = PendingBuiltin(filter_seq_step, [θ_pred, θ_xs], cs)
@@ -808,6 +838,7 @@ materialize(θ_xs) ⇒ Seq(_, _)
 The step function receives the *original seq thunk* (not destructured head/tail) and materializes it internally to obtain head and tail. This avoids redundant materialization since the dispatch already materialized the collection. Lazy filter on sequences: the step function materializes head, applies predicate, and either includes it (Seq node) or skips it (recurse on tail). Elements are tested only when the result Seq is consumed.
 
 **[DELTA-REDUCE-DICT]**
+
 ```
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 acc₀ = θ_init
@@ -819,6 +850,7 @@ acc₀ = θ_init
 Builds a chain of PendingCall thunks without materializing any values. The entire reduction is deferred — nothing computes until the result thunk is materialized. At that point, the chain unwinds from the inside out.
 
 **[DELTA-REDUCE-SEQ]**
+
 ```
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 θ_step = PendingBuiltin(reduce_seq_step, [θ_f, θ_init, θ_h, θ_t], ∅, cs)
@@ -1119,13 +1151,15 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 - **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
 
 **Arena allocation (current implementation).** The runtime uses `ThunkArena` with `ThunkId` handles for all thunk storage. This is the "arena-backed registry" approach:
+
 - `ThunkArena` exists in `EvalContext` with `RefCell` interior mutability
 - `Value` variants use `ThunkId` handles: `Dict(IndexMap<Key, ThunkId>)`, `Seq { head: ThunkId, tail: ThunkId }`, `Overlay(ThunkId, ThunkId)`
 - Allocation goes through `ctx.alloc_thunk(Thunk)` which wraps in `Rc<Thunk>` and stores in arena `Vec<Rc<Thunk>>`
 - Arena persists across `---` boundaries (append-only, no per-section deallocation)
-- **No migration needed**: ThunkIds are stable indices that never invalidate; `$include` cache stores standalone `Rc<Thunk>` (arena-independent)
+- **No migration needed**: ThunkIds are stable indices that never invalidate; `$include` cache stores standalone `Arc<Thunk>` (arena-independent)
 
 **Full arena-based allocation for per-section lifetimes.** Further optimization enables per-section lifetimes:
+
 - **Arena allocator**: Replace `Rc::new(Thunk)` call sites with `arena.alloc(Thunk)`. Arena stores `Vec<Thunk>` (direct ownership, not Rc-wrapped). Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB).
 - **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
 - **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.
@@ -1173,7 +1207,7 @@ Within a section, all thunks are arena-allocated and lazy. Letrec entries refere
 | Dict entries | Each thunk migrated; sharing preserved via table |
 | Functions/closures | Captured environment chain migrated recursively |
 | Infinite Seq | Only the cons cell is migrated; lazy tail stays lazy |
-| `$include` results | Already Rc-backed (include cache outlives sections) |
+| `$include` results | Already Arc-backed (include cache outlives sections) |
 
 Per execution context:
 
@@ -1191,10 +1225,6 @@ Per execution context:
 **LSP incremental re-evaluation:** Migrated `%` values are self-contained `Rc`-backed storage with no arena references. The LSP caches `%` per section. Editing section N re-uses cached `%` from section N-1 (already migrated, no re-evaluation) and re-evaluates only sections N through the end.
 
 **`$include` interaction:** Included files are evaluated in their own arena. The include cache stores migrated results — the cache outlives any single section's arena. An `$include` call returns an already-migrated `Rc`-backed value, which is arena-independent and can be used freely across sections. This creates a controlled one-way dependency within sections: arena-allocated thunks may reference `Rc`-backed `$include` results, but never the reverse. This is structurally determined (section-local = arena, imported = Rc) and does not require per-thunk escape analysis — the "hybrid arena+Rc" alternative (rejected above) fails because it requires per-thunk decisions, not because mixing storage backends is inherently unsound.
-
-**Rationale:** The iterative evaluator shares prerequisites with arena allocation — both require explicit frame management and compile-time analysis. Bundling avoids two separate invasive refactors. Backward-compatible optimizations capture 75-85% of addressable allocation wins with near-zero risk. Profiling data from those optimizations guides whether the full arena is necessary.
-
-**Measurement plan:** Establish baseline metrics before and after optimization: total allocations per eval (count `Rc::new`, `IndexMap::new`, `Vec::new`), peak memory usage (heaptrack RSS on dict-heavy and deeply-nested workloads), and allocation hotspots (which paths account for >10% of allocations). Decision threshold for full arena: if backward-compatible optimizations achieve >80% allocation reduction, the arena migration can be deferred indefinitely; if <50%, proceed.
 
 **Key tradeoff:** Environment lookup stays O(depth) until arena evaluation with flat environments, but string interning makes each lookup step cheaper (pointer comparison vs byte comparison), and the literal fast-path reduces total thunk allocations significantly.
 
@@ -1343,6 +1373,7 @@ parse → expand_macros → desugar → resolve → typecheck → eval
 ```
 
 `expand_macros` walks the AST top-down. When a `Call` node's function name matches a registered macro in `MacroEnv`, the expander:
+
 1. Quotes all arguments (calls `ast_to_dict_expr` per arg — arguments are never evaluated)
 2. Calls the macro function with the quoted argument dicts
 3. Calls `dict_to_ast` on the result to produce a replacement AST node
@@ -1370,29 +1401,15 @@ This is a simplification of Flatt's full biggest-subset binding resolution rule,
 
 ## Allocation Strategy
 
-**Current (Phase 2): Hybrid Arena + Rc\<Thunk\> Model**
+**Hybrid Arena + Arc\<Thunk\> Model**
 
-Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but still wrapped in `Rc<Thunk>` and stored directly in `Value` variants. The arena acts as a registry: `alloc_thunk(Rc<Thunk>)` appends to `Vec<Rc<Thunk>>` and returns a `ThunkId(u32)` index. This establishes the arena pattern without requiring a massive `Value` enum refactor (Phase 3 work).
+Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but still wrapped in `Arc<Thunk>` for shared ownership. The arena acts as a registry: `alloc_thunk(Arc<Thunk>)` appends to `Vec<Arc<Thunk>>` and returns a `ThunkId(u32)` index.
 
-**Arena sharing via `Rc::clone()`:** Child contexts (created via `with_base_dir()` for `$include`, or `new_sharing_arena()` for macro expansion) share the parent's arena via `Rc<RefCell<ThunkArena>>`. This is critical for stdlib ThunkId validity: prelude dicts store `ThunkId` handles allocated during stdlib loading. When user code accesses `result.bind`, the ThunkId resolves via the shared arena.
+**Arena sharing:** Child contexts (created via `new_sharing_arena()` for macro expansion) share the parent's arena. This is critical for stdlib ThunkId validity: prelude dicts store `ThunkId` handles allocated during stdlib loading. When user code accesses `result.bind`, the ThunkId resolves via the shared arena.
 
-**Snapshot pattern (`clone_for_child()`):** When creating a child context that needs stdlib ThunkIds but will grow independently, the arena is cloned via `clone_for_child()`, which creates a new `Vec<Rc<Thunk>>` pre-populated with `Rc::clone()` of every existing thunk. The child arena starts with the same indices 0..N (stdlib thunks) and appends user thunks starting at N+1. This preserves ThunkId validity while allowing independent growth.
+**Snapshot pattern (`clone_for_child()`):** When creating a child context that needs stdlib ThunkIds but will grow independently, the arena is cloned via `clone_for_child()`, which creates a new `Vec<Arc<Thunk>>` pre-populated with `Arc::clone()` of every existing thunk. The child arena starts with the same indices 0..N (stdlib thunks) and appends user thunks starting at N+1. This preserves ThunkId validity while allowing independent growth.
 
 **Cache consistency:** `create_stdlib_env_with_arena()` writes the stdlib arena to `STDLIB_ARENA_CACHE` (thread-local storage) so that subsequent `EvalContext::new()` calls on the same thread inherit stdlib ThunkIds without explicit arena threading. This is a convenience layer — explicit arena threading via `new_sharing_arena()` is preferred for non-test code.
-
-**Phase 3 Migration Path:**
-
-The current snapshot approach relies on `Rc<Thunk>` shared identity: cloning the arena shares the same `Rc` pointers, so mutating a thunk's state (e.g., `Placeholder → Materialized`) is visible in both parent and child arenas. Phase 3 will migrate to direct `Vec<Thunk>` ownership (no `Rc` wrapper), which breaks this sharing model.
-
-**Three options for Phase 3:**
-
-1. **Single global stdlib slab:** Stdlib thunks live in a global arena (indices 0..N). User-context arenas start at index N. ThunkId encoding: `id < N` → stdlib slab, `id >= N` → user arena. Requires coordinating slab boundaries across all contexts.
-
-2. **Two-range ThunkId encoding:** High bit indicates stdlib vs user (`id & 0x80000000`). Stdlib arena is global, user arenas are per-context. Lookup dispatches on the high bit. Halves the ThunkId address space (2^31 thunks per range).
-
-3. **Arena migration at `---` boundaries:** Each document section gets its own arena. At `---` boundaries, the `%` pipeline variable is deep-materialized and copied into the next section's arena. No cross-arena ThunkIds. Matches the document pipeline semantics but adds materialization overhead at boundaries.
-
-**Decision deferred to `arena-eval` sprint.** Option 3 aligns with the document-as-phase-boundary model but may conflict with lazy `%` passing (current behavior: `%` is an `Unevaluated` thunk that crosses `---` without materialization). Option 1 is simplest but requires global coordination. Option 2 has the cleanest dispatch but halves the address space.
 
 **Precedent:** Jsonnet's VM uses 22 `FrameKind` variants with a value register (production-tested at Google). Nickel uses an iterative stack machine with `OpFirst`/`OpSecond` continuations (production Rust). Both are defunctionalized CPS machines. The theoretical foundation is Felleisen & Friedman's CEK machine.
 

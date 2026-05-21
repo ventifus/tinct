@@ -26,6 +26,7 @@ fn?     : Any → Bool    # true for Function and Builtin
 ```
 
 **No `list?`** because:
+
 1. Lists are dicts — there is no `Value::List` variant
 2. Any definition of "list-ness" is arbitrary (dense integers? contiguous?
    starting from 0?)

@@ -5,6 +5,7 @@
 Tinct's numeric type system extends beyond `Int` and `Float` with three capabilities:
 
 1. **General value constraints via `is:`.** The `is:` annotation key accepts any `Fn@Bool [Any]` predicate — ranges, divisibility, sign checks, or domain-specific invariants:
+
    ```tinct
    port@[type: Int  is: [between 0 65535]]
    score@[type: Float  is: [between 0.0 100.0]]
@@ -91,6 +92,7 @@ port@[type: Int  is: [between 0 65535]  repr: u16]
 Range annotations are refinements, not distinct types. In the type system, `Port` (defined as `Int @[min: 0  max: 65535]`) unifies with `Int`. The range constraint is a runtime contract, not a type-level constraint. This keeps HM inference sound — adding subranges as distinct types requires subtype constraints that complicate unification (Mitchell, 1991).
 
 For the type checker:
+
 - `Int @[min: 0  max: 65535]` has type `Int`
 - `Decimal @[precision: 2]` has type `Decimal`
 - Unification treats them as their base types
@@ -111,11 +113,13 @@ Range annotations do not affect row polymorphism. A record type `[port: Int  hos
 ### Interaction with JSON Interop
 
 JSON numbers (RFC 8259 §6) have no integer/float distinction and no width specification. On parsing:
+
 - Integer-valued JSON numbers map to `Int` (i64)
 - Decimal-valued JSON numbers map to `Float` (f64)
 - Numbers exceeding i64 range map to `BigInt`
 
 On serialization:
+
 - `BigInt` values serialize as JSON numbers (may exceed recipient's parsing range — a known JSON interop issue)
 - `Decimal` values serialize as JSON numbers or JSON strings depending on configuration
 
@@ -160,25 +164,31 @@ No Rust changes for Phase 1. The `between`, `non-negative`, `positive` predicate
 ## References
 
 **Standards:**
+
 - IEEE 754-2019. "IEEE Standard for Floating-Point Arithmetic." — Binary64 (f64), binary32 (f32), and decimal128 (d128) formats. Governs tinct's Float and Decimal representations.
 - JSON RFC 8259 §6. "Numbers." — No distinction between integer and floating point, no width specification. Constrains tinct's serialization choices for BigInt and Decimal.
 
 **Range types and refinement types:**
+
 - Ada Reference Manual §3.5.4. "Integer Types." — Declarative range constraints (`type Port is range 0 .. 65535`) with compiler-chosen representation. Direct precedent for tinct's approach.
 - Freeman, T. & Pfenning, F. (1991). "Refinement types for ML." *PLDI*, pp. 268-277. — Refinement types that refine base types with predicates. Range constraints are a simple instance of refinement types. Tinct's approach (runtime contracts, not type-level refinements) avoids the inference complexity.
 - Rondon, P., Kawaguchi, M. & Jhala, R. (2008). "Liquid types." *PLDI*, pp. 159-169. — Logically-qualified types combining HM inference with SMT-checked refinements. A more powerful system than tinct needs — cited to document the design space.
 
 **Arbitrary precision:**
+
 - GMP (GNU Multiple Precision Arithmetic Library). — Standard BigInt implementation. Rust's `num-bigint` crate wraps this.
 - Python PEP 237. "Unifying Long Integers and Integers." — Seamless promotion from fixed-width to arbitrary precision. Precedent for tinct's transparent BigInt promotion.
 
 **Decimal arithmetic:**
+
 - Cowlishaw, M. (2003). "Decimal floating-point: algorism for computers." *IEEE ARITH*, pp. 104-111. — Decimal arithmetic specification underlying IEEE 754 decimal formats.
 
 **Type system interaction:**
+
 - Mitchell, J.C. (1991). "Type inference with simple subtypes." *Journal of Functional Programming*, 1(3), 245-285. — Decidability of type inference with subtype constraints. Explains why tinct keeps range constraints at the runtime level rather than integrating them into HM inference.
 
 **Language-specific:**
+
 - doc/03-data-model.md §Numeric Types. — Current Int (i64), Float (f64), Number supertype, promotion table.
 - `doc/feature/structural-contracts.md` — `validate` schema validation, `@` annotation system.
 - `doc/whatif/float-dict-keys.md` — Decimal type enables sound fractional dict keys.

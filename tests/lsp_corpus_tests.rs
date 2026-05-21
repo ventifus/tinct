@@ -39,7 +39,7 @@ mod test_helpers;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 use test_helpers::split_test_file;
 
 /// Recursively find all .llt-eval files in a directory
@@ -87,7 +87,7 @@ fn get_diagnostics_for_source(source: &str) -> Vec<Diagnostic> {
         .expect("Failed to open current directory");
     let eval_ctx = tinct::EvalContext::new(
         base_dir,
-        Rc::clone(&stdlib_env),
+        Arc::clone(&stdlib_env),
         true, // no_fs (LSP context should have no_fs=true for security)
     );
 

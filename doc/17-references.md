@@ -5,6 +5,7 @@
 Foundational papers grounding tinct's design decisions. Each citation identifies the formal model a subsystem corresponds to and the guarantees it provides.
 
 **Type inference:**
+
 - Damas, L. & Milner, R. (1982). Principal type-schemes for functional programs. In *POPL '82*, pp. 207–212. ACM. — Proves existence of principal types for Hindley-Milner. tinct uses levels-based let-generalization (Kiselyov 2013) with annotation-driven polymorphism. Principal types hold for the annotated subset; full principality requires all parameters to be annotated.
 - Robinson, J.A. (1965). A machine-oriented logic based on the resolution principle. *JACM*, 12(1), 23–41. — The unification algorithm at the core of `unify()` in `src/types.rs`. Robinson is purely syntactic (no subtyping); tinct extends it with [U-SUBSUME], a ground-type compatibility check using the subtype lattice. This is a pragmatic middle ground — full subtyping integration would require algebraic subtyping (Dolan & Mycroft 2017).
 - Dolan, S. & Mycroft, A. (2017). Polymorphism, subtyping, and type inference in MLsub. In *POPL '17*, pp. 228–242. ACM. — Introduces algebraic subtyping: a principled combination of ML-style parametric polymorphism with subtyping that preserves principal types. Uses polar types (input vs output) and extends unification to handle subtyping constraints directly. tinct intentionally does not adopt this — [U-SUBSUME] is a simpler ground-type compatibility check that avoids MLsub's complexity while covering tinct's literal-type subtyping needs. See `doc/whatif/algebraic.md` for analysis of what adoption would require.
@@ -19,6 +20,7 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Wadler, P. & Findler, R.B. (2009). Well-typed programs can't be blamed. In *ESOP '09*, LNCS 5502, pp. 1–16. Springer. — The blame theorem: well-typed components are never blamed for runtime failures at typed/untyped boundaries. Defines blame polarity (positive/negative). Foundation for tinct's blame tracking, `BlameLabel` struct, and co-natural strategy selection. Type variables carry integer levels; generalization quantifies variables whose level exceeds the enclosing scope.
 
 **Row polymorphism:**
+
 - Rémy, D. (1994). Type inference for records in natural extension of ML. In *Theoretical Aspects of Object-Oriented Programming*, pp. 291–346. MIT Press. — Proves decidable inference with row variables. tinct's row types (open records with `...`, named row variables with `...rest`) follow Rémy's approach. Row-variable binding in `unify()` follows Rémy's approach, binding row variables to remainders via four-case remainder unification (see §Row-Variable Unification in [Type System Extensions](07-type-extensions.md)).
 - Wand, M. (1987). Complete type inference for simple objects. In *LICS '87*, pp. 37–44. IEEE. — Row variables as record tails, completeness proof (corrigendum published 1988). Proves principal types for the presence-only restriction. tinct's `unify_remainders` four-case field-partitioning algorithm follows Wand's structure with Rémy's kind separation: Cases 1–4 in the algorithm correspond directly to Wand's four unification cases in §Section 4. The "4-case algorithm" comments in `src/types.rs` cite this paper.
 - Gaster, B.R. & Jones, M.P. (1996). A polymorphic type system for extensible records and variants. TR NOTTCS-TR-96-3, University of Nottingham. — Introduces *lacks* predicates: `(r lacks l)` means row `r` does not contain label `l`. Extension (`extend(r, l, t)`) requires a lacks proof. Implemented as TREX in Hugs. Not adopted for tinct (requires type class infrastructure for evidence passing) but relevant if typed field deletion is added or if `$merge` needs precise open-record typing.
@@ -26,12 +28,14 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Bernstein, M. (2024). Adding row polymorphism to Damas-Hindley-Milner. Blog post. — Tutorial implementation of Wand's approach in dict-based (quotient algebra) representation. Reference implementation for the four-case field-partitioning unification pattern used in tinct's design.
 
 **Coinductive types and productivity:**
+
 - Coquand, T. (1994). Infinite objects in type theory. In *Types for Proofs and Programs*, pp. 62–78. Springer. — Foundational treatment of coinductive types in type theory. Introduces the guardedness condition for productive corecursion. tinct's `Value::Seq` is a coinductive cons-cell; productivity is ensured pragmatically (productive-by-construction combinators + depth limit) rather than statically, since Coquand's proof requires totality.
 - Turner, D.A. (2004). Total functional programming. *J. Universal Computer Science*, 10(7), 751–768. — Argues for eliminating partiality via a data/codata distinction. tinct deliberately retains general recursion (Turing-completeness) at the cost of static productivity guarantees, following Haskell/Nix rather than Dhall/Turner.
 - Abel, A. & Pientka, B. (2013). Wellfounded recursion with copatterns: a unified approach to termination and productivity. In *ICFP '13*, pp. 185–196. ACM. — Unifies termination and productivity checking via sized types and copatterns. Cited as incompatible with HM inference, motivating tinct's pragmatic approach.
 - Abel, A. (2012). Type-based termination, inflationary fixed-points, and mixed inductive-coinductive types. In *FICS '12*, EPTCS 77, pp. 1–11. — Sized types for Agda's termination/productivity checker. Alternative to syntactic guardedness; requires constraint solving beyond unification.
 
 **Network protocols:**
+
 - Berners-Lee, T., Fielding, R. & Masinter, L. (2005). RFC 3986. "Uniform Resource Identifier (URI): Generic Syntax." IETF. — Defines the URI syntax parsed by `uri`, `url`, and the Uri/Url value types. §3 defines the component grammar (scheme, authority, path, query, fragment); §3.2.1 treats userinfo as opaque, motivating tinct's convention of splitting on `:` without mandating it. §7.5 deprecates passwords in URIs (the `password` field is parsed but its use is discouraged). [URI model, `doc/03-data-model.md` §URI Values, `doc/whatif/lib-tls.md`]
 - Saint-Andre, P. & Klensin, J. (2017). RFC 8141. "Uniform Resource Names (URNs)." IETF. — Defines the URN syntax `urn:NID:NSS[?+r][?=q][#f]` parsed by the `urn` builtin and stored in the `Urn` value type. §2.3 defines r-component (resolution, `?+…`) and q-component (query, `?=…`); §2.3.1 states the r-component SHOULD NOT be used (reserved for future use). [URN model, `doc/03-data-model.md` §Urn, `doc/whatif/lib-tls.md`]
 - Nottingham, M. (2020). RFC 8820. "URI Design and Ownership." IETF. — Best practices for URI namespace design. Relevant to URI parsing design decisions in tinct. Obsoletes RFC 7320.
@@ -44,9 +48,10 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Evans, C., Palmer, C. & Sleevi, R. (2015). RFC 7469. "Public Key Pinning Extension for HTTP." IETF. — Defines SPKI hash pinning for HTTP. tinct's `SpkiPin` and the `pins` option of `tls-connect` implement certificate pinning at the connection layer (not HTTP-header-based), following the same SPKI fingerprint model. [SPKI pinning, `doc/whatif/lib-tls.md`]
 - Iyengar, J. & Thomson, M. (2021). RFC 9000. "QUIC: A UDP-Based Multiplexed and Secure Transport." IETF. — QUIC underlies HTTP/3 connections made via `http-connect`. `http-connect` runs QUIC internally (via `reqwest`/`quinn`); user Connectors only need to provide a `Udp` Handle. [HTTP/3, `doc/whatif/lib-tls.md`]
 - Bishop, M. (2022). RFC 9114. "HTTP/3." IETF. — HTTP/3 over QUIC, supported by `http-connect` via `reqwest`. [HTTP/3, `doc/whatif/lib-tls.md`]
-- Thomson, M. & Stradling, R. (2019–). *rustls* crate. — Rust TLS library implementing TLS 1.3. Used by `tls-connect` for the TLS engine. System roots via `rustls-native-certs`; compiled-in Mozilla roots via `webpki-roots`. See https://github.com/rustls/rustls. [TLS implementation, `doc/whatif/lib-tls.md`]
+- Thomson, M. & Stradling, R. (2019–). *rustls* crate. — Rust TLS library implementing TLS 1.3. Used by `tls-connect` for the TLS engine. System roots via `rustls-native-certs`; compiled-in Mozilla roots via `webpki-roots`. See <https://github.com/rustls/rustls>. [TLS implementation, `doc/whatif/lib-tls.md`]
 
 **I/O models:**
+
 - Moggi, E. (1991). Notions of computation and monads. *Information and Computation*, 93(1), 55–92. doi:10.1016/0890-5401(91)90052-4 — Categorical semantics for monads as models of computation. Foundation for the Haskell IO monad. Considered and rejected for tinct: requires HKTs and type classes disproportionate to a configuration language. [I/O model, `doc/whatif/io.md`]
 - Peyton Jones, S.L. & Wadler, P. (1993). Imperative functional programming. In *POPL '93*, pp. 71–84. doi:10.1145/158511.158524 — Introduces the IO monad as the practical realization of Moggi's theory in Haskell. Rejected for tinct. [I/O model, `doc/whatif/io.md`]
 - Peyton Jones, S.L. (2001). Tackling the awkward squad: monadic input/output, concurrency, exceptions, and foreign-function calls in Haskell. In *Engineering Theories of Software Construction*, NATO ASI Series, IOS Press, pp. 47–96. — The definitive treatment of why lazy I/O (`hGetContents`) is unsound and how the IO monad solves it. Motivates tinct's rejection of lazy I/O. [I/O model, `doc/whatif/io.md`]
@@ -59,12 +64,15 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Miller, M.S. (2006). *Robust Composition*. PhD thesis, Johns Hopkins University. — Object capability model: authority as explicit unforgeable references; caretaker pattern for handle revocation (Ch. 8); confinement impossibility result (Ch. 9). tinct's capability layer (`Value::DirCap`, `Value::NetCap`, `Value::Handle`, `Value::RevocableDirCap`) follows this model. Cap bound at open time (handle IS the narrowed capability); `$revocable` implements the caretaker pattern. [I/O model, sandbox design, `doc/whatif/io.md`]
 
 **Strictness analysis:**
+
 - Mycroft, A. (1981). Abstract interpretation and optimising transformations for applicative programs. Ph.D. thesis, University of Edinburgh. — Introduces per-argument strictness annotations for higher-order functional programs via abstract interpretation. Foundation for tinct's `Strictness` enum and builtin annotation table; the `Seq` projection name derives from Mycroft's analysis. See `doc/16-architecture.md §Builtin Argument Strictness Annotations`.
 
 **Call convention:**
+
 - Garrigue, J. (1995). Labeled and optional arguments for Objective Caml. In *JSSST Workshop*, pp. 1–14. — Formalizes labeled and optional function arguments with separate default evaluation environments. tinct's `default_env` parameter in `bind_args_thunks` (§Call Convention — Formal Specification) follows Garrigue's insight that the environment for evaluating defaults must be a parameter, not hard-coded — normal calls use the caller's environment, `$apply` uses the closure environment. tinct's Kotlin-model naming (any parameter is nameable) goes beyond Garrigue's labeled-only approach — see §Call Convention Part 1 C-NAMED-VALID.
 
 **Evaluation semantics:**
+
 - Findler, R.B. & Felleisen, M. (2002). Contracts for higher-order functions. In *ICFP '02*, pp. 48–59. ACM. — Introduces higher-order contracts (monitors that wrap functions with pre/post conditions) and the blame theorem for untyped languages. tinct's `Guarded` thunk state implements a lazy contract monitor: `Guarded(θ_inner, τ, path, span)` is a proxy contract that validates the inner thunk's value against type τ when forced. The `FORCE-GUARD` family of rules in §Thunk Lifecycle — Formal Specification directly corresponds to Findler & Felleisen's monitor semantics.
 - Plotkin, G.D. (1981). A structural approach to operational semantics. Tech. Rep. DAIMI FN-19, Aarhus University. — Foundational framework for structural operational semantics (SOS). tinct's delta rules for builtin materialization behavior (§Selective Materialization) follow Plotkin's style of inference rules with premises and conclusions.
 - Ariola, Z.M. & Felleisen, M. (1997). The call-by-need lambda calculus. *J. Functional Programming*, 7(3), 265–301. — Equational theory for call-by-need evaluation. Proves confluence (diamond property) for the pure call-by-need calculus. tinct's pure subset (no `$include`) satisfies this property; `$include` introduces evaluation-order dependence that breaks confluence (see §Thunk Lifecycle — Semantic Commitments).
@@ -73,36 +81,43 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Peyton Jones, S.L., Reid, A., Henderson, F., Haskell, C.A. & Sestoft, P. (1999). A semantics for imprecise exceptions. In *PLDI '99*, pp. 25–36. ACM. — Formalizes exception semantics in a lazy language. tinct's `Failed` thunk state memoizes errors permanently (Semantic Commitment 1 in §Thunk Lifecycle), matching the deterministic subset of Peyton Jones et al.'s semantics — tinct has no non-deterministic exception selection since errors are purely deterministic.
 
 **Abstract machines:**
+
 - Reynolds, J.C. (1972). Definitional interpreters for higher-order programming languages. In *Proceedings of the ACM Annual Conference*, vol. 2, pp. 717–740. ACM. — Introduces defunctionalization: the transformation of higher-order programs into first-order form by replacing function values with data. tinct's `PendingBuiltin` and `PendingCall` thunk states are defunctionalized continuations in exactly this sense — deferred computation represented as tagged data rather than closures.
 - Sestoft, P. (1997). Deriving a lazy abstract machine. *J. Functional Programming*, 7(3), 231–264. — Systematic derivation of a lazy abstract machine from the call-by-need lambda calculus. Provides the theoretical bridge between Launchbury's natural semantics (1993) and the CEK machine implementation (§Iterative Evaluator in [Evaluation](08-evaluation.md)). The derivation technique grounds tinct's transition from recursive `eval()`/`materialize()` to an explicit continuation stack.
 - Danvy, O. & Nielsen, L.R. (2003). Defunctionalization at work. In *PPDP '03*, pp. 162–174. ACM. — Systematic defunctionalization from higher-order to first-order programs. tinct's PendingBuiltin and PendingCall thunk states are defunctionalized continuations in the sense of Reynolds (1972). The iterative evaluator (see §Iterative Evaluator in [Evaluation](08-evaluation.md)) makes this CEK machine correspondence explicit, following Felleisen & Friedman (1986).
 
 **Desugaring:**
+
 - Pombrio, J. & Krishnamurthi, S. (2014). Resugaring: lifting evaluation sequences through syntactic sugar. In *PLDI '14*, pp. 361–371. ACM. — Formalizes how to map desugared evaluation steps back to surface syntax for error reporting. Motivates the universal practice of desugaring before evaluation. tinct's `$_` desugaring follows this pipeline: parse → desugar → typecheck → eval.
 - Krishnamurthi, S. (2012). *Programming Languages: Application and Interpretation (PLAI)*. — Textbook pipeline: parse → desugar → typecheck → evaluate. Desugaring produces a core language AST that all downstream passes consume. tinct's `$_` transformation is a desugaring in this sense.
 
 **Parsing:**
+
 - Ford, B. (2004). Parsing expression grammars: a recognition-based syntactic foundation. In *POPL '04*, pp. 111–122. ACM. — Proves O(n) parsing with packrat memoization. Tinct originally used a pest PEG grammar (removed in parser-core-c3); the current hand-written parser follows similar principles: ordered choice, no left recursion, and finite lookahead.
 
 **Binding declarations and syntax:**
+
 - Milner, R. (1978). "A theory of type polymorphism in programming." *Journal of Computer and System Sciences*, 17(3), 348–375. — `let` as the canonical polymorphic binding form in ML; basis for tinct's explicit `[let ...]` binding declarations. [unified bindings, `doc/whatif/unified-bindings.md`]
 - Landin, P.J. (1966). "The next 700 programming languages." *Communications of the ACM*, 9(3), 157–166. — ISWIM's `where`-clauses as syntactically distinct from application; the principle that binding and application look different. Foundation for tinct's invariant: `[let ...]` is binding; every other bracket is an expression. [unified bindings, `doc/whatif/unified-bindings.md`]
 - Harper, R. (2016). *Practical Foundations for Programming Languages*, 2nd ed. Cambridge University Press, ch. 1. — Multi-sorted abstract syntax; binding occurrences as a distinct syntactic sort from expression occurrences. Formal grounding for `Expr::LetDecl` as a separate AST sort from expressions. [unified bindings, `doc/whatif/unified-bindings.md`]
 - Peyton Jones, S. (ed.) (2003). *Haskell 98 Language and Libraries: The Revised Report.* §3.17. — Case alternatives with `->` separator; constructor-first patterns; pattern-body scoping model. Reference for tinct's `[case ...]` arm design. [unified bindings, `doc/whatif/unified-bindings.md`]
 
 **Pattern matching:**
+
 - Augustsson, L. (1985). "Compiling pattern matching." In *FPCA '85*, LNCS 201, pp. 368–381. Springer. — Decision tree compilation for pattern matching in lazy functional languages. Foundation for tinct's `[match]` macro expansion strategy. [pattern matching, `doc/whatif/pattern-matching.md`]
 - Karachalias, G., Schrijvers, T., Vytiniotis, D. & Peyton Jones, S. (2015). "GADTs meet their match: pattern-matching warnings that account for GADTs, guards, and laziness." In *ICFP '15*, pp. 424–436. ACM. — Extends Maranget's exhaustiveness checking to handle guards (treated as opaque for coverage), laziness (divergent scrutinees), and GADTs (type refinement in arms). The guard-opacity result directly applies to tinct's `is:` predicate arms. [pattern matching, exhaustiveness, `doc/whatif/pattern-matching.md`]
 - Maranget, L. (2008). "Compiling pattern matching to good decision trees." In *ML '08*, pp. 35–46. ACM. — Optimal decision trees via pattern matrices. Foundation for exhaustiveness and redundancy analysis in tinct's `[match]` exhaustiveness checking. [pattern matching, `doc/whatif/pattern-matching.md`]
 - Scott, K. & Ramsey, N. (2000). "When do match-compilation heuristics matter?" Technical Report CS-2000-13, University of Virginia. — Empirical comparison of match compilation strategies; shows simple heuristics suffice in practice. [pattern matching, `doc/whatif/pattern-matching.md`]
 
 **Algebraic subtyping:**
+
 - Dolan, S. (2016). *Algebraic Subtyping.* PhD thesis, University of Cambridge. — Full theoretical treatment: row types (Chapter 6), automata simplification, principal type proof (Theorem 4.1). [algebraic subtyping, `doc/whatif/union-types.md`]
 - Parreaux, L. (2020). "The simple essence of algebraic subtyping." In *ICFP '20*, Article 124. ACM. — Simplified constraint-solving algorithm for algebraic subtyping, closer to Algorithm W. ~500 line reference implementation. Direct implementation reference for tinct's algebraic subtyping design. [algebraic subtyping, `doc/whatif/union-types.md`]
 - Marques, R., Florido, M. & Vasconcelos, P. (2024). "Towards algebraic subtyping for extensible records." arXiv:2407.06747. — Extends Simple-sub with row variables. Directly applicable to tinct's row polymorphism + algebraic subtyping combination. [algebraic subtyping, row polymorphism, `doc/whatif/union-types.md`]
 - Traytel, D., Berghofer, S. & Nipkow, T. (2011). "Extending Hindley-Milner type inference with coercive structural subtyping." In *APLAS '11*, LNCS 7078, pp. 89–104. Springer. — Alternative coercion-based approach, simpler than biunification. Design contrast for tinct's union types. [algebraic subtyping, `doc/whatif/union-types.md`]
 
 **Type classes:**
+
 - Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." In *POPL '89*, pp. 60–76. ACM. — Foundational type classes paper. Defines dictionary-passing translation. Foundation for tinct's type class design. [type classes, `doc/whatif/typeclasses.md`]
 - Jones, M.P. (1993). "A system of constructor classes: overloading and implicit higher-order polymorphism." In *FPCA '93*, pp. 52–61. ACM. — Constructor classes for higher-kinded type variables (`Functor f`). Required for tinct's `Functor` class over Dict/Seq. [type classes, `doc/whatif/typeclasses.md`]
 - Jones, M.P. (1995). *Qualified types: Theory and practice.* Cambridge University Press. — Comprehensive treatment of qualified types. Covers constraint propagation through let-generalization. [type classes, `doc/whatif/typeclasses.md`]
@@ -114,6 +129,7 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Sheard, T. & Peyton Jones, S. (2002). "Template Haskell for Haskell." In *Haskell Workshop '02*, pp. 1–16. ACM. — Staged metaprogramming in a typed functional language: splice/quote mechanism. tinct's `ast-of` + `eval-ast` is a single-stage runtime analogue. [runtime reflection, `doc/08-evaluation.md §Runtime Reflection`]
 
 **Contracts and blame:**
+
 - Dimoulas, C., Findler, R.B., Flanagan, C. & Felleisen, M. (2011). "Correct blame for contracts: no more scapegoating." In *POPL '11*, pp. 215–226. ACM. — Formal semantics of blame assignment with higher-order contracts and module boundaries. [contracts, `doc/whatif/structural-contracts.md`]
 - Ahmed, A., Findler, R., Siek, J. & Wadler, P. (2011). "Blame for all." In *POPL '11*, pp. 201–214. ACM. — Extends blame to polymorphic languages. Relevant because tinct has parametric polymorphism via annotated type variables. [gradual typing, `doc/whatif/gradual-typing.md`]
 - Cimini, M. & Siek, J.G. (2016). "The gradualizer." In *POPL '16*, pp. 443–455. ACM. — Automated derivation of gradual type systems. Complementary to AGT. [gradual typing, `doc/whatif/gradual-typing.md`]
@@ -121,6 +137,7 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Vitousek, M., Kent, A., Siek, J. & Baker, J. (2014). "Design and evaluation of gradual typing for Python." In *DLS '14*, pp. 45–56. ACM. — Implementation experience showing automatic guard insertion is feasible at scale. [gradual typing, `doc/whatif/gradual-typing.md`]
 
 **Algebraic data types and variants:**
+
 - Rémy, D. (1989). "Typechecking records and variants in a natural extension of ML." In *POPL '89*, pp. 77–88. ACM. — Row polymorphism covers records *and* variants from the start using the same presence/absence flag machinery. Foundation for tinct's structural ADT model. [ADTs, nominal variants, `doc/whatif/algebraic-data-types.md`]
 - Garrigue, J. (1998). "Programming with polymorphic variants." In *ML Workshop '98*. — OCaml's structural variant types (`` `Foo value ``): 25+ years of production validation of structural discrimination. Principal types proven for polymorphic variants with row polymorphism. [ADTs, `doc/whatif/algebraic-data-types.md`]
 - Blume, M., Acar, U.A. & Chae, W. (2006). "Extensible programming with first-class cases." In *ICFP '06*, pp. 239–250. ACM. — Extends row polymorphism to variant types, enabling functions polymorphic over open variant sets. Template for a future `Type::Variant(Row)` if tinct adds dedicated variant rows. [ADTs, `doc/whatif/algebraic-data-types.md`]
@@ -132,6 +149,7 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Wadler, P. & Hughes, R.J.M. (1987). "Projections for strictness analysis." In *FPCA '87*, LNCS 274, pp. 385–407. Springer. — Extends Mycroft's binary Strict/Lazy lattice to a lattice of projections (id, seq, spine, both). Foundation for tinct's three-variant `Strictness` enum (`Id`, `Seq`, `Spine`) annotating per-position argument demand on builtins. [`doc/16-architecture.md §Builtin Argument Strictness Annotations`]
 
 **Macro systems and quasiquoting:**
+
 - Adams, M.D. (2015). "Towards the essence of hygiene." In *POPL '15*, pp. 457–469. ACM. — Algorithm-independent formal definition of hygiene as a property. [macros, `doc/whatif/macros.md`]
 - Ballantyne, M., King, A. & Felleisen, M. (2020). "Macros for domain-specific languages." *OOPSLA '20*. — Surface-to-core architecture for DSL macros. Relevant to tinct's "one language" philosophy. [macros, `doc/whatif/macros.md`]
 - Bawden, A. (1999). "Quasiquotation in Lisp." In *PEPM '99*, pp. 4–12. ACM. — Formal treatment of quasiquotation semantics. Defines the nesting depth algebra: `quote` increments depth, `unquote` decrements; evaluation occurs at depth 0. The definitive reference for quasiquote semantics. [quasiquoting, `doc/whatif/quasiquoting.md`]
@@ -146,6 +164,7 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 - Taha, W. & Sheard, T. (2000). "MetaML and multi-stage programming with explicit annotations." *Theoretical Computer Science*, 248(1–2), 211–242. — Typed code quotation: quoted code has type `Code a`. Type-theoretic foundation for quote/unquote. Reference for potential future typed quasiquoting. [quasiquoting, `doc/whatif/quasiquoting.md`]
 
 **Pretty-printing:**
+
 - Oppen, D. (1980). "Prettyprinting." *ACM TOPLAS*, 2(4), 465–483. — Foundational algorithm for line-breaking decisions in pretty-printing. Scan tokens left-to-right, decide whether a group fits on the current line or must break. Tinct's `fits-inline?` binary decision directly applies Oppen's model. [formatter, `doc/whatif/tinct-hosted-formatter.md`]
 
 ## Resources

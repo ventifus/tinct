@@ -2,15 +2,11 @@
 
 ### `identity`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `const`
-
-
 
 ```tinct
 fn@Unknown
@@ -18,15 +14,11 @@ fn@Unknown
 
 ### `not`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `and`
-
-
 
 ```tinct
 fn@Unknown
@@ -34,15 +26,11 @@ fn@Unknown
 
 ### `or`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `any?`
-
-
 
 ```tinct
 fn@Unknown
@@ -50,15 +38,11 @@ fn@Unknown
 
 ### `all?`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `>`
-
-
 
 ```tinct
 fn@Unknown
@@ -66,15 +50,11 @@ fn@Unknown
 
 ### `<=`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `>=`
-
-
 
 ```tinct
 fn@Unknown
@@ -82,15 +62,11 @@ fn@Unknown
 
 ### `quot`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `mod`
-
-
 
 ```tinct
 fn@Unknown
@@ -98,15 +74,11 @@ fn@Unknown
 
 ### `ceil`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `trunc`
-
-
 
 ```tinct
 fn@Unknown
@@ -114,15 +86,11 @@ fn@Unknown
 
 ### `abs`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `sign`
-
-
 
 ```tinct
 fn@Unknown
@@ -130,15 +98,11 @@ fn@Unknown
 
 ### `clamp`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `words`
-
-
 
 ```tinct
 fn@
@@ -146,15 +110,11 @@ fn@
 
 ### `unindent`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `when`
-
-
 
 ```tinct
 fn@Unknown
@@ -162,15 +122,11 @@ fn@Unknown
 
 ### `unless`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `cond`
-
-
 
 ```tinct
 fn@Unknown
@@ -178,15 +134,11 @@ fn@Unknown
 
 ### `get`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `has?`
-
-
 
 ```tinct
 fn@Unknown
@@ -194,15 +146,11 @@ fn@Unknown
 
 ### `get-or`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `get-in`
-
-
 
 ```tinct
 fn@Unknown
@@ -210,15 +158,11 @@ fn@Unknown
 
 ### `get-in-or`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `empty?`
-
-
 
 ```tinct
 fn@
@@ -226,15 +170,11 @@ fn@
 
 ### `make-entry`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `set`
-
-
 
 ```tinct
 fn@
@@ -242,15 +182,11 @@ fn@
 
 ### `remove`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `update`
-
-
 
 ```tinct
 fn@
@@ -258,15 +194,11 @@ fn@
 
 ### `values`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `entries`
-
-
 
 ```tinct
 fn@Unknown
@@ -274,15 +206,11 @@ fn@Unknown
 
 ### `from-entries`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `nth`
-
-
 
 ```tinct
 (value)
@@ -290,15 +218,11 @@ fn@Unknown
 
 ### `conj`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `reindex`
-
-
 
 ```tinct
 fn@Unknown
@@ -306,15 +230,11 @@ fn@Unknown
 
 ### `sort-by`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `sorted`
-
-
 
 ```tinct
 fn@
@@ -322,15 +242,11 @@ fn@
 
 ### `sorted-by`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `take-while`
-
-
 
 ```tinct
 fn@Unknown
@@ -338,15 +254,11 @@ fn@Unknown
 
 ### `drop-while`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `map-entries`
-
-
 
 ```tinct
 fn@Unknown
@@ -354,15 +266,11 @@ fn@Unknown
 
 ### `fold`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `slice-impl`
-
-
 
 ```tinct
 fn@
@@ -370,15 +278,11 @@ fn@
 
 ### `slice-step`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `slice`
-
-
 
 ```tinct
 fn@Unknown
@@ -386,15 +290,11 @@ fn@Unknown
 
 ### `zip`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `flatten-impl`
-
-
 
 ```tinct
 fn@
@@ -402,15 +302,11 @@ fn@
 
 ### `flatten-step`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `flatten`
-
-
 
 ```tinct
 fn@Unknown
@@ -418,15 +314,11 @@ fn@Unknown
 
 ### `find-deep-impl`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `find-deep-check`
-
-
 
 ```tinct
 fn@
@@ -434,15 +326,11 @@ fn@
 
 ### `find-deep-try`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `find-deep-try-check`
-
-
 
 ```tinct
 fn@
@@ -450,15 +338,11 @@ fn@
 
 ### `find-deep`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `with-entries`
-
-
 
 ```tinct
 fn@Unknown
@@ -466,15 +350,11 @@ fn@Unknown
 
 ### `partition`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `flat-map`
-
-
 
 ```tinct
 fn@Unknown
@@ -482,15 +362,11 @@ fn@Unknown
 
 ### `find-first`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `find-first-or`
-
-
 
 ```tinct
 fn@
@@ -498,15 +374,11 @@ fn@
 
 ### `group-by-step`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `group-by`
-
-
 
 ```tinct
 fn@Unknown
@@ -514,15 +386,11 @@ fn@Unknown
 
 ### `deep-merge-step`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `deep-merge`
-
-
 
 ```tinct
 fn@Unknown
@@ -530,15 +398,11 @@ fn@Unknown
 
 ### `walk-dict`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `walk`
-
-
 
 ```tinct
 fn@Unknown
@@ -546,15 +410,11 @@ fn@Unknown
 
 ### `unzip`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `transpose`
-
-
 
 ```tinct
 fn@Unknown
@@ -562,15 +422,11 @@ fn@Unknown
 
 ### `sum`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `product`
-
-
 
 ```tinct
 fn@Unknown
@@ -578,15 +434,11 @@ fn@Unknown
 
 ### `min`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `max`
-
-
 
 ```tinct
 fn@Unknown
@@ -594,15 +446,11 @@ fn@Unknown
 
 ### `count`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `contains?`
-
-
 
 ```tinct
 fn@
@@ -610,15 +458,11 @@ fn@
 
 ### `uniq-impl`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `uniq-step`
-
-
 
 ```tinct
 fn@
@@ -626,15 +470,11 @@ fn@
 
 ### `uniq`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `foldr`
-
-
 
 ```tinct
 fn@
@@ -642,15 +482,11 @@ fn@
 
 ### `compose`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `->`
-
-
 
 ```tinct
 fn@Unknown
@@ -658,15 +494,11 @@ fn@Unknown
 
 ### `num?`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `record?`
-
-
 
 ```tinct
 (value)
@@ -674,15 +506,11 @@ fn@
 
 ### `map?`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `list?`
-
-
 
 ```tinct
 fn@
@@ -690,15 +518,11 @@ fn@
 
 ### `try-or`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `ok?`
-
-
 
 ```tinct
 fn@Unknown
@@ -706,15 +530,11 @@ fn@Unknown
 
 ### `err?`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `and-then`
-
-
 
 ```tinct
 fn@Unknown
@@ -722,15 +542,11 @@ fn@Unknown
 
 ### `result-or`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `result-map`
-
-
 
 ```tinct
 fn@Unknown
@@ -738,15 +554,11 @@ fn@Unknown
 
 ### `result-ok`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `result`
-
-
 
 ```tinct
 (value)
@@ -754,15 +566,11 @@ fn@Unknown
 
 ### `Functor`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `FunctorResult`
-
-
 
 ```tinct
 (value)
@@ -770,15 +578,11 @@ fn@Unknown
 
 ### `FunctorSeq`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Applicative`
-
-
 
 ```tinct
 (value)
@@ -786,15 +590,11 @@ fn@Unknown
 
 ### `ApplicativeResult`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `ApplicativeSeq`
-
-
 
 ```tinct
 (value)
@@ -802,15 +602,11 @@ fn@Unknown
 
 ### `Monad`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `MonadResult`
-
-
 
 ```tinct
 (value)
@@ -818,15 +614,11 @@ fn@Unknown
 
 ### `MonadSeq`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Foldable`
-
-
 
 ```tinct
 (value)
@@ -834,15 +626,11 @@ fn@Unknown
 
 ### `FoldableSeq`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `FoldableRecord`
-
-
 
 ```tinct
 (value)
@@ -850,15 +638,11 @@ fn@Unknown
 
 ### `FoldableResult`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Traversable`
-
-
 
 ```tinct
 (value)
@@ -866,15 +650,11 @@ fn@Unknown
 
 ### `TraversableSeq`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `TraversableResult`
-
-
 
 ```tinct
 (value)
@@ -882,15 +662,11 @@ fn@Unknown
 
 ### `maybe-map`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `FunctorMaybe`
-
-
 
 ```tinct
 (value)
@@ -898,15 +674,11 @@ fn@Unknown
 
 ### `ApplicativeMaybe`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `MonadMaybe`
-
-
 
 ```tinct
 (value)
@@ -914,15 +686,11 @@ fn@Unknown
 
 ### `TraversableMaybe`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `sequence`
-
-
 
 ```tinct
 fn@Unknown
@@ -930,15 +698,11 @@ fn@Unknown
 
 ### `traverse`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `forM`
-
-
 
 ```tinct
 fn@Unknown
@@ -946,15 +710,11 @@ fn@Unknown
 
 ### `liftM2`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `whenM`
-
-
 
 ```tinct
 fn@Unknown
@@ -962,15 +722,11 @@ fn@Unknown
 
 ### `Add`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Sub`
-
-
 
 ```tinct
 (value)
@@ -978,15 +734,11 @@ fn@Unknown
 
 ### `Mul`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Div`
-
-
 
 ```tinct
 (value)
@@ -994,15 +746,11 @@ fn@Unknown
 
 ### `Equatable`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `# EquatableInt`
-
-
 
 ```tinct
 (value)
@@ -1010,15 +758,11 @@ fn@Unknown
 
 ### `# EquatableFloat`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `# EquatableStr`
-
-
 
 ```tinct
 (value)
@@ -1026,15 +770,11 @@ fn@Unknown
 
 ### `# EquatableBool`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Comparable`
-
-
 
 ```tinct
 (value)
@@ -1042,15 +782,11 @@ fn@Unknown
 
 ### `# ComparableInt`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `# ComparableFloat`
-
-
 
 ```tinct
 (value)
@@ -1058,15 +794,11 @@ fn@Unknown
 
 ### `# ComparableStr`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Showable`
-
-
 
 ```tinct
 (value)
@@ -1074,15 +806,11 @@ fn@Unknown
 
 ### `# ShowableInt`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `# ShowableFloat`
-
-
 
 ```tinct
 (value)
@@ -1090,15 +818,11 @@ fn@Unknown
 
 ### `# ShowableStr`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `# ShowableBool`
-
-
 
 ```tinct
 (value)
@@ -1106,15 +830,11 @@ fn@Unknown
 
 ### `Mappable`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `MappableSeq`
-
-
 
 ```tinct
 (value)
@@ -1122,15 +842,11 @@ fn@Unknown
 
 ### `MappableDict`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `Appendable`
-
-
 
 ```tinct
 (value)
@@ -1138,15 +854,11 @@ fn@Unknown
 
 ### `AppendableStr`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `AppendableDict`
-
-
 
 ```tinct
 (value)
@@ -1154,15 +866,11 @@ fn@Unknown
 
 ### `AppendableSeq`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `assert`
-
-
 
 ```tinct
 fn@Unknown
@@ -1170,15 +878,11 @@ fn@Unknown
 
 ### `<`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `=`
-
-
 
 ```tinct
 fn@
@@ -1186,15 +890,11 @@ fn@
 
 ### `+`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `-`
-
-
 
 ```tinct
 fn@
@@ -1202,15 +902,11 @@ fn@
 
 ### `*`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `/`
-
-
 
 ```tinct
 fn@
@@ -1218,15 +914,11 @@ fn@
 
 ### `if`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `filter`
-
-
 
 ```tinct
 (value)
@@ -1234,15 +926,11 @@ fn@
 
 ### `map`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `reduce`
-
-
 
 ```tinct
 (value)
@@ -1250,15 +938,11 @@ fn@
 
 ### `take`
 
-
-
 ```tinct
 (value)
 ```
 
 ### `drop`
-
-
 
 ```tinct
 (value)
@@ -1266,15 +950,11 @@ fn@
 
 ### `collect-kv`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `str-contains?`
-
-
 
 ```tinct
 fn@
@@ -1282,15 +962,11 @@ fn@
 
 ### `starts-with?`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `ends-with?`
-
-
 
 ```tinct
 fn@
@@ -1298,15 +974,11 @@ fn@
 
 ### `str-repeat`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `str-find`
-
-
 
 ```tinct
 fn@
@@ -1314,15 +986,11 @@ fn@
 
 ### `between`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `non-negative`
-
-
 
 ```tinct
 fn@
@@ -1330,15 +998,11 @@ fn@
 
 ### `positive`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `seq`
-
-
 
 ```tinct
 fn@Unknown
@@ -1346,15 +1010,11 @@ fn@Unknown
 
 ### `head`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `tail`
-
-
 
 ```tinct
 fn@Unknown
@@ -1362,15 +1022,11 @@ fn@Unknown
 
 ### `collect`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `range`
-
-
 
 ```tinct
 fn@Unknown
@@ -1378,15 +1034,11 @@ fn@Unknown
 
 ### `repeat`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `cycle`
-
-
 
 ```tinct
 fn@Unknown
@@ -1394,15 +1046,11 @@ fn@Unknown
 
 ### `iterate`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `unfold`
-
-
 
 ```tinct
 fn@Unknown
@@ -1410,15 +1058,11 @@ fn@Unknown
 
 ### `join`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `concat`
-
-
 
 ```tinct
 fn@Unknown
@@ -1426,15 +1070,11 @@ fn@Unknown
 
 ### `first`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `last`
-
-
 
 ```tinct
 fn@Unknown
@@ -1442,15 +1082,11 @@ fn@Unknown
 
 ### `rest`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `cons`
-
-
 
 ```tinct
 fn@Unknown
@@ -1458,15 +1094,11 @@ fn@Unknown
 
 ### `reverse`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `sort`
-
-
 
 ```tinct
 fn@Unknown
@@ -1474,15 +1106,11 @@ fn@Unknown
 
 ### `eval-ast`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `gensym`
-
-
 
 ```tinct
 fn@Unknown
@@ -1490,15 +1118,11 @@ fn@Unknown
 
 ### `llt-repr`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `tag-of`
-
-
 
 ```tinct
 fn@Unknown
@@ -1506,15 +1130,11 @@ fn@Unknown
 
 ### `variant`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `decimal`
-
-
 
 ```tinct
 fn@Unknown
@@ -1522,17 +1142,12 @@ fn@Unknown
 
 ### `big-int`
 
-
-
 ```tinct
 fn@Unknown
 ```
 
 ### `proxy`
 
-
-
 ```tinct
 fn@Unknown
 ```
-

@@ -446,10 +446,9 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         const CHUNK_SIZE: usize = 8192;
         loop {
             let mut chunk = vec![0u8; CHUNK_SIZE];
-            let n = handle
-                .borrow_mut()
-                .read(&mut chunk)
-                .map_err(|e| EvalError::user_error(format!("slurp: read failed: {}", e), call_span))?;
+            let n = handle.borrow_mut().read(&mut chunk).map_err(|e| {
+                EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
+            })?;
 
             if n == 0 {
                 break; // EOF
@@ -459,10 +458,7 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
             if contents.len() > MAX_FILE_SIZE as usize {
                 return Err(EvalError::resource_limit_exceeded(
-                    format!(
-                        "slurp: file exceeds maximum size ({} bytes)",
-                        MAX_FILE_SIZE
-                    ),
+                    format!("slurp: file exceeds maximum size ({} bytes)", MAX_FILE_SIZE),
                     call_span,
                 )
                 .into());
@@ -488,10 +484,7 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
         if contents.len() > MAX_FILE_SIZE as usize {
             return Err(EvalError::resource_limit_exceeded(
-                format!(
-                    "slurp: file exceeds maximum size ({} bytes)",
-                    MAX_FILE_SIZE
-                ),
+                format!("slurp: file exceeds maximum size ({} bytes)", MAX_FILE_SIZE),
                 call_span,
             )
             .into());

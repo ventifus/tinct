@@ -22,6 +22,7 @@ Key benefits:
 
 2. **Formatter ergonomics.** Formatter code that builds strings becomes
    significantly more readable:
+
    ```tinct
    # Before
    [str indent key ": " [quote-yaml val] "\n"]
@@ -173,6 +174,7 @@ nodes, computed as character offsets from the `IString` token span, so that
 ### Lexer (`src/lexer.rs`)
 
 Recognizes `i"` as an interpolated string start. Added:
+
 - `Token::InterpolatedString(Vec<InterpolatedPart>)` token type
 - `InterpolatedPart` enum: `Literal(String)` | `VarRef(String)`
 - `lex_interpolated_string()` method: parses string content character by
@@ -184,6 +186,7 @@ Recognizes `i"` as an interpolated string start. Added:
 
 Added `Token::InterpolatedString` case in `parse2()` main loop. Added
 `desugar_interpolated_string()` helper:
+
 - Converts `InterpolatedPart::Literal` → `Expr::Str`
 - Converts `InterpolatedPart::VarRef` → `Expr::VarRef`
 - Builds `Call` node with `func=Box<VarRef("str")>`, `args=parts`

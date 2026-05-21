@@ -51,23 +51,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_convert.rs` (bridge no longer needed) (`src/`)
 - [ ] `just build` + `just test` passes — this is the true first checkpoint
 
-### E1-eval-cutover: Migrate evaluator from Expr to CoreExpr (704 Expr refs in 5 eval files)
-
-**Survey (2026-05-21):** 2,586 total Expr:: refs in 26 files. Critical path: eval first (704 refs), then desugar deletion (76 callers), then downstream.
-**Depends on:** parser-migration-full ✅ (parser produces SurfaceProgram natively, commit 4dc467a)
-
-The evaluator currently matches `ThunkState::Unevaluated { expr: Spanned<Expr>, ... }` directly. All unevaluated thunks store `Expr`. The Surface path (`ThunkState::Surface` → `lower()` → `eval_core_expr()`) works but has a bridge fallback for complex CoreExpr variants.
-
-**Goal:** Remove ThunkState::Unevaluated entirely. All thunks use ThunkState::Surface. The eval loop only handles CoreExpr.
-
-- [ ] **Remove ThunkState::Unevaluated variant** from `src/value.rs` — all thunks created from expressions now use `ThunkState::Surface { node: Arc<SurfaceNode>, res, types, env, ctx }` (the Surface lowering path) (`src/value.rs`)
-- [ ] **Remove Expr match arms from `src/eval.rs`** (633 refs) — the `Unevaluated { expr, env, ctx }` handler that calls `eval()` recursively on `Expr` variants; after removal, `eval_core_expr()` is the only eval path; implement ALL missing CoreExpr variants natively (without Expr bridge fallback) (`src/eval.rs`)
-- [ ] **Remove Expr match arms from `src/eval_materialize.rs`** (41 refs) — update `force_step()` to not handle old Unevaluated state; update RestoreState to not reference Expr (`src/eval_materialize.rs`)
-- [ ] **Remove Expr match arms from `src/eval_dict.rs`** (20 refs) — `eval_dict` receives `SurfaceExpression::Dict` entries; the `Entry` type no longer used (`src/eval_dict.rs`)
-- [ ] **Remove Expr match arms from `src/eval_call.rs`** (8 refs) — function call dispatch (`src/eval_call.rs`)
-- [ ] **Remove Expr match arms from `src/eval_access.rs`** (4 refs) — property access (`src/eval_access.rs`)
-- [ ] **`just build` passes** — first checkpoint for eval cutover
-
 ### E2-desugar-cutover: Delete desugar.rs + migrate 76 callers
 
 **Depends on:** E1-eval-cutover (eval no longer needs desugared Expr)
@@ -336,6 +319,22 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 - [x] `validate_value` Seq items validation — **FIXED (commit e169762)**: added `validate_seq_items` branch
 - [x] Benchmark claim — **FIXED (commit e169762)**: replaced with factual description
 
+## Lint Findings (from lint-clippy / lint-clippy-allows / lint-stdlib-strict — 2026-05-21)
+
+**Note:** `just lint-clippy` and `just lint-stdlib-strict` were blocked during E1-eval-cutover by `E0425 cannot find value 'expr'` errors in `src/parser.rs`. E1 is now complete (2026-05-21); lint gates should be re-checked.
+
+**Fixes applied (2026-05-21):**
+- [x] `src/eval.rs:804-1656` — dangling old `eval_recursive` body (853 lines) left by partial deletion in E1-eval-cutover; removed
+- [x] `src/builtins_meta.rs:44` — unused import `Spanned`; removed
+- [x] `src/builtins_meta.rs:1913-1940` — orphaned `///` doc comment for deleted `builtin_include`; removed (caused `empty_line_after_doc_comment` lint)
+- [x] `src/ast_convert.rs:674` — `crate::span::Span` (no such module); corrected to `crate::ast::Span`
+
+**Untracked dead code from lint-clippy-allows (needs future sprint):**
+- [ ] `src/type_class.rs:88` — `resolver_injective: bool` has `#[allow(dead_code)]` with note "Wired up when chr-gaps Gap 1 (resolver evaluation) is implemented" — chr-gaps Gap 1 is not tracked in TODO.md; either add a tracking sprint or delete if abandoned
+- [ ] `src/type_unify.rs:2135` — `process_deferred_equalities` has `#[allow(dead_code)]` with note "future TypeStageApp deferral sprint (doc/06-type-inference.md:884)" — this sprint is not tracked in TODO.md; either add a tracking sprint or delete if abandoned
+
+**Justified allows (no action needed):** All `mutable_key_type` suppressions in LSP (Uri HashMap keys), all `disallowed_methods` suppressions with AMBIENT-OK comments, all `too_many_arguments` suppressions on recursive helpers, `large_enum_variant` on CLI Args, `type_complexity` on ThunkInner, all `dead_code` on runtime-v2 bridge scaffolding (`surface_fields.rs`, `lower.rs`, `ast_convert.rs`, `arena.rs`).
+
 ---
 
 ## Known Bugs
@@ -481,4 +480,74 @@ Five operations cap-std's `Dir` supports that tinct does not yet expose.
 **Shared finishing tasks:**
 - [ ] Update `doc/11a-builtins.md` §I/O table and §DirCap Permission Flags for all builtins plus `Symlinkable`, `PosixPermissions`, `ExtendedAttributes` (`doc/11a-builtins.md`)
 - [ ] Corpus tests for each builtin (see individual specs above) (`tests/corpus/eval/builtins/`)
+- [ ] `just test` passes
+
+---
+
+## CHR (Constraint Handling Rules)
+
+Whatif: `doc/whatif/chr-unification.md` (Accepted 2026-05-16). Implementation chain: chr-module-split ✅ → chr-normalization ✅ → chr-class-instance → chr-prelude. Then chr-gaps addresses known implementation gaps found in the 2026-05-17 audit.
+
+### chr-class-instance: Wire ClassDecl into constraint generation and instance lookup
+
+**Whatif:** `chr-unification`
+**Depends on:** chr-normalization
+
+- [ ] **Restructure `Constraint::Class`** — per whatif spec: change `class: String` → `class: ClassDecl` (embed the full ClassDecl, not just its name); remove the separate `fundeps` field (ClassDecl.determines is the single source of truth). Update all Constraint::Class construction sites and match arms across `src/type_unify.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs` (~20 sites). Update `improve_functional_dependency` signature to read FDs from `class.determines` instead of the `fundeps` parameter. **Required by chr-gaps:** the resolver name (`class.resolver`) must be accessible to `improve_functional_dependency` without a global lookup — carrying `ClassDecl` directly provides this. (`src/type_class.rs`, `src/type_unify.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`)
+- [ ] Extract FD info at constraint creation: `typecheck_annot.rs:703` has `fundeps: vec![]` hardcoded for ALL user-defined classes — now moot once `Constraint::Class` carries `ClassDecl` directly (determines comes from `ClassDecl.determines`); verify creation sites pass the correct ClassDecl (`src/typecheck_annot.rs:703`)
+- [ ] Add `InstanceEnv::lookup_mptc(class, determining_types)` method using tuple keys for multi-param classes — current `lookup_arithmetic_instance()` at `type_unify.rs:588-654` only handles hardcoded arithmetic classes; the general path at lines 641-653 returns error "class not supported by MPTC lookup" (`src/type_unify.rs`)
+- [ ] Wire MPTC general lookup into `improve_functional_dependency` — once `lookup_mptc` exists, replace the error stub at `type_unify.rs:641-653` with the general call (`src/type_unify.rs`)
+- [ ] Verify `ClassDecl.determines` is correctly populated during class registration for user-defined classes with `fundeps:` syntax — spot-check in tests (`src/typecheck.rs`)
+- [ ] Corpus tests: user-defined class with FD fires at a constrained call site; MPTC lookup returns correct instance (`tests/corpus/eval/`)
+- [ ] `just test` passes
+
+### chr-prelude: Update prelude class declarations to match CHR design
+
+**Whatif:** `chr-unification`
+**Depends on:** chr-class-instance
+
+- [ ] Rename arithmetic class declarations in prelude: `Add` → `Addable`, `Sub` → `Subtractable`, `Mul` → `Multipliable`, `Div` → `Divisible` (spec names per `chr-unification.md` and `doc/06-type-inference.md`) — update all instance declarations and `intern_class_name` in `src/eval.rs` (`stdlib/prelude.llt:1650-1660`, `src/eval.rs`)
+- [ ] Restore `Equatable`, `Comparable`, `Showable` class/instance declarations in prelude — currently commented out at `stdlib/prelude.llt:1696-1757`; remove `PRELUDE_INSTANCE_CACHE` workaround in `src/imports.rs` once instances load cleanly (`stdlib/prelude.llt`, `src/imports.rs`)
+- [ ] Wire `resolver:` key in `ClassDecl` — link FD resolver to the type-stage function (e.g., `AddResult` for `Addable`); update class registration to extract `resolver:` from the class dict and store in `ClassDecl.resolver` (`src/typecheck.rs`)
+- [ ] `just test` passes
+
+### chr-gaps: Fix critical CHR implementation gaps (from 2026-05-17 audit)
+
+**Whatif:** `chr-unification`
+**Depends on:** chr-prelude
+**Audit source:** mempalace tinct/decisions "CHR MIGRATION AUDIT — GAPS FOUND 2026-05-17"
+
+**Gap 1 — Type-stage resolver evaluation stubbed (CRITICAL):**
+- [ ] In `NormCtxt::normalize()` (`src/type_normalize.rs:145`): when cache miss and resolver is known, call the resolver function from the prelude eval context (look up resolver fn by name in `type_stage_env`, call with type dict arg, convert result back to Type) — currently falls through to "return stuck TypeStageApp" (`src/type_normalize.rs:145`)
+- [ ] Fix `improve_functional_dependency` stub at `src/type_unify.rs:520-525` — call the type-stage resolver instead of returning early; this is why arithmetic FD tests remain blocked (`src/type_unify.rs:520-525`)
+
+**Gap 2 — FD fundep indices lost at constraint creation (CRITICAL):**
+- [ ] (Covered by chr-class-instance `typecheck_annot.rs:703` task above — verify it unblocks Gap 1 testing)
+
+**Gap 3 — MPTC instance lookup general path (PARTIAL):**
+- [ ] (Covered by chr-class-instance `lookup_mptc` task above)
+
+**Gap 4 — `resolver_injective` flag unused:**
+- [ ] Add parser support for `injective:` key in class declarations to set `ClassDecl.resolver_injective` — currently hardcoded `false` everywhere (`src/type_class.rs:88`, `src/typecheck.rs`); note: the `#[allow(dead_code)]` on `resolver_injective` in `type_class.rs:88` will clear once this is wired (`src/type_class.rs`, `src/typecheck.rs`)
+
+- [ ] End-to-end test: `[class [Add a b c] fundeps: [[[a b] c]] resolver: AddResult +: [fn@c [a b]]]` with `[+ 1 2.0]` infers `c = Float` via FD improvement calling `AddResult` type-stage fn (`tests/corpus/eval/`)
+- [ ] `just test` passes
+
+### chr-typestageapp-deferral: Implement TypeStageApp deferral sprint
+
+**Context:** `process_deferred_equalities` in `src/type_unify.rs:2135` has `#[allow(dead_code)]` referencing "future TypeStageApp deferral sprint (doc/06-type-inference.md:884)". This function handles deferred equality constraints that arise when TypeStageApp normalization is stuck (resolver not yet callable). Without deferral, stuck TypeStageApps cause premature unification failures.
+
+- [ ] Read `doc/06-type-inference.md:884` for the TypeStageApp deferral design; confirm it matches `process_deferred_equalities` signature and intent (`doc/06-type-inference.md`)
+- [ ] Wire `process_deferred_equalities` into the inference loop — call it after each unification round when deferred equalities are non-empty (`src/type_unify.rs`, `src/typecheck.rs`)
+- [ ] The `#[allow(dead_code)]` on `process_deferred_equalities` at `src/type_unify.rs:2135` will clear once wired (`src/type_unify.rs:2135`)
+- [ ] `just test` passes
+
+### unknown-elimination: Eliminate `Type::Unknown` from inference output
+
+**Depends on:** chr-class-instance (Type::Variant handling), and HKT support for operator kinds
+**Context:** `Type::Unknown` currently leaks into inferred types for expressions the type checker cannot handle — dual-dispatch builtins, HKT positions, gradual typing escape. Goal: make Unknown a controlled escape hatch, not a default fallback.
+
+- [ ] Audit all sites that produce `Type::Unknown` in `src/typecheck.rs` — classify as: (a) intentional gradual typing escape, (b) missing instance lookup (fixable by chr-class-instance), (c) missing HKT support (deferred) (`src/typecheck.rs`)
+- [ ] Replace (b) sites with proper constraint generation once chr-class-instance lands
+- [ ] Add a lint/test that counts `Type::Unknown` occurrences in inferred output and fails if count exceeds a documented threshold (`tests/`)
 - [ ] `just test` passes

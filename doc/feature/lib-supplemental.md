@@ -689,6 +689,7 @@ collection operations — `map`, `filter`, `reduce`, `first`, `last`,
 (the convention used by Kubernetes, protobuf JSON encoding, and JOSE/JWT).
 
 **No literal syntax.** Bytes values are created via conversion:
+
 - `[str-bytes s]` — from a UTF-8 string
 - `[base64-decode s]` — from a base64 string
 - `[hex-decode s]` — from a hex string
@@ -777,6 +778,7 @@ dispatch changes only.
 ### Standard Library Files
 
 **New files:**
+
 - `stdlib/strings.llt` — `str-contains?`, `pad-left`, `pad-right`,
   `str-repeat`, `str-find`, `str-reverse`
 - `stdlib/math.llt` — `pi`, `e`, `phi` (Float literals), `hypot`,
@@ -791,6 +793,7 @@ dispatch changes only.
 - `stdlib/regex.llt` — see `doc/feature/lib-regex.md`
 
 **Extended files:**
+
 - `stdlib/prelude.llt` — gains `starts-with?`, `ends-with?` (now
   multi-dispatch on `String`/`Bytes`/`Seq`); `slice`, `take`, `drop`,
   `count`, `reverse`, `contains?`, `get`, `nth`, `length` gain

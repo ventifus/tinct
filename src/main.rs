@@ -7,8 +7,8 @@ use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::process;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_with_json_llt, json_to_value,
     literate, materialize, parse, value_to_json, EvalContext, Span, Thunk, MAX_FILE_SIZE,
@@ -1291,7 +1291,8 @@ fn run_eval(
             perms: tinct::DirPerms::full(),
         };
         let pwd_thunk = tinct::Thunk::new_materialized(pwd_value, tinct::Span::origin());
-        env.write().unwrap()
+        env.write()
+            .unwrap()
             .insert("%pwd".to_string(), Arc::new(pwd_thunk));
     }
 
@@ -1319,7 +1320,8 @@ fn run_eval(
             creation_span: tinct::Span::origin(),
         };
         let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
-        env.write().unwrap()
+        env.write()
+            .unwrap()
             .insert("%stdin".to_string(), Arc::new(stdin_thunk));
     }
 
@@ -1346,14 +1348,16 @@ fn run_eval(
             {
                 let libdir_arc = Arc::new(libdir_std);
                 // Clone the Dir for the DirCap value (needs Rc<Dir>)
-                let libdir_dir_for_cap = Rc::new(libdir_arc.open_dir(".").expect("failed to dup libdir"));
+                let libdir_dir_for_cap =
+                    Rc::new(libdir_arc.open_dir(".").expect("failed to dup libdir"));
                 let libdir_value = Value::DirCap {
                     dir: libdir_dir_for_cap,
                     perms: tinct::DirPerms::full(),
                 };
                 let libdir_thunk =
                     tinct::Thunk::new_materialized(libdir_value, tinct::Span::origin());
-                env.write().unwrap()
+                env.write()
+                    .unwrap()
                     .insert("%libdir".to_string(), Arc::new(libdir_thunk));
                 libdir_rc_for_ctx = Some(libdir_arc);
             }
@@ -1391,7 +1395,9 @@ fn run_eval(
             } else {
                 format!("%{name}")
             };
-            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
+            env.write()
+                .unwrap()
+                .insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -1467,7 +1473,8 @@ fn run_eval(
         };
 
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.write().unwrap()
+        env.write()
+            .unwrap()
             .insert("%clock".to_string(), Arc::new(cap_thunk));
     }
 
@@ -1677,7 +1684,9 @@ fn run_eval(
             } else {
                 format!("%{name}")
             };
-            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
+            env.write()
+                .unwrap()
+                .insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -2466,7 +2475,8 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
             .map_err(|_| "mtime is out of i64 range".to_string())?;
         let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.write().unwrap()
+        env.write()
+            .unwrap()
             .insert("%clock".to_string(), Arc::new(cap_thunk));
     }
 
@@ -2495,7 +2505,9 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
             } else {
                 format!("%{name}")
             };
-            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
+            env.write()
+                .unwrap()
+                .insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -2550,14 +2562,15 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         Some(std::collections::HashSet::new()),
     );
 
-    let thunk = eval_file_with_input(&ast.node, Arc::clone(&env), &eval_ctx, None).map_err(|e| {
-        let mut msg = format!("{e}");
-        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
-            msg.push('\n');
-            msg.push_str(&snippet);
-        }
-        msg
-    })?;
+    let thunk =
+        eval_file_with_input(&ast.node, Arc::clone(&env), &eval_ctx, None).map_err(|e| {
+            let mut msg = format!("{e}");
+            if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
+                msg.push('\n');
+                msg.push_str(&snippet);
+            }
+            msg
+        })?;
 
     let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
         let mut msg = format!("{e}");
@@ -2574,7 +2587,12 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     let json_llt_path = find_libdir_path().map(|p| p.join("cli").join("out").join("json.llt"));
 
     let output = if let Some(ref json_llt_path) = json_llt_path {
-        match format_with_json_llt(Arc::clone(&thunk), &eval_ctx, Arc::clone(&env), json_llt_path) {
+        match format_with_json_llt(
+            Arc::clone(&thunk),
+            &eval_ctx,
+            Arc::clone(&env),
+            json_llt_path,
+        ) {
             Ok(Some(compact_json)) => {
                 let parsed: serde_json::Value =
                     serde_json::from_str(&compact_json).map_err(|e| {
@@ -2677,7 +2695,8 @@ fn run_literate_weave(
             .map_err(|_| "mtime is out of i64 range".to_string())?;
         let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.write().unwrap()
+        env.write()
+            .unwrap()
             .insert("%clock".to_string(), Arc::new(cap_thunk));
     }
 
@@ -2706,7 +2725,9 @@ fn run_literate_weave(
             } else {
                 format!("%{name}")
             };
-            env.write().unwrap().insert(scoped_name, Arc::new(cap_thunk));
+            env.write()
+                .unwrap()
+                .insert(scoped_name, Arc::new(cap_thunk));
         }
     }
 

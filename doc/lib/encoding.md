@@ -2,15 +2,11 @@
 
 ### `hex-encode`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `hex-decode`
-
-
 
 ```tinct
 fn@
@@ -18,15 +14,11 @@ fn@
 
 ### `base64-encode`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `base64-decode`
-
-
 
 ```tinct
 fn@
@@ -34,9 +26,6 @@ fn@
 
 ### `mask-apply`
 
-
-
 ```tinct
 fn@
 ```
-

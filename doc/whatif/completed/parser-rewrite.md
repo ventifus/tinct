@@ -172,6 +172,7 @@ annotated bare-word context.
 any allocation, replacing the post-hoc depth check in the current builder.
 
 Static constraints are enforced inline rather than post-hoc:
+
 - Duplicate key detection during `Dict` frame entry collection
 - Variadic param rules during `Fn` frame param collection
 
@@ -224,6 +225,7 @@ The rewritten formatter walks `Spanned<File>` from `ParseOutput` and emits
 canonical tinct source. It does not consume the token stream.
 
 Key properties:
+
 - **Exact structure**: bracket form is known from AST node type, not keyword
   scanning.
 - **Exact comment placement**: leading and trailing comments from

@@ -1,4 +1,5 @@
 # Typing Cluster: Implementation Plan
+
 **State:** Accepted — 2026-05-05
 
 Comprehensive plan for the 12 typing-related whatif proposals and their
@@ -399,6 +400,7 @@ Dict patterns, seq patterns, nested patterns, and path-key patterns:
 ```
 
 Path-key desugar rules:
+
 - `[a.b.c: v]` → `[a: [b: [c: v]]]` — works for any value `v` (leaf or subtree)
 - `[a.b.c: v  a.b.d: w]` → `[a: [b: [c: v  d: w]]]` — shared prefix merged
 - Three granularities: `[a.b.c: v]`, `[a.b: [c: v]]`, `[a: [b: [c: v]]]` all equivalent
@@ -444,11 +446,13 @@ Result: [type [ok: a] [err: Str]]     # union of two record types
 ```
 
 **Desugar rule** (annotation resolution, not a parser pass):
+
 ```
 x@[T1 T2 ...named...]  →  x@[type: [T1 T2]  ...named...]
 x@[T]                  →  x@[type: T]    (single positional unwraps)
 x@T                    →  x@[type: T]    (existing shorthand, unchanged)
 ```
+
 The type resolver handles `type: [T1 T2]` as `Union(T1, T2)`. Existing
 `x@[type: Number  default: 30]` (no positional entries) is unchanged.
 
@@ -666,7 +670,7 @@ found: [match [lookup config "timeout"]
   constructor names registered as closures in the environment
   (`fn(x) → Variant { tag, payload: Some(x) }`). Constructor calls
   like `[Some 42]` are regular function application via `Expr::VarRef`
-  + `Expr::Call`. `Pattern::Constructor` in match. Constructor type
+  - `Expr::Call`. `Pattern::Constructor` in match. Constructor type
   signatures registered in type environment.
 - **Formal model:** Standard labeled injection into a sum type (Pierce
   2002, Chapter 11). `Ok` as `inl : a -> a + b`.
@@ -1159,6 +1163,7 @@ result: [try risky]    # inferred type: [ok: a] | [err: Str]
 ```
 
 The type checker's `infer_match()` function:
+
 1. Infers the scrutinee type (or uses the TypeAssert annotation)
 2. If the type is a `Type::Union`, extracts the variant set
 3. Calls the coverage algorithm (`src/coverage.rs`) with the arm pattern
@@ -1333,6 +1338,7 @@ Each sprint produces tests at three levels:
 
 For type system changes (Phase B), add **negative tests** --- programs
 that should be rejected by the type checker. Verify that:
+
 - Incorrect union membership is caught (`[@Result [x: 1]]`)
 - Constraint violations are caught (`[= fn1 fn2]` with `Equatable` constraint)
 - Non-exhaustive matches produce warnings
@@ -1340,6 +1346,7 @@ that should be rejected by the type checker. Verify that:
 
 For pattern matching (Phase A), add **evaluation tests** --- programs
 that exercise pattern matching at runtime, including:
+
 - Match failure (no arm matches) produces `MatchError`
 - Lazy forcing (only matched keys/fields are forced)
 - Nested pattern binding

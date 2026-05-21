@@ -132,6 +132,7 @@ describe: [fn [val]
 ```
 
 **What's needed for pure-tinct `describe`:**
+
 1. `ast-of` Rust primitive — the only Rust piece required
 2. The one-line fix in `ast_dict.rs` — annotation entry values now recursively serialize instead of falling back to `"<expr at N:M>"` (already applied)
 3. Everything else (`match`, `get-or`, `join`, `map`, `str`, `has?`, `find-first-or`, `null?`) is already in prelude
@@ -162,6 +163,7 @@ pub struct FnAnnotation {
 ```
 
 Wrapped as `Option<Box<FnAnnotation>>` on `Value::Function` for zero overhead on unannotated functions:
+
 ```rust
 pub annotation: Option<Box<FnAnnotation>>,
 ```
@@ -195,6 +197,7 @@ For other values: `[type: type-of(val)]` with a minimal description.
 ## What This Unlocks
 
 **Docgen without string parsing:**
+
 ```tinct
 # scripts/docgen.llt — core logic, using only prelude primitives:
 [process-file: [fn [path]
@@ -204,6 +207,7 @@ For other values: `[type: type-of(val)]` with a minimal description.
 ```
 
 **REPL `:describe` command:**
+
 ```
 tinct> :describe map
 map — fn@[f b] [fn@b [a]  [f a]]
@@ -228,6 +232,7 @@ Parameter names come from `Value::Function.params` (already carry `Param.annotat
 **Annotated vs inferred type in hover** — `describe` returns what the user *wrote* (the annotation); the type map holds what the type checker *inferred*. For hover on an over-broad annotation, the LSP shows both: "Annotated `@Number` — inferred as `Int`". `describe` supplies the annotation side; the type map supplies the inferred side. This is the `unknown-diagnostics` signal applied to hover.
 
 **Builtin introspection** — `describe` on a builtin currently returns only its name and type tag. Full type signature introspection for builtins requires resolving the open question of how `ast-of` accesses `TypeEnv::with_builtins()` (not yet in `EvalContext`):
+
 ```tinct
 [describe open]
 # → [type: "builtin"  name: "open"]   # current minimal form
@@ -247,6 +252,7 @@ io — module (17 exports)
 ```
 
 **Metaprogramming** — `source-of` returns the body AST dict (not a string); pass to a formatter for display:
+
 ```tinct
 debug-fn: [fn [f args]
   [compact-fmt: [include %libdir "formatter/compact.llt"]]
@@ -255,6 +261,7 @@ debug-fn: [fn [f args]
 ```
 
 **Testing helpers:**
+
 ```tinct
 assert-documented: [fn [f name]
   [if [= "" [get-or [describe f] "doc" ""]]
@@ -263,6 +270,7 @@ assert-documented: [fn [f name]
 ```
 
 **Round-trip — two paths:**
+
 ```tinct
 # In-memory (no file): ast-of → eval-ast
 # Works for functions that only close over stdlib names
@@ -288,6 +296,7 @@ assert-documented: [fn [f name]
 Since `Value::Function` stores its body AST and `FnAnnotation`, the formatters can format a function that was never written in a source file — one built programmatically by a macro or constructed via `apply fn`. Parsing is no longer a prerequisite for formatting.
 
 **Literate source reconstruction:**
+
 ```tinct
 [io: [include %libdir "io.llt"]]
 [pretty-fmt: [include %libdir "formatter/pretty.llt"]]
@@ -418,6 +427,7 @@ All `[include %libdir "formatter/compact.llt"]` references in this whatif are co
 **Note on dynamic typing:** `ast-of` returns `Unknown` from the type checker's perspective — field accesses like `ast.kind`, `ann.entries` are on an `Unknown`-typed value and cannot be statically verified. The reflection layer is inherently dynamically typed. This is intentional and consistent with how reflection works in other languages (Python `inspect`, Common Lisp `describe`). Tinct's gradual typing allows this: `@Unknown` opts out of checking for the reflection helpers.
 
 **Open questions before implementation:**
+
 - ~~Builtin introspection~~ **Resolved:** extract a shared `builtin_type_for(name)` static table into a new module; both `standard_builtins()` and `TypeEnv::with_builtins()` read from it; `ast-of` calls it directly — no EvalContext change, no duplication.
 - ~~`source_file` threading~~ **Resolved:** add `current_file: Option<PathBuf>` to `EvalConfig`; repurpose the existing `with_base_dir_and_path` stub at `src/eval.rs:255` (currently ignores its `_base_dir_path` arg — verified) to set this field; change `builtin_include` at `src/builtins_meta.rs:1152` from `ctx.with_base_dir(included_dir)` to `ctx.with_base_dir_and_path(included_dir, Some(file_path))` — the call site must change, not just the stub; `eval_fn` reads `ctx.config.current_file.clone()`. This information exists in the include context but must be threaded into `EvalContext`.
 - ~~Round-trip eval~~ **Resolved:** `eval-ast` already exists (`src/builtins_meta.rs:377`, registered at `src/builtins.rs:1093`); it takes an AST dict and evaluates it in `stdlib_env`. In-memory round-trip: `[eval-ast [ast-of f]]`. File persistence: `[format-pretty [ast-of f]]` written to a `DirCap` file, then `[include %doc "file.llt"]` to read back. No `eval-llt` string-eval primitive needed. Caveat: `eval-ast` evaluates in `stdlib_env`, so free variables beyond stdlib won't resolve — correct behavior, since functions worth serializing are pure/stdlib-only.

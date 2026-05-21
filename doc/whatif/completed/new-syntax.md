@@ -258,7 +258,7 @@ normalizes `$x` to `x`, but both forms are always accepted.
 
 **No ambiguity between key and head positions.** The `:` after a
 token is what distinguishes key context from head context.
-`$key:` (followed by `:`) = computed key. `$key ` (followed by
+`$key:` (followed by `:`) = computed key. `$key` (followed by
 whitespace or another token) = data head.
 
 ### Data Sequences with `$` Escape
@@ -779,6 +779,7 @@ structured data.
 `Identifier` tokens are not yet access-context triggers.
 
 **Proposed:**
+
 - Bare words → `Identifier` tokens (references in value position)
 - `$word` → `EscapedRef` tokens (reference with disambiguation
   marker, used in head and key positions)
@@ -803,6 +804,7 @@ value.
 
 **Proposed:** The bracket interpretation rules (§Implied Call) add
 head-position analysis:
+
 1. Keyword → special form (unchanged)
 2. Keyed entry → dict (unchanged)
 3. `Identifier` in head → `Call` node
@@ -834,6 +836,7 @@ binding uses `$` (from `$$`).
 
 **Proposed:** Same resolution logic, applied to more `VarRef`
 nodes. `eval_file_with_input()` changes:
+
 - Pipeline binding name changes from `$` to `%`
 - Named sections accumulate `%name` bindings in pipeline scope
 - Multi-file pipeline: named sections (`Σ`) scoped per-file,
@@ -913,6 +916,7 @@ and implied call — it works with current `$`-sigil syntax.
 ```
 
 Implementation:
+
 - Lexer: add `%` to valid identifier characters
 - Parser: parse `--- %name` and `--- %name@Type` section headers,
   `expects:` pragma

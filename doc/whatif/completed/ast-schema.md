@@ -104,6 +104,7 @@ Each entry in `entries` is itself a dict:
 ```
 
 **Comment fields on entries:**
+
 - `leading-comments:` — a `Seq` of comment strings (without `#`) for comments that appeared on lines before this entry. **Absent** (field omitted) when there are no leading comments.
 - `trailing-comment:` — a single string for an inline comment on the same line as the entry (e.g., `port: 8080  # default`). **Absent** when none.
 - `blank-before: true` — a blank line appeared before this entry in source. The formatter uses this to preserve the user's intentional visual grouping. `false` when no blank line preceded the entry.
@@ -228,6 +229,7 @@ pub fn ast_to_dict_expr(expr: &Expr, opts: AstToDictOpts) -> Value
 ```
 
 Serializes a **single expression** node to a tinct dict. Called by:
+
 - The `[quote expr]` evaluator: quotes the subexpression without producing a `File` root node
 - `ast_to_dict` internally: called per-expression while walking `Document.expressions`
 
@@ -240,10 +242,12 @@ pub fn dict_to_ast(v: &Value) -> Result<Expr, AstError>
 ```
 
 Validates and converts a tinct dict back to an `Expr`. Used by:
+
 - The macro evaluator: macro output `Value` → evaluatable `Expr`
 - Future: `[eval-ast node]` builtin for runtime code generation
 
 Validation rules:
+
 - `type:` key must be a known string
 - Required fields must be present and of the right shape
 - `span:` is optional — absent nodes get a synthetic zero span
@@ -292,6 +296,7 @@ Validation rules:
 ### Phase 1: Schema + `ast_to_dict` (minimal mode)
 
 Implement `ast_to_dict(None, None)` — no source info, no comments. This unblocks:
+
 - `tinct fmt --oneline` / `--nospaces` / `--minimize` (compact formatter in tinct)
 - `[quote expr]` (quasiquoting Phase 1)
 
@@ -301,6 +306,7 @@ Implement `ast_to_dict(None, None)` — no source info, no comments. This unbloc
 ### Phase 2: Source Info + Comments
 
 Add `source: Some(...)` and `comments: Some(...)` support to `ast_to_dict`. This unblocks:
+
 - `tinct fmt` full formatter (width-based layout decisions in tinct, comment preservation)
 
 - `src/ast_dict.rs`: `bare:` flag via source span comparison; `leading-comments:` embedding from `leading_comments` map
@@ -309,6 +315,7 @@ Add `source: Some(...)` and `comments: Some(...)` support to `ast_to_dict`. This
 ### Phase 3: `dict_to_ast`
 
 Implement `dict_to_ast`. This unblocks:
+
 - `[defmacro]` (macros Phase 1)
 - `[eval-ast node]` builtin (runtime code generation)
 

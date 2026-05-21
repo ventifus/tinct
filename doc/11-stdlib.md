@@ -150,12 +150,14 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `flatten` | **Materializing** — must inspect values to check if they are lists |
 
 **Arithmetic & comparison** (materializing — must evaluate operands):
+
 - `+`, `-`, `*` (auto-promote: Int op Int → Int, mixed → Float)
 - `/` (always returns Float), `quot`, `mod` (Int only, return Int; both are prelude functions)
 - `=`, `<`, `>`, `<=`, `>=` (work on Int, Float, String, Bool; cross-type Int/Float comparison allowed). `$=` returns `false` for Dict, Function, and Builtin values — there is no structural/deep equality. Structural/deep equality of dicts is intentionally not provided (materializing nested fields would violate lazy evaluation, and pointer equality would be inconsistent with value semantics).
 - `to-int`, `to-float`, `floor`, `ceil`, `round` (numeric conversions)
 
 **Strings** (materializing — must evaluate arguments):
+
 - `str` (exact concat), `words` (split by space, filter empties), `join` (with separator)
 - `split`, `replace`
 - `upper`, `lower`, `trim`, `unindent` (`upper`/`lower` are stdlib functions in `strings.llt` built on `str-map-chars` + `str-to-upper-char`/`str-to-lower-char`)
@@ -164,11 +166,13 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 - `regex-match?` — test if a regex matches anywhere in a string (Rust builtin, uses `regex` crate)
 
 **Composition** (structural — builds function pipelines, no values materialized):
+
 - `->` (threading)
 - `compose`
 - `apply` — call function with dict spread (Key::String → named args, Key::Int sorted → positional args)
 
 **Sequences** (lazy computation -- produce `Seq` values):
+
 - `range`, `repeat`, `cycle`, `iterate`, `unfold` -- constructors (finite or infinite)
 - `seq` -- low-level cons: `[call $seq $head $tail-thunk]`
 - `collect` -- materializes a Seq into a dict with integer keys
@@ -187,6 +191,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `try`, `try-or` | **Materializing** — materializes body, catches exceptions. `$try` returns `[Ok value]` on success or `[Err message]` on failure (ADT variants, destructured with `match`). |
 
 **Materialization** (runtime-supported):
+
 - `eval` — recursively materializes all thunks (runtime-supported, may diverge on infinite structures)
 - `from-json` — parses JSON string into Tinct dict (pure function, safe on untrusted input)
 
@@ -233,11 +238,11 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Strings | — | `str`, `split`, `replace`, `trim`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?`, `join` | Strings are opaque; all content operations require Rust. `upper`/`lower` are stdlib functions in `strings.llt`. `join` uses an O(n) string builder (dual-dispatch Dict/Seq). |
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
-| Evaluation control | — | `eval`, `raise`, `try`, `apply` | `eval` deep-materializes; `raise` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). The prelude exports `error` as an alias for `raise`. |
+| Evaluation control | — | `deep-materialize`, `materialize`, `raise`, `try`, `apply` | `deep-materialize` recursively materializes all thunks; `materialize` forces to WHNF; `raise` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). The prelude exports `error` as an alias for `raise`. |
 | Type introspection | — | `type-of`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. (`num?`, `record?`, `map?` are LLT stdlib aliases derived from these primitives.) |
 | Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `concat` (no stable aliases needed). |
 | I/O | — | `from-json` | serde_json deserialization. |
-| Include primitives | — | `load`, `expand`, `eval-ast`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` | Thin Rust primitives for implementing pure-LLT `include`. `load` reads files; `expand` runs macro expansion; `eval-ast` evaluates AST; `blake3` hashes content; `cap-identity` extracts DirCap identity; `include-cache-get`/`include-cache-put` manage the include cache. The prelude implements `include` as a pure-LLT function using these primitives. |
+| Include primitives | — | `load`, `expand`, `eval`, `eval-types`, `eval-ast`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` | Thin Rust primitives for the self-hosted include pipeline. `load` parses source text; `expand` runs macro expansion; `eval` evaluates document expressions in the runtime env; `eval-types` evaluates in the type-stage env; `eval-ast` evaluates a single AST dict; `blake3` hashes content; `cap-identity` extracts DirCap identity; `include-cache-get`/`include-cache-put` manage the content-addressed include cache. Prelude implements `include`, `eval-file`, and the document pipeline using these primitives. |
 
 **Tinct-implemented stdlib (wrappers and derived functions):**
 
@@ -355,6 +360,7 @@ The stdlib follows four organizing principles:
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
 **Stdlib categories:**
+
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
 - **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
@@ -1645,11 +1651,13 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 Individual stdlib modules have detailed documentation in `doc/lib/`. These docs are generated from `@[doc: "..."]` annotations in `stdlib/` source files:
 
 **Core modules:**
+
 - [prelude](lib/prelude.md) — Always-available functions in `stdlib/prelude.llt`
 - [numeric](lib/numeric.md) — Numeric utilities and constants
 - [path](lib/path.md) — Filesystem path manipulation
 
 **Optional modules** (load with `[include libdir "<module>.llt"]`):
+
 - [cli-in-json](lib/cli-in-json.md), [cli-in-toml-lite](lib/cli-in-toml-lite.md) — CLI input parsers
 - [cli-out-csv](lib/cli-out-csv.md), [cli-out-env](lib/cli-out-env.md), [cli-out-json](lib/cli-out-json.md), [cli-out-toml](lib/cli-out-toml.md), [cli-out-yaml](lib/cli-out-yaml.md) — CLI output formatters
 - [datetime](lib/datetime.md) — Timestamp and duration utilities

@@ -2,9 +2,6 @@
 
 ### `parse-toml-lite`
 
-
-
 ```tinct
 (value)
 ```
-

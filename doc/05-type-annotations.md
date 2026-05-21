@@ -23,6 +23,7 @@ type errors:
 ```
 
 Two forms:
+
 - **`name@Type`** — annotation on a binding or parameter
 - **`[@Type expr]`** — type assertion on an expression
 
@@ -68,6 +69,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 ```
 
 **Type conventions:**
+
 - Uppercase first letter: concrete types (`Int`, `String`, `Bool`, `Null`, `Any`)
 - Lowercase first letter: type variables (`a`, `b`, `k`, `v`)
 - `String` / `Str`: `String` is the user-facing annotation name; `Str` is the internal `Type::Str` variant. Use `String` in annotations; `Str` appears in error messages.
@@ -131,6 +133,7 @@ type errors:
 ```
 
 **Bare type constructors** produce unconstrained versions:
+
 - `@Seq` → `Seq(Unknown)` — sequence with unconstrained element type
 - `@Map` → `Map(Unknown, Unknown)` — map with unconstrained key and value
 - `@Dict` → open record (fresh row variable) — any dict structure
@@ -243,6 +246,7 @@ The double-bracket form is equivalent to the single-bracket form using `each` or
 | `@[[without A]]` | negation; no `each`-based equivalent |
 
 **Subtyping rules (BAS):**
+
 - `T <: Union(T, U)` — injection
 - `Union(T, U) <: V` iff `T <: V` and `U <: V` — elimination
 - `Intersection(T, U) <: T` and `Intersection(T, U) <: U` — projection
@@ -365,6 +369,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 ```
 
 **TypeVar scoping rules:**
+
 1. `bind: [a b c]` registers `a`, `b`, `c` as fresh TypeVars in `ann_mapping`
 2. `return:`, `type:`, and parameter `@` annotations reference names from `ann_mapping`
 3. A name in `return:` or a parameter annotation that is not in `bind:` is a type error
@@ -559,6 +564,7 @@ type errors:
 ```
 
 **Isolation.** The type-stage Env is separate from the runtime Env. Type-stage functions cannot reference runtime bindings. The type-stage Env is built from:
+
 1. Prelude `--- stage: type` section (including built-in type combinators)
 2. Program `--- stage: type` sections in source order
 
@@ -596,6 +602,7 @@ The prelude `--- stage: type` section defines all built-in type combinators:
 ```
 
 **Name resolution order** in type-stage Env:
+
 1. Type-stage bindings (`or`, `each`, user-defined)
 2. Type alias table (aliases declared with `[type ...]`)
 3. Primitive named types (`Int`, `String`, `Bool`, `Null`, `Any`, `Unknown`)
@@ -621,6 +628,7 @@ error: @ annotations outside type-assert or param contexts not yet supported
 ```
 
 **Disambiguation of bracket annotation contents:**
+
 - Any keyed entry matching a metadata key (`bind:`, `return:`, `constraint:`, `kinds:`, `doc:`) → metadata dict (not a type expression)
 - All-keyed with unrecognized keys → record type
 - Mixed positional and keyed with recognized metadata keys → type error
@@ -952,6 +960,7 @@ Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-g
 **TypeVar levels.** Each TypeVar carries an integer level (`TypeVar(String, u32)`) representing the nesting depth of its binding scope. Let-generalization generalizes TypeVars whose level exceeds the current enclosing level — preventing TypeVars from escaping their scope.
 
 **Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
+
 1. **Pass 0:** Resolve key names (literal keys extracted; computed keys resolved via type inference in parent scope)
 2. **Pass 1:** Bind all non-alias key names to fresh TypeVars at the current level
 3. **Pass 2:** Register type aliases sequentially (each alias sees previously registered siblings)

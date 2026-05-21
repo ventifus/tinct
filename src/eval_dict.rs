@@ -251,7 +251,8 @@ pub(crate) fn eval_dict(
         // overwrite the constructor with a self-referential unevaluated thunk.
         if let Key::String(ref name) = key {
             dict_env
-                .write().unwrap()
+                .write()
+                .unwrap()
                 .insert(name.clone(), Arc::clone(&thunk));
         }
 
@@ -273,7 +274,8 @@ pub(crate) fn eval_dict(
         // incremented only for Expr::Str | Expr::Annotated key entries).
         if is_static_key {
             ctx.env_arena
-                .lock().unwrap()
+                .lock()
+                .unwrap()
                 .fill_letrec_slot(env_id, slot_idx, thunk_id);
             slot_idx += 1;
         }

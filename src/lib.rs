@@ -82,7 +82,7 @@ pub(crate) mod lower;
 // runtime-v2: surface AST field extraction for match dispatch and dot-access.
 pub(crate) mod surface_fields;
 // runtime-v2: bridge converter from old File/Expr AST to SurfaceProgram (transitional).
-pub(crate) mod ast_convert;
+pub mod ast_convert;
 // Literate tinct: extract and evaluate tinct code blocks from Markdown files.
 pub mod literate;
 // REPL (Read-Eval-Print Loop).
@@ -171,8 +171,12 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(
+        ast_convert::surface_program_to_file(&file.program),
+        no_fs,
+        &expand_base_dir,
+    )
+    .map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -280,7 +284,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
                     perms: value::DirPerms::full(),
                 };
                 let libdir_thunk = Arc::new(Thunk::new_materialized(libdir_val, Span::origin()));
-                env.write().unwrap().insert("%libdir".to_string(), libdir_thunk);
+                env.write()
+                    .unwrap()
+                    .insert("%libdir".to_string(), libdir_thunk);
             }
         }
     }
@@ -319,8 +325,12 @@ pub fn eval_source_with_cap_net(
     #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), no_fs, &expand_base_dir).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(
+        ast_convert::surface_program_to_file(&file.program),
+        no_fs,
+        &expand_base_dir,
+    )
+    .map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     let provenance = expand_result.provenance;
 
@@ -455,8 +465,12 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), false, &expand_base_dir).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(
+        ast_convert::surface_program_to_file(&file.program),
+        false,
+        &expand_base_dir,
+    )
+    .map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
     desugar::desugar_file(&mut file.node);
@@ -494,8 +508,12 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
-    let expand_result =
-        expand::expand_macros(ast_convert::surface_program_to_file(&file.program), false, &expand_base_dir).map_err(|e| format!("{e}"))?;
+    let expand_result = expand::expand_macros(
+        ast_convert::surface_program_to_file(&file.program),
+        false,
+        &expand_base_dir,
+    )
+    .map_err(|e| format!("{e}"))?;
     let mut file = expand_result.file;
     desugar::desugar_file(&mut file.node);
     resolve::resolve_file(&file.node);
@@ -1393,7 +1411,7 @@ mod tests {
         let f = Value::Function {
             params: Rc::new(vec![]),
             body: Rc::new(ast::Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
-            env: Rc::new(RefCell::new(Environment::new())),
+            env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
         let err = value_to_json(&f, &test_ctx()).unwrap_err();
@@ -1510,8 +1528,8 @@ mod tests {
                 .expect("json_to_value failed")
         });
 
-        let thunk = eval::eval_file_with_input(&file.node, env, &ctx, initial_input)
-            .expect("eval failed");
+        let thunk =
+            eval::eval_file_with_input(&file.node, env, &ctx, initial_input).expect("eval failed");
         let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
         value_to_json(&val, &ctx).expect("value_to_json failed")
     }
@@ -1833,8 +1851,12 @@ mod tests {
         let parsed = parse(input).expect("parse failed");
         let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("open cwd for test macro expansion");
-        let expand_result = expand::expand_macros(ast_convert::surface_program_to_file(&parsed.program), false, &expand_base_dir)
-            .expect("macro expansion failed");
+        let expand_result = expand::expand_macros(
+            ast_convert::surface_program_to_file(&parsed.program),
+            false,
+            &expand_base_dir,
+        )
+        .expect("macro expansion failed");
         let mut file = expand_result.file;
         desugar::desugar_file(&mut file.node);
         resolve::resolve_file(&file.node);

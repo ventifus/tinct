@@ -7,6 +7,7 @@ parser: stack overflow risk on deeply-nested input, opaque error messages, and
 a formatter that operated on token streams with AST-level heuristics.
 
 Key improvements:
+
 1. **Security**: crafted deeply-nested input cannot reach SIGSEGV — depth is
    bounded by heap (`Vec<StackFrame>` length), never by the native stack.
 2. **Error quality**: the parser tracks state explicitly, enabling messages like
@@ -73,6 +74,7 @@ the annotation separator in annotated bare-word context.
 allocation, replacing the post-hoc depth check in the previous builder.
 
 Static constraints are enforced inline:
+
 - Duplicate key detection during `Dict` frame entry collection
 - Variadic param rules during `Fn` frame param collection
 
@@ -122,6 +124,7 @@ The rewritten formatter walks `Spanned<File>` from `ParseOutput` and emits
 canonical tinct source. It does not consume the token stream.
 
 Key properties:
+
 - **Exact structure**: bracket form is known from AST node type, not keyword
   scanning.
 - **Exact comment placement**: leading and trailing comments from

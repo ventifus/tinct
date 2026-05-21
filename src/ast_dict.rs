@@ -201,7 +201,9 @@ fn document_to_dict(
             if !comments.is_empty() {
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
-                    .map(|c| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span))))
+                    .map(|c| {
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span)))
+                    })
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
@@ -498,7 +500,9 @@ fn expr_to_thunk_id(
                 // Store params as a dict with integer keys (like other lists)
                 let params_thunk_ids: Vec<ThunkId> = params
                     .iter()
-                    .map(|p| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span))))
+                    .map(|p| {
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span)))
+                    })
                     .collect();
                 dict.insert(
                     Key::String("params".into()),
@@ -1197,7 +1201,9 @@ fn entry_to_thunk_id(
             if !comments.is_empty() {
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
-                    .map(|c| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span))))
+                    .map(|c| {
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span)))
+                    })
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
@@ -1296,7 +1302,10 @@ fn annotation_to_thunk_id(
         Annotation::Simple(name) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("simple"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("simple"),
+                    span,
+                ))),
             );
             dict.insert(
                 Key::String("value".into()),
@@ -2040,7 +2049,10 @@ fn is_empty_dict(val: &Value) -> bool {
     matches!(val, Value::Dict(d) if d.is_empty())
 }
 
-fn extract_span(dict: &IndexMap<Key, ThunkId>, ctx: &Arc<crate::eval::EvalContext>) -> Option<Span> {
+fn extract_span(
+    dict: &IndexMap<Key, ThunkId>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Option<Span> {
     let span_thunk_id = dict.get(&Key::String("span".into()))?;
     let span_thunk = ctx.get_thunk(*span_thunk_id);
     let span_val = span_thunk.try_get_materialized()?;
@@ -2531,7 +2543,12 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(
+            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
+            &opts,
+            &ctx,
+        )
+        .unwrap();
 
         // Navigate to the first document's first expression (the dict)
         match thunk.try_get_materialized() {
@@ -2624,7 +2641,12 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(
+            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
+            &opts,
+            &ctx,
+        )
+        .unwrap();
 
         // Navigate to the key and check bare: false
         match thunk.try_get_materialized() {
@@ -2719,7 +2741,12 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(
+            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
+            &opts,
+            &ctx,
+        )
+        .unwrap();
 
         // Navigate to the entry and check for leading-comments
         match thunk.try_get_materialized() {
@@ -2834,7 +2861,12 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(
+            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
+            &opts,
+            &ctx,
+        )
+        .unwrap();
 
         // Navigate to the second entry and check blank-before: true
         match thunk.try_get_materialized() {
@@ -2920,7 +2952,12 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).unwrap();
+        let thunk = ast_to_dict(
+            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
+            &opts,
+            &ctx,
+        )
+        .unwrap();
 
         // Navigate to the key and check bare: false (default when source is None)
         match thunk.try_get_materialized() {

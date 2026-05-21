@@ -3,11 +3,13 @@
 ### 13.1 Simple Dict
 
 **Input:**
+
 ```tinct
 [name: "Alice"  age: 30]
 ```
 
 **AST:**
+
 ```json
 Dict([
     Entry { key: Some(Str("name")), value: Str("Alice") },
@@ -20,11 +22,13 @@ Note: Entries with explicit `key:` syntax produce `Entry { key: Some(...), value
 ### 13.2 Simple List
 
 **Input:**
+
 ```tinct
 ["a" "b" "c"]
 ```
 
 **AST:**
+
 ```json
 Dict([
     Entry { key: None, value: Str("a") },
@@ -38,6 +42,7 @@ Note: Unkeyed entries produce `Entry { key: None, value: ... }` nodes. The evalu
 ### 13.3 Nested Dict
 
 **Input:**
+
 ```tinct
 [
     database: [host: "localhost"  port: 5432]
@@ -46,6 +51,7 @@ Note: Unkeyed entries produce `Entry { key: None, value: ... }` nodes. The evalu
 ```
 
 **AST:**
+
 ```json
 Dict([
     Entry {
@@ -69,11 +75,13 @@ Note: Nested dicts are simply `Dict` expressions appearing as entry values. Letr
 ### 13.4 Function Call with Named Args
 
 **Input:**
+
 ```tinct
 [fetch "https://example.com" timeout: 60 retries: 3]
 ```
 
 **AST:**
+
 ```json
 Call {
     func: VarRef("fetch"),
@@ -90,11 +98,13 @@ Note: Named arguments appear in a separate `named_args` list in the Call AST nod
 ### 13.5 Function Definition with Annotations
 
 **Input:**
+
 ```tinct
 [fn@Number [x@Number  y@[type: Number  default: 0]] [+ x y]]
 ```
 
 **AST:**
+
 ```json
 Fn {
     return_ann: Some(Annotation::Simple("Number")),
@@ -118,6 +128,7 @@ Note: Parameter annotations can be simple type names (`Simple("Number")`) or pro
 ### 13.6 Pipeline with `_` Shorthand
 
 **Input:**
+
 ```tinct
 [-> data.users
     [filter [> _.age 30] _]
@@ -128,6 +139,7 @@ Note: Parameter annotations can be simple type names (`Simple("Number")`) or pro
 Note: `_` desugaring is a **pre-typecheck AST transformation**, not a parser or evaluator concern. The parser produces the AST as-is — `_` is just `VarRef("_")`. A desugaring pass (`desugar_file()` and `desugar_expr()`) then rewrites `_`-containing expressions into implicit lambdas before type checking and evaluation. See doc/04-functions.md §`_` Desugaring for the formal rewrite rules and scope boundary definition.
 
 **AST:**
+
 ```json
 Call {
     func: VarRef("->"),
@@ -167,11 +179,13 @@ Note: After desugaring, `_`-containing expressions become `Fn { params: [Param {
 ### 13.7 Access Chains
 
 **Input:**
+
 ```tinct
 [get 0 config.services].host
 ```
 
 **AST:**
+
 ```json
 DotAccess {
     expr: Call {
@@ -187,11 +201,13 @@ Note: Bracket access is not supported. The old `config.services[0].host` syntax 
 ### 13.8 Subsequence Operations (replaces Range Access)
 
 **Input:**
+
 ```tinct
 [slice data 2 5]
 ```
 
 **AST:**
+
 ```json
 Call {
     func: VarRef("slice"),
@@ -204,11 +220,13 @@ Note: Range access syntax (`data[2..5]`) is not supported. Use the `slice`, `tak
 ### 13.9 Type Assertion
 
 **Input:**
+
 ```tinct
 [@Number expr]
 ```
 
 **AST:**
+
 ```json
 TypeAssert {
     annotation: Annotation::Simple("Number"),
@@ -221,11 +239,13 @@ Note: `TypeAssert` nodes materialize the inner expression and check its type. Ty
 ### 13.10 Type Assertion with Fallback
 
 **Input:**
+
 ```tinct
 [@[type: Number  default: 0] config.port]
 ```
 
 **AST:**
+
 ```json
 TypeAssert {
     annotation: Annotation::PropertyDict([
@@ -241,11 +261,13 @@ Note: Property dict annotations allow fallback defaults. If type checking fails,
 ### 13.11 Type Alias
 
 **Input:**
+
 ```tinct
 Mapper: [type [Fn@b [a]]]
 ```
 
 **AST:**
+
 ```json
 Entry {
     key: Some(Str("Mapper")),
@@ -263,6 +285,7 @@ The type checker interprets `Annotated { name: "Fn", ... }` as a function type c
 ### 13.12 Comments
 
 **Input:**
+
 ```tinct
 [
     # Configuration
@@ -272,6 +295,7 @@ The type checker interprets `Annotated { name: "Fn", ... }` as a function type c
 ```
 
 **AST:**
+
 ```json
 Dict([
     Entry { key: Some(Str("host")), value: Str("localhost") },
@@ -284,11 +308,13 @@ Note: Comments are discarded during tokenization and do not appear in the AST.
 ### 13.13 Variadic Function
 
 **Input:**
+
 ```tinct
 [fn [f ...args] [map f args]]
 ```
 
 **AST:**
+
 ```json
 Fn {
     return_ann: None,
@@ -309,11 +335,13 @@ Note: Variadic parameters (marked with `...`) collect all remaining positional a
 ### 13.14 Mixed Positional and Named Entries
 
 **Input:**
+
 ```tinct
 [f x y timeout: 60]
 ```
 
 **AST:**
+
 ```json
 Call {
     func: VarRef("f"),
@@ -329,6 +357,7 @@ Note: Call syntax distinguishes positional (`args`) and named (`named_args`) arg
 ### 13.15 Multi-Expression Document
 
 **Input:**
+
 ```tinct
 [x: 10]
 
@@ -336,6 +365,7 @@ Note: Call syntax distinguishes positional (`args`) and named (`named_args`) arg
 ```
 
 **AST:**
+
 ```json
 File {
     documents: [
@@ -354,6 +384,7 @@ Note: Multiple top-level expressions in a document form a scope chain: each expr
 ### 13.16 Multi-Document File
 
 **Input:**
+
 ```tinct
 [data: [name: "Alice"  age: 30]]
 ---
@@ -361,6 +392,7 @@ Note: Multiple top-level expressions in a document form a scope chain: each expr
 ```
 
 **AST:**
+
 ```json
 File {
     documents: [

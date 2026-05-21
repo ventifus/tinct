@@ -143,6 +143,7 @@ app-router: [fn [let line@LogLine]
       [case [let _: Error] [partial write-handle %stderr]]   # other errors → stderr
       [case [let _]        [partial write-handle log-file]]]]]  # rest → log file
 ```
+
 ```
 
 **`with-log-handler` — scope-local logger rebinding (future):**
@@ -215,17 +216,20 @@ make-syslog-sink: [fn [let sock host@Str port@Port]
 ```
 
 Console stdout (`=== out`):
+
 ```
 INFO  server starting port=8080 workers=4
 WARN  config missing, using default key=timeout default=30
 ```
 
 Console stderr:
+
 ```
 ERROR database connection failed host=db.internal err=timeout
 ```
 
 Syslog UDP packets to `syslog.internal:514`:
+
 ```
 <14>May 17 14:23:01 myapp: server starting port=8080 workers=4
 <12>May 17 14:23:01 myapp: config missing, using default key=timeout default=30
@@ -233,6 +237,7 @@ Syslog UDP packets to `syslog.internal:514`:
 ```
 
 Design points:
+
 - **Library provides building blocks, app assembles the stack.** `syslog.llt` never decides a host, port, facility, or appname.
 - **Capabilities are explicit and app-owned.** `syslog-sock`, `%net-cap`, `%stderr` are all in `myapp.llt`'s dict. The factories receive what they need as parameters.
 - **Policy is app logic.** The fan-out routing, the level split between stdout/stderr, whether syslog gets Debug entries — all app decisions, all in one place.
@@ -259,14 +264,17 @@ additive: log calls and the final result both appear in `=== out`. `stdlib/log.l
 depends on `remove-emitted-flag`.
 
 **Redirect mechanism.** In a running application (not literate mode), where does `emit` output go when used for logging? Currently stdout. Options for log filtering/routing:
+
 - A `with-log-handler` combinator: `[with-log-handler handler body]` — handler receives each `emit` call
 - A `LogCap` capability controlling the log destination
 - CLI flags like `--log-output path`
 
 **Log level filtering.** How does a program suppress DEBUG messages in production? The level is in the formatted string currently. A structured entry form (Dict) would enable runtime filtering:
+
 ```tinct
 [log [level: "debug"  msg: "computing"  x: val]]
 ```
+
 But this requires the runtime to understand the `level:` key, or a `with-log-handler` to filter.
 
 ## Prerequisites

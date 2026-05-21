@@ -1,4 +1,5 @@
 # What If: Nominal Variants for tinct
+
 **State:** Accepted — 2026-05-05
 **Replaces:** [`type-variant.md`](../type-variant.md) — nominal variants subsume the need for a new `Type::Variant`
 
@@ -153,6 +154,7 @@ literals evaluate in value position (`ok` → `"ok"`) but for nominal unit varia
 ```
 
 The structural vs nominal distinction in patterns is visually unambiguous:
+
 - `[lowercase: binding]` — dict field pattern (key, colon, binding)
 - `[Uppercase binding]` — constructor pattern (tag, space, binding, no colon)
 - `lowercase` — string literal match
@@ -331,6 +333,7 @@ Exhaustiveness (Phase 2) checks that nominal constructor arms cover all construc
 
 **Proposed:** When a `[type ...]` declaration with nominal entries is evaluated,
 register constructor values in the environment:
+
 - Unit constructors (`None`, `Red`): bind to `Value::Variant { tag, payload: None }`
 - Payload constructors (`Some`, `Ok`): bind to a closure
   `fn(x) → Value::Variant { tag, payload: Some(x) }`

@@ -86,6 +86,7 @@ Each entry in `entries` is itself a plain dict (not a Variant):
 ```
 
 **Comment fields on entries:**
+
 - `leading-comments:` — a `Seq` of comment strings (without `#`) for comments that appeared on lines before this entry. **Absent** (field omitted) when there are no leading comments.
 - `trailing-comment:` — a single string for an inline comment on the same line as the entry (e.g., `port: 8080  # default`). **Absent** when none.
 - `blank-before: true` — a blank line appeared before this entry in source. The formatter uses this to preserve the user's intentional visual grouping. `false` when no blank line preceded the entry.
@@ -338,6 +339,7 @@ pub fn ast_to_dict_expr(
 ```
 
 Serializes a **single expression** node to a tinct dict. Called by:
+
 - The `[quote expr]` evaluator: quotes the subexpression without producing a `File` root node
 - `ast_to_dict` internally: called per-expression while walking `Document.expressions`
 
@@ -353,10 +355,12 @@ pub fn dict_to_ast(
 ```
 
 Validates and converts a tinct dict back to an `Expr`. Used by:
+
 - The macro evaluator: macro output `Value` → evaluatable `Expr`
 - `[eval-ast node]` builtin for runtime code generation
 
 Validation rules:
+
 - Accepts both `Value::Variant` (new format, e.g. `Variant("Call", {...})`) and legacy plain dicts with a `type:` string discriminator (e.g. `[type: "call" ...]`) for backward compatibility
 - Required fields must be present and of the right shape
 - `span:` is optional — absent nodes get a synthetic zero span

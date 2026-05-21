@@ -14,7 +14,7 @@ tinct's evaluator makes three semantic adequacy claims in `doc/08-evaluation.md 
 
 And one confluence claim in `doc/08-evaluation.md §Thunk Lifecycle — Semantic Properties`:
 
-4. For any expression in the pure subset, all maximal reduction sequences converge to the same normal form (confluence / diamond property)
+1. For any expression in the pure subset, all maximal reduction sequences converge to the same normal form (confluence / diamond property)
 
 These claims are documented assertions. The corpus tests provide evidence but do not systematically cover the reduction-path equivalence space, and no formal proof exists.
 

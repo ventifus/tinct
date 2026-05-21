@@ -43,6 +43,7 @@ This sprint is a prerequisite for runtime-v2 but is not in TODO.md until runtime
 ### Part A — New type hierarchy (alongside existing types for now; existing deleted in Part E)
 
 Add to `src/ast.rs`:
+
 - `SurfaceExpression` enum — all variants use `Arc<SurfaceNode>` at recursive positions (not `Box` or `Rc`)
 - `SurfaceNode { pub expr: SurfaceExpression, pub span: Span }` — dedicated wrapper; no `id` field (identity = `Arc::as_ptr() as usize`)
 - `SurfaceProgram { pub documents: Vec<Spanned<SurfaceDocument>> }`
@@ -61,6 +62,7 @@ Do NOT delete `Expr`, `Document`, `File` yet — kept until Part E.
 ### Part B — Parser, resolver, typechecker, expander migration
 
 **Parser** (`src/parser.rs`):
+
 - Change `parse()` return type from `File` to `SurfaceProgram`
 - Every `Rc::new(spanned_expr)` at recursive positions → `Arc::new(SurfaceNode { expr, span })`
 - Every `Box::new(spanned_expr)` at recursive positions → `Arc::new(SurfaceNode { expr, span })`
@@ -69,6 +71,7 @@ Do NOT delete `Expr`, `Document`, `File` yet — kept until Part E.
 - NOTE: `NodeId` is NOT stored in nodes; it is computed on-demand by callers via `Arc::as_ptr()`
 
 **Resolver** (`src/resolve.rs`):
+
 - New entry point: `pub fn resolve_program(program: &SurfaceProgram) -> ResolutionTable`
 - Walks `SurfaceProgram` → `SurfaceDocument.items` → `SurfaceItem::Expr` → `SurfaceNode.expr`
 - For `SurfaceExpression::VarRef { name, escaped }`: compute de Bruijn coordinates; insert `node_id(&arc) → (level, slot)` into `ResolutionTable`
@@ -78,11 +81,13 @@ Do NOT delete `Expr`, `Document`, `File` yet — kept until Part E.
 - Remove all `VarRef.resolved: RefCell<...>` mutations from the old resolver
 
 **Typechecker** (`src/typecheck.rs`):
+
 - Walk `SurfaceProgram` instead of `File`
 - Produce `TypeAnnotationTable` instead of mutating `TypeAssert.resolved_type: RefCell<Option<Type>>`
 - `type_stage_env`: build by calling `build_type_stage_env()` at startup; store in `EvalConfig.type_stage_env: Arc<RwLock<Environment>>` (populated here in Part B; the field itself is added in Part E)
 
 **Expander** (`src/expand.rs`):
+
 - Change all `Expr::Variant` match arms to `SurfaceExpression::Variant`
 - `expand_document()`: walks `SurfaceDocument.items`; processes `SurfaceItem::Decl(SurfaceDeclaration::DefMacro/MacroDecl/SyntaxClass)` to register macros; processes `SurfaceItem::Decl(SurfaceDeclaration::Splice)` by flattening into `SurfaceItem::Expr` entries inline
 - Macro round-trip replacement: `ast_to_dict_expr` → `surface_expr_tag` + `surface_node_get_field` (these functions are added in Part D); `dict_to_ast` → a new `surface_node_from_value(v: &Value, ctx: &Arc<EvalContext>) -> Result<Arc<SurfaceNode>, MacroError>` that converts macro output back to `SurfaceNode`. Add this function to `src/surface_fields.rs`
@@ -103,10 +108,12 @@ pub fn lower(
 ```
 
 **Structural lowering** for all `SurfaceExpression` variants → corresponding `CoreExpr` variants:
+
 - Container type changes: recursive `Arc<SurfaceNode>` → `Arc<Spanned<CoreExpr>>` via recursive `lower()` calls; `Vec<Arc<SurfaceNode>>` → `Vec<Arc<Spanned<CoreExpr>>>`
 - `PatternDecl`/`LetDecl` `bindings`: `Vec<Arc<SurfaceNode>>` → `Vec<Spanned<CoreExpr>>` (unwrap Arc, recurse)
 
 **Special cases:**
+
 - `SurfaceExpression::VarRef { name, escaped }`:
   - `if let Some(&(level, slot)) = res.get(&node_id(arc))` → `CoreExpr::Var { name, level, slot }`
   - else → `CoreExpr::FreeVar(name)` — runtime name-based env lookup (same as current `VarRef` slow path for `Some(None)` resolved)
@@ -153,6 +160,7 @@ pub fn surface_node_from_value(v: &Value, ctx: &Arc<EvalContext>)
 **Delete from `src/ast.rs`:** `Expr`, `Document`, `File`, `VarRef.resolved: RefCell<...>`, `TypeAssert.resolved_type: RefCell<Option<Type>>`
 
 **All 7 eval files must be updated** (not just `src/eval.rs`):
+
 - `src/eval.rs` — pattern-match on `CoreExpr`; all arms updated
 - `src/eval_materialize.rs` — match on new `UnevaluatedState` variants
 - `src/eval_dict.rs` — `eval_dict` now uses `SurfaceDocument.items`; skips `SurfaceItem::Decl`
@@ -180,33 +188,41 @@ enum UnevaluatedState {
 ```
 
 **`AstNodeField` evaluation** (in `src/eval_materialize.rs`):
+
 - Takes `node` and `field`; calls `surface_node_get_field(node, field)`; returns the resulting `Value` as `Materialized`
 
 **`FreeVar` evaluation** (in `src/eval.rs` `CoreExpr::FreeVar` arm):
+
 - Name-based env lookup: `env.get(name)` — same as current `VarRef` slow path for `Some(None)` case
 
 **`RuntimeTypeCheck` evaluation** (new `CoreExpr` arm):
+
 1. Force `expr` (materialization point)
 2. Validate result against `annotation` using the same structural check as existing `TypeAssert` guard path (`check_type_assert` / `Guarded` thunk mechanism in `src/eval_materialize.rs`)
 3. Pass → return materialized value; Fail with `default` → return `default` as lazy thunk; Fail without default → raise `EvalError`
 4. Result cached in `OnceCell`
 
 **Update `IncludeCacheEntry::Cached`** to carry the tables:
+
 ```rust
 Cached(Arc<Thunk>, Arc<ResolutionTable>, Arc<TypeAnnotationTable>)
 ```
+
 The `eval` builtin retrieves `res` and `types` from the `IncludeCacheEntry` for the file that produced the `Expression` nodes being passed in `[Seq Expression]`.
 
 **RAII drop guard** — add to every `tokio::spawn` call site (prep for async in Sprint 2):
+
 ```rust
 struct ResultGuard { cell: Arc<OnceCell<Result<Value, Arc<EvalError>>>> }
 impl Drop for ResultGuard {
     fn drop(&mut self) { self.cell.set(Err(EvalError::cancelled())).ok(); }
 }
 ```
+
 Including every `tokio::spawn` inside `eval_dict` for parallel dict evaluation.
 
 **Rc→Arc migration** (same pass — same files already open):
+
 - `Rc<Thunk>` → `Arc<Thunk>` throughout
 - `Rc<RefCell<Environment>>` → `Arc<RwLock<Environment>>`
 - `Rc<EvalConfig>` → `Arc<EvalConfig>`
@@ -217,6 +233,7 @@ Including every `tokio::spawn` inside `eval_dict` for parallel dict evaluation.
 - `Cargo.toml`: add `tokio` (rt-multi-thread, time, signal, sync, macros), `tokio-util`, `dashmap`
 
 **Delete:**
+
 - `src/ast_dict.rs` entirely
 - `src/desugar.rs` — three responsibilities confirmed by code inspection: (1) Pipe→Call → `lower()`; (2) `$_` desugaring → `stdlib/desugar.llt` Sprint 3; (3) `desugar_annotation`/`desugar_param_annotation` → moved into `lower()` which already traverses annotations structurally
 - `src/eval_deep.rs`
@@ -229,11 +246,13 @@ Including every `tokio::spawn` inside `eval_dict` for parallel dict evaluation.
 ### Part F — Native AST value types
 
 Add to `src/value.rs`:
+
 - `Value::Program(Arc<SurfaceProgram>)`
 - `Value::Document(Arc<SurfaceDocument>)`
 - `Value::Expression(Arc<SurfaceNode>)`
 
 Update builtins (`src/builtins_meta.rs`):
+
 - `load`: parse → `SurfaceProgram` → `Value::Program`
 - `expand`: unwrap `Value::Program` → `&SurfaceProgram`; run expansion; wrap result
 - `eval`: iterate `[Seq Expression]`; for each `Value::Expression(node)`: get `(res, types)` from `IncludeCacheEntry` for this file's program; create `UnevaluatedState::Surface { node, res, types, env, ctx }` where env = `stdlib_env + env: entries + %: binding`; return lazy thunks
@@ -242,6 +261,7 @@ Update builtins (`src/builtins_meta.rs`):
 - Delete `eval-ast` and `builtin_eval_ast`
 
 Update `src/eval.rs` — add arms to match evaluator, dot-access evaluator, `get`, `has?`, `type-of`, `dict?`:
+
 - **Match evaluator**: `Value::Expression(node)` → `surface_expr_tag(&node.expr)` for tag; create one `AstNodeField` thunk per pattern-bound variable
 - **Dot-access**: `Value::Expression(node)` → `surface_node_get_field(node, field)`; `Value::Document` → `surface_doc_get_field`; `Value::Program` → `surface_program_get_field`
 - **CRITICAL**: `Value::Variant` dot-access arm must remain unchanged and reachable — new arms must not intercept `Value::Variant` dispatch
@@ -258,11 +278,13 @@ Add to `stdlib/prelude.llt` (AST types — must be added before codecs/json.llt)
 `Expression`, `Document`, `Program`, `Parameter`, `Entry`, `Annotation`, `AnnotationEntry`, `MatchArm`, `InstanceArm`, `DotKey`, `NamedArg`, `Span`, `Declaration`, `Pattern`, `DocumentName`
 
 Update include-decomp tinct pipeline in `stdlib/prelude.llt` (3 steps):
+
 1. `eval-file`: change `ast@Dict` → `ast@Program` type annotation
 2. `eval-document-runtime`: change `doc.name` string check → `DocumentName` match (`[match doc.name [Named n]: ... Unnamed: ...]`); `doc.expressions` now `[Seq Expression]` passed directly to `eval` builtin (was positional Dict from old schema)
 3. Confirm `dict_to_file` deletion forced these changes (it was the bridge between old Dict-based eval and new Expression-based eval)
 
 Create `stdlib/codecs/json.llt` (after type declarations above are in prelude):
+
 - `to-json` — full tinct implementation via match dispatch on `Expression`/`Document`/`Program`
 - `from-json` — Rust primitive re-exported (interim; full tinct impl blocked on `str-at`/`str-slice`/`str-length`)
 
@@ -279,14 +301,17 @@ Update `stdlib/cli/out/json.llt` — delegate to `codecs/json.llt`
 ### Part A — Async evaluation core
 
 **`eval`, `materialize` → `async fn`:**
+
 - Every recursive call site gains `.await`
 - `eval_dict` fans out independent entries via `tokio::task::JoinSet`; each entry's thunk wrapped in `ResultGuard` (including eval_dict spawns — not just the `task` builtin)
 
 **Deadlock detection:**
+
 - Task-local `HashSet<*const Thunk>` (intra-task, fast path) — check before entering `result.get_or_init().await`; if thunk is in set, raise `EvalError::Cycle`
 - Process-global `WAIT_FOR: DashMap<tokio::task::Id, usize>` where value is `Arc::as_ptr() as usize` (NOT `*const Thunk` — raw pointers are `!Send`, use `usize` cast instead); DFS cycle check from current task before suspending; remove entry on exit (either result received, cycle detected, or cancelled)
 
 **Current `BuiltinFn` type** (confirmed by code inspection of `src/value.rs:29-39`):
+
 ```rust
 pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>;
 // where BuiltinArgs has: args: &[Rc<Thunk>], named: Option<&IndexMap<String, Rc<Thunk>>>,
@@ -294,6 +319,7 @@ pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>;
 ```
 
 **New `BuiltinFn` type after Sprint 2A** (args are owned — moved into future to satisfy `'static` bound for `tokio::spawn`):
+
 ```rust
 type BuiltinFn = fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send + 'static>>;
 
@@ -305,6 +331,7 @@ struct BuiltinArgs {
     // Note: depth removed — tracked via EvalContext or call stack instead
 }
 ```
+
 Confirmed: `~190 builtins` (not ~180 — test at `src/builtins.rs:6652` asserts `count == 190`).
 All ~180 builtins gain async wrapper; I/O builtins replace `block_on(fut)` with `fut.await`.
 
@@ -325,16 +352,19 @@ Register in `standard_builtins()` (implement in `src/builtins_async.rs`):
 `task`, `await`, `await-any`, `channel`, `send`, `recv`, `select-once`, `par`, `context`, `with-cancel`, `with-timeout`, `with-deadline`, `cancelled?`, `with-context`, `timeout`, `cancel-task`, `cancel-root`, `drain`, `exit-now`, `signal-channel`, `timer-channel`, `watch-channel`
 
 Add to `src/value.rs`:
+
 - `Value::Task(Arc<Mutex<TaskState>>)`
 - `Value::Channel(Arc<ChannelInner>)`
 - `Value::Context(tokio_util::sync::CancellationToken)`
 
 Add to `src/type_def.rs` with full handling (unify, apply, occurs_in, collect_type_vars, display):
+
 - `Type::Task(Box<Type>)` — follows `Type::Seq` pattern exactly
 - `Type::Channel(Box<Type>)` — follows `Type::Seq` pattern exactly
 - `Type::Context` — opaque; no type parameter
 
 Inference rules in `src/typecheck.rs`:
+
 - `task` body type → `Task(body_type)`
 - `await` unifies `Task(?t)` → `?t`
 - `send`/`recv` unify channel element type
@@ -344,12 +374,14 @@ Add to `stdlib/prelude.llt` (after AST types from Sprint 1G):
 `Signal`, `Action`, `CancelHandle`, `SelectSource`, `Context` (opaque — registered as primitive type, no tinct declaration)
 
 Add `stdlib/async.llt`:
+
 - `cancel: [fn [c@CancelHandle] [c.cancel]]`
 - `await-all` (channels + `with-cancel` + `recv-all` via `reduce` — see whatif for full implementation; uses `collect` to force spawning)
 - `recv-all` uses `reduce` over `[range 0 n]` (Rust builtin loop — no tinct recursion depth consumed)
 - `par-map`, `par-filter`, `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`
 
 **Test corpus** (sprint runner writes these):
+
 1. Single task spawn + await
 2. Channel send/recv ordering
 3. `await-all` with one failing task — verify cancellation of siblings
@@ -367,10 +399,12 @@ Add `stdlib/async.llt`:
 ### `$_` desugaring surface pass
 
 Create `stdlib/desugar.llt`:
+
 - `desugar-program: [fn [p@Program] ...]` — walks `Expression` tree via match dispatch; finds `[Var name: "_" escaped: true]` in non-parameter positions; wraps containing expression in `[Fn params: [[Parameter name: "_" ...]] body: ... desugared: true ...]`; does NOT recurse into `Quote` nodes
 - Full match-dispatch traversal similar to `json-expression` — one arm per `Expression` variant
 
 **Register in `src/main.rs`:**
+
 1. After `expand()` returns `Value::Program`, look up `desugar-program` from `stdlib_env`: `let desugar = stdlib_env.get("desugar-program").expect("prelude must define desugar-program")`
 2. Call it via `invoke_function(&desugar, &[program_value], &ctx)` and materialize the result
 3. Unwrap returned `Value::Program` back to `Arc<SurfaceProgram>` before passing to resolver

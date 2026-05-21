@@ -79,6 +79,7 @@ Each argument position has a **receive mode** that controls how the parsed brack
 The macro body uses tinct code and AST construction primitives to inspect arguments and produce the output. No Rust transformation logic. No flags.
 
 **fn let-softening:**
+
 ```tinct
 [defparse-macro fn [params: flat-list  body: expr]
   [if [let-decl? params]
@@ -92,6 +93,7 @@ The macro body uses tinct code and AST construction primitives to inspect argume
 - `[cons 'let params]` — prepends `let` to params, producing `[let x y]`
 
 **class and type — identical pattern:**
+
 ```tinct
 [defparse-macro class [tvars: flat-list  ...body: expr]
   [if [let-decl? tvars]
@@ -105,6 +107,7 @@ The macro body uses tinct code and AST construction primitives to inspect argume
 ```
 
 **case arm let-wrapping — macro handles the conditional logic:**
+
 ```tinct
 [defparse-macro case [scrutinee: expr  ...arms: flat-list]
   [list 'case scrutinee
@@ -118,6 +121,7 @@ The macro body uses tinct code and AST construction primitives to inspect argume
 The case macro does real work: it maps over arms, inspects each one for structural tests (`:` separator), and applies wrapping only where safe. The helper `contains-structural-test?` and `wrap-in-let` are tinct stdlib functions — not Rust implementations.
 
 **Annotated-key dict — logic in the macro:**
+
 ```tinct
 [defparse-macro dispatch [scrutinee: expr  arms: flat-list]
   # Arms received as a flat list of [key value] pairs with full-expression keys
@@ -219,6 +223,7 @@ Point: [type [x: Float  y: Float]]
 ```
 
 Example — SQL embedding:
+
 ```tinct
 [declare-key-identity sql  full-expression]
 [defparse-macro sql [query: tokens]
@@ -277,6 +282,7 @@ parse → [post-parse transformation pass] → type-check → eval
 ```
 
 The transformation pass:
+
 1. Walks the parsed AST
 2. For each form `[name ...]` where `name` has a `defparse-macro` declaration:
    a. Re-deliver arguments in their declared receive modes
@@ -305,6 +311,7 @@ The transformation pass:
 **Current:** `expand.rs` handles post-parse macro expansion.
 
 **Proposed:** After parsing, before type-checking, run the parse-stage transformation pass:
+
 1. Scan for `defparse-macro` and `declare-key-identity` declarations (using the pre-existing pre-parse scan mechanism)
 2. Walk the AST; for registered form names, re-deliver arguments in declared modes and call the macro body
 3. Collect results and substitute in place

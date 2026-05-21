@@ -437,10 +437,12 @@ ensures dispatch is always deterministic (Sulzmann et al. 2007).
 ## Prerequisites
 
 **Independent of `hkt-mappable-appendable` (can sprint now):**
+
 - `[CONSTRAIN-UNKNOWN]` fix in `satisfies_constraint` — already applied (`src/type_unify.rs:23`)
 - `[CONSTRAIN-FIELD/INTER/UNION/TOP/NEVER]` row-level propagation rules — new match arms in `satisfies_constraint`; no HKT dependency
 
 **Requires `hkt-mappable-appendable`:**
+
 - MPTC `Constraint` enum extension (`vars: Vec<String>`, `fundeps`) — requires the `ClassEnv` and `[class ...]`/`[instance ...]` infrastructure to be complete before MPTC instances can be declared
 - Functional dependency improvement mechanism — builds on the multi-var Constraint form
 - `Add`/`Sub`/`Mul`/`Div` re-registration as MPTC — requires both the Constraint extension and class infrastructure

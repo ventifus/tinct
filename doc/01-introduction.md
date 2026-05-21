@@ -33,6 +33,7 @@ Within a document, sequential expressions form a scope chain — each expression
 ### LLM-Friendly
 
 Designed for LLMs to generate and modify:
+
 - Fewer tokens than JSON (no mandatory quotes on keys, no commas)
 - Consistent syntax — everything is `[key: value]` or `[f args]`
 - Composition eliminates repetition, reducing token count further
@@ -60,6 +61,7 @@ type errors:
 ```
 
 **Why this design:**
+
 - **Unification** — One fundamental data structure. Functions like `map`, `filter`, `get` work uniformly on all data.
 - **Flexibility** — Mixed integer and string keys naturally supported. Natural extension to keyword arguments.
 - **First-class key-value pairs** — Matches the configuration language use case. Keys are names, not duplicated strings.
@@ -124,6 +126,7 @@ type errors:
 ```
 
 **Edge cases:**
+
 - `[call: something]` — the `:` makes `call` a key, not a keyword. Parsed as `Dict`.
 - `[f]` — zero-argument call to `f`. To construct a single-element data sequence containing a reference, use `[$f]`.
 
@@ -169,6 +172,7 @@ Build complex things from simple things. No repetition.
 ```
 
 Compare to JSON where every field must be repeated:
+
 ```json
 {
   "dev":  {"timeout": 30, "retries": 3, "env": "dev"},

@@ -1,4 +1,5 @@
 # What If: `let` Binding Form for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to enable non-recursive local bindings everywhere
@@ -66,6 +67,7 @@ nested `[call [fn [name] ...] value]` layer.
 
 1. **Intermediate bindings in functions.** Multi-step function bodies
    without wrapper dicts:
+
    ```tinct
    process: [fn [data]
        [cleaned: [clean data]]
@@ -184,6 +186,7 @@ matching the existing sequential inference in `infer_sequential`.
 4. **Pattern matching readiness.** When `[match]`
    (`doc/whatif/pattern-matching.md`) is adopted, match arm bodies will
    need intermediate bindings. Sequential function bodies enable this:
+
    ```tinct
    [match val
      [ok: v]
@@ -262,6 +265,7 @@ position. Each expression's result dict becomes the parent scope for
 the next. The last expression's value is the return value.
 
 Implementation:
+
 - Grammar change: `fn_body` rule accepts expression sequence
 - Parser desugars to nested `Expr::Sequential` (preferred) or
   changes `Expr::Fn` body to `Vec<Spanned<Expr>>`

@@ -478,7 +478,7 @@ named parameters.
   1. `stdlib/formatter/format.llt`: `format-node` dispatch on `node.type` using `[match ...]`
   2. `format-literal`, `format-var`, `format-dot`, `format-pipe`, `format-call`, `format-fn`, `format-dict`, `format-type-*` — one helper per major node category
   3. `fits-inline?` via speculative rendering: `[<= [entry-count node] 4]` AND `[<= [str-length [render-inline node]] 80]`; `render-inline` bound with `let:` for memoization (`$length` is dict-only and cannot be used here)
-  4. `emit-comments`: leading-comments indented with `# ` prefix; trailing-comment appended after `  # `
+  4. `emit-comments`: leading-comments indented with `#` prefix; trailing-comment appended after ` # `
   5. `blank-before: true` → insert blank line before entry
   6. `src/main.rs`: `tinct fmt` (no flag) evaluates `format.llt` via `ast_to_dict(src, comments)`; Rust formatter retained as `format_source_rust()` for LSP
   7. All existing formatter corpus tests pass against the tinct implementation
@@ -609,6 +609,7 @@ is handled in the main evaluator, not in `src/expand.rs`.
 
 Macro bodies in `[defmacro]` run in a **fresh `EvalContext`** per expansion pass —
 not the runtime context. This prevents:
+
 - `IncludeContext` cache pollution (compile-time include results mixing with runtime results)
 - `MAX_EVAL_DEPTH` budget erosion (recursive macros eating runtime depth)
 - `gensym` counter state leaking between passes
@@ -639,6 +640,7 @@ separation consequence rather than an implementation shortcut.
 After M4b, the pipeline is `parse → expand_macros → desugar → resolve → typecheck → eval`.
 Both `expand_macros` and `desugar.rs` coexist during M4b and M5a. M5b removes `desugar.rs`
 by porting `_` to a tinct macro. During the coexistence phase:
+
 - The `_` macro defined in M5b must **not** conflict with the still-running `desugar.rs` pass. The Rust pass is removed atomically in M5b, not incrementally.
 - Any new syntactic desugaring added between M4b and M5b should go into `desugar.rs` (not a tinct macro) to avoid depending on a half-complete macro system.
 

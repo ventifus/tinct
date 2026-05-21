@@ -436,7 +436,8 @@ pub(crate) fn force_step(
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .eval_stack
             .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
@@ -539,7 +540,8 @@ pub(crate) fn force_step(
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .eval_stack
             .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
@@ -653,7 +655,8 @@ pub(crate) fn force_step(
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .eval_stack
             .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
 
@@ -1259,7 +1262,8 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     .is_none()
                         })
                     {
-                        let next_arg = Arc::clone(&args.as_ref().expect("args set above")[next_idx]);
+                        let next_arg =
+                            Arc::clone(&args.as_ref().expect("args set above")[next_idx]);
                         stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                             thunk,
                             def,
@@ -1840,11 +1844,11 @@ pub(crate) fn eval_step(
             // This still uses eval_recursive because we need a thunk, not a materialized value.
             // The TypeAssertCheck continuation below will materialize it and validate.
             // This is the correct pattern: eval → thunk → push continuation → materialize.
-            let inner_thunk = match eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), ctx)
-            {
-                Ok(t) => t,
-                Err(e) => return Action::Continue(Err(e)),
-            };
+            let inner_thunk =
+                match eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), ctx) {
+                    Ok(t) => t,
+                    Err(e) => return Action::Continue(Err(e)),
+                };
             let resolved = resolved_type.borrow().clone();
 
             // Fast path: if there is no type to check, skip materialization entirely.
@@ -2053,7 +2057,7 @@ mod tests {
 
     #[test]
     fn test_restore_state_unevaluated() {
-        let expr = Arc::new(sp(Expr::Int(42)));
+        let expr = Rc::new(sp(Expr::Int(42)));
         let env = empty_env();
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 10);
@@ -2140,8 +2144,8 @@ mod tests {
         // Create a simple function thunk
         let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
-                params: Arc::new(vec![]),
-                body: Arc::new(sp(Expr::Int(42))),
+                params: Rc::new(vec![]),
+                body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
                 annotation: None,
             },
@@ -2198,8 +2202,8 @@ mod tests {
         // Create a function thunk
         let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
-                params: Arc::new(vec![]),
-                body: Arc::new(sp(Expr::Int(42))),
+                params: Rc::new(vec![]),
+                body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
                 annotation: None,
             },
@@ -2331,7 +2335,7 @@ mod tests {
             span: test_span(5, 1, 5, 3), // Line 5: the value production site
         };
         let value_thunk = crate::value::Thunk::new_unevaluated(
-            Arc::new(value_expr),
+            Rc::new(value_expr),
             test_env(),
             test_ctx(),
             test_span(5, 1, 5, 3),
@@ -2387,7 +2391,7 @@ mod tests {
             span: same_span,
         };
         let value_thunk = crate::value::Thunk::new_unevaluated(
-            Arc::new(value_expr),
+            Rc::new(value_expr),
             test_env(),
             test_ctx(),
             same_span,
@@ -2420,7 +2424,7 @@ mod tests {
         // Create an Unevaluated thunk, force it via the CEK machine (run), and verify
         // it transitions to Materialized state with the correct cached value.
         let span = test_span(1, 1, 1, 10);
-        let expr = Arc::new(sp(Expr::Int(42)));
+        let expr = Rc::new(sp(Expr::Int(42)));
         let env = empty_env();
         let ctx = test_ctx();
 
@@ -2480,7 +2484,7 @@ mod tests {
         let env = empty_env();
 
         // Create a thunk that will fail: reference an undefined variable
-        let expr = Arc::new(sp(Expr::var_ref("undefined_var".into())));
+        let expr = Rc::new(sp(Expr::var_ref("undefined_var".into())));
         let thunk = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
 
         // Verify initial state is Unevaluated
@@ -2555,7 +2559,7 @@ mod tests {
         let env = empty_env();
 
         // Create a dict with an entry that will error when materialized
-        let error_expr = Arc::new(sp(Expr::var_ref("undefined_var".into())));
+        let error_expr = Rc::new(sp(Expr::var_ref("undefined_var".into())));
         let error_thunk = Arc::new(Thunk::new_unevaluated(
             error_expr,
             Arc::clone(&env),
@@ -2573,7 +2577,7 @@ mod tests {
         env.write().unwrap().insert("my_dict".into(), dict_thunk);
 
         // Create a dot access expression: my_dict.field
-        let access_expr = Arc::new(sp(Expr::DotAccess {
+        let access_expr = Rc::new(sp(Expr::DotAccess {
             expr: Box::new(sp(Expr::var_ref("my_dict".into()))),
             field: crate::ast::DotKey::Ident("field".to_string()),
         }));
@@ -2671,7 +2675,8 @@ mod tests {
 
         // Bind a variable in caller's env so the default expr can reference it.
         let fallback_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
-        env.write().unwrap()
+        env.write()
+            .unwrap()
             .insert("fallback_val".into(), fallback_thunk);
 
         // Inner thunk: a String value — fails the Int guard.
@@ -2681,7 +2686,7 @@ mod tests {
         ));
 
         // Default expression: a variable reference to `fallback_val` in caller's env.
-        let default_expr = Arc::new(sp(Expr::VarRef {
+        let default_expr = Rc::new(sp(Expr::VarRef {
             name: "fallback_val".into(),
             escaped: true,
             resolved: std::cell::RefCell::new(None),

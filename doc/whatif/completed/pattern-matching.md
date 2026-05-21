@@ -1,4 +1,5 @@
 # What If: Pattern Matching for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to add pattern matching to tinct's bracket-based lazy
@@ -50,6 +51,7 @@ This matters for three reasons:
 
 3. **Error handling.** `try` returns `[ok: value]` or `[err: message]`.
    Dispatching on the result key without destructuring is clunky:
+
    ```tinct
    result: [try risky]
    [if [has? result "ok"]
@@ -473,6 +475,7 @@ into a single intermediate dict. The mixed example above desugars to:
 ```
 
 **Desugar rules:**
+
 - `[a.b.c: v]` → `[a: [b: [c: v]]]` — path on the left, any pattern on the right
 - `[a.b.c: v  a.b.d: w]` → `[a: [b: [c: v  d: w]]]` — shared prefix merged
 - `[a.0.name: n]` → `[a: [0: [name: n]]]` — integer segments → `Key::Int` (after `access-pipeline` lands)
@@ -506,6 +509,7 @@ pattern parsing are needed when bracket access is removed.
 ## References
 
 **Pattern matching compilation:**
+
 - Augustsson, L. (1985). "Compiling pattern matching." In *FPCA '85*,
   LNCS 201, pp. 368–381. Springer. — Decision tree compilation for
   pattern matching in lazy functional languages.
@@ -529,22 +533,26 @@ pattern parsing are needed when bracket access is removed.
   compilation strategies for lazy languages.
 
 **Pattern matching and laziness:**
+
 - Wadler, P. (1987). "Views: a way for pattern matching to cohabit with
   data abstraction." In *POPL '87*, pp. 307–313. ACM. — Pattern matching
   over abstract types via views. Relevant to tinct's dict/seq dispatch
   where the underlying representation may differ from the pattern surface.
 
 **Nickel pattern matching:**
+
 - Nickel v1.5 changelog (2024). Introduction of match expressions with
   record and enum patterns.
 - Nickel v1.7 changelog (2024). Extension with wildcards, constants,
   guards, array patterns, and or-patterns.
 
 **Union elimination (Dhall model):**
+
 - Christiansen, D.R. (2013). "Bidirectional typing rules: a tutorial."
   — Checking mode for eliminators ensures exhaustiveness.
 
 **Comparable language designs:**
+
 - Nix manual §5.1: Function argument set patterns (`{ x, y, ... }: body`).
   No general pattern matching after 30+ years.
 - Jsonnet spec: No pattern matching. Type dispatch via `std.type()`.

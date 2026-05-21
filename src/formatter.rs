@@ -122,13 +122,21 @@ pub fn format_source_tinct_with_dir(
             }),
         }
     };
-    let ast_thunk =
-        ast_to_dict(&crate::ast_convert::surface_program_to_file(&parse_output.program).node, &opts, &ctx).map_err(|e| format!("{e}"))?;
+    let ast_thunk = ast_to_dict(
+        &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
+        &opts,
+        &ctx,
+    )
+    .map_err(|e| format!("{e}"))?;
 
     // Evaluate formatter with AST as % (pipeline input).
-    let formatter_thunk =
-        eval::eval_file_with_input(&formatter_file.node, Arc::clone(&env), &ctx, Some(ast_thunk))
-            .map_err(|e| format!("formatter eval error: {e}"))?;
+    let formatter_thunk = eval::eval_file_with_input(
+        &formatter_file.node,
+        Arc::clone(&env),
+        &ctx,
+        Some(ast_thunk),
+    )
+    .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — should be [Ok String] or [Err msg].
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)

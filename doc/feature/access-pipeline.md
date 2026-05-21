@@ -245,6 +245,7 @@ representation uses a `DotKey` enum: `DotKey::Ident(String)` for string keys,
 ### Desugar Pass (`src/desugar.rs`)
 
 Desugar rules for `Expr::Pipe { lhs, rhs }`:
+
 - `Pipe(lhs, Call(f, args))` → `Call(f, args ++ [lhs])`
 - `Pipe(lhs, VarRef(name))` → `Call(VarRef(name), [lhs])`
 - `Pipe(lhs, other)` → `Call(other, [lhs])`

@@ -76,7 +76,7 @@ impl ThunkArena {
     /// Phase 3 (arena-eval): used when the evaluator builds letrec dicts via FlatEnv.
     #[cfg(test)]
     pub fn alloc_placeholder(&mut self) -> ThunkId {
-        let thunk = Rc::new(Thunk::new_placeholder(Span::origin()));
+        let thunk = Arc::new(Thunk::new_placeholder(Span::origin()));
         self.alloc(thunk)
     }
 
@@ -319,7 +319,6 @@ impl FlatEnv {
 mod tests {
     use super::*;
     use crate::value::{Thunk, ThunkState, Value};
-    use std::rc::Rc;
 
     fn test_span() -> Span {
         Span::origin()
@@ -328,7 +327,7 @@ mod tests {
     #[test]
     fn test_thunk_arena_alloc_get() {
         let mut arena = ThunkArena::new();
-        let thunk = Rc::new(Thunk::new_materialized(Value::Int(42), test_span()));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), test_span()));
         let id = arena.alloc(Arc::clone(&thunk));
         assert_eq!(arena.get(id).try_get_materialized(), Some(Value::Int(42)));
     }
@@ -336,9 +335,18 @@ mod tests {
     #[test]
     fn test_thunk_arena_multiple_allocs() {
         let mut arena = ThunkArena::new();
-        let id1 = arena.alloc(Rc::new(Thunk::new_materialized(Value::Int(1), test_span())));
-        let id2 = arena.alloc(Rc::new(Thunk::new_materialized(Value::Int(2), test_span())));
-        let id3 = arena.alloc(Rc::new(Thunk::new_materialized(Value::Int(3), test_span())));
+        let id1 = arena.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(1),
+            test_span(),
+        )));
+        let id2 = arena.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(2),
+            test_span(),
+        )));
+        let id3 = arena.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(3),
+            test_span(),
+        )));
 
         assert_eq!(arena.get(id1).try_get_materialized(), Some(Value::Int(1)));
         assert_eq!(arena.get(id2).try_get_materialized(), Some(Value::Int(2)));
@@ -355,7 +363,7 @@ mod tests {
         let mut arena = ThunkArena::new();
         let ids: Vec<ThunkId> = (0..10)
             .map(|i| {
-                arena.alloc(Rc::new(Thunk::new_materialized(
+                arena.alloc(Arc::new(Thunk::new_materialized(
                     Value::Int(i as i64),
                     test_span(),
                 )))
@@ -424,7 +432,6 @@ mod tests {
         use crate::eval::materialize;
         use crate::eval::EvalContext;
         use crate::value::Environment;
-        use std::cell::RefCell;
 
         // Create a placeholder thunk (unfilled)
         let mut arena = ThunkArena::new();
@@ -432,7 +439,7 @@ mod tests {
         let thunk = arena.get(id);
 
         // Create a minimal test context
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let env = Arc::new(std::sync::RwLock::new(Environment::new()));
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         let ctx = EvalContext::new(base_dir, env, false);
@@ -571,7 +578,7 @@ mod tests {
 
         let ids: Vec<ThunkId> = (0..count)
             .map(|i| {
-                arena.alloc(Rc::new(Thunk::new_materialized(
+                arena.alloc(Arc::new(Thunk::new_materialized(
                     Value::Int(i as i64),
                     test_span(),
                 )))
@@ -625,9 +632,18 @@ mod tests {
     fn test_clone_for_child_snapshot_size() {
         // Test (a): snapshot.len() == parent.len() at snapshot time
         let mut parent = ThunkArena::new();
-        let id1 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(1), test_span())));
-        let id2 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(2), test_span())));
-        let id3 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(3), test_span())));
+        let id1 = parent.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(1),
+            test_span(),
+        )));
+        let id2 = parent.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(2),
+            test_span(),
+        )));
+        let id3 = parent.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(3),
+            test_span(),
+        )));
 
         let snapshot = parent.clone_for_child();
 
@@ -654,15 +670,24 @@ mod tests {
     fn test_clone_for_child_independent_growth() {
         // Test (b): parent grows independently after snapshot
         let mut parent = ThunkArena::new();
-        let id1 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(1), test_span())));
+        let id1 = parent.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(1),
+            test_span(),
+        )));
 
         let mut snapshot = parent.clone_for_child();
 
         // Parent grows
-        let id2 = parent.alloc(Rc::new(Thunk::new_materialized(Value::Int(2), test_span())));
+        let id2 = parent.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(2),
+            test_span(),
+        )));
 
         // Snapshot grows independently
-        let id3 = snapshot.alloc(Rc::new(Thunk::new_materialized(Value::Int(3), test_span())));
+        let id3 = snapshot.alloc(Arc::new(Thunk::new_materialized(
+            Value::Int(3),
+            test_span(),
+        )));
 
         // Parent should have 2 thunks
         assert_eq!(parent.len(), 2);
@@ -683,11 +708,9 @@ mod tests {
 
     #[test]
     fn test_clone_for_child_shared_rc_identity() {
-        use std::rc::Rc;
-
         // Test (c): mutating a pre-snapshot thunk's state is visible in the snapshot
         let mut parent = ThunkArena::new();
-        let thunk = Rc::new(Thunk::new_placeholder(test_span()));
+        let thunk = Arc::new(Thunk::new_placeholder(test_span()));
         let id = parent.alloc(Arc::clone(&thunk));
 
         let snapshot = parent.clone_for_child();
@@ -703,6 +726,6 @@ mod tests {
         );
 
         // Verify they point to the same underlying Thunk (Rc identity)
-        assert!(Rc::ptr_eq(parent.get(id), snapshot.get(id)));
+        assert!(Arc::ptr_eq(parent.get(id), snapshot.get(id)));
     }
 }

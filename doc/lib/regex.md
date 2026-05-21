@@ -2,15 +2,11 @@
 
 ### `re-compile`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `re-match`
-
-
 
 ```tinct
 fn@
@@ -18,15 +14,11 @@ fn@
 
 ### `re-find`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `re-findall`
-
-
 
 ```tinct
 fn@
@@ -34,15 +26,11 @@ fn@
 
 ### `re-replace`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `re-split`
-
-
 
 ```tinct
 fn@
@@ -50,9 +38,6 @@ fn@
 
 ### `re-escape-replacement`
 
-
-
 ```tinct
 fn@
 ```
-

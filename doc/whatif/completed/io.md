@@ -42,6 +42,7 @@ tinct is a configuration language that lives at system boundaries — it generat
 tinct adopts the same model as Nix and Dhall: **I/O builtins are strict functions that execute immediately when forced, return pure values, and do not require monadic infrastructure**. This is the correct model for a lazy call-by-need configuration language. The formal justification is in §Formal Grounding below.
 
 Each I/O builtin:
+
 - Is **strict in its arguments** — arguments are materialized before the I/O operation executes
 - **Returns a pure tinct value** — the result (string, dict, seq, or an opaque handle/cap) is a first-class value with no residual I/O structure
 - **Executes at force time** — in a lazy binding, it runs when the binding is first forced; in a pipeline stage, it runs when the stage is evaluated
@@ -234,6 +235,7 @@ A `NetCap`'s allowlist is a list of entries. Each entry is one of:
 | `"fd00::/8"` | IPv6 CIDR range |
 
 Matching at `connect`/`tls` time:
+
 1. Check the target hostname against all hostname and glob entries (exact, pre-DNS check)
 2. Resolve the hostname to one or more IP addresses
 3. Check each resolved IP against all CIDR entries

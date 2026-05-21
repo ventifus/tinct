@@ -429,12 +429,14 @@ as before (TlsReader + TlsWriter sharing `Rc<RefCell<StreamOwned>>`).
 ### Builtins (`src/builtins_io.rs`, `src/builtins.rs`)
 
 **`connect` signature change:** Inspect Transport tag to determine argument count:
+
 - `Tcp`, `Udp` → 2 address args (host, port)
 - `UnixStream`, `UnixDatagram`, `NamedPipe` → 1 address arg (path)
 - `Icmp` → 1 address arg (host)
 - Unknown variant → forward remaining args to user Connector's `connect` field
 
 **New builtins:**
+
 - `tls-layer` — Handle form TLS upgrade; requires Handle refactor
 - `quic-session` — QUIC session via quinn; 4 args: cap host port opts
 - `http2-session` — HTTP/2 session via reqwest/h2; 1 arg: Handle[Stream Tls]
@@ -451,11 +453,13 @@ as before (TlsReader + TlsWriter sharing `Rc<RefCell<StreamOwned>>`).
 ### Value Types (`src/value.rs`)
 
 New value variants:
+
 - `Value::QuicSession` — opaque QUIC session (quinn)
 - `Value::Http2Session` — opaque HTTP/2 session (reqwest/h2)
 - `Value::Http3Session` — opaque HTTP/3 session
 
 Handle modification:
+
 - `raw_tcp: Option<std::net::TcpStream>` field added to `Value::Handle`
 
 **Impact:** Moderate.
@@ -469,6 +473,7 @@ Updated to use new primitives: `http-get` uses explicit Handle from `connect` ra
 ### New `stdlib/protocols/` Files
 
 Four new files, each pure tinct, each standalone:
+
 - `socks5.llt`, `dns.llt`, `grpc.llt`, `websocket.llt`
 
 **Impact:** Additive.

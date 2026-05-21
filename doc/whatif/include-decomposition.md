@@ -249,7 +249,6 @@ The current Rust `run_eval` function becomes this reduce. `cli-pipeline` receive
 [eval-file [expand [load "[+ 1 2]" name: "inline"]] [] %libdir]
 ```
 
-
 ## What Would Change
 
 No transition periods. No backwards compatibility. Code is deleted, not shimmed.
@@ -307,6 +306,7 @@ Expose `eval` and `eval-types` as registered builtins.
 Positional args: `exprs` (positional Dict of expression AST dicts — the `expressions` field from a document dict). Named args: `%:` (pipeline input bound as `$`), `env:` (extra bindings dict, defaults to `[]`).
 
 Implementation:
+
 1. Deserialize `exprs`: iterate in key order, call `dict_to_ast` on each entry → `Vec<Spanned<Expr>>`
 2. Build env chain: `ctx.config.stdlib_env` as root → child env with `env:` entries injected → child env with `"$"` bound to the `%:` thunk
 3. Call `eval_expressions`; return its result lazily
@@ -337,6 +337,7 @@ let result = invoke_function(&cli_pipeline, &[files_thunk, initial_thunk, pwd_th
 ### Modify: `src/expand.rs` — Expose `expand`, Delete Shadow Guard
 
 **Expose** `expand` as a user-callable builtin via a round-trip through the Dict representation:
+
 1. Receive the file AST dict (the `Dict` returned by `load`)
 2. `dict_to_file(ast_dict, ctx)` → `File` — deserialize; schema errors surface as user errors with the `AstError` message
 3. `crate::expand::expand(&file, ctx)` → `File` — run macro expansion

@@ -16,6 +16,7 @@ What would it take to give tinct rank-1 higher-kinded types, making `[do]` infer
 ```
 
 The result monad dict:
+
 ```tinct
 result: [bind: and-then  pure: result-ok]
 ```
@@ -68,9 +69,10 @@ Tinct avoids infix operators. The kind `* → *` (type constructor) is written a
 | `key@Label` | `key` is bound to an anonymous label TypeVar (system-generated name); the type checker generates a `HasField` constraint automatically |
 | `key@[label: l]` | `key` is bound to a named label TypeVar `l`; use when the same label must appear elsewhere in the type signature |
 
-A constrained annotation like `m@Monad` implies `Operator` — no separate kind annotation is needed when the constraint provides the kind. 
+A constrained annotation like `m@Monad` implies `Operator` — no separate kind annotation is needed when the constraint provides the kind.
 
 **Label annotations** create Label-kinded TypeVars:
+
 - `key@Label` (anonymous) — the type checker generates a fresh label TypeVar internally (system-generated name like `_label_0`), registers it in `kind_env` with `Kind::Label`, and generates a `HasField` constraint automatically. Use when the label is not referenced elsewhere in the type.
 - `key@[label: l]` (named) — creates a label TypeVar named `l`, binds `key` to `TypeVar(l_fresh)`, and registers `kind_env[l_fresh] = Kind::Label`. Use when the same label must appear in multiple type positions (e.g., two parameters that must access the same field).
 
@@ -680,11 +682,13 @@ A function that receives a label as a parameter has a label-polymorphic scheme:
 ```
 
 The `get` builtin's full scheme:
+
 ```
 get : ∀ (l : Label) (d : *) (a : *). HasField l d a => StringLiteral(l) → d → a
 ```
 
 Call-site resolution of `[get "name" user]`:
+
 1. Instantiate scheme: fresh label var `l'`, type vars `d'`, `a'`, constraint `HasField l' d' a'`
 2. `unify(StringLiteral(l'), StringLiteral("name"))` → `l' ↦ StringLiteral("name")`
 3. `unify(d', type(user))` → `d' ↦ {name: String, age: Int}`
@@ -772,6 +776,7 @@ Tinct's lazy evaluation model makes the IO monad (and Result monad for failure) 
 ## Backward Compatibility
 
 Every existing `[do monad ...]` call is valid in the new model:
+
 - The explicit monad argument is still accepted and takes priority over inference.
 - The bind-field dispatch (looking up `monad.bind`) still works for dicts without a registered `Monad` instance.
 - User-defined monad dicts that predate the `Monad` typeclass are unaffected.
@@ -789,6 +794,7 @@ The upgrade path: existing code compiles unchanged. New code can drop the explic
 ### Type System (`src/types.rs`, `src/type_unify.rs`) *(hkt-foundation)*
 
 New `Kind` variants and `Type` variants:
+
 ```rust
 pub enum Kind { Star, Row, Operator, Label }  // Label: kind of type-level string labels
 

@@ -165,7 +165,7 @@ stages: [$parse transform format]
 
 **Other positions** — `$` on a non-head, non-key bare word is redundant. `$x` and `x` resolve to the same reference. `$` is permanently valid on references in value position; the formatter normalizes `$x` to `x`, but both forms are always accepted.
 
-**No ambiguity between key and head positions.** The `:` after a token is what distinguishes key context from head context. `$key:` (followed by `:`) = computed key. `$key ` (followed by whitespace or another token) = data head.
+**No ambiguity between key and head positions.** The `:` after a token is what distinguishes key context from head context. `$key:` (followed by `:`) = computed key. `$key` (followed by whitespace or another token) = data head.
 
 ### Data Sequences with `$` Escape
 

@@ -282,6 +282,7 @@ arm's body evaluates. No new forcing semantics.
 ## References
 
 **Pattern matching compilation:**
+
 - Augustsson, L. (1985). "Compiling pattern matching." In *FPCA '85*,
   LNCS 201, pp. 368–381. Springer. — Decision tree compilation for
   pattern matching in lazy functional languages.
@@ -305,22 +306,26 @@ arm's body evaluates. No new forcing semantics.
   compilation strategies for lazy languages.
 
 **Pattern matching and laziness:**
+
 - Wadler, P. (1987). "Views: a way for pattern matching to cohabit with
   data abstraction." In *POPL '87*, pp. 307–313. ACM. — Pattern matching
   over abstract types via views. Relevant to tinct's dict/seq dispatch
   where the underlying representation may differ from the pattern surface.
 
 **Nickel pattern matching:**
+
 - Nickel v1.5 changelog (2024). Introduction of match expressions with
   record and enum patterns.
 - Nickel v1.7 changelog (2024). Extension with wildcards, constants,
   guards, array patterns, and or-patterns.
 
 **Union elimination (Dhall model):**
+
 - Christiansen, D.R. (2013). "Bidirectional typing rules: a tutorial."
   — Checking mode for eliminators ensures exhaustiveness.
 
 **Comparable language designs:**
+
 - Nix manual §5.1: Function argument set patterns (`{ x, y, ... }: body`).
   No general pattern matching after 30+ years.
 - Jsonnet spec: No pattern matching. Type dispatch via `std.type()`.

@@ -44,6 +44,7 @@ msg: [str "Hello " name]
 2. **Formatter ergonomics.** `doc/whatif/templating.md` formatters
    build strings heavily. Interpolation makes formatter code
    significantly more readable:
+
    ```tinct
    # Before
    [str indent key ": " [quote-yaml val] "\n"]
@@ -227,6 +228,7 @@ strings.
 string representation (via `str` semantics).
 
 Implementation:
+
 - Lexer recognizes `i"` as an interpolated string token
 - Parser splits into literal segments and variable references
 - Desugars to `[str "Hello " name]` (AST rewrite)

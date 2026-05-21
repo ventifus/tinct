@@ -1,4 +1,5 @@
 # What If: Type Classes for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to add type classes (ad-hoc polymorphism) to tinct?
@@ -74,15 +75,18 @@ has no Equatable instance) while accepting `[= 1 2]` (Int has Equatable).
 Type classes carry laws that instances must satisfy:
 
 **Equatable:**
+
 - Reflexivity: `[= x x]` → true (except NaN)
 - Symmetry: `[= x y]` = `[= y x]`
 - Transitivity: if `[= x y]` and `[= y z]` then `[= x z]`
 
 **Comparable:**
+
 - Antisymmetry, transitivity, totality
 - Consistent with Equatable: `[= x y]` iff `[<= x y]` and `[>= x y]`
 
 **Numeric:**
+
 - Additive identity: `[+ x 0]` = `x`
 - Additive inverse: `[+ x [neg x]]` = 0
 - Commutativity: `[+ x y]` = `[+ y x]`
@@ -153,6 +157,7 @@ When typeclasses are adopted, `Equatable` for records uses **structural
 derivation with key-set semantics**:
 
 Two records are equal iff:
+
 1. They have the same set of keys (regardless of insertion order)
 2. All corresponding values are equal (recursive `Equatable` check)
 

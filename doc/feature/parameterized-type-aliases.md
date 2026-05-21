@@ -88,6 +88,7 @@ Parameterized type aliases are **syntactic abbreviations**, not polymorphic type
 - **Let-generalization:** `id: [fn [x] x]` gets type `forall a. a -> a` — the type scheme quantifies `a` and each use instantiates fresh variables via the inference algorithm
 
 When `[Pair Int]` appears in a type annotation position, the type checker:
+
 1. Looks up `Pair` in the alias environment
 2. Checks arity: `Pair` declares 1 parameter, 1 argument provided
 3. Builds substitution `{a |-> Int}`
@@ -146,6 +147,7 @@ This is unambiguous because type bodies always contain either uppercase type nam
 ### Type Checker (`typecheck.rs`)
 
 `register_type_aliases()` stores `TypeAlias { params, body }` instead of plain `Type`. When resolving a type expression that references a parameterized alias (e.g., `[Pair Int]`):
+
 1. Build a substitution from parameter names to provided type arguments
 2. Check arity: if an alias has `n` parameters and is applied to `m` arguments where `m != n`, report a type error
 3. Apply the substitution to the body and return the resulting type

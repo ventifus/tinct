@@ -17,6 +17,7 @@ circular dependency at the module level:
 `src/builtins_seq_xform.rs`, `src/builtins_seq_gen.rs`, `src/builtins_seq_reduce.rs`
 
 The circular dependency:
+
 - `builtins*.rs` imports from `eval*.rs`: `materialize`, `eval_call`, `invoke_function`, `EvalContext`, `EvalResult`
 - `eval.rs` imports from `builtins.rs`: `standard_builtins`, `create_root_env`
 

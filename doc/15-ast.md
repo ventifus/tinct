@@ -231,18 +231,21 @@ enum Annotation {
 #### LetDecl, CaseArm, and Placeholder Details
 
 **LetDecl** — `Expr::LetDecl { bindings: Vec<Spanned<Expr>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
+
 - `VarRef { name, escaped: false, .. }` — bare identifier binding (e.g., `x`)
 - `Annotated { name, annotation }` — typed binding (e.g., `x@Int`) or structural test (e.g., `v: Ok`)
 - `Placeholder` (represented as `_`) — wildcard match, introduces no binding
 - Nested `LetDecl` — multi-level pattern for constructor payloads (e.g., `[let [let inner]]`)
 
 LetDecl appears in:
+
 - Function parameter lists: `[fn [let x@Int y] body]`
 - Case arm patterns: `[case [let x@Int] body]`
 - Type class declarations: `[class [let Equatable a] ...]` (TypeVar binding list)
 - Instance patterns: `[instance Class [pattern [let a@Int b@Float]] ...]`
 
 **CaseArm** — `Expr::CaseArm { pattern, body }` — is a match arm with explicit scoping introduced by the `case` keyword. The pattern can be:
+
 - `LetDecl` — binding pattern that introduces variables into the body's scope (e.g., `[case [let x@Int] body]`)
 - Any other expression — exact-value match (e.g., `[case 42 body]`, `[case "hello" body]`)
 
@@ -251,6 +254,7 @@ CaseArm is used inside `[match ...]` expressions. The `match` evaluator tries ea
 **Placeholder** — `Expr::Placeholder` — represents the `...` token when used as an expression (not as a Rest marker in type contexts). The type checker assigns it type `Unknown`, meaning it satisfies any constraint without producing a type error. At evaluation time, forcing a Placeholder thunk raises an `UnimplementedError` with the message `"placeholder \`...\` was evaluated — replace with an implementation"`. This allows developers to write incomplete code that type-checks but defers implementation details.
 
 Example use in a try block:
+
 ```tinct
 [try [fn [] ...]]
 === out
@@ -446,6 +450,7 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which desugars to `[g [
 ### dict_to_ast
 
 `dict_to_ast(v: &Value) -> Result<Expr, AstError>` validates and reconstructs an `Expr`:
+
 - Accepts both `Value::Variant` (new format from `ast_to_dict`) and legacy plain dicts with a `type:` string discriminator (backward compat)
 - Required fields must be present and of the correct shape
 - `span:` is optional — absent nodes get a synthetic zero span
@@ -491,6 +496,7 @@ The parser examines the first token of every `[]` to detect special forms:
 | anything else | — | `Dict` |
 
 Edge cases:
+
 - `[call: something]` — `call` followed by `:` (with no newline between) makes it a key, not a keyword. Parsed as `Dict`.
 - `[call\n: something]` — newline between `call` and `:` allows keyword recognition; parsed as `Call` with no arguments (the `: something` is parsed separately as an error or discarded depending on context).
 - `[$call x]` — `$call` is an escaped reference in head position, not the bare keyword `call`. Parsed as `Dict` (data sequence).

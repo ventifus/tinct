@@ -767,6 +767,7 @@ Display for Record(IndexMap<String, Type>):
 ```
 
 Examples (BAS era):
+
 - `Record({name: Str, age: Int})` → `[name: Str  age: Int]`
 - `Record({})` → `[]`
 

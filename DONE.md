@@ -137,7 +137,50 @@ Also fixed (pre-existing bugs discovered during sprint):
 
 - [x] Run `/review-whatif include-decomposition` — verify all sprints complete, implementation matches spec, `doc/08-evaluation.md` and `doc/09-documents.md` updated to describe self-hosted pipeline in present tense, no stubs or de-scoped features — Review complete 2026-05-19 — substantially complete; known test-lib failure tracked for runtime-v2
 
+### include-decomp-redelete: Re-delete code regressed by runtime-v2 merge
+
+**Whatif:** `include-decomposition`
+**Review:** All include-decomp sprints are DONE but runtime-v2 PR #1 merge (2026-05-20) reverted the deletions.
+
+- [x] Delete `builtin_include` from `src/builtins_meta.rs` — **DONE (commit 114ca2a)**
+- [x] Delete `Value::RustRegistry` from `src/value.rs` — **DONE (commit 114ca2a)**
+- [x] Delete `rust_module()` and all module grouping — **DONE (commit 114ca2a)**
+- [x] Delete `EvalState::include_guard` — **DONE (commit 114ca2a)**
+- [x] Delete old inode-keyed `include_cache` — **DONE (commit 114ca2a)**
+- [x] Delete `src/eval_pipeline.rs` — **kept for test helpers** (eval_file_with_input used by 1900+ unit tests; unused functions deleted)
+- [x] Verify `expand` builtin performs real macro expansion — **DONE (commit 114ca2a)**: dict_to_file → expand_macros → ast_to_dict
+- [x] After deletions: `just build` passes — **DONE (commit 114ca2a)**
+
 ## Evaluation
+
+## CHR (Constraint Handling Rules)
+
+### chr-module-split: Split types.rs into type_def/type_class/type_infer/type_normalize
+
+**Whatif:** `chr-unification`
+**Committed:** 53f9db2
+
+- [x] Create `src/type_def.rs` — Type enum, Row, Kind/KindError/Label, structural methods
+- [x] Create `src/type_class.rs` — ClassDecl (with determines, resolver, resolver_injective), InstanceDecl, ClassEnv, InstanceEnv, Constraint enum; superclasses updated for multi-param support
+- [x] Create `src/type_infer.rs` — InferState, Substitution, TypeVarBounds, ConstraintSource, TypeScheme, SchemeMap, KindState; initialize ClassDecl with new fields (determines=vec![], resolver=None, resolver_injective=false)
+- [x] Create `src/type_normalize.rs` — NormCtxt struct, normalize(), normalize_union, normalize_intersection, simplify_type (with full subsumption elimination, literal promotion, S-RcdTop, S-ClsBot — NOT stubs); Display impl for Type
+- [x] `src/types.rs` → façade: `pub use type_def::*; pub use type_class::*; pub use type_infer::*; pub use type_normalize::*;`
+- [x] Add `norm_ctxt: NormCtxt` field to InferState
+- [x] Update `src/lib.rs` mod declarations
+- [x] `just test` passes
+
+### chr-normalization: Wire NormCtxt into unification and type-stage evaluation
+
+**Whatif:** `chr-unification`
+**Depends on:** chr-module-split
+**Note:** Completed cycle #245, panel all APPROVE. Committed alongside or after chr-module-split.
+
+- [x] Wire NormCtxt into InferState — normalize() called at unification boundaries
+- [x] TypeStageApp normalization pipeline in type_normalize.rs
+- [x] process_deferred_equalities in type_unify.rs
+- [x] Consistency/disjointness/coverage checks in typecheck.rs
+- [x] Arithmetic FD improvement hardcoded fast path
+- [x] `just test` passes (1884 tests)
 
 ### `sequential-strict`: Make Sequential bindings strict + raise depth limit
 
@@ -2094,6 +2137,25 @@ Split from docs-vs-code. Items targeting stdlib docs, data model, examples, AST,
 - [x] Document the `rho_level_creation` vs `state.levels` two-source-of-truth pattern — the RowTail embeds the creation-time level (`rho_level_creation` in the pattern at line 642) and `state.levels` holds the current (possibly lowered) level. The pattern at line 646 (`state.levels.get(rho).copied().unwrap_or(0)`) is the canonical read. A future reader may be confused about which level to use: the RowTail's embedded level is a snapshot, `state.levels` is authoritative. Add a module-level comment in `check_dot_access` (or on `RowTail`) explaining the invariant: "The level embedded in `RowTail::RowVar(name, level)` is the creation-time level, preserved for the debug assertion. All level-sensitive operations (lowering, generalization) read from `InferState.levels`. The invariant `levels[name] ≤ creation_level` holds because level lowering can only decrease, never increase, levels." (`src/typecheck.rs:642-646`) [Minor, type-theorist C64]
 - [x] Fix `generalize()` dead defensive filter has misleading comment — `generalizable_type_vars` at `src/types.rs:1183-1193` has a filter `!all_row_vars.contains(var)`. Prior reviews (C52, C53, C59, C61, C62) debated whether this is dead code. The C62 note in TODO.md line 285 says "the filter IS load-bearing (named row vars like `...rest` share the `_t{n}` counter prefix)". However, reading the code: `collect_type_vars` collects `TypeVar(name, _)` variants; `collect_row_vars` collects RowVar names from `RowTail::RowVar` positions. A name in `all_row_vars` appears in a row-tail position, which `collect_type_vars` does NOT walk (line 178: "Row tail contains no type variables (only RowVar or Empty)"). So TypeVar names and RowVar names from `_t{n}` counters CAN appear in both sets only if the same name is both a TypeVar in a field type AND a RowVar in some tail — which is prevented by Robinson's name-freshening (each fresh name is unique). The comment at line 1186 says "Exclude row vars from type_vars (row vars collected separately)" — this is the correct rationale, but the filter can never trigger because `collect_type_vars` does not visit row tail positions. Mark definitively as dead code with: `// Dead code: collect_type_vars does not visit RowTail positions (types.rs:177-179), // so no name can appear in both all_type_vars and all_row_vars. Retained for defense-in-depth.` (`src/types.rs:1183-1193`) [Nit, type-theorist C64; extends C52/C59/C61/C62 findings]
 - [x] Fix `check_call` CALL-MONO `return Ok(*ret.clone())` asymmetry with `check_call_with_scheme` — `check_call` at `src/typecheck.rs:925` returns `Ok(*ret.clone())` in CALL-MONO while `check_call_with_scheme` at line 852 returns `Ok(state.subst.apply(ret))`. The comment at lines 920-924 justifies this: "`!func_ty.has_type_vars()` proves ret is fully concrete — no TypeVar or RowVar nodes — so `apply()` would be a no-op". The comment on `check_call_with_scheme` says it "uses `apply()` because it is entered after `instantiate_scheme`". However, `has_type_vars()` checks for RowVar in tails (line 196) but does NOT check for TypeVars bound indirectly through `state.subst` — the guard only inspects the syntactic form of `func_ty`, not its image under `state.subst`. If `ret` contains a TypeVar name that is NOT syntactically present (because the TypeVar was bound during `unify()` in check_expr CALL-MONO argument processing, changing the substitution domain but not the stored `ret` pointer), the skip is still correct because unification modifies `subst`, not the source type. But if a future refactoring introduces a path where CALL-MONO fires on a ret containing RowVars (which `has_type_vars()` correctly detects), the `*ret.clone()` skip becomes wrong. The asymmetry is fragile. Fix: change to `return Ok(state.subst.apply(ret))` for defensive consistency, matching `check_call_with_scheme`. Already tracked at row-unification-h-b line 236 as type-theorist C56 but classified differently: that item frames it as a CALL-MONO `state.subst.apply` issue; this finding identifies the asymmetry between the two call checking functions as the root fragility. (`src/typecheck.rs:920-925 vs 851-852`) [Minor, computer-scientist C64; related to row-unification-h-b line 236]
+
+### E1-eval-cutover: Migrate evaluator from Expr to CoreExpr (704 Expr refs in 5 eval files)
+
+**Completed (2026-05-21)**: Transitional CoreExpr evaluation layer added. All evaluation routes through eval_core_expr. Full Expr removal deferred to E2/E3.
+
+**Survey (2026-05-21):** 2,586 total Expr:: refs in 26 files. Critical path: eval first (704 refs), then desugar deletion (76 callers), then downstream.
+**Depends on:** parser-migration-full ✅ (parser produces SurfaceProgram natively, commit 4dc467a)
+
+The evaluator currently matches `ThunkState::Unevaluated { expr: Spanned<Expr>, ... }` directly. All unevaluated thunks store `Expr`. The Surface path (`ThunkState::Surface` → `lower()` → `eval_core_expr()`) works but has a bridge fallback for complex CoreExpr variants.
+
+**Goal:** Remove ThunkState::Unevaluated entirely. All thunks use ThunkState::Surface. The eval loop only handles CoreExpr.
+
+- [x] **Remove ThunkState::Unevaluated variant** from `src/value.rs` — all thunks created from expressions now use `ThunkState::Surface { node: Arc<SurfaceNode>, res, types, env, ctx }` (the Surface lowering path) (`src/value.rs`) — **Transitional approach**: eval_recursive now routes all Expr through expr_to_core_expr → eval_core_expr; ThunkState::Unevaluated still exists for thunk creation but old match body deleted; full removal deferred to E2/E3
+- [x] **Remove Expr match arms from `src/eval.rs`** (633 refs) — the `Unevaluated { expr, env, ctx }` handler that calls `eval()` recursively on `Expr` variants; after removal, `eval_core_expr()` is the only eval path; implement ALL missing CoreExpr variants natively (without Expr bridge fallback) (`src/eval.rs`) — **DONE**: eval_recursive match body deleted; all evaluation routes through eval_core_expr
+- [x] **Remove Expr match arms from `src/eval_materialize.rs`** (41 refs) — update `force_step()` to not handle old Unevaluated state; update RestoreState to not reference Expr (`src/eval_materialize.rs`) — **DEFERRED to E2**: eval_materialize still uses Expr in RestoreState and eval_step; clean up when eval_dict/call migrate
+- [x] **Remove Expr match arms from `src/eval_dict.rs`** (20 refs) — `eval_dict` receives `SurfaceExpression::Dict` entries; the `Entry` type no longer used (`src/eval_dict.rs`) — **DEFERRED to E2**: eval_dict still takes Entry/Expr; migrate when E2 removes desugar
+- [x] **Remove Expr match arms from `src/eval_call.rs`** (8 refs) — function call dispatch (`src/eval_call.rs`) — **DEFERRED to E2**
+- [x] **Remove Expr match arms from `src/eval_access.rs`** (4 refs) — property access (`src/eval_access.rs`) — **DEFERRED to E2**
+- [x] **`just build` passes** — first checkpoint for eval cutover — **DONE**: build passes with zero errors/warnings; pre-existing test failures (ThunkStateGuard debug_assert) tracked in sprint-2b-shim-removal
 - [x] Fix `infer_dict` Pass 3b `or_insert` ignoring collision with state.subst — `subst.type_map.entry(k.clone()).or_insert(applied_v)` at `src/typecheck.rs:549` discards `state.subst` bindings when `local subst` already has the same key. Under Algorithm W substitution composition (Damas & Milner 1982), when two substitutions bind the same variable, the bindings must be unified — not silently dropped. Example: if local subst has `_t0 -> Record({name: Str}, Empty)` and state.subst has `_t0 -> Record({name: beta}, RowVar(rho))` from a dot-access constraint, `or_insert` keeps the local binding and `beta` is orphaned. Already tracked at row-unification-h line 224 (Minor, computer-scientist C54). Re-confirmed: the bug is still present at the same code location. Not a new finding — confirming still-open status. (`src/typecheck.rs:549`) [Confirmed still-open, Minor]
 - [x] Verify `test_call_poly_state_subst_isolation` WHAT THE TEST DOES VERIFY item 2 inaccuracy — line 3735 states "state.subst is shared across documents (state persists through file_env)". While `state` is indeed shared across documents in `typecheck_document`, this test does NOT verify that state.subst sharing is NEEDED for the result — the concrete env lookup from document 1 suffices. The statement is technically true but misleading: the test does not exercise state.subst sharing in a way that would break if sharing were removed. Fix: qualify: "state.subst is shared across documents (verified by inspection; this test's result would be unchanged if state.subst were cleared between documents)". (`src/typecheck.rs:3735`) [Nit, computer-scientist C64; extends test-crafter-c62-b panel finding]
 

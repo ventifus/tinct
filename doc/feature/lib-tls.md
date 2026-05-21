@@ -399,6 +399,7 @@ Returns `Handle@[Binary Readable Writable Stream]` for `Tcp`,
 default when `Transport` is omitted.
 
 **`tls-connect`** — two forms:
+
 - Connector form: `tls-connect connector Transport host port opts`
   opens the connection via `connect connector Transport ...` then
   layers TLS. `Transport` must produce a `Stream` Handle.

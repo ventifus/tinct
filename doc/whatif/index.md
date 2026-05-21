@@ -108,7 +108,6 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Date-Time Support](completed/lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
 | [Pure-Tinct Regex Engine](completed/lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
 
-
 ---
 
 ## Adoption Analysis

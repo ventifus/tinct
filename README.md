@@ -371,6 +371,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 ### Unit Tests
 
 Tests across multiple modules covering:
+
 - **parser.rs** -- every AST node type, access chains, special forms, annotations, document structure, static constraints, and error cases
 - **ast.rs** -- Display/Debug formatting for all AST types
 - **eval.rs** -- core evaluation (literals, variable references, dict letrec, cycle detection), access chain evaluation (dot, bracket, range, type assert, annotated), document evaluation (scope chains, `%` pipeline, laziness, isolation), function evaluation (`fn`/`call`, named args, variadics, `_` implicit lambda desugaring, TypeAlias), depth limiting, and materialization span propagation
@@ -414,10 +415,12 @@ Add a test by creating a `.llt-eval` file in the appropriate directory, then run
 ## Requirements
 
 ### Containerized Workflow
+
 - **just** -- Command runner ([install](https://github.com/casey/just))
 - **podman** or **docker** -- Container runtime
 
 ### Native Workflow
+
 - **Rust** 1.85+ -- ([install](https://rustup.rs))
 
 ## Documentation

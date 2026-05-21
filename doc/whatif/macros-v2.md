@@ -2,6 +2,7 @@
 
 **State:** Accepted — 2026-05-17
 **Replaces:**
+
 - [`parse-stage-macros.md`](parse-stage-macros.md) — supersedes the parse-stage argument delivery approach
 - [`completed/macro-rewrite.md`](completed/macro-rewrite.md) — supersedes the defmacro-as-desugaring approach
 
@@ -145,6 +146,7 @@ Hygienic macros use `gensym` for names the caller should never reference. The op
 ```
 
 `inject: it` does three things:
+
 1. Sets the **default binding name** (`it`) — used when the macro is called in expression position.
 2. Binds **`binding`** implicitly in the macro body — a `VarRef` holding the actual name in use. In expression position: `VarRef("it")`; in dict-key position: the caller's key.
 3. Enables **dict-key override** — when called as `user: [aif ...]`, the expander uses `user` as the binding name instead of `it`. The caller can always rename by writing a dict key. When called without a key, `it` is used.
@@ -238,6 +240,7 @@ Variadic via `...rest` — already defined in `[let ...]` for function params:
 ```
 
 **Hygiene.** With `[let ...]` patterns, the template/user-code distinction is structural:
+
 - Names bound in the `[let ...]` argument pattern are *user-code bindings* — they hold pieces of the caller's input AST. No rename needed; they are the user's own names.
 - Names introduced by `gensym` in the body are *macro-introduced* — they must not capture caller-scope variables.
 
@@ -915,6 +918,7 @@ Expr::SyntaxClass {
 `Expr::SyntaxClass` is a declaration form — same treatment as `Expr::MacroDecl`. Both are filtered from the post-expansion AST before type-checking; both have `panic!` arms in the evaluator (expansion guarantees their removal). Syntax class declarations are pre-scanned and registered alongside `MacroDecl` nodes before the main expansion walk.
 
 When a macro parameter is annotated with a syntax class name (`name@pragma-name`) or a built-in `Expr` variant (`name@VarRef`), the expander validates the argument before calling the macro body:
+
 - Built-in variant: "argument 'name' expected VarRef, got Call"
 - Named syntax class: uses the `message:` field
 Validation failure raises `MacroError` at the call-site span.
@@ -931,6 +935,7 @@ Defines `Entry`, `Annotation`, and `Expr` nominal types plus `flatten-args`, `id
 **Current:** `ast_to_dict` produces plain dicts with string `type:` fields: `{type: "var-ref" name: "x"}`.
 **Proposed:** Produces typed `Expr` variant values: `VarRef(name: "x")`, `Call(func: ..., args: [...])`, etc.
 **Impact: Major** — every existing AST consumer must migrate from string-type dispatch to variant pattern matching:
+
 - `stdlib/macros.llt` — `tmpl`, `do`, `begin` macros use `[get "type" node]` string equality (~15 node-building sites)
 - `stdlib/formatter/compact.llt` and `stdlib/formatter/pretty.llt` — both dispatch on `{type: "..."}` string fields with wildcard fallbacks; all arms need migration; new arms needed for `Splice` and `MacroDecl`
 - `src/builtins_meta.rs` — `ast-of` constructs output in the old schema

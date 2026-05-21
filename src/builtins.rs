@@ -384,10 +384,10 @@ pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_bool_check,
     builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_deep_materialize,
     builtin_dict_check, builtin_eval, builtin_eval_types, builtin_expand, builtin_float_check,
-    builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
-    builtin_include_cache_get, builtin_include_cache_put, builtin_int_check, builtin_llt_repr,
-    builtin_load, builtin_macro_injects, builtin_null_check, builtin_raise, builtin_str_check,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include_cache_get,
+    builtin_include_cache_put, builtin_int_check, builtin_llt_repr, builtin_load,
+    builtin_macro_injects, builtin_null_check, builtin_raise, builtin_str_check, builtin_tag_of,
+    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1096,10 +1096,26 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("*", builtin_mul, [Strictness::Seq, Strictness::Seq]),
         builtin!("/", builtin_div_float, [Strictness::Seq, Strictness::Seq]),
         // Arithmetic stable aliases (used internally by prelude to allow shadowing)
-        builtin!("builtin-add", builtin_add, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-sub", builtin_sub, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-mul", builtin_mul, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-div", builtin_div_float, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "builtin-add",
+            builtin_add,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-sub",
+            builtin_sub,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-mul",
+            builtin_mul,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-div",
+            builtin_div_float,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         // Comparison
         builtin!("=", builtin_eq, [Strictness::Seq, Strictness::Seq]),
         builtin!("<", builtin_lt, [Strictness::Seq, Strictness::Seq]),
@@ -1124,7 +1140,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-length", builtin_length, [Strictness::Spine]), // Stable alias
         builtin!("merge", builtin_merge),
         builtin!("append", builtin_append, [Strictness::Seq, Strictness::Id]),
-        builtin!("builtin-append", builtin_append, [Strictness::Seq, Strictness::Id]), // Stable alias
+        builtin!(
+            "builtin-append",
+            builtin_append,
+            [Strictness::Seq, Strictness::Id]
+        ), // Stable alias
         builtin!(
             "builtin-get",
             builtin_get,
@@ -1151,7 +1171,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("str", builtin_str, [Strictness::Seq]),
         builtin!("builtin-str", builtin_str, [Strictness::Seq]), // Stable alias
         builtin!("split", builtin_split, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-split", builtin_split, [Strictness::Seq, Strictness::Seq]), // Stable alias
+        builtin!(
+            "builtin-split",
+            builtin_split,
+            [Strictness::Seq, Strictness::Seq]
+        ), // Stable alias
         builtin!(
             "replace",
             builtin_replace,
@@ -1252,7 +1276,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]), // Stable alias
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
         // Evaluation control
-        builtin!("deep-materialize", builtin_deep_materialize, [Strictness::Seq]),
+        builtin!(
+            "deep-materialize",
+            builtin_deep_materialize,
+            [Strictness::Seq]
+        ),
         builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("raise", builtin_raise, [Strictness::Seq]),
         builtin!("builtin-raise", builtin_raise, [Strictness::Seq]), // Stable alias
@@ -1411,16 +1439,44 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-iterate", builtin_iterate),
         builtin!("builtin-unfold", builtin_unfold),
         builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine]),
-        builtin!("filter", builtin_filter, [Strictness::Id, Strictness::Spine]),
+        builtin!(
+            "filter",
+            builtin_filter,
+            [Strictness::Id, Strictness::Spine]
+        ),
         builtin!("take", builtin_take, [Strictness::Seq, Strictness::Spine]),
         builtin!("drop", builtin_drop, [Strictness::Seq, Strictness::Spine]),
-        builtin!("reduce", builtin_reduce, [Strictness::Id, Strictness::Id, Strictness::Spine]),
+        builtin!(
+            "reduce",
+            builtin_reduce,
+            [Strictness::Id, Strictness::Id, Strictness::Spine]
+        ),
         // Stable aliases for map/filter/take/drop/reduce (used internally by prelude to allow shadowing)
-        builtin!("builtin-map", builtin_map, [Strictness::Id, Strictness::Spine]),
-        builtin!("builtin-filter", builtin_filter, [Strictness::Id, Strictness::Spine]),
-        builtin!("builtin-take", builtin_take, [Strictness::Seq, Strictness::Spine]),
-        builtin!("builtin-drop", builtin_drop, [Strictness::Seq, Strictness::Spine]),
-        builtin!("builtin-reduce", builtin_reduce, [Strictness::Id, Strictness::Id, Strictness::Spine]),
+        builtin!(
+            "builtin-map",
+            builtin_map,
+            [Strictness::Id, Strictness::Spine]
+        ),
+        builtin!(
+            "builtin-filter",
+            builtin_filter,
+            [Strictness::Id, Strictness::Spine]
+        ),
+        builtin!(
+            "builtin-take",
+            builtin_take,
+            [Strictness::Seq, Strictness::Spine]
+        ),
+        builtin!(
+            "builtin-drop",
+            builtin_drop,
+            [Strictness::Seq, Strictness::Spine]
+        ),
+        builtin!(
+            "builtin-reduce",
+            builtin_reduce,
+            [Strictness::Id, Strictness::Id, Strictness::Spine]
+        ),
         builtin!(
             "builtin-join",
             builtin_join,
@@ -1618,7 +1674,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
         builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
         builtin!("builtin-proxy", builtin_proxy),
-        builtin!("builtin-macro-injects", builtin_macro_injects, [Strictness::Seq]),
+        builtin!(
+            "builtin-macro-injects",
+            builtin_macro_injects,
+            [Strictness::Seq]
+        ),
     ]
 }
 
@@ -1657,9 +1717,14 @@ fn load_stdlib_module(
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(), Box<crate::error::EvalError>> {
-    let mut file = crate::parser::parse(source).map(|o| crate::ast_convert::surface_program_to_file(&o.program)).map_err(|e| {
-        crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
-    })?;
+    let mut file = crate::parser::parse(source)
+        .map(|o| crate::ast_convert::surface_program_to_file(&o.program))
+        .map_err(|e| {
+            crate::error::EvalError::internal(
+                format!("{module_name} parse error: {e}"),
+                Span::origin(),
+            )
+        })?;
 
     crate::desugar::desugar_file(&mut file.node);
     crate::resolve::resolve_file(&file.node);
@@ -1717,9 +1782,9 @@ std::thread_local! {
 /// Returns None if create_stdlib_env has not yet been called on this thread.
 pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Arc<Mutex<crate::arena::ThunkArena>>> {
     STDLIB_ARENA_CACHE.with(|c| {
-        c.borrow()
-            .as_ref()
-            .map(|stdlib_arena| Arc::new(Mutex::new(stdlib_arena.lock().unwrap().clone_for_child())))
+        c.borrow().as_ref().map(|stdlib_arena| {
+            Arc::new(Mutex::new(stdlib_arena.lock().unwrap().clone_for_child()))
+        })
     })
 }
 
@@ -1988,7 +2053,10 @@ mod tests {
     /// Build a materialized dict thunk whose entries are allocated into `ctx`'s arena.
     /// Accepts `IndexMap<Key, Arc<Thunk>>` (convenient for test construction) and
     /// stores each as a `ThunkId` in `Value::Dict`, as the runtime requires.
-    fn thunk_dict(map: IndexMap<Key, Arc<Thunk>>, ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+    fn thunk_dict(
+        map: IndexMap<Key, Arc<Thunk>>,
+        ctx: &Arc<crate::eval::EvalContext>,
+    ) -> Arc<Thunk> {
         let mut id_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(map.len());
         for (k, v) in map {
             id_map.insert(k, ctx.alloc_thunk(v));
@@ -2050,19 +2118,19 @@ mod tests {
 
         // Check that Int is defined
         assert!(
-            type_env.borrow().get("Int").is_some(),
+            type_env.read().unwrap().get("Int").is_some(),
             "Int should be defined in type-stage env"
         );
 
         // Check that Str is defined
         assert!(
-            type_env.borrow().get("Str").is_some(),
+            type_env.read().unwrap().get("Str").is_some(),
             "Str should be defined in type-stage env"
         );
 
         // Check that union is defined
         assert!(
-            type_env.borrow().get("union").is_some(),
+            type_env.read().unwrap().get("union").is_some(),
             "union should be defined in type-stage env"
         );
     }
@@ -6269,15 +6337,15 @@ mod tests {
 
         // The cached arena should be a snapshot of the stdlib arena
         assert_eq!(
-            cached_arena.borrow().len(),
-            arena.borrow().len(),
+            cached_arena.lock().unwrap().len(),
+            arena.lock().unwrap().len(),
             "cached arena should be a snapshot of the stdlib arena"
         );
 
         assert!(
-            cached_arena.borrow().len() > 390,
+            cached_arena.lock().unwrap().len() > 390,
             "cached arena should contain at least 390 stdlib thunks (prelude + macros), got {}",
-            cached_arena.borrow().len()
+            cached_arena.lock().unwrap().len()
         );
     }
 
@@ -6290,7 +6358,7 @@ mod tests {
         // are now in standard_builtins.
         // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
         assert_eq!(
-            count, 226,
+            count, 227,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6394,7 +6462,11 @@ mod tests {
         assert!(names.contains(&"link"), "missing link");
         assert!(names.contains(&"read-link"), "missing read-link");
         assert!(names.contains(&"from-json"), "missing from-json");
-        assert!(names.contains(&"include"), "missing include");
+        // include was deleted (builtin_include removed in include-decomp sprint)
+        assert!(
+            !names.contains(&"include"),
+            "include should NOT be in standard_builtins (deleted in include-decomp sprint)"
+        );
         // Sequences (registered as builtin-NAME; prelude exports unwrapped names)
         assert!(names.contains(&"builtin-seq"), "missing builtin-seq");
         assert!(names.contains(&"builtin-head"), "missing builtin-head");
@@ -6525,8 +6597,8 @@ mod tests {
         );
         assert_eq!(
             names.len(),
-            192,
-            "expected 192 builtins, got {} (removed eval-ast, added eval and eval-types; 9 meta primitives now in standard_builtins: gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects, ast-of; 7 include-decomp primitives: blake3, cap-identity, load, expand, eval, eval-types, include-cache-get, include-cache-put)",
+            227,
+            "expected 227 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }
@@ -9659,7 +9731,7 @@ mod tests {
     #[test]
     fn test_stdlib_wholeness() {
         let stdlib_env = create_stdlib_env().expect("create_stdlib_env() must not fail");
-        let env = stdlib_env.borrow();
+        let env = stdlib_env.read().unwrap();
 
         // Names that must exist: Rust-native builtins registered in standard_builtins()
         // plus a representative selection of prelude-defined functions.

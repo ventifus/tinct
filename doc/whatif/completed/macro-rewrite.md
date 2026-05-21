@@ -187,9 +187,11 @@ and `i"..."` migration:
 | `tmpl` string interpolation | In `src/parser.rs` | **Open** — migrate to `[defmacro tmpl]` |
 
 Rust that is **eliminated** by macro-rewrite:
+
 - `desugar_interpolated_string()` in `src/parser.rs`
 
 Rust that **stays** (match as special form, not macro):
+
 - `Expr::Match`, `Pattern::*` variants — implemented in typing-cluster A2/A3
 - `eval::eval_match()`, `typecheck::infer_match()`, `formatter::format_match()`
 

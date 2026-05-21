@@ -123,12 +123,14 @@ than automata states, and better error messages.
    - `constrain(Fn(A → B) <: Fn(C → D))` → `constrain(C <: A)` + `constrain(B <: D)`
    - `constrain(Record(R1) <: Record(R2))` → constrain shared fields covariantly
 2. **Type variables carry bounds instead of equality bindings:**
+
    ```rust
    struct TypeVarBounds {
        lower: Vec<Type>,  // types that are subtypes of this var (positive positions)
        upper: Vec<Type>,  // types that are supertypes of this var (negative positions)
    }
    ```
+
    Satisfiable iff `join(lower) <: meet(upper)`.
 3. **Union and intersection types emerge from bound compaction** — not user-written
    syntax but inferred result types when a variable has multiple lower/upper bounds.

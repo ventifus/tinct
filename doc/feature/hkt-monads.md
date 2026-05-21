@@ -446,6 +446,7 @@ HasField l Unknown Unknown
 ```
 
 `get`'s full scheme:
+
 ```
 get : ∀ (l : Label) (d : *) (a : *). HasField l d a => StringLiteral(l) → d → a
 ```
@@ -477,6 +478,7 @@ Accepted 2026-05-11. The acceptance review identified the following critical iss
 4. **`UNIFY-OPERATOR` rule added** — specified above.
 
 Decisions made:
+
 - **Appendable kind** — Option A adopted: `Appendable` keeps the hardcoded fixed-instance set; Appendable has an unsolved Str problem better addressed by multi-parameter typeclasses.
 - **Annotation disambiguation** — bracket application form `@[Seq Int]` = `App(Seq, Int)` is the canonical parameterized type annotation.
 - **Foldable method name** — named `fold` (not `foldl`/`foldr`): tinct sequences are finite, so the left/right distinction does not apply; `FoldableSeq.fold = reduce`. `sequence`/`traverse` are generic over Traversable.

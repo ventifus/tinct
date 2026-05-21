@@ -422,6 +422,7 @@ The formal rules map directly to the implementation:
 ```
 
 DICT-SCOPE creates `ρ_dict` with parent `ρ_builtins`:
+
 - `ρ_dict.B = {even? ↦ θ₁, odd? ↦ θ₂, result ↦ θ₃}` where all `θᵢ = Unevaluated(eᵢ, ρ_dict)`
 - Materializing `θ₃` evaluates `[even? 4]` in `ρ_dict`
 - `lookup(even?, ρ_dict)` → `θ₁` (clause 1) → materializes `θ₁` → creates closure capturing `ρ_dict`
@@ -437,6 +438,7 @@ DICT-SCOPE creates `ρ_dict` with parent `ρ_builtins`:
 ```
 
 SEQ-SCOPE with `ρ₀ = ρ_builtins`:
+
 1. Evaluate `e₁` in `ρ₀` → DICT-SCOPE creates `ρ_dict₁` with `{x ↦ θ_10, double ↦ θ_fn}`
 2. Materialize → `Dict({x: θ_10, double: θ_fn})`
 3. Create `ρ₁ = ({x ↦ θ_10, double ↦ θ_fn}, Some(ρ₀))`
@@ -457,6 +459,7 @@ SEQ-SCOPE with `ρ₀ = ρ_builtins`:
 ```
 
 DOC-PIPELINE (with `d = 0`, `Σ₀ = {}`):
+
 1. `pipeline_bindings₁ = {% ↦ θ_empty}`. Evaluate doc₁ → `θ₁ = Dict({base_port: θ_8080})`. `Σ₁ = {}` (no name on doc₁).
 2. `pipeline_bindings₂ = {% ↦ θ₁}`. `ρ_doc₂` has NO access to `ρ_doc₁`'s bindings — `base_port` would fail. Data flows only through `%`.
 3. `%.base_port` resolves: `lookup(%, ρ_doc₂)` → `θ₁`, then access chain `.base_port` on the dict.
@@ -574,6 +577,7 @@ The CLI flag name is derived from the cap name by stripping the `%` prefix: `%nc
 | `@ClockCap`        | `--cap-clock NAME` | Clock capability (real or fixed timestamp) |
 
 **`@Handle` mode suffixes** for `--cap-file`:
+
 - `r` — readable text handle (`$slurp` returns a String)
 - `rb` — readable binary handle (`$slurp` returns Bytes)
 - `w` — writable text handle (`$write-handle` writes a String)

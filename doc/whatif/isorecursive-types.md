@@ -84,6 +84,7 @@ Type::RecVar(String)     // "a"
 ```
 
 Example — a linked list of Int:
+
 ```
 Type::Recursive {
     var: "lst",

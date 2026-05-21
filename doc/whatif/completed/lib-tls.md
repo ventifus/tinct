@@ -469,6 +469,7 @@ Returns `Handle[Binary Readable Writable Stream]` for `Tcp`,
 default when `Transport` is omitted.
 
 **`tls-connect`** — two forms:
+
 - Connector form: `tls-connect connector Transport host port opts`
   opens the connection via `connect connector Transport ...` then
   layers TLS. `Transport` must produce a `Stream` Handle.
@@ -514,6 +515,7 @@ tinct run --cap-net net=api.internal script.llt
 
 Multiple `--cap-net` flags with the same NAME accumulate into one
 NetCap allowlist:
+
 ```
 tinct run --cap-net api=api.internal --cap-net api=metrics.internal script.llt
 # $api allows both hosts

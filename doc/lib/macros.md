@@ -15,4 +15,3 @@ Monadic do-notation macro transformer (STUB)
 ```tinct
 (value)
 ```
-

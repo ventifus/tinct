@@ -145,6 +145,7 @@ utils: [include "lib/utils.llt"]   # Namespaced
 ```
 
 **Why single brackets:**
+
 - Simpler — one bracket type, one concept
 - `()` and `{}` are both freed for future use
 - Bare identifier in head position signals application, approaching Lisp's `(f x y)` ergonomics
@@ -540,6 +541,7 @@ process: [fn [hosts@T2] ...]   # alias resolves transitively
 **Bracket application for type parameters.** In `xs@[Seq Int]`, the `@` is the annotation separator and `[Seq Int]` is the annotation — a type-stage function application. `Seq` is called with `Int` as its element type argument. This is identical to how data bracket expressions work: `[Seq Int]` evaluates `Seq` in the type-stage Env and applies `Int` as an argument.
 
 **`[Map T]` vs `[Map [K: V]]`.** These are two perspectives on the same map type:
+
 - `[Map T]` — collection perspective: iterate the values, key type is `Any`. Useful when you only care about the value type.
 - `[Map [K: V]]` — lookup perspective: access by key of type `K`, value type `V`. Useful when the key type matters.
 
@@ -635,6 +637,7 @@ Note: The `Expr::TypeApp` AST variant exists for legacy reasons but is never con
 ```
 
 **Type conventions** (enforced by type checker, not parser):
+
 - Uppercase first letter = concrete type (`String`, `Number`, `Person`, `Fn`)
 - Lowercase first letter = type variable (`a`, `b`, `k`, `v`)
 - `Any` = dynamic escape hatch

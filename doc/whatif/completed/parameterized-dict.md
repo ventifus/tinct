@@ -123,6 +123,7 @@ Under BAS, this is a first-class Boolean-algebra union — `Record ∨ Map`. BAS
 `Null` in tinct is the empty closed record `[]` — `Type::Record(Row{fields:{}, tail:Empty})`. `V | Null` is a BAS union expressible in the existing type system.
 
 **Runtime behavior change for `get` on typed maps:** Currently `builtin-get` raises `KeyNotFound` on a missing key. For the `V | Null` return type to be honest, `get` on a value typed `Map@[K: V]` must return `[]` rather than error on miss. This requires either:
+
 - A new `get?` builtin (safe get, returns `V | Null`) alongside the existing `get` (which errors on miss and is appropriate for records where the field is guaranteed to exist), or
 - The TypeAssert elaboration for `@[Map [key: K  value: V]]` wraps subsequent `get` calls in a null-returning variant
 
@@ -155,6 +156,7 @@ The converse does **not** hold: `Map@[K: V] <: Record(row)` is false — a map d
 Inference **always produces `Record` types** for dict literals. This is required by the principal type property (Damas & Milner 1982): `Record([x: IntLiteral(42), y: IntLiteral(99)], Empty)` is strictly more informative than `Map@[Str: Int]`, which would lose the field-name information. Inference must produce the most general *most specific* type.
 
 `Map[K: V]` arises only from:
+
 - Explicit `@[Map [K: V]]` annotations
 - Builtins whose return type is declared `Map[K: V]` (e.g., future regex group-capture returns)
 - Inference from `builtin-reduce` accumulating uniform-value `set` operations (Phase 2 refinement, not Phase 1)
@@ -162,6 +164,7 @@ Inference **always produces `Record` types** for dict literals. This is required
 ### Unification Rules
 
 `unify(Map[K₁ V₁], Map[K₂ V₂])` proceeds element-wise:
+
 - Unify K₁ with K₂ (K is invariant — unification produces a common binding, not a subtype)
 - Unify V₁ with V₂
 
@@ -224,6 +227,7 @@ Both forms reduce to the same algorithm at runtime: sort keys canonically, then 
 **Current:** `Type::Record(Row)` is the only dict variant. `@Dict` expands to an open record with a fresh row variable.
 
 **Proposed:**
+
 - Add `Type::Map(Box<Type>, Box<Type>)`
 - Register `Record`, `Map`, `Dict` in `TypeEnv::with_builtins()`; `Record` and `Map` produce fresh-variable open types at each use; `Dict` is a BAS union
 - Add `is_subtype` rules: `Map(K, V₁) <: Map(K, V₂)` when `V₁ <: V₂` (K invariant, V covariant); `Record(ρ) <: Dict`; `Map(K,V) <: Dict`; `Null <: Map(K,V)`; [RECORD→MAP] cross-form rule
@@ -236,6 +240,7 @@ Both forms reduce to the same algorithm at runtime: sort keys canonically, then 
 **Current:** `@Dict` produces a fresh open record. `get` returns `Any` for dict access.
 
 **Proposed:**
+
 - `check_get`: target type `Map@[K: V]` → return `V | Null`; target `Record(ρ)` → return field type (total)
 - `check_get?`: new builtin, returns `V | Null`
 - `check_get_or`: target `Map@[K: V]` → return `V`
@@ -249,6 +254,7 @@ Both forms reduce to the same algorithm at runtime: sort keys canonically, then 
 **Current:** No `get?` builtin. `get` errors on missing key. `=` on dicts silently returns `false`.
 
 **Proposed:**
+
 - Add `get?`: returns the value or `[]` (Null) on missing key — no error
 - Add `record?`, `map?` type-narrowing predicates (returning Bool)
 - Update `dict?` to narrow to `Dict` (union)
@@ -261,6 +267,7 @@ Both forms reduce to the same algorithm at runtime: sort keys canonically, then 
 **Current:** `get-or` type is `Dict → Key → Any → Any`.
 
 **Proposed:**
+
 - `get-or` implemented in terms of `get?`: returns the value or the default
 - Type signature: `Map@[K: V] → K → V → V`
 - `has?` type signature: `Map@[K: V] → K → Bool`

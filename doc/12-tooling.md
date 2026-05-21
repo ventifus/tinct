@@ -9,6 +9,7 @@ The current formatter (`src/formatter.rs`) is an AST-based formatter that walks 
 ### Line-Breaking: Width + Element Count
 
 A bracket expression `[...]` is rendered on a single line if both conditions are met:
+
 1. The fully-expanded single-line form fits within **80 characters** (including indentation)
 2. The expression contains **≤ 4 entries** (key-value pairs or positional values)
 
@@ -37,11 +38,13 @@ Semicolons are normalized away. They are syntactic sugar for newlines, and the f
 The formatter defines one canonical Tinct style with no layout configuration options. CLI flags control I/O behavior and formatter selection:
 
 **I/O flags:**
+
 - `--check` — exit 1 if any file is not formatted (CI mode)
 - `--in-place` — overwrite files in place
 - `stdin` (`-` as file argument) — read from stdin, write to stdout
 
 **Formatter selection:**
+
 - `-o <name>` / `--output <name>` — select formatter by name; resolves to `stdlib/cli/fmt/<name>.llt`; defaults to `pretty`
   - `-o pretty` (default) — full layout with comment preservation (multi-line, indented)
   - `-o compact` — single-line compact output (comments stripped, semicolons for separators)
@@ -82,7 +85,7 @@ $ tinct fmt -o compact config.llt
 
 **Section headers in compact mode:**
 
-Section headers (`---`) emit as `; ` (semicolon + space) after the header metadata:
+Section headers (`---`) emit as `;` (semicolon + space) after the header metadata:
 
 ```bash
 # Input
@@ -156,6 +159,7 @@ tinct run -i json -e '%.x' <<< '{"x":42}'          # → 42
 **Convention:** Input formatters live in `stdlib/cli/in/`. Each formatter reads from the `%stdin` Handle and produces a tinct value as `%` for the next stage.
 
 **Included input formatters:**
+
 - `json` — `[from-json [slurp %stdin]]` (parse JSON from %stdin)
 
 When `-i` is present, auto-detection is suppressed and the input program reads from `%stdin` as a Handle (via `$slurp` or `$lines`).
@@ -172,6 +176,7 @@ tinct run -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
 **Convention:** Output formatters live in `stdlib/cli/out/`. Each formatter receives `%` and produces formatted output (typically via `$emit` or as the final value).
 
 **Included output formatters:**
+
 - `raw` — Emit strings unquoted; Seq elements one per line; error for other types
 - `json` — Serialize to compact JSON (Seq requires `| collect` first; error otherwise)
 - `json-pretty` — Serialize to indented JSON (Seq requires `| collect` first; error otherwise)
@@ -380,6 +385,7 @@ tinct fmt --strict --check *.llt
 | 1 | Type errors detected (strict mode) or other error |
 
 **When strict mode is active:**
+
 - All type errors are printed to stderr in the same format as advisory warnings
 - The error count is reported: `type checking failed with N error(s) (--strict mode)`
 - Evaluation or formatting does not proceed
@@ -395,6 +401,7 @@ Test files use the `.llt-eval` extension to distinguish them from regular `.llt`
 ### Structure
 
 A test file consists of:
+
 1. Optional directives (first line only, starting with `#`)
 2. Tinct source code (the input to test)
 3. Labeled sections (delimited by `=== <label>`)
@@ -494,6 +501,7 @@ expected Str, found Int
 ```
 
 This test:
+
 - Parses successfully
 - Evaluates to `{"x": 42, "y": 99}` (output matches `=== out`)
 - Produces a type warning about `y` (warning substring matches `=== warn`)
@@ -527,6 +535,7 @@ All runners are in `tests/corpus_tests.rs`.
 Tinct provides multiple unprivileged sandboxing layers to restrict what evaluation can access. All work without root privileges. Sandbox flags are scoped to the subcommands that use them — for example, `--no-fs` and `--timeout` are `eval` subcommand flags. For the document pipeline model (how sandbox flags interact with multi-document evaluation and `%` pipeline), see [Documents](09-documents.md).
 
 **Implemented features:**
+
 - `--no-fs`: Application-level filesystem blocking (disables `$include` entirely)
 - `--timeout <duration>`: SIGALRM-based wall-clock limit (e.g., `--timeout 5s`)
 - `--require-integrity`: Require BLAKE3 hashes on all `$include` calls
@@ -652,6 +661,7 @@ tinct run --cap-file out=/tmp/output.bin:wb script.llt
 ```
 
 Mode suffix:
+
 - `r` — read-only, text (`$slurp` returns a String)
 - `rb` — read-only, binary (`$slurp` returns Bytes)
 - `w` — write-only, text (`$write-handle` writes a String; file is created/truncated)
@@ -693,6 +703,7 @@ Filesystem access is controlled via the object capability model: `$include` requ
 **Landlock (Linux 5.13+):** Auto-triggered when `--cap-fs` entries are present (unless `--no-landlock` is set). Landlock is a kernel-level LSM that enforces read-only access on the `--cap-fs` paths plus the directories containing the main input files. Defense-in-depth: if a bug in cap-std or DirCap handling allows an unauthorized path to reach `open()`, Landlock catches it at the kernel level. Gracefully degrades on older kernels (silently skipped).
 
 **Sandboxing model:**
+
 - Every file access requires a DirCap. No ambient `$include "path.llt"` — must be `[include %pwd "path.llt"]` or `[include %libdir "io.llt"]`.
 - `%pwd` and `%libdir` are injected automatically (suppress with `--no-pwd` / `--no-libdir`).
 - `--cap-fs data=/var/data` injects `%data` as a DirCap for `/var/data`. Repeatable.

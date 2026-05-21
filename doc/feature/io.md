@@ -35,6 +35,7 @@ call-by-need configuration language. The formal justification is in §Formal
 Grounding below.
 
 Each I/O builtin:
+
 - Is **strict in its arguments** — arguments are materialized before the I/O
   operation executes
 - **Returns a pure tinct value** — the result (string, dict, seq, or an opaque
@@ -307,6 +308,7 @@ A `NetCap`'s allowlist is a list of entries. Each entry is one of:
 | `"fd00::/8"` | IPv6 CIDR range |
 
 Matching at `connect`/`tls` time:
+
 1. Check the target hostname against all hostname and glob entries (exact, pre-DNS check)
 2. Resolve the hostname to one or more IP addresses
 3. Check each resolved IP against all CIDR entries

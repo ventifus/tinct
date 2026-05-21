@@ -916,6 +916,7 @@ The display format is:
 ```
 
 The materialization clause uses a context-sensitive verb determined by `infer_materialization_verb()`:
+
 - `"called at"` when the first visible stack frame starts with `'['` (function call)
 - `"accessed at"` when the stack contains frames with "access", `.`, or "bracket" (field access)
 - `"materialized at"` as the fallback
@@ -979,6 +980,7 @@ for frame in self.stack.iter().filter(|f| {
 **Important:** This filter operates only on `Display` output. The `self.stack` field is not modified — all frames are preserved for programmatic access (LSP diagnostics, future tooling).
 
 **Naming guidance for prelude authors:** If you write a helper function that should not appear in user-facing stack traces, suffix its name with:
+
 - `-impl` (implementation detail)
 - `-step` (iteration step in a recursive helper)
 - `-check` (internal validation)
@@ -1092,4 +1094,3 @@ All 36 `ErrorKind` variants map to stable error codes and human-readable message
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
 The variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
-

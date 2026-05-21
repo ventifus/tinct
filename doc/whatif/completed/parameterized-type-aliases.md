@@ -1,4 +1,5 @@
 # What If: Parameterized Type Aliases for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to add parameterized (generic) type aliases to tinct's
@@ -82,6 +83,7 @@ intended type arguments:
 ```
 
 With parameters:
+
 ```tinct
 [
   Mapper: [type [a b] [Fn@b [a]]]
@@ -145,6 +147,7 @@ polymorphic type schemes. The distinction:
 
 When `[Pair Int]` appears in a type annotation position, the type
 checker:
+
 1. Looks up `Pair` in the alias environment
 2. Checks arity: `Pair` declares 1 parameter, 1 argument provided
 3. Builds substitution `{a |-> Int}`
@@ -240,6 +243,7 @@ and stores the result in `TypeEnv::type_aliases` as a plain `Type`.
 tracking, no instantiation.
 
 **Proposed:**
+
 1. **Registration:** `register_type_aliases()` stores
    `TypeAlias { params, body }` instead of plain `Type`.
 2. **Resolution:** When resolving a type expression that references a

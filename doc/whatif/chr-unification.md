@@ -55,11 +55,13 @@ x@[or Int Null]   # or called pre-inference; resolves to Type::Union([Int, Null]
 Tinct's type constraints are Constraint Handling Rules (CHRs). Two rule forms:
 
 **Simplification rules** (type families / type-stage functions) — fire unconditionally, replacing the expression with its normal form (CHR `<=>` rule):
+
 ```
 TypeStageApp("F", [T₁, T₂]) <=> type-stage-eval F(T₁, T₂)   # fires when all args are ground
 ```
 
 **Propagation rules** (functional dependencies) — fire when guard becomes ground, adding an equality to the constraint store while retaining the original constraint (CHR `==>` rule):
+
 ```
 Addable a b c, a ≈ T₁, b ≈ T₂ ==> c ≈ TypeStageApp("AddResult", [T₁, T₂])
 ```
@@ -434,6 +436,7 @@ DivMod:  [class [a b q r]  [determines: [[[a b] [q r]]]   resolver: DivModResult
 ```
 
 Multiple FDs in the structural bracket require one resolver per FD, in the same order as the `determines:` list:
+
 ```tinct
 BiConvert: [class [a b]  [determines: [[[a] b]  [[b] a]]  resolver: [AtoB  BtoA]]  ...]
 ```
@@ -441,6 +444,7 @@ BiConvert: [class [a b]  [determines: [[[a] b]  [[b] a]]  resolver: [AtoB  BtoA]
 When there is exactly one FD, `resolver:` takes a single name. When there are N FDs, `resolver:` takes a list of N names.
 
 `kinds:` also goes in the structural bracket:
+
 ```tinct
 Functor: [class [f]  [kinds: [f: Operator]]
   fmap: [fn@[f b] [[f a]]]]
@@ -493,6 +497,7 @@ Instances are anonymous — they register in the InstanceEnv and are selected au
 The `resolver:` key names the type-stage function(s) used by the normalization pass when reducing `TypeStageApp(class_name, ground_args)`. For a class with one FD, `resolver:` takes a single name. For a class with N FDs, `resolver:` takes a list of N names in the same order as the `determines:` list — the Kth resolver is called when the Kth FD's determining positions become ground.
 
 Each resolver is called via:
+
 1. Convert `Type::*` to type dicts with **literal widening**: `IntLiteral(_) → [kind: "named" name: "Int"]`, `FloatLiteral(_) → [kind: "named" name: "Float"]`, `StringLiteral(_) → [kind: "named" name: "Str"]`, then all other types by their kind tag. Widening happens before conversion so that call sites `[+ 1 2]` (where args are `IntLiteral(1)`, `IntLiteral(2)`) produce the same resolver inputs as explicitly-annotated `Int` args.
 2. Look up the resolver by name in the type-stage Env (carried by `NormCtxt`)
 3. Call `eval(resolver_fn, type_dicts, type_stage_env)` — returns a type dict for the determined position(s). If `eval()` encounters an `InProgress` thunk (resolver cycle not caught by `call_stack`), the resulting `EvalError` is caught at the `normalize()` call site and converted to `TypeError("type-stage evaluation failed: {message}")`. This is not catchable by user `$try` — TypeErrors are static diagnostics, not runtime errors.
@@ -639,6 +644,7 @@ Two cases at let-generalization:
 ### ~~Congruence Rule for Non-Injective Resolvers~~ — Resolved
 
 **Resolution:** Deferred equality for non-injective resolvers. Case 1 of `unify_normalized` now splits on `ClassDecl.resolver_injective`:
+
 - Injective F: pairwise congruence (sound — equal outputs imply equal inputs)
 - Non-injective F: add to `state.deferred_equalities`; process after each `unify` call when args become ground
 
@@ -1305,15 +1311,18 @@ Add `structural_metadata: Option<Spanned<Expr>>` to `StackFrame::ClassDecl`. In 
 **Current:** `Expr::InstanceDecl { class_name: String, instance_type: Box<Spanned<Expr>>, methods: Vec<Spanned<Entry>> }` — the class name and instance type are bundled in a bracket header; all methods are flat at the top level. `StackFrame::InstanceDecl` in `parser.rs` requires the first expression to be an `Expr::Dict(len>=2)` or `Expr::Call` (the header bracket); bare `VarRef` class names cause a parse error.
 
 **Proposed — `Expr::InstanceDecl`:**
+
 ```rust
 Expr::InstanceDecl {
     class_name: String,
     arms: Vec<(Spanned<Expr>, Vec<Spanned<Entry>>)>,  // (Expr::PatternDecl, method entries)
 }
 ```
+
 `instance_type` is removed (patterns carry type info); `methods` becomes per-arm. All exhaustive-match sites must be updated: `eval.rs`, `typecheck.rs`, `formatter.rs`, `desugar.rs`, `resolve.rs`, `lsp/analysis.rs`, `ast_dict.rs`, `expand.rs` (~8 files, mechanical arm addition).
 
 **Proposed — `StackFrame::InstanceDecl`:** Replace `instance_type`/`methods`/`pending_key` fields with:
+
 ```rust
 StackFrame::InstanceDecl {
     class_name: String,
@@ -1323,7 +1332,9 @@ StackFrame::InstanceDecl {
     span_start: Position,
 }
 ```
+
 `pending_methods` (as previously sketched) is architecturally wrong — method dicts arrive as completed `Expr::Dict` nodes via `push_value`, not entry-by-entry. The `push_value` InstanceDecl arm must handle two distinct sub-cases:
+
 1. `pending_arm_key.is_some()` AND the incoming value is an `Expr::Dict` — this is the **arm's method dict** (the bracket `[method-key: impl ...]` that follows `:`). Pair it with `pending_arm_key`, push `(key, entries)` to `arms`, clear `pending_arm_key` and `current_arm_methods`.
 2. `pending_arm_key.is_some()` AND the incoming value is a scalar (a method implementation expression for an already-open method key in `current_arm_methods`) — accumulate into `current_arm_methods` via the normal pending-key mechanism. Note: `StackFrame::InstanceDecl` needs its own `pending_method_key: Option<Spanned<Expr>>` for individual method-key/value pairs within the arm's method dict, distinct from `pending_arm_key` (the pattern-arm level separator). Alternatively, the design simplifies by requiring method dicts to always be written as bracket forms `[+: impl  *: impl]` — the inner `StackFrame::Dict` handles key/value accumulation and delivers a completed `Expr::Dict` to the InstanceDecl frame. This is the recommended approach: no `current_arm_methods` accumulation needed; the `push_value` arm simply receives `Expr::Dict` and treats it as the arm's method dict.
 
@@ -1347,6 +1358,7 @@ StackFrame::PatternDecl {
 ```
 
 **Parsing sequence:**
+
 1. `[pattern` → push `StackFrame::PatternDecl { bindings: [] }`
 2. The following `[...]` bracket opens a standard Dict frame producing `Expr::Annotated` nodes (via the existing `ImmediateAt` mechanism — `a@Int`, `a@[Seq elem]`, etc. are parsed as annotated identifiers). This is NOT the same path as `StackFrame::Fn` params, which uses the eager synchronous `parse_param_list()` function before the frame is pushed. `PatternDecl` uses the iterative frame protocol; `push_expr_to_parent` for the frame converts the `Expr::Annotated` nodes into `bindings: Vec<Spanned<Expr>>`.
 3. Inner brackets within annotations (`a@[Seq elem]`, `c@[or Int Null]`) are parsed recursively as composite type expressions using the same annotation bracket rules already implemented
@@ -1384,6 +1396,7 @@ Classes and instances are **values in scope**, not entries in global registries.
 When `[$Addable a b c]` is processed as a constraint, `$Addable` uses the `$`-sigil scope reference to resolve the Addable VALUE from the current scope. The resulting `Constraint::Class` stores the ClassDecl directly (not just a string name) — this is how `improve_functional_dependency` accesses the FD info without a global ClassEnv lookup.
 
 Concretely:
+
 - `ClassEnv` is **not** a global `HashMap<String, ClassDecl>`. It is scope-resident: classes are looked up via the TypeEnv, the same as type aliases and other type-environment entries.
 - `InstanceEnv` is similarly scope-local. Instances declared in one dict don't automatically apply in another dict's scope. To share instances across dicts, they are imported via normal scoping.
 - `Constraint::Class { class: ClassDecl, vars: Vec<String> }` — the constraint carries the ClassDecl directly, extracted from the scope-resident value at constraint-creation time. No string-keyed global lookup needed at resolution time.

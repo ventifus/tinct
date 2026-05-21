@@ -159,6 +159,7 @@ The scoping problem with current constructor patterns: `[Ok v]: body` uses `v` a
 ### Binding Patterns Inside `[let ...]` in `case`
 
 **Plain binding**:
+
 ```tinct
 [let n]       # bind n to scrutinee
 [let n@Int]   # bind n, type constraint Int → n : scrutinee_ty ∩ Int
@@ -166,6 +167,7 @@ The scoping problem with current constructor patterns: `[Ok v]: body` uses `v` a
 ```
 
 **Single-payload structural test** — binding name first, `:`, constructor:
+
 ```tinct
 [let v: Ok]      # test Ok tag, v binds to Ok's payload
 [let v@Int: Ok]  # test Ok, payload must be Int, bind to v
@@ -177,6 +179,7 @@ The scoping problem with current constructor patterns: `[Ok v]: body` uses `v` a
 The `@Type` annotation in `name@Type: Constructor` is a **compile-time type constraint** on the payload, not a runtime type test. The runtime only tests the constructor tag. In the arm body, `v : payload_type(Ok) ∩ Int`. If `payload_type(Ok) ∩ Int = Never` (e.g., Ok wraps a String), the type checker emits a dead-arm warning: "this arm can never match." The runtime never checks whether the payload is Int.
 
 **Multi-payload structural test** — bracket groups the payload bindings before `:`:
+
 ```tinct
 [let [a b]: Pair]              # test Pair, a gets first component, b gets second
 [let [x@Float y@Float]: Pair]  # test Pair, both components must be Float
@@ -186,6 +189,7 @@ The `@Type` annotation in `name@Type: Constructor` is a **compile-time type cons
 This example was originally used to argue that the `:` form reads better than juxtaposition — purely visual, not a special semantic case. The binding list `[let ok: Ok  a  b  c: Something  de: SomethingElse]` has five entries, which would match a five-component tuple scrutinee positionally (same rule as instance arms: N elements = N components, one-to-one). For a single-value scrutinee, five elements is an arity mismatch → type error.
 
 **Nested structural patterns** — the left-hand side of `:` is itself a binding pattern:
+
 ```tinct
 [let [[a b]: Pair]: Ok]    # test Ok; payload must be Pair; bind its components to a, b
 [let [v: Ok]: Some]        # test Some; payload must be Ok; bind Ok's payload to v
@@ -226,6 +230,7 @@ Multi-payload constructors pack their components into a single positional dict a
 The bracket group `[a b]` in `[let [a b]: Pair]` destructures the positional dict payload: `a` binds to index 0, `b` binds to index 1. This reuses the existing positional dict pattern machinery.
 
 Constructor declarations with multiple payloads specify the count:
+
 ```tinct
 [type Point [Pt Float Float]]    # Pt has 2 payloads
 [type Tree [Node Tree Tree]      # Node has 2 payloads (both Tree)
@@ -243,6 +248,7 @@ Registry entries from [type Result [Ok a] [Err String]]:
 ```
 
 When typing `[case [let v: Ok] body]` with scrutinee of type `Result String`:
+
 1. Narrow the scrutinee type to the Ok branch: `scrutinee_ty ∩ Ok@String`
 2. Look up Ok's payload type: `a` instantiated with `String` → `String`
 3. In `body`: `v : String`, scrutinee narrowed to `Ok@String`
@@ -273,6 +279,7 @@ Constructor types are looked up from the local TypeEnv (scope-aware). `[let v: O
 ```tinct
 [case [let [[x y]: Pair]: Ok] body]
 ```
+
 1. Narrow to `Ok` branch: get Ok payload type = `Pair Float Float` (from registry, instantiated)
 2. Narrow payload to `Pair` branch: `x : Float`, `y : Float`
 3. In `body`: `x : Float`, `y : Float`
@@ -342,9 +349,11 @@ z: [y y y]         # thunk — no error yet
 **Type checker:** `...` has type `Unknown` — the gradual escape hatch. It satisfies any type constraint without generating a type error. This makes `...` usable wherever a value of any type is needed.
 
 **Evaluator:** `...` evaluates to `Thunk::new_placeholder(span)`. When any materialization path forces this thunk, it raises:
+
 ```
 UnimplementedError at <file>:<line>:<col>: ... placeholder reached
 ```
+
 The source span points precisely to the `...` token. Tinct's existing materialization-span threading carries the call chain, so the full lazy evaluation path is visible in the error. **`UnimplementedError` is cacheable** — when a placeholder thunk is forced, the error is stored in `ThunkState::Failed` so subsequent forces return the memoized error without re-evaluation. **`UnimplementedError` is catchable** — `$try` intercepts it, returning `[Err unimplemented-error]`. This enables `...` as a first-class "required but unset" mechanism for dict values:
 
 ```tinct
@@ -418,6 +427,7 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 **`StackFrame::CaseDecl`**: Pushed when `[case` is encountered. Collects two expressions: first = pattern (`Expr::LetDecl` or exact-value expression), second = body. Closes to `Expr::CaseArm`.
 
 **Per-frame updates:**
+
 - `StackFrame::Fn`: first expression must be `Expr::LetDecl`; parse error otherwise. (`parse_param_list()` is extended or replaced — the binding list now flows as `Expr::LetDecl` rather than being eagerly consumed as raw param entries.)
 - `StackFrame::ClassDecl`: first expression must be `Expr::LetDecl`
 - `StackFrame::TypeAlias`: if first expression is `Expr::LetDecl`, it is the param list; otherwise it is the body (no-param alias)
@@ -441,6 +451,7 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 **Binding extraction**: each context (`fn`, `class`, `type`, `instance`, `case`) receives `Expr::LetDecl` and extracts bindings from `bindings: Vec<Spanned<Expr>>`. The semantic interpretation differs by context (value params vs TypeVars vs case bindings), but the extraction mechanics are shared.
 
 **Case arm typing**: new `typecheck_case_arm(pattern: &Expr, scrutinee_ty: &Type, ...) -> (Environment, Type)` function that:
+
 1. If pattern is `Expr::LetDecl`: processes each binding element against the scrutinee type per the typing rules table above
 2. If pattern is a literal or nullary constructor expression: validates the type is scalar/nullary (type error otherwise), returns unmodified environment
 
@@ -461,10 +472,12 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 **Proposed:**
 
 **`eval_case_arm(pattern: &Expr, scrutinee: ThunkId, env: Rc<Environment>) -> Option<Rc<Environment>>`**:
+
 - If `Expr::LetDecl`: call `eval_let_pattern(bindings, scrutinee, env)` which returns `Some(bound_env)` on success or `None` on structural mismatch (soft skip)
 - If exact-value expression: evaluate the expression, call `values_equal`, return `Some(env)` on match or `None` on mismatch
 
 **`eval_let_pattern`**: recursively processes binding elements:
+
 - `VarRef(name)`: bind name to scrutinee thunk → `Some(env + [name: scrutinee])`
 - `Annotated(name, Simple(TypeName))` where TypeName is lowercase: typed binding, check type, bind
 - `Annotated(Constructor, bindings)` where Constructor is uppercase: materialize scrutinee, check tag matches Constructor, extract payload, recurse on payload with `bindings` → soft skip on tag mismatch
@@ -482,9 +495,11 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 **`values_equal` extension**: add `Value::Variant { payload: None }` support (nullary constructors compare by tag only). Non-nullary variant comparison remains a type error, not a runtime mismatch.
 
 **`Expr::Placeholder` evaluation**: `...` evaluates to `Thunk::new_placeholder(span)`. When this thunk is materialized by any path, it raises:
+
 ```
 UnimplementedError at <file>:<line>:<col>: ... placeholder reached
 ```
+
 The source span (carried in `Spanned<Expr::Placeholder>`) is stored in the thunk and included in the error. Tinct's existing materialization-span threading shows the full lazy evaluation chain that led to the placeholder.
 
 **`Expr::Placeholder` implementation**: Do NOT reuse `ThunkState::Placeholder` — it already serves as a letrec construction sentinel that `panic!()` when forced. Adding user-facing `...` semantics to it would destroy the ability to diagnose letrec bugs. Instead: in `eval_step`/`eval_recursive`, match `Expr::Placeholder` and return `Err(EvalError::unimplemented(span))` immediately. The laziness is preserved because `eval_step` only runs when a thunk is forced. The containing dict/fn/expression's thunk wraps the `Expr::Placeholder` as `Thunk::new_unevaluated`; it only errors when that thunk is forced.

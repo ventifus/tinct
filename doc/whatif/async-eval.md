@@ -1,6 +1,7 @@
 # What If: Async and Parallel Evaluator for tinct
 
 **State:** Superseded — 2026-05-19
+
 - Core async runtime (eval async, Rc→Arc, OnceLock thunk, task/await/channel/select, par, event sources, context/cancellation) → [`runtime-v2.md`](runtime-v2.md)
 - Serve/connect layer design, networking primitives, DNS and ICMP worked examples, stdlib networking modules → [`lib-net-v3.md`](lib-net-v3.md)
 
@@ -146,7 +147,6 @@ result: [await worker]
 ```
 
 This is consistent with tinct's lazy semantics and means `task` is safe to place in dict entries without surprising side effects. For fire-and-forget work where the result is not needed, use `[seq [await [task expr]] next]` to force evaluation.
-
 
 ### Async Primitives
 

@@ -57,11 +57,13 @@ TypeScheme {
 ```
 
 For `Seq`-specific operations (`reduce`):
+
 ```
 reduce: ∀a b. (b → a → b) → b → Seq a → b
 ```
 
 For `each` (side effects, return Null):
+
 ```
 each: ∀a. (a → Unknown) → Seq a → Null
 ```

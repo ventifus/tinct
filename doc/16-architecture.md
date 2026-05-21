@@ -43,6 +43,7 @@
 **Pipeline phases:** Source text → Parser → Desugar → TypeCheck → Evaluator → Serializer → Output
 
 **Key contracts:**
+
 - `BuiltinFn` signature: `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>` where `BuiltinArgs` carries `args: &[Rc<Thunk>]`, `named: &IndexMap<String, Rc<Thunk>>`, `call_span: Span`, `ctx: Rc<EvalContext>`
 - `Value` serialization: every `Value` variant must have handlers in both `value_to_json()` and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
@@ -52,6 +53,7 @@
 - Desugar ordering: `desugar_file()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_file_with_input, CLI, REPL, stdlib loading, lsp/document.rs::update_document)
 
 **Cross-module coupling:**
+
 - Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `standard_builtins()` (builtins.rs). Safe because dependency is at function-call level, not module init.
 - Elaboration write-once: typecheck writes `TypeAssert.resolved_type` (RefCell) exactly once; re-typechecking the same AST panics. Parse a fresh AST for each typecheck run.
 - Include cache: `EvalContext.state.include_cache` (HashMap keyed by file identity) memoizes `$include` results — same file included twice returns the cached thunk without re-evaluation.
@@ -183,6 +185,7 @@ struct EvalContext {
 ```
 
 **What stays separate:**
+
 - `Environment` — variable bindings and lexical scope chain. Created and nested per scope.
 
 **Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping; depth is call-stack tracking. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope and depth increments per recursive call.
@@ -196,6 +199,7 @@ struct EvalContext {
 **Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. Include context is passed as a parameter — no global set/clear functions.
 
 **Per-caller patterns:**
+
 - **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_file.
 - **LSP:** Each DocumentState gets its own EvalContext. DocumentStore extracts base_dir from document URI. Config (stdlib_env) is shared across documents; state is per-document.
 - **REPL:** Single EvalContext per session. Include state (guard, cache) persists across eval_input() calls. Session env accumulates bindings across commands. **Limitation:** `eval_input()` calls `parse_expression()` which returns the last expression of the FIRST document only; `---`-separated multi-doc input silently discards all documents after the first.
@@ -263,17 +267,20 @@ struct Environment {
 **Materialization behavior is inferred by the compiler, not annotated in the type system.** The stdlib listing documents which functions are structural, lazy-transforming, materializing, or selective — but this is documentation for humans, not a language feature.
 
 **Why not a type-level annotation:**
+
 - Redundant — the annotation would restate what the code already does
 - Fragile — refactoring internals could invalidate the annotation
 - Over-simplified — real materialization behavior is conditional and nuanced (e.g., `$filter` materializes predicates but not passed-through values). No annotation captures "materialized only when the collection is non-empty."
 - Burden — one more thing the programmer writes and maintains
 
 **Compiler responsibilities:**
+
 - **Demand analysis** — examine function bodies to determine which arguments are always materialized, sometimes materialized, or never materialized. Analogous to GHC's demand analyzer.
 - **Builtin metadata** — builtins are implemented in Rust, so the compiler can't analyze their bodies. Materialization behavior must be manually declared as metadata on the Rust side.
 - **Dead thunk detection** — warn when an expression is never materialized (dead code under lazy eval).
 
 **Tooling integration:**
+
 - LSP hover: show which arguments will be materialized at a call site
 - LSP inlay hints: `[materialized]` / `[lazy]` next to arguments
 - Auto-generated docs: annotate stdlib reference with materialization behavior
@@ -394,9 +401,11 @@ builtin!("seq", builtin_seq)               // all-Id (no third arg, empty slice)
 All seven sites must change together — a partial migration leaves mismatched field accesses that do not compile.
 
 **Value enum size.** `Value::Builtin` grows from 24 bytes (`name` 16 + `func` 8) to 40 bytes (adding `pos_strictness` 16). Add a compile-time assertion after the migration to catch future regressions:
+
 ```rust
 const _: () = assert!(std::mem::size_of::<Value>() == EXPECTED);
 ```
+
 Verify `Value`'s dominant variant (`Value::Dict`) still determines the enum size before adding the assertion.
 
 #### Strictness Annotation Table
@@ -473,12 +482,14 @@ These costs are negligible for ordinary use but can accumulate in tight recursiv
 ### Performance Characteristics
 
 **Hot path allocation patterns:**
+
 - **Environment lookup is O(depth)**: `Environment::get()` walks the parent chain on every variable reference. Deeply nested scopes compound this cost.
 - **IndexMap ~20% slower than HashMap**: Dict operations use `IndexMap` to preserve insertion order (required for dict semantics). Type-level `Substitution.type_map`/`row_map` also use `IndexMap` but could be `HashMap` (order irrelevant).
 - **Thunk boxing cost**: Every value is wrapped in `Rc<RefCell<ThunkState>>`. Lazy evaluation requires this indirection but adds allocation and refcounting overhead.
 - **Substitution::apply() is O(type_size)**: Type inference calls `apply()` per unification. Each call allocates a `HashSet<String>` for cycle detection and walks the entire type tree.
 
 **Known bottlenecks:**
+
 - Rc clone frequency in dict construction loops
 - AST deep-clone per call argument (until AST nodes become Rc)
 - Type tree traversal during multi-pass dict inference
@@ -548,22 +559,26 @@ The following security features are implemented:
 ### Attack Surface Analysis
 
 **DoS via crafted inputs** (mitigated):
+
 - Deep nesting: MAX_PARSE_DEPTH, MAX_LEX_DEPTH enforce limits before stack overflow
 - Infinite sequences: MAX_COLLECT_SIZE bounds materialization; lazy evaluation makes unbounded data safe
 - Type inference explosion: MAX_SUBST_SIZE caps substitution growth from pathological type annotations
 - String amplification: MAX_STRING_SIZE caps output from `$replace`, `$join`, `$upper`, `$lower`
 
 **Path traversal** (partially mitigated):
+
 - LSP mode: `no_fs=true` disables all file I/O, preventing CWE-22 attacks via malicious document content
 - CLI mode: `$include` uses `canonicalize()` to resolve symlinks and relative paths but has no root confinement; `--no-fs` flag disables file I/O entirely
 - TOCTOU race: canonicalize → metadata → read creates race window; cap-std fd-based reads eliminate this race
 
 **Panic hygiene**:
+
 - All user-reachable code paths return `Err(...)`, not `panic!()`
 - Two `expect("collection too large")` sites remain on index casts after MAX_COLLECT_SIZE check
 - `unsafe` blocks limited to SIGALRM handler setup and alarm cancellation (`src/main.rs:168,176-190,302-304`) — audited and sound
 
 **Dependency hygiene**:
+
 - All dependencies are actively maintained stable crates (clap, indexmap, serde_json, lsp-server, lsp-types, rustyline)
 - No known CVEs
 - `cargo audit` is automated in CI
@@ -573,23 +588,27 @@ The following security features are implemented:
 Tinct uses a multi-layer testing approach that matches the component architecture. Each layer has its own testing discipline:
 
 **Unit tests** (per module, ~1000+ tests total):
+
 - Parser unit tests in `src/parser.rs` — test module at bottom of file
 - Evaluator unit tests in `src/eval.rs` — thunk lifecycle, state transitions, depth limits, error caching
 - Type checker unit tests in `src/types.rs` — unification, substitution, occurs check, row polymorphism
 - Builtin unit tests in `src/builtins.rs` — argument validation, error paths, edge cases
 
 **Corpus tests** (end-to-end, ~200+ tests):
+
 - `tests/corpus/eval/<category>/` — evaluation tests (parse + desugar + eval), output matches expected
 - `tests/corpus/parse/<category>/` — parse-only tests, AST or error matches expected
 - Format: `.llt-eval` and `.llt-parse` files with `===` delimiter between input and expected output (see [Tooling](12-tooling.md) §Corpus Test Format)
 - Coverage: all language features, edge cases, error conditions
 
 **CLI integration tests** (REPL and LSP):
+
 - REPL session tests — multi-command interactions, environment persistence, `$eval` behavior
 - LSP protocol tests — document sync, hover, diagnostics, incremental updates
 - File I/O sandboxing tests — `--no-fs` flag, include guards, path canonicalization
 
 **Testing philosophy**:
+
 - **Unit tests** — per module isolation (src/parser.rs, src/eval.rs, src/types.rs, src/builtins.rs). Test individual functions, error paths, edge cases, state transitions.
 - **Corpus tests** — end-to-end validation (tests/corpus/valid/, tests/corpus/invalid/). Test language features in combination; verify error messages match expected output.
 - **CLI integration tests** — REPL session tests, LSP protocol tests, file I/O sandboxing tests (--no-fs flag, include guards).

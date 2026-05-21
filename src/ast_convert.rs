@@ -1,12 +1,22 @@
-//! Conversion from the old Expr/Document/File AST to the Surface AST types.
+//! AST conversion bridges for incremental migrations.
 //!
-//! This module provides a bridge so the Surface types can be used immediately
-//! without migrating the 8000-line parser in one go. The parser continues to
-//! produce File/Document/Expr; callers that need SurfaceProgram call
-//! `file_to_surface_program()`.
+//! This module contains THREE bridge functions for different migration phases:
 //!
-//! This is a transitional module deleted in Sprint 1, Part E when the parser
-//! is migrated to produce SurfaceProgram directly.
+//! 1. **file_to_surface_program** (File → SurfaceProgram)
+//!    - Converts old parser output to Surface AST types
+//!    - Deleted when parser is migrated to produce SurfaceProgram directly
+//!
+//! 2. **expr_to_core_expr** (Expr → CoreExpr) — FORWARD BRIDGE
+//!    - Converts old Expr to CoreExpr for E1-eval-cutover
+//!    - Used by eval_recursive to route all evaluation through CoreExpr
+//!    - Deleted when all Value/thunk types are migrated to CoreExpr (post-E3)
+//!
+//! 3. **core_expr_to_expr** (CoreExpr → Expr) — REVERSE BRIDGE
+//!    - Converts CoreExpr back to Expr for transitional compatibility
+//!    - Used by eval_core_expr to call existing helpers (eval_dict, eval_call, etc.)
+//!    - Deleted when eval_dict/eval_call/etc. are refactored to accept CoreExpr (E2/E3)
+//!
+//! All three bridges are TRANSITIONAL and will be deleted as migrations complete.
 
 use std::sync::Arc;
 
@@ -483,9 +493,9 @@ pub fn core_expr_to_expr(core: &crate::ast::Spanned<crate::ast::CoreExpr>) -> Sp
 }
 
 fn core_expr_inner_to_expr(expr: &crate::ast::CoreExpr) -> Expr {
+    use crate::ast::CoreExpr;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use crate::ast::CoreExpr;
 
     match expr {
         CoreExpr::Int(n) => Expr::Int(*n),
@@ -540,10 +550,7 @@ fn core_expr_inner_to_expr(expr: &crate::ast::CoreExpr) -> Expr {
             implied,
         } => Expr::Call {
             func: Box::new(core_expr_to_expr(func)),
-            args: args
-                .iter()
-                .map(|a| Rc::new(core_expr_to_expr(a)))
-                .collect(),
+            args: args.iter().map(|a| Rc::new(core_expr_to_expr(a))).collect(),
             named_args: named_args
                 .iter()
                 .map(|na| {
@@ -583,13 +590,21 @@ fn core_expr_inner_to_expr(expr: &crate::ast::CoreExpr) -> Expr {
             desugared: *desugared,
         },
 
-        CoreExpr::TypeAssert { annotation, expr: inner, .. } => Expr::TypeAssert {
+        CoreExpr::TypeAssert {
+            annotation,
+            expr: inner,
+            resolved_type,
+        } => Expr::TypeAssert {
             annotation: annotation.clone(),
             expr: Box::new(core_expr_to_expr(inner)),
-            resolved_type: RefCell::new(None),
+            resolved_type: RefCell::new(Some(resolved_type.clone())),
         },
 
-        CoreExpr::RuntimeTypeCheck { annotation, expr: inner, .. } => Expr::TypeAssert {
+        CoreExpr::RuntimeTypeCheck {
+            annotation,
+            expr: inner,
+            ..
+        } => Expr::TypeAssert {
             annotation: annotation.clone(),
             expr: Box::new(core_expr_to_expr(inner)),
             resolved_type: RefCell::new(None),
@@ -608,10 +623,7 @@ fn core_expr_inner_to_expr(expr: &crate::ast::CoreExpr) -> Expr {
                 .iter()
                 .map(|arm| crate::ast::MatchArm {
                     pattern: arm.pattern.clone(),
-                    guard: arm
-                        .guard
-                        .as_ref()
-                        .map(|g| Box::new(core_expr_to_expr(g))),
+                    guard: arm.guard.as_ref().map(|g| Box::new(core_expr_to_expr(g))),
                     body: Box::new(core_expr_to_expr(&arm.body)),
                 })
                 .collect(),
@@ -641,6 +653,213 @@ fn core_expr_inner_to_expr(expr: &crate::ast::CoreExpr) -> Expr {
 
         CoreExpr::Placeholder => Expr::Placeholder,
         CoreExpr::Error(s) => Expr::Error(*s),
+    }
+}
+
+/// Convert a `Spanned<Expr>` to a `Spanned<CoreExpr>` for the eval cutover.
+///
+/// This is the forward bridge from Expr → CoreExpr, used during the E1-eval-cutover
+/// sprint to route all evaluation through `eval_core_expr()`. Once all callers have
+/// been migrated to work with CoreExpr directly, this bridge can be deleted.
+///
+/// Key transformations:
+/// - VarRef with resolved (level, slot) → Var with de Bruijn coordinates
+/// - VarRef with unresolved → FreeVar (name-based lookup)
+/// - Pipe → Call (pipe is sugar for implied call)
+/// - TypeAssert with resolved_type → TypeAssert or RuntimeTypeCheck based on presence
+pub fn expr_to_core_expr(expr: &Spanned<Expr>) -> Spanned<crate::ast::CoreExpr> {
+    Spanned::new(expr_inner_to_core_expr(&expr.node, expr.span), expr.span)
+}
+
+fn expr_inner_to_core_expr(expr: &Expr, span: crate::ast::Span) -> crate::ast::CoreExpr {
+    use crate::ast::{CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam};
+
+    match expr {
+        Expr::Int(n) => CoreExpr::Int(*n),
+        Expr::Float(f) => CoreExpr::Float(*f),
+        Expr::Bool(b) => CoreExpr::Bool(*b),
+        Expr::Str(s) => CoreExpr::Str(s.clone()),
+
+        Expr::VarRef { name, resolved, .. } => {
+            // Check if we have resolved de Bruijn coordinates
+            if let Some(Some((level, slot))) = *resolved.borrow() {
+                CoreExpr::Var {
+                    name: name.clone(),
+                    level,
+                    slot,
+                }
+            } else {
+                // Unresolved or unresolvable → FreeVar
+                CoreExpr::FreeVar(name.clone())
+            }
+        }
+
+        Expr::DotAccess { expr: inner, field } => CoreExpr::DotAccess {
+            expr: Arc::new(expr_to_core_expr(inner)),
+            field: field.clone(),
+        },
+
+        // Pipe is desugared to Call during conversion
+        Expr::Pipe { lhs, rhs } => CoreExpr::Call {
+            func: Arc::new(expr_to_core_expr(rhs)),
+            args: vec![Arc::new(expr_to_core_expr(lhs))],
+            named_args: vec![],
+            implied: true,
+        },
+
+        Expr::Sequential(exprs) => CoreExpr::Sequential(
+            exprs
+                .iter()
+                .map(|e| Arc::new(expr_to_core_expr(e)))
+                .collect(),
+        ),
+
+        Expr::Dict(entries) => CoreExpr::Dict(
+            entries
+                .iter()
+                .map(|e| {
+                    Spanned::new(
+                        CoreEntry {
+                            key: e.node.key.as_ref().map(|k| Arc::new(expr_to_core_expr(k))),
+                            value: Arc::new(expr_to_core_expr(&e.node.value)),
+                        },
+                        e.span,
+                    )
+                })
+                .collect(),
+        ),
+
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => CoreExpr::Call {
+            func: Arc::new(expr_to_core_expr(func)),
+            args: args
+                .iter()
+                .map(|a| Arc::new(expr_to_core_expr(a)))
+                .collect(),
+            named_args: named_args
+                .iter()
+                .map(|na| {
+                    Spanned::new(
+                        CoreNamedArg {
+                            name: na.node.name.clone(),
+                            value: Arc::new(expr_to_core_expr(&na.node.value)),
+                        },
+                        na.span,
+                    )
+                })
+                .collect(),
+            implied: *implied,
+        },
+
+        Expr::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => CoreExpr::Fn {
+            return_ann: return_ann.clone(),
+            params: params
+                .iter()
+                .map(|p| {
+                    Spanned::new(
+                        CoreParam {
+                            name: p.node.name.clone(),
+                            annotation: p.node.annotation.clone(),
+                            variadic: p.node.variadic,
+                        },
+                        p.span,
+                    )
+                })
+                .collect(),
+            body: Arc::new(expr_to_core_expr(body)),
+            desugared: *desugared,
+        },
+
+        Expr::TypeAssert {
+            annotation,
+            expr: inner,
+            resolved_type,
+        } => {
+            // Check if typechecker provided a resolved type
+            if let Some(resolved) = resolved_type.borrow().clone() {
+                CoreExpr::TypeAssert {
+                    annotation: annotation.clone(),
+                    expr: Arc::new(expr_to_core_expr(inner)),
+                    resolved_type: resolved,
+                }
+            } else {
+                // No resolved type — runtime type check with optional default
+                let default = annotation
+                    .node
+                    .get_property("default")
+                    .map(|e| Arc::new(expr_to_core_expr(&e)));
+                CoreExpr::RuntimeTypeCheck {
+                    annotation: annotation.clone(),
+                    expr: Arc::new(expr_to_core_expr(inner)),
+                    default,
+                }
+            }
+        }
+
+        Expr::Annotated { name, annotation } => CoreExpr::Annotated {
+            name: name.clone(),
+            annotation: annotation.clone(),
+        },
+
+        Expr::Rest(name) => CoreExpr::Rest(name.clone()),
+
+        Expr::Match { scrutinee, arms } => CoreExpr::Match {
+            scrutinee: Arc::new(expr_to_core_expr(scrutinee)),
+            arms: arms
+                .iter()
+                .map(|arm| CoreMatchArm {
+                    pattern: arm.pattern.clone(),
+                    guard: arm.guard.as_ref().map(|g| Arc::new(expr_to_core_expr(g))),
+                    body: Arc::new(expr_to_core_expr(&arm.body)),
+                })
+                .collect(),
+        },
+
+        Expr::Quote(inner) => CoreExpr::Quote(Arc::new(expr_to_core_expr(inner))),
+        Expr::Unquote(inner) => CoreExpr::Unquote(Arc::new(expr_to_core_expr(inner))),
+        Expr::UnquoteSplice(inner) => CoreExpr::UnquoteSplice(Arc::new(expr_to_core_expr(inner))),
+
+        Expr::PatternDecl { bindings } => CoreExpr::PatternDecl {
+            bindings: bindings.iter().map(|b| expr_to_core_expr(b)).collect(),
+        },
+
+        Expr::LetDecl { bindings } => CoreExpr::LetDecl {
+            bindings: bindings.iter().map(|b| expr_to_core_expr(b)).collect(),
+        },
+
+        Expr::CaseArm { pattern, body } => CoreExpr::CaseArm {
+            pattern: Arc::new(expr_to_core_expr(pattern)),
+            body: Arc::new(expr_to_core_expr(body)),
+        },
+
+        Expr::TypeApp { func, arg } => CoreExpr::TypeApp {
+            func: Arc::new(expr_to_core_expr(func)),
+            arg: Arc::new(expr_to_core_expr(arg)),
+        },
+
+        Expr::Placeholder => CoreExpr::Placeholder,
+
+        Expr::Error(span) => CoreExpr::Error(*span),
+
+        // TypeAlias, ClassDecl, InstanceDecl, DefMacro, MacroDecl, SyntaxClass, Splice
+        // are declaration forms that should not be evaluated. Convert to Error with
+        // proper span so error messages point to the declaration site.
+        Expr::TypeAlias { .. } => CoreExpr::Error(span),
+        Expr::ClassDecl { .. } => CoreExpr::Error(span),
+        Expr::InstanceDecl { .. } => CoreExpr::Error(span),
+        Expr::DefMacro { .. } => CoreExpr::Error(span),
+        Expr::MacroDecl { .. } => CoreExpr::Error(span),
+        Expr::SyntaxClass { .. } => CoreExpr::Error(span),
+        Expr::Splice(_) => CoreExpr::Error(span),
     }
 }
 
@@ -866,6 +1085,7 @@ pub fn parse_to_surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Span;
     use crate::parser::parse;
 
     #[test]
@@ -980,7 +1200,9 @@ mod tests {
         let doc = &program.documents[0].node;
         match &doc.items[0] {
             SurfaceItem::Expr(node) => {
-                assert!(matches!(node.expr, SurfaceExpression::Float(f) if (f - 3.14).abs() < 1e-10));
+                assert!(
+                    matches!(node.expr, SurfaceExpression::Float(f) if (f - 3.14).abs() < 1e-10)
+                );
             }
             _ => panic!("expected Expr item"),
         }
@@ -1073,7 +1295,7 @@ mod tests {
                     assert_eq!(entries.len(), 2);
                     // Second entry should be the anonymous rest marker
                     match &entries[1].node.value.expr {
-                        SurfaceExpression::Rest(None) => {},
+                        SurfaceExpression::Rest(None) => {}
                         _ => panic!("expected Rest(None)"),
                     }
                 } else {
@@ -1095,15 +1317,12 @@ mod tests {
                 Document {
                     stage: None,
                     name: None,
-                    expressions: vec![Rc::new(Spanned::new(
-                        Expr::Placeholder,
-                        Span::default(),
-                    ))],
+                    expressions: vec![Rc::new(Spanned::new(Expr::Placeholder, Span::origin()))],
                     output_type: None,
                     expects: None,
                     caps: None,
                 },
-                Span::default(),
+                Span::origin(),
             )],
         };
         let program = file_to_surface_program(&file);

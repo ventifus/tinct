@@ -238,6 +238,7 @@ Document-to-document `%` pipeline passes the whole output value. If a document p
 **Current:** No pipe operator exists; the desugar pass handles `$_` lambda wrapping.
 
 **Proposed:** Add desugar rules for `Expr::Pipe { lhs, rhs }`:
+
 - `Pipe(lhs, Call(f, args))` → `Call(f, args ++ [lhs])`
 - `Pipe(lhs, VarRef(name))` → `Call(VarRef(name), [lhs])`
 - `Pipe(lhs, other)` → `Call(other, [lhs])`
@@ -287,6 +288,7 @@ Extend `is_direct_underscore` to cover `Pipe { lhs, .. }` by recursing into lhs 
 Extend dot access to integer keys (`DotKey` enum). Add `|` as a desugar-pass infix operator. Add `get` builtin. Add `each`, `each-key`, `each-kv`, `collect-kv` builtins.
 
 What this enables:
+
 - `list.0` for integer index access (replaces `list[0]` for literal keys)
 - `dict | [get $key]` for dynamic computed field access (replaces `dict[$key]`)
 - `dict | [get "name"]` as point-free field accessor (or explicit `[fn [u] u.name]`)
@@ -299,6 +301,7 @@ This phase is additive — bracket access still works. Migration can happen grad
 Remove `BracketAccess`, `RangeAccess`, and `..` from lexer/parser/AST/desugar/typecheck/eval. Remove `Token::BracketAccess` and `Token::Range`. Remove the whitespace-sensitive `[` detection. Add `|` to lexer denylists. Add Seq-at-top-level error to CLI.
 
 What this enables:
+
 - Full generator pipeline: `users | each | [filter active?] | [map _.name] | collect`
 - Grammar simplification: whitespace-sensitive `[` detection removed entirely
 - Streaming text output: `users | each | [fn [u] [emit [str u.name "\n"]]]`
@@ -311,6 +314,7 @@ This phase is **breaking** for bracket and range access. All corpus tests and ex
 Add `[select data keys...]` (multi-key projection via `each-kv` + `collect-kv`) and `[path data steps...]` (chained `|` over a sequence of selectors) as stdlib functions. Migrate `->` usage in stdlib/examples/docs to `|` idiom.
 
 What this enables:
+
 - `$data | [select "name" "age"]` — sub-dict projection
 - `$data | [path "users" 0 "name"]` — deep path drilling without chained dots
 - Idiomatic tinct that reads as data pipelines throughout

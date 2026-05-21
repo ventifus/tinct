@@ -17,18 +17,18 @@
 
 ## Tooling
 
-12. [Tooling](12-tooling.md) — Formatter, sandboxing & security
+1. [Tooling](12-tooling.md) — Formatter, sandboxing & security
 
 ## By Example
 
-13. [Worked Examples](13-examples.md) — 16 annotated examples with AST output
-14. [Patterns & Comparisons](14-patterns.md) — Common patterns, comparison with jq/JSONPath/JMESPath
+1. [Worked Examples](13-examples.md) — 16 annotated examples with AST output
+2. [Patterns & Comparisons](14-patterns.md) — Common patterns, comparison with jq/JSONPath/JMESPath
 
 ## Internals
 
-15. [AST & Parser Internals](15-ast.md) — AST node types, static constraints, desugaring rules
-16. [Architecture](16-architecture.md) — Components, EvalContext, Value enum, compiler notes
+1. [AST & Parser Internals](15-ast.md) — AST node types, static constraints, desugaring rules
+2. [Architecture](16-architecture.md) — Components, EvalContext, Value enum, compiler notes
 
 ## Appendix
 
-17. [References](17-references.md) — Formal references, academic papers, resources
+1. [References](17-references.md) — Formal references, academic papers, resources

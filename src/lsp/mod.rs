@@ -1,7 +1,7 @@
 //! LSP (Language Server Protocol) implementation for LLT.
 //!
 //! Single-threaded synchronous LSP server using `lsp-server` (not tower-lsp,
-//! because `Rc<RefCell<Environment>>` is not Send/Sync).
+//! because the LSP protocol handler is inherently single-threaded).
 //!
 //! ## Architecture
 //!

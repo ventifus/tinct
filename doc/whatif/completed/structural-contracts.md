@@ -1,4 +1,5 @@
 # What If: Structural Contracts for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to let tinct programs declare the shape of data
@@ -315,6 +316,7 @@ Declare the expected type of `%` at the document level:
 ```
 
 Implementation:
+
 - Parse `%@Type` as first expression in a document
 - Type checker resolves the annotation and binds `%` to that type
   within the document
@@ -342,6 +344,7 @@ nginx-schema: [
 ```
 
 Implementation:
+
 - `validate` builtin: walks schema dict and data in parallel
 - Collects ALL violations (not fail-fast)
 - Returns data on success (pass-through for pipeline use)
@@ -362,6 +365,7 @@ Input (%):
 ```
 
 Implementation:
+
 - Parse `%@Type` annotation and schema dicts
 - Merge type information with schema constraints
 - Output as human-readable description or as JSON/YAML for tooling
@@ -380,6 +384,7 @@ Error: contract violation at pipeline boundary (data.llt -> fmt/nginx.llt)
 ```
 
 Implementation:
+
 - Pipeline runner tags each `%` value with its source stage
 - Contract violations include source-stage attribution
 - Hints suggest fixes based on the mismatch type
@@ -413,6 +418,7 @@ debugging is the primary motivator for the entire contract system.
 ## References
 
 **Contract systems:**
+
 - Findler, R.B. & Felleisen, M. (2002). "Contracts for higher-order
   functions." *ICFP*, pp. 48-59. — Blame assignment theory.
   Positive/negative party model for identifying which module violated
@@ -426,6 +432,7 @@ debugging is the primary motivator for the entire contract system.
   interacts with contract boundaries.
 
 **Schema validation:**
+
 - Wright, A. et al. (2022). JSON Schema: A Media Type for Describing
   JSON Documents. Draft 2020-12. — Schema-as-document validation
   with `$ref`, `allOf`, `anyOf`, composition.
@@ -434,6 +441,7 @@ debugging is the primary motivator for the entire contract system.
   type system. `s/keys`, `s/and`, `s/conform` pattern.
 
 **Type-level contracts:**
+
 - Unison. "Ability types and structural contracts." — Types that
   encode capabilities and constraints in a content-addressed
   codebase.
@@ -442,6 +450,7 @@ debugging is the primary motivator for the entire contract system.
   evaluation.
 
 **Language-specific:**
+
 - Dhall. "Safety guarantees." — Total type system where well-typed
   programs cannot fail at runtime. Types as complete contracts.
 - NixOS module system. `mkOption`, `types.*` — Typed option

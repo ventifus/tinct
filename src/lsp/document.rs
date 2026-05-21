@@ -475,7 +475,7 @@ impl DocumentStore {
         let base_eval_ctx = crate::eval::EvalContext::new_sharing_arena(
             base_dir,
             Arc::clone(&stdlib_env),
-            false,
+            true, // no_fs=true prevents $include path traversal (CWE-22)
             stdlib_arena,
             std::collections::HashMap::new(), // LSP doesn't track macro injects yet
         );
@@ -493,7 +493,8 @@ impl DocumentStore {
             stdlib_env,
             base_eval_ctx,
             include_graph: HashMap::new(),
-            prelude_ast: prelude_ast.map(|o| crate::ast_convert::surface_program_to_file(&o.program)),
+            prelude_ast: prelude_ast
+                .map(|o| crate::ast_convert::surface_program_to_file(&o.program)),
         })
     }
 

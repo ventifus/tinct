@@ -151,6 +151,7 @@ principal type property: `Record([x: IntLiteral(42), y: IntLiteral(99)], Empty)`
 strictly more informative than `Map@[Str: Int]`, which loses the field-name information.
 
 `Map@[K: V]` arises only from:
+
 - Explicit `@[Map [K: V]]` annotations
 - Builtins whose return type is declared `Map@[K: V]`
 - Inference from `builtin-reduce` accumulating uniform-value `set` operations (Phase 2 refinement)
@@ -158,6 +159,7 @@ strictly more informative than `Map@[Str: Int]`, which loses the field-name info
 ### Unification Rules
 
 `unify(Map[K₁ V₁], Map[K₂ V₂])` proceeds element-wise:
+
 - Unify K₁ with K₂ (K is invariant — unification produces a common binding, not a subtype)
 - Unify V₁ with V₂
 
@@ -202,6 +204,7 @@ then compare key-by-key and value-by-value recursively. `[= [a: 1 b: 2] [b: 2 a:
 is `true`.
 
 **Implementation** (`src/builtins_math.rs`):
+
 1. Extract and sort keys from both dicts (string keys lexicographically, integer keys numerically, string keys sort after integer keys)
 2. If key sequences differ, return `false`
 3. For each key pair, force both value thunks and recurse

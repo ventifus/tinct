@@ -1,6 +1,7 @@
 # Runtime Reflection
 
 > **Supersedes:**
+>
 > - `doc/08-evaluation.md §Runtime Reflection` — spec-level description; this document is the user-facing guide
 > - `doc/11a-builtins.md §Meta & Code Generation` — `ast-of` and `eval-ast` entries added there; `str` updated to note Showable dispatch
 
@@ -203,6 +204,7 @@ assert-documented: [fn [f name]
 ## LSP Integration
 
 When hovering over a function call, the LSP shows:
+
 - The type-inferred signature (from the type map)
 - The annotated doc string (from `FnAnnotation.doc`, available without a type-checker re-run)
 - A "Defined at `file.llt:line`" link (from `FnAnnotation.source_span`)

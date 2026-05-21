@@ -2624,4 +2624,9 @@ Same semantics as --- within a file, applied across multiple files.
     initial
     files]]
 
+# Construct a ClockCap that always returns the given fixed timestamp.
+# Useful for testing time-sensitive code without depending on the system clock.
+# Pass the result wherever a ClockCap (%clock) is expected.
+fixed-clock: fixed-clock
+
 ]

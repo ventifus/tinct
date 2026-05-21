@@ -63,11 +63,13 @@ Laziness and macros serve overlapping but distinct purposes.
 ### Why Laziness Reduces Macro Need
 
 In strict languages, macros are essential for:
+
 - **Short-circuit evaluation**: `and(a, b)` evaluates both args; you need a macro for `(and a b)` that skips `b` when `a` is false.
 - **Conditional execution**: `if-then-else` must be a special form or macro, not a function.
 - **Deferred computation**: Avoiding work that might not be needed.
 
 tinct is lazy. All of these work as ordinary functions:
+
 ```tinct
 # These are functions in stdlib/prelude.llt, not macros
 when:   [fn [pred body] [if pred body []]]
@@ -384,6 +386,7 @@ Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
 ## References
 
 **Macro systems:**
+
 - Kohlbecker, E., Friedman, D.P., Felleisen, M. & Duba, B. (1986).
   "Hygienic macro expansion." In *LFP '86*, pp. 151--161. ACM. ---
   Original hygiene algorithm (KFFD). Time-stamped renaming to prevent
@@ -417,6 +420,7 @@ Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
   philosophy.
 
 **Lazy evaluation and macro need:**
+
 - Launchbury, J. (1993). "A natural semantics for lazy evaluation." In
   *POPL '93*, pp. 144--154. ACM. --- Formal semantics showing call-by-need
   provides deferred evaluation without macros.
@@ -424,6 +428,7 @@ Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
   laziness makes macros "probably minimal" in Haskell.
 
 **Error reporting through macros:**
+
 - Pombrio, J. & Krishnamurthi, S. (2014). "Resugaring: lifting
   evaluation sequences through syntactic sugar." In *PLDI '14*,
   pp. 361--371. ACM. --- Formalizes how to present desugared evaluation
@@ -440,6 +445,7 @@ Port `_` desugaring from hardcoded Rust to a tinct-defined macro.
   tinct's expansion phase follows.
 
 **Precedent implementations:**
+
 - Elixir `defmacro` --- the closest practical model. AST is 3-tuples,
   `quote`/`unquote` convert between code and data. Hygienic by default
   with `var!` escape hatch.

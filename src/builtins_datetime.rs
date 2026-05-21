@@ -12,8 +12,8 @@ use crate::eval::materialize;
 use crate::value::{string_val, BuiltinArgs, ClockCapInner, Key, Thunk, Value};
 use indexmap::IndexMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 
 /// Helper to create a boxed EvalError from a message.
 fn dt_err(msg: impl Into<String>, span: Span) -> Box<EvalError> {

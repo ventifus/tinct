@@ -85,8 +85,8 @@ fn test_tinct_formatter_compact_literals() {
     let parsed = parse(&formatted).expect("formatted output is not parseable");
 
     // Should have one document with one dict expression
-    assert_eq!(parsed.file.node.documents.len(), 1);
-    assert_eq!(parsed.file.node.documents[0].node.expressions.len(), 1);
+    assert_eq!(parsed.program.documents.len(), 1);
+    assert_eq!(parsed.program.documents[0].node.expressions().count(), 1);
 }
 
 #[test]

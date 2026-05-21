@@ -19,6 +19,7 @@ type errors:
 ```
 
 **Why this design:**
+
 - **Unification** — One fundamental data structure. Functions like `map`, `filter`, `get` work uniformly on all data.
 - **Flexibility** — Mixed integer and string keys naturally supported. Natural extension to keyword arguments.
 - **First-class key-value pairs** — Matches the configuration language use case. Keys are names, not duplicated strings.
@@ -301,6 +302,7 @@ type errors:
 ```
 
 **Why this split:**
+
 - No ambiguity about which operations renumber — it's determined by the category, not the data
 - List operations always give you clean, predictable lists
 - Dict operations never silently destroy your key structure
@@ -678,7 +680,6 @@ An **access chain** is a sequence of projections applied left-to-right to a targ
 π ::= dot(f)              — field access by literal string key f (or integer key n for dot-int access)
 ```
 
-
 **Chains.** An access chain `C = π₁ · π₂ · ... · πₙ` applied to target expression `t` evaluates as left-to-right composition:
 
 ```
@@ -727,7 +728,6 @@ eval_dot(target, field, ρ, d) ⇒ θ
 ```
 
 Error case: if `key ∉ dom(map)`, error `key_not_found(field, span)`. No default — missing keys are always errors (§Null and Missing Keys).
-
 
 ### Part 3: Error Taxonomy
 
@@ -816,6 +816,7 @@ The type checker mirrors the access algebra with type-level projections:
 ```
 
 Chain: `dot("database") · dot("host")` applied to `config`.
+
 1. `eval(VarRef("config"), ρ)` → `θ_config`
 2. `materialize_dict(θ_config)` → `{database: θ_db}`. `map[String("database")]` → `θ_db`. Result: `θ_db` (lazy).
 3. `materialize_dict(θ_db)` → `{host: θ_host, port: θ_port}`. `map[String("host")]` → `θ_host`. Result: `θ_host` (lazy).
@@ -834,7 +835,6 @@ type errors:
 ```
 
 `[get 0 services]` calls the `get` builtin with key `Int(0)` and dict `services`. The builtin materializes `services`, looks up `Key::Int(0)` → `θ_svc0`. Then `.host` dot-accesses `θ_svc0`.
-
 
 **Example 3: Subsequence with `slice`**
 

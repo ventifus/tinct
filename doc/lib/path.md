@@ -2,15 +2,11 @@
 
 ### `path-parts`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `basename`
-
-
 
 ```tinct
 fn@
@@ -18,15 +14,11 @@ fn@
 
 ### `dirname`
 
-
-
 ```tinct
 fn@
 ```
 
 ### `extension`
-
-
 
 ```tinct
 fn@
@@ -34,9 +26,6 @@ fn@
 
 ### `path-join`
 
-
-
 ```tinct
 fn@
 ```
-

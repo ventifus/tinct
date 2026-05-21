@@ -839,6 +839,7 @@ arms — there is no free ride via existing `Seq` dispatch. This is a
 real refactor, not a trivial addition.
 
 **Memory comparison for a 20-char string:**
+
 - Current `Value::String`: 44 bytes, 1 allocation
 - `Value::String`: 36-byte `Rc<str>` (header + data) + 16 bytes
   for `(start, end)` in the `Value` enum ≈ same order of magnitude,
@@ -928,6 +929,7 @@ A `Bytes` value with content `[0xDE 0xAD 0xBE 0xEF]` serializes as
 `"3q2+7w=="`. This is reversible via `base64-decode`.
 
 **No literal syntax.** Bytes values are created via conversion:
+
 - `[str-bytes s]` — from a UTF-8 string  
 - `[base64-decode s]` — from a base64 string
 - `[hex-decode s]` — from a hex string
@@ -1016,6 +1018,7 @@ new builtins, dispatch changes only.
 ### Standard Library Files
 
 **New files:**
+
 - `stdlib/strings.llt` — `str-contains?`, `pad-left`, `pad-right`,
   `str-repeat`, `str-find`, `str-reverse`
   (`starts-with?`/`ends-with?` move to prelude; `str-slice` subsumed
@@ -1033,6 +1036,7 @@ new builtins, dispatch changes only.
 - `stdlib/regex.llt` — see `doc/whatif/lib-regex.md`
 
 **Extended files:**
+
 - `stdlib/prelude.llt` — gains `starts-with?`, `ends-with?` (now
   multi-dispatch on `String`/`Bytes`/`Seq`); `slice`, `take`, `drop`,
   `count`, `reverse`, `contains?`, `get`, `nth`, `length` gain
@@ -1168,6 +1172,7 @@ stat      : [fn@StatResult   [cap@DirCap  path@String]]
 ## Dependencies
 
 **Between sections in this document:**
+
 - §TOML Parsing Lite requires `starts-with?`, `ends-with?`, `trim`
   from §Extended String Utilities.
 - §Strings as Character Sequences (`Value::String` refactor) makes
@@ -1187,6 +1192,7 @@ stat      : [fn@StatResult   [cap@DirCap  path@String]]
 - §Path Utilities has no dependencies.
 
 **On other whatif documents:**
+
 - `doc/whatif/lib-regex.md` requires `str-chars` (§Extended String
   Utilities) and `char-code` (§Bitwise Primitives).
 - §Filesystem Capabilities `stat` return dict includes `Timestamp`
@@ -1198,6 +1204,7 @@ stat      : [fn@StatResult   [cap@DirCap  path@String]]
   protocol and `HttpConn`.
 
 **Stubs:**
+
 - `Watchable` flag and `watch` protocol method are reserved with no
   implementation — requires a future event-driven execution model.
 

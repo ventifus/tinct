@@ -1,4 +1,5 @@
 # What If: Algebraic Data Types for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to add algebraic data types to tinct's structural, dict-first language?
@@ -299,6 +300,7 @@ cost, not appropriate for a configuration language).
 String literals (`Expr::Str`) in type-expression position are not handled.
 
 **Proposed:**
+
 1. Extend `resolve_type_dict` (or the `[type ...]` handler in `infer_dict`): when
    the `[type ...]` body contains multiple positional entries, resolve each as a
    type expression and wrap in `Type::Union(vec![...])`.

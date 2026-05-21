@@ -7,6 +7,7 @@ This chapter provides a complete reference for all 184 Rust-native builtins. For
 **Arity:** Exact count or range (e.g., `2` = exactly two args, `1-2` = one or two args, `1+` = one or more).
 
 **Strictness signature:** Describes which arguments are materialized before the builtin executes:
+
 - `S` = Strict — argument is materialized
 - `L` = Lazy — argument passes through as a thunk (never materialized by this builtin)
 - `Sc` = Selectively strict — materialization is conditional on another argument's value
@@ -14,6 +15,7 @@ This chapter provides a complete reference for all 184 Rust-native builtins. For
 - `I` = Inspect — peeks at thunk state without materializing; branches on Materialized/Unevaluated/Pending without forcing
 
 **Result type:**
+
 - `→ V` = Value result (Int, Float, String, Bool)
 - `→ D` = Container result (Dict or Seq; may contain thunks from inputs)
 - `→ Θ` = Thunk result (Rc::clone of input or new PendingBuiltin/PendingCall)
@@ -21,6 +23,7 @@ This chapter provides a complete reference for all 184 Rust-native builtins. For
 - `→ ⊥` = Always raises an error; never returns
 
 **Category:**
+
 - **Structural** — rearranges entries without inspecting values; thunks pass through untouched
 - **Materializing** — must compute values to determine the result
 - **Lazy-transforming** — applies a function but produces new thunks; no computation until result is materialized
@@ -38,6 +41,7 @@ Arithmetic operators dispatch via the `Add`/`Sub`/`Mul`/`Div` MPTC classes. The 
 | `/` | 2 | `S × S → V` | Float | Divide first by second (always returns Float) |
 
 **Error cases:**
+
 - All: No matching `Add`/`Sub`/`Mul`/`Div` instance for the operand types
 - `/`: Division by zero (catchable via `try`)
 
@@ -51,6 +55,7 @@ Comparison operators dispatch via `Equatable` and `Comparable` typeclass instanc
 | `<` | 2 | `S × S → V` | Bool | Less-than — primitive types (Int, Float, Str) use built-in dispatch; user-defined types route through registered `Comparable` instance |
 
 **Error cases:**
+
 - `=`: No registered `Equatable` instance for a non-primitive type
 - `<`: No registered `Comparable` instance, or mismatched types
 
@@ -76,6 +81,7 @@ Core operations on dicts. All materialize the dict structure (the IndexMap) to p
 | `append` | 2 | `S × L → D` | Dict | Add entry to dict; materializes dict for key computation, value passes through as thunk |
 
 **Error cases:**
+
 - `keys`: Type mismatch if arg is not Dict or Seq
 - `length`: Type mismatch if arg is not Dict or Seq
 - `merge`: Type mismatch if either arg is not Dict
@@ -95,6 +101,7 @@ Convert a Dict to a lazy Seq of its contents. All three builtins use an internal
 **`builtin-get` note:** This is a primitive for runtime key lookup by computed key value. Use `data.key` for static string-key dot access; `builtin-get` is for cases where the key itself is a runtime value (e.g., the result of `each-key`).
 
 **Error cases:**
+
 - `builtin-get`: Type mismatch if first arg is not Int or String; key-not-found error if key is absent from dict
 - `each`, `each-key`, `each-kv`: Type mismatch if arg is not Dict
 
@@ -112,6 +119,7 @@ All string operations materialize their arguments and return computed String val
 | `trim` | 1 | `S → V` | String | Remove leading and trailing whitespace |
 
 **Error cases:**
+
 - `str`: None (all types can be stringified)
 - `split`: Type mismatch if either arg is not String
 - `replace`: Type mismatch if any arg is not String
@@ -129,6 +137,7 @@ Numeric functions materialize their arguments and return computed values.
 | `to-float` | 1 | `S → V` | Float | Parse string to Float |
 
 **Error cases:**
+
 - `floor`, `round`: Type mismatch if arg is not Float or Int
 - `to-int`: Type mismatch if arg is not String; parse error if string is not a valid integer
 - `to-float`: Type mismatch if arg is not String; parse error if string is not a valid float
@@ -139,19 +148,20 @@ Control over evaluation order and error handling.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `eval` | 1 | `S → V` | Any | Deep materialization — recursively materializes all thunks in the value tree |
+| `deep-materialize` | 1 | `S → V` | Any | Deep materialization — recursively materializes all thunks in the value tree |
+| `materialize` | 1 | `S → V` | Any | Force WHNF (weak head normal form) evaluation: materializes the thunk but does not recursively materialize nested thunks |
 | `error` | 1 | `S → ⊥` | Never returns | Materializes arg as error message, raises catchable error |
 | `try` | 1 | `S → D` | Variant | Materializes function arg, invokes it with no args, catches errors; returns `[Ok result]` or `[Err message]` (ADT variants, destructured with `match`) |
 | `apply` | 2 | `S × S → Θ` | Any | Materialize function and dict, call function with dict as named args |
-| `force` | 1 | `S → V` | Any | Force WHNF (weak head normal form) evaluation: materializes the thunk but does not recursively materialize nested thunks |
 | `eval-ast` | 1 | `S → V` | Any | Evaluate an AST dict (as produced by `[quote ...]`); converts via `dict_to_ast` and evaluates in the current environment |
 
 **Error cases:**
-- `eval`: Propagates any error from deep materialization
+
+- `deep-materialize`: Propagates any error from deep materialization
+- `materialize`: Propagates any error from materialization
 - `error`: Always raises (by design)
 - `try`: Type mismatch if arg is not a function (zero-arity)
 - `apply`: Type mismatch if first arg is not a function or second is not a dict
-- `force`: Propagates any error from materialization
 - `eval-ast`: Type mismatch if arg is not a Dict conforming to the AST schema; conversion error if the dict structure is invalid
 
 ## Type Introspection
@@ -188,6 +198,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 | `str` | variadic | `S... → V` | String | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
 
 **Error cases:**
+
 - `gensym`: None (accepts 0 or 1 args; non-String arg produces type error)
 - `llt-repr`: None (all values have a repr)
 - `ast-of`: None (all values return a dict)
@@ -202,6 +213,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 | `tag-of` | 1 | `S → V` | String | Extract tag from variant: `[tag-of [Ok 42]]` → `"Ok"` |
 
 **Error cases:**
+
 - `variant`: Type mismatch if tag is not String
 - `tag-of`: Type mismatch if arg is not a Variant
 
@@ -214,6 +226,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 | `big-int` | 1 | `S → V` | BigInt | Convert String or Int to BigInt (arbitrary-precision integer) |
 
 **Error cases:**
+
 - `float`: Type mismatch if arg is not Int or Float
 - `decimal`: Type mismatch if arg is not String or Int; parse error for malformed string
 - `big-int`: Type mismatch if arg is not String or Int; parse error for malformed string
@@ -225,6 +238,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 | `get?` | 2 | `S × S → V` | Bool or Value | Optional key lookup: returns `[Ok value]` if key exists, `[Err "key not found"]` otherwise (Result variant) |
 
 **Error cases:**
+
 - Type mismatch if first arg is not Dict or second arg is not a valid key type (Int or String)
 
 ## Datagram I/O
@@ -235,6 +249,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 | `recv-datagram` | 1-2 | `S (× S)? → V` | String | Receive bytes from datagram Handle; optional max-size arg (default 65536) |
 
 **Error cases:**
+
 - `send-datagram`: Type mismatch if first arg is not Handle or second arg is not Bytes/String; capability error if Handle does not carry `Datagram` capability; I/O error on send failure
 - `recv-datagram`: Type mismatch if arg is not Handle; capability error if Handle does not carry `Datagram` capability; I/O error on receive failure
 
@@ -310,31 +325,20 @@ File loading, JSON parsing, and text output.
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
 | `from-json` | 1 | `S → D` | Dict | Parse JSON string to dict; numbers become Int or Float, arrays become dicts with 0-indexed keys |
-| `include` | 1-3 | `S (× S)? → D` or `S × S (× S)? → D` | Dict | Load and evaluate an LLT file; returns the file's final value |
 | `emit` | 1 | `S → Null` | Null | Write string to stdout; suppresses default JSON output; returns empty dict (Null) |
 | `write` | 3 | `DirCap × S × S → Null` | Null | Write content to file; takes DirCap, path (String), content (String); returns empty dict (Null) |
 | `write-atomic` | 3 | `DirCap × S × S → Null` | Null | Atomically write content to file via temp+rename; takes DirCap, path, content; returns empty dict (Null) |
 | `revoke-cap` | 1 | `RevocableDirCap → Null` | Null | Revoke a RevocableDirCap; subsequent uses will error; returns empty dict (Null) |
 
-**`include` call patterns:**
-
-1. **`[include "path"]`** — Backward compatible: load file from current working directory (via `ctx.config.base_dir`). Path is relative to the directory containing the evaluating file.
-
-2. **`[include "path" "hash"]`** — Backward compatible with integrity check: same as (1) but with a required integrity hash in `"algo:hexdigest"` format (e.g., `"blake3:abc123..."`).
-
-3. **`[include $cap "path"]`** — Cap-qualified: load file from the given `DirCap`. Path is relative to the cap's root directory. The cap can be a user-provided capability (e.g., `pwd`, `libdir`) or an attenuated cap created via `narrow`.
-
-4. **`[include $cap "path" "hash"]`** — Cap-qualified with integrity check: same as (3) but with a required integrity hash.
-
-**Caching:** Files are cached by `(st_dev, st_ino)` inode identity on Unix systems (by path hash on non-Unix). The same physical file accessed via different caps or paths is evaluated only once.
+**`include`** is a pure-tinct function defined in `stdlib/prelude.llt`, not a Rust builtin. It is built from the thin Rust primitives in the **Include Pipeline Primitives** section below. See [Documents & Pipelines](09-documents.md) §Include for full semantics and call patterns.
 
 **`emit` behavior:**
 
 `emit` writes UTF-8 text directly to stdout, bypassing the default JSON serialization. When `emit` is called during evaluation, the CLI suppresses the automatic JSON output at the end. Multiple `emit` calls append sequentially. This enables text-based formatters and templating workflows (see [Documents & Pipelines](09-documents.md) §Multi-File Pipeline).
 
 **Error cases:**
+
 - `from-json`: Type mismatch if arg is not String; parse error if JSON is invalid
-- `include`: Type mismatch if first arg is not DirCap or String; arity mismatch if DirCap is provided but path is missing; file not found; parse/eval errors from included file; revoked capability error if using a revoked `RevocableDirCap`
 - `emit`: Type mismatch if arg is not String; I/O error if stdout write fails
 - `write`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on file creation or write failure; revoked capability error if using a revoked `RevocableDirCap`; capability permission error if `DirCap` does not hold the `Writable` flag
 - `write-atomic`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on temp file creation, write, sync, or rename failure; revoked capability error if using a revoked `RevocableDirCap`; capability permission error if `DirCap` does not hold the `Writable` flag
@@ -370,6 +374,40 @@ The `...` row tail means "this flag plus possibly others." A `DirCap` holding `[
 
 For DirCap creation (via `--cap-fs NAME=PATH[:MODE]`) and in-script attenuation (via `narrow`), see [Tooling](12-tooling.md) §Object Capability Model.
 
+## Include Pipeline Primitives
+
+Thin Rust primitives that implement the self-hosted `include` pipeline. These are internal to `stdlib/prelude.llt` — user code calls `include`, `eval-file`, and `eval-document-pipeline` from prelude rather than using these primitives directly.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `load` | 1+ | `S (name: S) → D` | Dict | Parse source text to a file AST dict; `name:` named arg provides a provenance hint for error spans (e.g., the file path) |
+| `expand` | 1 | `S → D` | Dict | Run macro expansion on a file AST dict produced by `load`; returns the expanded AST dict |
+| `eval` | 1+ | `S (%: L) (env: S) → Θ` | Any | Evaluate a list of AST expression nodes in the runtime env; `%:` binds the pipeline input as `$`; `env:` merges extra bindings into scope |
+| `eval-types` | 1 | `S → Θ` | Any | Evaluate AST expression nodes in the type-stage env (type-level builtins only — no I/O, no capability access) |
+| `blake3` | 1 | `S → V` | String | Compute BLAKE3 hash of a string; returns 64-char lowercase hex |
+| `cap-identity` | 1 | `S → V` | String | Return a stable identity string for a `DirCap` derived from `fstat` on the directory fd; format: `"dev:ino"` — stable across renames and mounts |
+| `include-cache-get` | 1 | `S → D` | Variant | Look up an entry in the content-addressed include cache by hash; returns `[Missing]`, `[Pending]`, or `[Cached value]` |
+| `include-cache-put` | 2 | `S × D → Null` | Null | Write an entry to the include cache; entry must be `[Missing]`, `[Pending]`, or `[Cached value]` |
+
+**`IncludeCacheEntry` variants:**
+
+- `Missing` — not yet loaded (or evaluation failed; reset to `Missing` after error to allow retries)
+- `Pending` — currently being evaluated; used for circular include detection
+- `[Cached value]` — successfully evaluated; `value` is the memoized result
+
+**Cache key:** `blake3(cap-identity + "|" + source-text)`. Same source text under the same directory identity shares one cache entry; same source under a different directory gets its own entry (different `%include-dir`, potentially different sub-includes). The cache is process-scoped.
+
+**Error cases:**
+
+- `load`: Type mismatch if source is not String; parse error if source text is syntactically invalid
+- `expand`: Type mismatch if arg is not a valid file AST dict (as produced by `load`)
+- `eval`: Type mismatch if `exprs` is not a valid expression list; errors from expression evaluation propagate
+- `eval-types`: Same as `eval`; additionally rejects `%:` and `env:` named args
+- `blake3`: Type mismatch if arg is not String
+- `cap-identity`: Type mismatch if arg is not DirCap; I/O error if `fstat` fails
+- `include-cache-get`: Type mismatch if arg is not String
+- `include-cache-put`: Type mismatch if args are not String and a valid `IncludeCacheEntry` variant
+
 ## Sequences
 
 Sequence constructors create lazy Seq values; destructors materialize the Seq spine to varying degrees; higher-order operations apply functions lazily.
@@ -386,6 +424,7 @@ Sequence constructors create lazy Seq values; destructors materialize the Seq sp
 | `unfold` | 2 | `L × L → Θ` | Seq | General unfold: `f(state) → dict`; step dict must have value as **first** entry and next state as **second** entry (insertion order matters; key names are ignored); returns PendingBuiltin thunk |
 
 **Error cases:**
+
 - `seq`: None (any values can be head/tail)
 - `range`: Type mismatch if args are not Int; arity error if more than 2 args
 - `repeat`: None
@@ -402,6 +441,7 @@ Sequence constructors create lazy Seq values; destructors materialize the Seq sp
 | `collect` | 1 | `S → D` | Dict | Materialize entire Seq spine (all tails until terminal `[]`); head thunks pass through into Dict |
 
 **Error cases:**
+
 - `head`, `tail`: Type mismatch if arg is not Seq
 - `collect`: Type mismatch if arg is not Seq; resource limit if Seq exceeds MAX_COLLECT_SIZE (10M elements)
 
@@ -420,6 +460,7 @@ All have **dual dispatch** on Dict/Seq. Dict paths preserve keys; Seq paths retu
 | `concat` | 2 | `S × L → LT` | Dict or Seq | Concatenate two collections; Seq → lazy chain (O(1)), Dict → eager merge with reindexing |
 
 **Error cases:**
+
 - `map`: Type mismatch if collection is not Dict or Seq, or function is not callable
 - `filter`: Type mismatch if collection is not Dict or Seq, or predicate is not callable; predicate must return Bool
 - `take`, `drop`: Type mismatch if first arg is not Int or second is not Dict/Seq; negative count errors
@@ -748,6 +789,7 @@ Parse URI strings into structured values with dot-accessible fields.
 For field descriptions, see [Data Model](03-data-model.md) §URI Values.
 
 **Error cases:**
+
 - `uri`: Parse error if string is not a valid RFC 3986 URI
 - `url`: Parse error if not a valid URI; type error if no authority (host) component is present
 - `urn`: Parse error if not a valid URI; type error if scheme is not `"urn"`
@@ -784,10 +826,12 @@ type errors:
 `timeout-ms` is the maximum wait time in milliseconds. A value of `0` disables the timeout (not recommended). The host may be an IPv4 address string or a hostname — DNS resolution is performed before sending.
 
 **Returned dict:** Always returns a dict (never throws on network failure):
+
 - Success: `{ok: {latency-ms: Int}}` — latency in whole milliseconds
 - Failure: `{err: String}` — human-readable error message
 
 Failure cases that produce `{err: ...}`:
+
 - DNS resolution failure
 - Timeout
 - ICMP socket creation failure (see privilege requirements below)
@@ -811,6 +855,7 @@ If socket creation fails, the error dict includes a message explaining the `ping
 **NetCap allowlist:** The host is checked against the `NetCap` allowlist before any socket operations. Port-based allowlist entries (`hostname:port`) do not match (ICMP has no ports); hostname and CIDR entries apply normally.
 
 **Error cases (hard errors, not `{err: ...}` dict):**
+
 - Type mismatch if `cap` is not a `NetCap` (E010)
 - Type mismatch if `host` is not a String (E010)
 - Type mismatch if `timeout-ms` is not an Int (E010)
@@ -842,9 +887,9 @@ let result = rt.block_on(async { /* quinn QUIC handshake */ });
 
 **Extension:** If a session builtin needs to hold a live async connection across multiple builtin calls (e.g., streaming gRPC), the runtime must outlive the builtin call. In that case, store the runtime alongside the handle in the `Value::Handle` `caps` dict as an opaque Rust-managed resource.
 
-## %rust Virtual Module
+## Stable Builtin Aliases
 
-The `builtin-*` aliases provide access to the raw Rust implementations by stable names that cannot be shadowed by user code. They are only accessible inside `stdlib/prelude.llt` via `[include %rust "core"]` — **they are not available to user code**.
+The `builtin-*` aliases provide access to the raw Rust implementations by stable names that cannot be shadowed by user code. They are pre-injected into the bootstrap environment and accessible to prelude, but **not re-exported to user scope**.
 
 | Alias | Target | Purpose |
 |-------|--------|---------|
@@ -869,17 +914,62 @@ The `builtin-*` aliases provide access to the raw Rust implementations by stable
 | `builtin-big-int` | `big-int` | Stable name for raw big integer conversion |
 | `builtin-proxy` | `proxy` | Stable name for raw proxy construction |
 
-These exist so that prelude wrappers (e.g., `>` implemented via `<` and `not`) call through to the underlying Rust primitive even when the public name is shadowed by user code. When a user writes `<: [fn [a b] ...]`, prelude's `>` still calls `builtin-lt` (unchanged). The prelude accesses them via the `%rust` virtual module (`[include %rust "core"]`), which creates a fresh env containing only the primitives in that group.
+These exist so that prelude wrappers (e.g., `>` implemented via `<` and `not`) call through to the underlying Rust primitive even when the public name is shadowed by user code. When a user writes `<: [fn [a b] ...]`, prelude's `>` still calls `builtin-lt` (unchanged).
 
 **Privacy:** `builtin-*` aliases are not in user scope. Any reference to `builtin-lt` from user code produces `undefined variable: builtin-lt` at both runtime and from the type checker. This is enforced by the environment chain — user code inherits only what prelude exports.
 
-**%rust module groups:**
-- `"core"` — arithmetic, comparison, control flow, and their `builtin-*` aliases
-- `"collection"` — dict and sequence primitives
-- `"string"` — string primitives
-- `"io"` — I/O primitives
-- `"meta"` — type introspection and code generation primitives
-- `"type-core"` — minimal subset for type-stage evaluation
+## Datetime
+
+Capability-gated time access and timestamp manipulation.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `now` | 1 | `S → V` | Timestamp | Read the current time from a `ClockCap`; returns a `Timestamp` (nanoseconds since Unix epoch as an opaque value) |
+| `fixed-clock` | 1 | `S → V` | ClockCap | Construct a `ClockCap` that always returns the given `Timestamp`; useful for testing time-sensitive code without depending on the system clock |
+| `parse-timestamp` | 1 | `S → V` | Timestamp | Parse an RFC 3339 string (e.g., `"2024-01-01T00:00:00Z"`) to a Timestamp |
+| `format-timestamp` | 2 | `S × S → V` | String | Format a Timestamp as an RFC 3339 string; second arg is a timezone name (e.g., `"UTC"`, `"America/New_York"`) |
+| `timestamp-add` | 2 | `S × S → V` | Timestamp | Add a duration (nanoseconds as Int) to a Timestamp |
+| `timestamp-diff` | 2 | `S × S → V` | Int | Difference between two Timestamps in nanoseconds: `b - a` |
+| `timestamp<?` | 2 | `S × S → V` | Bool | True if first Timestamp is before second |
+| `timestamp>?` | 2 | `S × S → V` | Bool | True if first Timestamp is after second |
+| `timestamp=?` | 2 | `S × S → V` | Bool | True if two Timestamps are equal |
+| `timestamp-year` | 1 | `S → V` | Int | Extract year component (UTC) |
+| `timestamp-month` | 1 | `S → V` | Int | Extract month component (1-12, UTC) |
+| `timestamp-day` | 1 | `S → V` | Int | Extract day-of-month component (1-31, UTC) |
+| `timestamp-hour` | 1 | `S → V` | Int | Extract hour component (0-23, UTC) |
+| `timestamp-minute` | 1 | `S → V` | Int | Extract minute component (0-59, UTC) |
+| `timestamp-second` | 1 | `S → V` | Int | Extract second component (0-60, UTC; 60 for leap seconds) |
+| `timestamp-parts` | 2 | `S × S → V` | Dict | Decompose a Timestamp into a dict of all components in the given timezone: `year`, `month`, `day`, `hour`, `minute`, `second`, `nanosecond`, `tz-offset-seconds` |
+| `timestamp->unix` | 1 | `S → V` | Int | Convert Timestamp to Unix epoch seconds (integer, truncating nanoseconds) |
+| `unix->timestamp` | 1 | `S → V` | Timestamp | Convert Unix epoch seconds (Int) to Timestamp |
+| `duration-nanos` | 1 | `S → V` | Int | Return duration in nanoseconds (identity — durations are already nanoseconds) |
+| `duration-seconds` | 1 | `S → V` | Int | Convert seconds to nanosecond duration |
+| `duration-minutes` | 1 | `S → V` | Int | Convert minutes to nanosecond duration |
+| `duration-hours` | 1 | `S → V` | Int | Convert hours to nanosecond duration |
+| `duration-days` | 1 | `S → V` | Int | Convert days to nanosecond duration |
+| `load-tz` | 1 | `S → V` | Any | Load timezone data by IANA name (e.g., `"America/New_York"`); for use with `format-timestamp` and `timestamp-parts` |
+| `timestamp-in-tz` | 2 | `S × S → V` | Dict | Decompose a Timestamp in the given timezone; alias for `timestamp-parts` with explicit tz |
+| `local->timestamp` | 1 | `S → V` | Timestamp | Convert a local-time dict (with `tz` field) to a UTC Timestamp |
+| `local-tz-name` | 0 | `() → V` | String | Return the system's local timezone name |
+
+**`ClockCap`** is an opaque capability granting access to time. The `%clock` variable is injected by the CLI as a real-time `ClockCap`. Pass a `ClockCap` to `now` to read the current time. Use `fixed-clock` to construct a deterministic clock for testing:
+
+```tinct
+[test-clock: [fixed-clock [parse-timestamp "2024-06-01T12:00:00Z"]]]
+[now test-clock]   # always returns 2024-06-01T12:00:00Z
+```
+
+`--no-cap-clock` omits `%clock` injection; `--cap-clock-fixed "RFC3339"` overrides `%clock` with a fixed timestamp at the CLI level.
+
+**Error cases:**
+
+- `now`: Type mismatch if arg is not a ClockCap
+- `fixed-clock`: Type mismatch if arg is not a Timestamp
+- `parse-timestamp`: Type mismatch if arg is not String; parse error if not a valid RFC 3339 string
+- `format-timestamp`: Type mismatch if first arg is not Timestamp or second is not String; unknown timezone name
+- Timestamp component extractors (`timestamp-year` etc.): Type mismatch if arg is not Timestamp
+- `load-tz`: Unknown timezone name
+- `local-tz-name`: I/O error if system timezone cannot be determined
 
 ## Summary
 

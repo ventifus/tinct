@@ -109,6 +109,7 @@ matching the existing sequential inference in `infer_sequential`.
 4. **Pattern matching readiness.** `[match]` arm bodies use
    intermediate bindings via the same sequential function body
    mechanism:
+
    ```tinct
    [match val
      [ok: v]:

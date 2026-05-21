@@ -372,12 +372,14 @@ builtins — always available without include.
 ### Builtins (`src/builtins_io.rs`, `src/builtins.rs`)
 
 **`connect` signature:** Inspects Transport tag to determine argument count:
+
 - `Tcp`, `Udp` → 2 address args (host, port)
 - `UnixStream`, `UnixDatagram`, `NamedPipe` → 1 address arg (path)
 - `Icmp` → 1 address arg (host)
 - Unknown variant → forward remaining args to user Connector's `connect` field
 
 **New builtins:**
+
 - `tls-layer` — Handle form TLS upgrade; requires Handle refactor
 - `quic-session` — QUIC session via quinn; 4 args: cap host port opts
 - `http2-session` — HTTP/2 session via reqwest/h2; 1 arg: Handle@[Stream Tls]
@@ -390,6 +392,7 @@ builtins — always available without include.
 ### Value Types (`src/value.rs`)
 
 New value variants:
+
 - `Value::QuicSession` — opaque QUIC session (quinn)
 - `Value::Http2Session` — opaque HTTP/2 session (reqwest/h2)
 - `Value::Http3Session` — opaque HTTP/3 session

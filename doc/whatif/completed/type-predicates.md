@@ -39,6 +39,7 @@ builtin — "list-ness" is a convention, not a type distinction.
 - **`seq?` distinguishes lazy sequences** — `Seq` is a separate
   `Value` variant, not a dict
 - **Key inspection at runtime** — users can check keys manually:
+
   ```tinct
   list?: [fn [xs]
     [and [= [type-of xs] "Dict"] [= [first [keys xs]] 0]]]
@@ -84,6 +85,7 @@ fn?     : Any → Bool    # true for Function and Builtin
 ```
 
 **No `list?`** because:
+
 1. Lists are dicts — there is no `Value::List` variant
 2. Any definition of "list-ness" is arbitrary (dense integers? contiguous?
    starting from 0?)
@@ -164,10 +166,12 @@ existing builtin call mechanism.
 **Current:** No type predicates in stdlib.
 **Proposed:** Optionally add `list?` as a stdlib function (not a builtin)
 that checks for dict-with-integer-keys convention:
+
 ```tinct
 list?: [fn [xs]
   [and [dict? xs] [all? [fn [k] [int? k]] [keys xs]]]]
 ```
+
 **Impact:** Minor — optional convenience function, not a language change.
 
 ## Phased Adoption

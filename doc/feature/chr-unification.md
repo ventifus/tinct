@@ -1,6 +1,7 @@
 # CHR-Unified Type Constraints
 
 > **Updates:**
+>
 > - `doc/06-type-inference.md §Multi-Parameter Type Classes and Functional Dependencies` — replaces the hardcoded 9-entry arithmetic table with the full CHR design
 > - `doc/06-type-inference.md §Typeclass Declarations and Instances` — syntax updated for two-bracket class body and match-arm instances
 > - `doc/feature/advanced-typeclasses.md §Precise Mixed-Mode Arithmetic` — arithmetic classes are now declared in `stdlib/prelude.llt`, not hardcoded in Rust

@@ -15,6 +15,7 @@ tinct operates entirely on in-memory data. The only I/O mechanism is `include`, 
 ```
 
 Users who want to combine tinct with SQL today must:
+
 - Run the SQL query externally and write results to a JSON/YAML file
 - Include that file via `include`
 - Lose lazy streaming — the entire result set is materialized before tinct sees it

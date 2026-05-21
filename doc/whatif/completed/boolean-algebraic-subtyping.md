@@ -789,13 +789,13 @@ for recursive subtyping.
 - Chau, C.Y. & Parreaux, L. (2026). "The simple essence of Boolean-algebraic
   subtyping: semantic soundness for algebraic union, intersection, negation, and
   equi-recursive types." *Proc. ACM Program. Lang.*, 10(POPL), pp. 1353–1382.
-  doi:10.1145/3776689. Preprint: https://lptk.github.io/files/boolean-algebraic-subtyping.pdf.
-  Artifact: https://github.com/fo5for/sebas — Proves BAS sound via five characteristic
+  doi:10.1145/3776689. Preprint: <https://lptk.github.io/files/boolean-algebraic-subtyping.pdf>.
+  Artifact: <https://github.com/fo5for/sebas> — Proves BAS sound via five characteristic
   Boolean homomorphisms; encodes extensible records without row variables.
   [algebraic subtyping, row polymorphism]
 - Parreaux, L. & Chau, C.Y. (2022). "MLstruct: Principal type inference in a Boolean
   algebra of structural types." *Proc. ACM Program. Lang.*, 6(OOPSLA2), Article 141.
-  doi:10.1145/3563304. Artifact: https://github.com/hkust-taco/mlstruct —
+  doi:10.1145/3563304. Artifact: <https://github.com/hkust-taco/mlstruct> —
   Working implementation of BAS-style inference. Source of the C-Var1/2 constraint
   rewriting rules, RDNF normalization, I-Case3 pattern matching typing rule, and the
   S-RcdTop collapse of disjoint-field-set record unions. Direct implementation reference.

@@ -16,6 +16,7 @@ env.insert("Udp", TypeScheme::mono(Type::Unknown));
 ```
 
 The `connect` builtin accepts a transport parameter typed as `Unknown`. This means:
+
 - No compile-time checking that `Tcp` is passed to `connect` instead of `42`
 - No exhaustiveness checking in `match` arms over transport values
 - No LSP hover showing what variants are available
@@ -46,6 +47,7 @@ Type::Variant(String),  // e.g. Type::Variant("Transport")
 ```
 
 Transport constants registered as:
+
 ```rust
 env.insert("Tcp", TypeScheme::mono(Type::Variant("Transport".to_string())));
 env.insert("Udp", TypeScheme::mono(Type::Variant("Transport".to_string())));
@@ -54,6 +56,7 @@ env.insert("Unix", TypeScheme::mono(Type::Variant("Transport".to_string())));
 ```
 
 `connect` typed as:
+
 ```rust
 Type::Function {
     params: vec![

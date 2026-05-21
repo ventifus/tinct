@@ -1,4 +1,5 @@
 # What If: Path-Sensitive Type Narrowing for tinct
+
 **State:** Accepted — 2026-05-05
 
 What would it take to narrow types in conditional branches based on

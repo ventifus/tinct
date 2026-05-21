@@ -3,6 +3,7 @@
 **State:** Accepted — 2026-05-20
 
 **Supersedes:**
+
 - [`ast-value-types.md`](ast-value-types.md) — fully absorbed
 - [`async-eval.md`](async-eval.md) — core async runtime absorbed here; serve/connect layers and networking content extracted to [`lib-net-v3.md`](lib-net-v3.md)
 
@@ -63,6 +64,7 @@ The current `Expr` enum serves every phase of the pipeline — parser, macro exp
 **The `Core*` family** (`CoreExpr`) exists for one purpose: to be the evaluator's private, optimised, already-resolved internal representation. It embeds de Bruijn coordinates as plain fields, is never exposed to tinct code, and can change freely without affecting the tinct API.
 
 **`SurfaceExpression`** — what the parser produces and what tinct code sees:
+
 - Immutable; no `RefCell` fields
 - `Arc`-wrapped at every recursive position
 - Node identity derived from `Arc` pointer — stable for the Arc's lifetime, no counter required
@@ -71,6 +73,7 @@ The current `Expr` enum serves every phase of the pipeline — parser, macro exp
 - Wrapped in `Value::Expression` — the representation tinct metaprogramming operates on
 
 **`CoreExpr`** — what the evaluator operates on:
+
 - De Bruijn coordinates as plain `u32` fields (no `RefCell`, no `Option`)
 - Produced by the lowering pass from `SurfaceExpression`
 - Stored inside `UnevaluatedState::Expr` in each thunk
@@ -329,6 +332,7 @@ The full implementation walks all Expression variants via match dispatch, analog
 **Phase-ordering invariant:** Both `ResolutionTable` and `TypeAnnotationTable` must be fully populated before any thunk is forced. This is enforced by phase ordering: `expand` → resolution → typecheck → evaluation. Macro expansion and `include` must not synthesize new `SurfaceNode` expressions after typechecking. The tables are immutable once produced; the lowering pass reads but never writes them.
 
 **TypeAssert lowering:** The lowering pass checks `type_table.get(&node_id(&arc))`:
+
 - **Present** → `CoreExpr::TypeAssert { resolved_type: *ty }` — structural runtime check against `ty` (see `CoreExpr::TypeAssert` comment above for full protocol: primitives in-place, records in-place, functions via Findler-Felleisen proxy)
 - **Absent** (macro-synthesized, bypassed typechecking) → `CoreExpr::RuntimeTypeCheck { annotation, default }` — uses `annotation` (not a resolved `Type`) for a best-effort check; falls back to `default:` if present, raises error otherwise. Less precise than `TypeAssert` since the annotation hasn't been elaborated by the type checker.
 
@@ -521,7 +525,7 @@ UnevaluatedState::AstNodeField {
 }
 ```
 
-3. Each thunk evaluates lazily by calling `surface_node_get_field(&node, field)` when demanded in the arm body. Unused bindings are never *evaluated* — their `Arc<Thunk>` wrapper is allocated at dispatch time, but `surface_node_get_field` is never called for them. The benefit is for expensive field computations: `args: [Seq Expression]` on a `Call` node is never constructed if the arm body doesn't use `args`.
+1. Each thunk evaluates lazily by calling `surface_node_get_field(&node, field)` when demanded in the arm body. Unused bindings are never *evaluated* — their `Arc<Thunk>` wrapper is allocated at dispatch time, but `surface_node_get_field` is never called for them. The benefit is for expensive field computations: `args: [Seq Expression]` on a `Call` node is never constructed if the arm body doesn't use `args`.
 
 This is especially significant for heavy fields: `args: [Seq Expression]` in a `[Call ...]` arm or `entries: [Seq Entry]` in a `[Dict ...]` arm are never constructed if the arm body doesn't use them.
 
@@ -902,7 +906,6 @@ results@[Seq Int]:  [await-all [task [+ 1 2]] [task [* 3 4]]]
 
 `Type::Task(Box<Type>)`, `Type::Channel(Box<Type>)`, `Type::Context` (opaque) — all new. `task` infers the inner type from the body expression. `await` unifies `Task@?T` → `?T`. Pattern is identical to existing parameterized types (`Seq@T`).
 
-
 ---
 
 ## Stdlib Module Map
@@ -1181,6 +1184,7 @@ par-filter: [fn [f seq]
 A cleanup pass at the end of the sprint must verify every item below is gone. Nothing in this list should remain active.
 
 **`src/ast.rs`**
+
 - `Expr` enum — replaced by `SurfaceExpression` + `CoreExpr`
 - `Document` struct — replaced by `SurfaceDocument`
 - `File` struct — replaced by `SurfaceProgram`
@@ -1188,6 +1192,7 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 - `TypeAssert.resolved_type: RefCell<Option<Type>>` — replaced by `TypeAnnotationTable` + distinct `CoreExpr` variants
 
 **`src/ast_dict.rs`** — **entire file deleted**
+
 - `dict_to_ast` — no remaining callers
 - `dict_to_file` — never written; confirm it was never accidentally added
 - `ast_to_dict` (file-level) — gone; `load` wraps `SurfaceProgram` directly
@@ -1196,52 +1201,64 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 - String-keyed `type:` Dict schema — superseded; no backwards compat
 
 **`src/desugar.rs`** — deleted; its two responsibilities split:
+
 - `Pipe` → `Call`: moves into the lowering pass in `src/lower.rs`
 - `$_` implicit lambda desugaring: moves to `stdlib/desugar.llt` as a tinct surface-to-surface pass; registered in the pipeline between `expand` and resolution
 
 **`src/eval_pipeline.rs`** — entire file deleted
+
 - `eval_file_with_input`
 - `eval_document` (the let\* loop is extracted into `src/lower.rs` or inline in the evaluator)
 - `eval_file` (public wrapper around `eval_file_with_input`)
 Note: `run_eval` does **not** exist in this file — confirmed by code inspection.
 
 **`src/builtins_meta.rs`**
+
 - `builtin_eval_ast` — replaced by `eval` on a single-element seq
 - `builtin_include` — deleted in `include-decomp-eval-primitives` (prerequisite); confirm gone
 
 **`src/builtins.rs`**
+
 - `eval-ast` registration in `standard_builtins()`
 - `builtin_include` registration — from prerequisite sprint; confirm gone
 - `rust_module()` dispatcher — from prerequisite sprint; confirm gone
 - `builtin-*` alias registrations — from prerequisite sprint; confirm gone
 
 **`src/value.rs`**
+
 - `ThunkState` enum — replaced by `(Mutex<Option<UnevaluatedState>>, OnceCell<...>)` pair
 - `Value::RustRegistry` — from prerequisite sprint; confirm gone
 - All `Rc<T>` value types — replaced by `Arc<T>`; scan for any remaining `use std::rc::Rc` imports
 
 **`src/eval.rs` / `src/eval_materialize.rs`**
+
 - All `Rc<Thunk>` / `Rc<RefCell<Environment>>` usage — replaced by `Arc`
 - `InProgress` / `PendingBuiltin` / `PendingCall` thunk states — replaced by `OnceCell` pair
 
 **`src/eval_state.rs` or `src/eval.rs`**
+
 - `EvalState::include_guard: HashSet<(u64, u64)>` — from prerequisite sprint; confirm gone
 - `EvalState::include_cache` (old inode-keyed cache) — from prerequisite sprint; confirm gone
 
 **`src/async_rt.rs`**
+
 - Thread-local `current_thread` Tokio runtime — replaced by `run_program()`
 - `block_on` bridge function — replaced by `.await`; confirm no remaining call sites except LSP boundary
 
 **`src/main.rs`**
+
 - `run_eval()` Rust call — replaced by tinct `cli-pipeline` (from prerequisite sprint); confirm gone
 
 **Error types**
+
 - `Box<EvalError>` at cross-thread boundaries — replaced by `Arc<EvalError>`; scan for remaining `Box<EvalError>` in async contexts
 
 **Rust JSON serializer**
+
 - `value_to_json` (or equivalent) in `src/` — replaced by `stdlib/codecs/json.llt`; the Rust function becomes a thin shim that calls the tinct `to-json` function, then is deleted once tinct has full control
 
 **Tinct stdlib**
+
 - `[include %rust "..."]` patterns in `stdlib/prelude.llt` — from prerequisite sprint; confirm gone
 - Any `dict?` guards around AST node access — `dict?` returns `false` for AST types; any such guard is dead code
 
@@ -1254,6 +1271,7 @@ Decisions made during Sprint 1 implementation that refine or supersede the desig
 ### Parser bridge approach (Part B)
 
 The internal parser (8182 lines, 391 `Expr::` constructions) was not directly migrated in Sprint 1. Instead, a bridge approach was used:
+
 - `ParseOutput` gains a `pub program: Spanned<SurfaceProgram>` field populated by calling `file_to_surface_program()` at the final assembly point in `parse()`
 - Internal parser machinery continues building `File`/`Expr` internally
 - `src/ast_convert.rs` provides `file_to_surface_program()`, `expr_to_surface_node()`, and `surface_node_to_expr()` as a transitional bridge
@@ -1280,6 +1298,7 @@ The `tag-of` builtin was extended to handle `Value::Expression` by returning `su
 ### ThunkArena/ThunkId architecture (Rc→Arc deferred to Sprint 2)
 
 The codebase uses a `ThunkArena` with `ThunkId(u32)` integer indices rather than raw `Rc<Thunk>` pointers (as assumed by the design). `Value::Dict(IndexMap<Key, ThunkId>)` stores integer indices, not `Rc<Thunk>`. The Rc→Arc migration described in Part E applies to:
+
 - `Rc<Thunk>` in `BuiltinFn` signatures → `Arc<Thunk>` (Sprint 2)
 - `ThunkArena` contents → `Arc<Thunk>` (Sprint 2)
 - `ThunkState` → `OnceCell` pair (Sprint 2)
