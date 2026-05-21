@@ -53,7 +53,7 @@ use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 /// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
-pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_deep_materialize(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -377,24 +377,6 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// `eval-ast`: takes 1 arg (Dict from quote), reconstructs AST, evaluates it.
 /// Inherently materializing: must materialize dict to extract AST structure,
 /// then evaluate the reconstructed expression.
-pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("eval-ast", args, named, &ctx, call_span)?;
-
-    // Convert the dict to an AST node
-    let ast = crate::ast_dict::dict_to_ast(&val, &ctx)
-        .map_err(|e| EvalError::user_error(format!("eval-ast: {}", e), call_span))?;
-
-    // Evaluate the reconstructed AST in the stdlib environment
-    let env = Arc::clone(&ctx.config.stdlib_env);
-    crate::eval::eval(Rc::new(ast), env, &ctx)
-}
-
 /// `gensym`: Generate a unique symbol name for macro hygiene.
 ///
 /// - Zero args: returns `":gensym:N"` where N is a global monotonic counter.
@@ -1071,6 +1053,9 @@ fn type_name(val: &Value) -> String {
         Value::Program(_) => "Program",
         Value::Document(_) => "Document",
         Value::Expression(_) => "Expression",
+        Value::Task => "Task",
+        Value::Channel => "Channel",
+        Value::Context => "Context",
     }
     .to_string()
 }
@@ -1429,6 +1414,289 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         )
         .into()),
     }
+}
+
+/// `eval`: evaluates a sequence of Expression values in a given environment.
+///
+/// For the include-decomp self-hosted pipeline. Takes a `[Seq Expression]` and
+/// returns a `[Seq Any]` of lazy thunks (one per expression).
+///
+/// Each Expression is wrapped in a ThunkState::Surface which defers lowering and
+/// evaluation until the thunk is forced.
+///
+/// Named args:
+/// - `env:` (Dict) — bindings added to the base environment (default: empty)
+/// - `%:` (Any) — the pipeline input value, bound as `$` in the environment
+///
+/// Base environment: stdlib_env (the standard library prelude).
+pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    // Extract optional env: and %: named args
+    let (env_dict, pipeline_input) = if let Some(named_map) = named {
+        // Reject unknown named args
+        for key in named_map.keys() {
+            if key != "env" && key != "%" {
+                return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
+            }
+        }
+
+        let env_dict = named_map.get("env").map(|t| Arc::clone(t));
+        let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
+        (env_dict, pipeline_input)
+    } else {
+        (None, None)
+    };
+
+    // Start with stdlib environment
+    let base_env = Arc::clone(&ctx.config.stdlib_env);
+
+    // Add env: dict bindings if provided
+    let env_with_bindings = if let Some(env_thunk) = env_dict {
+        let env_val = materialize(&env_thunk, Some(&call_span), &ctx)?;
+        match env_val {
+            Value::Dict(entries) => {
+                // Create child environment with dict entries as bindings
+                let child_env = Arc::new(std::sync::RwLock::new(
+                    crate::value::Environment::with_parent(Arc::clone(&base_env))
+                ));
+                for (key, thunk_id) in entries.iter() {
+                    if let Key::String(name) = key {
+                        child_env.write().unwrap().insert(name.clone(), ctx.get_thunk(*thunk_id));
+                    }
+                }
+                child_env
+            }
+            _ => return Err(EvalError::type_mismatch_ctx(
+                "eval".to_string(),
+                "Dict",
+                env_val.type_name(),
+                call_span,
+            ).into()),
+        }
+    } else {
+        base_env
+    };
+
+    // Add %: (pipeline input) as $ binding if provided
+    let final_env = if let Some(input_thunk) = pipeline_input {
+        let child_env = Arc::new(std::sync::RwLock::new(
+            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings))
+        ));
+        child_env.write().unwrap().insert("$".to_string(), input_thunk);
+        child_env
+    } else {
+        env_with_bindings
+    };
+
+    // Materialize the sequence argument
+    let seq_val = materialize(&args[0], Some(&call_span), &ctx)?;
+
+    // Collect Expression nodes from the sequence
+    let mut expression_nodes = Vec::new();
+    let mut current = seq_val;
+    loop {
+        match current {
+            Value::Seq { head, tail } => {
+                let head_val = materialize(&ctx.get_thunk(head), Some(&call_span), &ctx)?;
+                match head_val {
+                    Value::Expression(node) => {
+                        expression_nodes.push(node);
+                    }
+                    _ => return Err(EvalError::type_mismatch_ctx(
+                        "eval".to_string(),
+                        "Seq of Expression",
+                        &format!("Seq containing {}", head_val.type_name()),
+                        call_span,
+                    ).into()),
+                }
+                current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx)?;
+            }
+            Value::Dict(ref entries) if entries.is_empty() => {
+                // Empty dict = end of sequence
+                break;
+            }
+            _ => return Err(EvalError::type_mismatch_ctx(
+                "eval".to_string(),
+                "Seq",
+                current.type_name(),
+                call_span,
+            ).into()),
+        }
+    }
+
+    // Create empty resolution and type tables
+    // TODO: In a full implementation, these should come from the IncludeCacheEntry
+    // for the file that produced these Expression values. For now, use empty tables.
+    let res_table = std::sync::Arc::new(crate::ast::ResolutionTable::new());
+    let types_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+
+    // Create Surface thunks for each expression
+    let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
+    for node in expression_nodes.into_iter().rev() {
+        // Create Surface thunk
+        let surface_thunk = Arc::new(Thunk::new_surface(
+            node,
+            Arc::clone(&res_table),
+            Arc::clone(&types_table),
+            Arc::clone(&final_env),
+            Arc::clone(&ctx),
+            call_span,
+        ));
+        let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
+
+        // Build cons cell (Seq)
+        let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
+        result_seq = Value::Seq {
+            head: surface_thunk_id,
+            tail: tail_thunk_id,
+        };
+    }
+
+    ok_val(result_seq, call_span)
+}
+
+/// `eval-types`: same as `eval` but evaluates in the type-stage environment.
+///
+/// This is used for evaluating type-level expressions (type aliases, class declarations).
+/// Base environment: ctx.config.type_stage_env (contains type-level bindings).
+pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+
+    // Extract optional env: and %: named args (same as eval)
+    let (env_dict, pipeline_input) = if let Some(named_map) = named {
+        for key in named_map.keys() {
+            if key != "env" && key != "%" {
+                return Err(EvalError::named_arg_rejected("eval-types".to_string(), call_span).into());
+            }
+        }
+
+        let env_dict = named_map.get("env").map(|t| Arc::clone(t));
+        let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
+        (env_dict, pipeline_input)
+    } else {
+        (None, None)
+    };
+
+    // TODO: Use type_stage_env when it's added to EvalConfig (Part E)
+    // For now, use stdlib_env as the base (same as eval)
+    let base_env = Arc::clone(&ctx.config.stdlib_env);
+
+    // Add env: dict bindings if provided
+    let env_with_bindings = if let Some(env_thunk) = env_dict {
+        let env_val = materialize(&env_thunk, Some(&call_span), &ctx)?;
+        match env_val {
+            Value::Dict(entries) => {
+                let child_env = Arc::new(std::sync::RwLock::new(
+                    crate::value::Environment::with_parent(Arc::clone(&base_env))
+                ));
+                for (key, thunk_id) in entries.iter() {
+                    if let Key::String(name) = key {
+                        child_env.write().unwrap().insert(name.clone(), ctx.get_thunk(*thunk_id));
+                    }
+                }
+                child_env
+            }
+            _ => return Err(EvalError::type_mismatch_ctx(
+                "eval-types".to_string(),
+                "Dict",
+                env_val.type_name(),
+                call_span,
+            ).into()),
+        }
+    } else {
+        base_env
+    };
+
+    // Add %: (pipeline input) as $ binding if provided
+    let final_env = if let Some(input_thunk) = pipeline_input {
+        let child_env = Arc::new(std::sync::RwLock::new(
+            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings))
+        ));
+        child_env.write().unwrap().insert("$".to_string(), input_thunk);
+        child_env
+    } else {
+        env_with_bindings
+    };
+
+    // Materialize the sequence argument
+    let seq_val = materialize(&args[0], Some(&call_span), &ctx)?;
+
+    // Collect Expression nodes from the sequence
+    let mut expression_nodes = Vec::new();
+    let mut current = seq_val;
+    loop {
+        match current {
+            Value::Seq { head, tail } => {
+                let head_val = materialize(&ctx.get_thunk(head), Some(&call_span), &ctx)?;
+                match head_val {
+                    Value::Expression(node) => {
+                        expression_nodes.push(node);
+                    }
+                    _ => return Err(EvalError::type_mismatch_ctx(
+                        "eval-types".to_string(),
+                        "Seq of Expression",
+                        &format!("Seq containing {}", head_val.type_name()),
+                        call_span,
+                    ).into()),
+                }
+                current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx)?;
+            }
+            Value::Dict(ref entries) if entries.is_empty() => {
+                break;
+            }
+            _ => return Err(EvalError::type_mismatch_ctx(
+                "eval-types".to_string(),
+                "Seq",
+                current.type_name(),
+                call_span,
+            ).into()),
+        }
+    }
+
+    // Create empty resolution and type tables
+    let res_table = std::sync::Arc::new(crate::ast::ResolutionTable::new());
+    let types_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+
+    // Create Surface thunks for each expression
+    let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
+    for node in expression_nodes.into_iter().rev() {
+        let surface_thunk = Arc::new(Thunk::new_surface(
+            node,
+            Arc::clone(&res_table),
+            Arc::clone(&types_table),
+            Arc::clone(&final_env),
+            Arc::clone(&ctx),
+            call_span,
+        ));
+        let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
+
+        let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
+        result_seq = Value::Seq {
+            head: surface_thunk_id,
+            tail: tail_thunk_id,
+        };
+    }
+
+    ok_val(result_seq, call_span)
 }
 
 /// Convert a SurfaceProgram back to the legacy File AST format.

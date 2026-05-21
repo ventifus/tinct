@@ -382,12 +382,12 @@ pub(crate) use crate::builtins_io::{
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_bool_check,
-    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_dict_check, builtin_eval,
-    builtin_eval_ast, builtin_expand, builtin_float_check, builtin_fn_check, builtin_force,
-    builtin_from_json, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_int_check, builtin_llt_repr, builtin_load, builtin_macro_injects, builtin_null_check,
-    builtin_raise, builtin_str_check, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
-    builtin_validate, builtin_variant,
+    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_deep_materialize,
+    builtin_dict_check, builtin_eval, builtin_eval_types, builtin_expand, builtin_float_check,
+    builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym,
+    builtin_include_cache_get, builtin_include_cache_put, builtin_int_check, builtin_llt_repr,
+    builtin_load, builtin_macro_injects, builtin_null_check, builtin_raise, builtin_str_check,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1227,7 +1227,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
         // Evaluation control
-        builtin!("deep-materialize", builtin_eval, [Strictness::Seq]),
+        builtin!("deep-materialize", builtin_deep_materialize, [Strictness::Seq]),
         builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("raise", builtin_raise, [Strictness::Seq]),
         builtin!("try", builtin_try, [Strictness::Id]),
@@ -1351,9 +1351,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // Decomposed include primitives (include-decomp-primitives sprint)
         builtin!("blake3", builtin_blake3, [Strictness::Seq]),
         builtin!("cap-identity", builtin_cap_identity, [Strictness::Seq]),
-        // runtime-v2 Part G: expand primitive (identity stub; full impl in self-hosted pipeline)
+        // runtime-v2 Part F: expand/load/eval primitives for include-decomp pipeline
         builtin!("expand", builtin_expand, [Strictness::Seq]),
         builtin!("load", builtin_load, [Strictness::Seq]),
+        builtin!("eval", builtin_eval, [Strictness::Seq]),
+        builtin!("eval-types", builtin_eval_types, [Strictness::Seq]),
         builtin!(
             "include-cache-get",
             builtin_include_cache_get,
@@ -1566,7 +1568,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
         // Meta primitives (exposed via %rust "meta" module)
-        builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq]),
+        // DELETED: builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq])
+        // eval-ast was the old single-expression eval interface, superseded by the new eval builtin
         builtin!("gensym", builtin_gensym),
         builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
@@ -6485,8 +6488,8 @@ mod tests {
         );
         assert_eq!(
             names.len(),
-            191,
-            "expected 191 builtins, got {} (9 meta primitives now in standard_builtins: eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects; 5 new include-decomp primitives: blake3, cap-identity, load, include-cache-get, include-cache-put)",
+            192,
+            "expected 192 builtins, got {} (removed eval-ast, added eval and eval-types; 9 meta primitives now in standard_builtins: gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects, ast-of; 7 include-decomp primitives: blake3, cap-identity, load, expand, eval, eval-types, include-cache-get, include-cache-put)",
             names.len()
         );
     }

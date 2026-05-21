@@ -434,6 +434,24 @@ pub enum Value {
     /// A single AST expression node — the type returned by `ast-of` and `[quote ...]`.
     /// Tinct code pattern-matches on this via the `Expression` type variants.
     Expression(Arc<SurfaceNode>),
+
+    // =========================================================================
+    // runtime-v2 async primitives (Sprint 2, Part B — skeletons added in Part F)
+    // =========================================================================
+    //
+    // These are placeholder variants added as dependencies for Sprint 2.
+    // Full implementations will be added in Sprint 2, Part B.
+    /// Async task handle — returned by `task` builtin, consumed by `await`.
+    /// Skeleton added in Part F; full implementation in Sprint 2, Part B.
+    Task,
+
+    /// Channel for inter-task communication — created by `channel` builtin.
+    /// Skeleton added in Part F; full implementation in Sprint 2, Part B.
+    Channel,
+
+    /// Cancellation context — created by `context` builtin, consumed by `with-cancel`.
+    /// Skeleton added in Part F; full implementation in Sprint 2, Part B.
+    Context,
 }
 
 /// State for an HTTP/3 session: the request sender and the background driver task.
@@ -523,6 +541,9 @@ impl Value {
             Value::Program(_) => "Program",
             Value::Document(_) => "Document",
             Value::Expression(_) => "Expression",
+            Value::Task => "Task",
+            Value::Channel => "Channel",
+            Value::Context => "Context",
         }
     }
 
@@ -609,6 +630,9 @@ impl fmt::Debug for Value {
                 "Expression({})",
                 crate::surface_fields::surface_expr_tag(&node.expr)
             ),
+            Value::Task => write!(f, "Task"),
+            Value::Channel => write!(f, "Channel"),
+            Value::Context => write!(f, "Context"),
         }
     }
 }
@@ -697,6 +721,9 @@ impl fmt::Display for Value {
                 "<expression:{}>",
                 crate::surface_fields::surface_expr_tag(&node.expr)
             ),
+            Value::Task => write!(f, "<task>"),
+            Value::Channel => write!(f, "<channel>"),
+            Value::Context => write!(f, "<context>"),
         }
     }
 }
@@ -968,6 +995,32 @@ impl Thunk {
     pub fn new_materialized(value: Value, span: Span) -> Self {
         Self {
             state: Mutex::new(ThunkState::Materialized(value)),
+            span,
+            origin: None,
+        }
+    }
+
+    /// Create a Surface thunk — wraps a SurfaceNode for lazy evaluation.
+    ///
+    /// On first force, the Surface thunk is evaluated via the evaluator which converts
+    /// it through the bridge to the old Expr format and evaluates it.
+    /// (Full CoreExpr lowering path is Sprint 2.)
+    pub fn new_surface(
+        node: std::sync::Arc<crate::ast::SurfaceNode>,
+        res: std::sync::Arc<crate::ast::ResolutionTable>,
+        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<crate::eval::EvalContext>,
+        span: Span,
+    ) -> Self {
+        Self {
+            state: Mutex::new(ThunkState::Surface {
+                node,
+                res,
+                types,
+                env,
+                ctx,
+            }),
             span,
             origin: None,
         }
