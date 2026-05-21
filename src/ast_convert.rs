@@ -916,4 +916,149 @@ mod tests {
         let program = file_to_surface_program(&output.file.node);
         assert_eq!(program.documents.len(), 2);
     }
+
+    // Test coverage for the 7 simple Expr → SurfaceExpression variants (parser-migration-a scope)
+
+    #[test]
+    fn test_convert_float_literal() {
+        let output = parse("3.14").expect("parse failed");
+        let program = file_to_surface_program(&output.file.node);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                assert!(matches!(node.expr, SurfaceExpression::Float(f) if (f - 3.14).abs() < 1e-10));
+            }
+            _ => panic!("expected Expr item"),
+        }
+    }
+
+    #[test]
+    fn test_convert_bool_literal() {
+        let output = parse("true").expect("parse failed");
+        let program = file_to_surface_program(&output.file.node);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                assert!(matches!(node.expr, SurfaceExpression::Bool(true)));
+            }
+            _ => panic!("expected Expr item"),
+        }
+
+        let output = parse("false").expect("parse failed");
+        let program = file_to_surface_program(&output.file.node);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                assert!(matches!(node.expr, SurfaceExpression::Bool(false)));
+            }
+            _ => panic!("expected Expr item"),
+        }
+    }
+
+    #[test]
+    fn test_convert_str_literal() {
+        let output = parse(r#""hello world""#).expect("parse failed");
+        let program = file_to_surface_program(&output.file.node);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                assert!(matches!(&node.expr, SurfaceExpression::Str(s) if s == "hello world"));
+            }
+            _ => panic!("expected Expr item"),
+        }
+    }
+
+    #[test]
+    fn test_convert_escaped_varref() {
+        let output = parse("$escaped-name").expect("parse failed");
+        let program = file_to_surface_program(&output.file.node);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                assert!(matches!(
+                    &node.expr,
+                    SurfaceExpression::VarRef { name, escaped: true } if name == "escaped-name"
+                ));
+            }
+            _ => panic!("expected Expr item"),
+        }
+    }
+
+    #[test]
+    fn test_convert_rest_named() {
+        // Rest with a name: `[a: 1 ...rest]`
+        let output = parse("[a: 1 ...rest]").expect("parse failed");
+        let program = file_to_surface_program(&output.file.node);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                if let SurfaceExpression::Dict(entries) = &node.expr {
+                    assert_eq!(entries.len(), 2);
+                    // Second entry should be the rest marker
+                    match &entries[1].node.value.expr {
+                        SurfaceExpression::Rest(Some(name)) => assert_eq!(name, "rest"),
+                        _ => panic!("expected Rest(Some(name))"),
+                    }
+                } else {
+                    panic!("expected Dict");
+                }
+            }
+            _ => panic!("expected Expr item"),
+        }
+    }
+
+    #[test]
+    fn test_convert_rest_anonymous() {
+        // Rest without a name (open row): `[a: 1 ...]`
+        let output = parse("[a: 1 ...]").expect("parse failed");
+        let program = file_to_surface_program(&output.file.node);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                if let SurfaceExpression::Dict(entries) = &node.expr {
+                    assert_eq!(entries.len(), 2);
+                    // Second entry should be the anonymous rest marker
+                    match &entries[1].node.value.expr {
+                        SurfaceExpression::Rest(None) => {},
+                        _ => panic!("expected Rest(None)"),
+                    }
+                } else {
+                    panic!("expected Dict");
+                }
+            }
+            _ => panic!("expected Expr item"),
+        }
+    }
+
+    #[test]
+    fn test_convert_placeholder() {
+        // Currently no direct syntax for Placeholder in the parser;
+        // it's used internally in some contexts. This test documents
+        // that the bridge handles it correctly.
+        use std::rc::Rc;
+        let file = File {
+            documents: vec![Spanned::new(
+                Document {
+                    stage: None,
+                    name: None,
+                    expressions: vec![Rc::new(Spanned::new(
+                        Expr::Placeholder,
+                        Span::default(),
+                    ))],
+                    output_type: None,
+                    expects: None,
+                    caps: None,
+                },
+                Span::default(),
+            )],
+        };
+        let program = file_to_surface_program(&file);
+        let doc = &program.documents[0].node;
+        match &doc.items[0] {
+            SurfaceItem::Expr(node) => {
+                assert!(matches!(node.expr, SurfaceExpression::Placeholder));
+            }
+            _ => panic!("expected Expr item"),
+        }
+    }
 }

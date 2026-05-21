@@ -985,19 +985,30 @@ pub struct ParseOutput {
     pub blank_before: BTreeMap<usize, bool>,
     /// Recovered parse errors (errors inside bracket forms where the parser continued).
     pub errors: Vec<ParseError>,
+    /// Cached `SurfaceProgram` — computed once at parse time and reused.
+    ///
+    /// This field is populated eagerly in the constructor so that `as_surface_program()`
+    /// can return a reference without recomputing the conversion on every call.
+    /// Once the parser produces `SurfaceProgram` natively (Part E), this field becomes
+    /// the primary output and `file` becomes the cache (or is removed entirely).
+    pub program: crate::ast::SurfaceProgram,
 }
 
 impl ParseOutput {
-    /// Convert the parsed `File` to a `SurfaceProgram`.
+    /// Get the parsed program as a `SurfaceProgram`.
     ///
     /// This is a bridge method that allows callers to access the new Surface AST
     /// representation without requiring the parser to change. The parser continues
-    /// to construct the old `File` AST, and this method converts it on demand.
+    /// to construct the old `File` AST, and this method returns the cached conversion.
+    ///
+    /// Returns a reference to the cached `SurfaceProgram` rather than computing it
+    /// on demand. The cache is populated once at parse time.
     ///
     /// This method will be removed in Part E when the parser is migrated to produce
-    /// `SurfaceProgram` directly.
-    pub fn as_surface_program(&self) -> crate::ast::SurfaceProgram {
-        crate::ast_convert::file_to_surface_program(&self.file.node)
+    /// `SurfaceProgram` directly (at which point `program` becomes the primary field
+    /// and this method becomes unnecessary).
+    pub fn as_surface_program(&self) -> &crate::ast::SurfaceProgram {
+        &self.program
     }
 }
 
@@ -4371,13 +4382,17 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
         },
     };
 
+    let file_spanned = Spanned::new(file, file_span);
+    let program = crate::ast_convert::file_to_surface_program(&file_spanned.node);
+
     Ok(ParseOutput {
-        file: Spanned::new(file, file_span),
+        file: file_spanned,
         source: input.to_string(),
         leading_comments,
         trailing_comments,
         blank_before,
         errors: recovered_errors,
+        program,
     })
 }
 
@@ -5811,6 +5826,7 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
             // Fatal error (lexer failure, unclosed brackets, etc.)
             // Construct a synthetic empty File with the error recorded.
             let empty_file = Spanned::new(File { documents: vec![] }, Span::origin());
+            let program = crate::ast_convert::file_to_surface_program(&empty_file.node);
             ParseOutput {
                 file: empty_file,
                 source: input.to_string(),
@@ -5818,6 +5834,7 @@ pub fn parse_with_recovery(input: &str) -> ParseOutput {
                 trailing_comments: BTreeMap::new(),
                 blank_before: BTreeMap::new(),
                 errors: vec![fatal_error],
+                program,
             }
         }
     }

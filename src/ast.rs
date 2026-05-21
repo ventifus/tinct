@@ -819,7 +819,7 @@ impl Expr {
 
 /// Dedicated wrapper for expression nodes in the Surface AST.
 /// Identity is derived from the Arc pointer — no stored NodeId.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceNode {
     pub expr: SurfaceExpression,
     pub span: Span,
@@ -836,7 +836,7 @@ pub fn node_id(arc: &Arc<SurfaceNode>) -> NodeId {
 
 /// Immutable surface expression — what the parser produces and what tinct metaprogramming sees.
 /// No RefCell fields. All recursive positions use Arc<SurfaceNode>.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceExpression {
     // Literals
     Int(i64),
@@ -938,21 +938,21 @@ pub enum SurfaceExpression {
 }
 
 /// A dict/list entry in a SurfaceExpression::Dict.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceEntry {
     pub key: Option<Arc<SurfaceNode>>,
     pub value: Arc<SurfaceNode>,
 }
 
 /// A named argument in a SurfaceExpression::Call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceNamedArg {
     pub name: String,
     pub value: Arc<SurfaceNode>,
 }
 
 /// A function parameter in a SurfaceExpression::Fn.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
@@ -960,7 +960,7 @@ pub struct SurfaceParam {
 }
 
 /// A match arm in a SurfaceExpression::Match.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMatchArm {
     pub pattern: Spanned<Pattern>,
     pub guard: Option<Arc<SurfaceNode>>,
@@ -969,7 +969,7 @@ pub struct SurfaceMatchArm {
 
 /// Compile-time-only declaration forms — removed from SurfaceExpression so the
 /// evaluator never needs to handle them (they are fully resolved before evaluation).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceDeclaration {
     TypeAlias {
         params: Vec<String>,
@@ -1007,14 +1007,14 @@ pub enum SurfaceDeclaration {
 }
 
 /// An item in a SurfaceDocument — either an expression or a compile-time declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceItem {
     Expr(Arc<SurfaceNode>),
     Decl(Spanned<SurfaceDeclaration>),
 }
 
 /// A document in a SurfaceProgram — one or more items forming a scope chain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceDocument {
     pub stage: Option<Stage>,
     pub name: Option<String>,
@@ -1035,7 +1035,7 @@ impl SurfaceDocument {
 }
 
 /// A complete tinct program — one or more documents separated by ---.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceProgram {
     pub documents: Vec<Spanned<SurfaceDocument>>,
 }
