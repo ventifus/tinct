@@ -77,9 +77,29 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ## runtime-v2 — Sprint 2: Async Runtime
 
-❌ NOT STARTED. Depends on Sprint 1 Part E complete.
+⚠️ **Sprint 2A (Rc→Arc) unblocks Parts B+E remaining tasks (E1-E3)** — do this first.
 
-- [ ] Rc→Arc migration throughout; `ThunkState` → `OnceCell` pair; add tokio dependency
+### sprint-2a-rc-arc: Rc→Arc migration + ThunkState OnceLock pair
+
+**Unblocks:** Parts B+E E1-E3 (delete old Expr types, eval cutover to CoreExpr)
+**Plan:** `doc/whatif/plans/runtime-v2-plan.md` §Part E — Rc→Arc migration
+
+- [ ] Change all `Rc<Thunk>` → `Arc<Thunk>` throughout codebase (`src/*.rs`)
+- [ ] Change all `Rc<RefCell<Environment>>` → `Arc<RwLock<Environment>>` (`src/*.rs`)
+- [ ] Change `Rc<EvalConfig>` → `Arc<EvalConfig>` (`src/*.rs`)
+- [ ] Change `Rc<RefCell<EvalState>>` → `Arc<Mutex<EvalState>>` (`src/*.rs`)
+- [ ] Change `ThunkState` enum → `(Mutex<Option<UnevaluatedState>>, tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>)` pair (`src/value.rs`, all ThunkState consumers)
+- [ ] Change `EvalError` from `Box<EvalError>` → `Arc<EvalError>` at cross-thread boundaries (`src/error.rs`, `src/*.rs`)
+- [ ] `EvalConfig` gains `type_stage_env: Arc<RwLock<Environment>>` field (`src/eval.rs`)
+- [ ] Add tokio dependency: `tokio = { version = "1", features = ["rt-multi-thread", "time", "signal", "sync", "macros"] }`, `tokio-util`, `dashmap` (`Cargo.toml`)
+- [ ] Update `BuiltinFn` type from `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>` to use `Arc<Thunk>` (`src/value.rs`)
+- [ ] `cargo check` clean — first milestone
+- [ ] `just test` passes — all existing tests pass after migration
+
+### sprint-2b-async: Async evaluation + primitives
+
+❌ NOT STARTED. Depends on sprint-2a-rc-arc complete.
+
 - [ ] `eval`/`materialize` → `async fn`; multi-thread Tokio runtime
 - [ ] `task`, `await`, `await-all`, `channel`, `send`, `recv`, `select-once`, `par`, `par-map`, `par-filter`
 - [ ] `context`, `with-cancel`, `with-timeout`, `cancel-task`, `cancel-root`, `drain`
