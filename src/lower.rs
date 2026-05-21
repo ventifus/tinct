@@ -52,7 +52,11 @@ fn lower_expr(
         SurfaceExpression::VarRef { name, .. } => {
             let id = node_id(arc);
             match res.get(&id) {
-                Some(&(level, slot)) => CoreExpr::Var { name: name.clone(), level, slot },
+                Some(&(level, slot)) => CoreExpr::Var {
+                    name: name.clone(),
+                    level,
+                    slot,
+                },
                 None => CoreExpr::FreeVar(name.clone()),
             }
         }
@@ -82,18 +86,19 @@ fn lower_expr(
             entries
                 .iter()
                 .map(|se| {
-                    let key = se
-                        .node
-                        .key
-                        .as_ref()
-                        .map(|k| Arc::new(lower(k, res, types)));
+                    let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
                     let value = Arc::new(lower(&se.node.value, res, types));
                     Spanned::new(CoreEntry { key, value }, se.span)
                 })
                 .collect(),
         ),
 
-        SurfaceExpression::Call { func, args, named_args, implied } => CoreExpr::Call {
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => CoreExpr::Call {
             func: Arc::new(lower(func, res, types)),
             args: args
                 .iter()
@@ -114,7 +119,12 @@ fn lower_expr(
             implied: *implied,
         },
 
-        SurfaceExpression::Fn { return_ann, params, body, desugared } => CoreExpr::Fn {
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => CoreExpr::Fn {
             return_ann: return_ann.clone(),
             params: params
                 .iter()
@@ -133,7 +143,10 @@ fn lower_expr(
             desugared: *desugared,
         },
 
-        SurfaceExpression::TypeAssert { annotation, expr: inner } => {
+        SurfaceExpression::TypeAssert {
+            annotation,
+            expr: inner,
+        } => {
             let id = node_id(arc);
             match types.get(&id) {
                 Some(ty) => CoreExpr::TypeAssert {
@@ -174,9 +187,7 @@ fn lower_expr(
 
         SurfaceExpression::Quote(inner) => CoreExpr::Quote(Arc::new(lower(inner, res, types))),
 
-        SurfaceExpression::Unquote(inner) => {
-            CoreExpr::Unquote(Arc::new(lower(inner, res, types)))
-        }
+        SurfaceExpression::Unquote(inner) => CoreExpr::Unquote(Arc::new(lower(inner, res, types))),
 
         SurfaceExpression::UnquoteSplice(inner) => {
             CoreExpr::UnquoteSplice(Arc::new(lower(inner, res, types)))

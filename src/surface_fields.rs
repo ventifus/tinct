@@ -109,9 +109,7 @@ pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static 
         SurfaceExpression::Sequential(_) => &["exprs", "span"],
         SurfaceExpression::Dict(_) => &["entries", "span"],
         SurfaceExpression::Call { .. } => &["fn", "args", "named", "implied", "span"],
-        SurfaceExpression::Fn { .. } => {
-            &["params", "body", "return-ann", "desugared", "span"]
-        }
+        SurfaceExpression::Fn { .. } => &["params", "body", "return-ann", "desugared", "span"],
         SurfaceExpression::TypeAssert { .. } => &["annotation", "expr", "span"],
         SurfaceExpression::Annotated { .. } => &["name", "annotation", "span"],
         SurfaceExpression::Rest(_) => &["name", "span"],
@@ -146,6 +144,51 @@ impl std::fmt::Display for MacroConversionError {
 
 impl std::error::Error for MacroConversionError {}
 
+/// Convert a macro output `Value` back to a `SurfaceNode`.
+///
+/// This is the inverse of quoting: used when a macro returns a `Value` that needs
+/// to be inserted into the AST. The macro expander calls this to convert the
+/// transformer's output back to `Arc<SurfaceNode>`.
+///
+/// Supported conversions:
+/// - `Value::Expression(node)` → return the node directly
+/// - `Value::Dict` or `Value::Variant` → use `dict_to_ast()` then `expr_to_surface_node()`
+///
+/// Returns `Err` if the value is not a valid AST representation (e.g., primitive values,
+/// non-AST dicts).
+pub fn surface_node_from_value(
+    v: &Value,
+    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+) -> Result<Arc<SurfaceNode>, crate::error::EvalError> {
+    use crate::ast_convert::expr_to_surface_node;
+    use crate::ast_dict::dict_to_ast;
+
+    match v {
+        // Fast path: already a SurfaceNode
+        Value::Expression(node) => Ok(Arc::clone(node)),
+
+        // Slow path: Dict or Variant → dict_to_ast → expr_to_surface_node
+        Value::Dict(_) | Value::Variant { .. } => {
+            let expr = dict_to_ast(v, ctx).map_err(|ast_err| {
+                crate::error::EvalError::macro_error(
+                    format!("macro output is not a valid AST: {}", ast_err),
+                    crate::ast::Span::origin(),
+                )
+            })?;
+            Ok(expr_to_surface_node(&expr))
+        }
+
+        // Non-AST values
+        _ => Err(crate::error::EvalError::macro_error(
+            format!(
+                "macro output must be an Expression, Dict, or Variant; got {}",
+                v.type_name()
+            ),
+            crate::ast::Span::origin(),
+        )),
+    }
+}
+
 // ============================================================================
 // Field extraction — returns Value for field access on Value::Expression
 // ============================================================================
@@ -170,8 +213,8 @@ pub fn surface_node_get_field(
     let null = || Value::Dict(indexmap::IndexMap::new());
 
     match (&node.expr, field) {
-        // span is deferred — building a Span Dict requires ThunkId allocation
-        (_, "span") => null(),
+        // span field — convert to Dict with position fields
+        (_, "span") => span_to_value(&node.span, ctx),
 
         // --- IntLiteral ---
         (SurfaceExpression::Int(n), "value") => Value::Int(*n),
@@ -193,23 +236,17 @@ pub fn surface_node_get_field(
         (SurfaceExpression::DotAccess { expr: inner, .. }, "target") => {
             Value::Expression(Arc::clone(inner))
         }
-        (SurfaceExpression::DotAccess { field: dot_key, .. }, "field") => {
-            dot_key_to_value(dot_key)
-        }
+        (SurfaceExpression::DotAccess { field: dot_key, .. }, "field") => dot_key_to_value(dot_key),
 
         // --- Pipe ---
         (SurfaceExpression::Pipe { lhs, .. }, "lhs") => Value::Expression(Arc::clone(lhs)),
         (SurfaceExpression::Pipe { rhs, .. }, "rhs") => Value::Expression(Arc::clone(rhs)),
 
         // --- Sequential ---
-        (SurfaceExpression::Sequential(exprs), "exprs") => {
-            nodes_to_list_dict(exprs, ctx)
-        }
+        (SurfaceExpression::Sequential(exprs), "exprs") => nodes_to_list_dict(exprs, ctx),
 
         // --- Dict ---
-        (SurfaceExpression::Dict(entries), "entries") => {
-            surface_entries_to_list_dict(entries, ctx)
-        }
+        (SurfaceExpression::Dict(entries), "entries") => surface_entries_to_list_dict(entries, ctx),
 
         // --- Call ---
         (SurfaceExpression::Call { func, .. }, "fn") => Value::Expression(Arc::clone(func)),
@@ -256,9 +293,7 @@ pub fn surface_node_get_field(
         // --- Quote / Unquote / UnquoteSplice ---
         (SurfaceExpression::Quote(inner), "expr")
         | (SurfaceExpression::Unquote(inner), "expr")
-        | (SurfaceExpression::UnquoteSplice(inner), "expr") => {
-            Value::Expression(Arc::clone(inner))
-        }
+        | (SurfaceExpression::UnquoteSplice(inner), "expr") => Value::Expression(Arc::clone(inner)),
 
         // --- PatternDecl / LetDecl ---
         (SurfaceExpression::PatternDecl { bindings }, "bindings")
@@ -289,8 +324,8 @@ fn nodes_to_list_dict(
 ) -> Value {
     let mut map = indexmap::IndexMap::new();
     for (i, node) in nodes.iter().enumerate() {
-        use std::rc::Rc;
         use crate::value::Thunk;
+        use std::rc::Rc;
         let thunk = Rc::new(Thunk::new_materialized(
             Value::Expression(Arc::clone(node)),
             node.span,
@@ -306,8 +341,8 @@ fn surface_entries_to_list_dict(
     entries: &[crate::ast::Spanned<crate::ast::SurfaceEntry>],
     ctx: &std::rc::Rc<crate::eval::EvalContext>,
 ) -> Value {
-    use std::rc::Rc;
     use crate::value::Thunk;
+    use std::rc::Rc;
     let mut map = indexmap::IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // Build Entry Variant: {key: Expression, value: Expression, span: []}
@@ -318,9 +353,21 @@ fn surface_entries_to_list_dict(
         let val_val = Value::Expression(Arc::clone(&entry.node.value));
         // Pack as a Variant("Entry", {key: ..., value: ...})
         let mut payload = indexmap::IndexMap::new();
-        payload.insert(Key::String("key".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(key_val, entry.span))));
-        payload.insert(Key::String("value".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(val_val, entry.span))));
-        let entry_variant = Value::Variant { tag: "Entry".into(), payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(payload), entry.span)))) };
+        payload.insert(
+            Key::String("key".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(key_val, entry.span))),
+        );
+        payload.insert(
+            Key::String("value".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(val_val, entry.span))),
+        );
+        let entry_variant = Value::Variant {
+            tag: "Entry".into(),
+            payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                Value::Dict(payload),
+                entry.span,
+            )))),
+        };
         let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(entry_variant, entry.span)));
         map.insert(Key::Int(i as i64), tid);
     }
@@ -332,14 +379,32 @@ fn named_args_to_list_dict(
     named_args: &[crate::ast::Spanned<crate::ast::SurfaceNamedArg>],
     ctx: &std::rc::Rc<crate::eval::EvalContext>,
 ) -> Value {
-    use std::rc::Rc;
     use crate::value::Thunk;
+    use std::rc::Rc;
     let mut map = indexmap::IndexMap::new();
     for (i, na) in named_args.iter().enumerate() {
         let mut payload = indexmap::IndexMap::new();
-        payload.insert(Key::String("name".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(&na.node.name), na.span))));
-        payload.insert(Key::String("value".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Expression(Arc::clone(&na.node.value)), na.span))));
-        let na_variant = Value::Variant { tag: "NamedArg".into(), payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(payload), na.span)))) };
+        payload.insert(
+            Key::String("name".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                string_val(&na.node.name),
+                na.span,
+            ))),
+        );
+        payload.insert(
+            Key::String("value".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                Value::Expression(Arc::clone(&na.node.value)),
+                na.span,
+            ))),
+        );
+        let na_variant = Value::Variant {
+            tag: "NamedArg".into(),
+            payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                Value::Dict(payload),
+                na.span,
+            )))),
+        };
         let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(na_variant, na.span)));
         map.insert(Key::Int(i as i64), tid);
     }
@@ -351,14 +416,32 @@ fn params_to_list_dict(
     params: &[crate::ast::Spanned<crate::ast::SurfaceParam>],
     ctx: &std::rc::Rc<crate::eval::EvalContext>,
 ) -> Value {
-    use std::rc::Rc;
     use crate::value::Thunk;
+    use std::rc::Rc;
     let mut map = indexmap::IndexMap::new();
     for (i, p) in params.iter().enumerate() {
         let mut payload = indexmap::IndexMap::new();
-        payload.insert(Key::String("name".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(string_val(&p.node.name), p.span))));
-        payload.insert(Key::String("variadic".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Bool(p.node.variadic), p.span))));
-        let p_variant = Value::Variant { tag: "Parameter".into(), payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(payload), p.span)))) };
+        payload.insert(
+            Key::String("name".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                string_val(&p.node.name),
+                p.span,
+            ))),
+        );
+        payload.insert(
+            Key::String("variadic".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                Value::Bool(p.node.variadic),
+                p.span,
+            ))),
+        );
+        let p_variant = Value::Variant {
+            tag: "Parameter".into(),
+            payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+                Value::Dict(payload),
+                p.span,
+            )))),
+        };
         let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(p_variant, p.span)));
         map.insert(Key::Int(i as i64), tid);
     }
@@ -370,9 +453,9 @@ fn match_arms_to_list_dict(
     arms: &[crate::ast::SurfaceMatchArm],
     ctx: &std::rc::Rc<crate::eval::EvalContext>,
 ) -> Value {
-    use std::rc::Rc;
-    use crate::value::Thunk;
     use crate::ast::Span;
+    use crate::value::Thunk;
+    use std::rc::Rc;
     let span = Span::origin();
     let mut map = indexmap::IndexMap::new();
     for (i, arm) in arms.iter().enumerate() {
@@ -382,9 +465,20 @@ fn match_arms_to_list_dict(
             |g| Value::Expression(Arc::clone(g)),
         );
         let mut payload = indexmap::IndexMap::new();
-        payload.insert(Key::String("body".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(body_val, span))));
-        payload.insert(Key::String("guard".into()), ctx.alloc_thunk(Rc::new(Thunk::new_materialized(guard_val, span))));
-        let arm_variant = Value::Variant { tag: "MatchArm".into(), payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(payload), span)))) };
+        payload.insert(
+            Key::String("body".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(body_val, span))),
+        );
+        payload.insert(
+            Key::String("guard".into()),
+            ctx.alloc_thunk(Rc::new(Thunk::new_materialized(guard_val, span))),
+        );
+        let arm_variant = Value::Variant {
+            tag: "MatchArm".into(),
+            payload: Some(
+                ctx.alloc_thunk(Rc::new(Thunk::new_materialized(Value::Dict(payload), span))),
+            ),
+        };
         let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(arm_variant, span)));
         map.insert(Key::Int(i as i64), tid);
     }
@@ -394,17 +488,32 @@ fn match_arms_to_list_dict(
 /// Convert a DotKey to a Value::Variant (Ident | Index).
 pub fn dot_key_to_value(key: &DotKey) -> Value {
     match key {
-        DotKey::Ident(_) => Value::Variant { tag: "Ident".into(), payload: None },
-        DotKey::Int(_) => Value::Variant { tag: "Index".into(), payload: None },
+        DotKey::Ident(_) => Value::Variant {
+            tag: "Ident".into(),
+            payload: None,
+        },
+        DotKey::Int(_) => Value::Variant {
+            tag: "Index".into(),
+            payload: None,
+        },
     }
 }
 
 /// Convert an Annotation to a Value::Variant (Simple | PropertyDict | Annotated).
 pub fn annotation_to_value(ann: &Spanned<Annotation>) -> Value {
     match &ann.node {
-        Annotation::Simple(_) => Value::Variant { tag: "Simple".into(), payload: None },
-        Annotation::PropertyDict(_) => Value::Variant { tag: "PropertyDict".into(), payload: None },
-        Annotation::Annotated(_, _) => Value::Variant { tag: "Annotated".into(), payload: None },
+        Annotation::Simple(_) => Value::Variant {
+            tag: "Simple".into(),
+            payload: None,
+        },
+        Annotation::PropertyDict(_) => Value::Variant {
+            tag: "PropertyDict".into(),
+            payload: None,
+        },
+        Annotation::Annotated(_, _) => Value::Variant {
+            tag: "Annotated".into(),
+            payload: None,
+        },
     }
 }
 
@@ -415,6 +524,69 @@ fn annotation_opt_to_value(ann: Option<&Spanned<Annotation>>) -> Value {
     }
 }
 
+/// Convert a `Span` to a `Value::Dict` with position fields.
+///
+/// Returns a Dict with integer fields:
+/// - `start_line`, `start_col`, `end_line`, `end_col` (1-based)
+/// - `start_offset`, `end_offset` (0-based byte offsets)
+///
+/// This is used when extracting the `span` field from AST nodes. The Dict is
+/// materialized directly (not thunked) since all fields are primitive integers.
+pub fn span_to_value(
+    span: &crate::ast::Span,
+    ctx: &std::rc::Rc<crate::eval::EvalContext>,
+) -> Value {
+    use crate::value::Thunk;
+    use std::rc::Rc;
+
+    let mut map = indexmap::IndexMap::new();
+
+    map.insert(
+        Key::String("start_line".into()),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Int(span.start.line as i64),
+            *span,
+        ))),
+    );
+    map.insert(
+        Key::String("start_col".into()),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Int(span.start.column as i64),
+            *span,
+        ))),
+    );
+    map.insert(
+        Key::String("end_line".into()),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Int(span.end.line as i64),
+            *span,
+        ))),
+    );
+    map.insert(
+        Key::String("end_col".into()),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Int(span.end.column as i64),
+            *span,
+        ))),
+    );
+    map.insert(
+        Key::String("start_offset".into()),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Int(span.start.offset as i64),
+            *span,
+        ))),
+    );
+    map.insert(
+        Key::String("end_offset".into()),
+        ctx.alloc_thunk(Rc::new(Thunk::new_materialized(
+            Value::Int(span.end.offset as i64),
+            *span,
+        ))),
+    );
+
+    Value::Dict(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,7 +594,10 @@ mod tests {
     use std::sync::Arc;
 
     fn make_node(expr: SurfaceExpression) -> Arc<SurfaceNode> {
-        Arc::new(SurfaceNode { expr, span: Span::origin() })
+        Arc::new(SurfaceNode {
+            expr,
+            span: Span::origin(),
+        })
     }
 
     #[test]
@@ -444,8 +619,10 @@ mod tests {
 
     #[test]
     fn test_surface_expr_tag_varref() {
-        let expr =
-            SurfaceExpression::VarRef { name: "x".into(), escaped: false };
+        let expr = SurfaceExpression::VarRef {
+            name: "x".into(),
+            escaped: false,
+        };
         assert_eq!(surface_expr_tag(&expr), "Var");
     }
 
@@ -469,7 +646,13 @@ mod tests {
         let node = make_node(SurfaceExpression::Int(0));
 
         let variants: Vec<(&str, SurfaceExpression)> = vec![
-            ("Var", SurfaceExpression::VarRef { name: "x".into(), escaped: false }),
+            (
+                "Var",
+                SurfaceExpression::VarRef {
+                    name: "x".into(),
+                    escaped: false,
+                },
+            ),
             (
                 "DotAccess",
                 SurfaceExpression::DotAccess {
@@ -534,8 +717,14 @@ mod tests {
             ),
             ("Quote", SurfaceExpression::Quote(node.clone())),
             ("Unquote", SurfaceExpression::Unquote(node.clone())),
-            ("UnquoteSplice", SurfaceExpression::UnquoteSplice(node.clone())),
-            ("PatternDecl", SurfaceExpression::PatternDecl { bindings: vec![] }),
+            (
+                "UnquoteSplice",
+                SurfaceExpression::UnquoteSplice(node.clone()),
+            ),
+            (
+                "PatternDecl",
+                SurfaceExpression::PatternDecl { bindings: vec![] },
+            ),
             ("LetDecl", SurfaceExpression::LetDecl { bindings: vec![] }),
             (
                 "CaseArm",

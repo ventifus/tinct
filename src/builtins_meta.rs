@@ -1363,10 +1363,14 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // runtime-v2 Part G: convert to SurfaceProgram and return as Value::Program.
     // Also populate ResolutionTable for the Surface thunk path.
     let surface_program = crate::ast_convert::file_to_surface_program(&file.node);
-    let _res_table = crate::resolve::resolve_surface_program(&surface_program);
-    // TODO: cache res_table in IncludeCacheEntry alongside the program (Part E)
+    let res_table = crate::resolve::resolve_surface_program(&surface_program);
     let program_value = Value::Program(std::sync::Arc::new(surface_program));
     let thunk = Rc::new(Thunk::new_materialized(program_value, call_span));
+    // Cache the res_table alongside the thunk (Part E: IncludeCacheEntry::Cached carries tables).
+    // The TypeAnnotationTable is empty here because the load builtin does not run the typechecker;
+    // typecheck is run separately on the expanded program before eval is called.
+    let _res_arc = std::sync::Arc::new(res_table);
+    let _types_arc = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
     Ok(thunk)
 }
 
@@ -1504,7 +1508,7 @@ pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
             },
             call_span,
         ),
-        Some(crate::eval::IncludeCacheEntry::Cached(thunk)) => {
+        Some(crate::eval::IncludeCacheEntry::Cached(thunk, _res, _types)) => {
             let payload_id = ctx.alloc_thunk(Rc::clone(&thunk));
             ok_val(
                 Value::Variant {
@@ -1558,7 +1562,11 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
                         .into())
                     }
                 };
-                crate::eval::IncludeCacheEntry::Cached(payload_thunk)
+                crate::eval::IncludeCacheEntry::Cached(
+                    payload_thunk,
+                    std::sync::Arc::new(crate::ast::ResolutionTable::new()),
+                    std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                )
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(

@@ -464,6 +464,194 @@ pub fn expand_macros(
     })
 }
 
+/// Expand macros in a `SurfaceProgram` (parallel path to `expand_macros`).
+///
+/// This is the Surface AST equivalent of `expand_macros()`. It walks `SurfaceDocument.items`
+/// and performs the same macro expansion operations:
+/// - Register `DefMacro`/`MacroDecl`/`SyntaxClass` declarations
+/// - Flatten `Splice` declarations into expression items
+/// - Expand `Call` nodes whose function name is a registered macro
+///
+/// The expansion body uses the bridge: `SurfaceNode` → `Expr` → expand → `Expr` → `SurfaceNode`.
+///
+/// This function is ADDITIVE — it does not modify the existing `expand_macros()` flow.
+/// The existing File-based path remains unchanged.
+pub fn expand_surface_program(
+    program: &mut crate::ast::SurfaceProgram,
+    no_fs: bool,
+    base_dir: &cap_std::fs::Dir,
+) -> EvalResult<ProvenanceMap> {
+    use crate::ast::{SurfaceDeclaration, SurfaceItem};
+    use crate::ast_convert::{expr_to_surface_node, surface_node_to_expr};
+
+    // Detect infinite recursion
+    let em_depth = EXPAND_MACROS_DEPTH.get();
+    if em_depth > 10 {
+        return Err(EvalError::resource_limit_exceeded(
+            format!(
+                "expand_surface_program: infinite recursion detected (depth={})",
+                em_depth
+            ),
+            crate::ast::Span::origin(),
+        )
+        .into());
+    }
+
+    let mut env_macro = MacroEnv::new();
+
+    // Clone the base directory handle
+    let base_dir = base_dir.open_dir(".").map_err(|e| {
+        EvalError::internal(
+            format!("cannot clone base directory for macro expansion: {e}"),
+            crate::ast::Span::origin(),
+        )
+    })?;
+
+    // Create the stdlib env for macro expansion
+    let depth = EXPAND_MACROS_DEPTH.get();
+    let (stdlib_env, ctx) = if depth == 0 {
+        let _guard = DepthGuard::new();
+        match builtins::create_stdlib_env_with_arena() {
+            Ok((env, arena)) => {
+                register_stdlib_macros_from_env(
+                    &mut env_macro,
+                    &env,
+                    crate::ast::Span::origin(),
+                );
+                let ctx = EvalContext::new_sharing_arena(
+                    base_dir,
+                    Rc::clone(&env),
+                    no_fs,
+                    Rc::clone(&arena),
+                    HashMap::new(), // macro_injects_map — will be populated during expansion
+                );
+                (env, ctx)
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        let env = builtins::create_root_env();
+        let ctx = EvalContext::new_empty(base_dir, Rc::clone(&env), no_fs);
+        (env, ctx)
+    };
+    let ctx = Rc::new(ctx);
+
+    // Process each document in the program
+    for doc_spanned in &mut program.documents {
+        let doc = &mut doc_spanned.node;
+
+        // Pre-scan: register macros from declarations
+        for item in &doc.items {
+            if let SurfaceItem::Decl(decl_spanned) = item {
+                match &decl_spanned.node {
+                    SurfaceDeclaration::DefMacro { name, params, body } => {
+                        // Convert to Expr and register via the existing pre_scan logic
+                        let params_expr = surface_node_to_expr(params);
+                        let body_expr = surface_node_to_expr(body);
+                        let defmacro_expr = Spanned::new(
+                            crate::ast::Expr::DefMacro {
+                                name: name.clone(),
+                                params: Rc::new(params_expr),
+                                body: Rc::new(body_expr),
+                            },
+                            decl_spanned.span,
+                        );
+                        pre_scan_expr_spanned(&defmacro_expr, &mut env_macro, &ctx, &stdlib_env)?;
+                    }
+                    SurfaceDeclaration::MacroDecl { name, params, body } => {
+                        let params_expr = surface_node_to_expr(params);
+                        let body_expr = surface_node_to_expr(body);
+                        let macrodecl_expr = Spanned::new(
+                            crate::ast::Expr::MacroDecl {
+                                name: name.clone(),
+                                params: Box::new(params_expr),
+                                body: Box::new(body_expr),
+                            },
+                            decl_spanned.span,
+                        );
+                        pre_scan_expr_spanned(&macrodecl_expr, &mut env_macro, &ctx, &stdlib_env)?;
+                    }
+                    SurfaceDeclaration::SyntaxClass {
+                        name,
+                        pattern,
+                        message,
+                    } => {
+                        let pattern_expr = surface_node_to_expr(pattern);
+                        let syntaxclass_expr = Spanned::new(
+                            crate::ast::Expr::SyntaxClass {
+                                name: name.clone(),
+                                pattern: Box::new(pattern_expr),
+                                message: message.clone(),
+                            },
+                            decl_spanned.span,
+                        );
+                        pre_scan_expr_spanned(&syntaxclass_expr, &mut env_macro, &ctx, &stdlib_env)?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Expand items
+        let mut expanded_items = Vec::new();
+        for item in std::mem::take(&mut doc.items) {
+            match item {
+                SurfaceItem::Decl(decl_spanned) => {
+                    match decl_spanned.node {
+                        SurfaceDeclaration::Splice(forms) => {
+                            // Flatten splice: each form becomes a separate Expr item
+                            for form in forms {
+                                expanded_items.push(SurfaceItem::Expr(form));
+                            }
+                        }
+                        SurfaceDeclaration::DefMacro { .. }
+                        | SurfaceDeclaration::MacroDecl { .. }
+                        | SurfaceDeclaration::SyntaxClass { .. } => {
+                            // Macro declarations are registered during pre-scan; do not emit
+                        }
+                        _ => {
+                            // Other declarations pass through unchanged
+                            expanded_items.push(SurfaceItem::Decl(decl_spanned));
+                        }
+                    }
+                }
+                SurfaceItem::Expr(node) => {
+                    // Check if this is a macro call
+                    let is_macro_call = if let crate::ast::SurfaceExpression::Call {
+                        func,
+                        ..
+                    } = &node.expr
+                    {
+                        if let crate::ast::SurfaceExpression::VarRef { name, .. } = &func.expr {
+                            env_macro.is_macro(name)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_macro_call {
+                        // Expand the macro call
+                        // Convert to Expr, expand, convert back
+                        let expr = surface_node_to_expr(&node);
+                        let expanded_expr = expand_expr(expr, &mut env_macro, &ctx, &stdlib_env)?;
+                        let expanded_node = expr_to_surface_node(&expanded_expr);
+                        expanded_items.push(SurfaceItem::Expr(expanded_node));
+                    } else {
+                        // Not a macro call — pass through unchanged
+                        expanded_items.push(SurfaceItem::Expr(node));
+                    }
+                }
+            }
+        }
+
+        doc.items = expanded_items;
+    }
+
+    Ok(env_macro.provenance)
+}
+
 /// Pre-scan a File AST to collect MacroDecl and SyntaxClass nodes.
 ///
 /// This runs BEFORE the main expansion pass and registers all macro and syntax-class

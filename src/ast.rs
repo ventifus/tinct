@@ -846,14 +846,23 @@ pub enum SurfaceExpression {
 
     // Variable reference. escaped: true = $name (pin in patterns), false = bare (bind).
     // No 'resolved' field — de Bruijn coordinates live in ResolutionTable keyed by NodeId.
-    VarRef { name: String, escaped: bool },
+    VarRef {
+        name: String,
+        escaped: bool,
+    },
 
     // Access
-    DotAccess { expr: Arc<SurfaceNode>, field: DotKey },
+    DotAccess {
+        expr: Arc<SurfaceNode>,
+        field: DotKey,
+    },
 
     // Pipe is surface-only — the lowering pass rewrites it to Call before evaluation.
     // Kept here so formatters and metaprogramming can distinguish pipe-form from call-form.
-    Pipe { lhs: Arc<SurfaceNode>, rhs: Arc<SurfaceNode> },
+    Pipe {
+        lhs: Arc<SurfaceNode>,
+        rhs: Arc<SurfaceNode>,
+    },
 
     // Sequential let* scoping (multi-expr fn bodies, match arm bodies)
     Sequential(Vec<Arc<SurfaceNode>>),
@@ -879,16 +888,25 @@ pub enum SurfaceExpression {
     },
 
     // Type assertion — no resolved_type field; lives in TypeAnnotationTable keyed by NodeId
-    TypeAssert { annotation: Spanned<Annotation>, expr: Arc<SurfaceNode> },
+    TypeAssert {
+        annotation: Spanned<Annotation>,
+        expr: Arc<SurfaceNode>,
+    },
 
     // Annotated bare word, e.g. Fn@Number
-    Annotated { name: String, annotation: Spanned<Annotation> },
+    Annotated {
+        name: String,
+        annotation: Spanned<Annotation>,
+    },
 
     // Row variable / open record marker — None = unnamed (...)
     Rest(Option<String>),
 
     // Pattern matching
-    Match { scrutinee: Arc<SurfaceNode>, arms: Vec<SurfaceMatchArm> },
+    Match {
+        scrutinee: Arc<SurfaceNode>,
+        arms: Vec<SurfaceMatchArm>,
+    },
 
     // Quasiquoting
     Quote(Arc<SurfaceNode>),
@@ -897,10 +915,20 @@ pub enum SurfaceExpression {
 
     // Binding and pattern forms. Structurally valid only in specific host positions;
     // the lowering pass raises an error if these appear in other positions.
-    PatternDecl { bindings: Vec<Arc<SurfaceNode>> },
-    LetDecl { bindings: Vec<Arc<SurfaceNode>> },
-    CaseArm { pattern: Arc<SurfaceNode>, body: Arc<SurfaceNode> },
-    TypeApp { func: Arc<SurfaceNode>, arg: Arc<SurfaceNode> },
+    PatternDecl {
+        bindings: Vec<Arc<SurfaceNode>>,
+    },
+    LetDecl {
+        bindings: Vec<Arc<SurfaceNode>>,
+    },
+    CaseArm {
+        pattern: Arc<SurfaceNode>,
+        body: Arc<SurfaceNode>,
+    },
+    TypeApp {
+        func: Arc<SurfaceNode>,
+        arg: Arc<SurfaceNode>,
+    },
 
     // Placeholder `...` — evaluates to error when forced
     Placeholder,
@@ -1080,14 +1108,20 @@ pub enum CoreExpr {
     Str(String),
 
     // VarRef with resolved de Bruijn coordinates
-    Var { name: String, level: u32, slot: u32 },
+    Var {
+        name: String,
+        level: u32,
+        slot: u32,
+    },
     // Unresolvable ref (include-introduced bindings) — name-based env lookup at runtime
     FreeVar(String),
 
-    DotAccess { expr: Arc<Spanned<CoreExpr>>, field: DotKey },
+    DotAccess {
+        expr: Arc<Spanned<CoreExpr>>,
+        field: DotKey,
+    },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
-
     Sequential(Vec<Arc<Spanned<CoreExpr>>>),
     Dict(Vec<Spanned<CoreEntry>>),
     Call {
@@ -1116,16 +1150,32 @@ pub enum CoreExpr {
         expr: Arc<Spanned<CoreExpr>>,
         default: Option<Arc<Spanned<CoreExpr>>>,
     },
-    Annotated { name: String, annotation: Spanned<Annotation> },
+    Annotated {
+        name: String,
+        annotation: Spanned<Annotation>,
+    },
     Rest(Option<String>),
-    Match { scrutinee: Arc<Spanned<CoreExpr>>, arms: Vec<CoreMatchArm> },
+    Match {
+        scrutinee: Arc<Spanned<CoreExpr>>,
+        arms: Vec<CoreMatchArm>,
+    },
     Quote(Arc<Spanned<CoreExpr>>),
     Unquote(Arc<Spanned<CoreExpr>>),
     UnquoteSplice(Arc<Spanned<CoreExpr>>),
-    PatternDecl { bindings: Vec<Spanned<CoreExpr>> },
-    LetDecl { bindings: Vec<Spanned<CoreExpr>> },
-    CaseArm { pattern: Arc<Spanned<CoreExpr>>, body: Arc<Spanned<CoreExpr>> },
-    TypeApp { func: Arc<Spanned<CoreExpr>>, arg: Arc<Spanned<CoreExpr>> },
+    PatternDecl {
+        bindings: Vec<Spanned<CoreExpr>>,
+    },
+    LetDecl {
+        bindings: Vec<Spanned<CoreExpr>>,
+    },
+    CaseArm {
+        pattern: Arc<Spanned<CoreExpr>>,
+        body: Arc<Spanned<CoreExpr>>,
+    },
+    TypeApp {
+        func: Arc<Spanned<CoreExpr>>,
+        arg: Arc<Spanned<CoreExpr>>,
+    },
     Placeholder,
     Error(Span),
 }

@@ -1728,6 +1728,9 @@ fn run_eval(
         // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
         let _resolution_table =
             tinct::resolve::resolve_surface_program(&output.as_surface_program());
+        // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+        let (_type_errors, _type_annotation_table) =
+            tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
         let ast = output.file;
 
         // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
@@ -1982,6 +1985,9 @@ fn run_fmt(
         // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
         let _resolution_table =
             tinct::resolve::resolve_surface_program(&output.as_surface_program());
+        // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+        let (_type_errors, _type_annotation_table) =
+            tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
         let ast = output.file;
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
@@ -2098,6 +2104,9 @@ fn run_lint(
     let output = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+    let (_type_errors, _type_annotation_table) =
+        tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
     let ast = output.file;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
@@ -2372,6 +2381,9 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     })?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+    let (_type_errors, _type_annotation_table) =
+        tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
     let ast = output.file;
 
     // Expand macros (pre-desugar AST transformation).
@@ -2775,6 +2787,9 @@ fn run_literate_weave(
                 // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
                 let _resolution_table =
                     tinct::resolve::resolve_surface_program(&o.as_surface_program());
+                // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+                let (_type_errors, _type_annotation_table) =
+                    tinct::typecheck::typecheck_surface_program(&o.as_surface_program());
                 o.file
             }
             Err(e) => {
@@ -3283,6 +3298,9 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let output = parse(&source).map_err(|e| format!("{e}"))?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+    let (_type_errors, _type_annotation_table) =
+        tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
     let ast = output.file;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.

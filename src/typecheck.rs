@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    Annotation, Document, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
+    node_id, Annotation, Document, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
+    SurfaceDocument, SurfaceItem, SurfaceProgram, TypeAnnotationTable,
 };
 use crate::coverage;
 use crate::types::{
@@ -459,6 +460,321 @@ pub fn typecheck_file_with_types_and_env_and_source_returning_state(
         state,
         env,
     )
+}
+
+/// Type-check a SurfaceProgram and return a TypeAnnotationTable.
+///
+/// This is the runtime-v2 entry point for type checking. The SurfaceProgram is
+/// unchanged (immutable); all type annotations are captured in the returned table.
+///
+/// This function runs in parallel with `typecheck_file()` during Part D (the bridge
+/// phase). Callers invoke both functions and discard the SurfaceProgram result until
+/// Part E switches over to using the TypeAnnotationTable exclusively.
+///
+/// # Algorithm
+///
+/// 1. For each SurfaceDocument, walk items (expressions + declarations)
+/// 2. Convert SurfaceNode back to Expr via `ast_convert::surface_node_to_expr()`
+/// 3. Run existing type inference machinery (`infer_expr`, `typecheck_document` logic)
+/// 4. Capture inferred types in TypeAnnotationTable keyed by NodeId
+///
+/// The type environment is threaded across documents exactly like `typecheck_file()`:
+/// % bindings, %name bindings, dict-scoped let-generalization.
+///
+/// # Returns
+///
+/// Returns `(errors, table)` where:
+/// - `errors`: Type errors encountered during inference (advisory — evaluation proceeds)
+/// - `table`: TypeAnnotationTable mapping NodeId → Type for successfully inferred expressions
+pub fn typecheck_surface_program(
+    program: &SurfaceProgram,
+) -> (Vec<TypeError>, TypeAnnotationTable) {
+    let mut errors = Vec::new();
+    let mut table = TypeAnnotationTable::new();
+    let mut env = crate::imports::build_prelude_env();
+    let mut state = InferState::new();
+    // Seed with prelude instances so constraint checking works for dynamically registered classes.
+    crate::imports::seed_infer_state_from_prelude_cache(&mut state);
+
+    let mut named_types: HashMap<String, Type> = HashMap::new();
+    let mut pipeline_type = Type::Record(Row {
+        fields: HashMap::new(),
+    });
+
+    for doc_spanned in &program.documents {
+        let doc = &doc_spanned.node;
+
+        // Skip type-stage documents — they are handled separately by create_type_stage_env()
+        // and should not be type-checked in the runtime pipeline.
+        if doc.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+
+        match typecheck_surface_document(
+            doc,
+            &env,
+            &mut state,
+            &mut table,
+            &pipeline_type,
+            &named_types,
+        ) {
+            Ok((new_env, doc_output_type, mut advisory)) => {
+                env = new_env;
+                // Report advisory errors (expects:/output_type) without blocking propagation.
+                errors.append(&mut advisory);
+                // Store named section type if this document has a name
+                if let Some(ref name) = doc.name {
+                    named_types.insert(name.clone(), doc_output_type.clone());
+                }
+                // Update pipeline type for next document
+                pipeline_type = doc_output_type;
+            }
+            Err(mut doc_errors) => errors.append(&mut doc_errors),
+        }
+    }
+
+    (errors, table)
+}
+
+/// Type-check a single SurfaceDocument.
+///
+/// Mirrors the structure of `typecheck_document()` but operates on SurfaceItem instead of Expr.
+/// Converts SurfaceNode back to Expr for type inference, then captures results in TypeAnnotationTable.
+fn typecheck_surface_document(
+    doc: &SurfaceDocument,
+    parent_env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    table: &mut TypeAnnotationTable,
+    pipeline_type: &Type,
+    named_types: &HashMap<String, Type>,
+) -> Result<(Rc<TypeEnv>, Type, Vec<TypeError>), Vec<TypeError>> {
+    let mut errors = Vec::new();
+    let mut advisory_errors: Vec<TypeError> = Vec::new();
+
+    // Create environment with % and %name bindings
+    let mut env = TypeEnv::with_parent(parent_env);
+
+    // Bind % (pipeline variable) with the incoming type
+    env.insert("%".to_string(), pipeline_type.clone());
+
+    // Bind all named sections as %name
+    for (name, ty) in named_types {
+        env.insert(format!("%{}", name), ty.clone());
+    }
+
+    let mut env = Rc::new(env);
+
+    // Validate expects annotation if present (advisory errors)
+    if let Some(ref expects_ann) = doc.expects {
+        match resolve_annotation(
+            &expects_ann.node,
+            &env,
+            expects_ann.span,
+            state,
+            &mut None,
+            &mut None,
+        ) {
+            Ok(expected_type) => {
+                let (pipeline_type_resolved, expected_type_resolved) = if state.subst.is_empty() {
+                    (pipeline_type.clone(), expected_type.clone())
+                } else {
+                    (
+                        state.subst.apply(pipeline_type),
+                        state.subst.apply(&expected_type),
+                    )
+                };
+                let passes = Type::is_subtype(&pipeline_type_resolved, &expected_type_resolved)
+                    || ((contains_unknown_or_top(&pipeline_type_resolved)
+                        || contains_unknown_or_top(&expected_type_resolved))
+                        && Type::is_consistent(&pipeline_type_resolved, &expected_type_resolved));
+                if !passes {
+                    advisory_errors.push(TypeError::new(
+                        format!(
+                            "Pipeline input type {} does not satisfy expects contract {}",
+                            pipeline_type_resolved, expected_type_resolved
+                        ),
+                        expects_ann.span,
+                    ));
+                }
+            }
+            Err(e) => advisory_errors.push(e),
+        }
+    }
+
+    // Process caps: declarations if present
+    if let Some(ref caps_ann) = doc.caps {
+        let mut env_mut = (*env).clone();
+        for (cap_name, annotation) in &caps_ann.node {
+            match resolve_annotation(annotation, &env, caps_ann.span, state, &mut None, &mut None) {
+                Ok(cap_type) => {
+                    env_mut.insert(format!("%{}", cap_name), cap_type);
+                }
+                Err(e) => {
+                    errors.push(e);
+                }
+            }
+        }
+        env = Rc::new(env_mut);
+    }
+
+    let mut result_type = Type::Record(Row {
+        fields: HashMap::new(),
+    });
+
+    // Extract only expression items (skip declarations)
+    let expr_items: Vec<_> = doc
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            SurfaceItem::Expr(node) => Some(node),
+            SurfaceItem::Decl(_) => None,
+        })
+        .collect();
+
+    if expr_items.is_empty() {
+        // Validate output annotation even for empty document (advisory)
+        if let Some(ref output_ann) = doc.output_type {
+            match resolve_annotation(
+                &output_ann.node,
+                &env,
+                output_ann.span,
+                state,
+                &mut None,
+                &mut None,
+            ) {
+                Ok(expected_output) => {
+                    let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty()
+                    {
+                        (result_type.clone(), expected_output.clone())
+                    } else {
+                        (
+                            state.subst.apply(&result_type),
+                            state.subst.apply(&expected_output),
+                        )
+                    };
+                    let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
+                        || ((contains_unknown_or_top(&result_type_resolved)
+                            || contains_unknown_or_top(&expected_output_resolved))
+                            && Type::is_consistent(
+                                &result_type_resolved,
+                                &expected_output_resolved,
+                            ));
+                    if !passes {
+                        advisory_errors.push(TypeError::new(
+                            format!(
+                                "Document output type {} does not match annotation {}",
+                                result_type_resolved, expected_output_resolved
+                            ),
+                            output_ann.span,
+                        ));
+                    }
+                }
+                Err(e) => advisory_errors.push(e),
+            }
+        }
+
+        let mut result_env = TypeEnv::with_parent(&env);
+        result_env.insert("%".to_string(), result_type.clone());
+
+        if errors.is_empty() {
+            return Ok((Rc::new(result_env), result_type, advisory_errors));
+        } else {
+            return Err(errors);
+        }
+    }
+
+    for (i, surface_node) in expr_items.iter().enumerate() {
+        let is_last = i == expr_items.len() - 1;
+
+        // Convert SurfaceNode back to Expr for type inference
+        let expr = crate::ast_convert::surface_node_to_expr(surface_node);
+
+        // Infer type using existing machinery
+        match infer_expr(&expr, &env, state, &mut None) {
+            Ok(ty) => {
+                // Capture the inferred type in the table
+                table.insert(node_id(surface_node), ty.clone());
+
+                if is_last {
+                    result_type = ty;
+                } else {
+                    // For non-last expressions, update environment if it's a Dict
+                    // (This mirrors the dict-scoped let-generalization logic)
+                    if let Expr::Dict(entries) = &expr.node {
+                        match infer_dict(entries, &env, state, &mut None, expr.span) {
+                            Ok((dict_ty, schemes)) => {
+                                let mut new_env = TypeEnv::with_parent(&env);
+                                for (name, scheme) in &schemes {
+                                    new_env.insert_scheme(name.clone(), scheme.clone());
+                                }
+                                let mut alias_errs =
+                                    register_type_aliases(&expr, &mut new_env, &env, state);
+                                errors.append(&mut alias_errs);
+                                env = Rc::new(new_env);
+                                // Update table with dict type
+                                table.insert(node_id(surface_node), dict_ty);
+                            }
+                            Err(mut errs) => errors.append(&mut errs),
+                        }
+                    } else {
+                        // Non-dict: just thread the type through
+                        let mut new_env = TypeEnv::with_parent(&env);
+                        let mut alias_errs =
+                            register_type_aliases(&expr, &mut new_env, &env, state);
+                        errors.append(&mut alias_errs);
+                        env = Rc::new(new_env);
+                    }
+                }
+            }
+            Err(mut errs) => errors.append(&mut errs),
+        }
+    }
+
+    // Validate output_type annotation if present (advisory)
+    if let Some(ref output_ann) = doc.output_type {
+        match resolve_annotation(
+            &output_ann.node,
+            &env,
+            output_ann.span,
+            state,
+            &mut None,
+            &mut None,
+        ) {
+            Ok(expected_output) => {
+                let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty() {
+                    (result_type.clone(), expected_output.clone())
+                } else {
+                    (
+                        state.subst.apply(&result_type),
+                        state.subst.apply(&expected_output),
+                    )
+                };
+                let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
+                    || ((contains_unknown_or_top(&result_type_resolved)
+                        || contains_unknown_or_top(&expected_output_resolved))
+                        && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
+                if !passes {
+                    advisory_errors.push(TypeError::new(
+                        format!(
+                            "Document output type {} does not match annotation {}",
+                            result_type_resolved, expected_output_resolved
+                        ),
+                        output_ann.span,
+                    ));
+                }
+            }
+            Err(e) => advisory_errors.push(e),
+        }
+    }
+
+    let mut result_env = TypeEnv::with_parent(&env);
+    result_env.insert("%".to_string(), result_type.clone());
+
+    if errors.is_empty() {
+        Ok((Rc::new(result_env), result_type, advisory_errors))
+    } else {
+        Err(errors)
+    }
 }
 
 /// Extract documentation strings from parameter and function annotations.

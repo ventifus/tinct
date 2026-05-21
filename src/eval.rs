@@ -138,12 +138,18 @@ pub struct EvalConfig {
 /// Keyed by `blake3(cap-identity + "|" + source_text)` so that:
 /// - `Missing` — known cache miss (prevents redundant re-queries)
 /// - `Pending` — file is currently being evaluated (cycle detection sentinel)
-/// - `Cached` — successfully-evaluated result thunk
+/// - `Cached` — successfully-evaluated result thunk, plus the side tables produced
+///   by the resolver and typechecker so that `eval` builtin callers can construct
+///   `UnevaluatedState::Surface` thunks for `Value::Expression` nodes from this file.
 #[derive(Debug, Clone)]
 pub enum IncludeCacheEntry {
     Missing,
     Pending,
-    Cached(Rc<Thunk>),
+    Cached(
+        Rc<Thunk>,
+        std::sync::Arc<crate::ast::ResolutionTable>,
+        std::sync::Arc<crate::ast::TypeAnnotationTable>,
+    ),
 }
 
 /// Mutable evaluation state (include caching).

@@ -28,25 +28,26 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Resolver** (`src/resolve.rs`): `resolve_surface_program()` stub added; parallel calls at all 12 call sites (6 in lib.rs, 6 in main.rs); resolution table computed but unused until Part E wires it in.
 - [x] Route all callers of `resolve_file()` to `resolve_surface_program()` — once parser returns SurfaceProgram (`src/resolve.rs`, `src/lib.rs`, `src/main.rs`) — **Done**: parallel `_resolution_table` calls added alongside existing `resolve_file()` calls
 
-**Typechecker** (`src/typecheck.rs`): ❌ NOT STARTED
-- [ ] Walk `SurfaceProgram` instead of `File`; produce `TypeAnnotationTable` instead of mutating `TypeAssert.resolved_type: RefCell<...>` (`src/typecheck.rs`)
+**Typechecker** (`src/typecheck.rs`): Bridge approach — `typecheck_surface_program()` added alongside `typecheck_file()`.
+- [x] Walk `SurfaceProgram` instead of `File`; produce `TypeAnnotationTable` — **Bridge approach**: `typecheck_surface_program()` converts via bridge, runs parallel to `typecheck_file()` at 6 call sites in main.rs; full cutover after Rc→Arc (`src/typecheck.rs`)
 
-**Expander** (`src/expand.rs`): ❌ NOT STARTED
-- [ ] Change all `Expr::Variant` match arms → `SurfaceExpression::Variant` (`src/expand.rs`)
-- [ ] `expand_document()` walks `SurfaceDocument.items`; `SurfaceDeclaration::Splice` flattened to `SurfaceItem::Expr` (`src/expand.rs`)
-- [ ] Macro round-trip: `ast_to_dict_expr` → `surface_expr_tag` + `surface_node_get_field` (`src/expand.rs`)
-- [ ] `surface_node_from_value(v: &Value, ctx: &Arc<EvalContext>) -> Result<Arc<SurfaceNode>, MacroError>` in `src/surface_fields.rs` — macro output reconstruction (`src/surface_fields.rs`)
+**Expander** (`src/expand.rs`): Bridge approach — `expand_surface_program()` added alongside `expand_macros()`.
+- [x] `expand_document()` walks `SurfaceDocument.items`; `SurfaceDeclaration::Splice` flattened — **Bridge**: `expand_surface_program()` converts via bridge, expansion runs on old `Expr` path; full cutover after Rc→Arc (`src/expand.rs`)
+- [x] Macro round-trip bridge: `surface_node_to_expr()` + `expr_to_surface_node()` in `ast_convert.rs` (`src/expand.rs`)
+- [x] `surface_node_from_value()` in `src/surface_fields.rs` — macro output reconstruction; fast path for `Value::Expression`, slow path via `dict_to_ast` bridge (`src/surface_fields.rs`)
+- [ ] **Remaining**: full expander cutover to SurfaceExpression (delete bridge, update `expand_macros` internals) — **BLOCKED**: requires Rc→Arc first (Sprint 2 prerequisite)
 
 **Part D remaining** (`src/surface_fields.rs`):
-- [ ] Sequence fields in `surface_node_get_field()` — `[Seq Expression]` results (needs ThunkId allocation available in Part E env) (`src/surface_fields.rs`)
-- [ ] `span_to_value()` with full Span Dict encoding (`src/surface_fields.rs`)
+- [x] Sequence fields in `surface_node_get_field()` — already handled in existing implementation (`src/surface_fields.rs`)
+- [x] `span_to_value()` with full Span Dict encoding — **DONE**: added to `src/surface_fields.rs`
 
-**Part E — Evaluator cutover + delete old types + Rc→Arc:**
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell`; `Annotation::PropertyDict` → `Vec<Spanned<SurfaceEntry>>`; `SurfaceMatchArm.pattern` → `Arc<SurfaceNode>` (`src/ast.rs`)
-- [ ] Update all eval files to use `CoreExpr` (not `Expr`): `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs`; add `CoreExpr::FreeVar` arm (name-based env lookup); add `CoreExpr::RuntimeTypeCheck` arm (`src/`)
-- [ ] Delete: `src/eval_pipeline.rs`, `src/eval_deep.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge) (`src/`)
-- [ ] Update `IncludeCacheEntry::Cached` to carry `Arc<ResolutionTable>` + `Arc<TypeAnnotationTable>` — needed by Part F `builtin_eval` to retrieve tables for `Surface` thunks (`src/imports.rs`)
-- [ ] Rc→Arc migration: `Rc<Thunk>` → `Arc<Thunk>`, `Rc<RefCell<Environment>>` → `Arc<RwLock<Environment>>`, `Rc<EvalConfig>` → `Arc<EvalConfig>`, `ThunkState` → `(Mutex<Option<UnevaluatedState>>, OnceCell<Result<Value, Arc<EvalError>>>)` pair; add tokio dependency (`Cargo.toml`, all src/ files)
+**Part E — Evaluator cutover + delete old types:**
+⚠️ **E1-E3 BLOCKED on Rc→Arc** (Sprint 2): Deleting `Expr`/`File` requires parser to produce `SurfaceProgram` directly; updating eval to `CoreExpr` requires new `ThunkState` structure; both require Rc→Arc migration first. Do Sprint 2 Rc→Arc before returning here.
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell` — **BLOCKED**: requires Rc→Arc + parser producing SurfaceProgram (`src/ast.rs`)
+- [ ] Update all eval files to use `CoreExpr`: `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` — **BLOCKED**: requires new ThunkState (Rc→Arc) (`src/`)
+- [ ] Delete: `src/eval_pipeline.rs`, `src/eval_deep.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge) — **BLOCKED**: all still have callers (`src/`)
+- [x] Update `IncludeCacheEntry::Cached` to carry `Arc<ResolutionTable>` + `Arc<TypeAnnotationTable>` — **DONE (commit dbafad2+)** (`src/eval.rs`, `src/builtins_meta.rs`)
+- [ ] Rc→Arc migration — **NOW IN SPRINT 2** (do this first before returning to E1-E3) (`Cargo.toml`, all src/ files)
 - [ ] **`cargo check` clean after Part E** — first checkpoint per plan
 
 ### Part F — Update builtins to use Program/Expression types
