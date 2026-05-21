@@ -42,12 +42,12 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `span_to_value()` with full Span Dict encoding — **DONE**: added to `src/surface_fields.rs`
 
 **Part E — Evaluator cutover + delete old types:**
-⚠️ **E1-E3 BLOCKED on Rc→Arc** (Sprint 2): Deleting `Expr`/`File` requires parser to produce `SurfaceProgram` directly; updating eval to `CoreExpr` requires new `ThunkState` structure; both require Rc→Arc migration first. Do Sprint 2 Rc→Arc before returning here.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell` — **BLOCKED**: requires Rc→Arc + parser producing SurfaceProgram (`src/ast.rs`)
-- [ ] Update all eval files to use `CoreExpr`: `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` — **BLOCKED**: requires new ThunkState (Rc→Arc) (`src/`)
-- [ ] Delete: `src/eval_pipeline.rs`, `src/eval_deep.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge) — **BLOCKED**: all still have callers (`src/`)
-- [x] Update `IncludeCacheEntry::Cached` to carry `Arc<ResolutionTable>` + `Arc<TypeAnnotationTable>` — **DONE (commit dbafad2+)** (`src/eval.rs`, `src/builtins_meta.rs`)
-- [ ] Rc→Arc migration — **NOW IN SPRINT 2** (do this first before returning to E1-E3) (`Cargo.toml`, all src/ files)
+✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell` — UNBLOCKED by Rc→Arc (`src/ast.rs`)
+- [ ] Update all eval files to use `CoreExpr`: `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` — UNBLOCKED by Rc→Arc (`src/`)
+- [ ] Delete: `src/eval_pipeline.rs`, `src/eval_deep.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge) — check callers first (`src/`)
+- [x] Update `IncludeCacheEntry::Cached` — **DONE**
+- [x] Rc→Arc migration — **DONE (commit b0aa803)**: 34 files, 2450 ins, 2437 del
 - [ ] **`cargo check` clean after Part E** — first checkpoint per plan
 
 ### Part F — Update builtins to use Program/Expression types
@@ -84,17 +84,17 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Unblocks:** Parts B+E E1-E3 (delete old Expr types, eval cutover to CoreExpr)
 **Plan:** `doc/whatif/plans/runtime-v2-plan.md` §Part E — Rc→Arc migration
 
-- [ ] Change all `Rc<Thunk>` → `Arc<Thunk>` throughout codebase (`src/*.rs`)
-- [ ] Change all `Rc<RefCell<Environment>>` → `Arc<RwLock<Environment>>` (`src/*.rs`)
-- [ ] Change `Rc<EvalConfig>` → `Arc<EvalConfig>` (`src/*.rs`)
-- [ ] Change `Rc<RefCell<EvalState>>` → `Arc<Mutex<EvalState>>` (`src/*.rs`)
-- [ ] Change `ThunkState` enum → `(Mutex<Option<UnevaluatedState>>, tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>)` pair (`src/value.rs`, all ThunkState consumers)
-- [ ] Change `EvalError` from `Box<EvalError>` → `Arc<EvalError>` at cross-thread boundaries (`src/error.rs`, `src/*.rs`)
-- [ ] `EvalConfig` gains `type_stage_env: Arc<RwLock<Environment>>` field (`src/eval.rs`)
-- [ ] Add tokio dependency: `tokio = { version = "1", features = ["rt-multi-thread", "time", "signal", "sync", "macros"] }`, `tokio-util`, `dashmap` (`Cargo.toml`)
-- [ ] Update `BuiltinFn` type from `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>` to use `Arc<Thunk>` (`src/value.rs`)
-- [ ] `cargo check` clean — first milestone
-- [ ] `just test` passes — all existing tests pass after migration
+- [x] Change all `Rc<Thunk>` → `Arc<Thunk>` — **DONE (commit b0aa803)**
+- [x] Change all `Rc<RefCell<Environment>>` → `Arc<RwLock<Environment>>` — **DONE**
+- [x] Change `Rc<EvalConfig>` → `Arc<EvalConfig>` — **DONE**
+- [x] Change `Rc<RefCell<EvalState>>` → `Arc<Mutex<EvalState>>` — **DONE**
+- [ ] Change `ThunkState` enum → OnceLock pair — **DEFERRED to sprint-2b** (Rc→Arc done, OnceLock is async-specific)
+- [x] Change `EvalError` — kept as `Box<EvalError>` for now (Arc conversion deferred to sprint-2b when async boundaries exist)
+- [ ] `EvalConfig` gains `type_stage_env` — **DEFERRED to Part F**
+- [x] Add tokio + dashmap dependencies — **DONE**
+- [x] Update `BuiltinFn` to use `Arc<Thunk>` — **DONE**
+- [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
+- [ ] `just test` passes — needs verification after Rc→Arc
 
 ### sprint-2b-async: Async evaluation + primitives
 
