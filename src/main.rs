@@ -1708,7 +1708,7 @@ fn run_eval(
         };
 
         // Parse
-        let ast = parse(&source).map(|o| o.file).map_err(|e| {
+        let output = parse(&source).map_err(|e| {
             if strict {
                 // In strict mode, use rich diagnostic formatting
                 let file_name = match stage {
@@ -1721,6 +1721,9 @@ fn run_eval(
                 format!("{e}")
             }
         })?;
+        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+        let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+        let ast = output.file;
 
         // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
         let file_base_dir_path = match stage {
@@ -1969,9 +1972,11 @@ fn run_fmt(
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let ast = parse(&source)
-            .map(|o| o.file)
+        let output = parse(&source)
             .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+        let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+        let ast = output.file;
 
         // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
         // See also: src/lib.rs (typecheck_source pipeline)
@@ -2082,9 +2087,11 @@ fn run_lint(
     let source = read_source(file_path)?;
 
     // Parse the file
-    let ast = parse(&source)
-        .map(|o| o.file)
+    let output = parse(&source)
         .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+    let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    let ast = output.file;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
     // AMBIENT-OK: CLI bootstrap — operator specified this file path.
@@ -2343,13 +2350,16 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     let cap_fs = config.cap_fs;
     let cap_net = config.cap_net;
     // Parse the tangled source.
-    let ast = parse(tangled).map(|o| o.file).map_err(|e| {
+    let output = parse(tangled).map_err(|e| {
         if strict {
             tinct::format_parse_error(&e, tangled, markdown_path)
         } else {
             format!("parse error in tangled tinct source: {e}")
         }
     })?;
+    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+    let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    let ast = output.file;
 
     // Expand macros (pre-desugar AST transformation).
     // AMBIENT-OK: CLI bootstrap — operator specified this markdown_path.
@@ -2744,9 +2754,13 @@ fn run_literate_weave(
     for (i, block_with_exp) in blocks_with_exp.iter().enumerate() {
         let code = &block_with_exp.code;
 
-        let parse_result = parse(code).map(|o| o.file);
+        let parse_result = parse(code);
         let ast = match parse_result {
-            Ok(a) => a,
+            Ok(o) => {
+                // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+                let _resolution_table = tinct::resolve::resolve_surface_program(&o.as_surface_program());
+                o.file
+            },
             Err(e) => {
                 let error_msg = if strict {
                     tinct::format_parse_error(&e, code, &format!("block {}", i + 1))
@@ -3248,7 +3262,10 @@ fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
 
 fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let source = read_source(file_path)?;
-    let ast = parse(&source).map(|o| o.file).map_err(|e| format!("{e}"))?;
+    let output = parse(&source).map_err(|e| format!("{e}"))?;
+    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+    let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    let ast = output.file;
 
     // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> typecheck.
     // AMBIENT-OK: CLI bootstrap — operator specified this file path.

@@ -16,11 +16,11 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC)
 
-**Parser** (`src/parser.rs`): ❌ NOT STARTED
-- [ ] Change `parse()` return type from `File` to `SurfaceProgram`; every `Rc::new(spanned_expr)` → `Arc::new(SurfaceNode { expr, span })`; declaration forms route to `SurfaceItem::Decl`, expression forms to `SurfaceItem::Expr` (`src/parser.rs`)
+**Parser** (`src/parser.rs`): Bridge method added — `ParseOutput::as_surface_program()` converts File → SurfaceProgram on demand. Full parser migration (constructing SurfaceNode directly) deferred to Part E.
+- [x] Change `parse()` return type from `File` to `SurfaceProgram`; every `Rc::new(spanned_expr)` → `Arc::new(SurfaceNode { expr, span })`; declaration forms route to `SurfaceItem::Decl`, expression forms to `SurfaceItem::Expr` (`src/parser.rs`) — **Bridge approach**: added `ParseOutput::as_surface_program()` method; full parser internals migration deferred to Part E
 
-**Resolver** (`src/resolve.rs`): Part B resolver done in rebase (SurfaceResolver added); remaining:
-- [ ] Route all callers of `resolve_file()` to `resolve_surface_program()` — once parser returns SurfaceProgram (`src/resolve.rs`, `src/lib.rs`, `src/main.rs`)
+**Resolver** (`src/resolve.rs`): `resolve_surface_program()` stub added; parallel calls at all 12 call sites (6 in lib.rs, 6 in main.rs); resolution table computed but unused until Part E wires it in.
+- [x] Route all callers of `resolve_file()` to `resolve_surface_program()` — once parser returns SurfaceProgram (`src/resolve.rs`, `src/lib.rs`, `src/main.rs`) — **Done**: parallel `_resolution_table` calls added alongside existing `resolve_file()` calls
 
 **Typechecker** (`src/typecheck.rs`): ❌ NOT STARTED
 - [ ] Walk `SurfaceProgram` instead of `File`; produce `TypeAnnotationTable` instead of mutating `TypeAssert.resolved_type: RefCell<...>` (`src/typecheck.rs`)
@@ -133,7 +133,7 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 
 ## Health Review #22 Findings (2026-05-19)
 
-### eval-hardening: Fix eval engine correctness issues
+### eval-hardening-perf: Fix eval engine correctness + performance issues
 
 - [ ] **CRITICAL** `Cont::GuardedValidate` Overlay error path does not check `is_cacheable()` — replace `thunk.cache_failure(&e)` at `src/eval_materialize.rs:1050` with the full `is_cacheable()` guard + `restore.take()` pattern used at line 1198 (`src/eval_materialize.rs`)
 - [ ] Fix `work_stack` orphan leak: when `push_structural` fails mid-traversal, partially-pushed `WorkItem::Force` items leak `Rc<Thunk>` references; add `work_stack.clear()` before propagating the error (`src/eval_deep.rs:509-520`)
@@ -143,8 +143,14 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 - [ ] Fix `%_input` synthetic binding name in `wrap_with_nominal_validation` (`src/eval_pipeline.rs:113-158`) — replace with gensym to eliminate collision risk with pathological nesting patterns (`src/eval_pipeline.rs`)
 - [ ] `validate_value` enum check is O(n) linear scan — build a hash set from enum values before matching for large-enum performance (`src/builtins_meta.rs:1940`)
 - [ ] `builtin_load` slot indices latent bug: `resolve_file` populates VarRef slots for the load-time env, but `builtin_eval` re-uses the AST in a new env where slots may differ — strip resolved slots from `builtin_load` output OR document that `builtin_eval` must re-resolve before arena-phase3 activates; **note:** runtime-v2 Part E will eliminate this entirely (VarRef slots replaced by ResolutionTable keyed by Arc pointer); for now add a doc comment guard (`src/builtins_meta.rs:1548`, `src/ast_dict.rs`)
+- [ ] `validate_value` allocates fresh `String` for every schema key lookup — replace 10 `Key::String("...".to_string())` with `StrKey("...")` at `src/builtins_meta.rs:1791-2007` (zero-alloc wrapper already exists)
+- [ ] `builtin_until` allocates `IndexMap::new()` twice per iteration — pass `None` instead of empty maps at `src/builtins_meta.rs:225,245` (`src/builtins_meta.rs`)
+- [ ] `eval_dict` allocates `HashMap::new()` for `constructor_precomputed` on every dict — add early-exit guard: only allocate when `has_type_alias` is true (`src/eval_dict.rs:71`)
+- [ ] `ast_to_dict` payload dicts have no capacity hints — add `IndexMap::with_capacity(N)` per match arm using statically known field counts (`src/ast_dict.rs:234+`)
+- [ ] `deep_materialize` Dict arm allocates `Vec<Key>` scratch — eliminate by passing key count as `usize` into BuildDict and iterating `map.keys()` during assembly (`src/eval_deep.rs:342-358`)
+- [ ] `list_to_thunk_id` creates intermediate Vec<ThunkId> — change to accept `impl ExactSizeIterator<Item=ThunkId>` to eliminate the intermediate Vec (`src/ast_dict.rs:99,141,208`)
 
-### bas-type-system: Fix type system soundness issues
+### type-soundness: Fix type system soundness issues (bas + cs)
 
 - [ ] **CRITICAL** `Union vs Union` unification with TypeVars falls through to hard error — add `(Type::Union(m1), Type::Union(m2))` arm before C-Var1 guards in `type_unify.rs` that defers to `state.deferred_equalities` when both have inference vars (`src/type_unify.rs:1989-2090`)
 - [ ] Document and guard eval-layer coupling in `normalize()` — add `NormCtxt::allow_eval: bool` flag; set to `false` inside `unify()` at line 1539 to prevent runtime errors from propagating into type inference (`src/type_normalize.rs:344-404`, `src/type_unify.rs:1539`)
@@ -154,15 +160,12 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 - [ ] Fix `check_do_infer` fast-path: return `Type::Unknown` instead of `state.fresh_type_var()` for unknown methods (orphaned TypeVars pollute `state.levels`) (`src/typecheck.rs:3578`)
 - [ ] Update `doc/06-type-inference.md` type grammar to include BAS types (Union, Intersection, Negation, Never) in the main grammar — these are user-expressible via annotations (`doc/06-type-inference.md:6-22,27-41`)
 - [ ] Fix `doc/07-type-extensions.md:386-407` archived code block confusion — separate BAS `Row` struct from archived RowTail into distinct code blocks (`doc/07-type-extensions.md`)
-
-### perf-foundations: Performance improvements
-
-- [ ] `validate_value` allocates fresh `String` for every schema key lookup — replace 10 `Key::String("...".to_string())` with `StrKey("...")` at `src/builtins_meta.rs:1791-2007` (zero-alloc wrapper already exists)
-- [ ] `builtin_until` allocates `IndexMap::new()` twice per iteration — pass `None` instead of empty maps at `src/builtins_meta.rs:225,245` (`src/builtins_meta.rs`)
-- [ ] `eval_dict` allocates `HashMap::new()` for `constructor_precomputed` on every dict — add early-exit guard: only allocate when `has_type_alias` is true (`src/eval_dict.rs:71`)
-- [ ] `ast_to_dict` payload dicts have no capacity hints — add `IndexMap::with_capacity(N)` per match arm using statically known field counts (`src/ast_dict.rs:234+`)
-- [ ] `deep_materialize` Dict arm allocates `Vec<Key>` scratch — eliminate by passing key count as `usize` into BuildDict and iterating `map.keys()` during assembly (`src/eval_deep.rs:342-358`)
-- [ ] `list_to_thunk_id` creates intermediate Vec<ThunkId> — change to accept `impl ExactSizeIterator<Item=ThunkId>` to eliminate the intermediate Vec (`src/ast_dict.rs:99,141,208`)
+- [ ] **MAJOR (LIVE BUG)** `rename_single_type_var` missing `NominalVariant` arm — TypeVars inside NominalVariant fields are not renamed during single-var scheme instantiation; two call sites share the same TypeVar, violating freshness invariant; fix: add `NominalVariant { tag, fields }` arm that calls `rename_single_type_var_in_row(fields, ...)` (`src/type_env.rs:148`)
+- [ ] **MAJOR (COMPLETENESS BUG)** Match arm narrowing uses `StringLiteral(tag)` for Constructor patterns instead of `NominalVariant{tag, ...}` — intersection with NominalVariant scrutinee collapses to Never, making pattern-bound variables typed `Never`; fix: use `Type::NominalVariant { tag: tag.clone(), fields: Row::empty() }` for both positive narrowing (line 2242) and negation accumulation (line 2291) (`src/typecheck.rs:2238-2295`)
+- [ ] **MAJOR (LATENT Phase 2 bug)** Resolver doesn't create scopes for match arm pattern-bound variables — at runtime names are looked up by name (correct in Phase 1) but de Bruijn coordinates are wrong for FlatEnv Phase 2; fix: collect pattern-bound names (Variable, Dict, Seq, Constructor patterns) and enter/exit scope for each arm (`src/resolve.rs:308-315`)
+- [ ] **MAJOR** `ScopeId` struct is dead code — module doc claims Flatt (2016) scope-set hygiene but `ScopeId::fresh()` was deleted and `ScopeId` is never instantiated; actual model is KFFD-class gensym hygiene; fix: update expand.rs module doc to describe gensym-based manual hygiene accurately; remove `ScopeId` struct and `impl` block (`src/expand.rs:16-55`)
+- [ ] `collect_pattern_bindings` gives `Unknown` to Constructor payload binding — should extract field type from matching NominalVariant when scrutinee is a Union containing a matching tag (`src/typecheck.rs:1468-1472`)
+- [ ] Exhaustiveness checking only fires for `Type::Union` scrutinee — bare `NominalVariant` scrutinee (not wrapped in Union) skips exhaustiveness entirely; needs type alias registry lookup to get sibling constructors (`src/typecheck.rs:2315`, `src/coverage.rs`)
 
 ### grammar-doc-polish: Fix grammar/doc consistency issues
 
@@ -186,15 +189,6 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 - [ ] `prelude.llt:1423-1429` — `result-ok` and `and-then` have `fn@[return: Unknown]` annotation; should be `fn@[return: Result]` or similar (`stdlib/prelude.llt`)
 - [ ] `prelude.llt:2295-2297` — `first-or` uses `[match [empty? xs] [case true ...]]` boolean dispatch; replace with `[if [empty? xs] default [first xs]]` for consistency with prelude style (`stdlib/prelude.llt:2295-2297`)
 - [ ] `strings.llt` — `str-reverse-impl`, `upper`, `lower` use bare annotated params without `[let ...]`; inconsistent with `[fn@T [let ...]]` style used throughout prelude.llt; standardize or document the new-style param choice (`stdlib/strings.llt:47,94,100`)
-
-### cs-type-soundness: Fix type system soundness issues found by computer-scientist
-
-- [ ] **MAJOR (LIVE BUG)** `rename_single_type_var` missing `NominalVariant` arm — TypeVars inside NominalVariant fields are not renamed during single-var scheme instantiation; two call sites share the same TypeVar, violating freshness invariant; fix: add `NominalVariant { tag, fields }` arm that calls `rename_single_type_var_in_row(fields, ...)` (`src/type_env.rs:148`)
-- [ ] **MAJOR (COMPLETENESS BUG)** Match arm narrowing uses `StringLiteral(tag)` for Constructor patterns instead of `NominalVariant{tag, ...}` — intersection with NominalVariant scrutinee collapses to Never, making pattern-bound variables typed `Never`; fix: use `Type::NominalVariant { tag: tag.clone(), fields: Row::empty() }` for both positive narrowing (line 2242) and negation accumulation (line 2291) (`src/typecheck.rs:2238-2295`)
-- [ ] **MAJOR (LATENT Phase 2 bug)** Resolver doesn't create scopes for match arm pattern-bound variables — at runtime names are looked up by name (correct in Phase 1) but de Bruijn coordinates are wrong for FlatEnv Phase 2; fix: collect pattern-bound names (Variable, Dict, Seq, Constructor patterns) and enter/exit scope for each arm (`src/resolve.rs:308-315`)
-- [ ] **MAJOR** `ScopeId` struct is dead code — module doc claims Flatt (2016) scope-set hygiene but `ScopeId::fresh()` was deleted and `ScopeId` is never instantiated; actual model is KFFD-class gensym hygiene; fix: update expand.rs module doc to describe gensym-based manual hygiene accurately; remove `ScopeId` struct and `impl` block (`src/expand.rs:16-55`)
-- [ ] `collect_pattern_bindings` gives `Unknown` to Constructor payload binding — should extract field type from matching NominalVariant when scrutinee is a Union containing a matching tag (`src/typecheck.rs:1468-1472`)
-- [ ] Exhaustiveness checking only fires for `Type::Union` scrutinee — bare `NominalVariant` scrutinee (not wrapped in Union) skips exhaustiveness entirely; needs type alias registry lookup to get sibling constructors (`src/typecheck.rs:2315`, `src/coverage.rs`)
 
 ### integration-fixes: Cross-layer integration issues
 
