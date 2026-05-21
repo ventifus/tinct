@@ -51,7 +51,7 @@ Under BAS, the Result type must use **nominal variants** to be discriminated:
 
 `Dict` is the BAS union of `Record` and `Map@[K: V]` — two different type constructors, not field-disjoint records, so S-RcdTop does not collapse this union:
 
-```
+```text
 Dict = Record ∨ Map@[K: V]
 ```
 
@@ -69,7 +69,7 @@ Both static and runtime TypeAssert checks are structural. The evaluator validate
 
 **Elaboration.** The type checker resolves TypeAssert annotations and embeds the resolved type directly in the AST (Dunfield & Krishnaswami 2021, §elaboration). This follows the standard bidirectional typing approach: the checking judgment produces an elaborated term where type information is explicit.
 
-```
+```text
 Expr::TypeAssert { expr, annotation }
 → Expr::TypeAssert { expr, annotation, resolved_type: RefCell<Option<Type>> }
 ```
@@ -82,7 +82,7 @@ Because the resolved type is part of the AST, it is captured naturally by `Uneva
 
 *Immediate rules* (checked at assertion time):
 
-```
+```text
 ────────────────────────────────── [VM-ANY]
 v ∈ Unknown
 
@@ -128,7 +128,7 @@ v ∈ α
 
 *Proxy contract rule* (shape checked at assertion time, field types checked lazily):
 
-```
+```text
 v = Dict(entries),
 ∀(fᵢ: τᵢ) ∈ fields.  fᵢ ∈ string_keys(entries),
 ρ = Closed ⟹ string_keys(entries) = dom(fields),
@@ -214,7 +214,7 @@ This ensures defaults are always type-safe. A default that doesn't match the ass
 
 **Consistency invariant** (for deeply checkable types):
 
-```
+```text
 If Γ ⊢ e ⇒ σ  and  σ <: τ  and  eval(e) = v  and  τ is deeply checkable,
 then v ∈ τ.
 ```
@@ -225,7 +225,7 @@ For *opaque* type constructors (`Fn`, `Seq`), the invariant degenerates to tag-l
 
 **Error messages.** Runtime validation errors report the structural path to the mismatch:
 
-```
+```text
 type assertion failed: expected [name: String  age: Int],
   field "age": expected Int, got String
 ```
@@ -309,7 +309,7 @@ Several builtins dispatch on their input type (Dict vs Seq), producing different
 
 To cache evaluation failures instead of restoring `Unevaluated` and re-evaluating on every access attempt:
 
-```
+```text
 Failed(Box<EvalError>)
 ```
 
@@ -346,7 +346,7 @@ With `PendingCall` and `Seq`, several operations become lazier:
 
 To support builtins that return lazy results, `BuiltinFn` changes from returning `Value` to returning `Rc<Thunk>`:
 
-```
+```text
 // Before
 type BuiltinFn = fn(args, named, depth, call_span) -> Result<Value, Box<EvalError>>;
 
@@ -364,7 +364,7 @@ Builtins that return materialized values wrap them in `Thunk::new_materialized()
 
 ---
 
-# Appendix: Archived Rémy Row Polymorphism Design
+## Appendix: Archived Rémy Row Polymorphism Design
 
 > **Note:** The following sections describe the Rémy row polymorphism design. Under the current BAS implementation, the `RowTail` enum, `row_map` in `Substitution`, and `row_vars` in `TypeScheme` are not present. All records are closed — openness is expressed via width subtyping in `is_subtype()`. See §Boolean-Algebraic Subtyping above for the live specification.
 
@@ -418,7 +418,7 @@ pub enum Type {
 
 **Kind grammar:**
 
-```
+```text
 κ ::= Type                  # kind of types (Int, String, Record(ρ), ...)
     | Row                   # kind of rows ({x: Int, ...ρ}, {}, ...)
 ```
@@ -459,7 +459,7 @@ pub struct Substitution {
 
 **Note on `Function` param representation:** `Type::Function` stores params as `Vec<(Option<String>, Type)>` — each entry is a `(name, type)` pair where `name` is `Some(param_name)` for user-defined functions and `None` for builtins. All traversals (apply, occurs check, substitution) must destructure each tuple as `(_name, ty)` and recurse only into `ty`; the name component is never a type and is never traversed. Implementors adding new traversal sites must follow this pattern.
 
-```
+```text
 apply_type(τ, S):
   TypeVar(α)      → if α ∈ S.type_map then apply_type(S.type_map[α], S) else TypeVar(α)
   Record(r)       → Record(apply_row(r, S))
@@ -482,7 +482,7 @@ The `merge` is **left-biased**: explicit fields (from `fields'`) take precedence
 
 **Occurs check** is per-kind:
 
-```
+```text
 type_var_occurs(α, τ):
   TypeVar(β)        → α == β
   Record(r)         → type_var_occurs_in_row(α, r)
@@ -523,7 +523,7 @@ In the Rémy design, row unification was the core of the type system. It used **
 
 **Unification algorithm:**
 
-```
+```text
 unify_rows(Row { fields: F₁, tail: t₁ }, Row { fields: F₂, tail: t₂ }, S):
   # Step 1: Resolve bound row variables
   (F₁, t₁) = resolve_row(F₁, t₁, S)
@@ -573,7 +573,7 @@ resolve_row(fields, tail, S):
 
 **Remainder unification** handles the four cases from Wand (1987):
 
-```
+```text
 unify_remainders(U₁, t₁, U₂, t₂, S):
   # Note: Case 4 must be matched before Cases 2/3 in implementation
   # to prevent pattern shadowing (Case 2 is strictly more general than Case 4).
@@ -647,7 +647,7 @@ The occurs check at step 3 must happen before the level lowering at step 4: if t
 
 **Type-level unification for records:**
 
-```
+```text
 UNIFY-RECORD:
   unify_types(Record(r₁), Record(r₂), S) = unify_rows(r₁, r₂, S)
 ```
@@ -662,7 +662,7 @@ Row variables participate in generalization and instantiation via the standard H
 
 **Variable collection** (two sets):
 
-```
+```text
 collect_type_vars(τ) → Set<String>     # type variables in τ
 collect_row_vars(τ) → Set<String>      # row variables in τ
 
@@ -676,7 +676,7 @@ row_vars_in_tail(Empty)     = {}
 
 **Instantiation** freshens both namespaces independently:
 
-```
+```text
 instantiate(τ, counter):
   type_vars = collect_type_vars(τ)
   row_vars = collect_row_vars(τ)
@@ -708,7 +708,7 @@ Generalization now operates only on type variables. Record width subtyping is ha
 
 In the Rémy design, row variables enabled constraint generation for access chains instead of falling back to `Unknown`.
 
-```
+```text
 check_dot_access(Γ, e, field) :
   τ = infer(Γ, e)
   τ' = apply_subst(τ)
@@ -739,7 +739,7 @@ Under BAS, width subtyping replaces row variable constraints for access chains (
 
 `is_subtype` handles `Record(Row)` directly using the field map:
 
-```
+```text
 is_subtype(Record(Row { fields: F₁, tail: t₁ }), Record(Row { fields: F₂, tail: t₂ })):
   # All fields in sup must be present in sub with subtype field types
   for (l, τ_sup) in F₂:
@@ -760,7 +760,7 @@ This preserves the current behavior ([Type Inference](06-type-inference.md) §Su
 
 In the BAS era, record types display using field-only syntax (no tail):
 
-```
+```text
 Display for Record(IndexMap<String, Type>):
   field_strs = ["{l}: {τ}" for (l, τ) in fields]
   return "[" + field_strs.join("  ") + "]"

@@ -113,7 +113,7 @@ Negation types (`~A`) are essential to the constraint solver, not just a user-fa
 annotation. The core difficulty with union/intersection types in constraint solving is
 constraints of the form:
 
-```
+```text
 τ₁ ≤ τ₂ ∨ α     (union on the right — a type variable α appears in a union)
 α ∧ τ₁ ≤ τ₂     (intersection on the left — type variable α is intersected)
 ```
@@ -136,7 +136,7 @@ Without negation, the solver must backtrack or guess which disjunct to pursue. W
 negation, these are rewritten losslessly using Boolean algebra (Parreaux & Chau 2022,
 §3.2.1, C-Var1/2 rules — formal notation):
 
-```
+```text
 τ₁ ≤ τ₂ ∨ α   →   τ₁ & ~τ₂ ≤ α     (move τ₂ to left side as ~τ₂)
 α & τ₁ ≤ τ₂   →   α ≤ τ₂ | ~τ₁     (move τ₁ to right side as ~τ₁)
 ```
@@ -173,7 +173,7 @@ Single-field record types `{f: τ}` are atoms of the Boolean algebra. Multi-fiel
 records are their intersections. Width subtyping is then a theorem — a dict with more
 fields is a subtype of one with fewer, because intersection elimination gives `A & B <: A`:
 
-```
+```text
 {name: Str} & {age: Int}  <:  {name: Str}
 ```
 
@@ -238,7 +238,7 @@ tells the caller exactly what they will receive (Parreaux & Chau 2022, §1).
 BAS's S-RcdTop rule (Parreaux & Chau 2022, §2.2.2) collapses unions of records with
 disjoint field sets to the top type:
 
-```
+```text
 ⊤  ≤  {x: τ} ∨ τ'    when field x is not present in τ'
 ```
 
@@ -253,7 +253,7 @@ in BAS's Boolean algebra.
 Nominal class tags solve this directly. `#Ok` and `#Err` are nominal identities that
 remain disjoint under the Boolean algebra via S-ClsBot:
 
-```
+```text
 #Ok & #Err ≤ Never   (unrelated nominal tags annihilate — no value can be both)
 ```
 
@@ -372,7 +372,7 @@ fn find_compatible_member<'a>(pattern: &Pattern, members: &'a [Type]) -> Option<
 When `find_compatible_member` returns `None`, a style mismatch error is produced with
 a specific correction:
 
-```
+```text
 error: pattern style mismatch
   --> config.llt:5:5
   |
@@ -637,7 +637,7 @@ branch's constraining context.
 The key payoff is **union elimination**: when `x : A | B` and the true branch
 establishes `x : A`, the false branch computes:
 
-```
+```text
 x : (A | B) & ~A  =  B    (when A and B are disjoint)
 ```
 

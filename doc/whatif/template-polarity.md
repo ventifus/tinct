@@ -99,7 +99,7 @@ The content inside `{{ }}` is a tinct expression evaluated in the context
 of the data program's top-level dict. The result is converted to a string
 via the `str` builtin and interpolated into the surrounding text.
 
-```
+```text
 {{ config.port }}              → "8080"
 {{ [* config.cores 2] }}      → "8"
 {{ [str config.host ":8080"] }} → "example.com:8080"
@@ -115,7 +115,7 @@ calling `+` on a string) produce an eval error before interpolation.
 Block delimiters execute a tinct expression for its control-flow effect.
 Two forms are supported:
 
-```
+```text
 {% [if condition] %}   ... text ...   {% [end] %}
 {% [if condition] %}   ... text ...   {% [else] %}   ... text ...   {% [end] %}
 ```

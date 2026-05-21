@@ -23,7 +23,7 @@ Tinct's `Thunk`-based evaluator.
 
 A `Thunk` in Tinct (`src/value.rs`) moves through the following states:
 
-```
+```text
 Unevaluated(Expr, Env)
     │
     │  force() called
@@ -43,7 +43,7 @@ return the same `v`. This is the **memoization invariant**.
 The proof would proceed as a simulation relation `R` between thunk-based (lazy) and
 direct (eager) evaluation:
 
-```
+```text
 R(thunk t, value v)  iff  force(t) ≅ v
 ```
 

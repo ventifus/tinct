@@ -111,7 +111,7 @@ enum UnevaluatedState {
 
 **Forcing protocol:**
 
-```
+```text
 materialize(thunk):
   1. result.get() → Some(v): return v.clone()      [lock-free after init; the hot path]
   2. lock unevaluated mutex; take Option
@@ -242,7 +242,7 @@ changes: [watch-channel dir-cap "/etc/config"]
 
 **`http-channel` is not a Rust builtin.** It is `stdlib/http.llt`, built on two thin Rust network primitives:
 
-```
+```text
 tcp-listen:  NetCap → Int → Channel@Handle     # one Handle per accepted TCP connection
 quic-listen: NetCap → Int → Channel@QuicConn   # one QuicConn per accepted QUIC connection
 ```
@@ -259,7 +259,7 @@ Transport primitives produce a single connection or a channel of connections. Pr
 
 #### The Symmetry
 
-```
+```text
                   Server (receive)                Client (initiate)
                   ──────────────────────          ──────────────────────
 Transport     resource → Channel@A            resource → A
@@ -381,7 +381,7 @@ For protocols where either side can initiate — HTTP/2 server push, HTTP/3, Web
 
 `H2Conn` and `H3Conn` expose stream-level access for byte-level tunneling:
 
-```
+```text
 h2-open-stream:    H2Conn   → Handle    # raw H2 stream as byte pipe
 h3-open-stream:    H3Conn   → Handle    # raw H3/QUIC stream as byte pipe
 quic-open-stream:  QuicConn → Handle    # already exists
@@ -622,7 +622,7 @@ result: [timeout-with ctx [seconds 5] [task [fetch-with-ctx ctx url]]]
 
 Three Rust builtins compose the shutdown story:
 
-```
+```text
 cancel-root:  → Null      # cancel the root CancellationToken — signals all tasks to stop
 drain:        → Null      # await until all in-flight spawned tasks have finished
 exit-now:     Int → Null  # process::exit(code) immediately; no drain, no cleanup
@@ -713,7 +713,7 @@ Ctrl-C behaviour:
 - **Second Ctrl-C within ~2 seconds** (whether during eval or at prompt): calls `[exit 0]` — graceful drain then exit. The 2-second window is tracked in the REPL's Rust input loop, not in tinct.
 - **Ctrl-D:** calls `[exit 0]`.
 
-```
+```text
 > [await [task [sleep 10000]]]
 ^C
 Error: cancelled
@@ -938,7 +938,7 @@ Existing integration points that can't yet be made async (LSP synchronous callba
 
 The complete `stdlib/` layout resulting from this proposal and the Rust/tinct boundary principle.
 
-```
+```text
 stdlib/
   prelude.llt       — map, filter, reduce, result combinators; trimmed core
   strings.llt       — trim, pad-left/right, starts-with?, ends-with?, str-contains?, str-replace,
@@ -981,7 +981,7 @@ stdlib/
 
 **HTTP/1.1 request lifecycle** — where the Rust/tinct boundary sits:
 
-```
+```text
 OS TCP accept  → Rust: tcp-listen → Value::Handle
                → tinct: stdlib/http1.llt parse-request (text parsing)
                → tinct: stdlib/serve.llt pump attaches respond fn (oneshot::Sender)

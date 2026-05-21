@@ -14,7 +14,7 @@ the full set is complete.
 
 One type predicate builtin per `Value` variant:
 
-```
+```text
 int?    : Any → Bool
 float?  : Any → Bool
 num?    : Any → Bool    # true for Int or Float

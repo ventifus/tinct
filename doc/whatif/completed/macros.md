@@ -167,7 +167,7 @@ transformation --- the same thing tinct already does.
 
 ### Expansion Pipeline
 
-```
+```text
 source -> parse -> quote_macros -> expand (call macro fns on quoted AST) -> typecheck -> eval
 ```
 

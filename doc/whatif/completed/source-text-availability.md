@@ -8,7 +8,7 @@ What would it take to include source snippets with caret annotations in tinct er
 
 `EvalError` carries a `Span` (definition site and optional materialization site) but not the source text that produced it. The `Display` implementation for `EvalError` renders the span coordinates (`line:col`) but cannot show the source line itself or a caret (`^`) pointing at the error location.
 
-```
+```text
 error E020: type mismatch: expected Int, got String
   at 3:12 (materialized at 7:8)
 ```

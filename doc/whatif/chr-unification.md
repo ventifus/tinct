@@ -56,13 +56,13 @@ Tinct's type constraints are Constraint Handling Rules (CHRs). Two rule forms:
 
 **Simplification rules** (type families / type-stage functions) — fire unconditionally, replacing the expression with its normal form (CHR `<=>` rule):
 
-```
+```text
 TypeStageApp("F", [T₁, T₂]) <=> type-stage-eval F(T₁, T₂)   # fires when all args are ground
 ```
 
 **Propagation rules** (functional dependencies) — fire when guard becomes ground, adding an equality to the constraint store while retaining the original constraint (CHR `==>` rule):
 
-```
+```text
 Addable a b c, a ≈ T₁, b ≈ T₂ ==> c ≈ TypeStageApp("AddResult", [T₁, T₂])
 ```
 
@@ -113,7 +113,7 @@ struct NormCtxt<'a> {
 
 **What `normalize` handles, in application order:**
 
-```
+```text
 normalize(ty, ctx):
 
   1. Substitution: apply ctx.subst to ty (follow TypeVar chains to fixpoint)
@@ -549,7 +549,7 @@ Instances violating any of these conditions are rejected with a type error at in
 
 Under BAS, a TypeVar bound during unification may resolve to a union type (`Int | Float`) rather than a ground monotype. FD improvement must not fire when any determining position contains a union, intersection, or negation type — only atomic named types trigger improvement.
 
-```
+```text
 improve_functional_dependency conditions:
   ∀ position p ∈ determining(FD):
     type[p] is Type::Int | Type::Float | Type::Bool | Type::Str | ...  (named primitive)
@@ -582,7 +582,7 @@ The `normalize()` subsystem is the enabling infrastructure for automatic inserti
 
 Guard insertion is a post-inference elaboration pass, not an inline operation during type checking. It runs after `infer_dict` completes and all TypeVars are ground. The pass walks the type map produced by inference, finds every expression where the inferred type is `Unknown` and the contextual expected type is concrete, and emits a guard:
 
-```
+```text
 for each expression e in the type map:
   τ_e   = inferred type of e
   τ_ctx = contextual expected type of e (from call site, param annotation, etc.)
@@ -603,7 +603,7 @@ The `normalize()` call is the load-bearing step: it reduces any `TypeStageApp` n
 
 `Type::Unknown` is not an atomic named monotype. FD improvement must not fire when any determining position is `Unknown`. Add it to the deferral predicate alongside `Type::TypeVar(_)`:
 
-```
+```text
 improve_functional_dependency fires only when all determining positions are atomic:
   type[p] is NOT Union(...) | Intersection(...) | Negation(...) | TypeVar(_) | Unknown
 ```
@@ -1234,7 +1234,7 @@ Traversable: [class [t]  [kinds: [t: Operator]  superclasses: [Functor  Foldable
 
 **Current:** Type simplification is scattered: `promote_literal_for_constrained_var`, `widen_literal_for_constraint`, `expand_alias_body_guarded`, `type_key()` for FD dispatch. Each call site has its own logic.  
 **Proposed:** Unified `normalize(ty: Type, ctx: &NormCtxt) -> Type` function in a new `src/type_normalize.rs`. `NormCtxt` carries substitution, type-stage env, alias table, class env, normalization cache, and depth counter. All unification calls preface with `normalize`. The existing literal-widening and alias-expansion code is consolidated into `normalize`.  
-**Impact:** Major — consolidates scattered logic; `types.rs` imports `value.rs` (Rc<Environment> in NormCtxt). New module.
+**Impact:** Major — consolidates scattered logic; `types.rs` imports `value.rs` (`Rc<Environment>` in NormCtxt). New module.
 
 ### `src/types.rs` — `ClassDecl` (single source of truth for FDs)
 
@@ -1251,7 +1251,7 @@ Note: this change also requires updating the superclass extraction in `push_expr
 
 **Proposed:** Extract `Type` and its immediate structural dependencies into a new `src/type_def.rs` that neither `value.rs` nor `types.rs` needs to import from. This breaks the cycle:
 
-```
+```text
 type_def.rs       →  [nothing internal]
 value.rs          →  type_def.rs
 type_infer.rs     →  type_def.rs           (InferState, Substitution, Levels — top-level module)

@@ -103,7 +103,7 @@ These states add new reduction paths beyond the Ariola & Felleisen (1997) call-b
 
 ### Proof Sketch (to add to doc/08-evaluation.md)
 
-```
+```text
 Theorem (Confluence of pure tinct):
   For any closed expression e in the pure subset (no $include, no $error),
   all maximal reduction sequences from e converge to the same normal form

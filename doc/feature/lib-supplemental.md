@@ -443,7 +443,7 @@ request. On WebDAV, a PUT with `Content-Length`.
 
 Returns a lazy `Seq` of entry dicts. Each entry contains at minimum:
 
-```
+```json
 {
   name:  String     # filename only (no directory component)
   type:  String     # "file" | "dir" | "symlink" | "other"
@@ -462,7 +462,7 @@ as a convention).
 Full metadata dict. All fields are present; backends that cannot
 provide a field return `null`:
 
-```
+```json
 {
   name:         String      # filename
   type:         String      # "file" | "dir" | "symlink" | "other"

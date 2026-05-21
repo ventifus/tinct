@@ -47,7 +47,7 @@ parsing, which handles Windows drive letters correctly.
 
 **Shorthand mode letters** — each letter implies a sensible bundle of flags:
 
-```
+```sh
 --cap-fs NAME=PATH[:MODE]
 ```
 

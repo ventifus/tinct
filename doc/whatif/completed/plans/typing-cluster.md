@@ -184,7 +184,7 @@ Both solve the problem. Both can coexist. Decision: union types first
 
 Reading order: an arrow `A --> B` means A must be implemented before B.
 
-```
+```text
                           PHASE A                           PHASE B
                        (foundations)                    (type primitives)
                     +-----------------+            +---------------------+
@@ -258,7 +258,7 @@ Reading order: an arrow `A --> B` means A must be implemented before B.
 
 The longest dependency chain determines the minimum calendar time:
 
-```
+```text
 type-predicates (DONE)
   --> pattern-matching Ph2 (basic match)
     --> pattern-matching Ph3 (dict/seq destructuring)
@@ -273,7 +273,7 @@ must be independently testable and shippable.
 
 A parallel critical path runs through the type system:
 
-```
+```text
 union-types Ph2
   --> gradual-typing Ph2 (Any split)
     --> type-classes Ph2 (constrained vars)
@@ -345,7 +345,7 @@ process: [fn [data]
 - **Unlocks:** Multi-expression match arm bodies (Pattern matching
   Phase 3+), more ergonomic function definitions everywhere.
 
-**A2. Pattern Matching Phase 2 --- Basic Match**
+#### A2. Pattern Matching Phase 2 --- Basic Match
 
 Type and literal patterns, wildcard, variable binding, and `$name` pin:
 
@@ -376,7 +376,7 @@ Type and literal patterns, wildcard, variable binding, and `$name` pin:
   Foundation for all subsequent pattern matching phases.
 - **Depends on:** Type predicates (DONE).
 
-**A3. Pattern Matching Phase 3 --- Structural Destructuring**
+#### A3. Pattern Matching Phase 3 --- Structural Destructuring
 
 Dict patterns, seq patterns, nested patterns, and path-key patterns:
 
@@ -427,7 +427,7 @@ Path-key desugar rules:
 These extend `Type`, `is_subtype`, and the inference algorithm. Each is
 independently shippable but they build on each other.
 
-**B1. Union Types Phase 2 --- Annotation-Only Unions**
+#### B1. Union Types Phase 2 --- Annotation-Only Unions
 
 `Type::Union(Vec<Type>)` with subtyping rules. Unions appear only in
 explicit annotations and builtin signatures --- `unify` never produces
@@ -447,7 +447,7 @@ Result: [type [ok: a] [err: Str]]     # union of two record types
 
 **Desugar rule** (annotation resolution, not a parser pass):
 
-```
+```text
 x@[T1 T2 ...named...]  →  x@[type: [T1 T2]  ...named...]
 x@[T]                  →  x@[type: T]    (single positional unwraps)
 x@T                    →  x@[type: T]    (existing shorthand, unchanged)
@@ -472,7 +472,7 @@ The type resolver handles `type: [T1 T2]` as `Union(T1, T2)`. Existing
   precision, dual-dispatch builtin signatures.
 - **Key files:** `src/types.rs`, `src/typecheck.rs` (`resolve_annotation`).
 
-**B2. Gradual Typing Phase 2 --- Split `Any`**
+#### B2. Gradual Typing Phase 2 --- Split `Any`
 
 Replace `Type::Any` with `Type::Unknown` (gradual) + `Type::Top`
 (true supertype). Add `is_consistent()` alongside `is_subtype()`:
@@ -505,7 +505,7 @@ Type::Any                    Type::Unknown  // ? --- consistency, not subtyping
 - **Key files:** `src/types.rs` (every `Type::Any` match arm),
   `src/typecheck.rs` (every `Any` default).
 
-**B3. Parameterized Type Aliases Phase 2 --- Application**
+#### B3. Parameterized Type Aliases Phase 2 --- Application
 
 `[type [a] body]` with fresh instantiation per use site:
 
@@ -528,11 +528,11 @@ pair-of-ints: [fn@[Pair Int] [] [first: 1  second: 2]]
   (type classes Phase 3), arity-checked type constructors.
 - **Key files:** `src/parser.rs`, `src/typecheck.rs`.
 
-**B4. Type Classes Phase 2 --- Constrained Type Variables**
+#### B4. Type Classes Phase 2 --- Constrained Type Variables
 
 Elm-style fixed constraints on overloaded builtins:
 
-```
+```text
 = : Equatable a => a -> a -> Bool
 + : Numeric a => a -> a -> a
 map : Mappable f => (a -> b) -> f a -> f b
@@ -557,7 +557,7 @@ map : Mappable f => (a -> b) -> f a -> f b
 - **Key files:** `src/types.rs` (`TypeScheme`), `src/typecheck.rs`
   (inference engine), `src/builtins.rs` (builtin signatures).
 
-**B5. Path-Sensitive Narrowing --- `if` as Type-Level Special Form**
+#### B5. Path-Sensitive Narrowing --- `if` as Type-Level Special Form
 
 Refine variable types inside conditional branches based on the
 condition expression. After `[int? x]`, the true branch knows
@@ -599,7 +599,7 @@ gets the refined variant type.
 These build the user-facing type declaration and consumption story.
 They require Phase B's type primitives.
 
-**C1. ADTs Phase 2 --- Multi-Entry `[type ...]` Declarations**
+#### C1. ADTs Phase 2 --- Multi-Entry `[type ...]` Declarations
 
 Named structural union types via multi-entry `[type ...]` — no new keyword,
 no new parser rule. Two-line type checker extension:
@@ -627,7 +627,7 @@ Event: [type
 - **Depends on:** Union types Phase 2 (B1).
 - **Key files:** `src/parser.rs`, `src/typecheck.rs`.
 
-**C2. Nominal Variants Phase 1 --- Unit Constructors**
+#### C2. Nominal Variants Phase 1 --- Unit Constructors
 
 `Value::Variant` for enum-like values:
 
@@ -654,7 +654,7 @@ name: [tag-of selected]             # "Red"
 - **Depends on:** ADTs Phase 1 (convention) --- minimal, effectively
   no dependency.
 
-**C3. Nominal Variants Phase 2 --- Payload Constructors**
+#### C3. Nominal Variants Phase 2 --- Payload Constructors
 
 Full nominal variant system with pattern matching:
 
@@ -682,7 +682,7 @@ found: [match [lookup config "timeout"]
 - **Key files:** `src/value.rs`, `src/eval.rs`, `src/parser.rs`,
   `src/typecheck.rs`.
 
-**C4. Pattern Matching Phase 4 --- Guards and Or-Patterns**
+#### C4. Pattern Matching Phase 4 --- Guards and Or-Patterns
 
 ```tinct
 [match x
@@ -701,7 +701,7 @@ found: [match [lookup config "timeout"]
 - **Risk:** Low. Additive extensions to existing match infrastructure.
 - **Depends on:** Pattern matching Phase 3 (A3).
 
-**C5. Exhaustiveness Checking --- ADTs Phase 3 + Pattern Matching Phase 5**
+#### C5. Exhaustiveness Checking --- ADTs Phase 3 + Pattern Matching Phase 5
 
 ```tinct
 res: [@Result [try risky]]
@@ -734,7 +734,7 @@ res: [@Result [try risky]]
 Heavyweight type system extensions with significant research and
 implementation cost. All ship as part of the typing cluster.
 
-**D1. Type Classes Phase 3 --- Full Haskell-Style**
+#### D1. Type Classes Phase 3 --- Full Haskell-Style
 
 Class declarations, instance declarations, superclass hierarchy,
 dictionary passing at runtime:
@@ -761,7 +761,7 @@ dictionary passing at runtime:
 - **Ordering:** Ships after B4 (constrained vars) and B3 (parameterized
   aliases).
 
-**D2. Union Types Phase 3 --- Full Algebraic Subtyping**
+#### D2. Union Types Phase 3 --- Full Algebraic Subtyping
 
 Replace Robinson unification + `[U-SUBSUME]` with Simple-sub (Parreaux
 2020) constraint solving:
@@ -796,7 +796,7 @@ result: [if cond [ok: v] [err: msg]]
 - **Ordering:** Ships after B1 (annotation-only unions) and B2 (`Any`
   split).
 
-**D3. Recursive ADTs**
+#### D3. Recursive ADTs
 
 ```tinct
 Tree: [type Leaf [node: a  left: [Tree a]  right: [Tree a]]]
@@ -809,11 +809,11 @@ Tree: [type Leaf [node: a  left: [Tree a]  right: [Tree a]]]
   Phase 2 (C1).
 - **Ordering:** Ships after B3 (parameterized aliases) and C1 (ADTs).
 
-**D4. Gradual Typing Phase 3 --- Blame Tracking**
+#### D4. Gradual Typing Phase 3 --- Blame Tracking
 
 Full blame provenance for typed/untyped boundaries:
 
-```
+```text
 type mismatch at line 12: add expected Int for first argument
   blame: value from line 7 (from-json result, Unknown type)
   untyped boundary at line 7 is responsible
@@ -827,7 +827,7 @@ type mismatch at line 12: add expected Int for first argument
   Felleisen (2002) proxy contracts (already implemented as TypeAssert).
 - **Depends on:** Gradual typing Phase 2 (B2).
 
-**D5. Numeric Types**
+#### D5. Numeric Types
 
 Range-constrained numerics with Decimal and BigInt:
 
@@ -1388,7 +1388,7 @@ All phases ship. The ordering reflects dependency chains, not gates:
 A rough ordering assuming one sprint per week, with parallelism where
 dependencies allow:
 
-```
+```text
 Week 1-2:  A1 (let-binding) + B1 (union-types)         [parallel]
 Week 3-4:  A2 (pattern-matching-basic)                  [needs A1 done]
 Week 5-6:  A3 (pattern-matching-destructure)            [needs A2]
@@ -1416,7 +1416,7 @@ being available.
 Structural contracts and numeric types run on their own track and can
 be interleaved with any of the above:
 
-```
+```text
 Any time:  Type classes Ph1 (deep-eq/shallow-eq builtins)
 Any time:  Structural contracts Ph1 (%@Type)
 After SC1: Structural contracts Ph2 (validate)

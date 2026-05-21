@@ -360,7 +360,7 @@ File loading, JSON parsing, and text output.
 
 **Row-polymorphic signatures** express capability requirements without over-constraining the DirCap:
 
-```
+```text
 open      [cap@[DirCap [Readable ...]]   path@String "r"] → Handle@[Readable ...]
 open      [cap@[DirCap [Writable ...]]   path@String "w"] → Handle@[Writable ...]
 open      [cap@[DirCap [Appendable ...]] path@String "a"] → Handle@[Appendable ...]
@@ -747,7 +747,7 @@ Single-shot HTTP requests. `http-get` is implemented in pure-tinct (`stdlib/net.
 
 **Signatures:**
 
-```
+```text
 http-get : [fn@Dict [connector@Connector  url@Url  headers@Dict  tls-opts@[TlsOpts Null]]]
 fetch    : [fn@Dict [connector@Connector  url@Url]]
 ```
@@ -804,7 +804,7 @@ Send an ICMP echo request (ping) to a host and return the round-trip time.
 
 **Signature:**
 
-```
+```text
 icmp-ping : [fn [cap@NetCap  host@String  timeout-ms@Int]]
             → {ok: {latency-ms: Int}} | {err: String}
 ```

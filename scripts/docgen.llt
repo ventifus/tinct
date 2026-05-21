@@ -185,7 +185,7 @@ mod-filename: [fn@[return: String  doc: """Convert a module name to a flat filen
 
 render-entry: [fn@[return: String  doc: """Render one doc entry as a Markdown subsection."""] [let e@Dict]
   [str
-    "\n### `" e.name "`\n\n"
+    "\n## `" e.name "`\n\n"
     e.doc "\n\n"
     "```tinct\n"
     e.sig "\n"

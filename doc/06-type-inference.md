@@ -6,7 +6,7 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
 
 ## Type Grammar
 
-```
+```text
 τ ::= IntLiteral(n)              literal integer type
     | StringLiteral(s)           literal string type
     | Int                        integer
@@ -49,7 +49,7 @@ Tinct uses bidirectional type checking (Pierce & Turner 2000; Dunfield & Krishna
 
 The **subsumption rule** bridges them:
 
-```
+```text
 Γ ⊢ e ⇒ σ,  σ <: τ
 ────────────────────────────────── [SUB]
 Γ ⊢ e ⇐ τ
@@ -99,7 +99,7 @@ Implementation:
 
 **Literals:**
 
-```
+```text
 ────────────────────────────────── [INT]
 Γ ⊢ n : IntLiteral(n)
 
@@ -115,7 +115,7 @@ Implementation:
 
 **Variable reference:**
 
-```
+```text
 Γ(x) = ∀α₁...αₙ. τ
 τ' = instantiate_scheme(∀α₁...αₙ. τ, ℓ_current)
 ────────────────────────────────── [VAR-POLY]
@@ -130,7 +130,7 @@ Dicts are inferred in five sequential passes using the [DICT-GEN] rule — see �
 
 **Function definition:**
 
-```
+```text
 For each param pᵢ:
     if variadic (...pᵢ): β fresh; σᵢ = Seq(β)           [FN-VARIADIC]
     else if annotated pᵢ@σᵢ: use σᵢ
@@ -151,7 +151,7 @@ Else:
 
 **Lambda checking mode (bidirectional):**
 
-```
+```text
 Γ ⊢ [fn@σᵣ [p₁@τ₁ ... pₙ@τₙ] body] ⇐ Fn(σ₁...σₙ → σ_exp)
     where ¬has_type_vars(Fn(σ₁...σₙ → σ_exp))       (expected type fully concrete)
 For each param pᵢ:
@@ -181,7 +181,7 @@ When a return annotation is present, the dispatch depends on whether σᵣ conta
 
 Three rules depending on the function type. Arity is always checked.
 
-```
+```text
 Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = false
 Γ ⊢ aᵢ ⇐ σᵢ  for i = 1..n                         [checking mode]
 |args| = |params|
@@ -191,7 +191,7 @@ Three rules depending on the function type. Arity is always checked.
 
 Monomorphic path with checking: each argument is **checked** against its parameter type using subsumption. `[add "hello"]` where `add : Fn(Int Int → Int)` produces a type error because `String ≮: Int`. The `check_expr` call synthesizes the argument type and applies `[SUB]`.
 
-```
+```text
 Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = true
 Γ ⊢ aᵢ ⇒ τᵢ  for i = 1..n                          [synthesis]
 |args| = |params|
@@ -223,7 +223,7 @@ In practice, this divergence rarely surfaces because CALL-MONO only fires for mo
 
 **Unified CALL-MONO/CALL-POLY path.** Both CALL-MONO and CALL-POLY route through `check_expr`, which internally dispatches to `unify` when the expected type has inference vars (TypeVars), or to `is_subtype` when fully concrete. This ensures identical literal pairs receive consistent verdicts regardless of whether the function type has inference vars. The table above illustrates the logical difference between subsumption and unification semantics; in practice both paths produce the same verdict.
 
-```
+```text
 Γ ⊢ f ⇒ Unknown
 ────────────────────────────────── [CALL-UNKNOWN]
 Γ ⊢ [f a₁...aₙ] ⇒ Unknown
@@ -233,7 +233,7 @@ Calling a value typed as Unknown returns Unknown. Arguments are still synthesize
 
 **Variadic call:**
 
-```
+```text
 Γ ⊢ f ⇒ Fn(σ₁...σₙ₋₁, Seq(β) → σᵣ)
 Γ ⊢ aᵢ ⇒ τᵢ  for i = 1..n-1               (positional params)
 Γ ⊢ aₙ ⇒ υₙ, ..., Γ ⊢ aₖ ⇒ υₖ            (variadic args, k ≥ n-1)
@@ -255,7 +255,7 @@ Known gap: when the callee is a letrec forward reference (same-dict scope), the 
 
 **Access chains:**
 
-```
+```text
 Γ ⊢ e : Record(... k:τ ..., ρ)
 ────────────────────────────────── [DOT]
 Γ ⊢ e.k : τ
@@ -270,7 +270,7 @@ After unification, α is bound in S — references to α in the conclusion denot
 
 *Note: Under BAS, all records are closed. Accessing a field not present in a closed record is a static error. See [Type System Extensions](07-type-extensions.md) §Boolean-Algebraic Subtyping.*
 
-```
+```text
 Γ ⊢ e : Record(F, ρ),  Γ ⊢ key : StringLiteral(k),  F(k) = τ
 ────────────────────────────────── [BRACKET-LIT]
 Γ ⊢ e[key] : τ
@@ -290,7 +290,7 @@ After unification, α is bound in S — references to α in the conclusion denot
 
 **Type assertion (checking mode):**
 
-```
+```text
 resolve(ann) = σ,  Γ ⊢ e ⇐ σ                       [checking mode]
 ────────────────────────────────── [ASSERT]
 Γ ⊢ [@σ e] ⇒ σ
@@ -306,7 +306,7 @@ Type assertions use checking mode: the inner expression is checked against the a
 
 **Type alias:**
 
-```
+```text
 resolve(inner) = τ,  register alias in Γ
 ────────────────────────────────── [ALIAS]
 Γ ⊢ [type inner] : Unknown
@@ -314,7 +314,7 @@ resolve(inner) = τ,  register alias in Γ
 
 **Annotated expression:**
 
-```
+```text
 resolve(ann) = τ
 ────────────────────────────────── [ANNOTATED]
 Γ ⊢ name@ann : τ
@@ -332,7 +332,7 @@ Unification finds a most general substitution S such that S(τ₁) = S(τ₂). B
 
 **Algorithm variant:** The overall inference algorithm is closer to **Algorithm J** (Milner 1978) than Algorithm W (Damas & Milner 1982): it uses a mutable global substitution (`InferState.subst`) accumulated across inferences with immediate unification on each constraint, rather than threading explicit substitutions compositionally. This is more efficient but harder to reason about formally. The five-pass dict inference (§Dict Inference) is a letrec extension following Tofte (1988).
 
-```
+```text
 unify(τ, τ, S) = S                              [U-REFL]
 unify(Unknown, τ, S) = S                         [U-UNKNOWN-L]
 unify(τ, Unknown, S) = S                         [U-UNKNOWN-R]
@@ -344,7 +344,7 @@ unify(τ, α, S) = S[α ↦ τ]   if α ∉ FV(τ)       [U-VAR-R]
 
 Literal identity (same literal value = same type):
 
-```
+```text
 unify(IntLiteral(m), IntLiteral(n), S) =
     S           if m = n                         [U-INTLIT-EQ]
     error       if m ≠ n                         [U-INTLIT-NEQ]
@@ -358,7 +358,7 @@ Bidirectional literal-to-parent promotions are implemented as explicit match arm
 
 Structural:
 
-```
+```text
 unify(Fn(p₁...pₙ → r₁), Fn(q₁...qₙ → r₂), S) =
     let S' = unify(p₁,q₁, ... pₙ,qₙ, S)
     unify(r₁, r₂, S')                           [U-FN]
@@ -373,7 +373,7 @@ Record unification delegates entirely to row unification — see [Type System Ex
 
 Subsumptive fallback for concrete types (no type variables on either side):
 
-```
+```text
 unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
     if is_subtype(σ, τ) ∨ is_subtype(τ, σ): S   [U-SUBSUME]
     else: error                                  [U-FAIL]
@@ -395,7 +395,7 @@ All other non-structural, non-subsumable combinations: error [U-FAIL]
 
 **`TypeStageApp` unification rules.** After `normalize()` runs, `unify_normalized` may still encounter irreducible `TypeStageApp` nodes (non-ground args). Four cases:
 
-```
+```text
 unify(TypeStageApp("F", a₁), TypeStageApp("F", a₂))   # same function, F injective:
   → unify args pairwise                               [U-TSA-CONGRUENCE]
 
@@ -418,7 +418,7 @@ The FD elaboration case (`c ~ TypeStageApp("AddResult", [a, b])`) uses [U-TSA-VA
 
 Subtyping is a pure predicate (no substitution mutation). Used for TypeAssert validation and return type checking.
 
-```
+```text
 τ <: Unknown                                     [S-UNKNOWN-TOP]
 Unknown <: τ                                     [S-UNKNOWN-BOT]
 τ <: τ                                           [S-REFL]
@@ -444,7 +444,7 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
 
 ## Instantiation
 
-```
+```text
 instantiate(τ) = (S(τ), S)
     where S.type_map = {α₁ ↦ _t0, α₂ ↦ _t1, ...}  (type vars → Type)
     for each αᵢ ∈ FTV(τ), fresh type var names _tN generated
@@ -465,7 +465,7 @@ Tinct uses levels-based let-generalization following Kiselyov (2013) to support 
 
 **Type schemes.** The type environment Γ maps names to *type schemes* σ rather than bare types τ:
 
-```
+```text
 σ ::= ∀(α₁...αₙ, ρ₁...ρₘ). τ    (n,m ≥ 0; when both zero, equivalent to monomorphic τ)
 ```
 
@@ -523,7 +523,7 @@ When a `TypeVar(name, lvl)` is created, `levels[name] = lvl` is recorded. During
 
 **Level adjustment during unification (symmetric).** Both branches of type variable unification perform level lowering:
 
-```
+```text
 unify(α, τ, S) = S[α ↦ τ]
     if α ∉ FV(τ)                                   [occurs check]
     and set ℓ(β) = min(ℓ(β), ℓ(α))
@@ -539,7 +539,7 @@ Both rules lower levels symmetrically: when binding α to τ, every type variabl
 
 **Unknown-unification and generalization.** When a type variable α is unified with `Unknown`, the current [U-UNKNOWN] rules succeed without binding α. To prevent incorrect generalization of the unbound α, `unify(α, Unknown)` sets `ℓ(α) = 0` (below all binding levels):
 
-```
+```text
 unify(α, Unknown, S) = S,  set ℓ(α) = 0               [U-UNKNOWN-VAR]
 unify(Unknown, α, S) = S,  set ℓ(α) = 0               [U-VAR-UNKNOWN]
 unify(Unknown, τ, S) = S,  set ℓ(β) = 0
@@ -552,7 +552,7 @@ This ensures Unknown-touched variables are never generalized (since `ℓ(β) = 0
 
 **Generalization.** At a dict boundary at level ℓ, after all entries in the letrec group are inferred:
 
-```
+```text
 generalize(ℓ, τ) = ∀{α | α ∈ FTV(τ), ℓ(α) > ℓ}. τ     [GEN]
 ```
 
@@ -582,7 +582,7 @@ Creates fresh `TypeVar(_tN, level)` for each quantified variable, registers them
 
 **Modified dict inference (letrec with generalization):**
 
-```
+```text
 Pass 0 — Key resolution: unchanged
 Pass 1 — Bind all: Γ' = Γ, k₁:α₁, ..., kₙ:αₙ
          where each αᵢ is a fresh type variable at level ℓ+1.
@@ -643,7 +643,7 @@ Build Record(k₁:S(α₁)...kₙ:S(αₙ), Closed).
 
 Non-Dict Record expressions at document boundaries follow the same level-increment + generalize protocol as [DICT-GEN]:
 
-```
+```text
 Γ, ℓ ⊢ save ℓ_enc = ℓ; increment ℓ to ℓ+1
 Γ, ℓ+1 ⊢ e : Record(k₁:τ₁ … kₙ:τₙ, tail)
          restore ℓ to ℓ_enc
@@ -729,7 +729,7 @@ Tinct implements **constrained type variables** to provide precise types for ove
 
 A **constraint** is a pair `(class, var)` where `class` is the type class name (e.g., `"Equatable"`) and `var` is the type variable name (e.g., `"a"`). Type schemes carry constraints alongside quantified variables:
 
-```
+```text
 TypeScheme {
     type_vars: Vec<String>,
     constraints: Vec<Constraint>,    // NEW: constraints on type_vars
@@ -763,7 +763,7 @@ All other classes (`Mappable`, `Appendable`, `Functor`, `Applicative`, `Monad`, 
 
 When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation rules distribute the constraint over the type's structure (Garcia, Clark & Tanter 2016; Castagna & Lanvin 2017):
 
-```
+```text
 [CONSTRAIN-FIELD]   C({f: τ}) ⊢ satisfied    iff    C(τ) ⊢ satisfied
 [CONSTRAIN-INTER]   C(τ₁ & τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
 [CONSTRAIN-UNION]   C(τ₁ | τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
@@ -785,7 +785,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
 
 1. **Builtin registration** (`TypeEnv::with_builtins`): Overloaded builtins are registered with constrained type schemes:
 
-   ```
+   ```text
    =  : Equatable a => a → a → Bool
    <  : Comparable a => a → a → Bool
    +  : Numeric a => a → a → a
@@ -794,7 +794,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
 
 2. **Instantiation** (`instantiate_scheme`): When a constrained scheme is instantiated, constraints are copied with renamed variables:
 
-   ```
+   ```text
    scheme: Numeric a => a → a → a
    instantiate → fresh var _t0, constraint Numeric _t0
    result: Fn@_t0 [_t0 _t0]
@@ -803,7 +803,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
 
 3. **Constraint checking** (`unify`): When binding a type variable α to a concrete type τ (U-VAR-LEVEL arm), check all constraints on α:
 
-   ```
+   ```text
    For each constraint C(α) in state.constraints:
        if ¬satisfies_constraint(τ, C):
            error "type τ does not satisfy constraint C"
@@ -811,14 +811,14 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
 
    Example: unifying `_t0` (with `Numeric _t0`) with `Fn@Int [Int]`:
 
-   ```
+   ```text
    satisfies_constraint(Fn@Int [Int], "Numeric") → false
    → TypeError: type Fn@Int [Int] does not satisfy constraint Numeric
    ```
 
 4. **Generalization** (`generalize`): Constraints on generalized variables are included in the resulting TypeScheme:
 
-   ```
+   ```text
    state.constraints: [Numeric _t0, Showable _t1]
    generalizable vars: {_t0, _t2}
    → scheme.constraints: [Numeric a]    (only _t0 was generalized)
@@ -923,7 +923,7 @@ See `doc/feature/chr-unification.md` for the complete formal specification inclu
 
 When a dict literal is bound by name (e.g., `helpers: [id: [fn [x] x] ...]`), the dict's generalized entry schemes are stored in the binding's `TypeScheme` as `inner_schemes: Option<HashMap<String, TypeScheme>>`. Dot-access on a `VarRef` target retrieves the scheme and instantiates it via `[VAR-POLY]`:
 
-```
+```text
 Γ(d) = TypeScheme { body: Record(...), inner_schemes: Some(inner) }
 inner(f) = ∀α₁...αₙ[C₁...Cₙ]. τ_f
 τ' = instantiate_scheme(inner(f), ℓ_current)
@@ -943,7 +943,7 @@ Tinct supports rank-1 higher-kinded types (Jones 1993 constructor classes) via a
 
 The kind grammar has four kinds:
 
-```
+```text
 Kind ::= *         -- concrete types (Int, Str, Record, ...)
        | Row        -- record field sets
        | Operator   -- type constructors (* → *, written `Operator`)
@@ -965,7 +965,7 @@ In annotation positions, `[f a]` (no colons) is type constructor application whe
 
 **Unification:**
 
-```
+```text
 UNIFY-OPERATOR:
   m ∉ ftv(T)    kind_env ⊢ T : *
   ──────────────────────────────────
@@ -1113,7 +1113,7 @@ The explicit `[do monad ...]` form always takes priority and is backward-compati
 
 **`get` is label-polymorphic:**
 
-```
+```text
 get : ∀ (l : Label) (d : *) (a : *). HasField l d a => StringLiteral(l) → d → a
 ```
 
@@ -1121,7 +1121,7 @@ Field access is precise: `[get "host" config]` returns the type of `config.host`
 
 **Instance resolution rules:**
 
-```
+```text
 HasField (Concrete l) Record(fields) τ         when l ∈ dom(fields) and fields(l) = τ
 HasField l (τ₁ | τ₂) (a₁ | a₂)               distributes over union [HAS-FIELD-UNION]
 HasField l (τ₁ & τ₂) (a₁ & a₂)               distributes over intersection
@@ -1153,7 +1153,7 @@ This section formalizes the kind system, type constructor application, constrain
 
 Kinds classify types by their arity. The kind grammar:
 
-```
+```text
 κ ::= *           concrete types (Int, Str, Record, TypeVar)
     | Row         record field sets (internal, not user-exposed)
     | Operator    type constructors (* → *, written Operator)
@@ -1166,7 +1166,7 @@ Kinds are tracked in `InferState.kind_env: HashMap<String, Kind>`. TypeVars defa
 
 When a ClassDecl is processed, class parameters with `@Operator` annotations are registered in `kind_env`:
 
-```
+```text
 Γ ⊢ [class [C f@Operator] ...]
 For each param (name, Kind::Operator) in ClassDecl.params:
     kind_env[name] ← Kind::Operator
@@ -1180,7 +1180,7 @@ For each param (name, Kind::Operator) in ClassDecl.params:
 
 Type constructor application `[f a]` (no colons) resolves to `Type::App(Operator(f), a)` when `f` is Operator-kinded in `kind_env`. This check occurs before the union type path to prevent `[m Int]` from being parsed as `Union(Operator("m"), Int)`.
 
-```
+```text
 resolve_type_expr([f a], env, state, ...) where all_positional ∧ len = 2:
     if kind_env[f] = Operator:
         f_type ← Operator(f)
@@ -1200,7 +1200,7 @@ resolve_type_expr([f a], env, state, ...) where all_positional ∧ len = 2:
 
 Type constructor variables unify via occurs check and binding, analogous to `TypeVar` unification:
 
-```
+```text
 UNIFY-OPERATOR:
   m ∉ ftv(T)    (occurs check prevents infinite kinds)
   ──────────────────────────────────
@@ -1211,7 +1211,7 @@ UNIFY-OPERATOR:
 
 Type constructor applications unify via decomposition (standard Robinson, constructor then argument):
 
-```
+```text
 UNIFY-APP:
   unify(f₁, f₂) = θ₁    unify(θ₁(a₁), θ₁(a₂)) = θ₂
   ─────────────────────────────────────────────────────
@@ -1226,7 +1226,7 @@ UNIFY-APP:
 
 Constraints are generated when a constrained type scheme is instantiated at a call site. Each constraint in the scheme is copied with renamed type variables.
 
-```
+```text
 instantiate_scheme(σ, ℓ_current, state) where σ = ∀(α₁...αₙ). [C₁ a₁, ...] τ:
   For each αᵢ: fresh_var ← TypeVar(_tN, ℓ_current)
                S[αᵢ ↦ fresh_var]
@@ -1244,7 +1244,7 @@ instantiate_scheme(σ, ℓ_current, state) where σ = ∀(α₁...αₙ). [C₁ 
 
 Constraints are checked during type variable binding (U-VAR-LEVEL arm of `unify`). For each active constraint `C(α)`, when binding `α ↦ τ`:
 
-```
+```text
 check_constraints_on_var(α, τ, state):
   For each constraint C(α) in state.constraints:
       if ¬satisfies(τ, C, state):
@@ -1264,7 +1264,7 @@ check_constraints_on_var(α, τ, state):
 
 Instance declarations register method implementations in `InstanceEnv`:
 
-```
+```text
 Γ ⊢ [instance [C T] [method₁: impl₁] [method₂: impl₂] ...]
 InstanceDecl {
     class_name: "C"
@@ -1282,7 +1282,7 @@ InstanceEnv.instances[(C, T)] ← decl
 
 When a constraint `C m` is active and `m` is later unified with a concrete type `T`, instance resolution looks up `[instance [C T'] ...]` and attempts unification:
 
-```
+```text
 resolve_instance(class_name, target_type, state):
   For each instance decl with decl.class_name = class_name:
       freshened_inst_type ← instantiate_at_level(decl.instance_type, state)
@@ -1394,7 +1394,7 @@ Resolvers are ordinary type-stage functions — they can call other type-stage f
 
 If a resolver's type-stage evaluation exceeds the recursion limit (256 frames), the type checker raises:
 
-```
+```text
 type-stage reduction depth exceeded while computing AddResult(...)
   check resolver for infinite recursion or increase --type-stage-depth
 ```
@@ -1407,7 +1407,7 @@ The `[do]` form is syntactic sugar for monadic bind chains. It is implemented as
 
 Each `[bind x: expr]` binding in a `[do ...]` form desugars to a `[>>= expr [fn [let x] body]]` chain:
 
-```
+```text
 [do monad
   [bind x: expr₁]
   [bind y: expr₂]

@@ -51,7 +51,7 @@ x@String                             # equivalent to x@[type: String]
 **Desugar rule.** Positional entries in an annotation dict are moved to the
 `type:` key as a list, preserving the existing annotation resolution path:
 
-```
+```text
 x@[T1 T2 ...named...]  →  x@[type: [T1 T2]  ...named...]
 x@[T]                  →  x@[type: T]         (single positional unwraps)
 x@T                    →  x@[type: T]         (existing shorthand, unchanged)
@@ -82,7 +82,7 @@ and deduplicated. `x@[Int Str]` and `x@[Str Int]` resolve to the same `Type` val
 
 Three new rules extend `is_subtype`:
 
-```
+```text
 [UNION-INJ-L]  A <: A | B
 [UNION-INJ-R]  B <: A | B
 [UNION-ELIM]   If A <: C and B <: C, then A | B <: C

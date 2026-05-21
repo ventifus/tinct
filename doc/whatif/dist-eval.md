@@ -114,7 +114,7 @@ Worker B runs immediately on its assigned node. When it demands `a`, it sends a 
 
 #### GlobalThunkRef Lifecycle
 
-```
+```text
 Created (thunk submitted via remote-task)
   → Pending  (owning node computing; waiters suspended)
     → Inline  (result small; sent directly in DemandResponse)
@@ -278,7 +278,7 @@ All state changes commit as tinct dicts in the replication log. Log entries are 
 
 A pool node is a persistent tinct runtime that hosts programs, not a transient compute substrate that a locally-running process borrows. Nodes are started with:
 
-```
+```sh
 tinct pool --role coordinator --seeds "peer1:7777,peer2:7777"
 tinct pool --role worker      --seeds "peer1:7777,peer2:7777"
 ```
@@ -342,7 +342,7 @@ With `proxy: true`, the worker receives a `ProxiedCap` handle instead of a real 
 
 Every remote task has a **cache key**: SHA-256 of the canonical tinct-native encoding of `{expr, env, args}`. The coordinator checks this cache before dispatching. A hit returns the result immediately without involving any worker.
 
-```
+```text
 request → hash(thunk) → cache hit? → return cached
                        → cache miss? → dispatch → node evaluates → cache result → return
 ```
@@ -508,7 +508,7 @@ result: [remote-task pool fn
 
 Capabilities are not static declarations. Nodes acquire and lose capabilities at runtime — database connection pools change, mounts come and go, external services fail over. The coordinator tracks three states per (node, capability) pair:
 
-```
+```text
 absent → active → draining → absent
            ↑                     |
            └─────────────────────┘  (re-acquired)

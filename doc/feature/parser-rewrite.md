@@ -80,7 +80,7 @@ Static constraints are enforced inline:
 
 Error messages carry bracket context:
 
-```
+```text
 error: unclosed bracket
   --> input.llt:5:3
    |

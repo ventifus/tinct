@@ -62,12 +62,13 @@ impl ThunkArena {
     }
 
     /// Allocate a placeholder thunk for letrec. The placeholder is a sentinel
-    /// `ThunkState::Placeholder` that must be filled via `set_state()` before use.
+    /// `ThunkState::Placeholder` that must be filled via `set_materialized()` or
+    /// `set_state()` before use.
     ///
     /// The letrec pattern (internal evaluator use):
     /// 1. Pre-allocate placeholder slots for all dict entries.
     /// 2. Create the shared `FlatEnv` with those `ThunkId`s.
-    /// 3. Fill each placeholder via `arena.get(id).set_state(...)` (requires pub(crate) access).
+    /// 3. Fill each placeholder via `arena.get(id).set_materialized(...)` (requires pub(crate) access).
     ///
     /// Forcing a placeholder before filling is a logic error (letrec construction bug)
     /// and will panic at materialization time. This maintains Launchbury's monotonicity
@@ -318,7 +319,7 @@ impl FlatEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::{Thunk, ThunkState, Value};
+    use crate::value::{Thunk, Value};
 
     fn test_span() -> Span {
         Span::origin()
@@ -384,15 +385,15 @@ mod tests {
         let mut arena = ThunkArena::new();
         let id = arena.alloc_placeholder();
 
-        // Placeholder should be in Placeholder state (not Materialized)
+        // Placeholder should not be materialized yet
         let thunk = arena.get(id);
         assert!(
-            matches!(&*thunk.state(), ThunkState::Placeholder),
-            "expected Placeholder state"
+            !thunk.is_materialized(),
+            "expected placeholder to not be materialized"
         );
 
-        // Fill it via set_state (forward transition: Placeholder → Materialized)
-        thunk.set_state(ThunkState::Materialized(Value::Int(99)));
+        // Fill it via set_materialized (forward transition: Placeholder → Materialized)
+        thunk.set_materialized(Value::Int(99));
 
         // Verify the fill worked
         assert_eq!(arena.get(id).try_get_materialized(), Some(Value::Int(99)));
@@ -409,17 +410,13 @@ mod tests {
         let id_x = arena.alloc_placeholder();
         let id_y = arena.alloc_placeholder();
 
-        // Verify both start as Placeholder
-        assert!(matches!(&*arena.get(id_x).state(), ThunkState::Placeholder));
-        assert!(matches!(&*arena.get(id_y).state(), ThunkState::Placeholder));
+        // Verify both start as placeholders (not materialized)
+        assert!(!arena.get(id_x).is_materialized());
+        assert!(!arena.get(id_y).is_materialized());
 
         // Step 2: fill placeholders (in real eval, these would be Unevaluated with a shared env)
-        arena
-            .get(id_x)
-            .set_state(ThunkState::Materialized(Value::Int(10)));
-        arena
-            .get(id_y)
-            .set_state(ThunkState::Materialized(Value::Int(20)));
+        arena.get(id_x).set_materialized(Value::Int(10));
+        arena.get(id_y).set_materialized(Value::Int(20));
 
         // Step 3: verify the thunks are accessible through the arena
         assert_eq!(arena.get(id_x).try_get_materialized(), Some(Value::Int(10)));
@@ -716,7 +713,7 @@ mod tests {
         let snapshot = parent.clone_for_child();
 
         // Mutate the thunk's state via the parent's reference
-        thunk.set_state(ThunkState::Materialized(Value::Int(42)));
+        thunk.set_materialized(Value::Int(42));
 
         // The mutation should be visible in both parent and snapshot (shared Rc)
         assert_eq!(parent.get(id).try_get_materialized(), Some(Value::Int(42)));

@@ -213,7 +213,7 @@ args: [5 10]
 
 **Pipeline placement:**
 
-```
+```text
 source → parse → desugar_underscores → typecheck → eval
 ```
 
@@ -221,7 +221,7 @@ The pass operates on `Spanned<File>` (multi-document) and `Spanned<Expr>` (singl
 
 **DIRECT predicate.** Tests whether an expression is `_` or a dot access chain rooted at `_`. Operates on **raw** (pre-desugaring) AST nodes. Dict entry keys are excluded — only the access *target* triggers desugaring:
 
-```
+```text
 DIRECT(e) = match e with:
   | VarRef("_")              → true
   | DotAccess(e', _)         → DIRECT(e')
@@ -232,7 +232,7 @@ Note: `BracketAccess` and `RangeAccess` AST variants do not exist in this langua
 
 **Rewrite rules.** The pass checks WRAP conditions on **raw** (un-desugared) children *before* recursing. DIRECT subtrees are left as-is inside the generated `Fn` body — they are variable references to the `_` parameter, not candidates for further wrapping. Non-DIRECT children are recursed into at depth+1 (inside the generated lambda, `_` is bound). This avoids the greedy-wrapping problem where naive bottom-up traversal would wrap `_.age` before its enclosing Call could claim it (Visser 1998).
 
-```
+```text
 DESUGAR(e, depth) =
   -- Fn with _ param: increase depth, recurse into body only
   | Fn(params, body) where "_" ∈ params
@@ -291,7 +291,7 @@ Note: There are no WRAP-BRACKET or WRAP-RANGE rules — bracket and range access
 
 **Boundary forms and scoping.** `Dict`, `Call`, and `Fn` are **lambda boundaries**. The WRAP rules check raw children before recursing, so each `_` binds to the innermost enclosing bracket that triggers a WRAP rule:
 
-```
+```text
 [filter [> _.age 30] users]
 
 Traversal (top-down check, selective recursion):
@@ -377,7 +377,7 @@ A **valid binding** for parameters `P`, optional variadic `V`, positional args `
 
 **[C-COVERAGE] Per-parameter coverage (Kotlin model):**
 
-```
+```text
 ∀pᵢ ∈ P where required(pᵢ):  i < |pos|  ∨  pᵢ.name ∈ dom(named)
 V = ∅ ⟹ |pos| ≤ |P|                         (no excess args without variadic)
 ```
@@ -388,7 +388,7 @@ Every required parameter must be covered by either a positional argument at its 
 
 For each pᵢ ∈ P, exactly one case applies (in priority order):
 
-```
+```text
 (i)   i < |pos|                               ⟹  env_call(pᵢ) = pos[i]
 (ii)  i ≥ |pos| ∧ pᵢ.name ∈ dom(named)       ⟹  env_call(pᵢ) = named[pᵢ.name]
 (iii) i ≥ |pos| ∧ pᵢ.name ∉ dom(named)
@@ -399,7 +399,7 @@ If none of the three cases applies (i.e., i ≥ |pos|, not named, and required),
 
 **[C-NO-OVERLAP] Positional/named exclusivity:**
 
-```
+```text
 ∀(k, _) ∈ named:  ¬∃i < |pos| such that pᵢ.name = k
 ```
 
@@ -407,7 +407,7 @@ A named argument must not target a parameter already bound positionally.
 
 **[C-NAMED-VALID] Named argument validity:**
 
-```
+```text
 ∀(k, _) ∈ named:  ∃pᵢ ∈ P such that pᵢ.name = k
 ```
 
@@ -415,7 +415,7 @@ Named arguments may target any parameter (required or optional), but must target
 
 **[C-VARIADIC] Variadic collection:**
 
-```
+```text
 V ≠ ∅ ⟹ env_call(V) = Dict({k↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)})
 ```
 
@@ -423,7 +423,7 @@ Excess positional arguments (beyond `|P|`) are collected into a Dict with intege
 
 **[C-COMPLETE] Completeness:**
 
-```
+```text
 ∀pᵢ ∈ P:  pᵢ.name ∈ dom(env_call)
 V ≠ ∅ ⟹ V.name ∈ dom(env_call)
 ```
@@ -436,7 +436,7 @@ Five sequential phases compute the binding. The output of each phase flows into 
 
 **[BIND-SPLIT]**
 
-```
+```text
 params = [p₁, ..., pₙ]
     pₙ.variadic = true  →  P = [p₁, ..., pₙ₋₁],  V = pₙ
     otherwise            →  P = [p₁, ..., pₙ],     V = ∅
@@ -448,7 +448,7 @@ The variadic parameter, if present, is always the last parameter. This is enforc
 
 **[BIND-ARITY]**
 
-```
+```text
 For each pᵢ ∈ P where required(pᵢ):
     if i ≥ |pos| ∧ pᵢ.name ∉ dom(named):
         error("missing argument for required parameter '{pᵢ.name}'")
@@ -463,7 +463,7 @@ Per-parameter coverage check: each required parameter must be reachable via posi
 
 **[BIND-POSITIONAL]**
 
-```
+```text
 env₀ = Environment(parent: env_c)
 For i = 0, ..., |P|-1:
     if i < |pos|:
@@ -484,7 +484,7 @@ The `env_d` parameter controls where default expressions are evaluated — this 
 
 **[BIND-NAMED]** (validation only)
 
-```
+```text
 For each (k, θ) ∈ named:
     if ∃i < |pos| such that pᵢ.name = k:
         error("parameter 'k' received both positional and named argument")
@@ -500,7 +500,7 @@ The implementation may split this into two loops for engineering clarity (one fo
 
 **[BIND-VARIADIC]**
 
-```
+```text
 V ≠ ∅:
     var_dict = Dict({k↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)})
     env_call = env'[V.name ↦ Materialized(var_dict)]
@@ -573,7 +573,7 @@ Default evaluation errors (from `eval(default(pᵢ), env_d)` in BIND-POSITIONAL)
 
 **Dict-splitting.** `$apply` takes a function `f` and a single dict argument `D`. Before invoking the binding algorithm, it splits `D` into positional and named argument lists:
 
-```
+```text
 pos   = sort_by_key({ (k, v) ∈ D | k ∈ Int })    # integer-keyed entries, sorted by key
 named = { (k, v) ∈ D | k ∈ String }              # string-keyed entries, as named args
 ```
@@ -582,7 +582,7 @@ Integer-keyed entries become positional arguments (in ascending key order); stri
 
 The `default_env` parameter is the key difference between normal calls and `$apply`:
 
-```
+```text
 eval_call:     default_env = caller's environment (env)
 $apply:        default_env = closure environment  (env_c)
 ```

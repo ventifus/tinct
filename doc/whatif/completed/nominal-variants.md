@@ -236,7 +236,7 @@ Option a = Type::Union([
 
 Constructor type signatures are registered in the type environment:
 
-```
+```text
 Some : Fn@[Option a] [a]
 None : [Option a]           (unit — a value, not a function)
 ```

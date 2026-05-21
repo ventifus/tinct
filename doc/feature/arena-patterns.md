@@ -218,6 +218,7 @@ not need upvalue arrays: the `FlatEnv` is shared by reference (`EnvId`), and
 slot access directly reaches the correct binding. For outer-scope free
 variables, the `parent` chain (retained for stdlib only) provides the
 additional lookup level, giving at most two hops for user code (current level
+
 - stdlib root).
 
 **Migration identity preservation** requires two translation tables

@@ -140,7 +140,7 @@ land before it.
 
 ### Full Graph
 
-```
+```text
 PHASE M1               PHASE M2                  PHASE M3
 (foundation)           (first consumers)         (source info + richer quoting)
 
@@ -168,7 +168,7 @@ defmacro (M4b) ── macro-rewrite (D1) ── parse-stage-macros (D2)
 
 The longest dependency chain from nothing to full macros:
 
-```
+```text
 ast-dict-core (M1)
   → quote (M2b) + dict-to-ast (M4a) [parallel]
     → defmacro (M4b)
@@ -180,7 +180,7 @@ Five sequential steps. Each is independently testable and shippable.
 
 The formatter-full branch runs on a parallel track that reconverges in M5b:
 
-```
+```text
 ast-dict-core (M1)
   → ast-dict-source (M3a)
     → [wait for typing-cluster A2]
@@ -773,7 +773,7 @@ pass. Or: macro-rewrite (D1) is adopted, making the `_` port a prerequisite.
 A rough ordering assuming one sprint per entry, with parallelism where
 dependencies allow:
 
-```
+```text
 [current sprint backlog completes]
 
 M1:  ast-dict-core              ← first macros-cluster sprint; no deps

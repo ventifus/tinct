@@ -46,7 +46,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Consistent Error Handling](completed/error-patterns.md) | **Accepted 2026-05-09.** Nominal `[or [Ok T] [Err String]]` Result (not structural — S-RcdTop); `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate |
 
-## Syntax and Ergonomics
+## Macros and Syntax
 
 | Proposal | Summary |
 |----------|---------|
@@ -210,8 +210,8 @@ These proposals open new ground rather than closing existing work. All have acce
 
 Reading order: each row depends on those above it in the same chain.
 
-```
-# Typing cluster ✓ Complete (2026-05-07)
+```text
+### Typing cluster ✓ Complete (2026-05-07)
 type-predicates ✓ ─── let-binding ✓ ─── pattern-matching ✓ ─── union-types ✓
                                               │                        │
                                          narrowing ✓           ADTs ✓ ─── nominal-variants ✓
@@ -220,38 +220,38 @@ type-predicates ✓ ─── let-binding ✓ ─── pattern-matching ✓ ─
                                        parameterized-type-aliases ✓
                                        structural-contracts ✓ ─── numeric-types ✓
 
-# Macros cluster ✓ Complete
+### Macros cluster ✓ Complete
 quasiquoting ✓ ─── macros ✓ ─── call-aliases (adopt now)
                               ─── macro-rewrite ✓ superseded (tmpl done — see DONE.md)
                               ─── parse-stage-macros
 
-# I/O
+### I/O
 io ✓ Complete ─── templating ✓ Complete ─── template-polarity
 io ✓ Complete ─── lib-tls ✓ ─── lib-net-v2 ✓ (connect-v2, http-sessions, stdlib-protocols)
 
-# Standard library
+### Standard library
 lib-supplemental ✓ ─── lib-regex ✓
 
-# Formal verification
+### Formal verification
 eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
 
-# Post typing-cluster type system research
+### Post typing-cluster type system research
 union-types ✓ ─── boolean-algebraic-subtyping ✓ ─── record-map-split (parameterized-dict) ✓
                                                └─── error-patterns ✓ (nominal Result)
                                                └─── guardedness (Never propagation; requires runtime-v2)
 
-# Type annotation chain
+### Type annotation chain
 type-annotations-v2 (accepted, in progress) ─── unified-bindings (accepted, in progress)
 
-# Concurrency and stdlib chain (async-eval absorbed stdlib-architecture)
+### Concurrency and stdlib chain (async-eval absorbed stdlib-architecture)
 async-eval (async fn + Arc + OnceLock + multi-thread + task/channel/context/par/serve-layers)
   └─── dist-eval (cluster/remote-task/content-addressed-cache)
 async-eval ─── lib-net-v2 ✓ (tcp-listen/quic-listen/tls-layer serve/connect layers)
 
-# Profile-gated (no deps, waiting for profiling data)
+### Profile-gated (no deps, waiting for profiling data)
 string-interning, union-find-substitution
 
-# No deps, can adopt now
+### No deps, can adopt now
 float-dict-keys (Phase 1 Decimal ✓ — Phase 2 Key::Decimal open)
 value-serializer-visitor
 ```

@@ -10,7 +10,7 @@ which expression failed, not just its coordinates.
 
 Before this feature:
 
-```
+```text
 error E020: type mismatch: expected Int, got String
   at 3:12 (materialized at 7:8)
 ```

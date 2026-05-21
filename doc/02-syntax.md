@@ -788,7 +788,7 @@ A tinct **file** contains one or more **documents** separated by `---`. Each doc
 
 The `---` line may carry optional section header components:
 
-```
+```text
 --- %name@Type expects: Type caps: [%cap: @CapType]
 ```
 

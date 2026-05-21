@@ -57,14 +57,14 @@ Value::ClockCap(Rc<ClockCapInner>)
 
 **Builtins:**
 
-```
+```text
 now clock-cap                → Timestamp   (read current time)
 fixed-clock ts               → ClockCap    (always returns ts; for testing)
 ```
 
 **CLI injection:**
 
-```
+```sh
 tinct run --cap-clock clock script.llt
     → binds $clock to the real system clock
 
@@ -100,7 +100,7 @@ tinct reads the system database at runtime through a `DirCap` rather
 than shipping a compiled-in timezone database (which would add crate
 weight and make the binary stale):
 
-```
+```text
 load-tz zoneinfo-dir name    → Timezone
 ```
 
@@ -110,7 +110,7 @@ The function reads and parses the corresponding binary TZ file.
 
 **CLI injection:**
 
-```
+```sh
 tinct run --cap-fs zoneinfo=/usr/share/zoneinfo script.llt
 ```
 
@@ -259,7 +259,7 @@ duration, clock, and timezone. Registered in `standard_builtins()`.
 
 ### Type Checker (`src/typecheck.rs`)
 
-```
+```text
 Timestamp, Duration, ClockCap, Timezone — four new Type variants
 now          : ClockCap → Timestamp
 fixed-clock  : Timestamp → ClockCap

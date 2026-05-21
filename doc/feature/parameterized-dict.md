@@ -10,7 +10,7 @@ constructor and a `Dict` type that is their well-formed BAS union.
 
 The type hierarchy:
 
-```
+```text
           Dict                    ← BAS union: Record ∨ Map
          /    \
     Record    Map@[K: V]          ← structural forms
@@ -52,9 +52,9 @@ choice for a general rule.
 
 ```tinct
 transitions: @[Map [Int: [Seq Int]]]   # NFA: char code → successor state IDs
-groups:      @[Map [Int: String]]    # regex: capture group → matched text
-index:       @[Map [Str: Any]]       # string-keyed, untyped values
-cache:       @Map                    # bare: Map[Any: Any]
+groups:      @[Map [Int: String]]      # regex: capture group → matched text
+index:       @[Map [Str: Any]]         # string-keyed, untyped values
+cache:       @Map                      # bare: Map[Any: Any]
 ```
 
 ### `Record` — Bare Structural Record Type
@@ -63,7 +63,7 @@ cache:       @Map                    # bare: Map[Any: Any]
 `@Record` produces a fresh universally quantified open row variable — the same
 mechanism `@Dict` uses today:
 
-```
+```text
 @Record  →  Record(Row { fields: {}, tail: RowVar(fresh_ρ, level) })
 ```
 
@@ -112,6 +112,9 @@ Access returns `V | Null`:
 `Null` in tinct is the empty closed record `[]` — `Type::Record(Row{fields:{}, tail:Empty})`.
 `V | Null` is a BAS union expressible in the existing type system.
 
+`Null` in tinct is the empty closed record `[]` — `Type::Record(Row{fields:{}, tail:Empty})`.
+`V | Null` is a BAS union expressible in the existing type system.
+
 **`get?`** is a new safe-get builtin that returns `V | Null`. This keeps `get` strict
 (errors on miss, appropriate for records where the field is guaranteed to exist) and
 adds `get?` for dynamic map access. `get-or` is built on `get?`:
@@ -132,7 +135,7 @@ checked lazily on access (wrapped in a guard thunk).
 A structural record can satisfy a `Map@[K: V]` annotation if its keys are all of type
 K and its values are uniformly of type V:
 
-```
+```text
 ∀i: key(eᵢ) : K  ∧  type(eᵢ) <: V
 ────────────────────────────────────────────  [RECORD→MAP]
 Record(entries)  <:  Map[K V]

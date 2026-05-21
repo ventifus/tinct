@@ -171,7 +171,7 @@ This section formalizes how errors are represented, propagated, decorated, memoi
 
 An evaluation error `ε` is a record with five fields:
 
-```
+```text
 ε = ⟨kind, def_span, mat_span?, secondary_span?, macro_expansion?, blame?, pipeline_stage?, stack⟩  where
   kind             : ErrorKind                 — structured error variant with domain-specific data
   def_span         : Span                      — where the problematic value was defined
@@ -241,7 +241,7 @@ See `src/error.rs` for the full set of `ErrorKind` variants and their constructo
 
 **[DECORATE]** — `attach_materialization_context(ε, mat_span, origin, thunk_span)`:
 
-```
+```text
 DECORATE(ε, mat_span, origin, thunk_span):
   (1) if mat_span is Some(s) ∧ ε.mat_span is None:
         ε.mat_span ← Some(s)
@@ -262,7 +262,7 @@ Errors propagate upward through materialization chains via Rust's `?` operator (
 
 **[PROP-EVAL]** — Unevaluated thunk evaluation:
 
-```
+```text
 eval(expr, env, Σ_θ, d+1) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
 if ε'.kind.is_cacheable():
@@ -277,7 +277,7 @@ Note: `eval()` may internally call `materialize()` recursively (e.g., for Pendin
 
 **[PROP-BUILTIN]** — PendingBuiltin execution:
 
-```
+```text
 func(args, named, Σ_θ, pd, cs) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
 if ε'.kind.is_cacheable():
@@ -290,7 +290,7 @@ materialize(thunk, mat_span, d) ⇒ Err(ε')
 
 **[PROP-RESULT]** — Recursive materialization of result thunk:
 
-```
+```text
 func(...) ⇒ Ok(θ_result)
 materialize(θ_result, mat_span, d+1) ⇒ Err(ε)
 ε' = DECORATE(ε, mat_span, origin, thunk_span)
@@ -310,7 +310,7 @@ materialize(thunk, mat_span, d) ⇒ Err(ε')
 
 **[PROP-CYCLE]** — Circular dependency:
 
-```
+```text
 thunk.state = InProgress
 ε = circular_dependency(name, thunk.span)
 ε.mat_span ← mat_span
@@ -323,7 +323,7 @@ Note: PROP-CYCLE constructs the error inline at the detection site — it does *
 
 **[PROP-DEPTH]** — Depth limit exceeded:
 
-```
+```text
 d > MAX_EVAL_DEPTH
 ε = depth_exceeded(MAX_EVAL_DEPTH, thunk.span)
 ε.mat_span ← mat_span
@@ -339,7 +339,7 @@ Note: PROP-DEPTH does *not* transition to Failed — the thunk state is unchange
 
 **[MEMO-CACHE]** — On first error, cache in Failed state:
 
-```
+```text
 materialize(thunk, ...) ⇒ Err(ε)
 ε.kind.is_cacheable()
 ──────────────────────────
@@ -348,7 +348,7 @@ thunk.state ← Failed(ε)
 
 **[MEMO-SKIP]** — Non-cacheable error, restore thunk state:
 
-```
+```text
 materialize(thunk, ...) ⇒ Err(ε)
 ¬ε.kind.is_cacheable()
 ──────────────────────────
@@ -359,7 +359,7 @@ Cacheable error paths (PROP-EVAL, PROP-BUILTIN, PROP-RESULT, PROP-CYCLE) cache v
 
 **[MEMO-REACCESS]** — On subsequent access of a Failed thunk:
 
-```
+```text
 thunk.state = Failed(ε_cached)
 ε' = clone(ε_cached)
 (1) if mat_span is Some(s) ∧ ε'.mat_span is None:
@@ -383,7 +383,7 @@ MEMO-REACCESS mirrors DECORATE but operates on the cached error. Cache updates a
 
 **[TRY]** — Error catching:
 
-```
+```text
 materialize(θ_func, _, d) ⇒ Function([], body, env)
 θ_body = Thunk::new_unevaluated(body, env, body.span)
 materialize(θ_body, _, d) ⇒ Ok(v)
@@ -393,7 +393,7 @@ try(θ_func, d, s) ⇒ ok_val(Variant("Ok", θ(v)))
 
 **[TRY-ERR]** — Error caught:
 
-```
+```text
 materialize(θ_func, _, d) ⇒ Function([], body, env)
 θ_body = Thunk::new_unevaluated(body, env, body.span)
 materialize(θ_body, _, d) ⇒ Err(ε)
@@ -404,7 +404,7 @@ try(θ_func, d, s) ⇒ ok_val(Variant("Error", θ(ε.kind.to_string())))
 
 **[TRY-UNCATCHABLE]** — Uncatchable error re-raised:
 
-```
+```text
 materialize(θ_func, _, d) ⇒ Function([], body, env)
 θ_body = Thunk::new_unevaluated(body, env, body.span)
 materialize(θ_body, _, d) ⇒ Err(ε)
@@ -415,7 +415,7 @@ try(θ_func, d, s) ⇒ Err(ε)
 
 **[TRY-BUILTIN]** — Builtin zero-arg function:
 
-```
+```text
 materialize(θ_func, _, d) ⇒ Builtin(f)
 f([], {}, d, s) ⇒ Ok(θ_result)
 materialize(θ_result, _, d) ⇒ Ok(v)
@@ -909,7 +909,7 @@ Example output: `[E001] key not found: name (defined at 3:5-3:10) (materialized 
 
 The display format is:
 
-```
+```text
 [E0XX] {message} (defined at {line}:{col}-{line}:{col}) ({verb} {line}:{col}-{line}:{col})
   in {label} at {line}:{col}-{line}:{col}
   in {label} at {line}:{col}-{line}:{col}

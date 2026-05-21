@@ -429,7 +429,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 **`doc:` and LSP hover.** The doc string is stored in `TypeScheme.doc` and displayed below the inferred signature in LSP hover:
 
-```
+```text
 min: Comparable a => Fn@a [[Seq a]]
 Return smallest element
 ```

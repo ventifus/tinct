@@ -26,7 +26,7 @@ when sum types are added.
 The type checker has a dedicated rule for `if` (and by extension `cond`,
 `when`, `unless`):
 
-```
+```text
 Γ ⊢ cond : Bool
 Γ_T = narrow(Γ, cond, true)
 Γ_F = narrow(Γ, cond, false)

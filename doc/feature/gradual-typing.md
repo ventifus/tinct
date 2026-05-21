@@ -22,7 +22,7 @@ Blame tracking identifies which boundary between typed and untyped code is respo
 
 In proper gradual typing, the unknown type `?` relates to other types via a **consistency relation** (`~`), not subtyping:
 
-```
+```text
 τ ~ ?        (? is consistent with everything)
 ? ~ τ        (symmetric)
 Int ~ Int     (reflexive on concrete types)
@@ -101,7 +101,7 @@ fn is_consistent(a: &Type, b: &Type) -> bool {
 
 Every point where `Unknown` meets a concrete type is a blame boundary requiring a runtime check:
 
-```
+```text
 Γ ⊢ f : Fn(Int → Int),  Γ ⊢ x : Unknown
 ──────────────────────────────────────────
 Γ ⊢ [f x] ⇒ Int
@@ -142,7 +142,7 @@ enum Polarity { Positive, Negative }
 
 When a runtime check fails, the error message identifies both the failure point and the `Unknown` origin:
 
-```
+```text
 type assertion failed at line 5: expected Int, got String
   asserted by: [@Int ...] at line 5
   value originated from: unannotated parameter x at line 3
@@ -150,7 +150,7 @@ type assertion failed at line 5: expected Int, got String
 
 At implicit boundaries (argument positions, field access, pipeline crossings):
 
-```
+```text
 type mismatch at line 12: add expected Int for first argument
   blame: value from line 7 (from-json result, Unknown type)
   untyped boundary at line 7 is responsible
@@ -170,14 +170,14 @@ This is the **eager contract wrapping** strategy from Findler & Felleisen (2002)
 
 `Unknown` in record fields means "this field has unknown type." Row consistency handles:
 
-```
+```text
 is_consistent(Record({x: Int, y: Unknown}), Record({x: Int, y: String}))
 → true  (because Unknown ~ String)
 ```
 
 Open records with `Unknown` tails are consistent with any record that has the known fields:
 
-```
+```text
 is_consistent(Record({x: Int, ...Unknown}), Record({x: Int, y: String}))
 → true
 ```

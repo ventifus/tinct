@@ -4,7 +4,7 @@
 
 Type classes provide constrained polymorphism for tinct's overloaded builtins. Instead of `= : Any → Any → Bool`, overloaded operators carry class constraints:
 
-```
+```text
 = : Equatable a => a → a → Bool
 < : Comparable a => a → a → Bool
 + : Numeric a => a → a → a
@@ -106,7 +106,7 @@ The implementation follows a two-phase approach: Elm-style constrained type vari
 
 A fixed set of built-in constraints with no user-extensible class declarations. This follows Elm's approach — pragmatic, avoids the complexity of dictionary passing, and covers tinct's immediate needs:
 
-```
+```text
 Equatable  : types that support =, !=     (Int, Float, Str, Bool, Null)
 Comparable : types that support <, >, <=  (Int, Float, Str)
 Numeric    : types that support +, -, *   (Int, Float)
@@ -119,7 +119,7 @@ Filterable : types that support filter    (Dict, Seq)
 
 Overloaded builtins carry constrained signatures:
 
-```
+```text
 = : Equatable a => a → a → Bool          (was: Any → Any → Bool)
 + : Numeric a => a → a → a               (was: Any → Any → Any)
 map : Mappable f => (a → b) → f a → f b  (was: Any)
@@ -148,7 +148,7 @@ struct TypeScheme {
 
 Constrained type variables generate constraints during inference. When a variable `a` is used with `=`, the constraint `Equatable a` is recorded. During let-generalization, constraints on generalized variables become part of the type scheme. During instantiation, constraints are checked against the fixed instance sets:
 
-```
+```text
 G |- = => Equatable a => Fn(a, a -> Bool)    [instantiate with fresh a]
 G |- 1 => IntLiteral(1)
 unify(a, IntLiteral(1))  ->  a = IntLiteral(1)

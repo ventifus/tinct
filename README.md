@@ -385,13 +385,13 @@ Tests across multiple modules covering:
 
 File-based test suite with auto-discovery. Each `.llt-eval` file is parsed; valid inputs must succeed, invalid inputs must fail. Tests can include expected output after a `===` delimiter:
 
-```
+```text
 [key: "value"]
 ===
 Dict({"key": String("value")})
 ```
 
-```
+```text
 tests/corpus/
   valid/
     literals/       -- int, float, bool, string, bare word, var ref
@@ -438,7 +438,7 @@ between the two words:
 **Domain-first** — when operating on an existing value of a known type,
 the domain/type/protocol comes first, the verb second:
 
-```
+```text
 str-find      str-length    str-chars     str-repeat
 bytes-find    bytes-of      bytes-equal?
 timestamp-add timestamp-diff timestamp-year
@@ -449,7 +449,7 @@ dir-cap       net-cap       tag-of        type-of
 **Verb-first** — when constructing or converting *to* a domain type
 (the input is not yet that type), the verb comes first:
 
-```
+```text
 parse-timestamp   format-timestamp
 load-tz           from-json
 write-atomic

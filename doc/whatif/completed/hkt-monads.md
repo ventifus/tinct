@@ -416,7 +416,7 @@ The explicit `[do monad ...]` form always takes priority over inference. The `[d
 
 The kind grammar extends with two new productions:
 
-```
+```text
 Kind ::= *              -- concrete types (kind of Int, Str, Bool, Record, ...)
        | Row            -- record field sets (kind of row variables)
        | Operator       -- type constructors (kind * → *, written as `Operator`)
@@ -468,7 +468,7 @@ Label TypeVars remain in `Substitution.type_map` (bound to `StringLiteral` value
 
 **Kind rules for label vars:**
 
-```
+```text
 KIND-LABEL (kinding judgment):
   kind_env(l) = Label
   ──────────────────────────────────────────
@@ -499,7 +499,7 @@ pub enum Type {
 
 Unification extends with two new cases:
 
-```
+```text
 UNIFY-OPERATOR:
   m ∉ ftv(T)    kind_env ⊢ T : *     -- T must be a proper type, not Operator or Label
   ──────────────────────────────────
@@ -529,7 +529,7 @@ For type inference, `App(Operator("m"), a)` is unified against known concrete ap
 
 Kind checking is a pre-pass before type inference:
 
-```
+```text
 KIND-OPERATOR:
   Γ ⊢ f : Operator    Γ ⊢ a : *
   ─────────────────────────────
@@ -584,7 +584,7 @@ schematic (carried in `TypeScheme.constraints` for label-polymorphic functions).
 
 **Instance resolution rules:**
 
-```
+```text
 l ∈ dom(fields)    fields(l) = τ
 ─────────────────────────────────────────   [HAS-FIELD-REC]
 HasField (Concrete l) Record(fields) τ
@@ -637,7 +637,7 @@ implementations should warn: "field access on an uninhabitable intersection type
 
 **[GET]** — central inference rule:
 
-```
+```text
 Γ ⊢ key ⇒ StringLiteral(l)    Γ ⊢ dict ⇒ d
 fresh β    C' = C ∪ {HasField l d β}
 ──────────────────────────────────────────────────   [GET]
@@ -655,7 +655,7 @@ Resolution of `HasField l d β` is eager when possible:
 
 **[GET-IN]** — chained literal-key access, expanded inline:
 
-```
+```text
 ──────────────────────────────────────────────────   [GET-IN-NIL]
 Γ, C ⊢ [get-in [] dict] ⇒ type(dict), C
 
@@ -683,7 +683,7 @@ A function that receives a label as a parameter has a label-polymorphic scheme:
 
 The `get` builtin's full scheme:
 
-```
+```text
 get : ∀ (l : Label) (d : *) (a : *). HasField l d a => StringLiteral(l) → d → a
 ```
 

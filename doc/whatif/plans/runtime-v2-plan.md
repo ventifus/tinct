@@ -18,7 +18,7 @@ Three sprints after the prerequisite chain completes. **Parts A–E of Sprint 1 
 | `include-decomp-prelude` | Self-hosted pipeline in prelude; `expand` signature is `Dict→Dict` at this point |
 | `include-decomp-review` | `/review-whatif include-decomposition` |
 
-#### `runtime-v2-type-prereqs` task list
+### `runtime-v2-type-prereqs` task list
 
 This sprint is a prerequisite for runtime-v2 but is not in TODO.md until runtime-v2 is accepted.
 
@@ -427,7 +427,7 @@ This is a Rust-calls-tinct boundary crossing. The mechanism (`invoke_function`) 
 
 ## Dependency Graph
 
-```
+```text
 exhaustiveness-multi-field-nominal  (touches type_def.rs)
     └─► runtime-v2-type-prereqs     (touches type_def.rs + typecheck.rs)
             └─► include-decomp chain (expand: Dict→Dict, eval: Dict→Any)

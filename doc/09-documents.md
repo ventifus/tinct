@@ -4,7 +4,7 @@
 
 A Tinct **file** contains one or more **documents** separated by `---`. Each document contains one or more **expressions**. This three-level hierarchy governs scoping, isolation, and data flow.
 
-```
+```text
 file
 ├── document 1
 │   ├── expression 1  (e.g., [include "utils.llt"])
@@ -20,13 +20,15 @@ file
 
 Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `%` for the next. Documents can be named with `--- %name` to allow later sections to reference them by name:
 
-    file.llt
-    ├── --- %raw                  (optional header naming the section)
-    ├── document 1 (data)         → % for doc 2, also bound as %raw
-    ├── ---
-    ├── document 2 (transform)    → % for doc 3
-    ├── ---
-    └── document 3 (output)       → final value, serialized by CLI
+```text
+file.llt
+├── --- %raw                  (optional header naming the section)
+├── document 1 (data)         → % for doc 2, also bound as %raw
+├── ---
+├── document 2 (transform)    → % for doc 3
+├── ---
+└── document 3 (output)       → final value, serialized by CLI
+```
 
 Within a document, sequential expressions form a scope chain — each expression's bindings are visible to the next. Only the **last** expression is the document's return value; earlier expressions exist only as scope.
 
@@ -111,7 +113,7 @@ Tinct has one scoping mechanism — lexical scope with parent chains — applied
 
 These are not two different mechanisms. They are the same parent-chain lookup applied at different granularities. Variable lookup always walks the parent chain until it finds a match.
 
-```
+```text
 Builtins ($+, $eval, $if, ...)
   └── Expression 1's dict (letrec within)
         └── Expression 2's dict (letrec within, sees Expr 1 via parent)
@@ -216,7 +218,7 @@ Formalizes the two scoping mechanisms described above (letrec within dicts, sequ
 
 **Environments.** An environment `ρ` is a pair `(B, parent)` where `B : String → Thunk` is a finite map from names to thunks and `parent : Option<Env>` is a link to an enclosing scope. The parent chain forms a tree rooted at the builtins scope `ρ_builtins` (Property 4). The capture graph — thunks closing over their containing environment — may contain cycles in letrec scopes; see Property 4 for the distinction.
 
-```
+```text
 ρ ::= (B, None)            — root environment (builtins)
     | (B, Some(ρ_parent))  — child environment
 ```
@@ -235,7 +237,7 @@ Two rules construct environments: DICT-SCOPE for letrec within a dict, and SEQ-S
 
 **[DICT-SCOPE]** — Letrec environment for dict literals
 
-```
+```text
 entries = [(k₁, e₁), ..., (kₙ, eₙ)]       (dict entries, keys + value exprs)
 ρ_dict = ({}, Some(ρ_parent))               (fresh child env linked to parent)
 
@@ -266,7 +268,7 @@ The `∀i` is processed sequentially (source order). Bindings are inserted incre
 
 **[SEQ-SCOPE]** — Sequential expression scope chain within a document
 
-```
+```text
 Base case:
   exprs = []                                   (empty document)
   ────────────────────────────────────────────
@@ -306,7 +308,7 @@ The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-
 
 **[DOC-PIPELINE]** — Document isolation via `%` and named sections
 
-```
+```text
 Σ₀ = {}                                     (named-section map)
 documents = [doc₁, ..., docₘ]               (file documents separated by ---)
 ρ_base = ρ_builtins                          (shared root scope)
@@ -338,7 +340,7 @@ Variable lookup walks the parent chain from the current environment upward, retu
 
 **[LOOKUP]**
 
-```
+```text
 lookup(x, ρ):
   (1) x ∈ dom(ρ)         ⟹ return ρ.B[x]              (found in current scope)
   (2) ρ.parent = Some(ρ') ⟹ return lookup(x, ρ')       (recurse to parent)
@@ -353,25 +355,25 @@ The implementation (`Environment::get`, `value.rs:445-460`) converts the recursi
 
 Five properties that hold for all well-formed tinct programs. Each property follows from the construction rules (Part 2) and lookup rule (Part 3). The proofs use the Launchbury (1993) heap model extended with Nakata & Hasegawa's (2009) treatment of cyclic references.
 
-**Property 1: Shadowing Correctness**
+##### Property 1: Shadowing Correctness
 
 *Statement:* If name `x` is bound in environment `ρ` at depth `d₁` and also in ancestor `ρ'` at depth `d₂ > d₁` in the parent chain, then `lookup(x, ρ)` returns `ρ`'s binding at depth `d₁`.
 
 *Proof sketch:* By structural induction on the parent chain length. LOOKUP clause (1) returns immediately when `x ∈ dom(ρ)`, without inspecting ancestors. Since the parent chain has finite length (Property 4), the nearest binding is always reached first. The inductive step: if `x ∉ dom(ρ)`, LOOKUP recurses to `ρ.parent`, reducing the chain length by one. By the inductive hypothesis, the nearest binding in the remaining chain is returned. ∎
 
-**Property 2: Mutual Visibility (Letrec)**
+##### Property 2: Mutual Visibility (Letrec)
 
 *Statement:* For a dict constructed by DICT-SCOPE with entries `{s₁, ..., sₙ}` (string keys), materializing any thunk `θᵢ` can resolve `$sⱼ` for all `j ∈ 1..n`, including `j = i`.
 
 *Proof sketch:* By DICT-SCOPE, all `θᵢ = Unevaluated(eᵢ, ρ_dict)`. By the construction-time non-materialization invariant, no thunk is materialized during DICT-SCOPE construction, so by the time any `θᵢ` is subsequently materialized, `ρ_dict.B` contains `{s₁ ↦ θ₁, ..., sₙ ↦ θₙ}` — all string-keyed bindings are present. When `θᵢ` is materialized, `eval(eᵢ, ρ_dict, d)` has access to `ρ_dict`, and `lookup(sⱼ, ρ_dict)` succeeds via LOOKUP clause (1) for any `j`. Self-reference (`i = j`) is valid because materializing `θᵢ` transitions it to `InProgress` — a subsequent self-reference triggers MATERIALIZE-CYCLE (§Thunk Lifecycle), producing a cycle error rather than diverging. Mutual reference (`i ≠ j`) succeeds provided `θⱼ` is not already `InProgress` (no transitive cycle). This matches Nakata & Hasegawa's (2009) operational treatment of cyclic call-by-need: the `InProgress` state acts as a blackhole, ensuring termination for all reference patterns. ∎
 
-**Property 3: Heap Monotonicity**
+##### Property 3: Heap Monotonicity
 
 *Statement:* The set of bindings reachable from any environment `ρ` is monotonically non-decreasing over the course of evaluation. No binding is ever removed or reassigned to a different thunk.
 
 *Proof sketch:* The binding map is monotonic because: (a) DICT-SCOPE rejects duplicate keys before insertion (`eval.rs:336-338`), so each binding is inserted exactly once into an initially empty map; (b) SEQ-SCOPE inserts into freshly created empty environments, so no overwrite is possible; (c) no code path calls `Environment::insert` on scope-chain environments after construction. The `insert` API itself (`IndexMap::insert`) permits overwriting, but these three invariants prevent it. The thunks themselves may transition states (Unevaluated → Materialized), but the binding `name ↦ θ` is stable — the `Rc<Thunk>` pointer does not change, only the thunk's internal state. By the thunk lifecycle monotonicity theorem (§Thunk Lifecycle Part 1), thunk state transitions are irreversible. Therefore both the binding map and the thunk contents are monotonic. ∎
 
-**Property 4: Scope Chain Acyclicity**
+##### Property 4: Scope Chain Acyclicity
 
 *Statement:* The *parent chain* from any environment `ρ` to the root `ρ_builtins` is a finite, acyclic path.
 
@@ -379,7 +381,7 @@ Five properties that hold for all well-formed tinct programs. Each property foll
 
 **Parent chain vs capture graph:** This property concerns the *parent chain* (`env.parent` links), which is the graph walked by LOOKUP. The *capture graph* (`thunk.env` links) does contain cycles in letrec scopes: `ρ_dict` holds thunks that close over `ρ_dict` itself (via `Rc::clone(&dict_env)` at `eval.rs:342`). These capture cycles do not affect LOOKUP termination (LOOKUP walks only parent links) or semantic correctness. They do prevent `Rc` deallocation of letrec environments (since `Rc` cannot collect cycles), which is a known memory management limitation addressed by the arena migration (§Allocation Strategy — Phased Approach in [Evaluation](08-evaluation.md)).
 
-**Property 5: Determinism**
+##### Property 5: Determinism
 
 *Statement:* For the pure subset of tinct (no I/O builtins such as `$include`), `eval_document(exprs, ρ, d)` produces the same result thunk for the same input tuple `(exprs, ρ, d)`, and `lookup(x, ρ)` returns the same thunk for the same name and environment.
 
@@ -411,7 +413,7 @@ The formal rules map directly to the implementation:
 
 #### Part 6: Worked Examples
 
-**Example 1: Letrec mutual recursion**
+##### Example 1: Letrec mutual recursion
 
 ```tinct
 [
@@ -429,7 +431,7 @@ DICT-SCOPE creates `ρ_dict` with parent `ρ_builtins`:
 - The closure body references `odd?` → `lookup(odd?, ρ_dict)` → `θ₂` (clause 1) ✓ mutual visibility
 - Evaluation terminates: `even?(4) → odd?(3) → even?(2) → odd?(1) → even?(0) → true`
 
-**Example 2: Sequential scope chain with shadowing**
+##### Example 2: Sequential scope chain with shadowing
 
 ```tinct
 [x: 10  double: [fn [n] [* n 2]]]
@@ -546,7 +548,7 @@ cap_entry         = "%" ~ ident_char+ ~ ":" ~ "@" ~ ident_char+   // e.g., %nc: 
 
 Each entry is `%name: @Type`. The type checker adds each declared cap to the TypeEnv for the document body, resolving spurious "undefined variable" errors. At runtime, the evaluator validates that each declared cap is present in the root environment and produces a clear error if not:
 
-```
+```text
 error: %nc@NetCap is required but not provided
   inject it with:  tinct run --cap-net nc=HOST:PORT ...
   or unrestricted: tinct run --cap-net nc=any ...
@@ -560,7 +562,7 @@ error: %config@Handle is required but not provided
 
 Auto-injected caps (`%pwd`, `%libdir`, `%stdin`) produce a different hint if missing:
 
-```
+```text
 error: %pwd@DirCap is required but not provided
   note: %pwd is injected automatically — did you pass --no-pwd?
 ```
@@ -650,7 +652,7 @@ Duplicate names during merge are errors (consistent with the duplicate-keys-are-
 
 When an error originates inside a chain of included files, the runtime annotates the error's stack trace with one frame per include boundary, showing the full path that led to the error:
 
-```
+```text
 [E053] include: parse error in "bad.llt": ... (defined at ...)
   in included from outer.llt at 1:1-1:5
   in included from middle.llt at 1:1-1:24
@@ -705,7 +707,7 @@ This section formalizes the inter-file include mechanism. The intra-file documen
 
 The include system maintains mutable state `Σ` shared across nested include calls:
 
-```
+```text
 Σ = ⟨cache, stdlib_env⟩  where
   cache      : Map<String, IncludeCacheEntry>  — content-addressed cache (see key below)
   stdlib_env : ρ                               — environment for included files (builtins + stdlib)
@@ -725,7 +727,7 @@ IncludeCacheEntry = Missing | Pending | Cached(Rc<Thunk>)
 
 **[RESOLVE]** — Path resolution and canonicalization:
 
-```
+```text
 resolve(path_str, Σ.base_dir):
   raw = Path::new(path_str)
   resolved = if raw.is_absolute() then raw
@@ -747,7 +749,7 @@ In all rules below, `s` is the call-site span (used for error reporting but not 
 
 **[INCLUDE-HIT]** — Cache hit (memoized result):
 
-```
+```text
 resolve(path_str, config.base_dir) ⇒ canonical
 identity(canonical) ⇒ (dev, ino)
 (dev, ino) ∈ dom(Σ.cache)
@@ -769,7 +771,7 @@ Cache hits return a clone of the cached thunk pointer. No file I/O, no evaluatio
 
 **[INCLUDE-CYCLE]** — Cycle detection:
 
-```
+```text
 resolve(path_str, config.base_dir) ⇒ canonical
 identity(canonical) ⇒ (dev, ino)
 (dev, ino) ∉ dom(Σ.cache)
@@ -782,7 +784,7 @@ A file currently being evaluated (present in the guard set) cannot be included a
 
 **[INCLUDE-EVAL]** — Fresh evaluation:
 
-```
+```text
 resolve(path_str, config.base_dir) ⇒ canonical
 identity(canonical) ⇒ (dev, ino)
 (dev, ino) ∉ dom(Σ.cache)
@@ -850,7 +852,7 @@ This is consistent with Nix's `import` (which also eagerly evaluates the importe
 
 **P5 — Include isolation:** An included file has no access to the including file's scope chain. Included files evaluate in `Σ.stdlib_env` (builtins + stdlib only), with `%` initialized to the empty dict:
 
-```
+```text
 include(path, Σ, d, s):
   eval_file(file, Σ.stdlib_env, d + 1)     ← stdlib env, not caller's env
 ```
@@ -889,7 +891,7 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 
 Tinct is a pure data transformation language with no in-language side effects, modulo `$include`, which performs filesystem I/O as a controlled side effect with sandboxing (similar to Nix's `import` and Dhall's `import`). The program evaluates to a value; the CLI serializes it:
 
-```
+```sh
 tinct run file.llt              # evaluate, output result as JSON
 tinct run --eval file.llt       # deep-materialize all thunks before serializing (surfaces errors before partial output)
 tinct run -                     # read Tinct source from stdin
@@ -997,14 +999,14 @@ If no tinct code blocks are found in the Markdown file, `eval` exits with an err
 
 `weave` evaluates each block in pipeline order and outputs the original Markdown with the JSON result appended as an HTML comment immediately after each closing fence:
 
-```markdown
+````markdown
 # Config
 
 ```tinct
 [port: 8080]
 ```
 <!-- tinct-result: {"port": 8080} -->
-```
+````
 
 The result at each block is the intermediate pipeline value at that point — the output of that block after receiving `%` from all preceding blocks. Full result substitution replaces the inline markers in prose with serialized values.
 

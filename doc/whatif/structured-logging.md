@@ -144,7 +144,7 @@ app-router: [fn [let line@LogLine]
       [case [let _]        [partial write-handle log-file]]]]]  # rest → log file
 ```
 
-```
+```text
 
 **`with-log-handler` — scope-local logger rebinding (future):**
 
@@ -217,20 +217,20 @@ make-syslog-sink: [fn [let sock host@Str port@Port]
 
 Console stdout (`=== out`):
 
-```
+```text
 INFO  server starting port=8080 workers=4
 WARN  config missing, using default key=timeout default=30
 ```
 
 Console stderr:
 
-```
+```text
 ERROR database connection failed host=db.internal err=timeout
 ```
 
 Syslog UDP packets to `syslog.internal:514`:
 
-```
+```text
 <14>May 17 14:23:01 myapp: server starting port=8080 workers=4
 <12>May 17 14:23:01 myapp: config missing, using default key=timeout default=30
 <11>May 17 14:23:01 myapp: database connection failed host=db.internal err=timeout

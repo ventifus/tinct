@@ -68,7 +68,7 @@ config: [from-json @Config input]
 
 A schema mismatch is a new error variant, `EvalError::schema_mismatch`, distinct from `type_assert_failed`. It carries structured path information (JSON Pointer, RFC 6901) and accumulates **all** mismatches in a single pass — not just the first:
 
-```
+```text
 schema mismatch in from-json:
   at /users/2/name: expected Str, got 42
   at /port: expected Int, got "eight"

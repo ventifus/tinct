@@ -10,7 +10,7 @@ tinct has a small, closed set of built-in types (Int, Float, Number, Str,
 Bool, Null, Dict/Record, Seq, Function) with hardcoded promotion and
 comparison tables:
 
-```
+```text
 # Arithmetic: hardcoded promotion table (doc/03-data-model.md §Numeric Types)
 Int + Int     → Int
 Int + Float   → Float  (Int promotes to Float)
@@ -47,7 +47,7 @@ Builtins).
 
 Instead of `= : Any → Any → Bool`, type classes enable:
 
-```
+```text
 = : Equatable a => a → a → Bool
 < : Comparable a => a → a → Bool
 + : Numeric a => a → a → a
@@ -183,7 +183,7 @@ A fixed set of built-in constraints with no user-extensible class
 declarations. This follows Elm's approach — pragmatic, avoids the
 complexity of dictionary passing, and covers tinct's immediate needs:
 
-```
+```text
 Equatable  : types that support =, !=     (Int, Float, Str, Bool, Null)
 Comparable : types that support <, >, <=  (Int, Float, Str)
 Numeric    : types that support +, -, *   (Int, Float)
@@ -197,7 +197,7 @@ Filterable : types that support filter    (Dict, Seq)
 This replaces `Any` typing on overloaded builtins with constrained
 signatures:
 
-```
+```text
 = : Equatable a => a → a → Bool          (was: Any → Any → Bool)
 + : Numeric a => a → a → a               (was: Any → Any → Any)
 map : Mappable f => (a → b) → f a → f b  (was: Any)
@@ -228,7 +228,7 @@ During let-generalization, constraints on generalized variables become part
 of the type scheme. During instantiation, constraints are checked against
 the fixed instance sets:
 
-```
+```text
 G |- = => Equatable a => Fn(a, a -> Bool)    [instantiate with fresh a]
 G |- 1 => IntLiteral(1)
 unify(a, IntLiteral(1))  ->  a = IntLiteral(1)

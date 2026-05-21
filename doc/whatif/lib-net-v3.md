@@ -22,7 +22,7 @@ Define the **serve/connect layer model** as composable tinct stdlib functions. T
 
 ## The Symmetry
 
-```
+```text
                   Server (receive)                Client (initiate)
                   ──────────────────────          ──────────────────────
 Transport     resource → Channel@A            resource → A
@@ -278,7 +278,7 @@ dns-server-loop [dns-https-server [http3-requests [h3-serve [quic-listen net-cap
 
 ## Stdlib Module Map
 
-```
+```text
 stdlib/
   net.llt           — Port type, parse-url, url-encode/decode, form-encode/decode, resolve-host
   http1.llt         — HTTP/1.1 framing in pure tinct on top of Handle:
@@ -301,7 +301,7 @@ stdlib/
 
 **HTTP/1.1 request lifecycle — where the Rust/tinct boundary sits:**
 
-```
+```text
 OS TCP accept → Rust: tcp-listen → Value::Handle
               → tinct: stdlib/http1.llt parse-request (text parsing)
               → tinct: stdlib/serve.llt pump attaches respond fn

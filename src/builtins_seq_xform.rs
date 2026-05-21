@@ -16,7 +16,7 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, ThunkState, Value};
+use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, Value};
 
 /// `map`: Apply a function to every element of a dict or sequence.
 ///
@@ -233,7 +233,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
     };
 
     // dict_thunk is pre-wrapped as Materialized at the filter call site
-    debug_assert!(matches!(&*dict_thunk.state(), ThunkState::Materialized(_)));
+    debug_assert!(dict_thunk.try_get_materialized().is_some());
     let dict = materialize(&dict_thunk, None, &ctx)?;
     let dict_map = match dict {
         Value::Dict(ref m) => m,

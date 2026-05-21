@@ -481,7 +481,7 @@ Boolean capabilities (Readable, Writable, Binary, Text, Stream, Datagram, Seekab
 
 `connect` dispatches on the Transport variant to determine the address format and capability routing. Port is absent for transports that have no port concept:
 
-```
+```text
 # Stream transports (NetCap)
 connect cap Tcp  host port       → Handle{ Binary Readable Writable Stream }
 connect cap Udp  host port       → Handle{ Binary Readable Writable Datagram }
@@ -676,20 +676,20 @@ An **access chain** is a sequence of projections applied left-to-right to a targ
 
 **Projections.** A projection `π` extracts data from a dict:
 
-```
+```text
 π ::= dot(f)              — field access by literal string key f (or integer key n for dot-int access)
 ```
 
 **Chains.** An access chain `C = π₁ · π₂ · ... · πₙ` applied to target expression `t` evaluates as left-to-right composition:
 
-```
+```text
 eval_chain(t, [], ρ, d) = eval(t, ρ, d)                          (empty chain)
 eval_chain(t, [π₁, ...πₙ], ρ, d) = eval_chain(apply(π₁, t, ρ, d), [π₂, ...πₙ], ρ, d)
 ```
 
 **Parser correspondence:** The parser produces nested AST nodes for chains. `$a.b.0.c` parses as:
 
-```
+```text
 DotAccess(
   DotAccess(
     DotAccess(VarRef("a"), "b"),
@@ -707,7 +707,7 @@ Each projection materializes its target to a `Dict`, then extracts by key. All t
 
 **[MATERIALIZE-DICT]** — Common target materialization
 
-```
+```text
 θ_target = eval(target, ρ, d+1)
 v = materialize(θ_target, d+1)              (inherent materialization — must know dict structure)
 v = Dict(map)                               (target must be Dict; type error otherwise)
@@ -719,7 +719,7 @@ If `v` is not a `Dict`, evaluation fails with `type_mismatch("Dict", v.type_name
 
 **[ACCESS-DOT]** — Dot access: `$target.field`
 
-```
+```text
 map = materialize_dict(target, ρ, d)
 key = String(field)                          (field is a literal string from the AST)
 map[key] = θ                                 (look up key; error if absent)
@@ -745,31 +745,31 @@ Error context is enriched via `push_frame`: dot access adds `"accessing .{field}
 
 Five properties that hold for all access chains.
 
-**Property 1: Step-wise Materialization**
+#### Property 1: Step-wise Materialization
 
 *Statement:* Each projection in a chain invokes MATERIALIZE-DICT exactly once. In a chain `π₁ · π₂ · ... · πₙ`, MATERIALIZE-DICT is invoked `n` times — once per step. MATERIALIZE-DICT evaluates and materializes the target — if the target thunk is already `Materialized`, materialization is a cache hit (MATERIALIZE-CACHED from §Thunk Lifecycle).
 
 *Proof sketch:* By induction on chain length. Each `apply(πᵢ, ...)` invokes MATERIALIZE-DICT, which calls `materialize(θ, d+1)`. The result of step `i` becomes the target of step `i+1`. No step materializes the target of a different step. ∎
 
-**Property 2: Result Laziness**
+#### Property 2: Result Laziness
 
 *Statement:* ACCESS-DOT returns the thunk stored in the dict without materializing it. The result may be `Unevaluated`, `PendingBuiltin`, `PendingCall`, or `Materialized` — access does not trigger evaluation of the accessed value.
 
 *Proof sketch:* ACCESS-DOT returns `Rc::clone(thunk)` from `map.get(&key)` — a pointer copy, not a `materialize` call. The thunk's state is unchanged by the access. ∎
 
-**Property 3: Error Short-Circuiting**
+#### Property 3: Error Short-Circuiting
 
 *Statement:* If projection `πᵢ` in a chain fails, projections `πᵢ₊₁, ..., πₙ` are never evaluated.
 
 *Proof sketch:* By the chain recurrence, `eval_chain(t, [π₁, ...πₙ], ρ, d)` first computes `apply(π₁, t, ρ, d)`. If this returns an error, the recurrence has no value to pass to the next step, so the chain terminates with that error. By induction, no subsequent projection is evaluated. ∎
 
-**Property 4: Unbounded Chain Length**
+#### Property 4: Unbounded Chain Length
 
 *Statement:* In the iterative CEK machine, access chain steps push continuation frames onto the heap-allocated `Vec<Cont>`. Chain length is bounded only by available memory, with no hard depth limit. Each step pushes one `Cont::DotAccess` frame, which is popped after the target materializes.
 
 *Proof sketch:* The CEK machine's `eval_step` for dot access pushes `Cont::DotAccess(field, span)` and transitions to `Action::Materialize(target)`. Each step adds one frame to the stack (O(1) space per step). There is no `MAX_EVAL_DEPTH` check in the access path — the old recursive depth budget was eliminated by the CEK machine (see [Evaluation](08-evaluation.md) §Iterative Evaluator). ∎
 
-**Property 5: Sharing Preservation**
+#### Property 5: Sharing Preservation
 
 *Statement:* ACCESS-DOT returns an `Rc::clone` of the thunk stored in the dict — an alias, not a copy. If the same field is accessed twice, both accesses obtain pointers to the same `Rc<Thunk>`. Once the first access materializes it, the second access gets MATERIALIZE-CACHED (§Thunk Lifecycle).
 
@@ -805,7 +805,7 @@ The type checker mirrors the access algebra with type-level projections:
 
 ### Part 7: Worked Examples
 
-**Example 1: Chained dot access**
+#### Example 1: Chained dot access
 
 ```tinct
 [config: [database: [host: "localhost"  port: 5432]]]

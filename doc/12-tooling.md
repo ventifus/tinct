@@ -207,7 +207,7 @@ tinct run -o none -e '[map [fn [n] [emit n]] [range 0 3]]'  # emits 0 1 2, no fi
 
 The three flags compose to form a symmetric pipeline:
 
-```
+```text
 stdin → [-i input] → [files/exprs] → [-o output] → stdout
 ```
 
@@ -406,7 +406,7 @@ A test file consists of:
 2. Tinct source code (the input to test)
 3. Labeled sections (delimited by `=== <label>`)
 
-```
+```text
 # no_fs
 [x: 1  y: 2]
 === out
@@ -450,7 +450,7 @@ Directives appear on the first line only, starting with `#`. The directive line 
 
 Sections can appear in any order. The test runner extracts all sections regardless of order.
 
-```
+```text
 [x: 1]
 === warn
 unused variable: y
@@ -464,7 +464,7 @@ A test file without a `=== warn` section asserts that type checking produces zer
 
 To assert that a test *should* produce warnings, include a `=== warn` section with the expected warning substring:
 
-```
+```text
 [x@Int: "hello"]
 === out
 {"x": "hello"}
@@ -478,7 +478,7 @@ The `=== error` section enables substring matching for error tests. The test pas
 
 For `tests/corpus/eval/errors/`, the expected substring must include an `[EXXX]` error code (e.g., `[E001]`, `[E042]`). This ensures error codes are stable across refactoring.
 
-```
+```text
 [call $error "boom"]
 === out
 [E024]
@@ -488,7 +488,7 @@ The actual error message might be `[E024] explicit error: boom`, but the test on
 
 ### Example: Multi-Section Test
 
-```
+```text
 # Test: dict with type error
 [
   x@Int: 42
@@ -767,7 +767,7 @@ The cache is session-scoped and held in memory — it does not persist across `t
 
 **Error on mismatch:**
 
-```
+```text
 include: hash mismatch for 'config/settings.llt'
   expected: blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc5a0f67f7df2f8e
   actual:   blake3:b7c2f3a1d9e891f42c2d4b578c9a0e3f1b6d7e8a2c5f0d4e9b3a7c1f8e2d5b4

@@ -241,7 +241,7 @@ Constructor declarations with multiple payloads specify the count:
 
 The type checker builds a **constructor payload registry** from `[type ...]` nominal variant declarations. For each constructor, the registry records its payload type scheme (parameterized by the variant's type parameters):
 
-```
+```text
 Registry entries from [type Result [Ok a] [Err String]]:
   Ok  → payload: a         (parameterized by Result's type param a)
   Err → payload: String    (concrete)
@@ -350,7 +350,7 @@ z: [y y y]         # thunk — no error yet
 
 **Evaluator:** `...` evaluates to `Thunk::new_placeholder(span)`. When any materialization path forces this thunk, it raises:
 
-```
+```text
 UnimplementedError at <file>:<line>:<col>: ... placeholder reached
 ```
 
@@ -496,7 +496,7 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 
 **`Expr::Placeholder` evaluation**: `...` evaluates to `Thunk::new_placeholder(span)`. When this thunk is materialized by any path, it raises:
 
-```
+```text
 UnimplementedError at <file>:<line>:<col>: ... placeholder reached
 ```
 

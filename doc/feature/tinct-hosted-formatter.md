@@ -36,7 +36,7 @@ matching the schema in `doc/whatif/ast-schema.md`) and returns a formatted
 source string. Rust does three things: parse, serialize AST to dict, call the
 evaluator.
 
-```
+```text
 source → [Rust: parse2()] → ParseOutput
        → [Rust: ast_to_dict(opts)] → Value::Dict  (the AST as tinct data)
        → [tinct: stdlib/formatter/format.llt]       (% = AST dict)

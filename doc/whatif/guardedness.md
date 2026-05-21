@@ -128,7 +128,7 @@ The type checker, in `infer_dict`, checks whether each binding's `NodeId` is in 
 2. The specific variable reference that is unguarded (with its source span).
 3. The other bindings in the SCC, if it is a multi-node cycle.
 
-```
+```text
 TypeError: non-productive circular definition
   x: [+ x 1]
   ^^^^^^^^^^^ x references itself in a strict (unguarded) position

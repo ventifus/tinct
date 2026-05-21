@@ -719,7 +719,7 @@ enum UnevaluatedState {
 
 **Forcing protocol:**
 
-```
+```text
 materialize(thunk):
   1. result.get() → Some(v): return v.clone()      [lock-free after init; the hot path]
   2. lock unevaluated mutex; take Option
@@ -910,7 +910,7 @@ results@[Seq Int]:  [await-all [task [+ 1 2]] [task [* 3 4]]]
 
 ## Stdlib Module Map
 
-```
+```text
 stdlib/
   prelude.llt       — map, filter, reduce, result combinators; trimmed core
                       Expression/Document/Program/Parameter/Entry/... type declarations
@@ -1249,15 +1249,15 @@ Note: `run_eval` does **not** exist in this file — confirmed by code inspectio
 
 - `run_eval()` Rust call — replaced by tinct `cli-pipeline` (from prerequisite sprint); confirm gone
 
-**Error types**
+#### Error types
 
 - `Box<EvalError>` at cross-thread boundaries — replaced by `Arc<EvalError>`; scan for remaining `Box<EvalError>` in async contexts
 
-**Rust JSON serializer**
+#### Rust JSON serializer
 
 - `value_to_json` (or equivalent) in `src/` — replaced by `stdlib/codecs/json.llt`; the Rust function becomes a thin shim that calls the tinct `to-json` function, then is deleted once tinct has full control
 
-**Tinct stdlib**
+#### Tinct stdlib
 
 - `[include %rust "..."]` patterns in `stdlib/prelude.llt` — from prerequisite sprint; confirm gone
 - Any `dict?` guards around AST node access — `dict?` returns `false` for AST types; any such guard is dead code
@@ -1307,7 +1307,7 @@ The new `ThunkState::Surface` and `ThunkState::AstNodeField` variants use `Arc<S
 
 ### `SurfaceMatchArm` uses `Spanned<Pattern>` (not `Arc<SurfaceNode>`)
 
-The design specifies `SurfaceMatchArm { pattern: Arc<SurfaceNode>, ... }` but the current implementation uses `Spanned<Pattern>` for the pattern field, keeping the existing `Pattern` enum intact. The pattern→SurfaceNode migration is deferred — it would require adding Pattern variants to SurfaceExpression or converting Pattern to use Arc<SurfaceNode>.
+The design specifies `SurfaceMatchArm { pattern: Arc<SurfaceNode>, ... }` but the current implementation uses `Spanned<Pattern>` for the pattern field, keeping the existing `Pattern` enum intact. The pattern→SurfaceNode migration is deferred — it would require adding Pattern variants to SurfaceExpression or converting Pattern to use `Arc<SurfaceNode>`.
 
 ### `SurfaceExpression` is not `Send+Sync` in Sprint 1 — fixed at Part E
 

@@ -252,7 +252,7 @@ See [Formal Gradual Typing](gradual-typing.md) §Automatic Boundary Guards for t
 
 **FD improvement failure** — when no instance matches the ground arg types:
 
-```
+```text
 no Add instance for (Bool, String)
   at: [+ flag message]  line 7
   registered instances: (Int, Int), (Float, Float), (Int, Float), (Float, Int)
@@ -260,7 +260,7 @@ no Add instance for (Bool, String)
 
 **Depth limit exceeded** — when a resolver's type-stage evaluation hits the recursion limit:
 
-```
+```text
 type-stage reduction depth exceeded while computing MergeResult(ServerBase, ServerOpts)
   at: [merge base opts]  line 12
   check resolver for infinite recursion or increase --type-stage-depth
@@ -268,7 +268,7 @@ type-stage reduction depth exceeded while computing MergeResult(ServerBase, Serv
 
 **Instance coherence violation** — at class declaration time:
 
-```
+```text
 consistency violation for class Add:
   arm [pattern [a@Int b@Int c@Int]] at line 5
   arm [pattern [a@Int b@Int c@Float]] at line 6

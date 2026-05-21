@@ -34,7 +34,7 @@ substitute anywhere a `NetCap` is accepted.
 
 **Protocol method:**
 
-```
+```text
 [connect connector Transport host port opts] → Handle@[... Stream|Datagram ...]
 ```
 
@@ -78,7 +78,7 @@ WgConnector: [
 
 ### Handle Types for Network Connections
 
-```
+```text
 connect     connector Tcp  host port      → Handle@[Binary Readable Writable Stream]
 connect     connector Udp  host port      → Handle@[Binary Readable Writable Datagram]
 tls-connect connector Tcp  host port opts → Handle@[Binary Readable Writable Stream Tls]
@@ -123,7 +123,7 @@ A single-shot `http-get` creates and closes a connection per request.
 For connection reuse (required for HTTP/2 multiplexing), use
 `http-connect` to obtain an `HttpConn` value:
 
-```
+```text
 http-connect connector host port opts → HttpConn
 ```
 
@@ -430,7 +430,7 @@ allowlist `ENTRY` (hostname, `host:port`, or `*.glob`).
 Multiple `--cap-net` flags with the same NAME accumulate into one
 NetCap allowlist:
 
-```
+```sh
 tinct run --cap-net api=api.internal --cap-net api=metrics.internal script.llt
 # $api allows both hosts
 ```

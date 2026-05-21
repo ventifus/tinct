@@ -9,15 +9,14 @@ What would it take to formalize tinct's relationship with gradual typing
 
 tinct uses `Any` as both top and bottom of the type lattice:
 
-```
+```text
 τ <: Any    [S-ANY-TOP]
 Any <: τ    [S-ANY-BOT]
 ```
 
 This violates antisymmetry (τ <: Any ∧ Any <: τ does not imply τ = Any) and
 makes the subtype relation unsound as a partial order. It is documented as
-intentional for tinct's gradual type system (doc/06-type-inference.md §Subtyping, Limitation
-# 5).
+intentional for tinct's gradual type system (doc/06-type-inference.md §Subtyping, Limitation 5)
 
 `Any` currently serves multiple roles:
 
@@ -52,7 +51,7 @@ intentional for tinct's gradual type system (doc/06-type-inference.md §Subtypin
 In proper gradual typing, the unknown type `?` relates to other types via a
 **consistency relation** (`~`), not subtyping:
 
-```
+```text
 τ ~ ?        (? is consistent with everything)
 ? ~ τ        (symmetric)
 Int ~ Int     (reflexive on concrete types)
@@ -170,7 +169,7 @@ and `Unknown ~ String` do not imply `Int ~ String`.
 Every point where `Unknown` meets a concrete type is a blame boundary that
 needs a runtime check:
 
-```
+```text
 Γ ⊢ f : Fn(Int → Int),  Γ ⊢ x : Unknown
 ──────────────────────────────────────────
 Γ ⊢ [f x] ⇒ Int
@@ -234,7 +233,7 @@ type checker's elaboration pass.
 When a runtime check fails, the error message identifies both the failure
 point and the `Unknown` origin:
 
-```
+```text
 type assertion failed at line 5: expected Int, got String
   asserted by: [@Int ...] at line 5
   value originated from: unannotated parameter x at line 3
@@ -242,7 +241,7 @@ type assertion failed at line 5: expected Int, got String
 
 For automatic insertion at implicit boundaries:
 
-```
+```text
 type mismatch at line 12: add expected Int for first argument
   blame: value from line 7 (from-json result, Unknown type)
   untyped boundary at line 7 is responsible
@@ -293,7 +292,7 @@ create a blame boundary for the upstream section's output.
 `Unknown` in record fields means "this field has unknown type." Row
 consistency must handle:
 
-```
+```text
 is_consistent(Record({x: Int, y: Unknown}), Record({x: Int, y: String}))
 → true  (because Unknown ~ String)
 ```
@@ -301,7 +300,7 @@ is_consistent(Record({x: Int, y: Unknown}), Record({x: Int, y: String}))
 Open records with `Unknown` tails are consistent with any record that has
 the known fields:
 
-```
+```text
 is_consistent(Record({x: Int, ...Unknown}), Record({x: Int, y: String}))
 → true
 ```
@@ -468,7 +467,7 @@ ThunkState::Guarded {
 
 Update error reporting to emit the blame provenance chain. Error format:
 
-```
+```text
 type assertion failed at line 5: expected Int, got String
   asserted by: [@Int ...] at line 5
   value originated from: unannotated parameter x at line 3
@@ -505,7 +504,7 @@ particular value. With Phase 3b, each `---` boundary is an implicit
 TypeAssert over the document section interface. A type failure deep in section
 3 can report:
 
-```
+```text
 type mismatch: transform expected [name: Str  age: Int], got Unknown
   blame: value produced in section 1 (line 12, untyped from-json result)
   untyped boundary: --- at line 30

@@ -51,18 +51,25 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_convert.rs` (bridge no longer needed) (`src/`)
 - [ ] `just build` + `just test` passes — this is the true first checkpoint
 
-### E2-desugar-cutover: Delete desugar.rs + migrate 76 callers
+### E2-desugar-cutover: Rewrite desugar pass for SurfaceExpression + migrate callers
 
-**Depends on:** E1-eval-cutover (eval no longer needs desugared Expr)
+**Depends on:** E1-eval-cutover (eval no longer needs desugared Expr) ✅ done
 
-- [ ] **Delete `src/desugar.rs`** — `$_` desugaring is now done by `stdlib/desugar.llt` (commit f6a41d2) (`src/desugar.rs`)
-- [ ] **Remove `desugar_file()` calls from `src/typecheck.rs`** (41 callers) — typechecker now takes `SurfaceProgram` via `typecheck_surface_program()` exclusively; delete `typecheck_file()` bridge (`src/typecheck.rs`)
-- [ ] **Remove `desugar_file()` calls from `src/lib.rs`** (10 callers) — public API changes to use `SurfaceProgram` directly (`src/lib.rs`)
-- [ ] **Remove `desugar_file()` calls from `src/main.rs`** (6 callers) — CLI commands use `SurfaceProgram` directly (`src/main.rs`)
-- [ ] **Remove `desugar_file()` from `src/lsp/analysis.rs`, `lsp/document.rs`** (3 callers) — LSP uses Surface types (`src/lsp/`)
-- [ ] **Remove `desugar_file()` from remaining callers** (`src/eval_pipeline.rs` 3, `src/builtins.rs` 2, `src/imports.rs` 2, `src/resolve.rs` 1, `src/formatter.rs` 1, `src/repl.rs` 1) (`src/`)
-- [ ] **Delete `src/eval_pipeline.rs`** — migrate lib.rs/main.rs/repl.rs callers to tinct `cli-pipeline` via invoke_function (`src/`)
-- [ ] **`just build` passes** — second checkpoint
+- [x] Decide `$_` desugar path — **Option B: Surface-level desugar pass.** Write `desugar_surface_program(program: &mut SurfaceProgram)` and `desugar_surface_node(node: &mut Arc<SurfaceNode>, depth: usize)` in `src/desugar.rs`, with identical DIRECT/WRAP semantics adapted for `SurfaceExpression`/`Arc<SurfaceNode>`. Option (a) parser integration rejected: frame stack is bottom-up but WRAP requires top-down parent context. Option (c) `stdlib/desugar.llt` rejected: circular — typecheck runs before eval, stdlib desugar requires eval to run first. `stdlib/desugar.llt` remains valid as a metaprogramming tool only. See `/rnd` session 2026-05-21.
+
+- [ ] **Write Surface desugar functions in `src/desugar.rs`** — add `desugar_surface_program(program: &mut SurfaceProgram)` and `desugar_surface_node(node: &mut Arc<SurfaceNode>, depth: usize)` alongside existing Expr-based functions. Same DIRECT predicate and WRAP-CALL/WRAP-DICT/WRAP-DOT/WRAP-PIPE rules, adapted for `SurfaceExpression` match arms. Use `Arc::make_mut` for in-place mutation. Set `desugared: true` on generated `SurfaceExpression::Fn` nodes. (`src/desugar.rs`)
+
+- [ ] **Migrate production callers** — in lib.rs (10), main.rs (6), lsp/analysis.rs + lsp/document.rs (3), builtins.rs (2), imports.rs (2), eval_pipeline.rs (3), builtins_meta.rs (1), formatter.rs (1), repl.rs (1), resolve.rs (1): replace `desugar_file(&mut file.node)` with `desugar_surface_program(&mut output.program)` before `surface_program_to_file()`. Downstream File-based passes receive already-desugared AST; no further changes needed. (`src/`)
+
+- [ ] **Migrate typecheck.rs test callers** (41 callers) — test pattern `surface_program_to_file → desugar_file` becomes `desugar_surface_program → surface_program_to_file`; `typecheck_file()` bridge is unchanged and stays. (`src/typecheck.rs`)
+
+- [ ] **Migrate eval.rs test callers of `desugar_expr()`** (5 callers) — replace with `desugar_surface_node()`. (`src/eval.rs`)
+
+- [ ] **Delete Expr-based functions from `src/desugar.rs`** — remove `desugar_file()`, `desugar_expr()`, `desugar_document()` and all helpers that import `Expr`/`File`/`Document`. File now contains only Surface-based functions and zero old-AST imports. (`src/desugar.rs`)
+
+- [ ] **`just build` passes** — checkpoint
+
+- [ ] **Verify 22 `$_` corpus tests pass** — confirms Surface desugar is semantically equivalent to old Expr desugar (`tests/corpus/`)
 
 ### E3-bridge-cutover: Delete bridge files + old types from ast.rs
 
@@ -150,19 +157,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Update `BuiltinFn` to use `Arc<Thunk>` — **DONE**
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
-
-### sprint-2b-shim-removal: Remove ThunkStateGuard compatibility shim
-
-**Goal:** Eliminate the unsafe thread-local compatibility shim by migrating all 66 `.state()` callers to use ThunkInner API directly. This is the prerequisite for making eval async.
-**Approach:** For each call site, replace `.state()` pattern match with the appropriate direct ThunkInner call: `take_unevaluated()`, `get_value()`, `is_materialized()`, `cache_failure()`, `set_materialized()`.
-
-- [ ] Read `src/eval.rs` and find all 66 `.state()` call sites — group by pattern: (a) take-and-evaluate (`Unevaluated`/`Surface`/`Builtin`/`Call`/`Guarded`), (b) read-only check (`Materialized`/`Failed`/`InProgress`), (c) restore (`set_state`) (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Migrate group (a) take-and-evaluate callers in `eval.rs` — replace `match thunk.state() { UnevaluatedState::Expr ... }` with `match thunk.take_unevaluated()? { UnevaluatedState::Expr ... }` (`src/eval.rs`)
-- [ ] Migrate group (a) take-and-evaluate callers in `eval_materialize.rs` (`src/eval_materialize.rs`)
-- [ ] Migrate group (b) read-only check callers — `thunk.is_materialized()`, `thunk.get_value()`, `thunk.get_error()` (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Migrate group (c) restore callers — `thunk.restore_unevaluated(state)`, `thunk.set_materialized(v)`, `thunk.cache_failure(e)` (replacing `set_state(ThunkState::X)`) (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Delete `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum from `src/value.rs` (`src/value.rs`)
-- [ ] `just build` + `just test` passes after this sprint
 
 ### sprint-2b-eval-async: Make eval + materialize async fn
 
@@ -338,6 +332,8 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 ---
 
 ## Known Bugs
+
+- [ ] **`just docgen` fails with `[E020] arity mismatch`** at `[include %libdir "strings.llt"]` in `scripts/docgen.llt:13`. The `include` function (now defined in prelude after include-decomp) causes an arity error in the docgen evaluation context. Root cause unknown — likely a multi-document pipeline scoping issue with how prelude's `include` is resolved in document 1 of docgen.llt. When fixed: `doc/lib/*.md` will regenerate with correct `##` function headings (already updated in render-entry), and `"MD001": false` can be removed from `.markdownlint-cli2.jsonc`. (`scripts/docgen.llt`, `src/`, `stdlib/prelude.llt`)
 
 - [x] `just test-lib` fails with exit 101. **Fixed (2026-05-19):** Root cause was a parser bug in `src/parser.rs`: `pop_last_value_from_frame` in the `Token::Dot` handler correctly handles `CallArg::Positional` but returns a parse error for `CallArg::Named`. This caused `%: state.prev` in `eval-document-runtime` to fail — the `%` was consumed as the named-arg key, then `state` was consumed as its value (before `.prev` was attached via dot-access). Fix: replaced `%: state.prev` with a let-binding `[prev-val: state.prev]` + `%: prev-val` in `stdlib/prelude.llt::eval-document-runtime`. Also added `expand_macros_in_ctx` to `src/expand.rs` (reuses existing stdlib env when `builtin_expand` is called from within evaluation, eliminating the redundant stdlib reload). All 4 `test_syntax_llt_fn_*` tests pass; `just test-lib` exits 0.
 
@@ -541,6 +537,14 @@ Whatif: `doc/whatif/chr-unification.md` (Accepted 2026-05-16). Implementation ch
 - [ ] Wire `process_deferred_equalities` into the inference loop — call it after each unification round when deferred equalities are non-empty (`src/type_unify.rs`, `src/typecheck.rs`)
 - [ ] The `#[allow(dead_code)]` on `process_deferred_equalities` at `src/type_unify.rs:2135` will clear once wired (`src/type_unify.rs:2135`)
 - [ ] `just test` passes
+
+### type-warning-readability: Improve T013 ambiguous type variable error reporting
+
+**Context:** T013 warnings currently report internal inference variable names like `_t86` instead of the user-visible source variable that introduced the constraint. Example: `warning[T013]: ambiguous type variable '_t86' in constraint Showable: appears in constraint but not in the type — constraint will be silently dropped`. The user cannot tell which declaration or expression introduced `_t86`.
+
+- [ ] In the T013 warning emitter (`src/typecheck.rs` or `src/type_unify.rs`), look up the source variable name that was unified with `_t86` and include it in the message (`src/typecheck.rs`)
+- [ ] If no source name exists (truly fresh inference variable), fall back to reporting the expression span and annotation context instead of the raw internal name
+- [ ] Add a corpus test: `tests/corpus/eval/errors/t013_ambiguous_type_var.llt-eval` that verifies the message contains a user-readable name
 
 ### unknown-elimination: Eliminate `Type::Unknown` from inference output
 

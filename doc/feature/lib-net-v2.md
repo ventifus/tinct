@@ -128,7 +128,7 @@ MyConnector: [
 
 A Layer is any function that takes a Handle and returns a Handle with augmented capabilities:
 
-```
+```text
 Layer: Handle@R → Handle@[R ∪ NewCaps]
 ```
 
@@ -350,7 +350,7 @@ WebSocket upgrade and framing (RFC 6455):
 
 ### Stdlib Layout
 
-```
+```text
 stdlib/
   prelude.llt          # Auto-loaded
   net.llt              # Networking fundamentals: fetch, http-get, URI utils

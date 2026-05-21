@@ -60,13 +60,16 @@ is an intersection or negation type, not a union member. Examples:
 Subtyping: `A <: B` iff `A & ~B` is uninhabited. Subtyping is decidable and always
 terminates on well-formed inputs (Chau & Parreaux 2026, Theorem 7.6).
 
+Subtyping: `A <: B` iff `A & ~B` is uninhabited. Subtyping is decidable and always
+terminates on well-formed inputs (Chau & Parreaux 2026, Theorem 7.6).
+
 ### Why Negation Is Not Optional
 
 Negation types (`~A`) are essential to the constraint solver, not just a user-facing
 annotation. The core difficulty with union/intersection types in constraint solving is
 constraints of the form:
 
-```
+```text
 τ₁ ≤ τ₂ ∨ α     (union on the right — a type variable α appears in a union)
 α ∧ τ₁ ≤ τ₂     (intersection on the left — type variable α is intersected)
 ```
@@ -75,7 +78,7 @@ Without negation, the solver must backtrack or guess which disjunct to pursue. W
 negation, these are rewritten losslessly using Boolean algebra (Parreaux & Chau 2022,
 §3.2.1, C-Var1/2 rules):
 
-```
+```text
 τ₁ ≤ τ₂ ∨ α   →   τ₁ & ~τ₂ ≤ α     (move τ₂ to left side as ~τ₂)
 α & τ₁ ≤ τ₂   →   α ≤ τ₂ | ~τ₁     (move τ₁ to right side as ~τ₁)
 ```
@@ -91,7 +94,7 @@ Single-field record types `{f: τ}` are atoms of the Boolean algebra. Multi-fiel
 records are their intersections. Width subtyping is then a theorem — a dict with more
 fields is a subtype of one with fewer, because intersection elimination gives `A & B <: A`:
 
-```
+```text
 {name: Str} & {age: Int}  <:  {name: Str}
 ```
 
@@ -128,7 +131,7 @@ result: [try risky]
 
 BAS's S-RcdTop rule collapses unions of records with disjoint field sets to the top type:
 
-```
+```text
 ⊤  ≤  {x: τ} ∨ τ'    when field x is not present in τ'
 ```
 
@@ -138,7 +141,7 @@ value at all." S-RcdTop is required for the Boolean algebra to remain well-forme
 Nominal class tags solve this. `#Ok` and `#Err` are nominal identities that remain
 disjoint under the Boolean algebra via S-ClsBot:
 
-```
+```text
 #Ok & #Err ≤ Never   (unrelated nominal tags annihilate — no value can be both)
 ```
 

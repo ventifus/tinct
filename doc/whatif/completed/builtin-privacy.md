@@ -14,7 +14,7 @@ This is the strongest possible form of primitive privacy: user code can call not
 
 The env chain is:
 
-```
+```text
 bootstrap_env = { include, %libdir, %pwd, %stdin, %clock }
   ↓ (prelude auto-loaded here using [include %rust ...])
 prelude_output_env = everything prelude.llt defines

@@ -277,7 +277,7 @@ These capabilities from other macro systems are **intentionally not included**:
 
 Parse-stage macros run in a **transformation pass** between parsing and type-checking:
 
-```
+```text
 parse → [post-parse transformation pass] → type-check → eval
 ```
 

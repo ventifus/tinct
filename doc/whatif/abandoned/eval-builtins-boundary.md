@@ -51,7 +51,7 @@ The circular dependency is currently safe and documented. The boundary is establ
 
 Extract the subset of eval that builtins need into a thin `eval_core.rs`:
 
-```
+```text
 src/eval_core.rs:
   - EvalContext
   - EvalResult<T>  

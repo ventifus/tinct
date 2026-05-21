@@ -60,7 +60,7 @@ both branches of an `if`.
 The type checker gains a dedicated rule for `if` (and `cond`, `when`,
 `unless` by extension):
 
-```
+```text
 Γ ⊢ cond : Bool
 Γ_T = narrow(Γ, cond, true)
 Γ_F = narrow(Γ, cond, false)

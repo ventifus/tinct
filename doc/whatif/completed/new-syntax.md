@@ -338,7 +338,7 @@ pragmas), or include one:
 **Formal semantics** — extends DOC-PIPELINE (doc/09-documents.md §Document
 Structure):
 
-```
+```text
 Σ₀ = {}                                     (named-section map)
 θ₀ = input_thunk
 
@@ -444,7 +444,7 @@ output does not conform to `yaml.llt`'s input contract."
 
 **Formal semantics** — multi-file pipeline:
 
-```
+```text
 eval_pipeline(files, ρ_base, input_thunk):
   θ₀ = input_thunk
   ∀i ∈ 1..n:

@@ -161,7 +161,7 @@ For non-union scrutinees (e.g., `Int`, `String`, `Record`), exhaustiveness is no
 
 If the scrutinee matches none of the provided patterns, a `MatchError` is raised at runtime:
 
-```
+```text
 error: no match arm satisfied
   at match expression line 42
 ```

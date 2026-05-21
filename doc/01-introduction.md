@@ -4,7 +4,7 @@
 
 **One language for data AND logic.** Tinct is a unified data representation and transformation language. It combines the simplicity of JSON with the power of functional transformation languages like JSONnet and jq, with lazy evaluation throughout.
 
-```
+```text
 Traditional:  JSON (data) + jq (transformation) = Two languages
 Tinct:          Tinct (data + transformation)       = One language
 ```
@@ -19,7 +19,7 @@ Tinct:          Tinct (data + transformation)       = One language
 
 Data flows through stages. Within a file, `---` separates independent documents. Each document's output becomes `%` for the next:
 
-```
+```text
 file.llt
 ├── document 1 (data)         → % for doc 2
 ├── ---

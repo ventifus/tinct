@@ -78,7 +78,7 @@ This distinction preserves the "everything is a dict" invariant for data while e
 
 A sequence is a cons cell: a head value and a tail that is itself a sequence (or empty dict `[]` for end-of-sequence).
 
-```
+```text
 Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)
 ```
 
@@ -238,7 +238,7 @@ Placeholder is a pre-construction sentinel excluded from all materialization rul
 
 The valid state transitions form an almost-acyclic directed graph — nearly all transitions move strictly forward, with four backward edge exceptions: `InProgress → Guarded`, `InProgress → Unevaluated`, `InProgress → PendingBuiltin`, and `InProgress → PendingCall`, all of which restore state when a non-cacheable error (typically `DepthExceeded`) occurs and the thunk must be retried (see Exception below).
 
-```
+```text
 Placeholder ───────────────────────────────→ {any non-InProgress state}
 
 Unevaluated ──────────┐
@@ -259,7 +259,7 @@ Transition rules (each maps to one `take_*` or `set_state` call in `src/value.rs
 | PendingCall → InProgress | `take_pending_call()` | Atomic (`mem::replace`) |
 | Guarded → InProgress | `take_guarded()` | Atomic (`mem::replace`) |
 | InProgress → Materialized | `set_state(Materialized(v))` | Direct write |
-| InProgress → Failed | `cache_failure(err)` | Via `transition()` |
+| InProgress → Failed | `cache_failure(err)` | Direct write (clears `unevaluated`, sets `result` via OnceCell) |
 | InProgress → Unevaluated | `set_state(Unevaluated(...))` | Direct write — **backward edge**, non-cacheable errors only; restores original state for retry |
 | InProgress → Guarded | `set_state(Guarded(...))` | Direct write — **backward edge**, non-cacheable errors from builtins only; restores original state to allow retry |
 | InProgress → PendingBuiltin | `set_state(PendingBuiltin(...))` | Direct write — **backward edge**, non-cacheable errors only; restores original state for retry |
@@ -291,7 +291,7 @@ Materialization dispatches on the current state to produce a value or error. Rul
 
 **[MATERIALIZE-CACHED]**
 
-```
+```text
 θ.state = Materialized(v)
 ───────────────────────────
 materialize(θ) ⇒ v
@@ -299,7 +299,7 @@ materialize(θ) ⇒ v
 
 **[MATERIALIZE-FAILED]**
 
-```
+```text
 θ.state = Failed(e)
 ───────────────────────────
 materialize(θ) ⇒ error(e')
@@ -309,7 +309,7 @@ The materialization span update has three cases (`eval.rs:876-896`): (1) if e ha
 
 **[MATERIALIZE-CYCLE]**
 
-```
+```text
 θ.state = InProgress
 ───────────────────────────
 materialize(θ) ⇒ error("circular dependency")
@@ -333,7 +333,7 @@ The cycle error is discovered lazily — only when something tries to access `x`
 
 **[MATERIALIZE-GUARD]**
 
-```
+```text
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
 materialize(θ_inner) ⇒ v
@@ -345,7 +345,7 @@ materialize(θ) ⇒ v
 
 **[MATERIALIZE-GUARD-INNER-ERR]** — inner thunk materialization fails with a cacheable error:
 
-```
+```text
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
 materialize(θ_inner) ⇒ error(e)    where e.is_cacheable()
@@ -356,7 +356,7 @@ materialize(θ) ⇒ error(e)
 
 **[MATERIALIZE-GUARD-NONCACHEABLE]** — inner thunk materialization fails with a non-cacheable error (e.g., DepthExceeded from a builtin):
 
-```
+```text
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
 materialize(θ_inner) ⇒ error(e)               where ¬e.is_cacheable()
@@ -371,7 +371,7 @@ Note: `DepthExceeded` can arise from the continuation stack depth guard (`check_
 
 **[MATERIALIZE-GUARD-TYPE-ERR]** — inner thunk succeeds but value does not inhabit the expected type:
 
-```
+```text
 θ.state = Guarded(θ_inner, τ, path, span)
 θ.state ← InProgress
 materialize(θ_inner) ⇒ v
@@ -386,7 +386,7 @@ Guarded thunks implement proxy contracts (Findler & Felleisen 2002) for TypeAsse
 
 **[MATERIALIZE-UNEVALUATED]**
 
-```
+```text
 θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress                          (blackhole)
 eval(expr, env, Σ_θ) ⇒ θ'
@@ -400,7 +400,7 @@ materialize(θ) ⇒ v
 
 **[MATERIALIZE-UNEVALUATED-ERR]**
 
-```
+```text
 θ.state = Unevaluated(expr, env, Σ_θ)
 θ.state ← InProgress
 eval(expr, env, Σ_θ) ⇒ θ'
@@ -412,7 +412,7 @@ materialize(θ) ⇒ error(e)
 
 **[MATERIALIZE-BUILTIN]**
 
-```
+```text
 θ.state = PendingBuiltin(f, args, named, cs, Σ_θ)
 θ.state ← InProgress
 f(args, named, Σ_θ, cs) ⇒ θ'
@@ -426,7 +426,7 @@ The builtin receives `BuiltinArgs { args, named, call_span, ctx }` — no depth 
 
 **[MATERIALIZE-CALL]**
 
-```
+```text
 θ.state = PendingCall(f_θ, args, named, cs, caller_env, Σ_θ)
 θ.state ← InProgress
 materialize(f_θ) ⇒ Function(params, body, env)
@@ -439,7 +439,7 @@ materialize(θ) ⇒ v
 
 **[MATERIALIZE-CALL-BUILTIN]**
 
-```
+```text
 θ.state = PendingCall(f_θ, args, named, cs, caller_env, Σ_θ)
 θ.state ← InProgress
 materialize(f_θ) ⇒ Builtin(func)
@@ -697,7 +697,7 @@ Rules use the judgment form `δ(f, [θ₁, ..., θₙ], cs) ⇒ r` where f is th
 
 **[DELTA-IF-TRUE]**
 
-```
+```text
 materialize(θ_cond) ⇒ true
 ───────────────────────────
 δ(if, [θ_cond, θ_then, θ_else], cs) ⇒ θ_then
@@ -705,7 +705,7 @@ materialize(θ_cond) ⇒ true
 
 **[DELTA-IF-FALSE]**
 
-```
+```text
 materialize(θ_cond) ⇒ false
 ───────────────────────────
 δ(if, [θ_cond, θ_then, θ_else], cs) ⇒ θ_else
@@ -715,7 +715,7 @@ materialize(θ_cond) ⇒ false
 
 **[DELTA-SEQ]**
 
-```
+```text
 ───────────────────────────
 δ(seq, [θ_head, θ_tail], cs) ⇒ Materialized(Seq(Rc::clone(θ_head), Rc::clone(θ_tail)))
 ```
@@ -724,7 +724,7 @@ No arguments are materialized. Both pass through as thunks within the Seq value.
 
 **[DELTA-HEAD]**
 
-```
+```text
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 ───────────────────────────
 δ(head, [θ_xs], cs) ⇒ θ_h
@@ -732,7 +732,7 @@ materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 
 **[DELTA-TAIL]**
 
-```
+```text
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 ───────────────────────────
 δ(tail, [θ_xs], cs) ⇒ θ_t
@@ -742,7 +742,7 @@ DELTA-HEAD and DELTA-TAIL materialize the container to verify it is a Seq, but r
 
 **[DELTA-COLLECT-EMPTY]**
 
-```
+```text
 materialize(θ_xs) ⇒ Dict({})
 ───────────────────────────
 δ(collect, [θ_xs], cs) ⇒ Materialized(Dict({}))
@@ -750,7 +750,7 @@ materialize(θ_xs) ⇒ Dict({})
 
 **[DELTA-COLLECT]**
 
-```
+```text
 materialize(θ_xs) ⇒ Seq(θ_h₁, θ_t₁)
 materialize(θ_t₁) ⇒ Seq(θ_h₂, θ_t₂)
 ...
@@ -763,7 +763,7 @@ Collect materializes the Seq *spine* (all tail thunks) but head thunks pass thro
 
 **[DELTA-ITERATE]**
 
-```
+```text
 ───────────────────────────
 δ(iterate, [θ_f, θ_x], cs) ⇒ Materialized(Seq(
     Rc::clone(θ_x),
@@ -775,7 +775,7 @@ Fully lazy: neither f nor x is materialized. The result Seq's head is x (unchang
 
 **[DELTA-TRY]**
 
-```
+```text
 materialize(θ_func) ⇒ Function(params, body, env)    where |params| = 0
 eval(body, env) ⇒ θ_body
 materialize(θ_body) ⇒ v
@@ -793,7 +793,7 @@ materialize(θ_body) ⇒ error(e)
 
 **[DELTA-MAP-DICT]**
 
-```
+```text
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 ∀i. θ'ᵢ = PendingCall(θ_f, [θᵢ], ∅, cs)
 ───────────────────────────
@@ -804,7 +804,7 @@ materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 
 **[DELTA-MAP-SEQ]**
 
-```
+```text
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 θ'_h = PendingCall(θ_f, [θ_h], ∅, cs)
 θ'_t = PendingBuiltin(map, [Rc::clone(θ_f), θ_t], ∅, cs)
@@ -816,7 +816,7 @@ Recursive structure: head is a PendingCall, tail is a PendingBuiltin that will a
 
 **[DELTA-FILTER-DICT]**
 
-```
+```text
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 θ_step = PendingBuiltin(filter_dict_step, [θ_pred, θ_xs_mat, θ_keys, θ_idx], ∅, cs)
     where θ_xs_mat, θ_keys, θ_idx are pre-computed materialized thunks
@@ -828,7 +828,7 @@ The predicate `θ_pred` is not materialized at the top level — it is captured 
 
 **[DELTA-FILTER-SEQ]**
 
-```
+```text
 materialize(θ_xs) ⇒ Seq(_, _)
 θ_step = PendingBuiltin(filter_seq_step, [θ_pred, θ_xs], cs)
 ───────────────────────────
@@ -839,7 +839,7 @@ The step function receives the *original seq thunk* (not destructured head/tail)
 
 **[DELTA-REDUCE-DICT]**
 
-```
+```text
 materialize(θ_xs) ⇒ Dict({k₁↦θ₁, ..., kₙ↦θₙ})
 acc₀ = θ_init
 ∀i. accᵢ = PendingCall(θ_f, [accᵢ₋₁, θᵢ], ∅, cs)
@@ -851,7 +851,7 @@ Builds a chain of PendingCall thunks without materializing any values. The entir
 
 **[DELTA-REDUCE-SEQ]**
 
-```
+```text
 materialize(θ_xs) ⇒ Seq(θ_h, θ_t)
 θ_step = PendingBuiltin(reduce_seq_step, [θ_f, θ_init, θ_h, θ_t], ∅, cs)
 ───────────────────────────
@@ -864,7 +864,7 @@ Seq reduction uses a step function that materializes the tail to check for termi
 
 Six builtins (`map`, `filter`, `take`, `drop`, `reduce`, `join`) dispatch on the runtime type of their collection argument:
 
-```
+```text
 materialize(θ_xs) ⇒ v
     v = Dict(...)  →  apply Dict-specific rule
     v = Seq(...)   →  apply Seq-specific rule
@@ -893,7 +893,7 @@ Standard library functions defined in `stdlib/prelude.llt` inherit their materia
 
 **Inheritance proof sketch:** Each derived function's selectivity follows by inlining its definition and applying DELTA-IF-TRUE/DELTA-IF-FALSE. For `$and`:
 
-```
+```text
 and(θ_a, θ_b)
   = if(θ_a, θ_b, false)
   DELTA-IF-TRUE:  materialize(θ_a) ⇒ true  → θ_b    (b is materialized only when the caller materializes the result)
@@ -1170,7 +1170,7 @@ The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively 
 
 The migration algorithm traces from `%` (the section result) and rewrites arena handles to `Rc`-backed storage:
 
-```
+```text
 migrate(value, arena, thunk_table, env_table) → Rc<Thunk>:
   for each ThunkId in value:
     if thunk_table[id] exists:     return thunk_table[id]  (preserves sharing)
@@ -1368,7 +1368,7 @@ Quoted expressions have type `Dict`. No special type rules — `quote` is transp
 
 After parsing, the pipeline inserts an expansion phase:
 
-```
+```text
 parse → expand_macros → desugar → resolve → typecheck → eval
 ```
 

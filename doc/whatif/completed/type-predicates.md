@@ -73,7 +73,7 @@ builtin — "list-ness" is a convention, not a type distinction.
 Add one type predicate builtin per `Value` variant (excluding `Seq`,
 which already has `seq?`):
 
-```
+```text
 int?    : Any → Bool
 float?  : Any → Bool
 num?    : Any → Bool    # true for Int or Float

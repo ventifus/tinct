@@ -11,7 +11,7 @@ features as macros rather than new Rust AST variants and evaluator cases?
 
 tinct's pre-typecheck pipeline is:
 
-```
+```text
 parse → desugar_file() → resolve → typecheck → eval
 ```
 

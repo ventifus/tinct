@@ -125,7 +125,7 @@ subsequent steps.
 
 Formally, the desugaring is:
 
-```
+```text
 [fn [params] e1 e2 ... en]
   ==>
 [fn [params] (let* e1 (let* e2 (... en)))]

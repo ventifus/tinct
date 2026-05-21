@@ -59,7 +59,7 @@ evaluation. No runtime dispatch occurs.
 
 **Desugar rules:**
 
-```
+```text
 lhs | [f args...]  →  [f args... lhs]   # append lhs as final positional argument
 lhs | name         →  [name lhs]         # bare word: apply name as function to lhs
 lhs | other        →  [other lhs]        # any other expression: call it with lhs

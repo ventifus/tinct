@@ -13,7 +13,7 @@ Rémy-style row polymorphism for open/closed records.
 
 The subtype lattice is small and closed:
 
-```
+```text
 Any (top and bottom — gradual)
 ├── Number
 │   ├── Int
@@ -103,7 +103,7 @@ x@String                             # equivalent to x@[type: String]
 **Desugar rule.** Positional entries in an annotation dict are moved to the
 `type:` key as a list, preserving the existing annotation resolution path:
 
-```
+```text
 x@[T1 T2 ...named...]  →  x@[type: [T1 T2]  ...named...]
 x@[T]                  →  x@[type: T]         (single positional unwraps)
 x@T                    →  x@[type: T]         (existing shorthand, unchanged)
@@ -134,7 +134,7 @@ and deduplicated. `x@[Int Str]` and `x@[Str Int]` resolve to the same `Type` val
 
 Three new rules extend `is_subtype`:
 
-```
+```text
 [UNION-INJ-L]  A <: A | B
 [UNION-INJ-R]  B <: A | B
 [UNION-ELIM]   If A <: C and B <: C, then A | B <: C
@@ -254,7 +254,7 @@ problem; Simple-sub's concrete bounds help.
 Solve the dual-dispatch typing problem without union types via constrained
 polymorphism (see `doc/whatif/typeclasses.md`):
 
-```
+```text
 map : Functor f => (a → b) → f a → f b
 ```
 

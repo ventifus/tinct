@@ -2104,15 +2104,14 @@ fn all_thunks_materialized(val: &Value, ctx: &Arc<EvalContext>) -> bool {
         Value::Dict(map) => {
             for thunk_id in map.values() {
                 let thunk = ctx.get_thunk(*thunk_id);
-                let state = thunk.state();
-                if !matches!(&*state, crate::value::ThunkState::Materialized(_)) {
-                    return false;
-                }
-                // Recursively check the materialized value
-                if let crate::value::ThunkState::Materialized(ref inner_val) = &*state {
-                    if !all_thunks_materialized(inner_val, ctx) {
+                // Check if thunk is materialized
+                if let Some(inner_val) = thunk.try_get_materialized() {
+                    // Recursively check the materialized value
+                    if !all_thunks_materialized(&inner_val, ctx) {
                         return false;
                     }
+                } else {
+                    return false;
                 }
             }
             true
@@ -2123,64 +2122,54 @@ fn all_thunks_materialized(val: &Value, ctx: &Arc<EvalContext>) -> bool {
         } => {
             // Check head
             let head_thunk = ctx.get_thunk(*head_id);
-            let head_state = head_thunk.state();
-            if !matches!(&*head_state, crate::value::ThunkState::Materialized(_)) {
-                return false;
-            }
-            if let crate::value::ThunkState::Materialized(ref head_val) = &*head_state {
-                if !all_thunks_materialized(head_val, ctx) {
+            if let Some(head_val) = head_thunk.try_get_materialized() {
+                if !all_thunks_materialized(&head_val, ctx) {
                     return false;
                 }
+            } else {
+                return false;
             }
             // Check tail
             let tail_thunk = ctx.get_thunk(*tail_id);
-            let tail_state = tail_thunk.state();
-            if !matches!(&*tail_state, crate::value::ThunkState::Materialized(_)) {
-                return false;
-            }
-            if let crate::value::ThunkState::Materialized(ref tail_val) = &*tail_state {
-                if !all_thunks_materialized(tail_val, ctx) {
+            if let Some(tail_val) = tail_thunk.try_get_materialized() {
+                if !all_thunks_materialized(&tail_val, ctx) {
                     return false;
                 }
+            } else {
+                return false;
             }
             true
         }
         Value::Proxy { handler } => {
             // Check handler
             let handler_thunk = ctx.get_thunk(*handler);
-            let handler_state = handler_thunk.state();
-            if !matches!(&*handler_state, crate::value::ThunkState::Materialized(_)) {
-                return false;
-            }
-            if let crate::value::ThunkState::Materialized(ref handler_val) = &*handler_state {
-                if !all_thunks_materialized(handler_val, ctx) {
+            if let Some(handler_val) = handler_thunk.try_get_materialized() {
+                if !all_thunks_materialized(&handler_val, ctx) {
                     return false;
                 }
+            } else {
+                return false;
             }
             true
         }
         Value::Overlay(left, right) => {
             // Check left
             let left_thunk = ctx.get_thunk(*left);
-            let left_state = left_thunk.state();
-            if !matches!(&*left_state, crate::value::ThunkState::Materialized(_)) {
-                return false;
-            }
-            if let crate::value::ThunkState::Materialized(ref left_val) = &*left_state {
-                if !all_thunks_materialized(left_val, ctx) {
+            if let Some(left_val) = left_thunk.try_get_materialized() {
+                if !all_thunks_materialized(&left_val, ctx) {
                     return false;
                 }
+            } else {
+                return false;
             }
             // Check right
             let right_thunk = ctx.get_thunk(*right);
-            let right_state = right_thunk.state();
-            if !matches!(&*right_state, crate::value::ThunkState::Materialized(_)) {
-                return false;
-            }
-            if let crate::value::ThunkState::Materialized(ref right_val) = &*right_state {
-                if !all_thunks_materialized(right_val, ctx) {
+            if let Some(right_val) = right_thunk.try_get_materialized() {
+                if !all_thunks_materialized(&right_val, ctx) {
                     return false;
                 }
+            } else {
+                return false;
             }
             true
         }
@@ -2188,14 +2177,12 @@ fn all_thunks_materialized(val: &Value, ctx: &Arc<EvalContext>) -> bool {
             payload: Some(id), ..
         } => {
             let thunk = ctx.get_thunk(*id);
-            let state = thunk.state();
-            if !matches!(&*state, crate::value::ThunkState::Materialized(_)) {
-                return false;
-            }
-            if let crate::value::ThunkState::Materialized(ref inner_val) = &*state {
-                if !all_thunks_materialized(inner_val, ctx) {
+            if let Some(inner_val) = thunk.try_get_materialized() {
+                if !all_thunks_materialized(&inner_val, ctx) {
                     return false;
                 }
+            } else {
+                return false;
             }
             true
         }

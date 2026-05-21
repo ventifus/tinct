@@ -1,5 +1,7 @@
 //! Iterative materialization machinery: CEK continuation stack and force loop.
 //!
+//! Includes inline TypeAssert handling in force_step for correct lazy type validation.
+//!
 //! This module contains the core iterative evaluator (run/force_step/apply_cont)
 //! that materializes thunks without recursion. The CEK machine design is documented
 //! in doc/08-evaluation.md §Iterative Evaluator.
@@ -350,62 +352,52 @@ pub(crate) fn force_step(
     }
 
     // Early returns for already-resolved states
-    {
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Materialized(v) => return Action::Continue(Ok(v.clone())),
-            ThunkState::Failed(ref err) => {
-                let mut cloned = (**err).clone();
-                let mut should_update_cache = false;
-                if let Some(span) = mat_span {
-                    if cloned.materialization_span.is_none() {
-                        cloned.materialization_span = Some(span);
-                        should_update_cache = true;
-                    } else if cloned.materialization_span != Some(span)
-                        && !cloned.stack.iter().any(|f| f.span == span)
-                    {
-                        cloned.push_frame("materialized".to_string(), span);
-                        should_update_cache = true;
-                    }
-                }
-                if should_update_cache && cloned.kind.is_cacheable() {
-                    drop(state);
-                    thunk.set_state(ThunkState::Failed(Box::new(cloned.clone())));
-                }
-                return Action::Continue(Err(Box::new(cloned)));
-            }
-            ThunkState::InProgress => {
-                // Defer origin clone to error path only (hot path already returned at Materialized)
-                let origin = thunk.origin.clone();
-                let label = origin.as_deref().unwrap_or("thunk");
+    // Check Materialized state first (hot path)
+    if let Some(v) = thunk.try_get_materialized() {
+        return Action::Continue(Ok(v));
+    }
 
-                // Capture the eval_stack for cycle path reconstruction
-                let cycle_path = ctx.state.lock().unwrap().eval_stack.clone();
-
-                let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
-                if let Some(span) = mat_span {
-                    err = err.with_materialization_span(span);
-                }
-                let err_boxed: Box<EvalError> = err.into();
-                drop(state);
-                thunk.cache_failure(&err_boxed);
-                return Action::Continue(Err(err_boxed));
+    // Check Failed state — no ThunkStateGuard; reads directly from result cell.
+    if let Some(mut cloned) = thunk.get_cached_error() {
+        let mut should_update_cache = false;
+        if let Some(span) = mat_span {
+            if cloned.materialization_span.is_none() {
+                cloned.materialization_span = Some(span);
+                should_update_cache = true;
+            } else if cloned.materialization_span != Some(span)
+                && !cloned.stack.iter().any(|f| f.span == span)
+            {
+                cloned.push_frame("materialized".to_string(), span);
+                should_update_cache = true;
             }
-            ThunkState::Placeholder => {
-                panic!(
-                    "attempted to force a Placeholder thunk (span {:?}). \
-                     This indicates a letrec construction bug: all placeholder \
-                     slots must be filled via set_state() before evaluation begins.",
-                    thunk.span
-                );
-            }
-            ThunkState::Unevaluated { .. }
-            | ThunkState::PendingBuiltin { .. }
-            | ThunkState::PendingCall { .. }
-            | ThunkState::Guarded { .. }
-            | ThunkState::Surface { .. }
-            | ThunkState::AstNodeField { .. } => {}
         }
+        if should_update_cache && cloned.kind.is_cacheable() {
+            thunk.cache_failure(&cloned);
+        }
+        return Action::Continue(Err(cloned));
+    }
+
+    // Check InProgress state (cycle detection) — no ThunkStateGuard.
+    // NOTE: Placeholder thunks (new_placeholder) are also represented as
+    // (unevaluated=None, result=empty) and thus indistinguishable from InProgress
+    // at the ThunkInner storage level.  Treating them as InProgress produces a
+    // "circular dependency" error, which is acceptable — a forced Placeholder
+    // means a letrec construction bug, and the error message identifies the span.
+    if thunk.is_in_progress() {
+        // Defer origin clone to error path only (hot path already returned at Materialized)
+        let origin = thunk.origin.clone();
+        let label = origin.as_deref().unwrap_or("thunk");
+
+        // Capture the eval_stack for cycle path reconstruction
+        let cycle_path = ctx.state.lock().unwrap().eval_stack.clone();
+
+        let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
+        if let Some(span) = mat_span {
+            err = err.with_materialization_span(span);
+        }
+        let err_boxed: Box<EvalError> = err.into();
+        thunk.cache_failure(&err_boxed);
+        return Action::Continue(Err(err_boxed));
     }
 
     // INVARIANTS verified post-iterative-eval-b4 (2026-04-30):
@@ -504,6 +496,84 @@ pub(crate) fn force_step(
             }
         }
 
+        // Handle TypeAssert inline to enable iterative type validation.
+        // eval_core_expr(CoreExpr::TypeAssert) creates an Unevaluated(Expr::TypeAssert) thunk.
+        // Without special handling, force_step would call eval(Expr::TypeAssert) which
+        // creates another Unevaluated(Expr::TypeAssert) → infinite recursion.
+        // Instead, directly push TypeAssertCheck + Memoize continuations and materialize
+        // the inner expression, mirroring what eval_step does for Expr::TypeAssert.
+        if let Expr::TypeAssert {
+            expr: inner,
+            annotation,
+            resolved_type,
+        } = &expr.node
+        {
+            let inner_thunk =
+                match eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), &thunk_ctx) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let decorated = attach_materialization_context(
+                            e,
+                            mat_span.as_ref(),
+                            origin.as_deref(),
+                            thunk_span,
+                        );
+                        thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                        if decorated.kind.is_cacheable() {
+                            thunk.cache_failure(&decorated);
+                        } else {
+                            restore.restore(thunk);
+                        }
+                        return Action::Continue(Err(decorated));
+                    }
+                };
+            let resolved = resolved_type.borrow().clone();
+
+            // Fast path: if there is no type to check, skip type assertion entirely.
+            let has_type = match &annotation.node {
+                crate::ast::Annotation::Simple(_) => true,
+                crate::ast::Annotation::PropertyDict(_) => {
+                    annotation
+                        .node
+                        .get_property(crate::eval::DEFAULT_ANNOTATION_KEY)
+                        .is_some()
+                        || annotation_has_structural_fields(&annotation.node)
+                }
+                crate::ast::Annotation::Annotated(_, _) => true,
+            };
+
+            stack.push(Cont::Memoize(Box::new(MemoizeData {
+                thunk: Arc::clone(thunk),
+                origin,
+                thunk_span,
+                mat_span,
+                restore: Some(restore),
+                ctx: Arc::clone(&thunk_ctx),
+            })));
+
+            if resolved.is_none() && !has_type {
+                // No type check needed — just materialize the inner thunk directly.
+                return Action::Materialize {
+                    thunk: inner_thunk,
+                    mat_span,
+                };
+            }
+
+            let inner_span = inner_thunk.span;
+            stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
+                annotation: Box::new(annotation.clone()),
+                resolved: Box::new(resolved),
+                expr_span: expr.span,
+                thunk_span: inner_span,
+                env,
+                ctx: Arc::clone(&thunk_ctx),
+            })));
+            return Action::Materialize {
+                thunk: inner_thunk,
+                mat_span: Some(expr.span),
+            };
+        }
+
         match eval(expr, Arc::clone(&env), &thunk_ctx) {
             Ok(result_thunk) => {
                 stack.push(Cont::Memoize(Box::new(MemoizeData {
@@ -598,7 +668,7 @@ pub(crate) fn force_step(
                     // args/named are no longer needed; drop them implicitly.
                     // Pop from eval_stack before fast-path return
                     thunk_ctx.state.lock().unwrap().eval_stack.pop();
-                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                    thunk.set_materialized(value.clone());
                     Action::Continue(Ok(value))
                 } else {
                     // Move args/named into RestoreState — no clone needed.
@@ -647,11 +717,9 @@ pub(crate) fn force_step(
                 Action::Continue(Err(decorated))
             }
         }
-    } else if matches!(&*thunk.state(), ThunkState::PendingCall { .. }) {
-        let (func_thunk, args, named, call_span, caller_env, thunk_ctx) = thunk
-            .take_pending_call()
-            .expect("PendingCall state confirmed above; single-threaded execution prevents TOCTOU");
-
+    } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
+        thunk.take_pending_call()
+    {
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
@@ -721,7 +789,7 @@ pub(crate) fn force_step(
     } else {
         unreachable!(
             "force_step: all ThunkState variants are handled. \
-             Materialized/Failed/InProgress are early-returned at lines 1416-1453, \
+             Materialized/Failed/InProgress are early-returned at lines 354-399, \
              Unevaluated/PendingBuiltin/PendingCall/Guarded are processed above. \
              If this fires, a new ThunkState variant was added without updating force_step."
         )
@@ -748,7 +816,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                 Ok(value) => {
                     // Pop from eval_stack on successful materialization
                     ctx.state.lock().unwrap().eval_stack.pop();
-                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                    thunk.set_materialized(value.clone());
                     Action::Continue(Ok(value))
                 }
                 Err(e) => {
@@ -759,14 +827,14 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     } else if let Some(restore_state) = restore {
                         restore_state.restore(&thunk);
                     }
-                    // Note: when this Memoize was pushed from GuardedValidate's default
-                    // fallback path, restore is Some — GuardedValidate transferred the
-                    // RestoreState into this Memoize via restore.take() (see the three
-                    // Cont::Memoize pushes in Cont::GuardedValidate). Non-cacheable errors
-                    // from the default expr ARE handled by the else-if branch above when
-                    // restore is Some. restore: None only arises when Memoize was pushed
-                    // from a site where no restore state was available (e.g., top-level
-                    // thunk evaluation without a GuardedValidate ancestor).
+                    // restore is always Some when Memoize is pushed from the three
+                    // GuardedValidate default-fallback sites: each calls restore.take()
+                    // on a freshly-destructured GuardedValidateData whose restore field
+                    // starts as Some (set in force_step). restore is also Some for the
+                    // Unevaluated and PendingBuiltin Memoize paths. restore: None does
+                    // not currently arise from any push site; the else-if above is a
+                    // defensive guard for future Memoize push sites that may lack a
+                    // restore state (e.g., top-level eval with no deferred thunk).
                     Action::Continue(Err(e))
                 }
             }
@@ -926,7 +994,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // args/named are no longer needed; drop them implicitly.
                                     // Pop from eval_stack before fast-path return
                                     thunk_ctx.state.lock().unwrap().eval_stack.pop();
-                                    thunk.set_state(ThunkState::Materialized(value.clone()));
+                                    thunk.set_materialized(value.clone());
                                     Action::Continue(Ok(value))
                                 } else {
                                     // Move args/named into RestoreState — no clone needed.
@@ -1074,13 +1142,23 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             ) {
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict(new_entries);
-                                    thunk
-                                        .set_state(ThunkState::Materialized(guarded_value.clone()));
+                                    thunk.set_materialized(guarded_value.clone());
                                     Action::Continue(Ok(guarded_value))
                                 }
                                 Err(err) => {
                                     // Guard validation failed - use default if present
                                     if let Some((default_expr, default_env)) = default {
+                                        // Push to eval_stack to match the Memoize pop below.
+                                        // Guarded thunks don't push at force_step time (unlike
+                                        // Unevaluated/PendingBuiltin/PendingCall) because
+                                        // GuardedValidate normally exits via Action::Continue
+                                        // without a Memoize pop. Only the default-fallback
+                                        // paths push Cont::Memoize, so we push here to keep
+                                        // eval_stack balanced.
+                                        guard_ctx.state.lock().unwrap().eval_stack.push((
+                                            origin.as_deref().unwrap_or("thunk").to_string(),
+                                            thunk_span,
+                                        ));
                                         stack.push(Cont::Memoize(Box::new(MemoizeData {
                                             thunk: Arc::clone(&thunk),
                                             origin: Some(Arc::from("default fallback")),
@@ -1107,6 +1185,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         } else {
                             // Expected Record but got non-Dict - use default if present
                             if let Some((default_expr, default_env)) = default {
+                                // Push to eval_stack to match the Memoize pop below (see
+                                // comment at the first default-fallback site above).
+                                guard_ctx.state.lock().unwrap().eval_stack.push((
+                                    origin.as_deref().unwrap_or("thunk").to_string(),
+                                    thunk_span,
+                                ));
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin: Some(Arc::from("default fallback")),
@@ -1156,11 +1240,17 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                     } else {
                         // For non-Record types, simple value check
                         if value_matches_type(&value, &expected) {
-                            thunk.set_state(ThunkState::Materialized(value.clone()));
+                            thunk.set_materialized(value.clone());
                             Action::Continue(Ok(value))
                         } else {
                             // Type mismatch for non-Record types - use default if present
                             if let Some((default_expr, default_env)) = default {
+                                // Push to eval_stack to match the Memoize pop below (see
+                                // comment at the first default-fallback site above).
+                                guard_ctx.state.lock().unwrap().eval_stack.push((
+                                    origin.as_deref().unwrap_or("thunk").to_string(),
+                                    thunk_span,
+                                ));
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin: Some(Arc::from("default fallback")),
@@ -1295,7 +1385,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 // args/named are no longer needed; drop them implicitly.
                                 // Pop from eval_stack before fast-path return
                                 thunk_ctx.state.lock().unwrap().eval_stack.pop();
-                                thunk.set_state(ThunkState::Materialized(value.clone()));
+                                thunk.set_materialized(value.clone());
                                 Action::Continue(Ok(value))
                             } else {
                                 // Move args/named into RestoreState — no clone needed.

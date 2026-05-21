@@ -55,7 +55,7 @@ Two structural gaps remain.
 
 The key invariant is the three-layer pipeline:
 
-```
+```text
 source → [parse: syntactic only] → [transformation pass: user macros] → [type-check: semantic enforcement] → eval
 ```
 
@@ -560,7 +560,7 @@ The zero-arg case returns `[quote false]` — the AST for literal `false`. The o
 
 **Edge case — fixpoint:** `[my-or x y z]` expands to `[if x x [my-or y z]]`, which contains another `my-or` call. The transformation pass re-visits and expands again:
 
-```
+```text
 Pass 1: [my-or x y z]  →  [if x x [my-or y z]]
 Pass 2: [my-or y z]    →  [if y y z]
 Result: [if x x [if y y z]]
@@ -779,7 +779,7 @@ Point: [type [x@Float  y@Float]]
 
 Expansion trace:
 
-```
+```text
 [cond [[> x 10] "big"] [[> x 5] "medium"] [else "small"]]
 → [if [> x 10] "big"     [cond [[> x 5] "medium"] [else "small"]]]
 → [if [> x 10] "big"     [if [> x 5] "medium" [cond [else "small"]]]]

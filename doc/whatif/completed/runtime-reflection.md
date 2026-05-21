@@ -176,7 +176,7 @@ pub annotation: Option<Box<FnAnnotation>>,
 
 `ast-of` constructs the result dict using the existing `ast_to_dict` schema:
 
-```
+```text
 [type:       "fn"
  return-ann: annotation_to_thunk_id(fn.annotation.return_ann)   # existing schema
  params:     [[name: p.name  annotation: annotation_to_thunk_id(p.annotation)] ...]
@@ -208,7 +208,7 @@ For other values: `[type: type-of(val)]` with a minimal description.
 
 **REPL `:describe` command:**
 
-```
+```text
 tinct> :describe map
 map — fn@[f b] [fn@b [a]  [f a]]
   sig:    "fn@[f b] [fn@b [a]  [f a]]"
@@ -244,7 +244,7 @@ Parameter names come from `Value::Function.params` (already carry `Param.annotat
 
 **Module hover** — when hovering over `io` in `[io: [include %libdir "io.llt"]]`, the LSP renders a module summary by mapping `describe` over the dict:
 
-```
+```text
 io — module (17 exports)
   read-file    fn@[Ok Str | Err Str] [DirCap Str]  "Read a file..."
   write-file   fn@Null [DirCap Str Str]              "Write content to a file..."
@@ -356,7 +356,7 @@ As part of this feature, the stdlib should be reorganized to cleanly separate **
 
 ### Proposed layout
 
-```
+```text
 stdlib/
   cli/
     in/

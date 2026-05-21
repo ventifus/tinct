@@ -45,7 +45,7 @@ But tinct conflates two fundamentally different dict shapes under a single `@Dic
 
 ### The Type Hierarchy
 
-```
+```text
           Dict                    ← BAS union: Record ∨ Map
          /    \
     Record    Map@[K: V]          ← structural forms
@@ -84,7 +84,7 @@ x@[Map [key: Int  value: [Ok String | Err String]]]
 
 `Record` without parameters is **not** a lattice top element. Each occurrence of `@Record` produces a fresh universally quantified open row variable — the same mechanism `@Dict` uses today:
 
-```
+```text
 @Record  →  Record(Row { fields: {}, tail: RowVar(fresh_ρ, level) })
 ```
 
@@ -141,7 +141,7 @@ get-or: [fn@V [map@[Map [K: V]]  k@K  default@V]
 
 A structural record can satisfy a `Map@[K: V]` annotation if its keys are all of type K and its values are uniformly of type V. This is the Nickel rule `{f₁: T₁, ..., fₙ: Tₙ} <: {_: T}` when all Tᵢ <: T, adapted for tinct's two key types:
 
-```
+```text
 ∀i: key(eᵢ) : K  ∧  type(eᵢ) <: V
 ────────────────────────────────────────────  [RECORD→MAP]
 Record(entries)  <:  Map[K V]

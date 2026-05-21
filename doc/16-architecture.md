@@ -1,8 +1,8 @@
 # Architecture
 
-### Components
+## Components
 
-```
+```text
 ┌─────────────┐
 │   Source    │  .llt file (documents separated by ---)
 └──────┬──────┘
@@ -35,7 +35,7 @@
 ```
 
 > **Note:** The Desugar pass is mandatory and must run after parsing and before both type checking and evaluation. Both downstream phases require `_` to be eliminated — skipping desugar causes the type checker to see `VarRef("_")` instead of `Fn` nodes, producing spurious "undefined variable _" errors.
-
+>
 > **Note:** The type checker runs after desugaring but type errors are advisory — evaluation proceeds regardless of type errors. This matches the design philosophy that types aid development without blocking execution.
 
 ### Implementation Architecture
@@ -61,7 +61,7 @@
 ### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
 
 > For the formal evaluation semantics (thunk lifecycle, materialization rules, laziness design), see [Evaluation](08-evaluation.md). For the type system extensions that interact with evaluation (TypeAssert contracts, row polymorphism), see [Type System Extensions](07-type-extensions.md).
-
+>
 > **Implementation note:** The iterative `run()` loop with `Vec<Cont>` stack drives all materialization. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions use Action::Eval. **One remaining recursive path:** `eval_recursive` (TypeAssert inner expression at eval_materialize.rs:1855 — needs a thunk without materializing, cannot use Action::Eval which goes through wrap_thunk). Modules: `eval_call.rs`, `eval_deep.rs`, `eval_access.rs`.
 
 The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.

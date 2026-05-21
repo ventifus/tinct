@@ -191,7 +191,7 @@ identify which stage produced invalid data and which contract it
 violated. The pipeline runner tags each `%` value with its source
 stage. Contract violations include source-stage attribution:
 
-```
+```text
 Error: contract violation at pipeline boundary (data.llt -> fmt/nginx.llt)
   fmt/nginx.llt expects: port to be Int
   Got: "8080" (String)
@@ -374,7 +374,7 @@ Implementation:
 
 Enrich contract violation errors with blame context:
 
-```
+```text
 Error: contract violation at pipeline boundary (data.llt -> fmt/nginx.llt)
   fmt/nginx.llt expects: port to be Int
   Got: "8080" (String)

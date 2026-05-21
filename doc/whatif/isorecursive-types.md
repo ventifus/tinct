@@ -85,7 +85,7 @@ Type::RecVar(String)     // "a"
 
 Example — a linked list of Int:
 
-```
+```rust
 Type::Recursive {
     var: "lst",
     body: Type::Union([
@@ -157,7 +157,7 @@ These appear in `ast-of` output, annotation resolution results, and anywhere typ
 
 The annotation resolver currently expands type aliases iteratively, hitting `MAX_ALIAS_DEPTH` on cycles. With equirecursive support, cycle detection produces μ-type nodes instead:
 
-```
+```text
 resolve_type_alias("List", args=[]):
   if "List" in expansion_stack:
     return [kind: "recvar"  name: "List"]   # cycle — emit recvar

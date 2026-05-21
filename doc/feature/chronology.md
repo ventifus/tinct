@@ -120,12 +120,12 @@ The typing-cluster implementation sequence (all 2026-05-07 author dates, with `n
 
 Null semantics and access-pipeline also folded into this cluster, their commits dating to 2026-05-05–07.
 
-**Supplemental stdlib sprints (also 2026-05-07):**
+### Supplemental stdlib sprints (also 2026-05-07)
 
 - [`83c3b51`] [Supplemental Stdlib Modules](lib-supplemental.md) — `string-view`: `Value::String { source: Rc<str>, start, end }` zero-copy representation; `str-slice`, `str-contains?` builtins
 - [`e57403e`] [Supplemental Stdlib Modules](lib-supplemental.md) — `string-utils` (completing first round): `starts-with?`, `ends-with?`, `str-chars`; `stdlib/strings.llt` with `pad-left`, `pad-right`, `str-find`, `str-reverse`
 
-*(Additional lib-supplemental sprints — math-builtins, bitwise-encoding, bytes-type, toml-lite-path, fscap-protocol, handle-caps — landed across 2026-05-07–08; exact per-sprint dates not individually pinned but confirmed within this window)*
+(Additional lib-supplemental sprints — math-builtins, bitwise-encoding, bytes-type, toml-lite-path, fscap-protocol, handle-caps — landed across 2026-05-07–08; exact per-sprint dates not individually pinned but confirmed within this window)
 
 ## 2026-05-08 — String Interpolation via Macro, Datetime, Regex, TLS Stubs
 

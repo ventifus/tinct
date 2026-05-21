@@ -367,7 +367,7 @@ The explicit `[do monad ...]` form always takes priority over inference and is b
 
 The kind grammar extends with two new productions:
 
-```
+```text
 Kind ::= *              -- concrete types
        | Row            -- record field sets
        | Operator       -- type constructors (kind * → *)
@@ -392,7 +392,7 @@ pub enum Type {
 
 Unification extends with two new cases:
 
-```
+```text
 UNIFY-OPERATOR:
   m ∉ ftv(T)    kind_env ⊢ T : *
   ──────────────────────────────────
@@ -425,7 +425,7 @@ pub enum Label {
 
 Instance resolution rules:
 
-```
+```text
 l ∈ dom(fields)    fields(l) = τ
 ─────────────────────────────────────────   [HAS-FIELD-REC]
 HasField (Concrete l) Record(fields) τ
@@ -447,7 +447,7 @@ HasField l Unknown Unknown
 
 `get`'s full scheme:
 
-```
+```text
 get : ∀ (l : Label) (d : *) (a : *). HasField l d a => StringLiteral(l) → d → a
 ```
 

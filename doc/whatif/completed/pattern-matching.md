@@ -435,7 +435,7 @@ Dict patterns for deeply nested data quickly become repetitive. Path-key
 syntax lets the key position in a dict pattern use a dotted path, desugaring
 to an equivalent nested dict:
 
-```
+```text
 [a.b.c: v]  →  [a: [b: [c: v]]]
 ```
 

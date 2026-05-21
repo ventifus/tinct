@@ -15,7 +15,7 @@ areas remain as hardcoded limitations of the baseline system.
 **Numeric requires multi-parameter type classes.** The four arithmetic operators
 (`+`, `-`, `*`, `/`) are registered with a single-parameter constraint:
 
-```
+```text
 + : Numeric a => a → a → a
 ```
 
@@ -128,7 +128,7 @@ The arithmetic operators are re-typed using a 3-parameter `Add` class with
 functional dependency `(a, b) → c` — given the types of both operands, the
 result type is uniquely determined (Jones 1994):
 
-```
+```text
 Add a b c | (a,b) → c
 
 instances:
@@ -147,7 +147,7 @@ The Number-involving instances preserve Number as the result type (rather than w
 
 The arithmetic primitives are re-registered:
 
-```
+```text
 + : Add a b c => a → b → c
 - : Sub a b c => a → b → c
 * : Mul a b c => a → b → c
@@ -182,13 +182,13 @@ dispatch (below) is in place.
 
 **Display format.** Multi-parameter constraints display as `Add a b c =>`:
 
-```
+```text
 Add Int Float c => Fn@c [Int Float]
 ```
 
 After functional dependency resolution, `c = Float`:
 
-```
+```text
 Fn@Float [Int Float]
 ```
 
@@ -196,14 +196,14 @@ Fn@Float [Int Float]
 
 Under BAS, every multi-field record is an intersection of single-field records:
 
-```
+```text
 {name: Str, age: Int} = {name: Str} & {age: Int}
 ```
 
 Constraint propagation distributes over BAS intersection and union naturally, adding
 two propagation rules to `check_constraints`:
 
-```
+```text
 [CONSTRAIN-FIELD]   C({f: τ}) ⊢ satisfied    iff    C(τ) ⊢ satisfied
 [CONSTRAIN-INTER]   C(τ₁ & τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
 [CONSTRAIN-UNION]   C(τ₁ | τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied

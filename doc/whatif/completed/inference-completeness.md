@@ -85,7 +85,7 @@ constraints, element types, and return types precisely.
 
 DICT-GEN is extended with a dependency analysis phase between Pass 0 and Pass 1.
 
-```
+```text
 Pass 0  — Key resolution: unchanged.
 
 Pass 0a — Dependency graph: build a directed graph G over the n entries.
@@ -212,7 +212,7 @@ where T is a fresh TypeVar β unified against each variadic argument at call sit
 
 **Inference rule for variadic functions:**
 
-```
+```text
 [FN-VARIADIC]:
   Γ, p₁:τ₁, ..., pₙ₋₁:τₙ₋₁, pₙ:Seq(β) ⊢ body : τ_ret
   β fresh at current level
@@ -222,7 +222,7 @@ where T is a fresh TypeVar β unified against each variadic argument at call sit
 
 **Inference rule at call sites:**
 
-```
+```text
 [CALL-VARIADIC]:
   Γ ⊢ f : Fn(τ₁...τₙ₋₁, Seq(β) → τ_ret)
   Γ ⊢ a₁ : τ₁  ...  Γ ⊢ aₙ₋₁ : τₙ₋₁

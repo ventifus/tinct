@@ -102,7 +102,7 @@ Add one new token variant: `Token::BracketAccess`. The lexer emits it instead
 of `Token::OpenBracket` when `[` follows a value-producing token with no
 intervening whitespace:
 
-```
+```text
 a[0]   → EscapedRef("a"), BracketAccess, Int(0), CloseBracket
 a [0]  → EscapedRef("a"), OpenBracket, Int(0), CloseBracket
 ```
@@ -178,7 +178,7 @@ Static constraints are enforced inline rather than post-hoc:
 
 Error messages carry bracket context:
 
-```
+```text
 error: unclosed bracket
   --> input.llt:5:3
    |

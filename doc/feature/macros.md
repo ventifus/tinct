@@ -123,7 +123,7 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
 
 ### Expansion Pipeline
 
-```
+```text
 source -> parse -> quote_macros -> expand (call macro fns on quoted AST) -> typecheck -> eval
 ```
 

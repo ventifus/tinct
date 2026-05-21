@@ -221,7 +221,7 @@ The first section may omit its `---` header (no name, no pragmas), or include on
 
 **Formal semantics** — extends DOC-PIPELINE (doc/09-documents.md §Document Structure):
 
-```
+```text
 Σ₀ = {}                                     (named-section map)
 θ₀ = input_thunk
 
@@ -291,7 +291,7 @@ The type checker validates `config.llt`'s output against `yaml.llt`'s `expects:`
 
 **Formal semantics** — multi-file pipeline:
 
-```
+```text
 eval_pipeline(files, ρ_base, input_thunk):
   θ₀ = input_thunk
   ∀i ∈ 1..n:

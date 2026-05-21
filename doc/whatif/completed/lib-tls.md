@@ -65,7 +65,7 @@ the same protocol and can be substituted anywhere a `NetCap` is accepted.
 
 **Protocol method:**
 
-```
+```text
 [connect connector Transport host port opts] → Handle[... Stream|Datagram ...]
 ```
 
@@ -117,7 +117,7 @@ Network handles produced by `connect` carry `Readable` and `Writable`
 (TCP is bidirectional) but not `Seekable` (streams are sequential).
 `tls-connect` adds the `Tls` capability, which gates `tls-peer-cert`.
 
-```
+```text
 connect     connector Tcp  host port      → Handle[Binary Readable Writable Stream]
 connect     connector Udp  host port      → Handle[Binary Readable Writable Datagram]
 tls-connect connector Tcp  host port opts → Handle[Binary Readable Writable Stream Tls]
@@ -162,7 +162,7 @@ A single-shot `http-get` creates and closes a connection per request.
 For connection reuse (required for HTTP/2 multiplexing), use
 `http-connect` to obtain an `HttpConn` value:
 
-```
+```text
 http-connect connector host port opts → HttpConn
 ```
 
@@ -420,7 +420,7 @@ Default: `["http/1.1"]`. Correct for stdlib `fetch` (HTTP/1.0 over
 Handle). Negotiating `h2` with an HTTP/1.0 client produces a protocol
 error — set `alpn` explicitly when using the high-level Rust `fetch`.
 
-### HTTP/2, HTTP/3, and the Handle Boundary
+### HTTP/2, HTTP/3, and the Handle Boundary — Design Rationale
 
 `Handle[Binary Readable Writable]` models one bidirectional byte stream.
 This covers HTTP/1.x. It cannot cover HTTP/2 or HTTP/3:
@@ -504,7 +504,7 @@ tinct script itself and do not have a CLI flag. The CLI only needs to
 grant the raw network capability; the script composes it into whatever
 transport stack it needs.
 
-```
+```sh
 # Inject a NetCap allowing access to api.internal:
 tinct run --cap-net net=api.internal script.llt
 
@@ -516,7 +516,7 @@ tinct run --cap-net net=api.internal script.llt
 Multiple `--cap-net` flags with the same NAME accumulate into one
 NetCap allowlist:
 
-```
+```sh
 tinct run --cap-net api=api.internal --cap-net api=metrics.internal script.llt
 # $api allows both hosts
 ```

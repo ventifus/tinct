@@ -304,7 +304,7 @@ Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile
 3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env, shadowing some builtin names with user-friendly wrappers
 4. User code inherits the stdlib env — `builtin-*` names are accessible via the environment chain, but shadowed by prelude wrappers where appropriate
 
-```
+```text
 Bootstrap env: all 191 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
   └── Stdlib env: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
         └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
@@ -1052,7 +1052,7 @@ Two builtins form the comparison basis. All others are derived compositions.
 
 **EQ — Total equality (`=`):**
 
-```
+```text
 EQ(θ₁, θ₂, d, s) :
   v₁ = materialize(θ₁, _, d)
   v₂ = materialize(θ₂, _, d)
@@ -1062,7 +1062,7 @@ EQ(θ₁, θ₂, d, s) :
 
 **LT — Partial ordering (`<`):**
 
-```
+```text
 LT(θ₁, θ₂, d, s) :
   v₁ = materialize(θ₁, _, d)
   v₂ = materialize(θ₂, _, d)
@@ -1109,7 +1109,7 @@ The critical difference: EQ-INCOMP returns `false` (totality), while LT-ERROR ra
 
 Int/Float promotion uses Rust's `as f64` cast, which is the IEEE 754 `convertToFloat64` operation. This is exact for integers in the range [−2⁵³, 2⁵³] but loses precision outside it:
 
-```
+```text
 Promotion: Int(n) → Float(n as f64)
 
 Exact range:  |n| ≤ 2⁵³ (9,007,199,254,740,992)
@@ -1125,7 +1125,7 @@ Promotion is **symmetric**: `EQ-PROMOTE-IF` and `EQ-PROMOTE-FI` always produce t
 
 Three comparison operators are derived from `<` and `not` in `stdlib/prelude.llt`:
 
-```
+```text
 GT(a, b)  ≡  LT(b, a)               # >:  [fn [a b] [< b a]]
 LEQ(a, b) ≡  ¬LT(b, a)              # <=: [fn [a b] [not [< b a]]]
 GEQ(a, b) ≡  ¬LT(a, b)              # >=: [fn [a b] [not [< a b]]]
@@ -1137,7 +1137,7 @@ Note: `<=` is defined as `¬GT` (not as `LT ∨ EQ`), and `>=` as `¬LT` (not as
 
 Float comparison follows IEEE 754 semantics inherited from Rust's `f64` operations:
 
-```
+```text
 EQ-FLOAT with NaN:   NaN == NaN → false     (IEEE 754 §5.11)
 LT-FLOAT with NaN:   NaN < x   → false      (for any x, including NaN)
                       x < NaN   → false      (for any x, including NaN)
@@ -1145,7 +1145,7 @@ LT-FLOAT with NaN:   NaN < x   → false      (for any x, including NaN)
 
 **Consequence for derived relations:**
 
-```
+```text
 [= NaN NaN]  → false    (NaN ≠ NaN — correct per IEEE 754)
 [< NaN 1.0]  → false    (NaN is unordered)
 [> NaN 1.0]  → false    (= [< 1.0 NaN] → false)
@@ -1157,7 +1157,7 @@ The `<=` and `>=` anomalies arise because the stdlib derives them via negation o
 
 **NaN-vs-NaN anomaly:**
 
-```
+```text
 [<= NaN NaN] → true     (= [not [< NaN NaN]] = [not false] = true)
 [>= NaN NaN] → true     (= [not [< NaN NaN]] = [not false] = true)
 ```
@@ -1172,7 +1172,7 @@ Both `[<= NaN NaN]` and `[>= NaN NaN]` return `true`, even though `[= NaN NaN]` 
 
 Separate from value comparison, the `Key` type has its own partial ordering used by `sort-by` ordering:
 
-```
+```text
 Key::partial_cmp:
   (Int(a),    Int(b))    → Some(a.cmp(b))     # total within Int keys
   (String(a), String(b)) → Some(a.cmp(b))     # total within String keys (lexicographic)
@@ -1241,7 +1241,7 @@ Keys are materialized values (`Key` type: Int, String). Values are thunks — `$
 
 **[MERGE]**
 
-```
+```text
 materialize(θ_L, _, d) ⇒ Dict(L)
 materialize(θ_R, _, d) ⇒ Dict(R)
 Result = L ⊕ R
@@ -1251,7 +1251,7 @@ merge(θ_L, θ_R, d, s) ⇒ ok_val(Dict(Result))
 
 where `L ⊕ R` (right-biased merge) is defined as:
 
-```
+```text
 L ⊕ R = D  where
   dom(D) = K(L) ∪ K(R)
   D(k) = R(k)           if k ∈ K(R)         [RIGHT-BIAS]
@@ -1260,7 +1260,7 @@ L ⊕ R = D  where
 
 **Iteration order of D:**
 
-```
+```text
 order(D) = order_L(L, R) ++ new(R, L)  where
   order_L(L, R) = [k for k in L in insertion order]
                   (values replaced by R(k) where k ∈ K(R), position unchanged)
@@ -1292,7 +1292,7 @@ Named arguments are rejected (`reject_named`).
 
 T-MERGE applies only when both operands have closed record types (`RowTail::Empty`). Open records (`RowTail::RowVar`) fall through to T-MERGE-ANY.
 
-```
+```text
 Γ ⊢ L : Record(F_L, Closed),  Γ ⊢ R : Record(F_R, Closed)
 ───────────────────────────────────────────────────────────
 Γ ⊢ merge(L, R) : Record(F_L ⊕ F_R, Closed)
@@ -1300,7 +1300,7 @@ T-MERGE applies only when both operands have closed record types (`RowTail::Empt
 
 where `F_L ⊕ F_R` is the field-level right-biased merge:
 
-```
+```text
 dom(F_L ⊕ F_R) = dom(F_L) ∪ dom(F_R)
 (F_L ⊕ F_R)(k) = F_R(k)     if k ∈ dom(F_R)          [T-RIGHT-BIAS]
 (F_L ⊕ F_R)(k) = F_L(k)     if k ∈ dom(F_L) \ dom(F_R) [T-LEFT-KEEP]
@@ -1310,7 +1310,7 @@ For shared keys, the right operand's type wins. This mirrors the runtime semanti
 
 **[T-MERGE-ANY] Gradual fallback:**
 
-```
+```text
 Γ ⊢ L : Any   or   Γ ⊢ R : Any
 ────────────────────────────────
 Γ ⊢ merge(L, R) : Any
@@ -1322,7 +1322,7 @@ If either operand has type `Any` (unannotated, forward reference, or gradual esc
 
 **Row variable generalization:** With row-variable unification (§Row-Variable Unification — Kinded Rémy Model), the typing rule generalizes to:
 
-```
+```text
 Γ ⊢ L : Record(F_L, ρ₁),  Γ ⊢ R : Record(F_R, ρ₂)
 ─────────────────────────────────────────────────────
 Γ ⊢ merge(L, R) : Record(F_L ⊕ F_R, ρ₃)
@@ -1360,7 +1360,7 @@ Iteration-order proof: In `L ⊕ R`, the result order is `[keys from L in L's or
 
 The `merge` implementation eagerly materializes both operands. The lazy overlay design defers the merge operation itself:
 
-```
+```text
 Overlay(L, R) — O(1) construction
   access(k): if k ∈ K(R) then R(k) else L(k) — O(1) per key
   iterate:   flatten to concrete IndexMap — O(|L| + |R|)
@@ -1410,7 +1410,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 Applying MERGE:
 
-```
+```text
 L = {timeout↦θ(30), retries↦θ(3), env↦θ("staging")}
 R = {env↦θ("prod"), timeout↦θ(60)}
 
