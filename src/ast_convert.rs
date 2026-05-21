@@ -469,6 +469,178 @@ fn surface_expr_to_expr(expr: &SurfaceExpression, _span: crate::ast::Span) -> Ex
     }
 }
 
+/// Convert a `Spanned<CoreExpr>` back to a `Spanned<Expr>` for transitional evaluation.
+///
+/// This is the bridge from CoreExpr → Expr, used during the transitional period when
+/// eval_core_expr() falls back to the old Expr evaluation path for complex constructs.
+/// As CoreExpr evaluation is built out, this function will be used less and eventually
+/// deleted when all CoreExpr variants are handled directly.
+pub fn core_expr_to_expr(core: &crate::ast::Spanned<crate::ast::CoreExpr>) -> Spanned<Expr> {
+    Spanned::new(core_expr_inner_to_expr(&core.node), core.span)
+}
+
+fn core_expr_inner_to_expr(expr: &crate::ast::CoreExpr) -> Expr {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use crate::ast::CoreExpr;
+
+    match expr {
+        CoreExpr::Int(n) => Expr::Int(*n),
+        CoreExpr::Float(n) => Expr::Float(*n),
+        CoreExpr::Bool(b) => Expr::Bool(*b),
+        CoreExpr::Str(s) => Expr::Str(s.clone()),
+
+        // Var and FreeVar both become VarRef — the old AST doesn't have de Bruijn coordinates
+        CoreExpr::Var { name, .. } => Expr::VarRef {
+            name: name.clone(),
+            escaped: false,
+            resolved: RefCell::new(None),
+        },
+        CoreExpr::FreeVar(name) => Expr::VarRef {
+            name: name.clone(),
+            escaped: false,
+            resolved: RefCell::new(None),
+        },
+
+        CoreExpr::DotAccess { expr: inner, field } => Expr::DotAccess {
+            expr: Box::new(core_expr_to_expr(inner)),
+            field: field.clone(),
+        },
+
+        // Note: CoreExpr has no Pipe variant (it's desugared to Call by lowering)
+        CoreExpr::Sequential(exprs) => Expr::Sequential(
+            exprs
+                .iter()
+                .map(|e| Rc::new(core_expr_to_expr(e)))
+                .collect(),
+        ),
+
+        CoreExpr::Dict(entries) => Expr::Dict(
+            entries
+                .iter()
+                .map(|ce| {
+                    Spanned::new(
+                        Entry {
+                            key: ce.node.key.as_ref().map(|k| core_expr_to_expr(k)),
+                            value: Rc::new(core_expr_to_expr(&ce.node.value)),
+                        },
+                        ce.span,
+                    )
+                })
+                .collect(),
+        ),
+
+        CoreExpr::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => Expr::Call {
+            func: Box::new(core_expr_to_expr(func)),
+            args: args
+                .iter()
+                .map(|a| Rc::new(core_expr_to_expr(a)))
+                .collect(),
+            named_args: named_args
+                .iter()
+                .map(|na| {
+                    Spanned::new(
+                        crate::ast::NamedArg {
+                            name: na.node.name.clone(),
+                            value: Rc::new(core_expr_to_expr(&na.node.value)),
+                        },
+                        na.span,
+                    )
+                })
+                .collect(),
+            implied: *implied,
+        },
+
+        CoreExpr::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => Expr::Fn {
+            return_ann: return_ann.clone(),
+            params: params
+                .iter()
+                .map(|p| {
+                    Spanned::new(
+                        crate::ast::Param {
+                            name: p.node.name.clone(),
+                            annotation: p.node.annotation.clone(),
+                            variadic: p.node.variadic,
+                        },
+                        p.span,
+                    )
+                })
+                .collect(),
+            body: Rc::new(core_expr_to_expr(body)),
+            desugared: *desugared,
+        },
+
+        CoreExpr::TypeAssert { annotation, expr: inner, .. } => Expr::TypeAssert {
+            annotation: annotation.clone(),
+            expr: Box::new(core_expr_to_expr(inner)),
+            resolved_type: RefCell::new(None),
+        },
+
+        CoreExpr::RuntimeTypeCheck { annotation, expr: inner, .. } => Expr::TypeAssert {
+            annotation: annotation.clone(),
+            expr: Box::new(core_expr_to_expr(inner)),
+            resolved_type: RefCell::new(None),
+        },
+
+        CoreExpr::Annotated { name, annotation } => Expr::Annotated {
+            name: name.clone(),
+            annotation: annotation.clone(),
+        },
+
+        CoreExpr::Rest(name) => Expr::Rest(name.clone()),
+
+        CoreExpr::Match { scrutinee, arms } => Expr::Match {
+            scrutinee: Box::new(core_expr_to_expr(scrutinee)),
+            arms: arms
+                .iter()
+                .map(|arm| crate::ast::MatchArm {
+                    pattern: arm.pattern.clone(),
+                    guard: arm
+                        .guard
+                        .as_ref()
+                        .map(|g| Box::new(core_expr_to_expr(g))),
+                    body: Box::new(core_expr_to_expr(&arm.body)),
+                })
+                .collect(),
+        },
+
+        CoreExpr::Quote(inner) => Expr::Quote(Box::new(core_expr_to_expr(inner))),
+        CoreExpr::Unquote(inner) => Expr::Unquote(Box::new(core_expr_to_expr(inner))),
+        CoreExpr::UnquoteSplice(inner) => Expr::UnquoteSplice(Box::new(core_expr_to_expr(inner))),
+
+        CoreExpr::PatternDecl { bindings } => Expr::PatternDecl {
+            bindings: bindings.iter().map(|b| core_expr_to_expr(b)).collect(),
+        },
+
+        CoreExpr::LetDecl { bindings } => Expr::LetDecl {
+            bindings: bindings.iter().map(|b| core_expr_to_expr(b)).collect(),
+        },
+
+        CoreExpr::CaseArm { pattern, body } => Expr::CaseArm {
+            pattern: Box::new(core_expr_to_expr(pattern)),
+            body: Box::new(core_expr_to_expr(body)),
+        },
+
+        CoreExpr::TypeApp { func, arg } => Expr::TypeApp {
+            func: Box::new(core_expr_to_expr(func)),
+            arg: Box::new(core_expr_to_expr(arg)),
+        },
+
+        CoreExpr::Placeholder => Expr::Placeholder,
+        CoreExpr::Error(s) => Expr::Error(*s),
+    }
+}
+
 fn expr_to_surface_expr(expr: &Expr) -> SurfaceExpression {
     match expr {
         Expr::Int(n) => SurfaceExpression::Int(*n),

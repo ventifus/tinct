@@ -29,7 +29,8 @@ use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
-    Annotation, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span, Spanned,
+    Annotation, CoreExpr, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span,
+    Spanned,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type};
@@ -2108,6 +2109,74 @@ pub fn eval(
     }
 }
 
+/// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
+///
+/// This is the new CoreExpr evaluation entry point. It handles:
+/// - Literals (Int, Float, Bool, Str) → direct materialization
+/// - Variables (Var, FreeVar) → environment lookup
+/// - All other CoreExpr variants → convert back to Expr via bridge (transitional)
+///
+/// This is intentionally ADDITIVE and TRANSITIONAL. The full CoreExpr evaluation
+/// will be built out incrementally. For now, we only handle the simple cases directly.
+fn eval_core_expr(
+    expr: &Spanned<CoreExpr>,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
+    match &expr.node {
+        // Fast path: literals materialize directly without wrapping in Unevaluated
+        CoreExpr::Int(n) => Ok(Arc::new(Thunk::new_materialized(
+            Value::Int(*n),
+            expr.span,
+        ))),
+        CoreExpr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
+            Value::Float(*f),
+            expr.span,
+        ))),
+        CoreExpr::Bool(b) => Ok(Arc::new(Thunk::new_materialized(
+            Value::Bool(*b),
+            expr.span,
+        ))),
+        CoreExpr::Str(s) => Ok(Arc::new(Thunk::new_materialized(
+            string_val(s),
+            expr.span,
+        ))),
+
+        // Variable lookup with de Bruijn coordinates (fast path)
+        CoreExpr::Var { name, level, slot } => {
+            let env_lock = env.read().unwrap();
+            // Try slot-based lookup first (O(1) when level and slot are correct)
+            if let Some(thunk) = env_lock.get_by_slot(*level, *slot) {
+                Ok(thunk)
+            } else {
+                // Fallback to name-based lookup (for stale slot references)
+                let name_owned = name.clone();
+                env_lock.get(name).ok_or_else(|| {
+                    EvalError::undefined_variable(name_owned, expr.span).into()
+                })
+            }
+        }
+
+        // Free variable: name-based lookup only (no slot available)
+        CoreExpr::FreeVar(name) => {
+            let name_owned = name.clone();
+            let env_lock = env.read().unwrap();
+            env_lock.get(name).ok_or_else(|| {
+                EvalError::undefined_variable(name_owned, expr.span).into()
+            })
+        }
+
+        // All other CoreExpr variants: convert back to Expr via bridge and use existing eval.
+        // This is the transitional path. As CoreExpr evaluation is built out, these cases
+        // will be handled directly instead of going through the bridge.
+        _ => {
+            // Convert CoreExpr back to Expr via the bridge
+            let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
+            eval(old_expr, Arc::clone(env), ctx)
+        }
+    }
+}
+
 /// Force a thunk to its concrete value, memoizing the result.
 ///
 /// On first materialization, evaluates the thunk and caches the result (or error).
@@ -2781,14 +2850,17 @@ pub fn materialize(
                 Err(e)
             }
         }
-    } else if let Some((node, _res, _types, env, thunk_ctx)) = thunk.take_surface() {
-        // runtime-v2 Sprint 1: Surface thunk handling via bridge converter.
+    } else if let Some((node, res, types, env, thunk_ctx)) = thunk.take_surface() {
+        // runtime-v2 Sprint 1: Surface thunk handling via lower() → CoreExpr → eval_core_expr().
         //
-        // Convert the SurfaceNode back to old Expr via ast_convert::surface_node_to_expr,
-        // then evaluate normally. This is the transitional path; Sprint 2 replaces this
-        // with direct CoreExpr evaluation after the full Rc→Arc migration.
-        let old_expr = Rc::new(crate::ast_convert::surface_node_to_expr(&node));
-        let result = eval(old_expr.clone(), Arc::clone(&env), &thunk_ctx)
+        // 1. Lower the SurfaceNode to CoreExpr using lower()
+        // 2. Evaluate the CoreExpr using eval_core_expr()
+        // 3. Materialize the result thunk
+        //
+        // This is the new CoreExpr evaluation path. eval_core_expr() handles literals and
+        // variable lookups directly, and falls back to the Expr bridge for complex constructs.
+        let lowered = crate::lower::lower(&node, &res, &types);
+        let result = eval_core_expr(&lowered, &env, &thunk_ctx)
             .and_then(|result_thunk| {
                 run(
                     Action::Materialize {
@@ -2812,8 +2884,8 @@ pub fn materialize(
                     // Restore Surface state for non-cacheable errors
                     thunk.set_state(ThunkState::Surface {
                         node,
-                        res: _res,
-                        types: _types,
+                        res,
+                        types,
                         env,
                         ctx: thunk_ctx,
                     });
