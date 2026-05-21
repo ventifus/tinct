@@ -20,6 +20,61 @@ See DONE.md for the full history of completed sprints.
 
 Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) already exist from runtime-v2 branch. Parts B+E still needed.
 
+### parser-migration-a: Migrate parser literal + simple expression constructions
+
+**Goal:** Change `src/parser.rs` to produce `SurfaceNode`/`SurfaceExpression` instead of `Spanned<Expr>` for simple cases. Unblocks E1-E3 (delete old Expr types).
+**Approach:** Work through parser.rs section by section. Each `Rc::new(Spanned::new(Expr::X, span))` becomes `Arc::new(SurfaceNode { expr: SurfaceExpression::X, span })`.
+
+**Simple/literal cases (this sprint):**
+- [ ] Migrate `Expr::Int`, `Expr::Float`, `Expr::Bool`, `Expr::Str` → `SurfaceExpression::Int/Float/Bool/Str` in parser (`src/parser.rs`)
+- [ ] Migrate `Expr::VarRef { name, escaped, resolved }` → `SurfaceExpression::VarRef { name, escaped }` (no resolved field — goes in ResolutionTable) (`src/parser.rs`)
+- [ ] Migrate `Expr::Rest` → `SurfaceExpression::Rest` (`src/parser.rs`)
+- [ ] Migrate `Expr::Placeholder` → `SurfaceExpression::Placeholder` (`src/parser.rs`)
+- [ ] Change `ParseOutput.file: Spanned<File>` to `ParseOutput.program: SurfaceProgram` (or add `program` alongside `file` first as a bridge) (`src/parser.rs`)
+- [ ] Update `ParseOutput::as_surface_program()` to use the native SurfaceProgram field instead of file_to_surface_program bridge (`src/parser.rs`)
+- [ ] `just build` passes after this sprint
+
+### parser-migration-b: Migrate parser compound expression constructions
+
+**Depends on:** parser-migration-a
+- [ ] Migrate `Expr::Call { func, args, named_args, implied }` → `SurfaceExpression::Call { ... }` all `Rc<Spanned<Expr>>` → `Arc<SurfaceNode>` (`src/parser.rs`)
+- [ ] Migrate `Expr::Dict(entries)` → `SurfaceExpression::Dict(Vec<Spanned<SurfaceEntry>>)` (`src/parser.rs`)
+- [ ] Migrate `Expr::Fn { params, body, return_ann, desugared }` → `SurfaceExpression::Fn { ... }` (`src/parser.rs`)
+- [ ] Migrate `Expr::TypeAssert { annotation, expr }` → `SurfaceExpression::TypeAssert { ... }` (no resolved_type field) (`src/parser.rs`)
+- [ ] Migrate `Expr::Annotated { name, annotation }` → `SurfaceExpression::Annotated { ... }` (`src/parser.rs`)
+- [ ] Migrate `Expr::DotAccess { expr, field }` → `SurfaceExpression::DotAccess { ... }` (`src/parser.rs`)
+- [ ] Migrate `Expr::Pipe { lhs, rhs }` → `SurfaceExpression::Pipe { ... }` (`src/parser.rs`)
+- [ ] `just build` passes after this sprint
+
+### parser-migration-c: Migrate parser structural + quasiquote + pattern forms
+
+**Depends on:** parser-migration-b
+- [ ] Migrate `Expr::Sequential(exprs)` → `SurfaceExpression::Sequential(Vec<Arc<SurfaceNode>>)` (`src/parser.rs`)
+- [ ] Migrate `Expr::Match { scrutinee, arms }` → `SurfaceExpression::Match { ... }` (`src/parser.rs`)
+- [ ] Migrate `Expr::Quote/Unquote/UnquoteSplice` → `SurfaceExpression::Quote/Unquote/UnquoteSplice` (`src/parser.rs`)
+- [ ] Migrate `Expr::TypeApp { func, arg }` → `SurfaceExpression::TypeApp { ... }` (`src/parser.rs`)
+- [ ] Migrate `Expr::LetDecl/PatternDecl/CaseArm` → `SurfaceExpression::LetDecl/PatternDecl/CaseArm` (`src/parser.rs`)
+- [ ] `just build` passes after this sprint
+
+### parser-migration-d: Migrate declaration forms to SurfaceDeclaration
+
+**Depends on:** parser-migration-c
+- [ ] Route `Expr::TypeAlias`, `Expr::ClassDecl`, `Expr::InstanceDecl` → `SurfaceDeclaration::TypeAlias/ClassDecl/InstanceDecl` wrapped in `SurfaceItem::Decl` (`src/parser.rs`)
+- [ ] Route `Expr::DefMacro`, `Expr::MacroDecl`, `Expr::SyntaxClass` → `SurfaceDeclaration::DefMacro/MacroDecl/SyntaxClass` wrapped in `SurfaceItem::Decl` (`src/parser.rs`)
+- [ ] Route all expression forms → `SurfaceItem::Expr(Arc<SurfaceNode>)` (`src/parser.rs`)
+- [ ] Verify `ParseOutput.program` is fully native (no bridge calls) (`src/parser.rs`)
+- [ ] Update all 15 `expand_macros()` call sites to use `expand_surface_program()` instead (now that parser produces SurfaceProgram natively) (`src/expand.rs`, `src/lib.rs`, `src/main.rs`)
+- [ ] `just build` + `just test` passes after this sprint
+
+### E1-E3-cutover: Delete old Expr types + eval cutover + delete bridge files
+
+**Depends on:** parser-migration-d (parser produces SurfaceProgram natively)
+- [ ] Delete `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell` from `src/ast.rs` (`src/ast.rs`)
+- [ ] Update all eval files to use `CoreExpr`: `eval.rs`, `eval_materialize.rs`, `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` + add `CoreExpr::FreeVar` and `CoreExpr::RuntimeTypeCheck` arms (`src/`)
+- [ ] Delete `src/eval_pipeline.rs` (migrate lib.rs/main.rs/repl.rs callers to tinct `cli-pipeline` via invoke_function) (`src/`)
+- [ ] Delete `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` (bridge) (`src/`)
+- [ ] `cargo check` clean — first real checkpoint per plan
+
 ### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC)
 
 **Parser** (`src/parser.rs`): Bridge method added — `ParseOutput::as_surface_program()` converts File → SurfaceProgram on demand. Full parser migration (constructing SurfaceNode directly) deferred to Part E.
@@ -96,13 +151,103 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
 
+### sprint-2b-shim-removal: Remove ThunkStateGuard compatibility shim
+
+**Goal:** Eliminate the unsafe thread-local compatibility shim by migrating all 66 `.state()` callers to use ThunkInner API directly. This is the prerequisite for making eval async.
+**Approach:** For each call site, replace `.state()` pattern match with the appropriate direct ThunkInner call: `take_unevaluated()`, `get_value()`, `is_materialized()`, `cache_failure()`, `set_materialized()`.
+
+- [ ] Read `src/eval.rs` and find all 66 `.state()` call sites — group by pattern: (a) take-and-evaluate (`Unevaluated`/`Surface`/`Builtin`/`Call`/`Guarded`), (b) read-only check (`Materialized`/`Failed`/`InProgress`), (c) restore (`set_state`) (`src/eval.rs`, `src/eval_materialize.rs`)
+- [ ] Migrate group (a) take-and-evaluate callers in `eval.rs` — replace `match thunk.state() { UnevaluatedState::Expr ... }` with `match thunk.take_unevaluated()? { UnevaluatedState::Expr ... }` (`src/eval.rs`)
+- [ ] Migrate group (a) take-and-evaluate callers in `eval_materialize.rs` (`src/eval_materialize.rs`)
+- [ ] Migrate group (b) read-only check callers — `thunk.is_materialized()`, `thunk.get_value()`, `thunk.get_error()` (`src/eval.rs`, `src/eval_materialize.rs`)
+- [ ] Migrate group (c) restore callers — `thunk.restore_unevaluated(state)`, `thunk.set_materialized(v)`, `thunk.cache_failure(e)` (replacing `set_state(ThunkState::X)`) (`src/eval.rs`, `src/eval_materialize.rs`)
+- [ ] Delete `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum from `src/value.rs` (`src/value.rs`)
+- [ ] `just build` + `just test` passes after this sprint
+
+### sprint-2b-eval-async: Make eval + materialize async fn
+
+**Depends on:** sprint-2b-shim-removal
+**Goal:** Make the core evaluation loop async. Every function that calls `materialize()` must also become `async fn` and add `.await`.
+
+- [ ] Change `materialize(thunk: &Arc<Thunk>, ...) -> EvalResult<Value>` → `async fn` in `src/eval.rs` (`src/eval.rs`)
+- [ ] Change `eval(expr: &Spanned<CoreExpr>, env: &Arc<RwLock<Environment>>, ctx: &Arc<EvalContext>) -> EvalResult<Arc<Thunk>>` → `async fn` in `src/eval.rs` (`src/eval.rs`)
+- [ ] Change `force_step(thunk: &Arc<Thunk>, ...) -> EvalResult<Action>` → `async fn` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
+- [ ] Change `apply_cont(cont: Cont, ...) -> EvalResult<Action>` → `async fn` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
+- [ ] Change `run(thunk: &Arc<Thunk>, ctx: &Arc<EvalContext>) -> EvalResult<Value>` → `async fn` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
+- [ ] Change helper functions in `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` → `async fn` and add `.await` at all `materialize()` call sites (`src/eval_dict.rs`, `src/eval_call.rs`, `src/eval_access.rs`)
+- [ ] `just build` passes (expect many compile errors until builtins are updated)
+
+### sprint-2b-builtins-async: Change BuiltinFn type + update all builtins
+
+**Depends on:** sprint-2b-eval-async
+**Goal:** Change `BuiltinFn` signature from sync to async future-returning, update all ~190 builtins.
+
+- [ ] Change `BuiltinFn` type alias from `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>` to `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send + 'static>>` in `src/value.rs` (`src/value.rs`)
+- [ ] Add helper macro `builtin_fn!(|args| async move { ... })` to reduce boilerplate for builtins that don't call async code (`src/builtins.rs`)
+- [ ] Update all builtins in `src/builtins.rs` to return `Box::pin(async move { ... })` — builtins that don't call `materialize()` are trivial wraps; builtins that do call `materialize()` add `.await` (`src/builtins.rs`)
+- [ ] Update all builtins in `src/builtins_math.rs`, `src/builtins_string.rs`, `src/builtins_dict.rs` → `Box::pin(async move { ... })` (`src/builtins_math.rs`, `src/builtins_string.rs`, `src/builtins_dict.rs`)
+- [ ] Update all builtins in `src/builtins_seq_*.rs` (4 files) → `Box::pin(async move { ... })` (`src/builtins_seq_*.rs`)
+- [ ] Update all builtins in `src/builtins_io.rs`, `src/builtins_meta.rs`, `src/builtins_bytes.rs`, `src/builtins_uri.rs`, `src/builtins_datetime.rs` → `Box::pin(async move { ... })` (`src/builtins_io.rs`, `src/builtins_meta.rs`)
+- [ ] `just build` passes after all builtins updated
+
+### sprint-2b-entry-async: async main + async tests + LSP bridge
+
+**Depends on:** sprint-2b-builtins-async
+**Goal:** Wire up the async runtime at program entry points, preserve LSP synchrony.
+
+- [ ] Add `#[tokio::main]` to `src/main.rs` `main()` function; replace `async_rt::block_on()` calls with direct `.await` (`src/main.rs`)
+- [ ] Update `src/lib.rs` eval_source/typecheck_source to be `async fn` or wrap in `tokio::runtime::Runtime::block_on()` for test compatibility (`src/lib.rs`)
+- [ ] Update `src/repl.rs` to use async eval in a `tokio::spawn` loop (`src/repl.rs`)
+- [ ] Update `src/lsp/` to keep `block_on` at the outermost LSP message dispatch boundary only — analysis functions become `async fn`, LSP event loop stays sync (`src/lsp/`)
+- [ ] Change all `#[test]` in test modules that call eval to `#[tokio::test(flavor = "current_thread")]` (`src/lib.rs`, `src/builtins.rs`, etc.)
+- [ ] `just build` + `just test` passes — this is the first async-complete checkpoint
+
+### sprint-2b-primitives: Implement task/await/channel/select primitives
+
+**Depends on:** sprint-2b-entry-async
+- [ ] Implement `task` builtin: `spawn_task(fut)` → `Value::Task(Arc<Mutex<TaskState>>)` (`src/builtins_async.rs` new file)
+- [ ] Implement `await` builtin: materialize a `Value::Task`, returning result or propagating error (`src/builtins_async.rs`)
+- [ ] Implement `await-all` in `stdlib/async.llt` (channels + with-cancel pattern per whatif design)
+- [ ] Implement `channel` builtin → `Value::Channel(Arc<ChannelInner>)` with bounded tokio mpsc channel (`src/builtins_async.rs`)
+- [ ] Implement `send` + `recv` builtins for channel communication (`src/builtins_async.rs`)
+- [ ] Implement `select-once` builtin with `[Seq [SelectSource t r]]` API (`src/builtins_async.rs`)
+- [ ] Implement `par`, `par-map`, `par-filter` via JoinSet fanout (`src/builtins_async.rs`)
+- [ ] Register all new builtins in `standard_builtins()` (`src/builtins.rs`)
+- [ ] `just test` passes; add 5 corpus tests per whatif spec
+
+### sprint-2b-context: Implement context/cancellation primitives
+
+**Depends on:** sprint-2b-primitives
+- [ ] Implement `context` builtin → `Value::Context(CancellationToken)` (`src/builtins_async.rs`)
+- [ ] Implement `with-cancel` → returns `CancelHandle { child-ctx, cancel }` (`src/builtins_async.rs`)
+- [ ] Implement `with-timeout`, `with-deadline`, `cancelled?`, `with-context`, `timeout` (`src/builtins_async.rs`)
+- [ ] Implement `cancel-task` builtin (cancel specific Task handle) (`src/builtins_async.rs`)
+- [ ] Implement `cancel-root`, `drain`, `exit-now` (`src/builtins_async.rs`)
+- [ ] Implement `finally` (non-cancellable cleanup context) (`src/builtins_async.rs`)
+- [ ] `EvalContext` gains `cancel: CancellationToken` field; propagate through async eval (`src/eval.rs`)
+
+### sprint-2b-events: Implement signal/timer/watch event sources
+
+**Depends on:** sprint-2b-context
+- [ ] Implement `signal-channel` using tokio signal handling → `Value::Channel<Signal>` (`src/builtins_async.rs`)
+- [ ] Implement `timer-channel` using tokio time → `Value::Channel<Null>` with periodic ticks (`src/builtins_async.rs`)
+- [ ] Implement `watch-channel` using tokio watch → `Value::Channel<Any>` for change notifications (`src/builtins_async.rs`)
+- [ ] Implement `loop-select` in `stdlib/async.llt` (recurring select pattern)
+
+### sprint-2b-stdlib-async: stdlib/async.llt
+
+**Depends on:** sprint-2b-events
+- [ ] Create `stdlib/async.llt` with: `cancel`, `await-all` (channels + with-cancel), `recv-all`, `par-map`, `par-filter`, `exit`, `graceful-exit`, `finally`, `loop-select`, `retry` (`stdlib/async.llt`)
+- [ ] `just test` full suite passes
+- [ ] Run `/review-whatif runtime-v2` to verify completeness
+
 ### sprint-2b-async: Async evaluation + primitives
 
 🔄 IN PROGRESS. Step 4: Async foundation complete.
 
 - [x] **Step 1-3**: Rc→Arc, ThunkInner (Mutex + tokio::sync::OnceCell), Arc<RwLock<Environment>>
 - [x] **Step 4**: MINIMAL async foundation — eval/materialize are async-capable via async_rt::block_on
-- [ ] **Step 5**: Full async transformation — make eval/materialize `async fn`, propagate .await (568 call sites!)
+- [ ] **Step 5**: Full async transformation — see sub-sprints above (sprint-2b-shim-removal through sprint-2b-stdlib-async)
 - [ ] `task`, `await`, `await-all`, `channel`, `send`, `recv`, `select-once`, `par`, `par-map`, `par-filter`
 - [ ] `context`, `with-cancel`, `with-timeout`, `cancel-task`, `cancel-root`, `drain`
 - [ ] `signal-channel`, `timer-channel`, `watch-channel`
