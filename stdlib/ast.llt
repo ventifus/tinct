@@ -25,8 +25,8 @@
 # Matches the Rust Expr enum in src/ast.rs
 [type Expr
   # Literals — all literal types share the Literal constructor
-  # kind: "int"|"float"|"bool"|"str"  value: the literal value  bare: only emitted for kind:"str" nodes (true if unquoted)
-  [Literal    kind: String  value: Unknown  bare: Bool]
+  # kind: "int"|"float"|"bool"|"str"  value: the literal value  bare: only emitted for kind:"str" nodes (Bool if unquoted, Null for other kinds)
+  [Literal    kind: String  value: Unknown  bare: [Bool Null]]
 
   # Variables and references
   [VarRef     name: String]
@@ -54,7 +54,7 @@
   [Quote          expr: Expr]
   [Unquote        expr: Expr]
   [UnquoteSplice  expr: Expr]
-  [DefMacro       name: String  params: [Seq Unknown]  body: Expr]  # params is Vec<Spanned<Param>>
+  [DefMacro       name: String  params: Expr  body: Expr]  # params is a single LetDecl expression
   [MacroDecl      name: String  params: Expr  body: Expr]
   [Splice         forms: [Seq Expr]]
   [SyntaxClass    name: String  pattern: Expr  message: [String Null]]

@@ -702,7 +702,7 @@ fn expr_to_thunk_id(
         Expr::ClassDecl {
             name,
             params,
-            superclasses: _,
+            superclasses: _, // TODO (grammar-doc-polish): ClassDecl.superclasses silently dropped — design decision needed on schema representation
             methods,
             determines,
             resolver,

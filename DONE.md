@@ -8673,3 +8673,14 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 - [x] `ast_to_dict` payload dicts have no capacity hints — add `IndexMap::with_capacity(N)` per match arm using statically known field counts (`src/ast_dict.rs:234+`)
 - [x] `deep_materialize` Dict arm allocates `Vec<Key>` scratch — eliminate by passing key count as `usize` into BuildDict and iterating `map.keys()` during assembly (`src/eval_deep.rs:342-358`)
 - [x] `list_to_thunk_id` creates intermediate Vec<ThunkId> — change to accept `impl ExactSizeIterator<Item=ThunkId>` to eliminate the intermediate Vec (`src/ast_dict.rs:99,141,208`)
+
+## Health Review #22 Findings (2026-05-19) — Grammar/Doc
+
+### grammar-doc-polish: Fix grammar/doc consistency issues
+
+- [x] **CRITICAL** `doc/feature/macros.md:176` incorrectly states `[defmacro ...]` produces the same AST node as `[macro ...]` — fix: defmacro produces `Expr::DefMacro` (Variant tag "DefMacro"), macro produces `Expr::MacroDecl` (Variant tag "MacroDecl"); distinct serialized tags (`doc/feature/macros.md:176`)
+- [x] **REOPENED** `stdlib/ast.llt:29` — `Literal.bare` is typed `Bool` for ALL literal kinds but `bare` is only emitted for `kind:"str"` nodes; should be `[Bool Null]`; prior fix only changed the comment, not the type definition (`stdlib/ast.llt:29`)
+- [x] `stdlib/ast.llt:57` — `DefMacro.params` described as `[Seq Unknown]` but the field is a single `Expr` (a LetDecl node, not a sequence); fix: `[DefMacro name: String  params: Expr  body: Expr]` (`stdlib/ast.llt:57`)
+- [x] `doc/feature/ast-schema.md:259-271` — Document schema omits the `stage:` field which is always emitted as `Variant("Runtime"|"Type")`; any code building a document node from the schema spec will produce output that can't round-trip through `dict_to_file` (`doc/feature/ast-schema.md:259-271`, `src/ast_dict.rs:182-195`)
+- [x] `ClassDecl.superclasses` is silently dropped by `ast_to_dict` (field set to `_` at `src/ast_dict.rs:675`) — formatter/macro code reconstructing ClassDecl loses superclass declarations; design decision needed on schema representation before implementation (`src/ast_dict.rs:675`)
+- [x] `doc/02-syntax.md:733` — `defmacro` example uses bare `[pred body]` params without `[let ...]`; verify this still works at evaluation time (`doc/02-syntax.md:733-740`)

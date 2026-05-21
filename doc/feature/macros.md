@@ -173,7 +173,7 @@ Macros defined in an included file are available to the includer. This works bec
 
 ### Parser / Grammar
 
-`src/parser.rs` gains a `macro` keyword. `[macro name [let params] body]` produces an AST node (`Expr::MacroDecl`). `[defmacro ...]` is parsed as a backward-compatible alias that produces the same node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
+`src/parser.rs` gains a `macro` keyword. `[macro name [let params] body]` produces an AST node (`Expr::MacroDecl`). `[defmacro ...]` is parsed as a backward-compatible form that produces a distinct `Expr::DefMacro` node (serialized with Variant tag "DefMacro"). Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
 
 ### AST
 

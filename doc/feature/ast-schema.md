@@ -228,6 +228,8 @@ Variant("TypeApp"  {func: ...node...  arg: ...node...  span: ...})
 
 `methods` in `ClassDecl` is a plain dict (not a Seq) keyed by method name. `params` in `ClassDecl` is a Seq of string values.
 
+**Note:** `ClassDecl.superclasses` is currently omitted from the AST schema (silently dropped during serialization). A design decision is needed on how to represent superclass declarations in the schema before this field can be exposed.
+
 ### Placeholder and Error
 
 ```tinct
@@ -264,11 +266,14 @@ Document nodes are plain dicts (not Variant):
 [type: "document"
  expressions: [...]   # Seq of Variant nodes forming the scope chain
  name: "config"       # [] if anonymous
+ stage: [Runtime]     # Variant("Runtime"|"Type") — always emitted
  output-type: ...ann-or-null...
  expects: ...ann-or-null...
  leading-comments: ["# File header comment"]  # absent when empty
  span: ...]
 ```
+
+`stage:` is always emitted as a Variant with tag "Runtime" or "Type" (derived from the document stage annotation).
 
 `leading-comments:` on a document captures comments that appear at the top of the document section (before the first expression), such as file-level documentation headers.
 

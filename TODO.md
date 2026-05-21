@@ -171,15 +171,6 @@ The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge
 
 ## Health Review #22 Findings (2026-05-19)
 
-### grammar-doc-polish: Fix grammar/doc consistency issues
-
-- [ ] **CRITICAL** `doc/feature/macros.md:176` incorrectly states `[defmacro ...]` produces the same AST node as `[macro ...]` — fix: defmacro produces `Expr::DefMacro` (Variant tag "DefMacro"), macro produces `Expr::MacroDecl` (Variant tag "MacroDecl"); distinct serialized tags (`doc/feature/macros.md:176`)
-- [ ] **REOPENED** `stdlib/ast.llt:29` — `Literal.bare` is typed `Bool` for ALL literal kinds but `bare` is only emitted for `kind:"str"` nodes; should be `[Bool Null]`; prior fix only changed the comment, not the type definition (`stdlib/ast.llt:29`)
-- [ ] `stdlib/ast.llt:57` — `DefMacro.params` described as `[Seq Unknown]` but the field is a single `Expr` (a LetDecl node, not a sequence); fix: `[DefMacro name: String  params: Expr  body: Expr]` (`stdlib/ast.llt:57`)
-- [ ] `doc/feature/ast-schema.md:259-271` — Document schema omits the `stage:` field which is always emitted as `Variant("Runtime"|"Type")`; any code building a document node from the schema spec will produce output that can't round-trip through `dict_to_file` (`doc/feature/ast-schema.md:259-271`, `src/ast_dict.rs:182-195`)
-- [ ] `ClassDecl.superclasses` is silently dropped by `ast_to_dict` (field set to `_` at `src/ast_dict.rs:675`) — formatter/macro code reconstructing ClassDecl loses superclass declarations; design decision needed on schema representation before implementation (`src/ast_dict.rs:675`)
-- [ ] `doc/02-syntax.md:733` — `defmacro` example uses bare `[pred body]` params without `[let ...]`; verify this still works at evaluation time (`doc/02-syntax.md:733-740`)
-
 ### stdlib-doc-polish: Fix stdlib documentation and coverage gaps
 
 - [ ] **CRITICAL** `doc/11-stdlib.md:296-308` §Loading mechanism is completely stale — still describes `[include %rust "core"]` mechanism that was deleted; rewrite to describe actual post-include-decomp bootstrap (all builtins pre-injected by `create_root_env()`/`create_stdlib_env_inner()`) (`doc/11-stdlib.md:296-308`)
