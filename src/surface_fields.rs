@@ -1,6 +1,4 @@
 //! Surface AST field extraction for match dispatch and dot-access.
-// Functions are wired into eval.rs/eval_materialize.rs in Sprint 1 Part E.
-#![allow(dead_code)]
 //!
 //! These functions bridge the Surface AST types and the runtime value layer:
 //! - `surface_expr_tag()` — O(1) variant name extraction, used by the match evaluator
@@ -61,6 +59,7 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
 }
 
 /// Extract the variant tag from a `SurfaceDeclaration` as a static string.
+#[allow(dead_code)] // Used in Part E when Value::Declaration is added
 pub fn surface_decl_tag(decl: &SurfaceDeclaration) -> &'static str {
     match decl {
         SurfaceDeclaration::TypeAlias { .. } => "TypeAlias",
@@ -79,12 +78,14 @@ pub fn surface_decl_tag(decl: &SurfaceDeclaration) -> &'static str {
 
 /// Returns the match tag for a SurfaceDocument.
 /// Always `"Document"` — used by match evaluator for Value::Document dispatch.
+#[allow(dead_code)] // Used in Part F when Value::Document is added
 pub fn surface_doc_tag(_doc: &SurfaceDocument) -> &'static str {
     "Document"
 }
 
 /// Returns the match tag for a SurfaceProgram.
 /// Always `"Program"` — used by match evaluator for Value::Program dispatch.
+#[allow(dead_code)] // Used in Part F when Value::Program is added
 pub fn surface_program_tag(_prog: &SurfaceProgram) -> &'static str {
     "Program"
 }
@@ -131,6 +132,7 @@ pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static 
 // ============================================================================
 
 /// Error returned when converting a macro output value back to a SurfaceNode fails.
+#[allow(dead_code)] // Used in Part E when macro expansion uses SurfaceNode directly
 #[derive(Debug)]
 pub struct MacroConversionError {
     pub message: String,
@@ -156,6 +158,7 @@ impl std::error::Error for MacroConversionError {}
 ///
 /// Returns `Err` if the value is not a valid AST representation (e.g., primitive values,
 /// non-AST dicts).
+#[allow(dead_code)] // Used in Part E when macro expansion uses SurfaceNode directly
 pub fn surface_node_from_value(
     v: &Value,
     ctx: &std::sync::Arc<crate::eval::EvalContext>,

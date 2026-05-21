@@ -1,6 +1,4 @@
 //! Lowering pass: converts `SurfaceExpression` to `CoreExpr` for the evaluator.
-// Functions are wired into eval_materialize.rs in Sprint 1 Part E.
-#![allow(dead_code)]
 //!
 //! `lower()` is called per-thunk when a `Surface` thunk is first forced.
 //! It is a pure function of `(SurfaceNode, ResolutionTable, TypeAnnotationTable)`.
@@ -221,6 +219,7 @@ fn lower_expr(
 ///
 /// Utility for batch-lowering all expression items in a document.
 /// Declaration items (SurfaceItem::Decl) are skipped — they were processed by the expander.
+#[allow(dead_code)] // Used in Part E when batch lowering is activated
 pub fn lower_document_exprs<'a>(
     nodes: impl Iterator<Item = &'a Arc<SurfaceNode>>,
     res: &ResolutionTable,
@@ -235,6 +234,7 @@ pub fn lower_document_exprs<'a>(
 /// This function lowers them in place if needed for annotation-driven evaluation.
 /// In practice, annotations are resolved statically during typechecking and do not
 /// need runtime lowering — this function exists for completeness.
+#[allow(dead_code)] // Used if annotation runtime evaluation is needed in future sprints
 pub fn lower_annotation(
     ann: &Annotation,
     _res: &ResolutionTable,
@@ -247,6 +247,82 @@ pub fn lower_annotation(
             // During the full migration (when Annotation uses SurfaceNode), this
             // function will recurse into entry values. For now, clone as-is.
             ann.clone()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{ResolutionTable, SurfaceExpression, SurfaceNode, TypeAnnotationTable};
+    use std::sync::Arc;
+
+    fn make_node(expr: SurfaceExpression, span: crate::ast::Span) -> Arc<SurfaceNode> {
+        Arc::new(SurfaceNode { expr, span })
+    }
+
+    #[test]
+    fn test_lower_int_literal() {
+        let span = crate::ast::Span::origin();
+        let node = make_node(SurfaceExpression::Int(42), span);
+        let res = ResolutionTable::new();
+        let types = TypeAnnotationTable::new();
+
+        let lowered = lower(&node, &res, &types);
+
+        assert_eq!(lowered.span, span);
+        assert!(matches!(lowered.node, CoreExpr::Int(42)));
+    }
+
+    #[test]
+    fn test_lower_varref_with_resolution() {
+        let span = crate::ast::Span::origin();
+        let node = make_node(
+            SurfaceExpression::VarRef {
+                name: "x".into(),
+                escaped: false,
+            },
+            span,
+        );
+        let mut res = ResolutionTable::new();
+        let types = TypeAnnotationTable::new();
+
+        // Simulate resolver inserting a binding: level 0, slot 3
+        let id = crate::ast::node_id(&node);
+        res.insert(id, (0, 3));
+
+        let lowered = lower(&node, &res, &types);
+
+        match lowered.node {
+            CoreExpr::Var { name, level, slot } => {
+                assert_eq!(name, "x");
+                assert_eq!(level, 0);
+                assert_eq!(slot, 3);
+            }
+            _ => panic!("expected CoreExpr::Var, got {:?}", lowered.node),
+        }
+    }
+
+    #[test]
+    fn test_lower_varref_without_resolution() {
+        let span = crate::ast::Span::origin();
+        let node = make_node(
+            SurfaceExpression::VarRef {
+                name: "unbound".into(),
+                escaped: false,
+            },
+            span,
+        );
+        let res = ResolutionTable::new(); // Empty — no resolution entry
+        let types = TypeAnnotationTable::new();
+
+        let lowered = lower(&node, &res, &types);
+
+        match lowered.node {
+            CoreExpr::FreeVar(name) => {
+                assert_eq!(name, "unbound");
+            }
+            _ => panic!("expected CoreExpr::FreeVar, got {:?}", lowered.node),
         }
     }
 }

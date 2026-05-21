@@ -1,6 +1,4 @@
 //! Conversion from the old Expr/Document/File AST to the Surface AST types.
-// Transitional bridge — deleted in Sprint 1 Part E.
-#![allow(dead_code)]
 //!
 //! This module provides a bridge so the Surface types can be used immediately
 //! without migrating the 8000-line parser in one go. The parser continues to
@@ -46,12 +44,14 @@ pub fn file_to_surface_program(file: &File) -> SurfaceProgram {
 /// the table keyed by the corresponding `SurfaceNode`'s `NodeId`.
 ///
 /// Deleted in Part E when the typechecker directly produces `TypeAnnotationTable`.
+#[allow(dead_code)] // Used in Part B when typechecker integration lands
 pub fn file_to_surface_program_with_types(file: &File) -> (SurfaceProgram, TypeAnnotationTable) {
     let mut table = TypeAnnotationTable::new();
     let program = file_to_surface_program_collecting(file, &mut table);
     (program, table)
 }
 
+#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
 fn file_to_surface_program_collecting(
     file: &File,
     table: &mut TypeAnnotationTable,
@@ -70,6 +70,7 @@ fn file_to_surface_program_collecting(
     }
 }
 
+#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
 fn document_to_surface_collecting(
     doc: &Document,
     table: &mut TypeAnnotationTable,
@@ -89,6 +90,7 @@ fn document_to_surface_collecting(
     }
 }
 
+#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
 fn expr_to_surface_item_collecting(
     spanned: &Spanned<Expr>,
     table: &mut TypeAnnotationTable,
@@ -102,6 +104,7 @@ fn expr_to_surface_item_collecting(
     item
 }
 
+#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
 fn collect_type_annotations_from_expr(
     old_expr: &Spanned<Expr>,
     new_node: &Arc<SurfaceNode>,
@@ -797,6 +800,7 @@ fn match_arm_to_surface(arm: &MatchArm) -> SurfaceMatchArm {
 ///
 /// This is a temporary bridge until the parser directly produces `SurfaceProgram`.
 /// Currently converts the parsed File to SurfaceProgram.
+#[allow(dead_code)] // Used in Part B when parser integration changes
 pub fn parse_to_surface(
     input: &str,
 ) -> Result<(SurfaceProgram, crate::parser::ParseOutput), crate::parser::ParseError> {

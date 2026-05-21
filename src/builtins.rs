@@ -1599,7 +1599,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_icmp_ping,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
-        // Meta primitives (exposed via %rust "meta" module)
+        // Meta primitives
         // DELETED: builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq])
         // eval-ast was the old single-expression eval interface, superseded by the new eval builtin
         builtin!("gensym", builtin_gensym),
@@ -1622,16 +1622,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
     ]
 }
 
-/// Create a virtual Rust module environment containing the named primitive group.
-///
-/// This function is called by the include resolver when evaluating `[include %rust "module-name"]`.
-/// Each module returns an environment containing only the builtins in that group.
-///
-/// Module names:
-/// - `core`: arithmetic, comparison, control flow, core dict primitives, type predicates
 // TOMBSTONE: rust_module() deleted in include-decomp-redelete sprint (2026-05-20).
 // TOMBSTONE: create_bootstrap_env() deleted in include-decomp-redelete sprint (2026-05-20).
-// The %rust dict and [include %rust "..."] mechanism have been deleted.
+// The module system and include mechanism have been deleted.
 // All builtins are now registered directly in create_root_env() and visible to the prelude.
 // See doc/whatif/include-decomposition.md.
 
@@ -1834,8 +1827,7 @@ fn create_stdlib_env_inner(
 /// Create the type-stage environment used when evaluating type-stage documents.
 ///
 /// This function parses the prelude, filters to only `--- stage: type` documents,
-/// and evaluates them with a minimal bootstrap context containing only `include`
-/// and `%rust "type-core"`.
+/// and evaluates them with a minimal bootstrap context.
 ///
 /// The type-stage env is separate from the runtime stdlib env — it contains only
 /// the bindings defined in type-stage documents (e.g., `Int`, `Str`, `Seq`, `union`).
@@ -6295,7 +6287,7 @@ mod tests {
         // This test documents the current count. Update this assertion when adding/removing builtins.
         // The count in doc/11-stdlib.md should match this number.
         // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
-        // are now in standard_builtins and accessible only via %rust "meta" module.
+        // are now in standard_builtins.
         // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
         assert_eq!(
             count, 226,

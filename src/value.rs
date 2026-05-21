@@ -937,7 +937,6 @@ pub enum ThunkState {
 ///
 /// This is ADDITIVE — the existing ThunkState enum remains during the transition.
 /// Conversion methods below allow gradual migration.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum UnevaluatedState {
     /// AST expression from the old runtime (CoreExpr will replace this in full runtime-v2).
@@ -995,7 +994,6 @@ pub enum UnevaluatedState {
 /// - result: set exactly once when evaluation completes
 ///
 /// This is ADDITIVE — Thunk still uses Mutex<ThunkState> during the transition.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ThunkInner {
     /// Pre-evaluation state. Set to Some initially, taken (set to None) when evaluation starts.
