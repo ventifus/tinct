@@ -332,6 +332,25 @@ std::thread_local! {
     static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// RAII guard for EXPAND_MACROS_DEPTH. Restores depth on drop, even if the guarded scope panics.
+struct DepthGuard {
+    original_depth: u32,
+}
+
+impl DepthGuard {
+    fn new() -> Self {
+        let depth = EXPAND_MACROS_DEPTH.get();
+        EXPAND_MACROS_DEPTH.set(depth + 1);
+        DepthGuard { original_depth: depth }
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EXPAND_MACROS_DEPTH.set(self.original_depth);
+    }
+}
+
 /// Expand all macros in a File AST.
 ///
 /// This is the top-level entry point called from the pipeline.
@@ -377,9 +396,9 @@ pub fn expand_macros(
     let depth = EXPAND_MACROS_DEPTH.get();
     let (stdlib_env, ctx) = if depth == 0 {
         // Only call create_stdlib_env at depth 0 (top-level user code).
-        // Increment depth to prevent re-entrance.
-        EXPAND_MACROS_DEPTH.set(depth + 1);
-        let result = match builtins::create_stdlib_env_with_arena() {
+        // RAII guard increments depth and restores it on drop (even on panic).
+        let _guard = DepthGuard::new();
+        match builtins::create_stdlib_env_with_arena() {
             Ok((env, arena)) => {
                 // Load stdlib macros from the fully-evaluated stdlib env.
                 // The stdlib defines macros via regular function exports that we
@@ -394,16 +413,16 @@ pub fn expand_macros(
                     arena,
                     HashMap::new(), // No macros registered yet during initial expansion
                 );
-                Ok((env, ctx))
+                (env, ctx)
             }
-            Err(e) => Err(EvalError::internal(
-                format!("cannot create stdlib env for macro expansion: {e}"),
-                file.span,
-            )),
-        };
-        // Reset depth after create_stdlib_env completes
-        EXPAND_MACROS_DEPTH.set(depth);
-        result?
+            Err(e) => {
+                return Err(EvalError::internal(
+                    format!("cannot create stdlib env for macro expansion: {e}"),
+                    file.span,
+                )
+                .into())
+            }
+        }
     } else {
         // Re-entrant call (depth > 0): use bare root env to break the cycle.
         // This happens when create_stdlib_env → build_prelude_env → expand_macros(prelude.llt).

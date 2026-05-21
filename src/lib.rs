@@ -241,7 +241,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         stdlib_arena,
         expand_result.macro_injects_map,
     );
-    // Wire boundary guards and do-infer resolutions from type inference to the eval context
+    // Wire boundary guards and do-infer resolutions from type inference to the eval context.
+    // NOTE: When typecheck is skipped (e.g., --no-typecheck or eval-only paths), do-infer
+    // sentinels remain unresolved. The [do] macro expansion inserts %do-infer:N placeholder
+    // VarRefs that the typechecker normally rewrites. Without typecheck, these produce
+    // 'undefined variable: %do-infer:N' at eval time. This is expected degraded behavior.
     ctx.set_boundary_guards(infer_state.boundary_guards);
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
     // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
@@ -350,7 +354,11 @@ pub fn eval_source_with_cap_net(
         stdlib_arena,
         expand_result.macro_injects_map,
     );
-    // Wire boundary guards and do-infer resolutions from type inference to the eval context
+    // Wire boundary guards and do-infer resolutions from type inference to the eval context.
+    // NOTE: When typecheck is skipped (e.g., --no-typecheck or eval-only paths), do-infer
+    // sentinels remain unresolved. The [do] macro expansion inserts %do-infer:N placeholder
+    // VarRefs that the typechecker normally rewrites. Without typecheck, these produce
+    // 'undefined variable: %do-infer:N' at eval time. This is expected degraded behavior.
     ctx.set_boundary_guards(infer_state.boundary_guards);
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 

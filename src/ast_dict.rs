@@ -1482,6 +1482,12 @@ fn list_to_thunk_id(
 /// `AstError` if validation fails. Unknown fields are ignored (forward-compatible).
 ///
 /// The `ctx` parameter is needed to dereference ThunkIds embedded in the dict structure.
+///
+/// **Variant payload constraint**: Variant payloads must be materialized before passing
+/// to `dict_to_ast`. Lazy Variant payloads (from `[variant ...]`) will fail here.
+/// AST nodes produced by `ast_to_dict` use `Thunk::new_materialized` so the round-trip
+/// is safe. User code constructing Variant-form AST nodes must call `deep_materialize`
+/// on the variant before passing it to this function.
 pub fn dict_to_ast(
     val: &Value,
     ctx: &Rc<crate::eval::EvalContext>,
@@ -2283,6 +2289,11 @@ fn dict_to_annotation(
 /// - Spans recovered from each node's `span:` field via `extract_span`
 ///
 /// Used internally by the `expand` builtin for the Dict → File round-trip.
+///
+/// **Root type constraint**: `dict_to_file` requires a `Value::Dict` root (the full file schema).
+/// Unlike `dict_to_ast` which accepts both `Dict` and `Variant`, the file root must be a `Dict`
+/// with a `documents` field. This asymmetry is correct: `ast_to_dict` always emits `Dict` for
+/// file roots, never `Variant`, so the round-trip is consistent.
 pub fn dict_to_file(val: &Value, ctx: &Rc<crate::eval::EvalContext>) -> Result<File, AstError> {
     let dict = match val {
         Value::Dict(d) => d,

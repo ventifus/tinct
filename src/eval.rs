@@ -798,6 +798,12 @@ pub(crate) fn eval_recursive(
             // The type checker resolved the monad name and stored it in do_infer_resolutions
             // keyed by this VarRef's span. At runtime, substitute the sentinel with the
             // actual monad dict looked up from the environment by its resolved name.
+            //
+            // NOTE: When typecheck is skipped (e.g., --no-typecheck or eval-only paths),
+            // do_infer_resolutions is empty and %do-infer sentinels remain unresolved.
+            // The [do] macro expansion inserts %do-infer:N placeholder VarRefs that the
+            // typechecker normally rewrites. Without typecheck, these produce 'undefined
+            // variable: %do-infer:N' at eval time. This is expected degraded behavior.
             if name == "%do-infer" {
                 if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(name).cloned() {
                     let found = env.borrow().get(&monad_name);
@@ -1793,6 +1799,10 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Rc<EvalContext>) -> EvalResult
                 )
                 .into())
             }
+        }
+        Value::Expression(node) => {
+            // Value::Expression from ast-of builtin — convert back to Expr
+            Ok(crate::ast_convert::surface_node_to_expr(node))
         }
         _ => Err(
             EvalError::internal(format!("unquote of {:?} is not supported", value), span).into(),
