@@ -1,4 +1,5 @@
 //! AST types: `File`, `Document`, `Expr`, `Entry`, `Param`, `Annotation`, `Spanned<T>`.
+//! Also: `SurfaceExpression`, `SurfaceNode`, `SurfaceProgram`, `CoreExpr` (runtime-v2 types).
 
 use crate::types::Type;
 use std::cell::RefCell;
@@ -809,125 +810,138 @@ impl Expr {
 }
 
 // ============================================================================
-// Runtime-v2: Surface AST Types (Phase 3 of rebase)
+// runtime-v2 AST types (Sprint 1, Part A)
 // ============================================================================
+//
+// SurfaceExpression / SurfaceNode / SurfaceProgram — immutable, Send+Sync, Arc-recursive.
+// CoreExpr — evaluator-internal representation with de Bruijn coordinates.
+// These coexist with Expr/Document/File until Part E removes the old types.
 
-/// Unique identifier for a Surface AST node, derived from Arc pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(usize);
-
-/// Get the NodeId for a SurfaceNode from its Arc pointer address.
-pub fn node_id(node: &Arc<SurfaceNode>) -> NodeId {
-    NodeId(Arc::as_ptr(node) as usize)
-}
-
-/// Resolution table mapping NodeIds to (level, slot) de Bruijn coordinates.
-pub type ResolutionTable = HashMap<NodeId, (u32, u32)>;
-
-/// Type annotation table mapping NodeIds to resolved Types.
-pub type TypeAnnotationTable = HashMap<NodeId, Type>;
-
-/// Surface AST node wrapper with span.
-#[derive(Debug, Clone, PartialEq)]
+/// Dedicated wrapper for expression nodes in the Surface AST.
+/// Identity is derived from the Arc pointer — no stored NodeId.
+#[derive(Debug, Clone)]
 pub struct SurfaceNode {
     pub expr: SurfaceExpression,
     pub span: Span,
 }
 
-/// Surface expression enum — mirrors Expr but uses Arc<SurfaceNode> for children.
-#[derive(Debug, Clone, PartialEq)]
+/// Pointer-derived node identity. Valid only while the owning Arc<SurfaceNode> is live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(pub usize);
+
+/// Compute the NodeId for an Arc<SurfaceNode> from its raw pointer value.
+pub fn node_id(arc: &Arc<SurfaceNode>) -> NodeId {
+    NodeId(Arc::as_ptr(arc) as usize)
+}
+
+/// Immutable surface expression — what the parser produces and what tinct metaprogramming sees.
+/// No RefCell fields. All recursive positions use Arc<SurfaceNode>.
+#[derive(Debug, Clone)]
 pub enum SurfaceExpression {
+    // Literals
     Int(i64),
     Float(f64),
     Bool(bool),
     Str(String),
-    VarRef {
-        name: String,
-        escaped: bool,
-    },
-    DotAccess {
-        expr: Arc<SurfaceNode>,
-        field: DotKey,
-    },
-    Pipe {
-        lhs: Arc<SurfaceNode>,
-        rhs: Arc<SurfaceNode>,
-    },
+
+    // Variable reference. escaped: true = $name (pin in patterns), false = bare (bind).
+    // No 'resolved' field — de Bruijn coordinates live in ResolutionTable keyed by NodeId.
+    VarRef { name: String, escaped: bool },
+
+    // Access
+    DotAccess { expr: Arc<SurfaceNode>, field: DotKey },
+
+    // Pipe is surface-only — the lowering pass rewrites it to Call before evaluation.
+    // Kept here so formatters and metaprogramming can distinguish pipe-form from call-form.
+    Pipe { lhs: Arc<SurfaceNode>, rhs: Arc<SurfaceNode> },
+
+    // Sequential let* scoping (multi-expr fn bodies, match arm bodies)
     Sequential(Vec<Arc<SurfaceNode>>),
+
+    // Dict/list literal — key is None for auto-indexed (positional) entries
     Dict(Vec<Spanned<SurfaceEntry>>),
+
+    // Function call — implied: true = [f x y], false = [call f x y]
     Call {
         func: Arc<SurfaceNode>,
         args: Vec<Arc<SurfaceNode>>,
         named_args: Vec<Spanned<SurfaceNamedArg>>,
         implied: bool,
     },
+
+    // Function definition — desugared: true = synthesised by $_ desugaring
+    // return_ann is surface-level user input, not a pass result
     Fn {
         return_ann: Option<Spanned<Annotation>>,
         params: Vec<Spanned<SurfaceParam>>,
         body: Arc<SurfaceNode>,
         desugared: bool,
     },
-    TypeAssert {
-        annotation: Spanned<Annotation>,
-        expr: Arc<SurfaceNode>,
-    },
-    Annotated {
-        name: String,
-        annotation: Spanned<Annotation>,
-    },
+
+    // Type assertion — no resolved_type field; lives in TypeAnnotationTable keyed by NodeId
+    TypeAssert { annotation: Spanned<Annotation>, expr: Arc<SurfaceNode> },
+
+    // Annotated bare word, e.g. Fn@Number
+    Annotated { name: String, annotation: Spanned<Annotation> },
+
+    // Row variable / open record marker — None = unnamed (...)
     Rest(Option<String>),
-    Match {
-        scrutinee: Arc<SurfaceNode>,
-        arms: Vec<SurfaceMatchArm>,
-    },
+
+    // Pattern matching
+    Match { scrutinee: Arc<SurfaceNode>, arms: Vec<SurfaceMatchArm> },
+
+    // Quasiquoting
     Quote(Arc<SurfaceNode>),
     Unquote(Arc<SurfaceNode>),
     UnquoteSplice(Arc<SurfaceNode>),
-    PatternDecl {
-        bindings: Vec<Arc<SurfaceNode>>,
-    },
-    LetDecl {
-        bindings: Vec<Arc<SurfaceNode>>,
-    },
-    CaseArm {
-        pattern: Arc<SurfaceNode>,
-        body: Arc<SurfaceNode>,
-    },
-    TypeApp {
-        func: Arc<SurfaceNode>,
-        arg: Arc<SurfaceNode>,
-    },
+
+    // Binding and pattern forms. Structurally valid only in specific host positions;
+    // the lowering pass raises an error if these appear in other positions.
+    PatternDecl { bindings: Vec<Arc<SurfaceNode>> },
+    LetDecl { bindings: Vec<Arc<SurfaceNode>> },
+    CaseArm { pattern: Arc<SurfaceNode>, body: Arc<SurfaceNode> },
+    TypeApp { func: Arc<SurfaceNode>, arg: Arc<SurfaceNode> },
+
+    // Placeholder `...` — evaluates to error when forced
     Placeholder,
+
+    // Parse error node — span covers the unparseable region
     Error(Span),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// A dict/list entry in a SurfaceExpression::Dict.
+#[derive(Debug, Clone)]
 pub struct SurfaceEntry {
     pub key: Option<Arc<SurfaceNode>>,
     pub value: Arc<SurfaceNode>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// A named argument in a SurfaceExpression::Call.
+#[derive(Debug, Clone)]
 pub struct SurfaceNamedArg {
     pub name: String,
     pub value: Arc<SurfaceNode>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// A function parameter in a SurfaceExpression::Fn.
+#[derive(Debug, Clone)]
 pub struct SurfaceParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// A match arm in a SurfaceExpression::Match.
+#[derive(Debug, Clone)]
 pub struct SurfaceMatchArm {
     pub pattern: Spanned<Pattern>,
     pub guard: Option<Arc<SurfaceNode>>,
     pub body: Arc<SurfaceNode>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Compile-time-only declaration forms — removed from SurfaceExpression so the
+/// evaluator never needs to handle them (they are fully resolved before evaluation).
+#[derive(Debug, Clone)]
 pub enum SurfaceDeclaration {
     TypeAlias {
         params: Vec<String>,
@@ -964,13 +978,15 @@ pub enum SurfaceDeclaration {
     Splice(Vec<Arc<SurfaceNode>>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// An item in a SurfaceDocument — either an expression or a compile-time declaration.
+#[derive(Debug, Clone)]
 pub enum SurfaceItem {
     Expr(Arc<SurfaceNode>),
     Decl(Spanned<SurfaceDeclaration>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// A document in a SurfaceProgram — one or more items forming a scope chain.
+#[derive(Debug, Clone)]
 pub struct SurfaceDocument {
     pub stage: Option<Stage>,
     pub name: Option<String>,
@@ -980,9 +996,168 @@ pub struct SurfaceDocument {
     pub caps: Option<Spanned<Vec<(String, Annotation)>>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl SurfaceDocument {
+    /// Iterate only the expression items (skipping declarations).
+    pub fn expressions(&self) -> impl Iterator<Item = &Arc<SurfaceNode>> {
+        self.items.iter().filter_map(|item| match item {
+            SurfaceItem::Expr(node) => Some(node),
+            SurfaceItem::Decl(_) => None,
+        })
+    }
+}
+
+/// A complete tinct program — one or more documents separated by ---.
+#[derive(Debug, Clone)]
 pub struct SurfaceProgram {
     pub documents: Vec<Spanned<SurfaceDocument>>,
+}
+
+/// Variable resolution side table — populated by the resolver pass, keyed by NodeId.
+/// Replaces VarRef.resolved: RefCell<...> in the old design.
+#[derive(Debug)]
+pub struct ResolutionTable(pub HashMap<NodeId, (u32, u32)>);
+
+impl ResolutionTable {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    pub fn get(&self, id: &NodeId) -> Option<&(u32, u32)> {
+        self.0.get(id)
+    }
+
+    pub fn insert(&mut self, id: NodeId, coords: (u32, u32)) {
+        self.0.insert(id, coords);
+    }
+}
+
+impl Default for ResolutionTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Type annotation side table — populated by the typechecker, keyed by NodeId.
+/// Replaces TypeAssert.resolved_type: RefCell<Option<Type>> in the old design.
+#[derive(Debug)]
+pub struct TypeAnnotationTable(pub HashMap<NodeId, Type>);
+
+impl TypeAnnotationTable {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    pub fn get(&self, id: &NodeId) -> Option<&Type> {
+        self.0.get(id)
+    }
+
+    pub fn insert(&mut self, id: NodeId, ty: Type) {
+        self.0.insert(id, ty);
+    }
+}
+
+impl Default for TypeAnnotationTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Evaluator-internal expression — produced by lowering a SurfaceExpression.
+/// De Bruijn coordinates are plain fields (no RefCell, no Option).
+/// Never exposed to tinct code. Can be changed freely without affecting the tinct API.
+///
+/// Recursive positions use Arc<Spanned<CoreExpr>> directly — no CoreNode wrapper type,
+/// since CoreExpr has no need for pointer-derived identity.
+///
+/// Serializability invariant: every field is a primitive, String, u32, Box<Type>, Vec<T>,
+/// or Arc<Spanned<CoreExpr>>. No opaque Rust handles or trait objects.
+#[derive(Debug, Clone)]
+pub enum CoreExpr {
+    // Literals
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+
+    // VarRef with resolved de Bruijn coordinates
+    Var { name: String, level: u32, slot: u32 },
+    // Unresolvable ref (include-introduced bindings) — name-based env lookup at runtime
+    FreeVar(String),
+
+    DotAccess { expr: Arc<Spanned<CoreExpr>>, field: DotKey },
+
+    // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
+
+    Sequential(Vec<Arc<Spanned<CoreExpr>>>),
+    Dict(Vec<Spanned<CoreEntry>>),
+    Call {
+        func: Arc<Spanned<CoreExpr>>,
+        args: Vec<Arc<Spanned<CoreExpr>>>,
+        named_args: Vec<Spanned<CoreNamedArg>>,
+        implied: bool,
+    },
+    Fn {
+        return_ann: Option<Spanned<Annotation>>,
+        params: Vec<Spanned<CoreParam>>,
+        body: Arc<Spanned<CoreExpr>>,
+        desugared: bool,
+    },
+    // Statically type-checked TypeAssert — resolved_type set from TypeAnnotationTable during lowering.
+    // Runtime behavior: structural check against resolved_type at force time.
+    TypeAssert {
+        annotation: Spanned<Annotation>,
+        expr: Arc<Spanned<CoreExpr>>,
+        resolved_type: Type,
+    },
+    // TypeAssert for nodes absent from TypeAnnotationTable (macro-synthesized, bypassed typechecking).
+    // Falls back to default if present, raises error otherwise.
+    RuntimeTypeCheck {
+        annotation: Spanned<Annotation>,
+        expr: Arc<Spanned<CoreExpr>>,
+        default: Option<Arc<Spanned<CoreExpr>>>,
+    },
+    Annotated { name: String, annotation: Spanned<Annotation> },
+    Rest(Option<String>),
+    Match { scrutinee: Arc<Spanned<CoreExpr>>, arms: Vec<CoreMatchArm> },
+    Quote(Arc<Spanned<CoreExpr>>),
+    Unquote(Arc<Spanned<CoreExpr>>),
+    UnquoteSplice(Arc<Spanned<CoreExpr>>),
+    PatternDecl { bindings: Vec<Spanned<CoreExpr>> },
+    LetDecl { bindings: Vec<Spanned<CoreExpr>> },
+    CaseArm { pattern: Arc<Spanned<CoreExpr>>, body: Arc<Spanned<CoreExpr>> },
+    TypeApp { func: Arc<Spanned<CoreExpr>>, arg: Arc<Spanned<CoreExpr>> },
+    Placeholder,
+    Error(Span),
+}
+
+/// A dict/list entry in a CoreExpr::Dict.
+#[derive(Debug, Clone)]
+pub struct CoreEntry {
+    pub key: Option<Arc<Spanned<CoreExpr>>>,
+    pub value: Arc<Spanned<CoreExpr>>,
+}
+
+/// A named argument in a CoreExpr::Call.
+#[derive(Debug, Clone)]
+pub struct CoreNamedArg {
+    pub name: String,
+    pub value: Arc<Spanned<CoreExpr>>,
+}
+
+/// A function parameter in a CoreExpr::Fn.
+#[derive(Debug, Clone)]
+pub struct CoreParam {
+    pub name: String,
+    pub annotation: Option<Spanned<Annotation>>,
+    pub variadic: bool,
+}
+
+/// A match arm in a CoreExpr::Match.
+#[derive(Debug, Clone)]
+pub struct CoreMatchArm {
+    pub pattern: Spanned<Pattern>,
+    pub guard: Option<Arc<Spanned<CoreExpr>>>,
+    pub body: Arc<Spanned<CoreExpr>>,
 }
 
 #[cfg(test)]

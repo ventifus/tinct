@@ -9,53 +9,12 @@ use std::sync::Arc;
 
 use indexmap::{Equivalent, IndexMap};
 
-use crate::ast::{Expr, Param, Span, Spanned};
+use crate::ast::{Expr, Param, Span, Spanned, SurfaceDocument, SurfaceNode, SurfaceProgram};
 use crate::error::{EvalError, EvalResult};
 use crate::types::Type;
 
 // Re-export ThunkId for use in other modules
 pub use crate::arena::ThunkId;
-
-/// Type alias for the default fallback expression and environment pair used in
-/// Guarded thunks and type assertion contexts.
-pub type DefaultFallback = Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)>;
-
-/// Type alias for take_guarded return type
-type GuardedData = (
-    Rc<Thunk>,
-    Type,
-    Vec<String>,
-    Span,
-    Option<crate::error::BlameLabel>,
-    DefaultFallback,
-);
-
-/// Type alias for take_unevaluated return type
-type UnevaluatedData = (
-    Rc<Spanned<Expr>>,
-    Rc<RefCell<Environment>>,
-    Option<crate::arena::EnvId>,
-    Rc<crate::eval::EvalContext>,
-);
-
-/// Type alias for take_pending_builtin return type
-type PendingBuiltinData = (
-    BuiltinDef,
-    Vec<Rc<Thunk>>,
-    Option<IndexMap<String, Rc<Thunk>>>,
-    Span,
-    Rc<crate::eval::EvalContext>,
-);
-
-/// Type alias for take_pending_call return type
-type PendingCallData = (
-    Rc<Thunk>,
-    Vec<Rc<Thunk>>,
-    Option<IndexMap<String, Rc<Thunk>>>,
-    Span,
-    Rc<RefCell<Environment>>,
-    Rc<crate::eval::EvalContext>,
-);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
@@ -339,9 +298,6 @@ pub enum Value {
         params: Rc<Vec<Param>>,
         body: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
-        /// Optional flat environment ID for the closure's creation scope.
-        /// When Some(env_id), function calls can allocate child FlatEnvs for O(1) param lookup.
-        env_id: Option<crate::arena::EnvId>,
         annotation: Option<Box<FnAnnotation>>,
     },
     /// Rust-native built-in function
@@ -452,12 +408,34 @@ pub enum Value {
         socket: DatagramSocket,
         creation_span: Span,
     },
-    /// Surface AST program — created by `load`, consumed by `expand`.
-    Program(Arc<crate::ast::SurfaceProgram>),
-    /// Surface AST document — extracted from Program by match dispatch.
-    Document(Arc<crate::ast::SurfaceDocument>),
-    /// Surface AST expression — created by `ast-of`, dot-accessed for fields, matched on.
-    Expression(Arc<crate::ast::SurfaceNode>),
+    /// Rust primitive registry — virtual module cap for `[include %rust "module"]`.
+    /// Opaque Rust value that cannot be constructed by tinct code; injected only into
+    /// stdlib evaluation context. Never equal to anything, even itself.
+    RustRegistry,
+
+    // =========================================================================
+    // runtime-v2 native AST value types (Sprint 1, Part F)
+    // =========================================================================
+    //
+    // These variants replace the old Dict-schema representation of AST nodes.
+    // `load` returns Value::Program; `expand` takes and returns Value::Program;
+    // `eval` takes [Seq Expression]; `ast-of` returns Value::Expression.
+    //
+    // `dict?` returns false for all three — they are nominal types, not plain Dicts.
+    // Match dispatch works via `surface_expr_tag()` / `surface_doc_tag()` /
+    // `surface_program_tag()` from `src/surface_fields.rs`.
+
+    /// A complete tinct program — the type returned by `load` and `expand`.
+    /// Wraps an Arc<SurfaceProgram> for Send+Sync compatibility (future async runtime).
+    Program(Arc<SurfaceProgram>),
+
+    /// A single document within a program — accessible via `program.documents`.
+    /// Contains expressions and declarations.
+    Document(Arc<SurfaceDocument>),
+
+    /// A single AST expression node — the type returned by `ast-of` and `[quote ...]`.
+    /// Tinct code pattern-matches on this via the `Expression` type variants.
+    Expression(Arc<SurfaceNode>),
 }
 
 /// State for an HTTP/3 session: the request sender and the background driver task.
@@ -544,6 +522,7 @@ impl Value {
             Value::Http3Session(_) => "Http3Session",
             Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
             Value::DatagramHandle { .. } => "DatagramHandle",
+            Value::RustRegistry => "RustRegistry",
             Value::Program(_) => "Program",
             Value::Document(_) => "Document",
             Value::Expression(_) => "Expression",
@@ -626,9 +605,14 @@ impl fmt::Debug for Value {
             Value::Http3Session(_) => write!(f, "Http3Session"),
             Value::QuicDatagramHandle(_) => write!(f, "QuicDatagramHandle"),
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
-            Value::Program(_) => write!(f, "Program"),
-            Value::Document(_) => write!(f, "Document"),
-            Value::Expression(_) => write!(f, "Expression"),
+            Value::RustRegistry => write!(f, "RustRegistry"),
+            Value::Program(_) => write!(f, "Program(...)"),
+            Value::Document(_) => write!(f, "Document(...)"),
+            Value::Expression(node) => write!(
+                f,
+                "Expression({})",
+                crate::surface_fields::surface_expr_tag(&node.expr)
+            ),
         }
     }
 }
@@ -710,9 +694,14 @@ impl fmt::Display for Value {
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
             Value::QuicDatagramHandle(_) => write!(f, "<QuicDatagramHandle>"),
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
-            Value::Program(_) => write!(f, "<Program>"),
-            Value::Document(_) => write!(f, "<Document>"),
-            Value::Expression(_) => write!(f, "<Expression>"),
+            Value::RustRegistry => write!(f, "<rust-registry>"),
+            Value::Program(_) => write!(f, "<program>"),
+            Value::Document(_) => write!(f, "<document>"),
+            Value::Expression(node) => write!(
+                f,
+                "<expression:{}>",
+                crate::surface_fields::surface_expr_tag(&node.expr)
+            ),
         }
     }
 }
@@ -764,7 +753,7 @@ impl PartialEq for Value {
                     start: start_b,
                     end: end_b,
                 },
-            ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
+            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
@@ -779,7 +768,7 @@ impl PartialEq for Value {
                     start: start_b,
                     end: end_b,
                 },
-            ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
+            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
             (
                 Value::Uri {
                     scheme: scheme_a,
@@ -845,7 +834,7 @@ pub enum ThunkState {
     },
     PendingBuiltin {
         def: BuiltinDef,
-        args: Vec<Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
         /// Named args for this builtin call. `None` means no named args (the common case);
         /// avoids allocating an empty `IndexMap` for the many internal `PendingBuiltin`
         /// thunks created by sequence generators and transforms.
@@ -855,7 +844,7 @@ pub enum ThunkState {
     },
     PendingCall {
         func: Rc<Thunk>,
-        args: Vec<Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
         /// Named args for this call. `None` means no named args (the common case);
         /// avoids allocating an empty `IndexMap` for positional-only calls.
         named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
@@ -871,29 +860,48 @@ pub enum ThunkState {
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
-        field_path: Vec<String>,
+        field_path: Box<Vec<String>>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: DefaultFallback,
+        default: Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
     },
     InProgress,
     Materialized(Value),
     Failed(Box<EvalError>),
-    /// Surface AST node waiting to be lowered to Expr (runtime-v2 bridge).
-    /// Deleted in Sprint 1 Part E when evaluator uses Surface directly.
+
+    // =========================================================================
+    // runtime-v2 thunk states (Sprint 1, Part E)
+    // =========================================================================
+
+    /// Pre-lowering Surface thunk — created by the `eval` builtin for each
+    /// `Value::Expression` in a `[Seq Expression]` argument.
+    ///
+    /// On first force: convert via bridge to old Expr, then evaluate.
+    /// (Full lowering to CoreExpr + CoreExpr evaluator is Sprint 2.)
+    ///
+    /// Uses Arc<SurfaceNode> because SurfaceNode is defined with Arc-recursive fields.
+    /// The `res` and `types` tables are Arc to be shareable across thunks from the
+    /// same file without cloning.
     Surface {
-        node: Arc<crate::ast::SurfaceNode>,
-        res: Arc<crate::ast::ResolutionTable>,
-        types: Arc<crate::ast::TypeAnnotationTable>,
+        node: std::sync::Arc<crate::ast::SurfaceNode>,
+        res: std::sync::Arc<crate::ast::ResolutionTable>,
+        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
         env: Rc<RefCell<Environment>>,
-        env_id: Option<crate::arena::EnvId>,
         ctx: Rc<crate::eval::EvalContext>,
     },
-    /// Lazy field extraction from an AST node (for match pattern binding).
-    /// The field name is a static string — one of the known field names for
-    /// the expression variant (e.g. "name", "args", "body").
+
+    /// Created by match dispatch on `Value::Expression` — evaluates a single
+    /// field from a SurfaceNode lazily via `surface_node_get_field`.
+    ///
+    /// Unused bindings in the match arm are never forced — their thunks exist
+    /// but `surface_node_get_field` is never called for undemanded fields.
+    /// The `ctx` field is needed to allocate ThunkIds for sequence-typed fields
+    /// (args, entries, params, bindings, arms) which return Value::Dict lists.
     AstNodeField {
-        node: Arc<crate::ast::SurfaceNode>,
+        node: std::sync::Arc<crate::ast::SurfaceNode>,
         field: &'static str,
         ctx: Rc<crate::eval::EvalContext>,
     },
@@ -974,14 +982,15 @@ impl Thunk {
     /// Create a lazy AstNodeField thunk — evaluates a single named field from a SurfaceNode.
     ///
     /// `field` must be a `'static str` (a literal field name like "name", "args", "span").
-    /// These are the field names from `surface_expr_field_names()`.
+    /// `ctx` is needed to allocate ThunkIds for sequence-typed fields.
     pub fn new_ast_node_field(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         field: &'static str,
+        ctx: Rc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         Self {
-            state: RefCell::new(ThunkState::AstNodeField { node, field }),
+            state: RefCell::new(ThunkState::AstNodeField { node, field, ctx }),
             span,
             origin: None,
         }
@@ -1000,7 +1009,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::PendingBuiltin {
                 def,
-                args,
+                args: Box::new(args),
                 named,
                 call_span: span,
                 ctx,
@@ -1010,7 +1019,6 @@ impl Thunk {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // Constructor for PendingCall state
     pub fn new_pending_call(
         func: Rc<Thunk>,
         args: Vec<Rc<Thunk>>,
@@ -1029,7 +1037,7 @@ impl Thunk {
         Self {
             state: RefCell::new(ThunkState::PendingCall {
                 func,
-                args,
+                args: Box::new(args),
                 named,
                 call_span,
                 caller_env,
@@ -1065,13 +1073,16 @@ impl Thunk {
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: DefaultFallback,
+        default: Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
     ) -> Self {
         Self {
             state: RefCell::new(ThunkState::Guarded {
                 inner,
                 expected,
-                field_path,
+                field_path: Box::new(field_path),
                 guard_span,
                 blame_label,
                 default,
@@ -1133,15 +1144,22 @@ impl Thunk {
 
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
     /// Returns None if the thunk is not in the Unevaluated state.
-    pub fn take_unevaluated(&self) -> Option<UnevaluatedData> {
+    #[allow(clippy::type_complexity)]
+    pub fn take_unevaluated(
+        &self,
+    ) -> Option<(
+        Rc<Spanned<Expr>>,
+        Rc<RefCell<Environment>>,
+        Rc<crate::eval::EvalContext>,
+    )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Unevaluated {
                 expr,
                 env,
-                env_id,
+                env_id: _,
                 ctx,
-            } => Some((expr, env, env_id, ctx)),
+            } => Some((expr, env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1149,7 +1167,18 @@ impl Thunk {
         }
     }
 
-    pub fn take_pending_builtin(&self) -> Option<PendingBuiltinData> {
+    // Return type is a one-shot destructured tuple only used in materialize();
+    // a type alias would add indirection without clarity.
+    #[allow(clippy::type_complexity)]
+    pub fn take_pending_builtin(
+        &self,
+    ) -> Option<(
+        BuiltinDef,
+        Vec<Rc<Thunk>>,
+        Option<IndexMap<String, Rc<Thunk>>>,
+        Span,
+        Rc<crate::eval::EvalContext>,
+    )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingBuiltin {
@@ -1158,7 +1187,7 @@ impl Thunk {
                 named,
                 call_span,
                 ctx,
-            } => Some((def, args, named, call_span, ctx)),
+            } => Some((def, *args, named, call_span, ctx)),
             other => {
                 *state = other;
                 None
@@ -1166,7 +1195,17 @@ impl Thunk {
         }
     }
 
-    pub fn take_pending_call(&self) -> Option<PendingCallData> {
+    #[allow(clippy::type_complexity)]
+    pub fn take_pending_call(
+        &self,
+    ) -> Option<(
+        Rc<Thunk>,
+        Vec<Rc<Thunk>>,
+        Option<IndexMap<String, Rc<Thunk>>>,
+        Span,
+        Rc<RefCell<Environment>>,
+        Rc<crate::eval::EvalContext>,
+    )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::PendingCall {
@@ -1176,7 +1215,7 @@ impl Thunk {
                 call_span,
                 caller_env,
                 ctx,
-            } => Some((func, args, named.map(|b| *b), call_span, caller_env, ctx)),
+            } => Some((func, *args, named.map(|b| *b), call_span, caller_env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1192,7 +1231,19 @@ impl Thunk {
     /// - If the thunk is NOT Guarded, the state is restored unchanged and None is returned.
     ///
     /// The InProgress transition prevents re-entrance during guard materialization.
-    pub fn take_guarded(&self) -> Option<GuardedData> {
+    pub fn take_guarded(
+        &self,
+    ) -> Option<(
+        Rc<Thunk>,
+        Type,
+        Vec<String>,
+        Span,
+        Option<crate::error::BlameLabel>,
+        Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
+    )> {
         let mut state = self.state.borrow_mut();
         match std::mem::replace(&mut *state, ThunkState::InProgress) {
             ThunkState::Guarded {
@@ -1205,7 +1256,7 @@ impl Thunk {
             } => Some((
                 inner,
                 expected,
-                field_path,
+                *field_path,
                 guard_span,
                 blame_label,
                 default,
@@ -1217,28 +1268,23 @@ impl Thunk {
         }
     }
 
-    /// Take ownership of Surface state, atomically setting state to InProgress.
-    /// Returns None if the thunk is not in the Surface state.
+    /// Atomically take the Surface state (if present), transitioning to InProgress.
+    ///
+    /// Returns `Some((node, res, types, env, ctx))` if the thunk was in Surface state.
+    /// Returns `None` if the thunk was in any other state (state is restored).
     pub fn take_surface(
         &self,
     ) -> Option<(
-        Arc<crate::ast::SurfaceNode>,
-        Arc<crate::ast::ResolutionTable>,
-        Arc<crate::ast::TypeAnnotationTable>,
+        std::sync::Arc<crate::ast::SurfaceNode>,
+        std::sync::Arc<crate::ast::ResolutionTable>,
+        std::sync::Arc<crate::ast::TypeAnnotationTable>,
         Rc<RefCell<Environment>>,
-        Option<crate::arena::EnvId>,
         Rc<crate::eval::EvalContext>,
     )> {
         let mut state = self.state.borrow_mut();
-        match std::mem::replace(&mut *state, ThunkState::InProgress) {
-            ThunkState::Surface {
-                node,
-                res,
-                types,
-                env,
-                env_id,
-                ctx,
-            } => Some((node, res, types, env, env_id, ctx)),
+        let old = std::mem::replace(&mut *state, ThunkState::InProgress);
+        match old {
+            ThunkState::Surface { node, res, types, env, ctx } => Some((node, res, types, env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1246,36 +1292,21 @@ impl Thunk {
         }
     }
 
-    /// Take ownership of AstNodeField state, atomically setting state to InProgress.
-    /// Returns None if the thunk is not in the AstNodeField state.
+    /// Atomically take the AstNodeField state (if present), transitioning to InProgress.
+    ///
+    /// Returns `Some((node, field))` if the thunk was in AstNodeField state.
+    /// Returns `None` if the thunk was in any other state (state is restored).
     pub fn take_ast_node_field(
         &self,
-    ) -> Option<(
-        Arc<crate::ast::SurfaceNode>,
-        &'static str,
-        Rc<crate::eval::EvalContext>,
-    )> {
+    ) -> Option<(std::sync::Arc<crate::ast::SurfaceNode>, &'static str, Rc<crate::eval::EvalContext>)> {
         let mut state = self.state.borrow_mut();
-        match std::mem::replace(&mut *state, ThunkState::InProgress) {
+        let old = std::mem::replace(&mut *state, ThunkState::InProgress);
+        match old {
             ThunkState::AstNodeField { node, field, ctx } => Some((node, field, ctx)),
             other => {
                 *state = other;
                 None
             }
-        }
-    }
-
-    /// Create a lazy AST node field thunk (for match pattern binding).
-    pub fn new_ast_node_field(
-        node: Arc<crate::ast::SurfaceNode>,
-        field: &'static str,
-        ctx: Rc<crate::eval::EvalContext>,
-        span: Span,
-    ) -> Self {
-        Self {
-            state: RefCell::new(ThunkState::AstNodeField { node, field, ctx }),
-            span,
-            origin: None,
         }
     }
 
@@ -1513,7 +1544,6 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
             env: Rc::new(RefCell::new(Environment::new())),
-            env_id: None,
             annotation: None,
         };
         assert_ne!(f.clone(), f);
@@ -1810,7 +1840,6 @@ mod tests {
             params,
             body,
             env,
-            env_id: None,
             annotation: None,
         };
         assert_eq!(format!("{func}"), "[fn [x y] ...]");
@@ -1895,7 +1924,6 @@ mod tests {
             params,
             body,
             env,
-            env_id: None,
             annotation: None,
         };
         assert_eq!(format!("{func:?}"), "Function(a, b)");
@@ -1966,7 +1994,7 @@ mod tests {
             "take_unevaluated should succeed on Unevaluated thunk"
         );
 
-        let (_taken_expr, _taken_env, _taken_env_id, taken_ctx) = taken.unwrap();
+        let (_taken_expr, _taken_env, taken_ctx) = taken.unwrap();
 
         // Verify the taken ctx is the same Rc as ctx1
         assert!(
@@ -2058,7 +2086,6 @@ mod tests {
                     test_span(1, 1, 1, 1),
                 )),
                 env: Rc::new(RefCell::new(Environment::new())),
-                env_id: None,
                 annotation: None,
             },
             span,
@@ -2173,7 +2200,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*expected, Type::Int);
-                assert_eq!(*field_path, vec!["field".to_string()]);
+                assert_eq!(field_path.as_ref(), &vec!["field".to_string()]);
             }
             other => panic!("expected Guarded state, got {other:?}"),
         }

@@ -33,7 +33,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::ast::{Document, Entry, Expr, File, MatchArm, NamedArg, Param, Span, Spanned};
 use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
@@ -42,16 +42,23 @@ use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
 use crate::value::{Environment, Thunk, Value};
 
+/// Global scope ID counter — monotonically increasing across all expansions.
+/// Each macro invocation gets a fresh scope ID.
+static SCOPE_COUNTER: AtomicU32 = AtomicU32::new(1);
+
 /// A scope identifier assigned to each macro invocation.
 /// Scope 0 is reserved for user code (never assigned to a macro).
-/// Scope-set hygiene (Flatt 2016) is deferred; this type is kept as a placeholder
-/// for the future implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeId(pub u32);
 
 impl ScopeId {
     /// The user-code scope — variables written by the user, not introduced by macros.
     pub const USER: ScopeId = ScopeId(0);
+
+    /// Allocate a fresh scope ID for a new macro invocation.
+    fn fresh() -> Self {
+        ScopeId(SCOPE_COUNTER.fetch_add(1, Ordering::SeqCst))
+    }
 }
 
 /// Provenance information for a macro-generated AST node.
@@ -130,12 +137,6 @@ static SYNTHETIC_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn next_synthetic_id() -> u64 {
     SYNTHETIC_COUNTER.fetch_add(1, Ordering::SeqCst)
-}
-
-impl Default for MacroEnv {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl MacroEnv {
@@ -254,23 +255,14 @@ pub struct ExpandResult {
     /// Populated from all macros with `inject:` declarations encountered during expansion.
     /// Used by the `macro-injects` builtin for runtime introspection.
     pub macro_injects_map: HashMap<String, String>,
-    /// The stdlib environment used during macro expansion.
-    ///
-    /// Callers (e.g., `eval_source_with_config`) can reuse this environment for evaluation
-    /// instead of calling `create_stdlib_env_with_arena()` again, avoiding a redundant
-    /// prelude load. When `None`, the caller must create its own stdlib env (re-entrant path).
-    pub stdlib_env: Option<Rc<std::cell::RefCell<crate::value::Environment>>>,
-    /// The stdlib arena used during macro expansion. Paired with `stdlib_env`.
-    pub(crate) stdlib_arena: Option<Rc<std::cell::RefCell<crate::arena::ThunkArena>>>,
 }
 
 /// Register stdlib macros by looking up transformer functions in the stdlib environment.
 ///
-/// Stdlib macros are defined in `stdlib/macros.llt` as plain `[fn ...]` exports rather
-/// than `[macro ...]` declarations. This is a deliberate bootstrapping choice: the
-/// transformer functions must be registered before user code's `expand_macros` runs,
-/// and using `[macro ...]` would create a circular dependency (the macro expander is not
-/// yet active when macros.llt is first loaded by `create_stdlib_env`).
+/// Stdlib macros are defined in `stdlib/macros.llt` as regular function exports.
+/// They cannot use the normal `[macro ...]` / `[defmacro ...]` mechanism because:
+/// 1. create_stdlib_env() loads macros.llt BEFORE expand_macros runs on user code
+/// 2. The macro registration mechanism requires expand_macros to be running
 ///
 /// Instead, stdlib/macros.llt exports transformer functions as normal dict bindings,
 /// and we register them here by looking them up by name.
@@ -304,7 +296,7 @@ fn register_stdlib_macros_from_env(
         // Look up the transformer function by its export name (may differ from macro name)
         let transformer_thunk = {
             let env_ref = stdlib_env.borrow();
-            env_ref.get(transformer_fn_name)
+            env_ref.get(*transformer_fn_name)
         };
         if let Some(transformer) = transformer_thunk {
             // Build parameter bindings for the LetDecl pattern
@@ -338,31 +330,6 @@ fn register_stdlib_macros_from_env(
 std::thread_local! {
     static EXPAND_MACROS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-
-    /// Thread-local cache for the stdlib env used during macro expansion.
-    ///
-    /// Avoids creating a fresh stdlib env (and leaking an Rc cycle) on every call to
-    /// `expand_macros`. The cached env is a stable reference; callers that need to mutate
-    /// the env (e.g., injecting %pwd capabilities) use a child env backed by this parent.
-    ///
-    /// The cache is populated on the first `expand_macros` call (depth 0). Subsequent calls
-    /// return a clone of the cached `Rc<RefCell<Environment>>` backed by the same arena.
-    ///
-    /// **Security / SAFETY INVARIANT**: the cached stdlib env must NEVER be mutated after
-    /// being stored here. All per-eval state (capability injections, %pwd, %stdin, etc.)
-    /// must be placed in child envs backed by this parent. Mutation of the cached env
-    /// would corrupt all subsequent `expand_macros` calls on this thread. Although the
-    /// `Rc<RefCell<Environment>>` type is inherently mutable, no code path may call
-    /// `borrow_mut()` on the cached env directly — only child env creation via
-    /// `EvalContext::new_sharing_arena` is permitted.
-    ///
-    /// **Invalidation**: the cache is thread-local so each thread has its own instance.
-    /// Tests that patch stdlib behavior must clear the cache before use (no flush hook
-    /// currently exists — add one as a test utility in Part G if needed).
-    static EXPAND_STDLIB_CACHE: std::cell::RefCell<Option<(
-        Rc<std::cell::RefCell<crate::value::Environment>>,
-        Rc<std::cell::RefCell<crate::arena::ThunkArena>>,
-    )>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Expand all macros in a File AST.
@@ -408,65 +375,31 @@ pub fn expand_macros(
     //   expand_macros(user_code) → create_stdlib_env() → typecheck calls expand_macros(prelude.llt) →
     //   use create_root_env to break the cycle
     let depth = EXPAND_MACROS_DEPTH.get();
-    // Tracks whether we have a real stdlib env (depth==0) or just a root env (depth>0).
-    // Used to populate ExpandResult.stdlib_env for callers that want to reuse the env.
-    let mut result_stdlib_env: Option<Rc<std::cell::RefCell<crate::value::Environment>>> = None;
-    let mut result_stdlib_arena: Option<Rc<std::cell::RefCell<crate::arena::ThunkArena>>> = None;
-
     let (stdlib_env, ctx) = if depth == 0 {
         // Only call create_stdlib_env at depth 0 (top-level user code).
         // Increment depth to prevent re-entrance.
         EXPAND_MACROS_DEPTH.set(depth + 1);
-
-        // Check the thread-local cache first. This avoids creating a fresh stdlib env
-        // (and leaking an Rc cycle) on every expand_macros call. Repeated calls across
-        // corpus tests reuse the same cached prelude environment, reducing memory churn
-        // from ~3 stdlib loads × N tests to a single load amortized across all tests.
-        let cached = EXPAND_STDLIB_CACHE.with(|c| c.borrow().clone());
-        let result = if let Some((cached_env, cached_arena)) = cached {
-            // Cache hit: reuse the cached stdlib env and arena.
-            // The arena is shared so ThunkIds from prelude dicts remain valid.
-            register_stdlib_macros_from_env(&mut env_macro, &cached_env, file.span);
-            let ctx = EvalContext::new_sharing_arena(
-                base_dir,
-                Rc::clone(&cached_env),
-                no_fs,
-                Rc::clone(&cached_arena),
-                HashMap::new(),
-            );
-            result_stdlib_env = Some(Rc::clone(&cached_env));
-            result_stdlib_arena = Some(cached_arena);
-            Ok((cached_env, ctx))
-        } else {
-            // Cache miss: load the stdlib and populate the cache.
-            match builtins::create_stdlib_env_with_arena() {
-                Ok((env, arena)) => {
-                    // Populate the cache for future calls on this thread.
-                    EXPAND_STDLIB_CACHE.with(|c| {
-                        *c.borrow_mut() = Some((Rc::clone(&env), Rc::clone(&arena)));
-                    });
-                    // Load stdlib macros from the fully-evaluated stdlib env.
-                    // The stdlib defines macros via regular function exports that we
-                    // register by looking them up by name after the stdlib is loaded.
-                    register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
-                    // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
-                    // remain valid when transformer functions access them during expansion.
-                    let ctx = EvalContext::new_sharing_arena(
-                        base_dir,
-                        Rc::clone(&env),
-                        no_fs,
-                        Rc::clone(&arena),
-                        HashMap::new(), // No macros registered yet during initial expansion
-                    );
-                    result_stdlib_env = Some(Rc::clone(&env));
-                    result_stdlib_arena = Some(arena);
-                    Ok((env, ctx))
-                }
-                Err(e) => Err(EvalError::internal(
-                    format!("cannot create stdlib env for macro expansion: {e}"),
-                    file.span,
-                )),
+        let result = match builtins::create_stdlib_env_with_arena() {
+            Ok((env, arena)) => {
+                // Load stdlib macros from the fully-evaluated stdlib env.
+                // The stdlib defines macros via regular function exports that we
+                // register by looking them up by name after the stdlib is loaded.
+                register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
+                // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
+                // remain valid when transformer functions access them during expansion.
+                let ctx = EvalContext::new_sharing_arena(
+                    base_dir,
+                    Rc::clone(&env),
+                    no_fs,
+                    arena,
+                    HashMap::new(), // No macros registered yet during initial expansion
+                );
+                Ok((env, ctx))
             }
+            Err(e) => Err(EvalError::internal(
+                format!("cannot create stdlib env for macro expansion: {e}"),
+                file.span,
+            )),
         };
         // Reset depth after create_stdlib_env completes
         EXPAND_MACROS_DEPTH.set(depth);
@@ -480,7 +413,6 @@ pub fn expand_macros(
         // stdlib, so we need a fresh arena, not one seeded with potentially stale cache contents.
         let env = builtins::create_root_env();
         let ctx = EvalContext::new_empty(base_dir, Rc::clone(&env), no_fs);
-        // result_stdlib_env/arena stay None for the re-entrant path
         (env, ctx)
     };
     let ctx = Rc::new(ctx);
@@ -510,94 +442,6 @@ pub fn expand_macros(
         provenance: env_macro.provenance,
         discovered_macros: env_macro.discovered_macros,
         macro_injects_map,
-        stdlib_env: result_stdlib_env,
-        stdlib_arena: result_stdlib_arena,
-    })
-}
-
-/// Expand macros using an already-loaded `EvalContext`, avoiding a stdlib reload.
-///
-/// This is called from `builtin_expand` (inside the self-hosted include pipeline) when
-/// macro expansion is needed but a full stdlib env is already available via the caller's
-/// `EvalContext`. Using the caller's context avoids a redundant `create_stdlib_env_with_arena()`
-/// call, which would:
-///   - Re-parse and re-evaluate `stdlib/prelude.llt` from scratch (expensive)
-///   - Overwrite `STDLIB_ARENA_CACHE` with a fresh arena (breaking ThunkId sharing)
-///   - Leave `EXPAND_MACROS_DEPTH` at 0 so the inner call recurses into yet another load
-///
-/// The caller's `ctx` is used directly for macro transformer evaluation and expansion.
-/// Stdlib macros are registered from `ctx.config.stdlib_env`.
-pub(crate) fn expand_macros_in_ctx(
-    file: Spanned<File>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<ExpandResult> {
-    let em_depth = EXPAND_MACROS_DEPTH.get();
-    if em_depth > 10 {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "expand_macros: infinite recursion detected (depth={})",
-                em_depth
-            ),
-            file.span,
-        )
-        .into());
-    }
-
-    let mut env_macro = MacroEnv::new();
-
-    // Clone the caller's base_dir handle for use during pre-scan (libdir includes).
-    let base_dir = ctx.config.base_dir.open_dir(".").map_err(|e| {
-        EvalError::internal(
-            format!("cannot clone base directory for macro expansion: {e}"),
-            file.span,
-        )
-    })?;
-
-    // Reuse the caller's stdlib env — no reload needed.
-    let stdlib_env = Rc::clone(&ctx.config.stdlib_env);
-
-    // Register stdlib macros from the existing stdlib env (same as depth-0 path).
-    register_stdlib_macros_from_env(&mut env_macro, &stdlib_env, file.span);
-
-    // Build a child EvalContext that shares the caller's arena so ThunkIds from
-    // the stdlib remain valid during macro transformer evaluation.
-    let expand_ctx = Rc::new(EvalContext::new_sharing_arena(
-        base_dir,
-        Rc::clone(&stdlib_env),
-        ctx.config.no_fs,
-        Rc::clone(&ctx.thunk_arena),
-        HashMap::new(),
-    ));
-
-    // Pre-scan: collect MacroDecl and SyntaxClass nodes before main expansion.
-    pre_scan_file(&file.node, &mut env_macro, &expand_ctx, &stdlib_env)?;
-
-    // Process each document in the file.
-    let expanded_documents = file
-        .node
-        .documents
-        .into_iter()
-        .map(|doc| {
-            let expanded_doc = expand_document(doc.node, &mut env_macro, &expand_ctx, &stdlib_env)?;
-            Ok(Spanned::new(expanded_doc, doc.span))
-        })
-        .collect::<EvalResult<Vec<_>>>()?;
-
-    let macro_injects_map = env_macro.get_inject_map();
-    Ok(ExpandResult {
-        file: Spanned::new(
-            File {
-                documents: expanded_documents,
-            },
-            file.span,
-        ),
-        provenance: env_macro.provenance,
-        discovered_macros: env_macro.discovered_macros,
-        macro_injects_map,
-        // expand_macros_in_ctx uses an existing ctx, so stdlib_env/arena are already
-        // managed by the caller. Don't populate these fields to avoid double-ownership.
-        stdlib_env: None,
-        stdlib_arena: None,
     })
 }
 
@@ -1059,12 +903,12 @@ fn pre_scan_expr(
 
 /// Helper for scanning Box<Spanned<Expr>>
 fn pre_scan_expr_boxed(
-    expr: &Spanned<Expr>,
+    expr: &Box<Spanned<Expr>>,
     env: &mut MacroEnv,
     ctx: &Rc<EvalContext>,
     stdlib_env: &Rc<RefCell<Environment>>,
 ) -> EvalResult<()> {
-    pre_scan_expr(&Rc::new(expr.clone()), env, ctx, stdlib_env)
+    pre_scan_expr(&Rc::new(expr.as_ref().clone()), env, ctx, stdlib_env)
 }
 
 /// Helper for scanning Spanned<Expr>
@@ -1677,7 +1521,6 @@ fn expand_expr_inner(
 /// The macro expansion boundary is a data boundary. Both the input AST dict and the output
 /// AST dict are fully materialized before crossing. No arena-relative ThunkId handles may
 /// flow from the stdlib arena into the expansion arena or vice versa.
-#[allow(clippy::too_many_arguments)] // Macro expansion requires full context threading
 fn expand_macro_call(
     macro_name: &str,
     args: &[Rc<Spanned<Expr>>],
@@ -1843,7 +1686,6 @@ fn expand_macro_call(
                 positional: &positional_thunks,
                 named: None,
                 closure_env,
-                closure_env_id: None,
                 default_env: closure_env,
                 ctx,
                 call_span,
@@ -1912,6 +1754,10 @@ fn expand_macro_call(
     if expanded_ast.span == Span::origin() {
         expanded_ast.span = call_span;
     }
+
+    // Phase 1: allocate a fresh scope ID for hygiene provenance tracking.
+    // Phase 2 (future): apply scope-based alpha-renaming to macro-template bindings.
+    let _scope_id = ScopeId::fresh();
 
     // Record provenance for this expansion (dual-span tracking)
     env.provenance.insert(
@@ -1983,7 +1829,7 @@ fn validate_syntax_class(
                 Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) => "Literal",
                 Expr::Call { .. } => "Call",
                 Expr::Dict(_) => "Dict",
-                Expr::LetDecl { .. } => "LetDecl",
+                Expr::LetDecl { .. } => "Let",
                 Expr::Fn { .. } => "Fn",
                 Expr::Sequential(_) => "Seq",
                 Expr::Annotated { .. } => "Annotated",

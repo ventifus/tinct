@@ -64,13 +64,10 @@ impl NormCtxt {
 /// 2. If the type is TypeStageApp { fn_name, args }:
 ///    - Normalize each arg recursively
 ///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction:
-///
 ///      a. Check `resolver_cache` (memoized results from previous LLT calls this run)
 ///      b. On cache miss, call `evaluate_resolver()` to invoke the type-stage function
-///
 ///         from the prelude (e.g. AddResult, DivResult) and cache the result
 ///      c. If evaluation fails (fn not found, runtime error, unknown kind), return
-///
 ///         stuck TypeStageApp — caller can retry later via deferred_equalities
 ///    - If depth exceeded or cycle detected, return stuck TypeStageApp
 /// 3. Cache the result (only for ground types)
@@ -382,7 +379,6 @@ pub(crate) fn evaluate_resolver(
                 params,
                 body,
                 closure_env,
-                closure_env_id: None,
                 positional: &arg_thunks,
                 named: None,
                 default_env: closure_env,
@@ -519,6 +515,7 @@ impl fmt::Display for Type {
                 }
             }
             Type::Never => write!(f, "\u{22a5}"), // ⊥ symbol
+            Type::NominalVariant { tag, .. } => write!(f, "{}", tag),
             Type::App(func, arg) => write!(f, "[{} {}]", func, arg),
             Type::Operator(name) => write!(f, "{}", name),
             Type::TypeStageApp { fn_name, args } => {
@@ -530,21 +527,6 @@ impl fmt::Display for Type {
                     write!(f, "{}", arg)?;
                 }
                 write!(f, ")")
-            }
-            Type::NominalVariant { tag, fields } => {
-                write!(f, "[{}", tag)?;
-                if !fields.fields.is_empty() {
-                    write!(f, " ")?;
-                    let mut sorted: Vec<_> = fields.fields.iter().collect();
-                    sorted.sort_by_key(|(k, _)| *k);
-                    for (i, (key, ty)) in sorted.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " ")?;
-                        }
-                        write!(f, "{}: {}", key, ty)?;
-                    }
-                }
-                write!(f, "]")
             }
         }
     }
