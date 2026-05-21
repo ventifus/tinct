@@ -661,10 +661,6 @@ pub fn visit_value<V: ValueVisitor>(
                 ast::Span::origin(),
             )))
         }
-        value::Value::RustRegistry => Err(Box::new(error::EvalError::value_not_serializable(
-            "RustRegistry".to_string(),
-            ast::Span::origin(),
-        ))),
         value::Value::Program(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Program".to_string(),
             ast::Span::origin(),
@@ -2217,7 +2213,10 @@ mod tests {
         let result = eval_source("[]\n[f: [fn [] \"hello\"]]\n[f]");
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         let output = result.unwrap();
-        assert_eq!(output, "String(\"hello\")", "expected String(hello), got: {output}");
+        assert_eq!(
+            output, "String(\"hello\")",
+            "expected String(hello), got: {output}"
+        );
     }
 
     /// Regression test: function with 1 param in an intermediate dict should work.
@@ -2233,14 +2232,18 @@ mod tests {
     #[test]
     fn test_formatter_arity_via_eval_source() {
         // eval_source with the exact formatter pattern: include core, define function, call it
-        let result = eval_source("[include %rust \"core\"]\n[f: [fn [let x] x]]\n[try [fn [] [f 42]]]");
+        let result =
+            eval_source("[include %rust \"core\"]\n[f: [fn [let x] x]]\n[try [fn [] [f 42]]]");
         assert!(result.is_ok(), "eval_source should work: {:?}", result);
         // Compact.llt pattern: define 0-param function, call it
-        let result2 = eval_source("[include %rust \"core\"]\n[f: [fn [] \"hello\"]]\n[try [fn [] [f]]]");
-        assert!(result2.is_ok(), "eval_source 0-param should work: {:?}", result2);
+        let result2 =
+            eval_source("[include %rust \"core\"]\n[f: [fn [] \"hello\"]]\n[try [fn [] [f]]]");
+        assert!(
+            result2.is_ok(),
+            "eval_source 0-param should work: {:?}",
+            result2
+        );
     }
-
-
 }
 
 /// Resolve the stdlib directory path from the binary location.

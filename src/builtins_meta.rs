@@ -40,10 +40,9 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::Span;
+use crate::ast::{Span, Spanned};
 use crate::builtins::{
     builtin, ok_val, reject_named, require_string, JSON_DEPTH_LIMIT, MAX_COLLECT_SIZE,
-    MAX_FILE_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
@@ -1068,7 +1067,6 @@ fn type_name(val: &Value) -> String {
         Value::Http3Session(_) => "Http3Session",
         Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
         Value::DatagramHandle { .. } => "DatagramHandle",
-        Value::RustRegistry => "RustRegistry",
         Value::Program(_) => "Program",
         Value::Document(_) => "Document",
         Value::Expression(_) => "Expression",
@@ -1174,50 +1172,9 @@ pub(crate) fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     json_to_value(&parsed, 0, call_span, &ctx)
 }
 
-/// Parse an integrity hash string of the form `"algo:hexdigest"`.
-///
-/// Returns `(algo, hex)` on success. Only `"blake3"` is currently supported.
-/// Validates that the algorithm is known and the digest is the correct length and format.
-fn parse_integrity_hash(s: &str, call_span: Span) -> EvalResult<(&str, &str)> {
-    let Some((algo, hex)) = s.split_once(':') else {
-        return Err(EvalError::include_io_error(
-            s.to_string(),
-            "integrity hash must be \"algo:hexdigest\" (e.g. \"blake3:abc123...\")".to_string(),
-            call_span,
-        )
-        .into());
-    };
-    match algo {
-        "blake3" => {
-            // BLAKE3 output is 32 bytes = 64 hex chars.
-            if hex.len() != 64 {
-                return Err(EvalError::include_io_error(
-                    s.to_string(),
-                    format!("blake3 digest must be 64 hex characters, got {}", hex.len()),
-                    call_span,
-                )
-                .into());
-            }
-            if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err(EvalError::include_io_error(
-                    s.to_string(),
-                    "blake3 digest must contain only hex characters (0-9, a-f, A-F)".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-        }
-        other => {
-            return Err(EvalError::include_io_error(
-                s.to_string(),
-                format!("unsupported hash algorithm \"{other}\"; supported: blake3"),
-                call_span,
-            )
-            .into());
-        }
-    }
-    Ok((algo, hex))
-}
+// DELETED: parse_integrity_hash (include-decomp-redelete sprint)
+// Was used by builtin_include which has been deleted.
+// Integrity checking is now done in tinct-level include function in stdlib/prelude.llt.
 
 /// Compute the blake3 hash of `bytes` and return a lowercase hex string.
 pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
@@ -1389,12 +1346,10 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 
 /// `expand`: takes a `Value::Program`, runs macro expansion, returns `Value::Program`.
 ///
-/// runtime-v2 Part G stub: macro expansion is run internally in `builtin_load`.
-/// This primitive exists for the include-decomp self-hosted pipeline which separates
-/// parse/expand/eval into distinct primitives. For now, expansion has already been
-/// performed by `builtin_load`, so this is an identity function.
+/// For the include-decomp self-hosted pipeline which separates parse/expand/eval
+/// into distinct primitives.
 ///
-/// Full implementation: unwrap Program → run expand_macros → wrap back as Program.
+/// Pipeline: unwrap Program → convert to File → run expand_macros → wrap back as Program.
 pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1408,11 +1363,32 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     }
     let val = materialize(&args[0], Some(&call_span), &ctx)?;
     match val {
-        Value::Program(_) => {
-            // Identity: expansion was already performed by builtin_load.
-            // TODO: when include-decomp self-hosted pipeline is implemented,
-            // this should actually run expand_macros on the SurfaceProgram.
-            Ok(Rc::new(Thunk::new_materialized(val, call_span)))
+        Value::Program(surface_program) => {
+            // Convert SurfaceProgram back to File for macro expansion
+            let file = surface_program_to_file(&surface_program);
+
+            // Run macro expansion
+            let expand_result = crate::expand::expand_macros(
+                Spanned::new(file, call_span),
+                ctx.config.no_fs,
+                &ctx.config.base_dir,
+            )
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("expand: macro expansion error: {}", e.kind),
+                    call_span,
+                )
+            })?;
+
+            // Convert expanded File back to SurfaceProgram
+            let new_surface_program =
+                crate::ast_convert::file_to_surface_program(&expand_result.file.node);
+
+            // Return as Value::Program
+            ok_val(
+                Value::Program(std::sync::Arc::new(new_surface_program)),
+                call_span,
+            )
         }
         _ => Err(EvalError::type_mismatch_ctx(
             "expand".to_string(),
@@ -1422,6 +1398,44 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
         )
         .into()),
     }
+}
+
+/// Convert a SurfaceProgram back to the legacy File AST format.
+/// Required for macro expansion which operates on File.
+fn surface_program_to_file(program: &crate::ast::SurfaceProgram) -> crate::ast::File {
+    use crate::ast::{Document, SurfaceItem};
+    use crate::ast_convert::surface_node_to_expr;
+
+    let documents = program
+        .documents
+        .iter()
+        .map(|surface_doc| {
+            let doc_node = &surface_doc.node;
+            // Extract only expression items (skip declarations)
+            let expressions: Vec<std::rc::Rc<crate::ast::Spanned<crate::ast::Expr>>> = doc_node
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    SurfaceItem::Expr(node) => Some(std::rc::Rc::new(surface_node_to_expr(node))),
+                    SurfaceItem::Decl(_) => None,
+                })
+                .collect();
+
+            crate::ast::Spanned::new(
+                Document {
+                    expressions,
+                    name: doc_node.name.clone(),
+                    output_type: doc_node.output_type.clone(),
+                    expects: doc_node.expects.clone(),
+                    caps: doc_node.caps.clone(),
+                    stage: doc_node.stage.clone(),
+                },
+                surface_doc.span,
+            )
+        })
+        .collect();
+
+    crate::ast::File { documents }
 }
 
 /// `include-cache-get`: look up the string-keyed include cache by blake3 key.
@@ -1578,373 +1592,10 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
 /// re-uses the AST in a new env where slots may differ. Runtime-v2 Part E will eliminate
 /// this entirely (VarRef slots replaced by ResolutionTable keyed by Arc pointer). For now,
 /// do NOT rely on slot correctness across eval boundaries.
-pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Check if filesystem access is disabled before doing anything else.
-    if ctx.config.no_fs {
-        return Err(EvalError::include_forbidden(call_span).into());
-    }
-
-    // Accept 2 or 3 positional args; reject named args.
-    // Patterns:
-    //   [include $cap "path"]               — cap-qualified, no hash
-    //   [include $cap "path" "hash"]        — cap-qualified with integrity hash
-    if args.len() < 2 || args.len() > 3 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("include", named, call_span)?;
-
-    // Check for %rust virtual module cap (special case).
-    let first_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    if matches!(first_val, Value::RustRegistry) {
-        // %rust virtual module: [include %rust "module-name"]
-        // No hash argument allowed, no filesystem access, no cycle detection.
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-        let module_name_val = materialize(&args[1], Some(&call_span), &ctx)?;
-        let module_name = require_string("include", module_name_val, args[1].span)?;
-
-        // Resolve the module to an environment.
-        let module_env = crate::builtins::rust_module(&module_name)
-            .map_err(|e| EvalError::internal(format!("Rust module error: {}", e), call_span))?;
-
-        // Convert the environment to a Dict value.
-        // The environment already contains materialized Rc<Thunk> values, so we just
-        // need to allocate them in the arena and build the dict.
-        let mut dict = indexmap::IndexMap::new();
-        for (name, thunk) in module_env.borrow().bindings.iter() {
-            dict.insert(
-                crate::value::Key::String(name.clone()),
-                ctx.alloc_thunk(Rc::clone(thunk)),
-            );
-        }
-        return ok_val(Value::Dict(dict), call_span);
-    }
-
-    // Determine the DirCap from the first argument.
-    let (dir_cap, path_arg_idx, hash_arg_idx) = match &first_val {
-        Value::DirCap { dir, .. } => (Rc::clone(dir), 1, 2),
-        Value::RevocableDirCap {
-            inner,
-            perms: _,
-            revoked,
-        } => {
-            if revoked.get() {
-                return Err(EvalError::internal(
-                    "capability has been revoked".to_string(),
-                    call_span,
-                )
-                .into());
-            }
-            (Rc::clone(inner), 1, 2)
-        }
-        _ => {
-            return Err(
-                EvalError::type_mismatch("DirCap", first_val.type_name(), args[0].span).into(),
-            );
-        }
-    };
-
-    // Extract path string from args[1].
-    let path_val = materialize(&args[path_arg_idx], Some(&call_span), &ctx)?;
-    let file_path_str = require_string("include", path_val, args[path_arg_idx].span)?;
-
-    // Parse optional integrity hash from the hash argument position.
-    // owned_hash = Some((algo, hexdigest)) when a hash was provided.
-    let owned_hash: Option<(String, String)> = if hash_arg_idx < args.len() {
-        let hash_val = materialize(&args[hash_arg_idx], Some(&call_span), &ctx)?;
-        let hash_str = require_string("include", hash_val, args[hash_arg_idx].span)?;
-        parse_integrity_hash(&hash_str, call_span)?; // validates format
-        let colon_pos = hash_str.find(':').unwrap(); // safe: validated above
-        Some((
-            hash_str[..colon_pos].to_string(),
-            hash_str[colon_pos + 1..].to_string(),
-        ))
-    } else {
-        None
-    };
-
-    // Enforce --require-integrity: every $include must supply a hash.
-    if ctx.config.require_integrity && owned_hash.is_none() {
-        return Err(EvalError::include_hash_required(file_path_str.clone(), call_span).into());
-    }
-
-    // Open the file using cap-std. Absolute paths are rejected by cap-std (RESOLVE_BENEATH).
-    // The DirCap + cap-std RESOLVE_BENEATH already confines include paths to the cap's root.
-    let base_dir = &dir_cap;
-    let fd = base_dir.open(&file_path_str).map_err(|e| {
-        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
-    })?;
-
-    // Get metadata from the fd (single operation, no TOCTOU).
-    let metadata = fd.metadata().map_err(|e| {
-        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
-    })?;
-
-    // File-type guard: only regular files are allowed.
-    if !metadata.is_file() {
-        return Err(EvalError::include_io_error(
-            file_path_str.clone(),
-            "not a regular file".to_string(),
-            call_span,
-        )
-        .into());
-    }
-
-    // Check file size.
-    if metadata.len() > MAX_FILE_SIZE {
-        return Err(EvalError::include_file_too_large(
-            file_path_str.clone(),
-            metadata.len(),
-            MAX_FILE_SIZE,
-            call_span,
-        )
-        .into());
-    }
-
-    // Get file identity (dev, ino) for cycle detection and caching.
-    // On Unix, we can get these from metadata. On non-Unix, fall back to path-based approach.
-    #[cfg(unix)]
-    let file_id = {
-        use cap_std::fs::MetadataExt;
-        (metadata.dev(), metadata.ino())
-    };
-
-    #[cfg(not(unix))]
-    let file_id = {
-        // On non-Unix platforms, fall back to a hash of the file path as a best-effort identity.
-        // This is not ideal (doesn't detect hardlinks) but better than nothing.
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        file_path_str.hash(&mut hasher);
-        let hash = hasher.finish();
-        (0u64, hash)
-    };
-
-    // Cache lookup: skip when a hash is provided (must read bytes to verify integrity).
-    if owned_hash.is_none() {
-        if let Some(cached) = ctx.state.borrow().include_cache.get(&file_id) {
-            return Ok(Rc::clone(cached));
-        }
-    }
-
-    // Cycle detection: check if this file is currently being evaluated.
-    if ctx.state.borrow().include_guard.contains(&file_id) {
-        return Err(EvalError::include_cycle(
-            format!("{}  (dev={}, ino={})", file_path_str, file_id.0, file_id.1),
-            call_span,
-        )
-        .into());
-    }
-
-    // Read the file bytes from the fd.
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    let mut file_handle = fd;
-    file_handle.read_to_end(&mut bytes).map_err(|e| {
-        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
-    })?;
-
-    // Integrity check: verify hash before parsing or evaluating.
-    if let Some((_algo, expected_hex)) = &owned_hash {
-        let actual_hex = blake3_hex(&bytes);
-        // Case-insensitive hex comparison (user may provide uppercase).
-        if !actual_hex.eq_ignore_ascii_case(expected_hex) {
-            return Err(EvalError::include_hash_mismatch(
-                file_path_str.clone(),
-                format!("blake3:{expected_hex}"),
-                format!("blake3:{actual_hex}"),
-                call_span,
-            )
-            .into());
-        }
-        // Hash verified — return cached evaluation if available.
-        if let Some(cached) = ctx.state.borrow().include_cache.get(&file_id) {
-            return Ok(Rc::clone(cached));
-        }
-    }
-
-    // Convert bytes to UTF-8 source.
-    let source = String::from_utf8(bytes).map_err(|e| {
-        EvalError::include_io_error(
-            file_path_str.clone(),
-            format!("file is not valid UTF-8: {e}"),
-            call_span,
-        )
-    })?;
-
-    // Parse.
-    let file = crate::parser::parse(&source).map(|o| o.file).map_err(|e| {
-        EvalError::include_parse_failed(file_path_str.clone(), e.to_string(), call_span)
-    })?;
-
-    // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> eval.
-    // Macro expansion runs first so that DefMacro nodes are registered and macro calls
-    // are expanded before the underscore desugar pass and evaluation.
-    // This matches the pipeline in main.rs, lib.rs, and LSP.
-    let expand_result =
-        crate::expand::expand_macros(file, ctx.config.no_fs, &*dir_cap).map_err(|e| {
-            EvalError::include_parse_failed(
-                file_path_str.clone(),
-                format!("macro expansion error: {}", e),
-                call_span,
-            )
-        })?;
-    let mut file = expand_result.file;
-    // Note: expand_result.provenance is discarded here. Included files' macro provenance
-    // is not threaded back to the includer's provenance map. This is a known limitation.
-
-    // Desugar $_ implicit lambdas (pre-typecheck and pre-eval AST transformation).
-    crate::desugar::desugar_file(&mut file.node);
-
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    crate::resolve::resolve_file(&file.node);
-
-    // Determine the parent directory for the included file.
-    // We need to open a new Dir for relative includes within the included file.
-    // This is done BEFORE inserting into the guard/chain so that if open_dir fails,
-    // no cleanup is needed.
-    let parent_path = std::path::Path::new(&file_path_str).parent();
-    let included_dir = if let Some(pp) = parent_path.filter(|p| !p.as_os_str().is_empty()) {
-        // Open a subdirectory relative to dir_cap
-        dir_cap.open_dir(pp).map_err(|e| {
-            EvalError::include_io_error(
-                format!("{} (parent directory)", file_path_str),
-                e.to_string(),
-                call_span,
-            )
-        })?
-    } else {
-        // No parent directory means the file is in dir_cap itself
-        // We need to clone the Dir handle. cap-std Dir doesn't implement Clone,
-        // so we reopen it using try_clone() or by opening "." relative to dir_cap.
-        dir_cap.open_dir(".").map_err(|e| {
-            EvalError::include_io_error(
-                format!("{} (reopen base_dir)", file_path_str),
-                e.to_string(),
-                call_span,
-            )
-        })?
-    };
-
-    // Create a new EvalContext with the included file's directory.
-    let included_ctx = ctx.with_base_dir(included_dir);
-
-    let stdlib_env = Rc::clone(&ctx.config.stdlib_env);
-
-    // Add to include guard and include chain before recursing.
-    // The include chain records (file_path, call_span) for each active $include frame.
-    // On error, the chain is prepended to the error's stack frames so the user sees
-    // the full include path ("included from a.llt at 3:10 → included from b.llt at 1:5").
-    {
-        let mut state = ctx.state.borrow_mut();
-        state.include_guard.insert(file_id);
-        state.include_chain.push((file_path_str.clone(), call_span));
-    }
-
-    // Build an env for the included file: child of stdlib_env with %pwd and %libdir injected.
-    // %pwd points to the directory of the included file (dir_cap), enabling nested includes
-    // within the included file to use [include %pwd "relative/path"].
-    let include_env = {
-        use crate::value::Environment;
-        let child = Rc::new(std::cell::RefCell::new(Environment::with_parent(
-            Rc::clone(&stdlib_env),
-        )));
-        // Inject %pwd: the directory from which the file is being loaded.
-        // This allows the included file to perform its own relative includes via [include %pwd "..."].
-        let pwd_val = Value::DirCap {
-            dir: Rc::clone(&dir_cap),
-            perms: crate::value::DirPerms::full(),
-        };
-        let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-        child.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
-        // Inject %libdir: reuse the already-open Dir from EvalContext (set by main.rs/repl.rs
-        // at the capability initialization boundary). Avoids calling open_ambient_dir here.
-        if let Some(libdir_rc) = ctx.libdir_dir.borrow().clone() {
-            let libdir_val = Value::DirCap {
-                dir: libdir_rc,
-                perms: crate::value::DirPerms::full(),
-            };
-            let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
-            child
-                .borrow_mut()
-                .insert("%libdir".to_string(), libdir_thunk);
-        }
-        child
-    };
-
-    // Evaluate the included file with empty % and the include env (stdlib + caps).
-    let eval_result = crate::eval::eval_file(&file.node, include_env, &included_ctx);
-
-    // Remove from include guard and include chain regardless of success/failure.
-    let cleanup = || {
-        let mut state = ctx.state.borrow_mut();
-        state.include_guard.remove(&file_id);
-        state.include_chain.pop();
-    };
-
-    match eval_result {
-        Ok(thunk) => {
-            // Eagerly materialize: the include guard is only valid while
-            // the file's identity is in the set. Returning a lazy thunk
-            // would defer evaluation past the guard removal.
-            let val = match crate::eval::materialize(&thunk, None, &included_ctx) {
-                Ok(v) => {
-                    cleanup();
-                    v
-                }
-                Err(mut e) => {
-                    // Prepend this include frame to the error's stack so nested errors
-                    // show the full include path. Each $include level inserts its own
-                    // frame at position 0 as the error propagates outward, producing
-                    // outermost-first ordering in the final stack trace.
-                    cleanup();
-                    e.stack.insert(
-                        0,
-                        crate::error::StackFrame {
-                            label: format!("included from {file_path_str}"),
-                            span: call_span,
-                        },
-                    );
-                    return Err(e);
-                }
-            };
-            // Preserve the span from the included file's root expression
-            let result_thunk = Rc::new(Thunk::new_materialized(val, thunk.span));
-
-            // Cache the result thunk for future includes of this file.
-            ctx.state
-                .borrow_mut()
-                .include_cache
-                .insert(file_id, Rc::clone(&result_thunk));
-
-            Ok(result_thunk)
-        }
-        Err(mut e) => {
-            // Prepend this include frame to the error's stack so nested errors
-            // show the full include path. Each $include level inserts its own
-            // frame at position 0 as the error propagates outward, producing
-            // outermost-first ordering in the final stack trace.
-            cleanup();
-            e.stack.insert(
-                0,
-                crate::error::StackFrame {
-                    label: format!("included from {file_path_str}"),
-                    span: call_span,
-                },
-            );
-            Err(e)
-        }
-    }
-}
+// TOMBSTONE: builtin_include deleted in include-decomp-redelete sprint (2026-05-20).
+// The `include` function is now implemented in stdlib/prelude.llt as a self-hosted
+// pipeline using the decomposed primitives: load, expand, eval, blake3, cap-identity,
+// include-cache-get, include-cache-put. See doc/whatif/include-decomposition.md.
 
 /// `validate`: Validate a value against a schema dict.
 ///

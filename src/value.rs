@@ -408,10 +408,9 @@ pub enum Value {
         socket: DatagramSocket,
         creation_span: Span,
     },
-    /// Rust primitive registry — virtual module cap for `[include %rust "module"]`.
-    /// Opaque Rust value that cannot be constructed by tinct code; injected only into
-    /// stdlib evaluation context. Never equal to anything, even itself.
-    RustRegistry,
+    // DELETED: Value::RustRegistry (include-decomp-redelete sprint)
+    // The %rust virtual module is now a plain Value::Dict injected into bootstrap_env.
+    // See doc/whatif/include-decomposition.md.
 
     // =========================================================================
     // runtime-v2 native AST value types (Sprint 1, Part F)
@@ -424,7 +423,6 @@ pub enum Value {
     // `dict?` returns false for all three — they are nominal types, not plain Dicts.
     // Match dispatch works via `surface_expr_tag()` / `surface_doc_tag()` /
     // `surface_program_tag()` from `src/surface_fields.rs`.
-
     /// A complete tinct program — the type returned by `load` and `expand`.
     /// Wraps an Arc<SurfaceProgram> for Send+Sync compatibility (future async runtime).
     Program(Arc<SurfaceProgram>),
@@ -522,7 +520,6 @@ impl Value {
             Value::Http3Session(_) => "Http3Session",
             Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
             Value::DatagramHandle { .. } => "DatagramHandle",
-            Value::RustRegistry => "RustRegistry",
             Value::Program(_) => "Program",
             Value::Document(_) => "Document",
             Value::Expression(_) => "Expression",
@@ -605,7 +602,6 @@ impl fmt::Debug for Value {
             Value::Http3Session(_) => write!(f, "Http3Session"),
             Value::QuicDatagramHandle(_) => write!(f, "QuicDatagramHandle"),
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
-            Value::RustRegistry => write!(f, "RustRegistry"),
             Value::Program(_) => write!(f, "Program(...)"),
             Value::Document(_) => write!(f, "Document(...)"),
             Value::Expression(node) => write!(
@@ -694,7 +690,6 @@ impl fmt::Display for Value {
             Value::Http3Session(_) => write!(f, "<Http3Session>"),
             Value::QuicDatagramHandle(_) => write!(f, "<QuicDatagramHandle>"),
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
-            Value::RustRegistry => write!(f, "<rust-registry>"),
             Value::Program(_) => write!(f, "<program>"),
             Value::Document(_) => write!(f, "<document>"),
             Value::Expression(node) => write!(
@@ -875,7 +870,6 @@ pub enum ThunkState {
     // =========================================================================
     // runtime-v2 thunk states (Sprint 1, Part E)
     // =========================================================================
-
     /// Pre-lowering Surface thunk — created by the `eval` builtin for each
     /// `Value::Expression` in a `[Seq Expression]` argument.
     ///
@@ -1284,7 +1278,13 @@ impl Thunk {
         let mut state = self.state.borrow_mut();
         let old = std::mem::replace(&mut *state, ThunkState::InProgress);
         match old {
-            ThunkState::Surface { node, res, types, env, ctx } => Some((node, res, types, env, ctx)),
+            ThunkState::Surface {
+                node,
+                res,
+                types,
+                env,
+                ctx,
+            } => Some((node, res, types, env, ctx)),
             other => {
                 *state = other;
                 None
@@ -1298,7 +1298,11 @@ impl Thunk {
     /// Returns `None` if the thunk was in any other state (state is restored).
     pub fn take_ast_node_field(
         &self,
-    ) -> Option<(std::sync::Arc<crate::ast::SurfaceNode>, &'static str, Rc<crate::eval::EvalContext>)> {
+    ) -> Option<(
+        std::sync::Arc<crate::ast::SurfaceNode>,
+        &'static str,
+        Rc<crate::eval::EvalContext>,
+    )> {
         let mut state = self.state.borrow_mut();
         let old = std::mem::replace(&mut *state, ThunkState::InProgress);
         match old {
