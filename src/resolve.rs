@@ -12,9 +12,11 @@
 //!
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, Document, Expr, File, Spanned};
+use crate::ast::{Annotation, Document, Expr, File, ResolutionTable, Spanned, SurfaceProgram};
 
 /// Variable resolution pass state.
 ///
@@ -486,6 +488,21 @@ pub fn resolve_file(file: &File) {
             named_sections.push(name.clone());
         }
     }
+}
+
+/// Resolve variable references in a `SurfaceProgram` and return a `ResolutionTable`.
+///
+/// This is a stub implementation for the runtime-v2 rebase. It will be fully implemented
+/// in Part E when the new evaluator is wired in.
+///
+/// **Current behavior:** Returns an empty `ResolutionTable`.
+///
+/// **Future behavior:** Will walk the `SurfaceProgram` AST and populate the `ResolutionTable`
+/// with (level, slot) de Bruijn coordinates for all VarRef nodes, similar to `resolve_file`.
+pub fn resolve_surface_program(_program: &SurfaceProgram) -> ResolutionTable {
+    // TODO(runtime-v2 Part E): Implement full resolution for SurfaceProgram.
+    // This will mirror resolve_file logic but walk Arc<SurfaceNode> instead of Spanned<Expr>.
+    HashMap::new()
 }
 
 #[cfg(test)]

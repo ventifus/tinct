@@ -203,12 +203,15 @@ impl TinctRuntime {
     ///
     /// This is the [`TinctRuntime`] equivalent of the free function [`eval_source_with_config`].
     pub fn eval_source_with_config(&self, input: &str, no_fs: bool) -> Result<String, String> {
-        let file = parse(input).map_err(|e| format!("{e}"))?;
+        let output = parse(input).map_err(|e| format!("{e}"))?;
+        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+        // This will be used by the new evaluator in Part E. For now, the result is unused.
+        let _resolution_table = crate::resolve::resolve_surface_program(&output.as_surface_program());
         // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck -> eval.
         // See also: src/main.rs:234-240 (run_eval pipeline)
         // Expand macros (pre-desugar AST transformation).
         let expand_result =
-            expand::expand_macros(file.file, no_fs, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+            expand::expand_macros(output.file, no_fs, &self.cwd_dir).map_err(|e| format!("{e}"))?;
         let mut file = expand_result.file;
         let provenance = expand_result.provenance;
 
@@ -349,9 +352,11 @@ impl TinctRuntime {
         }
 
         // Use the standard config path, then inject caps after env creation
-        let file = parse(input).map_err(|e| format!("{e}"))?;
+        let output = parse(input).map_err(|e| format!("{e}"))?;
+        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+        let _resolution_table = crate::resolve::resolve_surface_program(&output.as_surface_program());
         let expand_result =
-            expand::expand_macros(file.file, no_fs, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+            expand::expand_macros(output.file, no_fs, &self.cwd_dir).map_err(|e| format!("{e}"))?;
         let mut file = expand_result.file;
         let provenance = expand_result.provenance;
 
@@ -435,11 +440,13 @@ impl TinctRuntime {
     ///
     /// This is the [`TinctRuntime`] equivalent of the free function [`typecheck_source`].
     pub fn typecheck_source(&self, input: &str) -> Result<(), String> {
-        let file = parse(input).map_err(|e| format!("{e}"))?;
+        let output = parse(input).map_err(|e| format!("{e}"))?;
+        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+        let _resolution_table = crate::resolve::resolve_surface_program(&output.as_surface_program());
         // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
         // Expand macros (pre-desugar AST transformation).
         let expand_result =
-            expand::expand_macros(file.file, false, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+            expand::expand_macros(output.file, false, &self.cwd_dir).map_err(|e| format!("{e}"))?;
         let mut file = expand_result.file;
         // Desugar $_ implicit lambdas (pre-typecheck AST transformation).
         desugar::desugar_file(&mut file.node);
@@ -467,9 +474,11 @@ impl TinctRuntime {
     ///
     /// This is the [`TinctRuntime`] equivalent of the free function [`typecheck_source_errors_only`].
     pub fn typecheck_source_errors_only(&self, input: &str) -> Result<(), String> {
-        let file = parse(input).map_err(|e| format!("{e}"))?;
+        let output = parse(input).map_err(|e| format!("{e}"))?;
+        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+        let _resolution_table = crate::resolve::resolve_surface_program(&output.as_surface_program());
         let expand_result =
-            expand::expand_macros(file.file, false, &self.cwd_dir).map_err(|e| format!("{e}"))?;
+            expand::expand_macros(output.file, false, &self.cwd_dir).map_err(|e| format!("{e}"))?;
         let mut file = expand_result.file;
         desugar::desugar_file(&mut file.node);
         resolve::resolve_file(&file.node);
@@ -1125,6 +1134,8 @@ pub fn format_with_json_llt(
 
     // Parse json.llt (it's a single dict expression — one document).
     let mut ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
+    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+    let _resolution_table = crate::resolve::resolve_surface_program(&ast.as_surface_program());
     desugar::desugar_file(&mut ast.file.node);
     resolve::resolve_file(&ast.file.node);
     let (_type_errors, _diagnostics) = typecheck::typecheck_file(&ast.file.node);
@@ -1900,10 +1911,12 @@ mod tests {
     #[test]
     fn typecheck_source_resolves_prelude_map() {
         let input = "[call $map [fn [let x] $x] [1 2 3]]";
-        let file = parse(input).expect("parse failed");
+        let output = parse(input).expect("parse failed");
+        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+        let _resolution_table = crate::resolve::resolve_surface_program(&output.as_surface_program());
         let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("open cwd for test macro expansion");
-        let expand_result = expand::expand_macros(file.file, false, &expand_base_dir)
+        let expand_result = expand::expand_macros(output.file, false, &expand_base_dir)
             .expect("macro expansion failed");
         let mut file = expand_result.file;
         desugar::desugar_file(&mut file.node);

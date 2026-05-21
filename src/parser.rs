@@ -987,6 +987,20 @@ pub struct ParseOutput {
     pub errors: Vec<ParseError>,
 }
 
+impl ParseOutput {
+    /// Convert the parsed `File` to a `SurfaceProgram`.
+    ///
+    /// This is a bridge method that allows callers to access the new Surface AST
+    /// representation without requiring the parser to change. The parser continues
+    /// to construct the old `File` AST, and this method converts it on demand.
+    ///
+    /// This method will be removed in Part E when the parser is migrated to produce
+    /// `SurfaceProgram` directly.
+    pub fn as_surface_program(&self) -> crate::ast::SurfaceProgram {
+        crate::ast_convert::file_to_surface_program(&self.file.node)
+    }
+}
+
 /// Given a token slice and a start index pointing just past an `[`,
 /// advance until the matching `]` is found (tracking nesting depth).
 ///
@@ -8178,5 +8192,30 @@ mod tests {
             result.contains("Int(8)"),
             "expected Int(8) in output, got: {result}"
         );
+    }
+
+    #[test]
+    fn test_parse_output_as_surface_program() {
+        // Test the ParseOutput::as_surface_program() bridge method.
+        let output = parse("[a: 1  b: 2]").expect("parse failed");
+        let surface = output.as_surface_program();
+
+        // Should have one document
+        assert_eq!(surface.documents.len(), 1);
+
+        // Document should have one item (the dict)
+        let doc = &surface.documents[0].node;
+        assert_eq!(doc.items.len(), 1);
+
+        // Item should be a Dict expression
+        match &doc.items[0] {
+            crate::ast::SurfaceItem::Expr(node) => {
+                assert!(matches!(
+                    &node.expr,
+                    crate::ast::SurfaceExpression::Dict(entries) if entries.len() == 2
+                ));
+            }
+            _ => panic!("expected Expr item"),
+        }
     }
 }
