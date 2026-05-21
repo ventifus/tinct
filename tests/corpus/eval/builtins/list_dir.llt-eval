@@ -1,5 +1,3 @@
 [> [length [collect [call $list-dir %pwd "src"]]] 0]
-=== warn
-T010
 === out
 true

@@ -1,0 +1,7 @@
+# json formatter: Expression serialization produces error (E080)
+# Value::Expression is not dict? so it falls through to the error branch
+[include %libdir "cli/out/json.llt"]
+---
+[call %.json [ast-of 42]]
+=== error
+[E080] cannot serialize Expression to JSON

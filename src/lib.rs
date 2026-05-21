@@ -20,6 +20,7 @@
 pub(crate) mod arena;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
 pub mod ast;
+pub(crate) mod ast_convert;
 pub mod ast_dict;
 pub mod async_rt;
 pub(crate) mod coverage;
@@ -33,6 +34,7 @@ pub mod formatter;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;
+pub(crate) mod surface_fields;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod typecheck;
@@ -258,13 +260,33 @@ impl TinctRuntime {
                 false, // disable scheme_map (not needed for eval)
                 false, // not in prelude load
             );
-        // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
-        // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
-        // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
-        // causing an index-out-of-bounds panic. The shared arena contains all ThunkIds
-        // allocated during prelude and macros.llt loading.
-        let (env, stdlib_arena) =
-            builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        // Reuse the stdlib env from macro expansion when available (EXPAND_STDLIB_CACHE hit).
+        // This avoids a redundant create_stdlib_env_with_arena() call (prelude re-parse + Rc cycle).
+        // When expand_result.stdlib_env is None (re-entrant expand_macros path), fall back to
+        // create_stdlib_env_with_arena() for a fresh env.
+        //
+        // IMPORTANT: We wrap the cached stdlib env in a child env so that per-eval injections
+        // (e.g., %pwd, %libdir capability thunks) don't pollute the shared cached env. The child
+        // env inherits all prelude bindings via the parent chain and is cheap to create.
+        let (env, stdlib_arena) = if let (Some(cached_env), Some(cached_arena)) =
+            (expand_result.stdlib_env, expand_result.stdlib_arena)
+        {
+            // Cache hit: create a per-eval child env backed by the cached stdlib env.
+            // The arena is the same one used during expansion, so ThunkIds from prelude dicts
+            // (e.g., `result.bind`) remain valid in the eval context.
+            let child_env = Rc::new(std::cell::RefCell::new(value::Environment::with_parent(
+                cached_env,
+            )));
+            (child_env, cached_arena)
+        } else {
+            // Cache miss: create a fresh stdlib env.
+            // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
+            // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
+            // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
+            // causing an index-out-of-bounds panic. The shared arena contains all ThunkIds
+            // allocated during prelude and macros.llt loading.
+            builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?
+        };
         // Create evaluation context (current directory, configurable sandbox)
         let ctx = eval::EvalContext::new_sharing_arena(
             self.base_dir
@@ -358,8 +380,18 @@ impl TinctRuntime {
                 false, // disable scheme_map (not needed for eval)
                 false, // not in prelude load
             );
-        let (env, stdlib_arena) =
-            builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        // Reuse the stdlib env from macro expansion when available (avoids Rc cycle memory leak).
+        // Wrap in child env to isolate per-eval cap injections from the shared cached env.
+        let (env, stdlib_arena) = if let (Some(cached_env), Some(cached_arena)) =
+            (expand_result.stdlib_env, expand_result.stdlib_arena)
+        {
+            let child_env = Rc::new(std::cell::RefCell::new(value::Environment::with_parent(
+                cached_env,
+            )));
+            (child_env, cached_arena)
+        } else {
+            builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?
+        };
 
         let ctx = eval::EvalContext::new_sharing_arena(
             self.base_dir
@@ -740,6 +772,18 @@ pub fn visit_value<V: ValueVisitor>(
                 ast::Span::origin(),
             )))
         }
+        value::Value::Program(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Program".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::Document(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Document".to_string(),
+            ast::Span::origin(),
+        ))),
+        value::Value::Expression(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Expression".to_string(),
+            ast::Span::origin(),
+        ))),
     }
 }
 

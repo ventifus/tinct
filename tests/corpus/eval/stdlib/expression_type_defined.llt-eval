@@ -1,0 +1,5 @@
+# Expression nominal type is declared in prelude and available without include
+# dict? returns false for Value::Expression (not a dict)
+[dict? [ast-of 42]]
+=== out
+Bool(false)

@@ -386,6 +386,117 @@ try-or-impl: [fn [let try-result default]
 [
 
 # ============================================================================
+# runtime-v2: Native AST Value Types
+# ============================================================================
+#
+# These types correspond to Value::Expression, Value::Document, Value::Program.
+# They are returned by `load`/`expand` (Program) and `ast-of` (Expression),
+# and consumed by `eval` ([Seq Expression]).
+#
+# Expression is self-referential — the type system handles this via its
+# recursive alias guard (substitutes a fresh TypeVar at recursive positions).
+
+Span: [type [Span
+  start-line: Int
+  start-col:  Int
+  end-line:   Int
+  end-col:    Int]]
+
+DotKey: [type [Ident String] [Index Int]]
+
+Annotation: [type
+  [Simple       value: String]
+  [PropertyDict entries: [Seq AnnotationEntry]]
+  [Annotated    name: String  inner: Annotation]]
+
+AnnotationEntry: [type [AnnotationEntry
+  key:   String
+  value: Annotation]]
+
+Parameter: [type [Parameter
+  name:       String
+  annotation: Annotation
+  variadic:   Bool
+  span:       Span]]
+
+NamedArg: [type [NamedArg
+  name:  String
+  value: Expression
+  span:  Span]]
+
+Entry: [type [Entry
+  key:   Expression
+  value: Expression
+  span:  Span]]
+
+MatchArm: [type [MatchArm
+  pattern: Expression
+  guard:   Expression
+  body:    Expression
+  span:    Span]]
+
+Expression: [type
+  [IntLiteral   value: Int    span: Span]
+  [FloatLiteral value: Float  span: Span]
+  [BoolLiteral  value: Bool   span: Span]
+  [StrLiteral   value: String span: Span]
+  [Var  name: String  escaped: Bool  span: Span]
+  [DotAccess  target: Expression  field: DotKey  span: Span]
+  [Pipe  lhs: Expression  rhs: Expression  span: Span]
+  [Sequential  exprs: [Seq Expression]  span: Span]
+  [Dict  entries: [Seq Entry]  span: Span]
+  [Call  fn: Expression  args: [Seq Expression]  named: [Seq NamedArg]  implied: Bool  span: Span]
+  [Fn  params: [Seq Parameter]  body: Expression  return-ann: Annotation  desugared: Bool  span: Span]
+  [TypeAssert  annotation: Annotation  expr: Expression  span: Span]
+  [Annotated  name: String  annotation: Annotation  span: Span]
+  [Rest  name: String  span: Span]
+  [Match  scrutinee: Expression  arms: [Seq MatchArm]  span: Span]
+  [Quote         expr: Expression  span: Span]
+  [Unquote       expr: Expression  span: Span]
+  [UnquoteSplice expr: Expression  span: Span]
+  [TypeApp  fn: Expression  arg: Expression  span: Span]
+  [PatternDecl  bindings: [Seq Expression]  span: Span]
+  [LetDecl      bindings: [Seq Expression]  span: Span]
+  [CaseArm      pattern: Expression  body: Expression  span: Span]
+  [Placeholder  span: Span]
+  [Error  span: Span]]
+
+Declaration: [type
+  [TypeAlias    params: [Seq String]  body: Expression]
+  [ClassDecl    name: String  params: [Seq String]]
+  [InstanceDecl class-name: String]
+  [DefMacro     name: String  params: Expression  body: Expression]
+  [MacroDecl    name: String  params: Expression  body: Expression]
+  [SyntaxClass  name: String  pattern: Expression  message: String]
+  [Splice       forms: [Seq Expression]]]
+
+DocumentName: [type [Named String] [Unnamed]]
+
+Document: [type [Document
+  name:         DocumentName
+  expressions:  [Seq Expression]
+  declarations: [Seq Declaration]
+  output-type:  Annotation
+  expects:      Annotation]]
+
+Program: [type [Program
+  documents: [Seq Document]]]
+
+variant?@[doc: "Check if value is a Variant."]: [fn@Bool [let v]
+  [= [type-of v] "Variant"]]
+
+payload-of@[return: Dict  doc: """
+Extract the payload dict from a Variant value.
+
+Example: [payload-of [Ok 42]] => [a: 42] (the payload dict)
+
+Note: Materializes the Variant's payload by treating the Variant as a Dict
+(auto-unpack semantics). For unit variants (no payload), returns an empty dict.
+Used by json.llt to serialize Variant payloads.
+"""]: [fn [let v]
+  [merge v []]]
+
+# ============================================================================
 # Identity
 # ============================================================================
 

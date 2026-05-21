@@ -118,7 +118,7 @@ For tests in `tests/corpus/eval/` (excluding `errors/` and `type_errors/`):
 ```
 [call $+ 1 2]
 === out
-3
+Int(3)
 ```
 
 A test that produces a known type warning documents it explicitly:

@@ -1,6 +1,4 @@
 # Minimal do macro test
 [do result [Ok 42]]
-=== warn
-T010
 === out
 Variant(Ok, Int(42))

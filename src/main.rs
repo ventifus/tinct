@@ -822,12 +822,13 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
         return Ok(NetCapEntry::Any);
     }
 
-    if let Some((host, port_str)) = s.split_once(':') {
-        // host:port format
-        let port: u16 = port_str
-            .parse()
-            .map_err(|_| format!("--cap-net: invalid port number '{}' in '{}'", port_str, s))?;
-        Ok(NetCapEntry::HostPort(host.to_string(), port))
+    if s.contains('/') {
+        // CIDR range — check before host:port to avoid misinterpreting IPv6
+        // addresses (e.g. 2001:db8::/32) as host:port.
+        match s.parse::<ipnet::IpNet>() {
+            Ok(net) => Ok(NetCapEntry::Cidr(net)),
+            Err(e) => Err(format!("--cap-net: invalid CIDR notation '{}': {}", s, e)),
+        }
     } else if s.contains('*') {
         // Glob pattern (prefix wildcard only)
         if !s.starts_with("*.") {
@@ -837,11 +838,14 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, String> {
             ));
         }
         Ok(NetCapEntry::HostnameGlob(s.to_string()))
-    } else if s.contains('/') {
-        // CIDR range
-        match s.parse::<ipnet::IpNet>() {
-            Ok(net) => Ok(NetCapEntry::Cidr(net)),
-            Err(e) => Err(format!("--cap-net: invalid CIDR notation '{}': {}", s, e)),
+    } else if let Some((host, port_str)) = s.rsplit_once(':') {
+        // host:port format — use rsplit_once so IPv6 addresses without CIDR
+        // (e.g. [::1]:8080) split on the last colon.
+        if let Ok(port) = port_str.parse::<u16>() {
+            Ok(NetCapEntry::HostPort(host.to_string(), port))
+        } else {
+            // Not a valid port — treat as plain hostname
+            Ok(NetCapEntry::Hostname(s.to_string()))
         }
     } else {
         // Plain hostname
@@ -3078,8 +3082,13 @@ fn run_literate_weave(
         i += 1;
     }
 
-    // Note: no_substitute is ignored. All docs use === out sections now.
-    let _ = no_substitute; // silence unused warning
+    // Inline marker substitution: replace <!-- tinct-result: EXPR --> markers
+    // with the most-recent code block's result. When EXPR is empty the full JSON
+    // is inserted; when EXPR is e.g. `%.x` the corresponding JSON field is
+    // extracted.
+    if !no_substitute {
+        output = substitute_inline_markers(&output, &block_outputs);
+    }
 
     // Write output
     if in_place {
@@ -3093,14 +3102,109 @@ fn run_literate_weave(
 
 /// Substitute inline `<!-- tinct-result: ... -->` markers in Markdown output.
 ///
-/// Markers with an expression (e.g., `<!-- tinct-result: expr -->`) evaluate that expression
-/// with the most recent block result available as `%`. Markers without an expression
-/// (just `<!-- tinct-result -->`) are replaced with the most recent block result.
+/// Markers with an expression (e.g., `<!-- tinct-result: %.x -->`) extract the
+/// named field from the most recent block result. Markers without an expression
+/// (just `<!-- tinct-result: -->`) are replaced with the full JSON output of the
+/// most recent block.
 ///
-/// This function scans the output for markers and replaces them with evaluated results.
+/// The "most recent block" advances each time a tinct code block's closing fence
+/// is encountered before the marker.
+fn substitute_inline_markers(woven: &str, block_outputs: &[BlockOutput]) -> String {
+    const MARKER_OPEN: &str = "<!-- tinct-result:";
+    const MARKER_CLOSE: &str = "-->";
+
+    let mut result = String::with_capacity(woven.len());
+    let mut current_block: usize = 0;
+    let mut in_tinct_block = false;
+
+    for line in woven.lines() {
+        let trimmed = line.trim();
+
+        // Track code block boundaries to know which block result is "current"
+        if !in_tinct_block && (trimmed == "```tinct" || trimmed == "```llt") {
+            in_tinct_block = true;
+        } else if in_tinct_block && trimmed == "```" {
+            in_tinct_block = false;
+            current_block += 1;
+        }
+
+        // Only substitute in non-code-block lines
+        if !in_tinct_block && line.contains(MARKER_OPEN) {
+            let mut line_result = String::with_capacity(line.len());
+            let mut remaining = line;
+
+            while let Some(open_pos) = remaining.find(MARKER_OPEN) {
+                line_result.push_str(&remaining[..open_pos]);
+                let after_open = &remaining[open_pos + MARKER_OPEN.len()..];
+
+                if let Some(close_pos) = after_open.find(MARKER_CLOSE) {
+                    let expr = after_open[..close_pos].trim();
+                    let blk_idx = current_block.saturating_sub(1);
+
+                    let replacement = if let Some(block) = block_outputs.get(blk_idx) {
+                        if let Some(ref out) = block.out {
+                            if expr.is_empty() {
+                                out.clone()
+                            } else {
+                                resolve_inline_expr(expr, out)
+                            }
+                        } else {
+                            // Block had an error — leave marker as-is
+                            let marker_end =
+                                open_pos + MARKER_OPEN.len() + close_pos + MARKER_CLOSE.len();
+                            remaining[open_pos..marker_end].to_string()
+                        }
+                    } else {
+                        // No block output — leave marker as-is
+                        let marker_end =
+                            open_pos + MARKER_OPEN.len() + close_pos + MARKER_CLOSE.len();
+                        remaining[open_pos..marker_end].to_string()
+                    };
+
+                    line_result.push_str(&replacement);
+                    remaining = &after_open[close_pos + MARKER_CLOSE.len()..];
+                } else {
+                    // No closing --> found, emit remainder as-is
+                    line_result.push_str(&remaining[open_pos..]);
+                    remaining = "";
+                    break;
+                }
+            }
+
+            line_result.push_str(remaining);
+            result.push_str(&line_result);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Resolve an inline expression against a JSON output string.
 ///
-/// Note: With === sections, this is only used for backward compatibility with old markdown files.
-/// The new format does not emit HTML comments.
+/// Supports `%.field` patterns (dot-key field extraction from a JSON object).
+/// Falls back to the full output for unrecognized patterns.
+fn resolve_inline_expr(expr: &str, json_output: &str) -> String {
+    // Handle %.field pattern
+    if let Some(field) = expr.strip_prefix("%.") {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_output) {
+            if let Some(field_val) = val.get(field) {
+                return match field_val {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Null => "null".to_string(),
+                    _ => field_val.to_string(),
+                };
+            }
+        }
+    }
+    // Fallback: return full output
+    json_output.to_string()
+}
+
 /// Schema keys recognized by the `describe` subcommand heuristic.
 /// A dict is considered a "schema dict" if any of its values is a dict containing
 /// at least one of these keys. This mirrors the constraint keys supported by `$validate`.

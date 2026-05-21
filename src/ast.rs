@@ -2,8 +2,10 @@
 
 use crate::types::Type;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Key type for dot access — either a string field name or an integer index.
 #[derive(Debug, Clone, PartialEq)]
@@ -804,6 +806,183 @@ impl Expr {
             resolved: RefCell::new(None),
         }
     }
+}
+
+// ============================================================================
+// Runtime-v2: Surface AST Types (Phase 3 of rebase)
+// ============================================================================
+
+/// Unique identifier for a Surface AST node, derived from Arc pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(usize);
+
+/// Get the NodeId for a SurfaceNode from its Arc pointer address.
+pub fn node_id(node: &Arc<SurfaceNode>) -> NodeId {
+    NodeId(Arc::as_ptr(node) as usize)
+}
+
+/// Resolution table mapping NodeIds to (level, slot) de Bruijn coordinates.
+pub type ResolutionTable = HashMap<NodeId, (u32, u32)>;
+
+/// Type annotation table mapping NodeIds to resolved Types.
+pub type TypeAnnotationTable = HashMap<NodeId, Type>;
+
+/// Surface AST node wrapper with span.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceNode {
+    pub expr: SurfaceExpression,
+    pub span: Span,
+}
+
+/// Surface expression enum — mirrors Expr but uses Arc<SurfaceNode> for children.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurfaceExpression {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    VarRef {
+        name: String,
+        escaped: bool,
+    },
+    DotAccess {
+        expr: Arc<SurfaceNode>,
+        field: DotKey,
+    },
+    Pipe {
+        lhs: Arc<SurfaceNode>,
+        rhs: Arc<SurfaceNode>,
+    },
+    Sequential(Vec<Arc<SurfaceNode>>),
+    Dict(Vec<Spanned<SurfaceEntry>>),
+    Call {
+        func: Arc<SurfaceNode>,
+        args: Vec<Arc<SurfaceNode>>,
+        named_args: Vec<Spanned<SurfaceNamedArg>>,
+        implied: bool,
+    },
+    Fn {
+        return_ann: Option<Spanned<Annotation>>,
+        params: Vec<Spanned<SurfaceParam>>,
+        body: Arc<SurfaceNode>,
+        desugared: bool,
+    },
+    TypeAssert {
+        annotation: Spanned<Annotation>,
+        expr: Arc<SurfaceNode>,
+    },
+    Annotated {
+        name: String,
+        annotation: Spanned<Annotation>,
+    },
+    Rest(Option<String>),
+    Match {
+        scrutinee: Arc<SurfaceNode>,
+        arms: Vec<SurfaceMatchArm>,
+    },
+    Quote(Arc<SurfaceNode>),
+    Unquote(Arc<SurfaceNode>),
+    UnquoteSplice(Arc<SurfaceNode>),
+    PatternDecl {
+        bindings: Vec<Arc<SurfaceNode>>,
+    },
+    LetDecl {
+        bindings: Vec<Arc<SurfaceNode>>,
+    },
+    CaseArm {
+        pattern: Arc<SurfaceNode>,
+        body: Arc<SurfaceNode>,
+    },
+    TypeApp {
+        func: Arc<SurfaceNode>,
+        arg: Arc<SurfaceNode>,
+    },
+    Placeholder,
+    Error(Span),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceEntry {
+    pub key: Option<Arc<SurfaceNode>>,
+    pub value: Arc<SurfaceNode>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceNamedArg {
+    pub name: String,
+    pub value: Arc<SurfaceNode>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceParam {
+    pub name: String,
+    pub annotation: Option<Spanned<Annotation>>,
+    pub variadic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceMatchArm {
+    pub pattern: Spanned<Pattern>,
+    pub guard: Option<Arc<SurfaceNode>>,
+    pub body: Arc<SurfaceNode>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurfaceDeclaration {
+    TypeAlias {
+        params: Vec<String>,
+        body: Arc<SurfaceNode>,
+    },
+    ClassDecl {
+        name: String,
+        params: Vec<String>,
+        superclasses: Vec<(String, String)>,
+        methods: Vec<Spanned<SurfaceEntry>>,
+        determines: Vec<Arc<SurfaceNode>>,
+        resolver: Option<Arc<SurfaceNode>>,
+        resolver_injective: bool,
+    },
+    InstanceDecl {
+        class_name: String,
+        arms: Vec<(Arc<SurfaceNode>, Vec<Spanned<SurfaceEntry>>)>,
+    },
+    DefMacro {
+        name: String,
+        params: Arc<SurfaceNode>,
+        body: Arc<SurfaceNode>,
+    },
+    MacroDecl {
+        name: String,
+        params: Arc<SurfaceNode>,
+        body: Arc<SurfaceNode>,
+    },
+    SyntaxClass {
+        name: String,
+        pattern: Arc<SurfaceNode>,
+        message: Option<String>,
+    },
+    Splice(Vec<Arc<SurfaceNode>>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurfaceItem {
+    Expr(Arc<SurfaceNode>),
+    Decl(Spanned<SurfaceDeclaration>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceDocument {
+    pub stage: Option<Stage>,
+    pub name: Option<String>,
+    pub items: Vec<SurfaceItem>,
+    pub output_type: Option<Spanned<Annotation>>,
+    pub expects: Option<Spanned<Annotation>>,
+    pub caps: Option<Spanned<Vec<(String, Annotation)>>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceProgram {
+    pub documents: Vec<Spanned<SurfaceDocument>>,
 }
 
 #[cfg(test)]

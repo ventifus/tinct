@@ -4,121 +4,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## runtime-v2-rebase: Land runtime-v2 Part A types onto main
-
-**Branch source:** `runtime-v2` (1 unique commit: `036a9704` — TODO.md description + lib.rs whitespace only)
-**Plan:** `doc/whatif/plans/runtime-v2-plan.md` — **this rebase covers Plan Part A only** (new type hierarchy added alongside existing types; `Expr`/`File` NOT deleted). Parts B–E are the next atomic sprint.
-**Prerequisites confirmed complete on main:** `exhaustiveness-multi-field-nominal` ✅, `include-decomp-eval-primitives` ✅, `include-decomp-prelude` ✅, `include-decomp-review` ✅
-**Test command:** `just test`
-
-**Why the Dict-based `builtin_load/expand/eval` interface is kept:** Per the plan, `include-decomp-prelude` establishes the Dict→Dict pipeline as an explicit intermediate step. `runtime-v2-plan.md` lists it as a prerequisite: *"`include-decomp-prelude` — Self-hosted pipeline in prelude; `expand` signature is `Dict→Dict` at this point."* The API changes (`load → Program`, `expand → Program`, `eval → [Seq Expression]`) are staged in Plan Part F, after Part E deletes the old types. The runtime-v2 branch made these changes out of order (before Parts B–E); we defer them to their correct position in Sprint 1F.
-
-**What the rebase does NOT do (deferred per plan):**
-- Part B: Parser returns `SurfaceProgram`; typechecker walks `SurfaceProgram`; expander migrates — atomic with Part E
-- Part E: Delete `Expr`/`File`/`Document`; evaluator uses `CoreExpr` — first `cargo check` checkpoint per plan
-- Part F: `builtin_load → Value::Program`, `builtin_expand → Value::Program`, `builtin_eval → [Seq Expression]`
-- Part G: Prelude pipeline updated to use `Program`/`Document` types (structure unchanged; `eval-file` gains `ast@Program`, `doc.name` becomes `DocumentName` match)
-
-### Phase 1 — Git rebase
-
-- [ ] `git checkout runtime-v2 && git rebase main` — expected conflict only in TODO.md (the single unique commit only touches TODO.md + whitespace); resolve by combining both TODO structures (`TODO.md`)
-- [ ] If rebase fails with unexpected conflicts: fall back to `git checkout -b runtime-v2-rebased main` + cherry-pick runtime-v2 changes file by file (`git`)
-
-### Phase 2 — New Rust files (additive, no conflicts)
-
-- [ ] Copy `src/lower.rs` from runtime-v2 — per-thunk lowering pass (SurfaceExpression → CoreExpr); `#![allow(dead_code)]` already present; verify referenced types exist after Phase 3 (`src/lower.rs`)
-- [ ] Copy `src/ast_convert.rs` from runtime-v2 — bridge converter `file_to_surface_program()` / `surface_node_to_expr()` (transitional; deleted in Part E); verify it compiles with ast.rs after Phase 3 (`src/ast_convert.rs`)
-- [ ] Copy `src/surface_fields.rs` from runtime-v2 — `surface_expr_tag()`, `surface_node_get_field()`, `dot_key_to_value()`, `annotation_to_value()`; verify after Phase 3 (`src/surface_fields.rs`)
-
-### Phase 3 — src/ast.rs: Add Surface/Core types alongside existing
-
-Keep ALL existing types (`Expr`, `File`, `Document`, etc.) — they remain the primary eval path until Part E.
-
-- [ ] Add `use std::sync::Arc;` and `use std::collections::HashMap;` to imports (`src/ast.rs`)
-- [ ] Add `NodeId(usize)` newtype and `node_id(arc: &Arc<SurfaceNode>) -> NodeId` helper (derived from `Arc::as_ptr()`) (`src/ast.rs`)
-- [ ] Add `ResolutionTable(HashMap<NodeId, (u32, u32)>)` and `TypeAnnotationTable(HashMap<NodeId, Type>)` (`src/ast.rs`)
-- [ ] Add `SurfaceExpression` enum (24 variants: `Int`, `Float`, `Bool`, `Str`, `VarRef`, `DotAccess`, `Pipe`, `Sequential`, `Dict`, `Call`, `Fn`, `TypeAssert`, `Annotated`, `Rest`, `Match`, `Quote`, `Unquote`, `UnquoteSplice`, `TypeApp`, `PatternDecl`, `LetDecl`, `CaseArm`, `Placeholder`, `Error`) (`src/ast.rs`)
-- [ ] Add supporting types: `SurfaceEntry`, `SurfaceParam`, `SurfaceNamedArg`, `SurfaceMatchArm` (`src/ast.rs`)
-- [ ] Add `SurfaceNode { expr: SurfaceExpression, span: Span }` wrapper struct (`src/ast.rs`)
-- [ ] Add `SurfaceDeclaration` enum (TypeAlias, ClassDecl, InstanceDecl, DefMacro, MacroDecl, Splice, SyntaxClass) (`src/ast.rs`)
-- [ ] Add `SurfaceItem` enum (`Expr(Arc<SurfaceNode>)`, `Decl(Spanned<SurfaceDeclaration>)`) (`src/ast.rs`)
-- [ ] Add `SurfaceDocument { stage, name, items }` and `SurfaceProgram { documents }` (`src/ast.rs`)
-- [ ] Add `CoreExpr` enum (Int, Float, Bool, Str, Var{name,level,slot}, FreeVar, DotAccess, Sequential, Dict, Call, Fn, TypeAssert, Annotated, Rest, Match, Quote, Unquote, UnquoteSplice, TypeApp, PatternDecl, LetDecl, CaseArm, Placeholder, Error, RuntimeTypeCheck) (`src/ast.rs`)
-- [ ] Add `CoreEntry`, `CoreParam`, `CoreNamedArg`, `CoreMatchArm` supporting types (`src/ast.rs`)
-- [ ] `cargo check` passes after this phase (`src/ast.rs`)
-
-### Phase 4 — src/value.rs: Add new Value variants + ThunkState additions
-
-Keep all main's changes (RustRegistry deleted, `env_id` on `Value::Function`, type aliases).
-
-- [ ] Add `Value::Program(Arc<SurfaceProgram>)`, `Value::Document(Arc<SurfaceDocument>)`, `Value::Expression(Arc<SurfaceNode>)` to Value enum (`src/value.rs`)
-- [ ] Update `type_name()` for new variants: "Program", "Document", "Expression" (`src/value.rs`)
-- [ ] Update `Display` and `Debug` impls for new variants (`src/value.rs`)
-- [ ] Update `dict?` to return `false` for Program/Document/Expression (`src/value.rs`)
-- [ ] Add `ThunkState::Surface { node: Arc<SurfaceNode>, res: Arc<ResolutionTable>, types: Arc<TypeAnnotationTable>, env: Rc<RefCell<Environment>>, ctx: Rc<EvalContext> }` variant (`src/value.rs`)
-- [ ] Add `ThunkState::AstNodeField { node: Arc<SurfaceNode>, field: &'static str }` variant (`src/value.rs`)
-- [ ] Add `take_surface()`, `take_ast_node_field()`, `Thunk::new_ast_node_field()` methods (`src/value.rs`)
-- [ ] Update `Pattern::Constructor` to handle `Value::Expression` match dispatch (lazy AstNodeField thunks per bound variable) (`src/eval_materialize.rs`)
-- [ ] `cargo check` passes after this phase
-
-### Phase 5 — src/resolve.rs: Add SurfaceResolver (additive)
-
-Keep all existing `resolve_file()` — it remains the primary path until Part E.
-
-- [ ] Add `SurfaceResolver` struct with scope-chain semantics (`src/resolve.rs`)
-- [ ] Add `resolve_surface_program(program: &SurfaceProgram) -> ResolutionTable` top-level entry point (`src/resolve.rs`)
-
-### Phase 6 — src/eval.rs: Add Surface/AstNodeField thunk handlers
-
-- [ ] Add `ThunkState::Surface` handler: call `ast_convert::surface_node_to_expr()` → evaluate the resulting `Expr` (bridge to old eval path; removed in Part E) (`src/eval.rs`)
-- [ ] Add `ThunkState::AstNodeField` handler: call `surface_fields::surface_node_get_field()` → `Materialized` (`src/eval.rs`)
-- [ ] Update `[quote expr]` to produce `Value::Expression` instead of `Value::Variant` (additive; doesn't affect include pipeline) (`src/eval.rs`)
-- [ ] `cargo check` passes after this phase
-
-### Phase 7 — src/eval_materialize.rs: DotAccess on Value::Expression
-
-- [ ] Add `DotAccessForce` handler for `Value::Expression`: `surface_node_get_field(field)` → lazy `AstNodeField` thunk (`src/eval_materialize.rs`)
-
-### Phase 8 — src/builtins_meta.rs: Selective merge
-
-KEEP main's: `builtin_eval`, `builtin_eval_types`, `builtin_expand` (Dict→Dict interface — this is the planned intermediate state per `runtime-v2-plan.md` prerequisite chain).
-DEFER per plan: `builtin_load → Value::Program`, `builtin_expand → Value::Program`, `builtin_eval → [Seq Expression]` — these belong in Sprint 1 Part F (after Part E deletes old types).
-ADD runtime-v2's: `builtin_ast_of` returning `Value::Expression` (+ registration fix — this is Part F, but safe to add early since it's additive).
-
-- [ ] Verify `builtin_load` still returns `Value::Dict` (the plan's explicit intermediate state); runtime-v2 branch made this change out of order — do NOT apply it; keep main's implementation (`src/builtins_meta.rs`)
-- [ ] Change `builtin_ast_of` to return `Value::Expression(Arc<SurfaceNode>)` instead of `Value::Variant`; convert `Unevaluated` and `Materialized` branches to build a `SurfaceNode` via `ast_convert` (`src/builtins_meta.rs`)
-- [ ] Register `builtin_ast_of` in `standard_builtins()` — **fixes the integration bug from Health Review #22** (`src/builtins.rs`)
-- [ ] Update the 3 `ast_of_*.llt-eval` corpus tests that currently assert `undefined variable: ast-of` — they should now succeed and return `Value::Expression` (`tests/corpus/eval/builtins/`)
-- [ ] Verify `builtin_expand` is still the Dict→Dict implementation from main; runtime-v2 replaced it with an identity stub out of order — do NOT apply that change; keep main's implementation (`src/builtins_meta.rs`)
-
-### Phase 9 — stdlib/prelude.llt: Add type declarations
-
-Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `include`, `cli-pipeline`). Insert runtime-v2's type declarations in the declarations section (before `variant?`/`payload-of`).
-
-- [ ] Add `Span` type declaration (`stdlib/prelude.llt`)
-- [ ] Add `DotKey` type declaration (`stdlib/prelude.llt`)
-- [ ] Add `Annotation` and `AnnotationEntry` type declarations (`stdlib/prelude.llt`)
-- [ ] Add `Parameter`, `NamedArg`, `Entry`, `MatchArm` type declarations (`stdlib/prelude.llt`)
-- [ ] Add `Expression` type declaration (24 variants: IntLiteral, FloatLiteral, BoolLiteral, StrLiteral, Var, DotAccess, Pipe, Sequential, Dict, Call, Fn, TypeAssert, Annotated, Rest, Match, Quote, Unquote, UnquoteSplice, TypeApp, PatternDecl, LetDecl, CaseArm, Placeholder, Error) (`stdlib/prelude.llt`)
-- [ ] Add `Declaration`, `DocumentName`, `Document`, `Program` type declarations (`stdlib/prelude.llt`)
-- [ ] Add `variant?` and `payload-of` functions (`stdlib/prelude.llt`)
-- [ ] Verify load order: type declarations must appear before any stdlib code that pattern-matches on them (`stdlib/prelude.llt`)
-
-### Phase 10 — Post-rebase verification
-
-- [ ] `cargo check` — zero errors, zero warnings
-- [ ] `just test` — all tests pass; update `ast_of_*.llt-eval` corpus test expectations as needed
-- [ ] `just test-lib` — passes
-- [ ] Verify include end-to-end: `just run` with a program that uses `[include %libdir "..."]`
-- [ ] Commit: `runtime-v2-rebase: land SurfaceNode/CoreExpr/Value::Expression types onto main`
-
-### New issues uncovered during rebase analysis
-
-- [ ] **BUG** `stdlib/codecs/json.llt:to-json` has dead `[Program _]`/`[Document _]`/`[Expression _]` match arms on current main (those Value variants don't exist in Rust yet); after rebase they activate — add corpus tests: `to_json_expression.llt-eval`, `to_json_program.llt-eval` to verify correct serialization (`tests/corpus/eval/builtins/`)
-- [ ] **BUG** `builtin_load` slot indices interaction with Surface thunks: once Part G introduces `ThunkState::Surface`, the pre-resolved VarRef slots in loaded programs become stale in new eval environments; `resolve_surface_program` must be called per eval, not reused from `builtin_load` output; document this constraint in `builtin_load` doc comment and add a TODO guard (`src/builtins_meta.rs`)
-
----
-
 ## runtime-v2 — Sprint 1 (continued): Parts B–G
 
 **Branch:** `main` (post-rebase)
@@ -176,7 +61,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] `eval-file`: annotation `ast@Dict` → `ast@Program` (`stdlib/prelude.llt`)
 - [ ] `eval-document-runtime`: `doc.name` → `DocumentName` match (`[match doc.name [Named n]: ... Unnamed: ...]`); `doc.expressions` is now `[Seq Expression]` passed directly to `eval` builtin; `doc.stage` matched as `Runtime`/`Type` Variants (`stdlib/prelude.llt`)
 - [ ] `eval-document-pipeline`: annotation `docs@[Seq Document]`; `doc.stage` match as Variants (`stdlib/prelude.llt`)
-- [ ] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — update to Expression match dispatch; formatter bug fix is prerequisite OR accept broken formatter tests (`stdlib/cli/fmt/`)
+- [ ] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — update to Expression match dispatch; formatter bug fix is prerequisite OR accept broken formatter tests (`stdlib/cli/fmt/`) (16 tests in `tests/formatter_tinct_roundtrip.rs` are marked `#[ignore]` pending this)
 - [ ] `Pattern` type declaration in prelude — `Pattern: Expression` alias; investigate dict shape issues post-Part E before adding (`stdlib/prelude.llt`)
 - [ ] Create `stdlib/codecs/json.llt` final version if not already migrated — verify `to-json` Expression match dispatch works end-to-end (`stdlib/codecs/json.llt`)
 - [ ] **`just test` after Part G** — highest-risk: corpus tests for `load`/`expand`/`eval` may fail on type changes; fix as found
@@ -229,6 +114,8 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 ## Known Bugs
 
 - [x] `just test-lib` fails with exit 101. **Fixed (2026-05-19):** Root cause was a parser bug in `src/parser.rs`: `pop_last_value_from_frame` in the `Token::Dot` handler correctly handles `CallArg::Positional` but returns a parse error for `CallArg::Named`. This caused `%: state.prev` in `eval-document-runtime` to fail — the `%` was consumed as the named-arg key, then `state` was consumed as its value (before `.prev` was attached via dot-access). Fix: replaced `%: state.prev` with a let-binding `[prev-val: state.prev]` + `%: prev-val` in `stdlib/prelude.llt::eval-document-runtime`. Also added `expand_macros_in_ctx` to `src/expand.rs` (reuses existing stdlib env when `builtin_expand` is called from within evaluation, eliminating the redundant stdlib reload). All 4 `test_syntax_llt_fn_*` tests pass; `just test-lib` exits 0.
+
+- [ ] **CLI Seq tests OOM:** `seq_with_collect_produces_json_array` and `seq_at_top_level_with_emit_and_none_output` fail with "memory allocation of 360 bytes failed" — likely infinite recursion or excessive memory usage in `collect`/`range` evaluation within the 8GB container. Tests use `[call $collect [call $range 0 3]]` which should be bounded. Investigate stack depth or prelude `collect`/`range` wrapper issues. (`tests/cli_tests.rs`)
 
 - [ ] **Parser bug (tracked for fix):** `named-arg: expr.field` patterns silently misbehave — `pop_last_value_from_frame` in `Token::Dot` handler (src/parser.rs ~line 4434) returns a parse error when it pops a `CallArg::Named` instead of the expected `CallArg::Positional`. Parser recovers by closing the call frame prematurely, producing a wrong AST. Fix: when `pop_last_value_from_frame` finds a `CallArg::Named`, it should NOT pop it as the dot-access target — instead, the dot-access should apply to the named arg's value, or the parser should accumulate DotAccess before consuming the named arg value (`src/parser.rs`).
 
@@ -312,6 +199,7 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 ### integration-fixes: Cross-layer integration issues
 
 - [ ] **MAJOR** `ast-of` builtin (`builtin_ast_of`) is defined in `src/builtins_meta.rs:790` but NOT registered in `standard_builtins()` — inaccessible after deletion of `%rust "meta"`; 3 corpus tests assert broken behavior with `undefined variable: ast-of`; **ADDRESSED by `runtime-v2-rebase` Phase 8**: registers `builtin_ast_of` returning `Value::Expression` and updates corpus tests (`src/builtins.rs`, `tests/corpus/eval/builtins/ast_of_*.llt-eval`)
+- [ ] Add `Value::Expression` arm to `value_to_expr` in `src/eval.rs:1787` via `ast_convert::surface_node_to_expr()` — needed for `[unquote (ast-of x)]` to work correctly; currently `Value::Expression` falls through to the Placeholder arm producing `Expr::Placeholder` instead of the wrapped expression (deferred to Part D) (`src/eval.rs:1787`, `src/ast_convert.rs`)
 - [ ] **MAJOR** `dict_to_ast` Variant path calls `try_get_materialized()` on payload thunk — fails for any Variant constructed via `[variant "Tag" payload]` in LLT (payload is lazy); macros producing Variant AST nodes cannot pass them to `eval-ast` until payload is materialized; document this constraint explicitly in `dict_to_ast` doc comment (`src/ast_dict.rs:1468-1486`)
 - [ ] Add RAII depth guard for `EXPAND_MACROS_DEPTH` in `src/expand.rs:378-406` — a panic inside `create_stdlib_env_with_arena()` leaves depth stuck at 1, causing all subsequent `expand_macros` calls to use bare root env silently (`src/expand.rs:381-405`)
 - [ ] `dict_to_file` only accepts `Value::Dict` for file root (not `Value::Variant`) while `dict_to_ast` accepts both — asymmetry is currently correct but undocumented and fragile; add doc comment (`src/ast_dict.rs:2256-2265`)

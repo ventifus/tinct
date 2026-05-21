@@ -1,0 +1,4 @@
+# payload-of extracts the payload dict from a Variant with a dict payload
+[.a [payload-of [variant "Ok" [a: 42]]]]
+=== out
+Int(42)

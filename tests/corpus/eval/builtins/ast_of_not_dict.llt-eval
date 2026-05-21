@@ -1,0 +1,4 @@
+# ast-of returns Value::Expression, not a Dict — dict? returns false
+[dict? [ast-of 42]]
+=== out
+Bool(false)
