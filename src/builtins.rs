@@ -1095,18 +1095,33 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("-", builtin_sub, [Strictness::Seq, Strictness::Seq]),
         builtin!("*", builtin_mul, [Strictness::Seq, Strictness::Seq]),
         builtin!("/", builtin_div_float, [Strictness::Seq, Strictness::Seq]),
+        // Arithmetic stable aliases (used internally by prelude to allow shadowing)
+        builtin!("builtin-add", builtin_add, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-sub", builtin_sub, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-mul", builtin_mul, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-div", builtin_div_float, [Strictness::Seq, Strictness::Seq]),
         // Comparison
         builtin!("=", builtin_eq, [Strictness::Seq, Strictness::Seq]),
         builtin!("<", builtin_lt, [Strictness::Seq, Strictness::Seq]),
+        // Comparison stable aliases (used internally by prelude to allow shadowing)
+        builtin!("builtin-eq", builtin_eq, [Strictness::Seq, Strictness::Seq]),
+        builtin!("builtin-lt", builtin_lt, [Strictness::Seq, Strictness::Seq]),
         // Control
         builtin!(
             "if",
             builtin_if,
             [Strictness::Seq, Strictness::Id, Strictness::Id]
         ),
+        // Control stable alias (used internally by prelude to allow shadowing)
+        builtin!(
+            "builtin-if",
+            builtin_if,
+            [Strictness::Seq, Strictness::Id, Strictness::Id]
+        ),
         // Dict primitives
         builtin!("keys", builtin_keys, [Strictness::Spine]),
         builtin!("length", builtin_length, [Strictness::Spine]),
+        builtin!("builtin-length", builtin_length, [Strictness::Spine]), // Stable alias
         builtin!("merge", builtin_merge),
         builtin!("append", builtin_append, [Strictness::Seq, Strictness::Id]),
         builtin!(
@@ -1230,6 +1245,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("deep-materialize", builtin_deep_materialize, [Strictness::Seq]),
         builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("raise", builtin_raise, [Strictness::Seq]),
+        builtin!("builtin-raise", builtin_raise, [Strictness::Seq]), // Stable alias
         builtin!("try", builtin_try, [Strictness::Id]),
         builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
         builtin!("until", builtin_until),
@@ -1377,18 +1393,16 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-iterate", builtin_iterate),
         builtin!("builtin-unfold", builtin_unfold),
         builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine]),
-        builtin!(
-            "filter",
-            builtin_filter,
-            [Strictness::Id, Strictness::Spine]
-        ),
+        builtin!("filter", builtin_filter, [Strictness::Id, Strictness::Spine]),
         builtin!("take", builtin_take, [Strictness::Seq, Strictness::Spine]),
         builtin!("drop", builtin_drop, [Strictness::Seq, Strictness::Spine]),
-        builtin!(
-            "reduce",
-            builtin_reduce,
-            [Strictness::Id, Strictness::Id, Strictness::Spine]
-        ),
+        builtin!("reduce", builtin_reduce, [Strictness::Id, Strictness::Id, Strictness::Spine]),
+        // Stable aliases for map/filter/take/drop/reduce (used internally by prelude to allow shadowing)
+        builtin!("builtin-map", builtin_map, [Strictness::Id, Strictness::Spine]),
+        builtin!("builtin-filter", builtin_filter, [Strictness::Id, Strictness::Spine]),
+        builtin!("builtin-take", builtin_take, [Strictness::Seq, Strictness::Spine]),
+        builtin!("builtin-drop", builtin_drop, [Strictness::Seq, Strictness::Spine]),
+        builtin!("builtin-reduce", builtin_reduce, [Strictness::Id, Strictness::Id, Strictness::Spine]),
         builtin!(
             "builtin-join",
             builtin_join,
@@ -1578,6 +1592,15 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         builtin!("proxy", builtin_proxy),
         builtin!("macro-injects", builtin_macro_injects, [Strictness::Seq]),
+        // Meta builtin stable aliases (used internally by prelude to allow shadowing)
+        builtin!("builtin-gensym", builtin_gensym),
+        builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
+        builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
+        builtin!("builtin-variant", builtin_variant),
+        builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
+        builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
+        builtin!("builtin-proxy", builtin_proxy),
+        builtin!("builtin-macro-injects", builtin_macro_injects, [Strictness::Seq]),
     ]
 }
 
@@ -6253,7 +6276,7 @@ mod tests {
         // are now in standard_builtins and accessible only via %rust "meta" module.
         // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
         assert_eq!(
-            count, 190,
+            count, 212,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }

@@ -123,8 +123,8 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 2 for full task list.
 
 ❌ NOT STARTED. Depends on Sprint 2 complete.
 
-- [ ] `stdlib/desugar.llt` — `$_` implicit lambda desugaring as tinct surface pass
-- [ ] `stdlib/codecs/json.llt` `from-json` — replace Rust builtin with pure-tinct `json-parse-value` implementation (str-at/str-slice available post-rebase)
+- [x] `stdlib/desugar.llt` — **DONE (commit f6a41d2)**: 215-line pure-tinct desugaring with full Expression match dispatch
+- [x] `stdlib/codecs/json.llt` `from-json` — **DONE (commit f6a41d2)**: switched to pure-tinct json-parse-value
 
 See `doc/whatif/plans/runtime-v2-plan.md` Sprint 3 for full task list.
 

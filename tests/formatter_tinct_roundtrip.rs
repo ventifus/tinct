@@ -21,7 +21,6 @@ fn pretty_script() -> PathBuf {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_simple_dict() {
     let input = r#"[
   server: [
@@ -47,7 +46,6 @@ fn test_tinct_formatter_compact_simple_dict() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_pretty_simple_dict() {
     let input = r#"[
   server: [
@@ -73,7 +71,6 @@ fn test_tinct_formatter_pretty_simple_dict() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_literals() {
     let input = r#"[
   int: 42
@@ -93,7 +90,6 @@ fn test_tinct_formatter_compact_literals() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_pretty_nested_dict() {
     let input = r#"[
   outer: [
@@ -113,7 +109,6 @@ fn test_tinct_formatter_pretty_nested_dict() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_function() {
     let input = "[add: [fn [x y] [+ x y]]]";
 
@@ -127,7 +122,6 @@ fn test_tinct_formatter_compact_function() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_call() {
     let input = "[[fn [x] [+ x 1]] 42]";
 
@@ -141,7 +135,6 @@ fn test_tinct_formatter_compact_call() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_empty_dict() {
     let input = "[]";
 
@@ -152,7 +145,6 @@ fn test_tinct_formatter_compact_empty_dict() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_auto_indexed() {
     let input = "[1 2 3]";
 
@@ -166,7 +158,6 @@ fn test_tinct_formatter_compact_auto_indexed() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_keyed_entry() {
     // Tests that a keyed dict entry formats correctly (key: value syntax)
     let input = "[port: 8080]";
@@ -188,7 +179,6 @@ fn test_tinct_formatter_compact_keyed_entry() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_multiline_to_oneline() {
     // The compact formatter collapses multi-line source to one line
     let input = "[\n  port: 8080\n  host: \"localhost\"\n]";
@@ -210,7 +200,6 @@ fn test_tinct_formatter_compact_multiline_to_oneline() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_pretty_comments_preserved() {
     // The pretty formatter preserves leading comments in block-mode dicts.
     // A dict is rendered in block mode when it has >4 entries OR is too wide.
@@ -242,7 +231,6 @@ fn test_tinct_formatter_pretty_comments_preserved() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_string_quoted() {
     // In compact mode (no source info), string literals are always quoted
     let input = r#"[host: "localhost"]"#;
@@ -256,7 +244,6 @@ fn test_tinct_formatter_compact_string_quoted() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_bool() {
     let input = "[enabled: true disabled: false]";
 
@@ -267,7 +254,6 @@ fn test_tinct_formatter_compact_bool() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_match_expr() {
     let input = "[result: [match x 1: \"one\" 2: \"two\" _: \"other\"]]";
 
@@ -280,7 +266,6 @@ fn test_tinct_formatter_compact_match_expr() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_pretty_multi_document() {
     let input = "[x: 1]\n---\n[y: 2]";
 
@@ -297,7 +282,6 @@ fn test_tinct_formatter_pretty_multi_document() {
 }
 
 #[test]
-#[ignore = "blocked on runtime-v2 Expression match dispatch update for stdlib/cli/fmt/ — see TODO.md"]
 fn test_tinct_formatter_compact_multi_document() {
     let input = "[x: 1]\n---\n[y: 2]";
 
