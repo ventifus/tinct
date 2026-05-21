@@ -171,20 +171,6 @@ The runtime-v2 branch was branched before include-decomp landed. The PR #1 merge
 
 ## Health Review #22 Findings (2026-05-19)
 
-### stdlib-doc-polish: Fix stdlib documentation and coverage gaps
-
-- [ ] **CRITICAL** `doc/11-stdlib.md:296-308` §Loading mechanism is completely stale — still describes `[include %rust "core"]` mechanism that was deleted; rewrite to describe actual post-include-decomp bootstrap (all builtins pre-injected by `create_root_env()`/`create_stdlib_env_inner()`) (`doc/11-stdlib.md:296-308`)
-- [ ] **CRITICAL** `doc/11-stdlib.md:236` §Evaluation control table lists `error` as Rust builtin — actual Rust builtin is `raise`; `error` is now a prelude alias (`error: raise` at prelude.llt:1886); update table to `eval, raise, try, apply` with note about `error` alias (`doc/11-stdlib.md:236`)
-- [ ] **CRITICAL** `doc/11-stdlib.md:239` claims `include` is a Rust builtin — it is now a pure-LLT function in prelude.llt:2462; remove from I/O row; add section documenting the 8 thin Rust primitives (`load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`) (`doc/11-stdlib.md:239`)
-- [ ] **CRITICAL** `doc/11-stdlib.md:308` `builtin-*` aliases accessibility claim is stale — "only accessible via `[include %rust "core"]`" is false; they are pre-injected by `create_stdlib_env_inner` and accessible to prelude via env chain without any include (`doc/11-stdlib.md:308`)
-- [ ] `upper`/`lower` have zero corpus tests — add `tests/corpus/eval/stdlib/upper_basic.llt-eval`, `upper_unicode.llt-eval`, `lower_basic.llt-eval`, `lower_unicode.llt-eval` covering multi-byte codepoints (`tests/corpus/eval/stdlib/`)
-- [ ] `pick` has zero corpus tests — add `pick_basic.llt-eval`, `pick_missing_key.llt-eval`, `pick_empty.llt-eval` (`tests/corpus/eval/stdlib/`)
-- [ ] `format-instance` in compact.llt/pretty.llt emits `<N arm(s)>` placeholder instead of formatting arms — stub produces unparseable output; needs full arm formatting implementation (`stdlib/cli/fmt/compact.llt:276-283`, `stdlib/cli/fmt/pretty.llt:444-451`)
-- [ ] `doc/11-stdlib.md:314` — Optional modules table for strings.llt missing `upper` and `lower` (`doc/11-stdlib.md:314`)
-- [ ] `prelude.llt:1423-1429` — `result-ok` and `and-then` have `fn@[return: Unknown]` annotation; should be `fn@[return: Result]` or similar (`stdlib/prelude.llt`)
-- [ ] `prelude.llt:2295-2297` — `first-or` uses `[match [empty? xs] [case true ...]]` boolean dispatch; replace with `[if [empty? xs] default [first xs]]` for consistency with prelude style (`stdlib/prelude.llt:2295-2297`)
-- [ ] `strings.llt` — `str-reverse-impl`, `upper`, `lower` use bare annotated params without `[let ...]`; inconsistent with `[fn@T [let ...]]` style used throughout prelude.llt; standardize or document the new-style param choice (`stdlib/strings.llt:47,94,100`)
-
 ### integration-fixes: Cross-layer integration issues
 
 - [x] **MAJOR** `ast-of` builtin (`builtin_ast_of`) is defined in `src/builtins_meta.rs:790` but NOT registered in `standard_builtins()` — **FIXED by runtime-v2-rebase Phase 8**: now registered, returns `Value::Expression`, corpus tests updated (`src/builtins.rs`, `tests/corpus/eval/builtins/ast_of_*.llt-eval`)

@@ -233,14 +233,15 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Strings | — | `str`, `split`, `replace`, `trim`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?`, `join` | Strings are opaque; all content operations require Rust. `upper`/`lower` are stdlib functions in `strings.llt`. `join` uses an O(n) string builder (dual-dispatch Dict/Seq). |
 | Numeric | — | `floor`, `round` | `f64::floor`, `f64::round`. `ceil` and `trunc` are derived. |
 | Parsing | — | `to-int`, `to-float` | String-to-number only. |
-| Evaluation control | — | `eval`, `error`, `try`, `apply` | `eval` deep-materializes; `error` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). |
+| Evaluation control | — | `eval`, `raise`, `try`, `apply` | `eval` deep-materializes; `raise` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). The prelude exports `error` as an alias for `raise`. |
 | Type introspection | — | `type-of`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. (`num?`, `record?`, `map?` are LLT stdlib aliases derived from these primitives.) |
 | Sequences | `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop` | `filter`, `map`, `reduce`, `take`, `drop` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. Also: `seq`, `head`, `tail`, `collect`, `seq?`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `concat` (no stable aliases needed). |
-| I/O | — | `from-json`, `include` | serde_json, filesystem access. |
+| I/O | — | `from-json` | serde_json deserialization. |
+| Include primitives | — | `load`, `expand`, `eval-ast`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` | Thin Rust primitives for implementing pure-LLT `include`. `load` reads files; `expand` runs macro expansion; `eval-ast` evaluates AST; `blake3` hashes content; `cap-identity` extracts DirCap identity; `include-cache-get`/`include-cache-put` manage the include cache. The prelude implements `include` as a pure-LLT function using these primitives. |
 
 **Tinct-implemented stdlib (wrappers and derived functions):**
 
-The prelude wraps every primary-name operator that has a stable alias, making it shadowable by domain-specific stdlib modules. The `builtin-*` names used in the derivation column are prelude-internal — they are accessed via `[include %rust "core"]` and are not available to user code:
+The prelude wraps every primary-name operator that has a stable alias, making it shadowable by domain-specific stdlib modules. The `builtin-*` names used in the derivation column are accessible to all code via the environment chain (they are pre-injected by `create_root_env()`), but are typically accessed only by the prelude and domain stdlib modules that need to call through a shadow:
 
 | Function | Derivation | Notes |
 |----------|-----------|-------|
@@ -293,25 +294,25 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
 
-1. Create bootstrap environment with only `include` and `%rust` (the virtual module registry)
-2. Parse and evaluate `prelude.llt` in a child of the bootstrap env — prelude accesses Rust primitives via `[include %rust "core"]`, `[include %rust "collection"]`, etc. This makes `builtin-*` aliases visible to prelude during its own evaluation
-3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env
-4. User code inherits the stdlib env — no `builtin-*` names are in scope
+1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all 191 builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `from-json`, `load`, `blake3`, etc.)
+2. `create_stdlib_env_inner()` parses and evaluates `stdlib/prelude.llt` in a child of the bootstrap env — prelude can access all builtins via the environment chain
+3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env, shadowing some builtin names with user-friendly wrappers
+4. User code inherits the stdlib env — `builtin-*` names are accessible via the environment chain, but shadowed by prelude wrappers where appropriate
 
 ```
-Bootstrap env: include + %rust (virtual module registry)
+Bootstrap env: all 191 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
   └── Stdlib env: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
         └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
               └── User predicates and programs
 ```
 
-The `builtin-*` aliases are only accessible to prelude via `[include %rust "core"]`. Any reference to `builtin-lt` from user code produces `undefined variable: builtin-lt` at both runtime and from the type checker.
+The prelude wraps 11 builtins with stable `builtin-*` aliases (`builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-if`, `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `raise`, `from-json`) are used directly by name.
 
 **Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
 
 | Module | Functions provided | When to include |
 |--------|-------------------|-----------------|
-| `strings.llt` | `pad-left`, `pad-right`, `str-reverse` | String formatting and reversal (`str-find`, `str-repeat` are in prelude) |
+| `strings.llt` | `pad-left`, `pad-right`, `str-reverse`, `upper`, `lower` | String formatting, reversal, and case conversion (`str-find`, `str-repeat` are in prelude) |
 | `math.llt` | `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` | Math constants, derived trig/log functions |
 | `encoding.llt` | `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` | Binary encoding/decoding |
 | `datetime.llt` | `parse-timestamp`, `format-timestamp`, `timestamp-add`, etc. | Date/time formatting |
@@ -907,6 +908,8 @@ type errors:
 ```
 
 **Note:** All formatters are implemented entirely in LLT (no Rust native code). They use recursion and will hit `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
+
+**Known limitation:** The `format-instance` helper in `compact.llt` and `pretty.llt` emits a placeholder `<N arm(s)>` for instance values instead of rendering their structure. This is a temporary stub pending full instance serialization support.
 
 ## Protocol Modules
 

@@ -6537,9 +6537,6 @@ blocks match, exits 1 with a diff-style report if any mismatch.
   vacuously (`src/main.rs`)
 - [x] Add `=== info` as a new section label alongside `=== out`/`=== warn`/`=== error`
   in the corpus test parsing infrastructure (`tests/corpus_tests.rs`, `src/literate.rs`)
-- [x] Update `doc/09-documents.md` §Weave Mode with the new block format and `--verify`
-  flag; update §Corpus Test Format to note `=== info` (`doc/09-documents.md`,
-  `doc/12-tooling.md`)
 
 **Error handling in weave** — embedding errors in the doc is the **default** behaviour:
 on block evaluation error, write the error to the block's `=== error` section, continue
@@ -8684,3 +8681,19 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 - [x] `doc/feature/ast-schema.md:259-271` — Document schema omits the `stage:` field which is always emitted as `Variant("Runtime"|"Type")`; any code building a document node from the schema spec will produce output that can't round-trip through `dict_to_file` (`doc/feature/ast-schema.md:259-271`, `src/ast_dict.rs:182-195`)
 - [x] `ClassDecl.superclasses` is silently dropped by `ast_to_dict` (field set to `_` at `src/ast_dict.rs:675`) — formatter/macro code reconstructing ClassDecl loses superclass declarations; design decision needed on schema representation before implementation (`src/ast_dict.rs:675`)
 - [x] `doc/02-syntax.md:733` — `defmacro` example uses bare `[pred body]` params without `[let ...]`; verify this still works at evaluation time (`doc/02-syntax.md:733-740`)
+
+## Health Review #22 Findings (2026-05-19)
+
+### stdlib-doc-polish: Fix stdlib documentation and coverage gaps
+
+- [x] **CRITICAL** `doc/11-stdlib.md:296-308` §Loading mechanism is completely stale — still describes `[include %rust "core"]` mechanism that was deleted; rewrite to describe actual post-include-decomp bootstrap (all builtins pre-injected by `create_root_env()`/`create_stdlib_env_inner()`) (`doc/11-stdlib.md:296-308`)
+- [x] **CRITICAL** `doc/11-stdlib.md:236` §Evaluation control table lists `error` as Rust builtin — actual Rust builtin is `raise`; `error` is now a prelude alias (`error: raise` at prelude.llt:1886); update table to `eval, raise, try, apply` with note about `error` alias (`doc/11-stdlib.md:236`)
+- [x] **CRITICAL** `doc/11-stdlib.md:239` claims `include` is a Rust builtin — it is now a pure-LLT function in prelude.llt:2462; remove from I/O row; add section documenting the 8 thin Rust primitives (`load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`) (`doc/11-stdlib.md:239`)
+- [x] **CRITICAL** `doc/11-stdlib.md:308` `builtin-*` aliases accessibility claim is stale — "only accessible via `[include %rust "core"]`" is false; they are pre-injected by `create_stdlib_env_inner` and accessible to prelude via env chain without any include (`doc/11-stdlib.md:308`)
+- [x] `upper`/`lower` have zero corpus tests — add `tests/corpus/eval/stdlib/upper_basic.llt-eval`, `upper_unicode.llt-eval`, `lower_basic.llt-eval`, `lower_unicode.llt-eval` covering multi-byte codepoints (`tests/corpus/eval/stdlib/`)
+- [x] `pick` has zero corpus tests — add `pick_basic.llt-eval`, `pick_missing_key.llt-eval`, `pick_empty.llt-eval` (`tests/corpus/eval/stdlib/`)
+- [x] `format-instance` in compact.llt/pretty.llt emits `<N arm(s)>` placeholder instead of formatting arms — stub produces unparseable output; needs full arm formatting implementation (`stdlib/cli/fmt/compact.llt:276-283`, `stdlib/cli/fmt/pretty.llt:444-451`)
+- [x] `doc/11-stdlib.md:314` — Optional modules table for strings.llt missing `upper` and `lower` (`doc/11-stdlib.md:314`)
+- [x] `prelude.llt:1423-1429` — `result-ok` and `and-then` have `fn@[return: Unknown]` annotation; should be `fn@[return: Result]` or similar (`stdlib/prelude.llt`)
+- [x] `prelude.llt:2295-2297` — `first-or` uses `[match [empty? xs] [case true ...]]` boolean dispatch; replace with `[if [empty? xs] default [first xs]]` for consistency with prelude style (`stdlib/prelude.llt:2295-2297`)
+- [x] `strings.llt` — `str-reverse-impl`, `upper`, `lower` use bare annotated params without `[let ...]`; inconsistent with `[fn@T [let ...]]` style used throughout prelude.llt; standardize or document the new-style param choice (`stdlib/strings.llt:47,94,100`)

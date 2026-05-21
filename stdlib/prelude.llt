@@ -1495,7 +1495,7 @@ Note: Predicate for Result error case.
         [Ok _]: false
         [Error _]: true]]
 
-and-then: [fn@[return: Unknown  doc: """
+and-then: [fn@[return: Result  doc: """
 Monad bind for Result (chain computations).
 
 Example: [and-then [Ok 21] [fn [x] [Ok [* x 2]]]] => [Ok 42]
@@ -1531,7 +1531,7 @@ Note: Maps a function over the Ok value; passes Error through unchanged.
         [Ok v]: [Ok [f v]]
         [Error msg]: [Error msg]]]
 
-result-ok: [fn@[return: Unknown  doc: """
+result-ok: [fn@[return: Result  doc: """
 Wrap value in Ok.
 
 Example: [result-ok 42] => [Ok 42]
@@ -2403,9 +2403,9 @@ Example:
 
 Note: Works with both Dict and Seq. For Dict, returns first value by insertion order.
 """] [let xs default]
-  [match [empty? xs]
-    [case true  default]
-    [case false [first xs]]]]
+  [if [empty? xs]
+      default
+      [first xs]]]
 
 macro-error: [fn@[return: Never  doc: """
 Signal a compile-time macro expansion error.

@@ -44,7 +44,7 @@
 str-at-impl: [fn@String [let s@String n@Int]
     [builtin-str-slice s n [builtin-add n 1]]]
 
-str-reverse-impl: [fn@String [s@String i@Int len@Int acc@String]
+str-reverse-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [builtin-if [builtin-lt i len]
         [str-reverse-impl s [builtin-add i 1] len [str [builtin-str-slice s i [builtin-add i 1]] acc]]
         acc]]
@@ -91,13 +91,13 @@ str-length: str-length
 # Convert a string to uppercase by mapping str-to-upper-char over each character.
 # Type: (String -> String)
 # Example: [upper "hello"] => "HELLO"
-upper@[doc: "Convert a string to uppercase"]: [fn@String [s@String]
+upper@[doc: "Convert a string to uppercase"]: [fn@String [let s@String]
     [str-map-chars [fn [c] [str-to-upper-char c]] s]]
 
 # Convert a string to lowercase by mapping str-to-lower-char over each character.
 # Type: (String -> String)
 # Example: [lower "HELLO"] => "hello"
-lower@[doc: "Convert a string to lowercase"]: [fn@String [s@String]
+lower@[doc: "Convert a string to lowercase"]: [fn@String [let s@String]
     [str-map-chars [fn [c] [str-to-lower-char c]] s]]
 
 # ============================================================================
