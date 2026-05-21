@@ -137,7 +137,6 @@ fn try_dispatch_method(
             params,
             body,
             closure_env,
-            closure_env_id: None,
             positional: arg_thunks,
             named: None,
             default_env: closure_env,
@@ -406,7 +405,7 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                     start: start_b,
                     end: end_b,
                 },
-            ) => Ok(source_a[*start_a..*end_a] == source_b[*start_b..*end_b]),
+            ) => Ok(&source_a[*start_a..*end_a] == &source_b[*start_b..*end_b]),
             (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
             // Cross-type: Int/Float promotion
             (Value::Int(a), Value::Float(b)) => {
@@ -523,7 +522,7 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 start: start_b,
                 end: end_b,
             },
-        ) => source_a[*start_a..*end_a] == source_b[*start_b..*end_b],
+        ) => &source_a[*start_a..*end_a] == &source_b[*start_b..*end_b],
         (Value::Bool(a), Value::Bool(b)) => a == b,
         // Cross-type: Int/Float promotion via `as f64` cast.
         // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
@@ -646,7 +645,7 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
                 start: start_b,
                 end: end_b,
             },
-        ) => source_a[*start_a..*end_a] < source_b[*start_b..*end_b],
+        ) => &source_a[*start_a..*end_a] < &source_b[*start_b..*end_b],
         (Value::Bool(a), Value::Bool(b)) => !a && *b, // false < true
         // Cross-type: Int/Float promotion via `as f64` cast.
         // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
@@ -1159,8 +1158,7 @@ pub(crate) fn builtin_shr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
 /// - Int → Float: cast via `as f64` (user explicitly opted into potential precision loss)
 /// - Float → Float: no-op
 /// - Other types → error
-///
-///   Inherently materializing: must inspect value to determine type and perform conversion.
+/// Inherently materializing: must inspect value to determine type and perform conversion.
 pub(crate) fn builtin_float(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,

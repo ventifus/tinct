@@ -38,7 +38,6 @@ pub fn format_source_tinct_with_dir(
     base_dir: Option<cap_std::fs::Dir>,
 ) -> Result<String, String> {
     use crate::ast_dict::{ast_to_dict, AstToDictOpts};
-    use crate::builtins::create_stdlib_env;
     use crate::desugar;
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;
@@ -49,7 +48,7 @@ pub fn format_source_tinct_with_dir(
     // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
     let compact = script_path.file_stem().and_then(|s| s.to_str()) == Some("compact");
 
-    // Set up evaluation context: use the caller-provided Dir if available; otherwise open CWD.
+    // Open the base directory first (needed by both expand_macros and EvalContext).
     let base_dir = match base_dir {
         Some(dir) => dir,
         None => {
@@ -63,16 +62,50 @@ pub fn format_source_tinct_with_dir(
         }
     };
 
-    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
-    let ctx = EvalContext::new(base_dir, Rc::clone(&env), false);
-
-    // Parse the source - always use parse to get comments
+    // Parse the input source (no env/ctx needed yet).
     use crate::ast_dict::CommentMaps;
     let parse_output = parse(input).map_err(|e| format!("{e}"))?;
 
-    // Convert AST to dict.
-    // Compact mode: minimal (no source, no comments).
-    // Pretty mode: full (with source info and comments).
+    // Load and expand the formatter script BEFORE creating env/ctx.
+    // expand_macros internally calls create_stdlib_env_with_arena(), updating STDLIB_ARENA_CACHE.
+    // By expanding first, env+ctx are created from the final cache state, keeping them
+    // in the same arena basis and avoiding the "undefined variable: try" regression.
+    let formatter_source = std::fs::read_to_string(script_path).map_err(|e| {
+        format!(
+            "cannot read formatter script {}: {e}",
+            script_path.display()
+        )
+    })?;
+    let formatter_parsed =
+        parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
+    let expand_result = crate::expand::expand_macros(
+        formatter_parsed.file,
+        false, // formatter always has filesystem access
+        &base_dir,
+    )
+    .map_err(|e| format!("formatter expand error: {e}"))?;
+    let mut formatter_file = expand_result.file;
+
+    // Desugar, resolve, typecheck the expanded formatter (no env/ctx needed for these passes).
+    desugar::desugar_file(&mut formatter_file.node);
+    resolve::resolve_file(&formatter_file.node);
+    let _ = typecheck::typecheck_file(&formatter_file.node);
+
+    // Create env+ctx AFTER expand_macros so STDLIB_ARENA_CACHE is stable.
+    // Use new_sharing_arena (not new) so stdlib ThunkIds are valid in the eval ctx —
+    // same pattern as eval_source_with_config. With EvalContext::new (clone), ThunkIds
+    // stored in prelude dicts are looked up in a separate arena vec and may be invalid.
+    let (env, stdlib_arena) =
+        crate::builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+    let ctx = EvalContext::new_sharing_arena(
+        base_dir,
+        Rc::clone(&env),
+        false,
+        stdlib_arena,
+        expand_result.macro_injects_map,
+    );
+
+    // Convert input AST to dict using the now-stable ctx.
     let opts = if compact {
         AstToDictOpts::default()
     } else {
@@ -88,24 +121,9 @@ pub fn format_source_tinct_with_dir(
     let ast_thunk =
         ast_to_dict(&parse_output.file.node, &opts, &ctx).map_err(|e| format!("{e}"))?;
 
-    // Load the formatter script from disk.
-    let formatter_source = std::fs::read_to_string(script_path).map_err(|e| {
-        format!(
-            "cannot read formatter script {}: {e}",
-            script_path.display()
-        )
-    })?;
-    let mut formatter_file =
-        parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
-
-    // Desugar, resolve, typecheck the formatter program.
-    desugar::desugar_file(&mut formatter_file.file.node);
-    resolve::resolve_file(&formatter_file.file.node);
-    let _ = typecheck::typecheck_file(&formatter_file.file.node);
-
     // Evaluate formatter with AST as % (pipeline input).
     let formatter_thunk = eval::eval_file_with_input(
-        &formatter_file.file.node,
+        &formatter_file.node,
         Rc::clone(&env),
         &ctx,
         Some(ast_thunk),

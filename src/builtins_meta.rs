@@ -17,9 +17,6 @@
 //! - `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`: Type predicates (plus `num?`, `record?`, `map?` in LLT stdlib)
 //!
 //! **AST and evaluation:**
-//! - `expand`: Run macro expansion on a file AST dict (dict → expand → dict)
-//! - `eval`: Evaluate AST expression nodes with optional `env:` and `%:` named args
-//! - `eval-types`: Evaluate AST expression nodes in the type stage environment
 //! - `eval-ast`: Reconstruct and evaluate AST from dict representation
 //! - `gensym`: Generate unique symbol names for macro hygiene
 //!
@@ -38,7 +35,6 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -47,16 +43,17 @@ use crate::arena::ThunkId;
 use crate::ast::Span;
 use crate::builtins::{
     builtin, ok_val, reject_named, require_string, JSON_DEPTH_LIMIT, MAX_COLLECT_SIZE,
+    MAX_FILE_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_call::{invoke_function, CallContext};
-use crate::value::{string_val, BuiltinArgs, Environment, Key, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
 /// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
-pub(crate) fn builtin_deep_materialize(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
         named,
@@ -314,7 +311,6 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> 
             params: &params,
             body: &body,
             closure_env: &closure_env,
-            closure_env_id: None,
             positional: &positional,
             named: if named_args.is_empty() {
                 None
@@ -397,223 +393,6 @@ pub(crate) fn builtin_eval_ast(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Evaluate the reconstructed AST in the stdlib environment
     let env = Rc::clone(&ctx.config.stdlib_env);
     crate::eval::eval(Rc::new(ast), env, &ctx)
-}
-
-/// `expand`: Run macro expansion on a file AST dict.
-///
-/// Takes a file AST dict (the output of `load` or `ast-of`) and returns the
-/// macro-expanded file AST dict. The round-trip is:
-/// 1. Dict → File (via `dict_to_file`)
-/// 2. File → expanded File (via `expand_macros_in_ctx`)
-/// 3. expanded File → Dict (via `ast_to_dict`)
-///
-/// Uses `expand_macros_in_ctx` instead of `expand_macros` to avoid a redundant
-/// stdlib reload. The caller's `EvalContext` already has a fully-loaded stdlib env
-/// (including all prelude functions and macro transformers), so there is no need to
-/// call `create_stdlib_env_with_arena()` again from within the include pipeline.
-///
-/// Schema errors from `dict_to_file` surface as user errors.
-pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("expand", args, named, &ctx, call_span)?;
-
-    // Convert the dict to a File AST
-    let file = crate::ast_dict::dict_to_file(&val, &ctx)
-        .map_err(|e| EvalError::user_error(format!("expand: {}", e), call_span))?;
-
-    // Run macro expansion using the caller's existing EvalContext.
-    // This avoids a redundant create_stdlib_env_with_arena() call that would otherwise
-    // re-parse the prelude, overwrite STDLIB_ARENA_CACHE, and break ThunkId sharing.
-    let spanned_file = crate::ast::Spanned::new(file, call_span);
-    let expand_result = crate::expand::expand_macros_in_ctx(spanned_file, &ctx)?;
-
-    // Convert back to dict
-    let opts = crate::ast_dict::AstToDictOpts::default();
-    crate::ast_dict::ast_to_dict(&expand_result.file.node, &opts, &ctx)
-}
-
-/// `eval`: Evaluate AST expression nodes in the runtime stage environment.
-///
-/// Positional arg: `exprs` — a positional Dict of expression AST dicts (from a document's
-/// `expressions` field after `expand`).
-///
-/// Named args:
-/// - `%:` — the pipeline input, bound as `%` in the evaluation environment (default: `[]`)
-/// - `env:` — extra bindings dict, merged into the environment (default: `[]`)
-///
-/// Returns the result of evaluating the expressions with sequential let* scoping.
-pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Get the positional dict of expression AST dicts.
-    // Do NOT use expect_one_arg here — it rejects named args, but builtin_eval
-    // accepts env: and %: named args that are read below.
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let exprs_dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let exprs_dict = match &exprs_dict_val {
-        Value::Dict(d) => d,
-        _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                "eval".to_string(),
-                "Dict",
-                exprs_dict_val.type_name(),
-                call_span,
-            )
-            .into());
-        }
-    };
-
-    // Extract expression AST dicts from the positional dict
-    let mut exprs = Vec::new();
-    for i in 0.. {
-        match exprs_dict.get(&Key::Int(i)) {
-            Some(thunk_id) => {
-                let thunk = ctx.get_thunk(*thunk_id);
-                let expr_val = materialize(&thunk, Some(&call_span), &ctx)?;
-                let expr_ast = crate::ast_dict::dict_to_ast(&expr_val, &ctx).map_err(|e| {
-                    EvalError::user_error(format!("eval: expression {}: {}", i, e), call_span)
-                })?;
-                // dict_to_ast already returns Spanned<Expr>, don't wrap again
-                exprs.push(expr_ast);
-            }
-            None => break,
-        }
-    }
-
-    // Build environment chain: stdlib_env → env: entries → "$" = %:
-    let base_env = Rc::clone(&ctx.config.stdlib_env);
-
-    // Add env: entries if provided
-    let env_with_extra = if let Some(named_map) = named {
-        if let Some(env_thunk) = named_map.get("env") {
-            let env_val = materialize(env_thunk, Some(&call_span), &ctx)?;
-            let env_dict = match env_val {
-                Value::Dict(d) => d,
-                Value::Overlay(l, r) => {
-                    crate::builtins::flatten_overlay(&l, &r, "eval env:", &ctx, call_span)?
-                }
-                _ => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "eval env:".to_string(),
-                        "Dict",
-                        env_val.type_name(),
-                        call_span,
-                    )
-                    .into());
-                }
-            };
-
-            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&base_env))));
-            for (key, val_thunk_id) in env_dict {
-                if let Key::String(name) = key {
-                    let val_thunk = ctx.get_thunk(val_thunk_id);
-                    child_env.borrow_mut().insert(name, val_thunk);
-                }
-            }
-            child_env
-        } else {
-            base_env
-        }
-    } else {
-        base_env
-    };
-
-    // Add "%" = %: if provided
-    let final_env = if let Some(named_map) = named {
-        if let Some(percent_thunk) = named_map.get("%") {
-            let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-                &env_with_extra,
-            ))));
-            child_env
-                .borrow_mut()
-                .insert("%".to_string(), Rc::clone(percent_thunk));
-            child_env
-        } else {
-            env_with_extra
-        }
-    } else {
-        env_with_extra
-    };
-
-    // Call eval_expressions
-    crate::eval::eval_expressions(&exprs, final_env, &ctx)
-}
-
-/// `eval-types`: Evaluate AST expression nodes in the type stage environment.
-///
-/// Positional arg: `exprs` — a positional Dict of expression AST dicts.
-///
-/// No `%:` or `env:` parameters. Uses `ctx.config.type_stage_env` as the base environment,
-/// which contains type-level builtins only (no IO, no caps, no runtime API).
-pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    reject_named("eval-types", named, call_span)?;
-
-    // Get the positional dict of expression AST dicts.
-    // reject_named above already validated no named args; use a manual arity check
-    // here so the intent is clear (expect_one_arg would re-check named redundantly).
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let exprs_dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let exprs_dict = match &exprs_dict_val {
-        Value::Dict(d) => d,
-        _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                "eval-types".to_string(),
-                "Dict",
-                exprs_dict_val.type_name(),
-                call_span,
-            )
-            .into());
-        }
-    };
-
-    // Extract expression AST dicts from the positional dict
-    let mut exprs = Vec::new();
-    for i in 0.. {
-        match exprs_dict.get(&Key::Int(i)) {
-            Some(thunk_id) => {
-                let thunk = ctx.get_thunk(*thunk_id);
-                let expr_val = materialize(&thunk, Some(&call_span), &ctx)?;
-                let expr_ast = crate::ast_dict::dict_to_ast(&expr_val, &ctx).map_err(|e| {
-                    EvalError::user_error(format!("eval-types: expression {}: {}", i, e), call_span)
-                })?;
-                // dict_to_ast already returns Spanned<Expr>, don't wrap again
-                exprs.push(expr_ast);
-            }
-            None => break,
-        }
-    }
-
-    // Use type_stage_env if available, otherwise fall back to stdlib_env
-    let base_env = ctx
-        .config
-        .type_stage_env
-        .as_ref()
-        .map(Rc::clone)
-        .unwrap_or_else(|| Rc::clone(&ctx.config.stdlib_env));
-
-    // Call eval_expressions
-    crate::eval::eval_expressions(&exprs, base_env, &ctx)
 }
 
 /// `gensym`: Generate a unique symbol name for macro hygiene.
@@ -783,22 +562,21 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     ok_val(string_val(name), call_span)
 }
 
-/// `ast-of`: returns the Surface AST representation of a value or thunk.
+/// `ast-of`: returns metadata about a value's AST or thunk state.
 ///
 /// This builtin does NOT materialize its argument, making it safe to use
 /// for introspection of unevaluated expressions.
 ///
-/// - Unevaluated thunks → Value::Expression (SurfaceNode)
-/// - Materialized values → Placeholder expression
-/// - PendingCall/PendingBuiltin → Placeholder expression
-/// - Other thunk states → Placeholder expression
+/// - Materialized values → metadata dict based on value type
+/// - Unevaluated thunks → AST dict from stored expression
+/// - PendingCall/PendingBuiltin → descriptor dict
+/// - Other thunk states → descriptor dict with state name
 pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
-    use std::sync::Arc;
     let BuiltinArgs {
         args,
         named,
         call_span,
-        ctx: _,
+        ctx,
     } = ctx_arg;
 
     // Reject named args and ensure exactly 1 arg
@@ -812,22 +590,221 @@ pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Inspect the thunk state WITHOUT forcing it
     let state = thunk.state();
 
-    match &*state {
+    let dict_entries = match &*state {
+        crate::value::ThunkState::Materialized(val) => {
+            // Value is already materialized — inspect it
+            match val {
+                crate::value::Value::Function {
+                    params, annotation, ..
+                } => {
+                    let mut entries = IndexMap::new();
+
+                    // Add type field
+                    entries.insert(
+                        crate::value::Key::String("type".into()),
+                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            string_val("function"),
+                            call_span,
+                        ))),
+                    );
+
+                    // Add params field as a list of param names
+                    let param_names: Vec<ThunkId> = params
+                        .iter()
+                        .map(|p| {
+                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                string_val(&p.name),
+                                call_span,
+                            )))
+                        })
+                        .collect();
+
+                    if !param_names.is_empty() {
+                        let params_seq = param_names.into_iter().rev().fold(
+                            ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                crate::value::Value::Dict(IndexMap::new()),
+                                call_span,
+                            ))),
+                            |tail, head| {
+                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                    crate::value::Value::Seq { head, tail },
+                                    call_span,
+                                )))
+                            },
+                        );
+                        entries.insert(crate::value::Key::String("params".into()), params_seq);
+                    }
+
+                    // Add doc field if present
+                    if let Some(ann) = annotation {
+                        if let Some(ref doc_str) = ann.doc {
+                            entries.insert(
+                                crate::value::Key::String("doc".into()),
+                                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                                    string_val(doc_str),
+                                    call_span,
+                                ))),
+                            );
+                        }
+                    }
+
+                    entries
+                }
+                other => {
+                    let mut entries = IndexMap::new();
+                    entries.insert(
+                        crate::value::Key::String("type".into()),
+                        ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                            string_val(other.type_name()),
+                            call_span,
+                        ))),
+                    );
+                    entries
+                }
+            }
+        }
         crate::value::ThunkState::Unevaluated { expr, .. } => {
-            // Thunk contains an unevaluated expression — convert Expr to SurfaceNode
+            // runtime-v2 Part G: return Value::Expression for unevaluated thunks.
+            // macros.llt is dual-dispatch ready (tag-of handles both Expression and Variant).
+            // The do-binding-name/do-binding-expr helpers use [get "entries" ...] which now
+            // works via surface_node_get_field returning real integer-keyed Dicts.
             let surface_node = crate::ast_convert::expr_to_surface_node(expr);
-            return ok_val(crate::value::Value::Expression(surface_node), call_span);
+            return Ok(Rc::new(crate::value::Thunk::new_materialized(
+                Value::Expression(surface_node),
+                call_span,
+            )));
         }
-        _ => {
-            // For all other states (Materialized, PendingBuiltin, PendingCall, etc.),
-            // return a Placeholder expression
-            let placeholder_node = Arc::new(crate::ast::SurfaceNode {
-                expr: crate::ast::SurfaceExpression::Placeholder,
-                span: call_span,
-            });
-            return ok_val(crate::value::Value::Expression(placeholder_node), call_span);
+        crate::value::ThunkState::PendingBuiltin { def, .. } => {
+            // Pending builtin call — return descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("pending-builtin"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("name".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val(def.name),
+                    call_span,
+                ))),
+            );
+            entries
         }
-    }
+        crate::value::ThunkState::PendingCall { .. } => {
+            // Pending function call — return descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("pending-call"),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::Guarded { .. } => {
+            // Type-guarded thunk — return descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("guarded"),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::InProgress => {
+            // Circular dependency detected — return descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("in-progress"),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::Failed(err) => {
+            // Failed evaluation — return error descriptor
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("failed"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("error".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val(&err.kind.to_string()),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::Placeholder => {
+            // Placeholder state (should not be observable in user code)
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Rc::new(crate::value::Thunk::new_materialized(
+                    string_val("placeholder"),
+                    call_span,
+                ))),
+            );
+            entries
+        }
+        crate::value::ThunkState::Surface { ref node, .. } => {
+            // runtime-v2: Surface thunk — return Value::Expression directly
+            return Ok(Rc::new(crate::value::Thunk::new_materialized(
+                Value::Expression(std::sync::Arc::clone(node)),
+                call_span,
+            )));
+        }
+        crate::value::ThunkState::AstNodeField { ref node, .. } => {
+            // runtime-v2: AstNodeField thunk — return the containing SurfaceNode as Expression
+            return Ok(Rc::new(crate::value::Thunk::new_materialized(
+                Value::Expression(std::sync::Arc::clone(node)),
+                call_span,
+            )));
+        }
+    };
+
+    ok_val(crate::value::Value::Dict(dict_entries), call_span)
 }
 
 /// `llt-repr`: takes 1 arg, deep-materializes it, returns its LLT display string representation.
@@ -845,7 +822,7 @@ pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
     // Convert to display string
     let display_str = crate::value_to_display_string(&deep_val, &ctx)
-        .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span))?;
+        .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind.to_string()), call_span))?;
     ok_val(string_val(&display_str), call_span)
 }
 
@@ -860,6 +837,11 @@ pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let val = crate::builtins::expect_one_arg("tag-of", args, named, &ctx, call_span)?;
     match val {
         Value::Variant { tag, .. } => ok_val(string_val(&tag), call_span),
+        // runtime-v2: Value::Expression supports tag-of via surface_expr_tag
+        Value::Expression(node) => ok_val(
+            string_val(crate::surface_fields::surface_expr_tag(&node.expr)),
+            call_span,
+        ),
         _ => Err(Box::new(EvalError::type_mismatch(
             "Variant",
             val.type_name(),
@@ -1086,6 +1068,7 @@ fn type_name(val: &Value) -> String {
         Value::Http3Session(_) => "Http3Session",
         Value::QuicDatagramHandle(_) => "QuicDatagramHandle",
         Value::DatagramHandle { .. } => "DatagramHandle",
+        Value::RustRegistry => "RustRegistry",
         Value::Program(_) => "Program",
         Value::Document(_) => "Document",
         Value::Expression(_) => "Expression",
@@ -1191,7 +1174,50 @@ pub(crate) fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     json_to_value(&parsed, 0, call_span, &ctx)
 }
 
-// parse_integrity_hash deleted along with builtin_include.
+/// Parse an integrity hash string of the form `"algo:hexdigest"`.
+///
+/// Returns `(algo, hex)` on success. Only `"blake3"` is currently supported.
+/// Validates that the algorithm is known and the digest is the correct length and format.
+fn parse_integrity_hash(s: &str, call_span: Span) -> EvalResult<(&str, &str)> {
+    let Some((algo, hex)) = s.split_once(':') else {
+        return Err(EvalError::include_io_error(
+            s.to_string(),
+            "integrity hash must be \"algo:hexdigest\" (e.g. \"blake3:abc123...\")".to_string(),
+            call_span,
+        )
+        .into());
+    };
+    match algo {
+        "blake3" => {
+            // BLAKE3 output is 32 bytes = 64 hex chars.
+            if hex.len() != 64 {
+                return Err(EvalError::include_io_error(
+                    s.to_string(),
+                    format!("blake3 digest must be 64 hex characters, got {}", hex.len()),
+                    call_span,
+                )
+                .into());
+            }
+            if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(EvalError::include_io_error(
+                    s.to_string(),
+                    "blake3 digest must contain only hex characters (0-9, a-f, A-F)".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+        other => {
+            return Err(EvalError::include_io_error(
+                s.to_string(),
+                format!("unsupported hash algorithm \"{other}\"; supported: blake3"),
+                call_span,
+            )
+            .into());
+        }
+    }
+    Ok((algo, hex))
+}
 
 /// Compute the blake3 hash of `bytes` and return a lowercase hex string.
 pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
@@ -1284,10 +1310,11 @@ pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>
 /// Takes 1 positional arg (String source text) and an optional `name:` named arg (String,
 /// used as the provenance hint for error messages).
 ///
-/// Pipeline: parse → macro-expand → desugar → resolve → ast_to_dict.
-/// Returns a Dict in the canonical AST schema (type: "file", schema-version: 1, documents: [...]).
+/// Pipeline: parse → macro-expand → desugar → ast_to_dict.
+/// Returns `Value::Program(Arc<SurfaceProgram>)` — the runtime-v2 native AST type.
 ///
 /// This is the primitive underlying the `include` pipeline in the include-decomposition design.
+/// runtime-v2 Part G: changed from Dict schema to Value::Program.
 pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     let BuiltinArgs {
         args,
@@ -1347,15 +1374,48 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
     // Desugar $_ implicit lambdas
     crate::desugar::desugar_file(&mut file.node);
 
-    // Variable resolution
+    // Variable resolution (old path — keeps backward compat with eval_file_with_input)
     crate::resolve::resolve_file(&file.node);
 
-    // Convert to AST dict
-    let opts = crate::ast_dict::AstToDictOpts {
-        source: Some(&source),
-        comments: None,
-    };
-    crate::ast_dict::ast_to_dict(&file.node, &opts, &ctx)
+    // runtime-v2 Part G: convert to SurfaceProgram and return as Value::Program.
+    // Also populate ResolutionTable for the Surface thunk path.
+    let surface_program = crate::ast_convert::file_to_surface_program(&file.node);
+    let _res_table = crate::resolve::resolve_surface_program(&surface_program);
+    // TODO: cache res_table in IncludeCacheEntry alongside the program (Part E)
+    let program_value = Value::Program(std::sync::Arc::new(surface_program));
+    let thunk = Rc::new(Thunk::new_materialized(program_value, call_span));
+    Ok(thunk)
+}
+
+/// `expand`: takes a `Value::Program`, runs macro expansion, returns `Value::Program`.
+///
+/// runtime-v2 Part G stub: macro expansion is run internally in `builtin_load`.
+/// This primitive exists for the include-decomp self-hosted pipeline which separates
+/// parse/expand/eval into distinct primitives. For now, expansion has already been
+/// performed by `builtin_load`, so this is an identity function.
+///
+/// Full implementation: unwrap Program → run expand_macros → wrap back as Program.
+pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs { args, named, call_span, ctx } = ctx_arg;
+    crate::builtins::reject_named("expand", named, call_span)?;
+    if args.len() != 1 {
+        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+    }
+    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    match val {
+        Value::Program(_) => {
+            // Identity: expansion was already performed by builtin_load.
+            // TODO: when include-decomp self-hosted pipeline is implemented,
+            // this should actually run expand_macros on the SurfaceProgram.
+            Ok(Rc::new(Thunk::new_materialized(val, call_span)))
+        }
+        _ => Err(EvalError::type_mismatch_ctx(
+            "expand".to_string(),
+            "Program",
+            val.type_name(),
+            call_span,
+        ).into()),
+    }
 }
 
 /// `include-cache-get`: look up the string-keyed include cache by blake3 key.
@@ -1480,14 +1540,398 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Rc<T
         .string_include_cache
         .insert(key, entry);
 
-    // Return [] (empty dict). The entry was stored in the cache; the return value
-    // is used in sequential `let*` expressions that require Dict.
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+    // Return the stored value (pass-through — the args[1] thunk, not the entry)
+    Ok(Rc::clone(&args[1]))
 }
 
-// builtin_include deleted — file inclusion is now a LLT-level operation
-// using the `load` primitive. See TODO.md include-decomp-prelude for the
-// LLT-level include function that replaces this builtin.
+/// `include`: takes 2 or 3 args (DirCap + path, optional hash), evaluates the file,
+/// returns its result. The capless 1-arg form `[include "path"]` is no longer supported.
+///
+/// Supported forms:
+///   `[include $cap "path"]`           — 2 args: DirCap + path String
+///   `[include $cap "path" "hash"]`    — 3 args: DirCap + path + integrity hash
+///
+/// Path resolution: relative paths are resolved within the provided DirCap (RESOLVE_BENEATH).
+/// Absolute paths are rejected by cap-std. Cycle detection prevents A→B→A
+/// circular includes. The included file gets an empty `%`, the stdlib environment,
+/// plus injected `%libdir` cap so that it can include further files.
+///
+/// ## Argument strictness
+///
+/// - `args[0]`: DirCap — materialized immediately
+/// - `args[1]`: path String — materialized immediately
+/// - `args[2]`: hash String (optional) — materialized immediately
+///
+/// All arguments are forced eagerly; `$include` does not participate in lazy evaluation
+/// of its path. This is intentional: lazily resolving the path would defer filesystem
+/// errors and make cycle detection unreliable.
+pub(crate) fn builtin_include(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+
+    // Check if filesystem access is disabled before doing anything else.
+    if ctx.config.no_fs {
+        return Err(EvalError::include_forbidden(call_span).into());
+    }
+
+    // Accept 2 or 3 positional args; reject named args.
+    // Patterns:
+    //   [include $cap "path"]               — cap-qualified, no hash
+    //   [include $cap "path" "hash"]        — cap-qualified with integrity hash
+    if args.len() < 2 || args.len() > 3 {
+        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+    }
+    reject_named("include", named, call_span)?;
+
+    // Check for %rust virtual module cap (special case).
+    let first_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    if matches!(first_val, Value::RustRegistry) {
+        // %rust virtual module: [include %rust "module-name"]
+        // No hash argument allowed, no filesystem access, no cycle detection.
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let module_name_val = materialize(&args[1], Some(&call_span), &ctx)?;
+        let module_name = require_string("include", module_name_val, args[1].span)?;
+
+        // Resolve the module to an environment.
+        let module_env = crate::builtins::rust_module(&module_name)
+            .map_err(|e| EvalError::internal(format!("Rust module error: {}", e), call_span))?;
+
+        // Convert the environment to a Dict value.
+        // The environment already contains materialized Rc<Thunk> values, so we just
+        // need to allocate them in the arena and build the dict.
+        let mut dict = indexmap::IndexMap::new();
+        for (name, thunk) in module_env.borrow().bindings.iter() {
+            dict.insert(
+                crate::value::Key::String(name.clone()),
+                ctx.alloc_thunk(Rc::clone(thunk)),
+            );
+        }
+        return ok_val(Value::Dict(dict), call_span);
+    }
+
+    // Determine the DirCap from the first argument.
+    let (dir_cap, path_arg_idx, hash_arg_idx) = match &first_val {
+        Value::DirCap { dir, .. } => (Rc::clone(dir), 1, 2),
+        Value::RevocableDirCap {
+            inner,
+            perms: _,
+            revoked,
+        } => {
+            if revoked.get() {
+                return Err(EvalError::internal(
+                    "capability has been revoked".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            (Rc::clone(inner), 1, 2)
+        }
+        _ => {
+            return Err(
+                EvalError::type_mismatch("DirCap", first_val.type_name(), args[0].span).into(),
+            );
+        }
+    };
+
+    // Extract path string from args[1].
+    let path_val = materialize(&args[path_arg_idx], Some(&call_span), &ctx)?;
+    let file_path_str = require_string("include", path_val, args[path_arg_idx].span)?;
+
+    // Parse optional integrity hash from the hash argument position.
+    // owned_hash = Some((algo, hexdigest)) when a hash was provided.
+    let owned_hash: Option<(String, String)> = if hash_arg_idx < args.len() {
+        let hash_val = materialize(&args[hash_arg_idx], Some(&call_span), &ctx)?;
+        let hash_str = require_string("include", hash_val, args[hash_arg_idx].span)?;
+        parse_integrity_hash(&hash_str, call_span)?; // validates format
+        let colon_pos = hash_str.find(':').unwrap(); // safe: validated above
+        Some((
+            hash_str[..colon_pos].to_string(),
+            hash_str[colon_pos + 1..].to_string(),
+        ))
+    } else {
+        None
+    };
+
+    // Enforce --require-integrity: every $include must supply a hash.
+    if ctx.config.require_integrity && owned_hash.is_none() {
+        return Err(EvalError::include_hash_required(file_path_str.clone(), call_span).into());
+    }
+
+    // Open the file using cap-std. Absolute paths are rejected by cap-std (RESOLVE_BENEATH).
+    // The DirCap + cap-std RESOLVE_BENEATH already confines include paths to the cap's root.
+    let base_dir = &dir_cap;
+    let fd = base_dir.open(&file_path_str).map_err(|e| {
+        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+    })?;
+
+    // Get metadata from the fd (single operation, no TOCTOU).
+    let metadata = fd.metadata().map_err(|e| {
+        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+    })?;
+
+    // File-type guard: only regular files are allowed.
+    if !metadata.is_file() {
+        return Err(EvalError::include_io_error(
+            file_path_str.clone(),
+            "not a regular file".to_string(),
+            call_span,
+        )
+        .into());
+    }
+
+    // Check file size.
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(EvalError::include_file_too_large(
+            file_path_str.clone(),
+            metadata.len(),
+            MAX_FILE_SIZE,
+            call_span,
+        )
+        .into());
+    }
+
+    // Get file identity (dev, ino) for cycle detection and caching.
+    // On Unix, we can get these from metadata. On non-Unix, fall back to path-based approach.
+    #[cfg(unix)]
+    let file_id = {
+        use cap_std::fs::MetadataExt;
+        (metadata.dev(), metadata.ino())
+    };
+
+    #[cfg(not(unix))]
+    let file_id = {
+        // On non-Unix platforms, fall back to a hash of the file path as a best-effort identity.
+        // This is not ideal (doesn't detect hardlinks) but better than nothing.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        file_path_str.hash(&mut hasher);
+        let hash = hasher.finish();
+        (0u64, hash)
+    };
+
+    // Cache lookup: skip when a hash is provided (must read bytes to verify integrity).
+    if owned_hash.is_none() {
+        if let Some(cached) = ctx.state.borrow().include_cache.get(&file_id) {
+            return Ok(Rc::clone(cached));
+        }
+    }
+
+    // Cycle detection: check if this file is currently being evaluated.
+    if ctx.state.borrow().include_guard.contains(&file_id) {
+        return Err(EvalError::include_cycle(
+            format!("{}  (dev={}, ino={})", file_path_str, file_id.0, file_id.1),
+            call_span,
+        )
+        .into());
+    }
+
+    // Read the file bytes from the fd.
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    let mut file_handle = fd;
+    file_handle.read_to_end(&mut bytes).map_err(|e| {
+        EvalError::include_io_error(file_path_str.clone(), e.to_string(), call_span)
+    })?;
+
+    // Integrity check: verify hash before parsing or evaluating.
+    if let Some((_algo, expected_hex)) = &owned_hash {
+        let actual_hex = blake3_hex(&bytes);
+        // Case-insensitive hex comparison (user may provide uppercase).
+        if !actual_hex.eq_ignore_ascii_case(expected_hex) {
+            return Err(EvalError::include_hash_mismatch(
+                file_path_str.clone(),
+                format!("blake3:{expected_hex}"),
+                format!("blake3:{actual_hex}"),
+                call_span,
+            )
+            .into());
+        }
+        // Hash verified — return cached evaluation if available.
+        if let Some(cached) = ctx.state.borrow().include_cache.get(&file_id) {
+            return Ok(Rc::clone(cached));
+        }
+    }
+
+    // Convert bytes to UTF-8 source.
+    let source = String::from_utf8(bytes).map_err(|e| {
+        EvalError::include_io_error(
+            file_path_str.clone(),
+            format!("file is not valid UTF-8: {e}"),
+            call_span,
+        )
+    })?;
+
+    // Parse.
+    let file = crate::parser::parse(&source).map(|o| o.file).map_err(|e| {
+        EvalError::include_parse_failed(file_path_str.clone(), e.to_string(), call_span)
+    })?;
+
+    // PIPELINE INVARIANT: expand_macros -> desugar -> resolve -> eval.
+    // Macro expansion runs first so that DefMacro nodes are registered and macro calls
+    // are expanded before the underscore desugar pass and evaluation.
+    // This matches the pipeline in main.rs, lib.rs, and LSP.
+    let expand_result =
+        crate::expand::expand_macros(file, ctx.config.no_fs, &*dir_cap).map_err(|e| {
+            EvalError::include_parse_failed(
+                file_path_str.clone(),
+                format!("macro expansion error: {}", e),
+                call_span,
+            )
+        })?;
+    let mut file = expand_result.file;
+    // Note: expand_result.provenance is discarded here. Included files' macro provenance
+    // is not threaded back to the includer's provenance map. This is a known limitation.
+
+    // Desugar $_ implicit lambdas (pre-typecheck and pre-eval AST transformation).
+    crate::desugar::desugar_file(&mut file.node);
+
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    crate::resolve::resolve_file(&file.node);
+
+    // Determine the parent directory for the included file.
+    // We need to open a new Dir for relative includes within the included file.
+    // This is done BEFORE inserting into the guard/chain so that if open_dir fails,
+    // no cleanup is needed.
+    let parent_path = std::path::Path::new(&file_path_str).parent();
+    let included_dir = if let Some(pp) = parent_path.filter(|p| !p.as_os_str().is_empty()) {
+        // Open a subdirectory relative to dir_cap
+        dir_cap.open_dir(pp).map_err(|e| {
+            EvalError::include_io_error(
+                format!("{} (parent directory)", file_path_str),
+                e.to_string(),
+                call_span,
+            )
+        })?
+    } else {
+        // No parent directory means the file is in dir_cap itself
+        // We need to clone the Dir handle. cap-std Dir doesn't implement Clone,
+        // so we reopen it using try_clone() or by opening "." relative to dir_cap.
+        dir_cap.open_dir(".").map_err(|e| {
+            EvalError::include_io_error(
+                format!("{} (reopen base_dir)", file_path_str),
+                e.to_string(),
+                call_span,
+            )
+        })?
+    };
+
+    // Create a new EvalContext with the included file's directory.
+    let included_ctx = ctx.with_base_dir(included_dir);
+
+    let stdlib_env = Rc::clone(&ctx.config.stdlib_env);
+
+    // Add to include guard and include chain before recursing.
+    // The include chain records (file_path, call_span) for each active $include frame.
+    // On error, the chain is prepended to the error's stack frames so the user sees
+    // the full include path ("included from a.llt at 3:10 → included from b.llt at 1:5").
+    {
+        let mut state = ctx.state.borrow_mut();
+        state.include_guard.insert(file_id);
+        state.include_chain.push((file_path_str.clone(), call_span));
+    }
+
+    // Build an env for the included file: child of stdlib_env with %pwd and %libdir injected.
+    // %pwd points to the directory of the included file (dir_cap), enabling nested includes
+    // within the included file to use [include %pwd "relative/path"].
+    let include_env = {
+        use crate::value::Environment;
+        let child = Rc::new(std::cell::RefCell::new(Environment::with_parent(
+            Rc::clone(&stdlib_env),
+        )));
+        // Inject %pwd: the directory from which the file is being loaded.
+        // This allows the included file to perform its own relative includes via [include %pwd "..."].
+        let pwd_val = Value::DirCap {
+            dir: Rc::clone(&dir_cap),
+            perms: crate::value::DirPerms::full(),
+        };
+        let pwd_thunk = Rc::new(Thunk::new_materialized(pwd_val, Span::origin()));
+        child.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        // Inject %libdir: reuse the already-open Dir from EvalContext (set by main.rs/repl.rs
+        // at the capability initialization boundary). Avoids calling open_ambient_dir here.
+        if let Some(libdir_rc) = ctx.libdir_dir.borrow().clone() {
+            let libdir_val = Value::DirCap {
+                dir: libdir_rc,
+                perms: crate::value::DirPerms::full(),
+            };
+            let libdir_thunk = Rc::new(Thunk::new_materialized(libdir_val, Span::origin()));
+            child
+                .borrow_mut()
+                .insert("%libdir".to_string(), libdir_thunk);
+        }
+        child
+    };
+
+    // Evaluate the included file with empty % and the include env (stdlib + caps).
+    let eval_result = crate::eval::eval_file(&file.node, include_env, &included_ctx);
+
+    // Remove from include guard and include chain regardless of success/failure.
+    let cleanup = || {
+        let mut state = ctx.state.borrow_mut();
+        state.include_guard.remove(&file_id);
+        state.include_chain.pop();
+    };
+
+    match eval_result {
+        Ok(thunk) => {
+            // Eagerly materialize: the include guard is only valid while
+            // the file's identity is in the set. Returning a lazy thunk
+            // would defer evaluation past the guard removal.
+            let val = match crate::eval::materialize(&thunk, None, &included_ctx) {
+                Ok(v) => {
+                    cleanup();
+                    v
+                }
+                Err(mut e) => {
+                    // Prepend this include frame to the error's stack so nested errors
+                    // show the full include path. Each $include level inserts its own
+                    // frame at position 0 as the error propagates outward, producing
+                    // outermost-first ordering in the final stack trace.
+                    cleanup();
+                    e.stack.insert(
+                        0,
+                        crate::error::StackFrame {
+                            label: format!("included from {file_path_str}"),
+                            span: call_span,
+                        },
+                    );
+                    return Err(e);
+                }
+            };
+            // Preserve the span from the included file's root expression
+            let result_thunk = Rc::new(Thunk::new_materialized(val, thunk.span));
+
+            // Cache the result thunk for future includes of this file.
+            ctx.state
+                .borrow_mut()
+                .include_cache
+                .insert(file_id, Rc::clone(&result_thunk));
+
+            Ok(result_thunk)
+        }
+        Err(mut e) => {
+            // Prepend this include frame to the error's stack so nested errors
+            // show the full include path. Each $include level inserts its own
+            // frame at position 0 as the error propagates outward, producing
+            // outermost-first ordering in the final stack trace.
+            cleanup();
+            e.stack.insert(
+                0,
+                crate::error::StackFrame {
+                    label: format!("included from {file_path_str}"),
+                    span: call_span,
+                },
+            );
+            Err(e)
+        }
+    }
+}
 
 /// `validate`: Validate a value against a schema dict.
 ///
@@ -1572,8 +2016,8 @@ fn expect_two_args(
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
 
-    let val1 = materialize(&args[0], Some(&call_span), ctx)?;
-    let val2 = materialize(&args[1], Some(&call_span), ctx)?;
+    let val1 = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val2 = materialize(&args[1], Some(&call_span), &ctx)?;
 
     Ok((val1, val2))
 }
@@ -1593,7 +2037,7 @@ fn validate_value(
     // Check `type` constraint
     if let Some(&type_thunk_id) = schema.get(&Key::String("type".to_string())) {
         let type_thunk = ctx.get_thunk(type_thunk_id);
-        let type_val = materialize(&type_thunk, Some(&span), ctx)?;
+        let type_val = materialize(&type_thunk, Some(&span), &ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -1614,19 +2058,27 @@ fn validate_value(
     // Check numeric range constraints (min, max)
     if let Some(&min_thunk_id) = schema.get(&Key::String("min".to_string())) {
         let min_thunk = ctx.get_thunk(min_thunk_id);
-        let min_val = materialize(&min_thunk, Some(&span), ctx)?;
+        let min_val = materialize(&min_thunk, Some(&span), &ctx)?;
         match (data, &min_val) {
-            (Value::Int(n), Value::Int(min)) if n < min => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
+            (Value::Int(n), Value::Int(min)) => {
+                if n < min {
+                    violations.push((path.to_string(), format!("must be >= {}", min)));
+                }
             }
-            (Value::Float(n), Value::Float(min)) if n < min => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
+            (Value::Float(n), Value::Float(min)) => {
+                if n < min {
+                    violations.push((path.to_string(), format!("must be >= {}", min)));
+                }
             }
-            (Value::Int(n), Value::Float(min)) if (*n as f64) < *min => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
+            (Value::Int(n), Value::Float(min)) => {
+                if (*n as f64) < *min {
+                    violations.push((path.to_string(), format!("must be >= {}", min)));
+                }
             }
-            (Value::Float(n), Value::Int(min)) if *n < (*min as f64) => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
+            (Value::Float(n), Value::Int(min)) => {
+                if *n < (*min as f64) {
+                    violations.push((path.to_string(), format!("must be >= {}", min)));
+                }
             }
             _ => {}
         }
@@ -1634,19 +2086,27 @@ fn validate_value(
 
     if let Some(&max_thunk_id) = schema.get(&Key::String("max".to_string())) {
         let max_thunk = ctx.get_thunk(max_thunk_id);
-        let max_val = materialize(&max_thunk, Some(&span), ctx)?;
+        let max_val = materialize(&max_thunk, Some(&span), &ctx)?;
         match (data, &max_val) {
-            (Value::Int(n), Value::Int(max)) if n > max => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
+            (Value::Int(n), Value::Int(max)) => {
+                if n > max {
+                    violations.push((path.to_string(), format!("must be <= {}", max)));
+                }
             }
-            (Value::Float(n), Value::Float(max)) if n > max => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
+            (Value::Float(n), Value::Float(max)) => {
+                if n > max {
+                    violations.push((path.to_string(), format!("must be <= {}", max)));
+                }
             }
-            (Value::Int(n), Value::Float(max)) if (*n as f64) > *max => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
+            (Value::Int(n), Value::Float(max)) => {
+                if (*n as f64) > *max {
+                    violations.push((path.to_string(), format!("must be <= {}", max)));
+                }
             }
-            (Value::Float(n), Value::Int(max)) if *n > (*max as f64) => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
+            (Value::Float(n), Value::Int(max)) => {
+                if *n > (*max as f64) {
+                    violations.push((path.to_string(), format!("must be <= {}", max)));
+                }
             }
             _ => {}
         }
@@ -1655,7 +2115,7 @@ fn validate_value(
     // Check string/sequence length constraints
     if let Some(&min_len_thunk_id) = schema.get(&Key::String("min-length".to_string())) {
         let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
-        let min_len_val = materialize(&min_len_thunk, Some(&span), ctx)?;
+        let min_len_val = materialize(&min_len_thunk, Some(&span), &ctx)?;
         if let Value::Int(min_len) = min_len_val {
             let actual_len = match data {
                 Value::String {
@@ -1681,7 +2141,7 @@ fn validate_value(
 
     if let Some(&max_len_thunk_id) = schema.get(&Key::String("max-length".to_string())) {
         let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
-        let max_len_val = materialize(&max_len_thunk, Some(&span), ctx)?;
+        let max_len_val = materialize(&max_len_thunk, Some(&span), &ctx)?;
         if let Value::Int(max_len) = max_len_val {
             let actual_len = match data {
                 Value::String {
@@ -1704,7 +2164,7 @@ fn validate_value(
     // Check pattern constraint (for strings)
     if let Some(&pattern_thunk_id) = schema.get(&Key::String("pattern".to_string())) {
         let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
-        let pattern_val = materialize(&pattern_thunk, Some(&span), ctx)?;
+        let pattern_val = materialize(&pattern_thunk, Some(&span), &ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -1736,12 +2196,12 @@ fn validate_value(
     // Check enum constraint
     if let Some(&enum_thunk_id) = schema.get(&Key::String("enum".to_string())) {
         let enum_thunk = ctx.get_thunk(enum_thunk_id);
-        let enum_val = materialize(&enum_thunk, Some(&span), ctx)?;
+        let enum_val = materialize(&enum_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref enum_dict) = enum_val {
             let mut found = false;
             for (_key, &val_thunk_id) in enum_dict {
                 let val_thunk = ctx.get_thunk(val_thunk_id);
-                let val = materialize(&val_thunk, Some(&span), ctx)?;
+                let val = materialize(&val_thunk, Some(&span), &ctx)?;
                 if values_equal(&val, data) {
                     found = true;
                     break;
@@ -1756,13 +2216,13 @@ fn validate_value(
     // Check fields constraint (for dicts)
     if let Some(&fields_thunk_id) = schema.get(&Key::String("fields".to_string())) {
         let fields_thunk = ctx.get_thunk(fields_thunk_id);
-        let fields_val = materialize(&fields_thunk, Some(&span), ctx)?;
+        let fields_val = materialize(&fields_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref fields_schema) = fields_val {
             if let Value::Dict(ref data_dict) = data {
                 // Validate each field in the schema
                 for (field_key, &field_schema_thunk_id) in fields_schema {
                     let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
-                    let field_schema_val = materialize(&field_schema_thunk, Some(&span), ctx)?;
+                    let field_schema_val = materialize(&field_schema_thunk, Some(&span), &ctx)?;
                     if let Value::Dict(ref field_schema) = field_schema_val {
                         let field_name = match field_key {
                             Key::String(s) => s.clone(),
@@ -1780,7 +2240,7 @@ fn validate_value(
                             field_schema.get(&Key::String("required".to_string()))
                         {
                             let req_thunk = ctx.get_thunk(req_thunk_id);
-                            let req_val = materialize(&req_thunk, Some(&span), ctx)?;
+                            let req_val = materialize(&req_thunk, Some(&span), &ctx)?;
                             matches!(req_val, Value::Bool(true))
                         } else {
                             false
@@ -1788,7 +2248,7 @@ fn validate_value(
 
                         if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
                             let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
-                            let field_value = materialize(&field_value_thunk, Some(&span), ctx)?;
+                            let field_value = materialize(&field_value_thunk, Some(&span), &ctx)?;
                             validate_value(
                                 field_schema,
                                 &field_value,
@@ -1809,13 +2269,13 @@ fn validate_value(
     // Check items constraint (for sequences/dicts with uniform element schema)
     if let Some(&items_thunk_id) = schema.get(&Key::String("items".to_string())) {
         let items_thunk = ctx.get_thunk(items_thunk_id);
-        let items_val = materialize(&items_thunk, Some(&span), ctx)?;
+        let items_val = materialize(&items_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref items_schema) = items_val {
             match data {
                 Value::Dict(ref data_dict) => {
                     for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
-                        let val = materialize(&val_thunk, Some(&span), ctx)?;
+                        let val = materialize(&val_thunk, Some(&span), &ctx)?;
                         let item_path = if path.is_empty() {
                             format!("[{}]", idx)
                         } else {
@@ -1851,7 +2311,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 start: start2,
                 end: end2,
             },
-        ) => s1[*start1..*end1] == s2[*start2..*end2],
+        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Dict(x), Value::Dict(y)) => x.is_empty() && y.is_empty(), // Null check
         _ => false,

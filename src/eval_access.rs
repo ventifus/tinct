@@ -33,7 +33,6 @@ pub(crate) fn invoke_proxy_handler(
             params: &params,
             body: &body,
             closure_env: &closure_env,
-            closure_env_id: None,
             positional: &[key_arg],
             named: None,
             default_env: &closure_env,

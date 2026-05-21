@@ -42,13 +42,13 @@ json-span: [fn [s@Span]
 
 to-json-dict: [fn [d@Dict]
   [str "{"
-    [str-join ","
+    [join ","
       [map [fn [pair] [str [json-string pair[0]] ":" [to-json pair[1]]]]
            [entries d]]]
     "}"]]
 
 to-json-seq: [fn [s]
-  [str "[" [str-join "," [map to-json [collect s]]] "]"]]
+  [str "[" [join "," [map to-json [collect s]]] "]"]]
 
 json-annotation: [fn [a@Annotation] [to-json a]]
 

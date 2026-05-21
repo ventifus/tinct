@@ -992,7 +992,6 @@ pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Rc<Thunk
                     params,
                     body,
                     closure_env,
-                    closure_env_id: None,
                     positional: &pos_args,
                     named: None,
                     default_env: closure_env,

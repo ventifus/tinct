@@ -30,14 +30,12 @@ use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
     Annotation, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span, Spanned,
 };
-use crate::ast_dict::{ast_to_dict_expr, AstToDictOpts};
-
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::value::{string_val, DefaultFallback, Environment, Key, Thunk, ThunkState, Value};
+use crate::value::{string_val, Environment, Key, Thunk, ThunkState, Value};
 
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -121,9 +119,6 @@ pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool 
 pub struct EvalConfig {
     pub base_dir: cap_std::fs::Dir,
     pub stdlib_env: Rc<RefCell<Environment>>,
-    /// Type-stage environment containing type-level builtins only (no IO, no caps).
-    /// Built once at startup alongside stdlib_env. Used by the `eval-types` builtin.
-    pub type_stage_env: Option<Rc<RefCell<Environment>>>,
     pub no_fs: bool,
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
@@ -151,13 +146,26 @@ pub enum IncludeCacheEntry {
     Cached(Rc<Thunk>),
 }
 
-/// Mutable evaluation state (class registry, instance registry, evaluation stack).
+/// Mutable evaluation state (include guard, caching).
 #[derive(Debug)]
 pub struct EvalState {
+    /// File identities (dev, ino) currently being evaluated by $include (cycle detection).
+    pub include_guard: HashSet<(u64, u64)>,
+    /// File identity (dev, ino) -> materialized result thunk (include result caching).
+    /// Only successful evaluations are cached; errors are not cached.
+    pub include_cache: HashMap<(u64, u64), Rc<Thunk>>,
     /// String-keyed include cache for `include-cache-get`/`include-cache-put`.
     /// Key is `blake3(cap-identity + "|" + source_text)`.
-    /// Used by the decomposed include pipeline.
+    /// Complements the inode-keyed cache above; used by the decomposed include pipeline.
     pub string_include_cache: HashMap<String, IncludeCacheEntry>,
+    /// Stack of active $include calls: `(display_path, call_site_span)`.
+    ///
+    /// Pushed by `builtin_include` before evaluating the included file, popped
+    /// after (in both success and error branches). Used to annotate errors from
+    /// nested includes with the full include path, e.g.:
+    ///   "included from a.llt at 3:10-3:25"
+    ///   "included from b.llt at 1:5-1:20"
+    pub include_chain: Vec<(String, Span)>,
     /// Stack of thunks currently being evaluated: `(origin_label, span)`.
     ///
     /// Pushed when transitioning from Unevaluated/PendingBuiltin/PendingCall/Guarded
@@ -281,17 +289,18 @@ pub struct EvalContext {
     /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
     /// Populated by typecheck_file via set_boundary_guards(), consumed during eval().
     pub boundary_guards: RefCell<HashMap<Span, Type>>,
-    /// Monad resolutions for inferred [do] forms: sentinel VarRef name → monad variable name.
-    /// The type checker records the resolved monad name here (keyed by the sentinel VarRef name
-    /// like `:do-infer:0` from gensym). At eval time, when the sentinel VarRef is evaluated,
-    /// the evaluator looks up this map by name and returns the monad dict value.
-    /// Parallel to boundary_guards: type-checker-to-evaluator communication via side channel.
+    /// Monad resolutions for inferred [do] forms: %do-infer VarRef span → monad variable name.
+    /// The type checker records the resolved monad name here (keyed by the span of the
+    /// `%do-infer` VarRef in the desugared bind chain). At eval time, when `VarRef("%do-infer")`
+    /// is evaluated, the evaluator looks up this map by span and returns the monad dict value.
+    /// Parallel to boundary_guards: type-checker-to-evaluator communication via span-keyed side channel.
     /// Populated by typecheck_file via set_do_infer_resolutions(), consumed during eval().
     pub do_infer_resolutions: RefCell<HashMap<String, String>>,
     /// Already-open libdir Dir, shared from the bootstrap boundary (main.rs or repl.rs).
-    /// Available via `%libdir` capability in user environments.
-    /// `None` in contexts where libdir was not opened (e.g., --no-libdir, bootstrap contexts, tests).
-    /// Propagated through `with_base_dir` so derived contexts see the same Dir.
+    /// Used by `builtin_include` to inject `%libdir` into the included file's environment
+    /// without calling `open_ambient_dir` again. `None` in contexts where libdir was not
+    /// opened (e.g., --no-libdir, bootstrap contexts, tests).
+    /// Propagated through `with_base_dir` so nested includes see the same Dir.
     pub libdir_dir: RefCell<Option<Rc<cap_std::fs::Dir>>>,
 }
 
@@ -323,14 +332,16 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
-                type_stage_env: None,
                 no_fs,
                 require_integrity: false,
                 macro_injects_map: HashMap::new(),
                 source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
+                include_guard: HashSet::new(),
+                include_cache: HashMap::new(),
                 string_include_cache: HashMap::new(),
+                include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
@@ -362,14 +373,16 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
-                type_stage_env: None,
                 no_fs,
                 require_integrity,
                 macro_injects_map: HashMap::new(),
                 source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
+                include_guard: HashSet::new(),
+                include_cache: HashMap::new(),
                 string_include_cache: HashMap::new(),
+                include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
@@ -410,14 +423,16 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env,
-                type_stage_env: None,
                 no_fs,
                 require_integrity: false,
                 macro_injects_map,
                 source_file: None,
             }),
             state: Rc::new(RefCell::new(EvalState {
+                include_guard: HashSet::new(),
+                include_cache: HashMap::new(),
                 string_include_cache: HashMap::new(),
+                include_chain: Vec::new(),
                 eval_stack: Vec::new(),
                 class_registry: HashMap::new(),
                 instance_registry: HashMap::new(),
@@ -450,7 +465,6 @@ impl EvalContext {
             config: Rc::new(EvalConfig {
                 base_dir,
                 stdlib_env: Rc::clone(&self.config.stdlib_env),
-                type_stage_env: self.config.type_stage_env.as_ref().map(Rc::clone),
                 no_fs: self.config.no_fs,
                 require_integrity: self.config.require_integrity,
                 macro_injects_map: self.config.macro_injects_map.clone(),
@@ -507,17 +521,18 @@ impl EvalContext {
 
     /// Set do-infer resolutions from type inference.
     /// Called after type checking to wire inferred [do] monad resolution to the evaluator.
-    /// The map keys are the sentinel VarRef names (e.g., `:do-infer:0` from gensym); values
-    /// are the monad dict variable names (e.g., "result") resolved by the type checker.
+    /// The map keys are the spans of `%do-infer` VarRef nodes; values are the monad dict
+    /// variable names (e.g., "result") resolved by the type checker.
     pub fn set_do_infer_resolutions(&self, resolutions: HashMap<String, String>) {
         *self.do_infer_resolutions.borrow_mut() = resolutions;
     }
 
-    /// Set the already-open libdir Dir for `%libdir` capability injection.
+    /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
+    /// into included files without calling `open_ambient_dir` again.
     ///
     /// Called by the capability initialization boundary (main.rs, repl.rs) immediately
     /// after opening the libdir directory and creating the EvalContext. Propagated
-    /// through `with_base_dir` to child contexts.
+    /// through `with_base_dir` to child contexts (nested includes).
     pub fn set_libdir_dir(&self, dir: Rc<cap_std::fs::Dir>) {
         *self.libdir_dir.borrow_mut() = Some(dir);
     }
@@ -542,7 +557,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Bool => matches!(value, Value::Bool(_)),
         Type::Bytes => matches!(value, Value::Bytes { .. }),
         Type::IntLiteral(n) => matches!(value, Value::Int(v) if v == n),
-        Type::StringLiteral(s) => value.as_str().is_some_and(|v| v == s),
+        Type::StringLiteral(s) => value.as_str().map_or(false, |v| v == s),
         Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin(_)),
         Type::Seq(_) => matches!(value, Value::Seq { .. }),
         Type::Map(_, _) => matches!(value, Value::Dict(_) | Value::Overlay(..)), // Map matches any Dict for now
@@ -674,7 +689,7 @@ pub(crate) fn validate_and_wrap_record(
     guard_span: Span,
     data_span: Span,
     ctx: &Rc<EvalContext>,
-    default: DefaultFallback,
+    default: Option<(Rc<Spanned<Expr>>, Rc<RefCell<Environment>>)>,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -782,25 +797,26 @@ pub(crate) fn eval_recursive(
         Expr::Bool(b) => Ok(Rc::new(Thunk::new_materialized(Value::Bool(*b), expr.span))),
         Expr::Str(s) => Ok(Rc::new(Thunk::new_materialized(string_val(s), expr.span))),
         Expr::VarRef { name, resolved, .. } => {
-            // Special case: do-infer sentinel — inferred [do] form monad resolution.
-            // The `do` macro emits `[`:do-infer:N`.bind ...]` when no explicit monad is given.
+            // Special case: `%do-infer` sentinel — inferred [do] form monad resolution.
+            // The `do` macro emits `[%do-infer.bind ...]` when no explicit monad is given.
             // The type checker resolved the monad name and stored it in do_infer_resolutions
-            // keyed by this VarRef's name (e.g., `:do-infer:0`). At runtime, substitute the
-            // sentinel with the actual monad dict looked up from the environment by its resolved name.
-            if name.starts_with(":do-infer:") {
-                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(name).cloned() {
+            // keyed by this VarRef's span. At runtime, substitute the sentinel with the
+            // actual monad dict looked up from the environment by its resolved name.
+            if name == "%do-infer" {
+                if let Some(monad_name) = ctx.do_infer_resolutions.borrow().get(name).cloned()
+                {
                     let found = env.borrow().get(&monad_name);
                     return match found {
                         Some(thunk) => Ok(thunk),
                         None => Err(EvalError::undefined_variable(
-                            format!("{name} → {monad_name}"),
+                            format!("%do-infer → {monad_name}"),
                             expr.span,
                         )
                         .into()),
                     };
                 }
                 // Fallthrough: no resolution recorded (type checker didn't run or failed).
-                // Fall through to normal lookup so the error message is "undefined variable: :do-infer:N".
+                // Fall through to normal lookup so the error message is "undefined variable: %do-infer".
             }
 
             // O(1) fast path: use resolved (level, slot) pair if available.
@@ -980,7 +996,7 @@ pub(crate) fn eval_recursive(
                         }
                         Err(EvalError::type_assert_failed(
                             &format_type_for_assert(&expected),
-                            value.type_name(),
+                            &value.type_name(),
                             thunk.span, // value's definition site, not annotation site
                         )
                         .with_materialization_span(expr.span)
@@ -1008,16 +1024,15 @@ pub(crate) fn eval_recursive(
                                         ..
                                     } => {
                                         let call_ctx = crate::eval_call::CallContext {
-                                            params,
-                                            body,
+                                            params: params,
+                                            body: body,
                                             closure_env: fn_env,
-                                            closure_env_id: None,
                                             positional: &[val_thunk],
                                             named: None,
                                             default_env: fn_env,
                                             call_span: expr.span,
                                             origin: Some("is: predicate".into()),
-                                            ctx,
+                                            ctx: ctx,
                                         };
                                         crate::eval_call::invoke_function(&call_ctx)?
                                     }
@@ -1033,7 +1048,7 @@ pub(crate) fn eval_recursive(
                                     _ => {
                                         return Err(EvalError::type_mismatch(
                                             "Function (is: predicate)",
-                                            pred_val.type_name(),
+                                            &pred_val.type_name(),
                                             expr.span,
                                         )
                                         .into());
@@ -1059,7 +1074,7 @@ pub(crate) fn eval_recursive(
                                                 "{} (is: predicate failed)",
                                                 format_type_for_assert(&expected)
                                             ),
-                                            value.type_name(),
+                                            &value.type_name(),
                                             thunk.span,
                                         )
                                         .with_materialization_span(expr.span)
@@ -1067,7 +1082,7 @@ pub(crate) fn eval_recursive(
                                     }
                                     _ => Err(EvalError::type_mismatch(
                                         "Bool (is: predicate return type)",
-                                        result_val.type_name(),
+                                        &result_val.type_name(),
                                         expr.span,
                                     )
                                     .into()),
@@ -1083,7 +1098,7 @@ pub(crate) fn eval_recursive(
                             }
                             Err(EvalError::type_assert_failed(
                                 &format_type_for_assert(&expected),
-                                value.type_name(),
+                                &value.type_name(),
                                 thunk.span, // value's definition site, not annotation site
                             )
                             .with_materialization_span(expr.span)
@@ -1198,7 +1213,6 @@ pub(crate) fn eval_recursive(
                     params: Rc::new(fn_params),
                     body: Rc::clone(body),
                     env: Rc::clone(&env),
-                    env_id: None,
                     annotation,
                 },
                 expr.span,
@@ -1250,7 +1264,6 @@ pub(crate) fn eval_recursive(
                             params: Rc::new(vec![param]),
                             body,
                             env: constructor_env,
-                            env_id: None,
                             annotation: None,
                         }
                     } else {
@@ -1370,7 +1383,6 @@ pub(crate) fn eval_recursive(
                                     params,
                                     body,
                                     closure_env: fn_env,
-                                    closure_env_id: None,
                                     positional: &[scrutinee_arg],
                                     named: None,
                                     default_env: fn_env,
@@ -1460,7 +1472,7 @@ pub(crate) fn eval_recursive(
             let num_determining = if let Some(fd_expr) = determines.first() {
                 // FD is a 2-element list: [[a b] c] — first element is the determining set.
                 match &fd_expr.node {
-                    Expr::Dict(entries) if !entries.is_empty() => {
+                    Expr::Dict(entries) if entries.len() >= 1 => {
                         // Try to read the first entry's value as a list (array-like dict).
                         // Dict form: {0: [a b], 1: c} — entry 0 has the determining set.
                         match &entries[0].node.value.node {
@@ -1562,7 +1574,7 @@ pub(crate) fn eval_recursive(
                 // Register this arm in the runtime registry.
                 // Extract the first num_determining type tags from the pattern so the
                 // key matches what try_dispatch_method builds (determined params excluded).
-                let type_tags = extract_instance_type_tags(pattern_expr, num_determining);
+                let type_tags = extract_instance_type_tags(&pattern_expr, num_determining);
                 {
                     let mut state = ctx.state.borrow_mut();
                     state.instance_registry.insert(
@@ -1655,7 +1667,7 @@ pub(crate) const VARIANT_TAG_MARKER: &str = "__variant_tag__";
 
 /// Check if an identifier starts with an uppercase letter.
 pub(crate) fn is_constructor_name(name: &str) -> bool {
-    name.chars().next().is_some_and(|c| c.is_uppercase())
+    name.chars().next().map_or(false, |c| c.is_uppercase())
 }
 
 /// Check if an expression is a nominal variant constructor declaration.
@@ -1721,22 +1733,25 @@ fn eval_quote(
 
 /// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
 ///
-/// Preprocesses the expression tree to handle nested unquotes, then converts to dict AST.
+/// Returns `Value::Expression(Arc<SurfaceNode>)` — the runtime-v2 representation.
+/// macros.llt has been updated to handle both Expression (new) and Variant (old) inputs
+/// via dual dispatch (tag-of works on both), so this migration is safe.
 fn eval_quote_walk(
     expr: &Expr,
     span: Span,
     env: Rc<RefCell<Environment>>,
     ctx: &Rc<EvalContext>,
 ) -> EvalResult<Rc<Thunk>> {
-    // Preprocess to handle nested unquotes
+    // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
     let processed_expr = eval_quote_preprocess(expr, span, &env, ctx)?;
 
-    // Convert the preprocessed AST to dict
-    let opts = AstToDictOpts {
-        source: None,
-        comments: None,
-    };
-    ast_to_dict_expr(&processed_expr, &opts, ctx)
+    // runtime-v2 Part G: return Value::Expression (was: ast_to_dict_expr returning Variant Dict)
+    // macros.llt is dual-dispatch ready (tag-of handles both Expression and Variant).
+    let surface_node = crate::ast_convert::expr_to_surface_node(&processed_expr);
+    Ok(Rc::new(Thunk::new_materialized(
+        Value::Expression(surface_node),
+        span,
+    )))
 }
 
 /// Convert a runtime Value back to an Expr AST node for unquoting.
@@ -2062,82 +2077,6 @@ fn eval_quote_preprocess(
     }
 }
 
-/// Evaluate a sequence of expressions with sequential let* scoping.
-///
-/// This is the core sequential evaluation loop extracted from `eval_document`.
-/// Each intermediate expression is materialized and flattened to a Dict; its string-keyed
-/// entries become scope bindings for the next expression. The last expression's result
-/// is returned as a thunk (lazy, any type).
-///
-/// Used by:
-/// - `eval_document` (via this function)
-/// - The `eval` builtin (runtime-stage evaluation)
-/// - The `eval-types` builtin (type-stage evaluation)
-pub fn eval_expressions(
-    exprs: &[Spanned<Expr>],
-    env: Rc<RefCell<Environment>>,
-    ctx: &Rc<EvalContext>,
-) -> EvalResult<Rc<Thunk>> {
-    if exprs.is_empty() {
-        return Ok(Rc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
-            Span::origin(),
-        )));
-    }
-
-    let mut current_env = env;
-
-    for (i, expr) in exprs.iter().enumerate() {
-        let is_last = i == exprs.len() - 1;
-
-        if is_last {
-            // Last expression: return its thunk as-is (lazy, any type)
-            return eval(Rc::new(expr.clone()), current_env, ctx);
-        }
-
-        // Intermediate expression: materialize and extract dict bindings
-        let thunk = eval(Rc::new(expr.clone()), Rc::clone(&current_env), ctx)?;
-        let value = materialize(&thunk, Some(&expr.span), ctx)?;
-
-        // Flatten Overlay to Dict for scope chain binding.
-        let map = match value {
-            Value::Dict(map) => map,
-            Value::Overlay(l, r) => {
-                crate::builtins::flatten_overlay(&l, &r, "sequential let*", ctx, expr.span)?
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "sequential let*".to_string(),
-                    "Dict",
-                    value.type_name(),
-                    expr.span,
-                )
-                .into());
-            }
-        };
-
-        let child_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
-            &current_env,
-        ))));
-        for (key, val_thunk_id) in map {
-            // Only string keys become scope bindings; int keys are positional, not named.
-            // Named bindings are forced to WHNF at binding time — strict let* semantics.
-            if let Key::String(name) = key {
-                let val_thunk = ctx.get_thunk(val_thunk_id);
-                let forced_value = materialize(&val_thunk, Some(&expr.span), ctx)?;
-                let strict_thunk = Rc::new(Thunk::new_materialized(forced_value, expr.span));
-                child_env.borrow_mut().insert(name, strict_thunk);
-            }
-        }
-        current_env = child_env;
-    }
-
-    // INVARIANT: This is unreachable because the loop always returns when
-    // processing the last expression. The loop only terminates naturally
-    // if exprs is empty, but we return early for that case.
-    unreachable!("eval_expressions: loop did not return")
-}
-
 pub fn eval(
     expr: Rc<Spanned<Expr>>,
     env: Rc<RefCell<Environment>>,
@@ -2271,7 +2210,7 @@ pub fn materialize(
     let origin_opt: Option<&str> = origin.as_deref();
     let decorate = |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span);
 
-    if let Some((expr, env, _env_id, thunk_ctx)) = thunk.take_unevaluated() {
+    if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
         let result = eval(Rc::clone(&expr), Rc::clone(&env), &thunk_ctx)
             .and_then(|result_thunk| {
                 run(
@@ -2341,7 +2280,7 @@ pub fn materialize(
                             } else {
                                 thunk.set_state(ThunkState::PendingBuiltin {
                                     def,
-                                    args,
+                                    args: Box::new(args),
                                     named,
                                     call_span,
                                     ctx: thunk_ctx,
@@ -2359,7 +2298,7 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingBuiltin {
                         def,
-                        args,
+                        args: Box::new(args),
                         named,
                         call_span,
                         ctx: thunk_ctx,
@@ -2389,7 +2328,7 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingCall {
                         func: func_thunk.clone(),
-                        args: args.clone(),
+                        args: Box::new(args.clone()),
                         named: named.clone().map(Box::new),
                         call_span,
                         caller_env: caller_env.clone(),
@@ -2409,7 +2348,6 @@ pub fn materialize(
                     params: &params,
                     body: &body,
                     closure_env: &env,
-                    closure_env_id: None,
                     positional: &args,
                     named: named.as_ref(),
                     // For normal calls, `default_env` is the caller's environment (the env at
@@ -2447,7 +2385,7 @@ pub fn materialize(
                                 } else {
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk.clone(),
-                                        args: args.clone(),
+                                        args: Box::new(args.clone()),
                                         named: named.clone().map(Box::new),
                                         call_span,
                                         caller_env: caller_env.clone(),
@@ -2471,7 +2409,7 @@ pub fn materialize(
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk.clone(),
-                                args: args.clone(),
+                                args: Box::new(args.clone()),
                                 named: named.clone().map(Box::new),
                                 call_span,
                                 caller_env: caller_env.clone(),
@@ -2514,7 +2452,7 @@ pub fn materialize(
                                     } else {
                                         thunk.set_state(ThunkState::PendingCall {
                                             func: func_thunk.clone(),
-                                            args: args.clone(),
+                                            args: Box::new(args.clone()),
                                             named: named.clone().map(Box::new),
                                             call_span,
                                             caller_env: caller_env.clone(),
@@ -2532,7 +2470,7 @@ pub fn materialize(
                         } else {
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk.clone(),
-                                args: args.clone(),
+                                args: Box::new(args.clone()),
                                 named: named.clone().map(Box::new),
                                 call_span,
                                 caller_env: caller_env.clone(),
@@ -2552,7 +2490,7 @@ pub fn materialize(
                 } else {
                     thunk.set_state(ThunkState::PendingCall {
                         func: func_thunk,
-                        args,
+                        args: Box::new(args),
                         named: named.map(Box::new),
                         call_span,
                         caller_env,
@@ -2619,7 +2557,7 @@ pub fn materialize(
                                                 thunk.set_state(ThunkState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path,
+                                                    field_path: Box::new(field_path),
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2644,7 +2582,7 @@ pub fn materialize(
                                                 thunk.set_state(ThunkState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path,
+                                                    field_path: Box::new(field_path),
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2678,7 +2616,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path,
+                                            field_path: Box::new(field_path),
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2702,7 +2640,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path,
+                                            field_path: Box::new(field_path),
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2721,7 +2659,7 @@ pub fn materialize(
                         };
                         let mut err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
-                            value.type_name(),
+                            &value.type_name(),
                             inner_span,
                         );
                         // Add secondary span if inner value was produced at a different
@@ -2754,7 +2692,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path,
+                                            field_path: Box::new(field_path),
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2778,7 +2716,7 @@ pub fn materialize(
                                         thunk.set_state(ThunkState::Guarded {
                                             inner,
                                             expected,
-                                            field_path,
+                                            field_path: Box::new(field_path),
                                             guard_span,
                                             blame_label,
                                             default: Some((default_expr, default_env)),
@@ -2797,7 +2735,7 @@ pub fn materialize(
                         };
                         let mut err = EvalError::type_assert_failed(
                             &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
-                            value.type_name(),
+                            &value.type_name(),
                             inner_span,
                         );
                         // Add secondary span if inner value was produced at a different
@@ -2822,7 +2760,7 @@ pub fn materialize(
                     thunk.set_state(ThunkState::Guarded {
                         inner,
                         expected,
-                        field_path,
+                        field_path: Box::new(field_path),
                         guard_span,
                         blame_label,
                         default,
@@ -2831,25 +2769,14 @@ pub fn materialize(
                 Err(e)
             }
         }
-    } else if let Some((node, res, types, env, env_id, thunk_ctx)) = thunk.take_surface() {
-        // Surface AST node that needs lowering to CoreExpr before evaluation.
-        // Bridge implementation: convert Surface → Expr → evaluate.
-        // Part E will replace this with direct Surface evaluation.
+    } else if let Some((node, _res, _types, env, thunk_ctx)) = thunk.take_surface() {
+        // runtime-v2 Sprint 1: Surface thunk handling via bridge converter.
         //
-        // NOTE: `res` and `types` (the ResolutionTable and TypeAnnotationTable) are
-        // captured but NOT consulted during bridge evaluation. The bridge calls
-        // `surface_node_to_expr()` which produces fresh `Expr` nodes with
-        // `resolved: RefCell::new(None)` — these nodes bypass de Bruijn slot lookup
-        // and use name-based environment lookup instead. This means:
-        //   1. The O(1) arena-slot lookup path (Part E) cannot be used here.
-        //   2. The bridge-produced Expr nodes must not be resolved via the standard
-        //      VarRef resolution path, which would panic on double-resolution.
-        // `res` and `types` are preserved solely for state restoration on non-cacheable
-        // errors (e.g., DepthExceeded), so the thunk can be re-evaluated at a shallower
-        // depth. They become meaningful only in Part E when the Surface path evaluates
-        // directly using CoreExpr + de Bruijn coordinates.
-        let expr = crate::ast_convert::surface_node_to_expr(&node);
-        let result = eval(Rc::new(expr), Rc::clone(&env), &thunk_ctx)
+        // Convert the SurfaceNode back to old Expr via ast_convert::surface_node_to_expr,
+        // then evaluate normally. This is the transitional path; Sprint 2 replaces this
+        // with direct CoreExpr evaluation after the full Rc→Arc migration.
+        let old_expr = Rc::new(crate::ast_convert::surface_node_to_expr(&node));
+        let result = eval(old_expr.clone(), Rc::clone(&env), &thunk_ctx)
             .and_then(|result_thunk| {
                 run(
                     Action::Materialize {
@@ -2867,31 +2794,33 @@ pub fn materialize(
                 Ok(value)
             }
             Err(e) => {
-                // Restore Surface state for non-cacheable errors (e.g., DepthExceeded)
                 if e.kind.is_cacheable() {
                     thunk.cache_failure(&e);
                 } else {
+                    // Restore Surface state for non-cacheable errors
                     thunk.set_state(ThunkState::Surface {
                         node,
-                        res,
-                        types,
+                        res: _res,
+                        types: _types,
                         env,
-                        env_id,
                         ctx: thunk_ctx,
                     });
                 }
                 Err(e)
             }
         }
-    } else if let Some((node, field, field_ctx)) = thunk.take_ast_node_field() {
-        // Lazy field extraction from an AST node (for match pattern binding).
-        // Extract the field and materialize directly (field extraction is synchronous).
-        let value = crate::surface_fields::surface_node_get_field(&node, field, &field_ctx);
+    } else if let Some((node, field, thunk_ctx)) = thunk.take_ast_node_field() {
+        // runtime-v2: AstNodeField thunk — lazily evaluate a named field from a SurfaceNode.
+        //
+        // Created by match dispatch on Value::Expression. Evaluates on demand when the
+        // arm body accesses the bound variable. Unused bindings are never forced.
+        let value = crate::surface_fields::surface_node_get_field(&node, field, &thunk_ctx);
         thunk.set_state(ThunkState::Materialized(value.clone()));
         Ok(value)
     } else {
         unreachable!(
-            "state must be Unevaluated, PendingBuiltin, PendingCall, Guarded, Surface, or AstNodeField. \
+            "state must be Unevaluated, PendingBuiltin, PendingCall, Guarded, \
+             Surface, or AstNodeField. \
              All other ThunkState variants are handled in the early-return section at the \
              top of this function: Materialized returns early, Failed returns early, \
              InProgress returns early and caches circular dependency error."
@@ -2965,6 +2894,11 @@ fn match_pattern(
             {
                 // Unit variant: match by tag name, not by type_name() (which returns "Variant")
                 variant_tag == tag
+            } else if let Value::Expression(node) = value {
+                // Expression: match by surface tag (e.g., "IntLiteral", "Var", "Call")
+                // or by the type name "Expression" itself
+                let surf_tag = crate::surface_fields::surface_expr_tag(&node.expr);
+                tag == surf_tag || tag == "Expression"
             } else {
                 type_name == tag
             };
@@ -3150,6 +3084,44 @@ fn match_pattern(
                         }
                     }
                 }
+                // runtime-v2: match on Value::Expression by surface tag
+                Value::Expression(node) => {
+                    let expr_tag = crate::surface_fields::surface_expr_tag(&node.expr);
+                    if tag.as_str() != expr_tag {
+                        return Ok(None);
+                    }
+                    match binding {
+                        None => Ok(Some(Rc::clone(env))),
+                        Some(payload_pattern) => {
+                            // Build a payload Dict from the Expression's fields for pattern binding.
+                            // Each field is a lazy AstNodeField thunk — only forced when demanded.
+                            // Binding invariant: ALL field names get thunks, even if unused by arm body.
+                            let field_names =
+                                crate::surface_fields::surface_expr_field_names(&node.expr);
+                            let mut payload_map = indexmap::IndexMap::new();
+                            for field_name in field_names {
+                                let thunk_id = ctx.alloc_thunk(Rc::new(
+                                    Thunk::new_ast_node_field(
+                                        std::sync::Arc::clone(&node),
+                                        field_name,
+                                        Rc::clone(ctx),
+                                        *value_span,
+                                    ),
+                                ));
+                                payload_map
+                                    .insert(Key::String((*field_name).to_string()), thunk_id);
+                            }
+                            let payload_val = Value::Dict(payload_map);
+                            match_pattern(
+                                &payload_pattern.node,
+                                &payload_val,
+                                env,
+                                &payload_pattern.span,
+                                ctx,
+                            )
+                        }
+                    }
+                }
                 _ => {
                     // Value is not a Variant
                     Ok(None)
@@ -3302,7 +3274,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 start: start2,
                 end: end2,
             },
-        ) => s1[*start1..*end1] == s2[*start2..*end2],
+        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
         (Value::Dict(_), Value::Dict(_)) => false, // Dict equality is complex, not supported for now
         // Nullary variants compare by tag equality
         (
@@ -3856,7 +3828,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3894,7 +3865,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("b".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -3963,7 +3933,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4000,7 +3969,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4047,7 +4015,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4090,7 +4057,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4124,7 +4090,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4174,7 +4139,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("y".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4223,7 +4187,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("rest".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4287,7 +4250,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("rest".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4437,7 +4399,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -4542,7 +4503,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -5261,6 +5221,11 @@ mod tests {
             stage: None,
         });
         let err = eval_document(&doc, empty_env(), &test_ctx()).unwrap_err();
+        assert!(
+            err.to_string().contains("document pipeline"),
+            "got: {}",
+            err.to_string()
+        );
         assert!(
             err.to_string().contains("expected Dict"),
             "got: {}",
@@ -6124,7 +6089,6 @@ mod tests {
             }]),
             body: Rc::new(Spanned::new(Expr::Int(0), span)),
             env: Rc::new(RefCell::new(Environment::new())),
-            env_id: None,
             annotation: None,
         };
         let result = deep_materialize(&val, &test_ctx(), None).unwrap();
@@ -6235,7 +6199,6 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(Spanned::new(Expr::Int(0), span)),
             env: Rc::new(RefCell::new(Environment::new())),
-            env_id: None,
             annotation: None,
         };
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
@@ -6558,7 +6521,6 @@ mod tests {
                 test_span(1, 15, 1, 23),
             )),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -6616,7 +6578,6 @@ mod tests {
                 test_span(1, 20, 1, 28),
             )),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -6648,7 +6609,6 @@ mod tests {
                 inner_call_span,
             )),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -6912,7 +6872,6 @@ mod tests {
             ]),
             body: Rc::new(sp(Expr::var_ref("a".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
         env.borrow_mut().insert(
@@ -7040,7 +6999,6 @@ mod tests {
                 implied: false,
             })),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
 
@@ -7162,7 +7120,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
 
@@ -7241,7 +7198,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
 
@@ -7331,7 +7287,6 @@ mod tests {
                 implied: false,
             })),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
 
@@ -7429,7 +7384,6 @@ mod tests {
                 implied: false,
             })),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
 
@@ -7571,7 +7525,6 @@ mod tests {
             }]),
             body: Rc::new(sp(Expr::var_ref("nonexistent".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
 
@@ -7668,7 +7621,6 @@ mod tests {
             params: Rc::new(vec![]),
             body: Rc::new(sp(Expr::var_ref("does_not_exist".into()))),
             env: Rc::clone(&env),
-            env_id: None,
             annotation: None,
         };
 
@@ -7877,7 +7829,6 @@ mod tests {
                         implied: false,
                     })),
                     env: Rc::clone(&env),
-                    env_id: None,
                     annotation: None,
                 };
 
@@ -7983,6 +7934,446 @@ mod tests {
             .is_cacheable(),
             "Regular errors should be cacheable"
         );
+    }
+
+    // === EvalContext isolation tests ===
+
+    #[test]
+    fn test_evalcontext_include_cache_persists_within_context() {
+        // Create a temp directory with a test file
+        let temp_dir = std::env::temp_dir().join(format!("tinct_test_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let test_file = temp_dir.join("test_cache.llt");
+        std::fs::write(&test_file, "[value: 42]").unwrap();
+
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
+            .expect("failed to open temp_dir");
+        let stdlib_env = crate::builtins::create_stdlib_env().unwrap();
+        let ctx = EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
+
+        // Create an env with %pwd bound to the test directory so [include %pwd "..."] works.
+        let test_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
+                    .expect("open temp_dir for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
+                Span::origin(),
+            ));
+            test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+
+        // First include: should evaluate and cache.
+        // Use 2-arg form [include %pwd "test_cache.llt"].
+        let include_expr1 = sp(Expr::Call {
+            func: Box::new(sp(Expr::var_ref("include".into()))),
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test_cache.llt".into())),
+            ],
+            named_args: vec![],
+            implied: false,
+        });
+        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&test_env), &ctx).unwrap();
+        let val1 = materialize(&result1, None, &ctx).unwrap();
+
+        // Verify the cache contains the file
+        assert_eq!(
+            ctx.state.borrow().include_cache.len(),
+            1,
+            "include_cache should contain exactly one entry"
+        );
+
+        // Second include of the same file: should hit cache
+        let include_expr2 = sp(Expr::Call {
+            func: Box::new(sp(Expr::var_ref("include".into()))),
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test_cache.llt".into())),
+            ],
+            named_args: vec![],
+            implied: false,
+        });
+        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&test_env), &ctx).unwrap();
+        let val2 = materialize(&result2, None, &ctx).unwrap();
+
+        // Both results should be the same value
+        match (&val1, &val2) {
+            (Value::Dict(m1), Value::Dict(m2)) => {
+                assert_eq!(m1.len(), m2.len());
+                let v1 = m1.get(&Key::String("value".into())).unwrap();
+                let v2 = m2.get(&Key::String("value".into())).unwrap();
+                assert_eq!(mat_id(v1, &ctx).unwrap(), mat_id(v2, &ctx).unwrap());
+            }
+            _ => panic!("expected Dict values"),
+        }
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_evalcontext_include_guard_detects_cycles() {
+        // Create a temp directory with a test file
+        let temp_dir =
+            std::env::temp_dir().join(format!("tinct_test_guard_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let test_file = temp_dir.join("guard_test.llt");
+        std::fs::write(&test_file, "[x: 1]").unwrap();
+
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
+            .expect("failed to open temp_dir");
+        let stdlib_env = crate::builtins::create_stdlib_env().unwrap();
+        let ctx = EvalContext::new(base_dir, Rc::clone(&stdlib_env), false);
+
+        // Manually insert the file identity (dev, ino) into the include guard
+        #[cfg(unix)]
+        let file_id = {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::metadata(&test_file).unwrap();
+            (metadata.dev(), metadata.ino())
+        };
+        #[cfg(not(unix))]
+        let file_id = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            "guard_test.llt".hash(&mut hasher);
+            (0u64, hasher.finish())
+        };
+        ctx.state.borrow_mut().include_guard.insert(file_id);
+
+        // Create an env with %pwd bound to temp_dir for the 2-arg include form.
+        let test_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir, cap_std::ambient_authority())
+                    .expect("open temp_dir for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
+                Span::origin(),
+            ));
+            test_env.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+
+        // Attempt to include the file via [include %pwd "guard_test.llt"]: should detect cycle
+        let include_expr = sp(Expr::Call {
+            func: Box::new(sp(Expr::var_ref("include".into()))),
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("guard_test.llt".into())),
+            ],
+            named_args: vec![],
+            implied: false,
+        });
+        let result = eval(Rc::new(include_expr.clone()), Rc::clone(&test_env), &ctx).unwrap();
+        let err = materialize(&result, None, &ctx).unwrap_err();
+
+        assert!(
+            err.to_string().contains("circular include") || err.to_string().contains("cycle"),
+            "expected circular include error, got: {}",
+            err.to_string()
+        );
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_evalcontext_two_contexts_with_different_base_dirs() {
+        // Create two temp directories with identical file structure
+        let temp_dir1 =
+            std::env::temp_dir().join(format!("tinct_test_ctx1_{}", std::process::id()));
+        let temp_dir2 =
+            std::env::temp_dir().join(format!("tinct_test_ctx2_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir1).unwrap();
+        std::fs::create_dir_all(&temp_dir2).unwrap();
+
+        // Create test.llt in each directory with different content
+        let test_file1 = temp_dir1.join("test.llt");
+        let test_file2 = temp_dir2.join("test.llt");
+        std::fs::write(&test_file1, "[value: 100]").unwrap();
+        std::fs::write(&test_file2, "[value: 200]").unwrap();
+
+        // Create two independent EvalContexts with different base_dirs
+        let base_dir1 =
+            cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
+                .expect("failed to open temp_dir1");
+        let ctx1 = EvalContext::new(
+            base_dir1,
+            crate::builtins::create_stdlib_env().unwrap(),
+            false,
+        );
+        let base_dir2 =
+            cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
+                .expect("failed to open temp_dir2");
+        let ctx2 = EvalContext::new(
+            base_dir2,
+            crate::builtins::create_stdlib_env().unwrap(),
+            false,
+        );
+
+        // Include test.llt from ctx1 using 2-arg form with %pwd = temp_dir1.
+        let env1 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx1.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir1 =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
+                    .expect("open temp_dir1 for %pwd");
+            let pwd_thunk1 = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir1),
+                    perms: crate::value::DirPerms::full(),
+                },
+                Span::origin(),
+            ));
+            env1.borrow_mut().insert("%pwd".to_string(), pwd_thunk1);
+        }
+        let include_expr1 = sp(Expr::Call {
+            func: Box::new(sp(Expr::var_ref("include".into()))),
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test.llt".into())),
+            ],
+            named_args: vec![],
+            implied: false,
+        });
+        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&env1), &ctx1).unwrap();
+        let val1 = materialize(&result1, None, &ctx1).unwrap();
+
+        // Include test.llt from ctx2 using 2-arg form with %pwd = temp_dir2.
+        let env2 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx2.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir2 =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
+                    .expect("open temp_dir2 for %pwd");
+            let pwd_thunk2 = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir2),
+                    perms: crate::value::DirPerms::full(),
+                },
+                Span::origin(),
+            ));
+            env2.borrow_mut().insert("%pwd".to_string(), pwd_thunk2);
+        }
+        let include_expr2 = sp(Expr::Call {
+            func: Box::new(sp(Expr::var_ref("include".into()))),
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("test.llt".into())),
+            ],
+            named_args: vec![],
+            implied: false,
+        });
+        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&env2), &ctx2).unwrap();
+        let val2 = materialize(&result2, None, &ctx2).unwrap();
+
+        // Verify that the two contexts resolved different files
+        match (&val1, &val2) {
+            (Value::Dict(m1), Value::Dict(m2)) => {
+                let v1_id = m1.get(&Key::String("value".into())).unwrap();
+                let v2_id = m2.get(&Key::String("value".into())).unwrap();
+                let v1 = mat_id(v1_id, &ctx1).unwrap();
+                let v2 = mat_id(v2_id, &ctx2).unwrap();
+                assert_eq!(
+                    v1,
+                    Value::Int(100),
+                    "ctx1 should resolve to temp_dir1/test.llt"
+                );
+                assert_eq!(
+                    v2,
+                    Value::Int(200),
+                    "ctx2 should resolve to temp_dir2/test.llt"
+                );
+            }
+            _ => panic!("expected Dict values"),
+        }
+
+        // Verify that the two contexts have independent caches
+        assert_eq!(ctx1.state.borrow().include_cache.len(), 1);
+        assert_eq!(ctx2.state.borrow().include_cache.len(), 1);
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir1).unwrap();
+        std::fs::remove_dir_all(&temp_dir2).unwrap();
+    }
+
+    #[test]
+    fn test_evalcontext_shared_state_different_config() {
+        // Create two temp directories
+        let temp_dir1 =
+            std::env::temp_dir().join(format!("tinct_test_shared1_{}", std::process::id()));
+        let temp_dir2 =
+            std::env::temp_dir().join(format!("tinct_test_shared2_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir1).unwrap();
+        std::fs::create_dir_all(&temp_dir2).unwrap();
+
+        // Create a test file in dir1
+        let test_file1 = temp_dir1.join("shared_test.llt");
+        std::fs::write(&test_file1, "[cached: true]").unwrap();
+
+        // Create ctx1 with base_dir = temp_dir1
+        let base_dir1 =
+            cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
+                .expect("failed to open temp_dir1");
+        let ctx1 = EvalContext::new(
+            base_dir1,
+            crate::builtins::create_stdlib_env().unwrap(),
+            false,
+        );
+
+        // Create ctx2 that shares ctx1's state but has a different base_dir
+        let base_dir2 =
+            cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
+                .expect("failed to open temp_dir2");
+        let ctx2 = ctx1.with_base_dir(base_dir2);
+
+        // Verify that ctx2 has a different base_dir (we can't directly compare Dirs,
+        // but we can verify they point to different paths by checking if files exist)
+        // This is sufficient to verify the test's intent: ctx1 and ctx2 have different base_dirs.
+
+        // Verify that ctx2 shares the same state as ctx1 (using Rc::ptr_eq)
+        assert!(
+            Rc::ptr_eq(&ctx1.state, &ctx2.state),
+            "ctx2 should share the same state Rc as ctx1"
+        );
+
+        // Include a file using ctx1 - this populates the include_cache.
+        // Use 2-arg form with %pwd = temp_dir1.
+        let env_ctx1 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx1.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir1, cap_std::ambient_authority())
+                    .expect("open temp_dir1 for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
+                Span::origin(),
+            ));
+            env_ctx1.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+        let include_expr1 = sp(Expr::Call {
+            func: Box::new(sp(Expr::var_ref("include".into()))),
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("shared_test.llt".into())),
+            ],
+            named_args: vec![],
+            implied: false,
+        });
+        let result1 = eval(Rc::new(include_expr1.clone()), Rc::clone(&env_ctx1), &ctx1).unwrap();
+        let _val1 = materialize(&result1, None, &ctx1).unwrap();
+
+        // Verify that ctx1's include_cache has one entry
+        assert_eq!(
+            ctx1.state.borrow().include_cache.len(),
+            1,
+            "ctx1 include_cache should have exactly one entry"
+        );
+
+        // Verify that ctx2's include_cache ALSO has the same entry (shared state)
+        assert_eq!(
+            ctx2.state.borrow().include_cache.len(),
+            1,
+            "ctx2 include_cache should share the same entry as ctx1"
+        );
+
+        // Verify they reference the exact same cache HashMap
+        // The cache key is (dev, ino) — extract from the test file's metadata.
+        let cache_key = {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&test_file1).unwrap();
+            (meta.dev(), meta.ino())
+        };
+        assert!(
+            ctx1.state.borrow().include_cache.contains_key(&cache_key),
+            "ctx1 cache should contain the file identity"
+        );
+        assert!(
+            ctx2.state.borrow().include_cache.contains_key(&cache_key),
+            "ctx2 cache should contain the same file identity"
+        );
+
+        // Test include_guard sharing: create same file in both directories
+        let guard_path1 = temp_dir1.join("guard_test.llt");
+        let guard_path2 = temp_dir2.join("guard_test.llt");
+        std::fs::write(&guard_path1, "[x: 1]").unwrap();
+        std::fs::write(&guard_path2, "[x: 2]").unwrap();
+
+        // Insert the (dev, ino) of guard_path2 into ctx1's include guard
+        let guard_file_id = {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&guard_path2).unwrap();
+            (meta.dev(), meta.ino())
+        };
+        ctx1.state.borrow_mut().include_guard.insert(guard_file_id);
+
+        // Verify the guard is visible in ctx2 (shared state)
+        assert!(
+            ctx2.state.borrow().include_guard.contains(&guard_file_id),
+            "ctx2 include_guard should contain the file identity inserted via ctx1"
+        );
+
+        // Attempt to include the guarded file using ctx2 - should detect cycle.
+        // This resolves to temp_dir2/guard_test.llt which is in the shared guard.
+        // Use 2-arg form with %pwd = temp_dir2.
+        let env_ctx2 = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(
+            &ctx2.config.stdlib_env,
+        ))));
+        {
+            let pwd_dir =
+                cap_std::fs::Dir::open_ambient_dir(&temp_dir2, cap_std::ambient_authority())
+                    .expect("open temp_dir2 for %pwd");
+            let pwd_thunk = Rc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::DirCap {
+                    dir: Rc::new(pwd_dir),
+                    perms: crate::value::DirPerms::full(),
+                },
+                Span::origin(),
+            ));
+            env_ctx2.borrow_mut().insert("%pwd".to_string(), pwd_thunk);
+        }
+        let include_expr2 = sp(Expr::Call {
+            func: Box::new(sp(Expr::var_ref("include".into()))),
+            args: vec![
+                rsp(Expr::var_ref("%pwd".into())),
+                rsp(Expr::Str("guard_test.llt".into())),
+            ],
+            named_args: vec![],
+            implied: false,
+        });
+        let result2 = eval(Rc::new(include_expr2.clone()), Rc::clone(&env_ctx2), &ctx2).unwrap();
+        let err = materialize(&result2, None, &ctx2).unwrap_err();
+
+        assert!(
+            err.to_string().contains("circular include") || err.to_string().contains("cycle"),
+            "expected circular include error from shared guard, got: {}",
+            err.to_string()
+        );
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir1).unwrap();
+        std::fs::remove_dir_all(&temp_dir2).unwrap();
     }
 
     // ── Structural TypeAssert tests (resolved_type: Some(Type::...)) ────
@@ -9355,19 +9746,19 @@ mod tests {
 
     #[test]
     fn test_eval_context_new_empty_state() {
-        // EvalContext::new() should create an empty string_include_cache and eval_stack
+        // EvalContext::new() should create an empty include_guard and include_cache
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         let env = empty_env();
         let ctx = EvalContext::new(base_dir, env, false);
 
         assert!(
-            ctx.state.borrow().string_include_cache.is_empty(),
-            "string_include_cache should be empty on creation"
+            ctx.state.borrow().include_guard.is_empty(),
+            "include_guard should be empty on creation"
         );
         assert!(
-            ctx.state.borrow().eval_stack.is_empty(),
-            "eval_stack should be empty on creation"
+            ctx.state.borrow().include_cache.is_empty(),
+            "include_cache should be empty on creation"
         );
     }
 
@@ -9379,13 +9770,9 @@ mod tests {
         let env = empty_env();
         let ctx1 = EvalContext::new(base_dir1, env, false);
 
-        // Populate the string_include_cache (the new equivalent of include_cache)
-        use crate::eval::IncludeCacheEntry;
-        ctx1.state
-            .borrow_mut()
-            .string_include_cache
-            .insert("test-key".to_string(), IncludeCacheEntry::Missing);
-        assert_eq!(ctx1.state.borrow().string_include_cache.len(), 1);
+        // Populate the state
+        ctx1.state.borrow_mut().include_guard.insert((0, 1));
+        assert_eq!(ctx1.state.borrow().include_guard.len(), 1);
 
         // Create ctx2 with a different base_dir but shared state
         let base_dir2 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
@@ -9398,18 +9785,15 @@ mod tests {
             "ctx2 should share the same state Rc as ctx1"
         );
 
-        // Verify the state is actually shared (string_include_cache has the same entry)
+        // Verify the state is actually shared (include_guard has the same entry)
         assert_eq!(
-            ctx2.state.borrow().string_include_cache.len(),
+            ctx2.state.borrow().include_guard.len(),
             1,
-            "ctx2 should see the same string_include_cache as ctx1"
+            "ctx2 should see the same include_guard as ctx1"
         );
         assert!(
-            ctx2.state
-                .borrow()
-                .string_include_cache
-                .contains_key("test-key"),
-            "ctx2 should see the entry added to ctx1's string_include_cache"
+            ctx2.state.borrow().include_guard.contains(&(0, 1)),
+            "ctx2 should see the entry added to ctx1's include_guard"
         );
     }
 
@@ -9433,11 +9817,16 @@ mod tests {
         );
     }
 
-    /// `with_base_dir()` inherits `no_fs` flag.
+    /// Integration test: `with_base_dir()` inherits `no_fs` flag.
     ///
-    /// Verifies structural properties of with_base_dir():
-    /// 1. no_fs=true propagates to the derived context.
-    /// 2. The derived context shares the same state Rc.
+    /// Verifies the no_fs=true code path end-to-end through `with_base_dir()`:
+    /// 1. Create a ctx1 with no_fs=true.
+    /// 2. Call ctx1.with_base_dir() to get ctx2 with a different base_dir.
+    /// 3. Evaluate a `$include` call using ctx2.
+    /// 4. Confirm the result is `IncludeForbidden` [E042] — proving:
+    ///    a. `with_base_dir()` correctly propagates the no_fs flag.
+    ///    b. `$include` resolves via ctx2's config (not a stale ctx1 config).
+    ///    c. No actual filesystem access is needed — the error fires immediately.
     #[test]
     fn test_eval_context_with_base_dir_inherits_no_fs() {
         // Two separate base dirs: ctx1 starts with no_fs=true.
@@ -9462,6 +9851,37 @@ mod tests {
         assert!(
             Rc::ptr_eq(&ctx1.state, &ctx2.state),
             "ctx2 must share the same state Rc as ctx1"
+        );
+
+        // Exercise the no_fs path: $include must produce IncludeForbidden [E042].
+        // This proves ctx2 correctly propagates no_fs to $include without needing
+        // any real files on disk.
+        let include_expr = sp(crate::ast::Expr::Call {
+            func: Box::new(sp(crate::ast::Expr::var_ref("include".into()))),
+            args: vec![Rc::new(sp(crate::ast::Expr::Str(
+                "hypothetical.llt".into(),
+            )))],
+            named_args: vec![],
+            implied: false,
+        });
+
+        let thunk = eval(
+            Rc::new(include_expr.clone()),
+            Rc::clone(&ctx2.config.stdlib_env),
+            &ctx2,
+        )
+        .expect("eval should succeed (thunk creation does not access filesystem)");
+        let err = materialize(&thunk, None, &ctx2).expect_err("$include with no_fs=true must fail");
+
+        assert!(
+            matches!(err.kind, crate::error::ErrorKind::IncludeForbidden),
+            "Expected IncludeForbidden [E042], got: {}",
+            err.kind.code()
+        );
+        assert_eq!(
+            err.kind.code(),
+            "E042",
+            "IncludeForbidden must produce error code E042"
         );
     }
 

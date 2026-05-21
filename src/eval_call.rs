@@ -115,11 +115,6 @@ pub struct CallContext<'a> {
     pub params: &'a [Param],
     pub body: &'a Rc<Spanned<Expr>>,
     pub closure_env: &'a Rc<RefCell<Environment>>,
-    /// Optional flat environment ID from the closure's creation scope.
-    /// When Some(env_id), enables O(1) param lookup via FlatEnv.
-    #[allow(dead_code)]
-    // arena-phase3 scaffolding: threaded through but not yet used for allocation
-    pub closure_env_id: Option<crate::arena::EnvId>,
     pub positional: &'a [Rc<Thunk>],
     pub named: Option<&'a IndexMap<String, Rc<Thunk>>>,
     pub default_env: &'a Rc<RefCell<Environment>>,
@@ -148,7 +143,7 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
             return Err(EvalError::arity_mismatch(1, ctx.positional.len(), ctx.call_span).into());
         }
 
-        if ctx.named.is_some_and(|n| !n.is_empty()) {
+        if ctx.named.map_or(false, |n| !n.is_empty()) {
             return Err(EvalError::named_arg_rejected(
                 "variant constructor".to_string(),
                 ctx.call_span,
@@ -195,7 +190,6 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Rc<Thunk>> {
         ctx.ctx,
         &ctx.call_span,
     )?;
-
     let mut thunk = Thunk::new_unevaluated(
         Rc::clone(ctx.body),
         call_env,
