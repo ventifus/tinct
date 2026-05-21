@@ -2154,7 +2154,7 @@ Example: [collect [range 0 3]] => [0 1 2]
 Example: [take 3 [range 5]] => Seq(5, 6, 7, ...)
 
 Note: 1-arg form produces infinite sequence; 2-arg form is half-open [start, end). Lazy evaluation allows infinite ranges.
-"""] [let start@Int rest]
+"""] [let start@Int ...rest]
     [builtin-if [seq? rest]
         [builtin-range start [builtin-head rest]]
         [builtin-range start]]]
