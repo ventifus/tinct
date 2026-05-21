@@ -20,7 +20,7 @@ use crate::eval::{
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{eval_call, invoke_function, CallContext};
 use crate::types::Type;
-use crate::value::{string_val, DefaultFallback, Environment, Thunk, ThunkState, Value};
+use crate::value::{string_val, Environment, Thunk, ThunkState, Value};
 
 /// Maximum continuation stack depth. Prevents resource exhaustion from deeply
 /// nested evaluation chains that would otherwise exhaust heap memory.
@@ -74,19 +74,18 @@ pub(crate) enum RestoreState {
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
-        env_id: Option<crate::arena::EnvId>,
         ctx: Rc<EvalContext>,
     },
     PendingBuiltin {
         def: crate::value::BuiltinDef,
-        args: Vec<Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
         named: Option<IndexMap<String, Rc<Thunk>>>,
         call_span: Span,
         ctx: Rc<EvalContext>,
     },
     PendingCall {
         func: Rc<Thunk>,
-        args: Vec<Rc<Thunk>>,
+        args: Box<Vec<Rc<Thunk>>>,
         named: Option<Box<IndexMap<String, Rc<Thunk>>>>,
         call_span: Span,
         caller_env: Rc<RefCell<Environment>>,
@@ -95,39 +94,24 @@ pub(crate) enum RestoreState {
     Guarded {
         inner: Rc<Thunk>,
         expected: Type,
-        field_path: Vec<String>,
+        field_path: Box<Vec<String>>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: DefaultFallback,
+        default: Option<(
+            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Rc<RefCell<Environment>>,
+        )>,
     },
-    Surface {
-        node: std::sync::Arc<crate::ast::SurfaceNode>,
-        res: std::sync::Arc<crate::ast::ResolutionTable>,
-        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
-        env: Rc<RefCell<Environment>>,
-        env_id: Option<crate::arena::EnvId>,
-        ctx: Rc<EvalContext>,
-    },
-    // TODO (Part D): add RestoreState::AstNodeField when surface_node_get_field can fail.
-    // Currently ThunkState::AstNodeField is handled synchronously and infallibly (stub always
-    // returns empty dict), so no restore state is needed. When Part D implements real field
-    // extraction with error semantics, add:
-    //   AstNodeField { node: Arc<SurfaceNode>, field: &'static str }
 }
 
 impl RestoreState {
     pub(crate) fn restore(self, thunk: &Thunk) {
         match self {
-            RestoreState::Unevaluated {
-                expr,
-                env,
-                env_id,
-                ctx,
-            } => {
+            RestoreState::Unevaluated { expr, env, ctx } => {
                 thunk.set_state(ThunkState::Unevaluated {
                     expr,
                     env,
-                    env_id,
+                    env_id: None,
                     ctx,
                 });
             }
@@ -180,23 +164,6 @@ impl RestoreState {
                     default,
                 });
             }
-            RestoreState::Surface {
-                node,
-                res,
-                types,
-                env,
-                env_id,
-                ctx,
-            } => {
-                thunk.set_state(ThunkState::Surface {
-                    node,
-                    res,
-                    types,
-                    env,
-                    env_id,
-                    ctx,
-                });
-            }
         }
     }
 }
@@ -214,7 +181,6 @@ pub(crate) struct MemoizeData {
 }
 
 /// Payload for Cont::PendingCallDispatch. Boxed to keep the Cont enum ≤96 bytes.
-#[allow(clippy::box_collection)] // Box<Vec<...>> is intentional: trades one heap allocation for keeping Cont enum small
 pub(crate) struct PendingCallDispatchData {
     pub(crate) thunk: Rc<Thunk>,
     pub(crate) func_thunk: Rc<Thunk>,
@@ -229,7 +195,6 @@ pub(crate) struct PendingCallDispatchData {
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
-#[allow(clippy::box_collection)] // Box<Vec<...>> is intentional: trades one heap allocation for keeping Cont enum small
 pub(crate) struct GuardedValidateData {
     pub(crate) thunk: Rc<Thunk>,
     pub(crate) expected: Type,
@@ -244,7 +209,10 @@ pub(crate) struct GuardedValidateData {
     pub(crate) ctx: Rc<EvalContext>,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
     /// Default expression and environment from TypeAssert `default:` annotation.
-    pub(crate) default: DefaultFallback,
+    pub(crate) default: Option<(
+        Rc<crate::ast::Spanned<crate::ast::Expr>>,
+        Rc<RefCell<crate::value::Environment>>,
+    )>,
     /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
     /// Wrapped in Option to enable .take() when passing to default-fallback Memoize continuations.
     pub(crate) restore: Option<RestoreState>,
@@ -360,7 +328,6 @@ pub(crate) enum Action {
     Eval {
         expr: Rc<Spanned<Expr>>,
         env: Rc<RefCell<Environment>>,
-        env_id: Option<crate::arena::EnvId>,
         ctx: Rc<EvalContext>,
     },
 }
@@ -465,7 +432,7 @@ pub(crate) fn force_step(
     // Defer origin clone to here — it's only needed for error reporting and Memoize continuations.
     let origin = thunk.origin.clone();
 
-    if let Some((expr, env, env_id, thunk_ctx)) = thunk.take_unevaluated() {
+    if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
         thunk_ctx
             .state
@@ -476,7 +443,6 @@ pub(crate) fn force_step(
         let restore = RestoreState::Unevaluated {
             expr: expr.clone(),
             env: env.clone(),
-            env_id,
             ctx: thunk_ctx.clone(),
         };
 
@@ -599,7 +565,7 @@ pub(crate) fn force_step(
             stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                 thunk: Rc::clone(thunk),
                 def,
-                args: (*args.take().unwrap()).to_vec(),
+                args: args.take().expect("args set above"),
                 named: named.take().expect("named set above"),
                 call_span,
                 ctx: thunk_ctx,
@@ -636,7 +602,7 @@ pub(crate) fn force_step(
                     // Move args/named into RestoreState — no clone needed.
                     let restore = RestoreState::PendingBuiltin {
                         def,
-                        args: (*args.take().unwrap()).to_vec(),
+                        args: Box::new(args.take().expect("args set above")),
                         named: named.take().expect("named set above"),
                         call_span,
                         ctx: Rc::clone(&thunk_ctx),
@@ -670,7 +636,7 @@ pub(crate) fn force_step(
                     // Move args/named into PendingBuiltin — no clone needed.
                     thunk.set_state(ThunkState::PendingBuiltin {
                         def,
-                        args: (*args.take().unwrap()).to_vec(),
+                        args: Box::new(args.take().expect("args set above")),
                         named: named.take().expect("named set above"),
                         call_span,
                         ctx: thunk_ctx,
@@ -726,7 +692,7 @@ pub(crate) fn force_step(
         let restore = RestoreState::Guarded {
             inner: Rc::clone(&inner),
             expected: expected.clone(),
-            field_path: field_path.clone(),
+            field_path: Box::new(field_path.clone()),
             guard_span,
             blame_label: blame_label.clone(),
             default: default_opt.clone(),
@@ -749,60 +715,11 @@ pub(crate) fn force_step(
             thunk: Rc::clone(&inner),
             mat_span,
         }
-    } else if let Some((node, res, types, env, env_id, thunk_ctx)) = thunk.take_surface() {
-        // Surface AST node: convert to Expr, evaluate, and materialize.
-        // This mirrors the old materialize() Surface handler (eval.rs) but in the iterative path.
-        // Bridge implementation: deleted in Sprint 1 Part E.
-        let restore = RestoreState::Surface {
-            node: std::sync::Arc::clone(&node),
-            res: std::sync::Arc::clone(&res),
-            types: std::sync::Arc::clone(&types),
-            env: Rc::clone(&env),
-            env_id,
-            ctx: Rc::clone(&thunk_ctx),
-        };
-        let expr = crate::ast_convert::surface_node_to_expr(&node);
-        match eval(Rc::new(expr), Rc::clone(&env), &thunk_ctx) {
-            Ok(result_thunk) => {
-                stack.push(Cont::Memoize(Box::new(MemoizeData {
-                    thunk: Rc::clone(thunk),
-                    origin,
-                    thunk_span,
-                    mat_span,
-                    restore: Some(restore),
-                    ctx: Rc::clone(&thunk_ctx),
-                })));
-                Action::Materialize {
-                    thunk: result_thunk,
-                    mat_span,
-                }
-            }
-            Err(e) => {
-                let decorated = attach_materialization_context(
-                    e,
-                    mat_span.as_ref(),
-                    origin.as_deref(),
-                    thunk_span,
-                );
-                if decorated.kind.is_cacheable() {
-                    thunk.cache_failure(&decorated);
-                } else {
-                    restore.restore(thunk);
-                }
-                Action::Continue(Err(decorated))
-            }
-        }
-    } else if let Some((node, field, field_ctx)) = thunk.take_ast_node_field() {
-        // AstNodeField: extract the named field from the SurfaceNode lazily.
-        // surface_node_get_field is a stub returning null in this minimal implementation.
-        let value = crate::surface_fields::surface_node_get_field(&node, field, &field_ctx);
-        thunk.set_state(ThunkState::Materialized(value.clone()));
-        Action::Continue(Ok(value))
     } else {
         unreachable!(
             "force_step: all ThunkState variants are handled. \
              Materialized/Failed/InProgress are early-returned at lines 1416-1453, \
-             Unevaluated/PendingBuiltin/PendingCall/Guarded/Surface/AstNodeField are processed above. \
+             Unevaluated/PendingBuiltin/PendingCall/Guarded are processed above. \
              If this fires, a new ThunkState variant was added without updating force_step."
         )
     }
@@ -873,11 +790,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
             match result.map_err(&decorate) {
                 Ok(func_value) => match func_value {
                     Value::Function {
-                        params,
-                        body,
-                        env,
-                        env_id,
-                        ..
+                        params, body, env, ..
                     } => {
                         // The block scopes borrows of args/named so the borrow checker
                         // allows args.take()/named.take() in the match arms below.
@@ -886,7 +799,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 params: &params,
                                 body: &body,
                                 closure_env: &env,
-                                closure_env_id: env_id,
                                 positional: args.as_deref().expect("args set above"),
                                 named: named.as_ref().expect("named set above").as_deref(),
                                 default_env: &caller_env, // Use caller's environment for default param evaluation
@@ -904,7 +816,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 // the Ok result, args/named are not needed for anything else.
                                 let restore = RestoreState::PendingCall {
                                     func: func_thunk,
-                                    args: (*args.take().unwrap()).to_vec(),
+                                    args: args.take().expect("args set above"),
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     caller_env,
@@ -936,7 +848,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Move args/named into PendingCall — no clone needed.
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args: (*args.take().unwrap()).to_vec(),
+                                        args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
@@ -979,7 +891,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
                             thunk.set_state(ThunkState::PendingBuiltin {
                                 def,
-                                args: (*args.take().unwrap()).to_vec(),
+                                args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above").map(|b| *b),
                                 call_span,
                                 ctx: thunk_ctx,
@@ -1012,7 +924,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Move args/named into RestoreState — no clone needed.
                                     let restore = RestoreState::PendingCall {
                                         func: func_thunk,
-                                        args: (*args.take().unwrap()).to_vec(),
+                                        args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
@@ -1041,7 +953,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     // Move args/named into PendingCall — no clone needed.
                                     thunk.set_state(ThunkState::PendingCall {
                                         func: func_thunk,
-                                        args: (*args.take().unwrap()).to_vec(),
+                                        args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         caller_env,
@@ -1067,7 +979,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // Move args/named into PendingCall — no clone needed.
                             thunk.set_state(ThunkState::PendingCall {
                                 func: func_thunk,
-                                args: (*args.take().unwrap()).to_vec(),
+                                args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above"),
                                 call_span,
                                 caller_env,
@@ -1087,7 +999,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         // Move args/named into PendingCall — no clone needed.
                         thunk.set_state(ThunkState::PendingCall {
                             func: func_thunk,
-                            args: (*args.take().unwrap()).to_vec(),
+                            args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
                             call_span,
                             caller_env,
@@ -1142,7 +1054,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             match validate_and_wrap_record(
                                 entries,
                                 row.as_ref(),
-                                &mut field_path,
+                                &mut *field_path,
                                 guard_span,
                                 inner_span,
                                 &guard_ctx,
@@ -1168,7 +1080,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                         return Action::Eval {
                                             expr: default_expr,
                                             env: default_env,
-                                            env_id: None,
                                             ctx: guard_ctx,
                                         };
                                     }
@@ -1191,7 +1102,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 return Action::Eval {
                                     expr: default_expr,
                                     env: default_env,
-                                    env_id: None,
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1206,7 +1116,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                value.type_name(),
+                                &value.type_name(),
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
@@ -1242,7 +1152,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 return Action::Eval {
                                     expr: default_expr,
                                     env: default_env,
-                                    env_id: None,
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1257,7 +1166,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                value.type_name(),
+                                &value.type_name(),
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
@@ -1333,7 +1242,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                             thunk,
                             def,
-                            args: (*args.take().unwrap()).to_vec(),
+                            args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
                             call_span,
                             ctx: thunk_ctx,
@@ -1367,7 +1276,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 // Move args/named into RestoreState — no clone needed.
                                 let restore = RestoreState::PendingBuiltin {
                                     def,
-                                    args: (*args.take().unwrap()).to_vec(),
+                                    args: Box::new(args.take().expect("args set above")),
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     ctx: Rc::clone(&thunk_ctx),
@@ -1395,7 +1304,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 // Move args/named into PendingBuiltin — no clone needed.
                                 thunk.set_state(ThunkState::PendingBuiltin {
                                     def,
-                                    args: (*args.take().unwrap()).to_vec(),
+                                    args: Box::new(args.take().expect("args set above")),
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     ctx: thunk_ctx,
@@ -1415,7 +1324,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         // Move args/named into PendingBuiltin — no clone needed.
                         thunk.set_state(ThunkState::PendingBuiltin {
                             def,
-                            args: (*args.take().unwrap()).to_vec(),
+                            args: Box::new(args.take().expect("args set above")),
                             named: named.take().expect("named set above"),
                             call_span,
                             ctx: thunk_ctx,
@@ -1561,30 +1470,67 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 }
                             }
                         }
+                        // runtime-v2: dot-access on native AST value types
                         Value::Expression(node) => {
-                            // AST node field access: extract field lazily via AstNodeField thunk.
-                            // Field names are static strings from the SurfaceExpression enum variants.
-                            // surface_node_get_field returns null for unrecognized fields.
-                            // Use a pre-computed static string pool for known field names to avoid
-                            // memory leaks from Box::leak on every DotAccess.
-                            let field_static: &'static str =
-                                crate::surface_fields::intern_field_name(&field_str);
-                            let field_thunk = Rc::new(Thunk::new_ast_node_field(
-                                node.clone(),
-                                field_static,
-                                Rc::clone(&ctx),
-                                access_span,
-                            ));
+                            let field_value = crate::surface_fields::surface_node_get_field(
+                                &node,
+                                &field_str,
+                                &ctx,
+                            );
+                            let thunk =
+                                Rc::new(Thunk::new_materialized(field_value, access_span));
                             Action::Materialize {
-                                thunk: field_thunk,
+                                thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),
                             }
+                        }
+                        Value::Program(prog) => {
+                            // Program.documents → integer-keyed list of Value::Document
+                            let val = match field_str.as_str() {
+                                "documents" => {
+                                    let mut map = indexmap::IndexMap::new();
+                                    for (i, doc_spanned) in prog.documents.iter().enumerate() {
+                                        let doc_val = Value::Document(std::sync::Arc::new(doc_spanned.node.clone()));
+                                        let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(doc_val, access_span)));
+                                        map.insert(crate::value::Key::Int(i as i64), tid);
+                                    }
+                                    Value::Dict(map)
+                                }
+                                _ => Value::Dict(indexmap::IndexMap::new()),
+                            };
+                            let thunk = Rc::new(Thunk::new_materialized(val, access_span));
+                            Action::Materialize { thunk, mat_span: outer_mat_span.or(Some(access_span)) }
+                        }
+                        Value::Document(doc) => {
+                            // Document field access — expressions, declarations, name, etc.
+                            let val = match field_str.as_str() {
+                                "expressions" => {
+                                    let mut map = indexmap::IndexMap::new();
+                                    for (i, item) in doc.items.iter().enumerate() {
+                                        if let crate::ast::SurfaceItem::Expr(node) = item {
+                                            let expr_val = Value::Expression(std::sync::Arc::clone(node));
+                                            let tid = ctx.alloc_thunk(Rc::new(Thunk::new_materialized(expr_val, access_span)));
+                                            map.insert(crate::value::Key::Int(i as i64), tid);
+                                        }
+                                    }
+                                    Value::Dict(map)
+                                }
+                                "name" => {
+                                    match &doc.name {
+                                        Some(n) => Value::Variant { tag: "Named".into(), payload: Some(ctx.alloc_thunk(Rc::new(Thunk::new_materialized(crate::value::string_val(n), access_span)))) },
+                                        None => Value::Variant { tag: "Unnamed".into(), payload: None },
+                                    }
+                                }
+                                _ => Value::Dict(indexmap::IndexMap::new()),
+                            };
+                            let thunk = Rc::new(Thunk::new_materialized(val, access_span));
+                            Action::Materialize { thunk, mat_span: outer_mat_span.or(Some(access_span)) }
                         }
                         other => {
                             // Type mismatch: report definition site and access site.
                             let mut err = EvalError::type_mismatch_ctx(
                                 "dot access".to_string(),
-                                "Dict, Proxy, Variant, or Expression",
+                                "Dict, Proxy, or Variant",
                                 other.type_name(),
                                 target_def_span,
                             )
@@ -1651,7 +1597,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                             Action::Eval {
                                                 expr: default,
                                                 env,
-                                                env_id: None,
                                                 ctx: Rc::clone(&ctx),
                                             }
                                         } else {
@@ -1668,13 +1613,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
-                                        env_id: None,
                                         ctx: Rc::clone(&ctx),
                                     }
                                 } else {
                                     Action::Continue(Err(EvalError::type_assert_failed(
                                         &format_type_for_assert(&expected),
-                                        value.type_name(),
+                                        &value.type_name(),
                                         thunk_span,
                                     )
                                     .with_materialization_span(expr_span)
@@ -1691,13 +1635,12 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             Action::Eval {
                                 expr: Rc::new(default_expr.clone()),
                                 env,
-                                env_id: None,
                                 ctx: Rc::clone(&ctx),
                             }
                         } else {
                             Action::Continue(Err(EvalError::type_assert_failed(
                                 &format_type_for_assert(&expected),
-                                value.type_name(),
+                                &value.type_name(),
                                 thunk_span,
                             )
                             .with_materialization_span(expr_span)
@@ -1736,7 +1679,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     return Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
-                                        env_id: None,
                                         ctx: Rc::clone(&ctx),
                                     };
                                 }
@@ -1762,7 +1704,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     return Action::Eval {
                                         expr: Rc::new(default_expr.clone()),
                                         env,
-                                        env_id: None,
                                         ctx: Rc::clone(&ctx),
                                     };
                                 }
@@ -1792,7 +1733,6 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
 pub(crate) fn eval_step(
     expr: Rc<Spanned<Expr>>,
     env: Rc<RefCell<Environment>>,
-    env_id: Option<crate::arena::EnvId>,
     ctx: &Rc<EvalContext>,
     stack: &mut Vec<Cont>,
 ) -> Action {
@@ -1910,7 +1850,6 @@ pub(crate) fn eval_step(
                 params: Rc::new(fn_params),
                 body: Rc::new(body.as_ref().clone()),
                 env: Rc::clone(&env),
-                env_id,
                 annotation: None,
             }))
         }
@@ -2033,10 +1972,9 @@ pub(crate) fn run(initial: Action, ctx: &Rc<EvalContext>) -> EvalResult<Value> {
             Action::Eval {
                 expr,
                 env,
-                env_id,
                 ctx: action_ctx,
             } => {
-                action = eval_step(expr, env, env_id, &action_ctx, &mut stack);
+                action = eval_step(expr, env, &action_ctx, &mut stack);
             }
             Action::Materialize { thunk, mat_span } => {
                 action = force_step(&thunk, mat_span, &mut stack, ctx);
@@ -2090,7 +2028,6 @@ mod tests {
         let restore = RestoreState::Unevaluated {
             expr: expr.clone(),
             env: env.clone(),
-            env_id: None,
             ctx: ctx.clone(),
         };
         restore.restore(&thunk);
@@ -2140,7 +2077,7 @@ mod tests {
         // Create RestoreState and restore
         let restore = RestoreState::PendingBuiltin {
             def: dummy_def,
-            args,
+            args: Box::new(args),
             named: None,
             call_span: span,
             ctx: ctx.clone(),
@@ -2166,7 +2103,6 @@ mod tests {
                 params: Rc::new(vec![]),
                 body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
-                env_id: None,
                 annotation: None,
             },
             span,
@@ -2194,7 +2130,7 @@ mod tests {
         // Create RestoreState and restore
         let restore = RestoreState::PendingCall {
             func: Rc::clone(&func_thunk),
-            args,
+            args: Box::new(args),
             named: if named.is_empty() {
                 None
             } else {
@@ -2225,7 +2161,6 @@ mod tests {
                 params: Rc::new(vec![]),
                 body: Rc::new(sp(Expr::Int(42))),
                 env: empty_env(),
-                env_id: None,
                 annotation: None,
             },
             span,
@@ -2262,7 +2197,7 @@ mod tests {
         // Restore
         let restore = RestoreState::PendingCall {
             func: Rc::clone(&func_thunk),
-            args: args.clone(),
+            args: Box::new(args.clone()),
             named: if named.is_empty() {
                 None
             } else {

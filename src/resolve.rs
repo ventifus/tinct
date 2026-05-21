@@ -12,11 +12,13 @@
 //!
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
-use std::collections::HashMap;
-
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, Document, Expr, File, ResolutionTable, Spanned, SurfaceProgram};
+use crate::ast::{
+    node_id, Annotation, Document, Expr, File, ResolutionTable, Spanned, SurfaceDeclaration,
+    SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
+};
+use std::sync::Arc;
 
 /// Variable resolution pass state.
 ///
@@ -26,12 +28,6 @@ pub struct Resolver {
     /// Stack of scopes. Each scope is an IndexMap from name to slot index.
     /// The innermost scope is at the end of the vector.
     scopes: Vec<IndexMap<String, u32>>,
-}
-
-impl Default for Resolver {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl Resolver {
@@ -490,19 +486,335 @@ pub fn resolve_file(file: &File) {
     }
 }
 
-/// Resolve variable references in a `SurfaceProgram` and return a `ResolutionTable`.
+// ============================================================================
+// runtime-v2: SurfaceProgram resolver — produces ResolutionTable
+// ============================================================================
+
+/// Variable resolution pass for the Surface AST.
 ///
-/// This is a stub implementation for the runtime-v2 rebase. It will be fully implemented
-/// in Part E when the new evaluator is wired in.
+/// Walks a `SurfaceProgram` and produces a `ResolutionTable` mapping each
+/// `VarRef` node's `NodeId` to its de Bruijn `(level, slot)` coordinates.
 ///
-/// **Current behavior:** Returns an empty `ResolutionTable`.
+/// This replaces the old `resolve_file()` mutation of `VarRef.resolved: RefCell<...>`.
+/// The SurfaceExpression tree is immutable; all resolution data lives in the table.
+struct SurfaceResolver {
+    scopes: Vec<indexmap::IndexMap<String, u32>>,
+    table: ResolutionTable,
+}
+
+impl SurfaceResolver {
+    fn new() -> Self {
+        Self { scopes: Vec::new(), table: ResolutionTable::new() }
+    }
+
+    fn enter_scope(&mut self, keys: &[String]) {
+        let mut scope = indexmap::IndexMap::new();
+        for (slot, key) in keys.iter().enumerate() {
+            scope.insert(
+                key.clone(),
+                u32::try_from(slot).expect("slot index overflow"),
+            );
+        }
+        self.scopes.push(scope);
+    }
+
+    fn exit_scope(&mut self) {
+        self.scopes.pop().expect("exit_scope called with empty stack");
+    }
+
+    fn resolve_name(&self, name: &str) -> Option<(u32, u32)> {
+        for (offset, scope) in self.scopes.iter().rev().enumerate() {
+            if let Some(&slot) = scope.get(name) {
+                let level = u32::try_from(offset).expect("scope depth overflow");
+                return Some((level, slot));
+            }
+        }
+        None
+    }
+
+    fn walk_surface_node(&mut self, arc: &Arc<SurfaceNode>) {
+        self.walk_surface_expr(arc, &arc.expr);
+    }
+
+    fn walk_surface_expr(&mut self, arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) {
+        match expr {
+            SurfaceExpression::VarRef { name, .. } => {
+                if let Some(coords) = self.resolve_name(name) {
+                    self.table.insert(node_id(arc), coords);
+                }
+                // If not found: FreeVar at runtime — no entry in table (lowering uses this as signal)
+            }
+
+            SurfaceExpression::Dict(entries) => {
+                let static_keys = surface_dict_static_keys(entries);
+
+                // Walk key expressions in outer scope
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        self.walk_surface_node(key);
+                    }
+                }
+
+                self.enter_scope(&static_keys);
+                for entry in entries {
+                    self.walk_surface_node(&entry.node.value);
+                }
+                self.exit_scope();
+            }
+
+            SurfaceExpression::Fn { return_ann: _, params, body, .. } => {
+                // Walk param annotations in outer scope
+                for param in params {
+                    if let Some(ann) = &param.node.annotation {
+                        self.walk_surface_annotation(ann);
+                    }
+                }
+                let param_names: Vec<String> =
+                    params.iter().map(|p| p.node.name.clone()).collect();
+                self.enter_scope(&param_names);
+                self.walk_surface_node(body);
+                self.exit_scope();
+            }
+
+            SurfaceExpression::Sequential(exprs) => {
+                let mut injected = 0usize;
+                for (i, e) in exprs.iter().enumerate() {
+                    let is_last = i == exprs.len() - 1;
+                    self.walk_surface_node(e);
+                    if !is_last {
+                        if let Some(keys) = surface_node_static_keys(e) {
+                            if !keys.is_empty() {
+                                self.enter_scope(&keys);
+                                injected += 1;
+                            }
+                        }
+                    }
+                }
+                for _ in 0..injected {
+                    self.exit_scope();
+                }
+            }
+
+            SurfaceExpression::Call { func, args, named_args, .. } => {
+                self.walk_surface_node(func);
+                for arg in args {
+                    self.walk_surface_node(arg);
+                }
+                for na in named_args {
+                    self.walk_surface_node(&na.node.value);
+                }
+            }
+
+            SurfaceExpression::DotAccess { expr, .. } => self.walk_surface_node(expr),
+
+            // Pipe: walk both sides (the lowering pass will rewrite pipe to call)
+            SurfaceExpression::Pipe { lhs, rhs } => {
+                self.walk_surface_node(lhs);
+                self.walk_surface_node(rhs);
+            }
+
+            SurfaceExpression::TypeAssert { annotation, expr } => {
+                self.walk_surface_annotation(annotation);
+                self.walk_surface_node(expr);
+            }
+
+            // Quote: do NOT resolve variables inside — they are AST data, not bindings.
+            SurfaceExpression::Quote(_) => {}
+
+            SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
+                self.walk_surface_node(inner);
+            }
+
+            SurfaceExpression::Match { scrutinee, arms } => {
+                self.walk_surface_node(scrutinee);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.walk_surface_node(guard);
+                    }
+                    self.walk_surface_node(&arm.body);
+                }
+            }
+
+            SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+                for b in bindings {
+                    self.walk_surface_node(b);
+                }
+            }
+
+            SurfaceExpression::CaseArm { pattern, body } => {
+                self.walk_surface_node(pattern);
+                self.walk_surface_node(body);
+            }
+
+            SurfaceExpression::Annotated { annotation, .. } => {
+                self.walk_surface_annotation(annotation);
+            }
+
+            SurfaceExpression::TypeApp { func, arg } => {
+                self.walk_surface_node(func);
+                self.walk_surface_node(arg);
+            }
+
+            // Terminals with no child expressions
+            SurfaceExpression::Int(_)
+            | SurfaceExpression::Float(_)
+            | SurfaceExpression::Bool(_)
+            | SurfaceExpression::Str(_)
+            | SurfaceExpression::Rest(_)
+            | SurfaceExpression::Placeholder
+            | SurfaceExpression::Error(_) => {}
+        }
+    }
+
+    fn walk_surface_annotation(&mut self, ann: &Spanned<crate::ast::Annotation>) {
+        match &ann.node {
+            crate::ast::Annotation::Simple(_) => {}
+            crate::ast::Annotation::PropertyDict(_entries) => {
+                // PropertyDict entries contain old Expr nodes (pre-migration).
+                // In the fully migrated system, Annotation will use Arc<SurfaceNode>.
+                // Until then, skip resolution of PropertyDict entry expressions —
+                // they will fall back to FreeVar (name-based lookup) at runtime.
+            }
+            crate::ast::Annotation::Annotated(_, inner) => {
+                let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span);
+                self.walk_surface_annotation(&inner_spanned);
+            }
+        }
+    }
+
+    fn walk_surface_declaration(&mut self, decl: &SurfaceDeclaration) {
+        match decl {
+            SurfaceDeclaration::TypeAlias { body, .. } => self.walk_surface_node(body),
+            SurfaceDeclaration::ClassDecl { methods, determines, resolver, .. } => {
+                for method in methods {
+                    if let Some(key) = &method.node.key {
+                        self.walk_surface_node(key);
+                    }
+                    self.walk_surface_node(&method.node.value);
+                }
+                for d in determines {
+                    self.walk_surface_node(d);
+                }
+                if let Some(r) = resolver {
+                    self.walk_surface_node(r);
+                }
+            }
+            SurfaceDeclaration::InstanceDecl { arms, .. } => {
+                for (pattern, methods) in arms {
+                    self.walk_surface_node(pattern);
+                    for method in methods {
+                        if let Some(key) = &method.node.key {
+                            self.walk_surface_node(key);
+                        }
+                        self.walk_surface_node(&method.node.value);
+                    }
+                }
+            }
+            SurfaceDeclaration::DefMacro { params, body, .. }
+            | SurfaceDeclaration::MacroDecl { params, body, .. } => {
+                self.walk_surface_node(params);
+                self.walk_surface_node(body);
+            }
+            SurfaceDeclaration::SyntaxClass { pattern, .. } => {
+                self.walk_surface_node(pattern);
+            }
+            SurfaceDeclaration::Splice(forms) => {
+                for form in forms {
+                    self.walk_surface_node(form);
+                }
+            }
+        }
+    }
+
+    fn walk_surface_document(&mut self, doc: &SurfaceDocument) {
+        let mut injected = 0usize;
+        let items: Vec<&SurfaceItem> = doc.items.iter().collect();
+        let expr_count = items.iter().filter(|i| matches!(i, SurfaceItem::Expr(_))).count();
+        let mut expr_idx = 0usize;
+
+        for item in &items {
+            match item {
+                SurfaceItem::Expr(node) => {
+                    let is_last_expr = expr_idx == expr_count - 1;
+                    self.walk_surface_node(node);
+                    if !is_last_expr {
+                        if let Some(keys) = surface_node_static_keys(node) {
+                            if !keys.is_empty() {
+                                self.enter_scope(&keys);
+                                injected += 1;
+                            }
+                        }
+                    }
+                    expr_idx += 1;
+                }
+                SurfaceItem::Decl(decl) => {
+                    self.walk_surface_declaration(&decl.node);
+                }
+            }
+        }
+        for _ in 0..injected {
+            self.exit_scope();
+        }
+    }
+
+    fn finish(self) -> ResolutionTable {
+        self.table
+    }
+}
+
+/// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
 ///
-/// **Future behavior:** Will walk the `SurfaceProgram` AST and populate the `ResolutionTable`
-/// with (level, slot) de Bruijn coordinates for all VarRef nodes, similar to `resolve_file`.
-pub fn resolve_surface_program(_program: &SurfaceProgram) -> ResolutionTable {
-    // TODO(runtime-v2 Part E): Implement full resolution for SurfaceProgram.
-    // This will mirror resolve_file logic but walk Arc<SurfaceNode> instead of Spanned<Expr>.
-    HashMap::new()
+/// This is the runtime-v2 entry point for variable resolution. The SurfaceProgram
+/// is unchanged (immutable); all resolution data is captured in the returned table.
+///
+/// The resolver models the same scope-chain semantics as `resolve_file()` and the
+/// evaluator: each intermediate dict expression's static keys become scope bindings
+/// for subsequent expressions within the same document.
+pub fn resolve_surface_program(program: &SurfaceProgram) -> ResolutionTable {
+    let mut resolver = SurfaceResolver::new();
+    let mut named_sections: Vec<String> = Vec::new();
+
+    for doc_spanned in &program.documents {
+        let doc = &doc_spanned.node;
+
+        // Build synthetic runtime scope: `%` plus `%name` for previously named sections.
+        let mut runtime_names: Vec<String> = vec!["%".to_string()];
+        for name in &named_sections {
+            runtime_names.push(format!("%{}", name));
+        }
+        resolver.enter_scope(&runtime_names);
+        resolver.walk_surface_document(doc);
+        resolver.exit_scope();
+
+        if let Some(ref name) = doc.name {
+            named_sections.push(name.clone());
+        }
+    }
+
+    resolver.finish()
+}
+
+/// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
+/// Same logic as the old resolver's `dict_static_keys` but for SurfaceEntry.
+fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            entry.node.key.as_ref().and_then(|key_node| match &key_node.expr {
+                SurfaceExpression::Str(s) => Some(s.clone()),
+                SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// Extract static string-keyed names from an Arc<SurfaceNode> if it is a Dict.
+fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
+    match &node.expr {
+        SurfaceExpression::Dict(entries) => Some(surface_dict_static_keys(entries)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
