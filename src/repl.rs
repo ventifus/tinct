@@ -142,6 +142,8 @@ impl ReplSession {
             .insert("%".to_string(), Arc::clone(&empty_dict));
 
         // Create REPL session context (REPL runs in current directory, no sandbox)
+        // AMBIENT-OK: REPL is an interactive session; operator has explicitly invoked it in CWD.
+        #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .map_err(|e| format!("cannot open current directory: {e}"))?;
         let ctx = crate::eval::EvalContext::new_sharing_arena(

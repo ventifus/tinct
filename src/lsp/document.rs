@@ -296,6 +296,7 @@ pub fn index_file(
         .ok_or_else(|| format!("Cannot extract filename from: {}", path.display()))?;
 
     // AMBIENT-OK: LSP opens files that the editor has already opened (document URIs).
+    #[allow(clippy::disallowed_methods)]
     let file_dir = cap_std::fs::Dir::open_ambient_dir(parent_path, cap_std::ambient_authority())
         .map_err(|e| format!("Cannot open dir for {}: {e}", path.display()))?;
 
@@ -462,6 +463,7 @@ impl DocumentStore {
         // AMBIENT-OK: bootstrap — acquires CWD as the initial base_dir for the LSP session.
         // Only "." is tried; falling back to "/" or /tmp would make RESOLVE_BENEATH a no-op
         // (everything on the filesystem would be reachable from a root Dir).
+        #[allow(clippy::disallowed_methods)]
         let base_dir = match cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()) {
             Ok(dir) => dir,
             Err(e) => {
@@ -505,6 +507,8 @@ impl DocumentStore {
         // Fallback chain: try document's directory first, then ".", then base_eval_ctx's Dir.
         // Stops here — falling back to "/" or /tmp would make RESOLVE_BENEATH a no-op,
         // defeating the cap-std confinement model.
+        // AMBIENT-OK: LSP opens document's directory (editor-chosen path); fallback to CWD only.
+        #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_path, cap_std::ambient_authority())
             .or_else(|_| cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()))
             .or_else(|_| {
@@ -660,6 +664,7 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     // All file I/O for this document goes through this Dir so RESOLVE_BENEATH
     // confines reads to the document's own directory.
     // AMBIENT-OK: LSP is opened by the editor which chose the document path.
+    #[allow(clippy::disallowed_methods)]
     let parent_dir =
         cap_std::fs::Dir::open_ambient_dir(parent_dir_path, cap_std::ambient_authority()).ok()?;
 

@@ -168,6 +168,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // See also: src/main.rs:234-240 (run_eval pipeline)
     // Expand macros (pre-desugar AST transformation).
     // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =
@@ -235,6 +236,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         .ok()
         .and_then(|d| d.canonicalize().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // AMBIENT-OK: lib.rs public API — no prior Dir available; operator provides source string.
+    #[allow(clippy::disallowed_methods)]
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new_sharing_arena(
@@ -254,6 +257,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
     // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
+        // AMBIENT-OK: injecting %pwd DirCap for corpus tests; CWD was already opened above.
+        #[allow(clippy::disallowed_methods)]
         if let Ok(pwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         {
@@ -265,6 +270,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             env.write().unwrap().insert("%pwd".to_string(), pwd_thunk);
         }
         if let Some(libdir_path) = find_libdir_path() {
+            // AMBIENT-OK: injecting %libdir DirCap from fixed stdlib path.
+            #[allow(clippy::disallowed_methods)]
             if let Ok(libdir_dir) =
                 cap_std::fs::Dir::open_ambient_dir(&libdir_path, cap_std::ambient_authority())
             {
@@ -309,6 +316,7 @@ pub fn eval_source_with_cap_net(
     // Use the standard config path, then inject caps after env creation
     let file = parse(input).map_err(|e| format!("{e}"))?;
     // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =
@@ -348,6 +356,8 @@ pub fn eval_source_with_cap_net(
         .ok()
         .and_then(|d| d.canonicalize().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // AMBIENT-OK: lib.rs public API — no prior Dir available; operator provides source string.
+    #[allow(clippy::disallowed_methods)]
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
     let ctx = eval::EvalContext::new_sharing_arena(
@@ -366,6 +376,8 @@ pub fn eval_source_with_cap_net(
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
     if !no_fs {
+        // AMBIENT-OK: injecting %pwd DirCap for corpus tests; CWD was already opened above.
+        #[allow(clippy::disallowed_methods)]
         if let Ok(pwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         {
@@ -440,6 +452,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: expand_macros -> desugar -> typecheck.
     // Expand macros (pre-desugar AST transformation).
     // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =
@@ -478,6 +491,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
 pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let file = parse(input).map_err(|e| format!("{e}"))?;
     // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
+    #[allow(clippy::disallowed_methods)]
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let expand_result =

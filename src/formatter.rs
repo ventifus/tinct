@@ -58,6 +58,7 @@ pub fn format_source_tinct_with_dir(
                 .ok()
                 .and_then(|d| d.canonicalize().ok())
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
+            #[allow(clippy::disallowed_methods)]
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory: {e}"))?
         }

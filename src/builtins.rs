@@ -1762,6 +1762,8 @@ pub(crate) fn create_stdlib_env_with_arena() -> Result<
     // Open CWD once at the public entry point; the private helper receives it as a parameter
     // so that open_ambient_dir is confined to this function (the bootstrap boundary for the
     // stdlib loading context).
+    // AMBIENT-OK: stdlib bootstrap — opening CWD to load stdlib from fixed paths.
+    #[allow(clippy::disallowed_methods)]
     let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| {
             Box::new(crate::error::EvalError::internal(
@@ -1843,6 +1845,8 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     // Open CWD at the public entry point to confine open_ambient_dir to this function.
     // The bootstrap context uses only embedded source (include_str!); the dir is required
     // by EvalContext::new_empty but is never accessed for filesystem reads during stdlib loading.
+    // AMBIENT-OK: stdlib bootstrap — type-stage env uses embedded source only, not filesystem.
+    #[allow(clippy::disallowed_methods)]
     let bootstrap_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| {
             Box::new(crate::error::EvalError::internal(
