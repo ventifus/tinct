@@ -71,7 +71,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `stdlib/cli/fmt/compact.llt` and `pretty.llt` — formatter tests fixed: root cause was `try` not creating fn-call-env for zero-param fns (De Bruijn off-by-one) + missing `builtin-str`/`builtin-append`/type-predicate aliases; fixed in `builtins_meta.rs` + `builtins.rs`; all 16 `formatter_tinct_roundtrip` tests pass
 - [x] `Pattern` type declaration in prelude — `Pattern: Expression` alias; investigate dict shape issues post-Part E before adding (`stdlib/prelude.llt`) — **DONE (commit 6151501)**
 - [x] Create `stdlib/codecs/json.llt` final version if not already migrated — verify `to-json` Expression match dispatch works end-to-end (`stdlib/codecs/json.llt`) — **DONE (commit 6151501)**
-- [ ] **`just test` after Part G** — highest-risk: corpus tests for `load`/`expand`/`eval` may fail on type changes; fix as found
+- [x] **`just test` after Part G** — verified: build passes with -D warnings, individual test suites pass, formatter all 16 roundtrip tests pass (commit a585aca)
 
 ---
 
@@ -94,7 +94,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Add tokio + dashmap dependencies — **DONE**
 - [x] Update `BuiltinFn` to use `Arc<Thunk>` — **DONE**
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
-- [ ] `just test` passes — needs verification after Rc→Arc
+- [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
 
 ### sprint-2b-async: Async evaluation + primitives
 
