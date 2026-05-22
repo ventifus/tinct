@@ -458,22 +458,43 @@ pub enum Value {
     Expression(Arc<SurfaceNode>),
 
     // =========================================================================
-    // runtime-v2 async primitives (Sprint 2, Part B — skeletons added in Part F)
+    // runtime-v2 async primitives (Sprint 2, Part B — real implementations)
     // =========================================================================
     //
-    // These are placeholder variants added as dependencies for Sprint 2.
-    // Full implementations will be added in Sprint 2, Part B.
     /// Async task handle — returned by `task` builtin, consumed by `await`.
-    /// Skeleton added in Part F; full implementation in Sprint 2, Part B.
-    Task,
+    /// Uses tokio::task::spawn_local for !Send futures within a LocalSet.
+    Task(Arc<tokio::sync::Mutex<TaskState>>),
 
     /// Channel for inter-task communication — created by `channel` builtin.
-    /// Skeleton added in Part F; full implementation in Sprint 2, Part B.
-    Channel,
+    /// Uses tokio::sync::mpsc for async send/recv operations.
+    Channel(Arc<ChannelInner>),
 
     /// Cancellation context — created by `context` builtin, consumed by `with-cancel`.
-    /// Skeleton added in Part F; full implementation in Sprint 2, Part B.
+    /// Skeleton added in Part F; full implementation deferred.
     Context,
+}
+
+/// State of an async task spawned via `task` builtin.
+/// Tracks the JoinHandle while pending, caches the result once completed.
+pub enum TaskState {
+    /// Task is running — holds the JoinHandle.
+    /// When awaited, polls the handle and transitions to Done.
+    Pending(tokio::task::JoinHandle<EvalResult<Value>>),
+    /// Task has completed — result is cached for subsequent awaits.
+    /// Clone the Value when returning; keeps the cache intact.
+    Done(EvalResult<Value>),
+}
+
+/// Inner state for a channel created via `channel` builtin.
+/// Uses tokio::sync::mpsc for async send/recv operations.
+pub struct ChannelInner {
+    /// Sender half — cloned for each send operation.
+    pub sender: tokio::sync::mpsc::Sender<Value>,
+    /// Receiver half — wrapped in Mutex for exclusive access.
+    /// Only one task can recv at a time.
+    pub receiver: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Value>>,
+    /// Channel capacity (for debugging/introspection).
+    pub capacity: i64,
 }
 
 /// State for an HTTP/3 session: the request sender and the background driver task.
@@ -563,8 +584,8 @@ impl Value {
             Value::Program { .. } => "Program",
             Value::Document(_) => "Document",
             Value::Expression(_) => "Expression",
-            Value::Task => "Task",
-            Value::Channel => "Channel",
+            Value::Task(_) => "Task",
+            Value::Channel(_) => "Channel",
             Value::Context => "Context",
         }
     }
@@ -652,8 +673,8 @@ impl fmt::Debug for Value {
                 "Expression({})",
                 crate::surface_fields::surface_expr_tag(&node.expr)
             ),
-            Value::Task => write!(f, "Task"),
-            Value::Channel => write!(f, "Channel"),
+            Value::Task(_) => write!(f, "Task"),
+            Value::Channel(_) => write!(f, "Channel"),
             Value::Context => write!(f, "Context"),
         }
     }
@@ -743,8 +764,8 @@ impl fmt::Display for Value {
                 "<expression:{}>",
                 crate::surface_fields::surface_expr_tag(&node.expr)
             ),
-            Value::Task => write!(f, "<task>"),
-            Value::Channel => write!(f, "<channel>"),
+            Value::Task(_) => write!(f, "<task>"),
+            Value::Channel(_) => write!(f, "<channel>"),
             Value::Context => write!(f, "<context>"),
         }
     }

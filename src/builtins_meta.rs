@@ -1280,8 +1280,8 @@ fn type_name(val: &Value) -> String {
         Value::Program { .. } => "Program",
         Value::Document(_) => "Document",
         Value::Expression(_) => "Expression",
-        Value::Task => "Task",
-        Value::Channel => "Channel",
+        Value::Task(_) => "Task",
+        Value::Channel(_) => "Channel",
         Value::Context => "Context",
     }
     .to_string()

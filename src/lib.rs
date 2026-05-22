@@ -736,11 +736,11 @@ pub fn visit_value<V: ValueVisitor>(
             "Expression".to_string(),
             ast::Span::origin(),
         ))),
-        value::Value::Task => Err(Box::new(error::EvalError::value_not_serializable(
+        value::Value::Task(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Task".to_string(),
             ast::Span::origin(),
         ))),
-        value::Value::Channel => Err(Box::new(error::EvalError::value_not_serializable(
+        value::Value::Channel(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Channel".to_string(),
             ast::Span::origin(),
         ))),

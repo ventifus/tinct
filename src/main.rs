@@ -1886,7 +1886,7 @@ fn run_eval(
         eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
         // Evaluate file with pipeline input
-        let file_result = tinct::async_rt::block_on_anywhere(eval_file_with_input(
+        let file_result = tinct::async_rt::block_on(eval_file_with_input(
             &ast.node,
             Arc::clone(&env),
             &eval_ctx,
@@ -2580,7 +2580,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         Some(std::collections::HashSet::new()),
     );
 
-    let thunk = tinct::async_rt::block_on_anywhere(eval_file_with_input(
+    let thunk = tinct::async_rt::block_on(eval_file_with_input(
         &ast.node,
         Arc::clone(&env),
         &eval_ctx,
@@ -2934,7 +2934,7 @@ fn run_literate_weave(
 
         let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
 
-        let thunk_result = tinct::async_rt::block_on_anywhere(eval_file_with_input(
+        let thunk_result = tinct::async_rt::block_on(eval_file_with_input(
             &ast.node,
             Arc::clone(&env),
             &eval_ctx,

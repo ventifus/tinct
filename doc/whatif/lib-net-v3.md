@@ -200,54 +200,69 @@ WebSocketConnection: [type [underlying: Handle  server-side: Bool]]
 
 ## Server Layers
 
-### `make-serve-layer` and `make-multiplex-serve`
+### `channel-map` and `channel-flat-map`
+
+These are general concurrent channel operators defined in `stdlib/async.llt` — not networking-specific. `channel-map` applies a function to each element concurrently (1:1); `channel-flat-map` applies a function that emits multiple outputs per element (1:N). The networking serve layers are just applications of these.
 
 ```tinct
-# 1:1 — each incoming connection is transformed into one outgoing connection.
-# accept-fn runs in its own task so handshakes proceed concurrently — the loop
-# returns to recv immediately without waiting for the handshake to complete.
-# (TLS, WireGuard, Noise Protocol, SSH transport, ...)
-make-serve-layer: [fn [let accept-fn]
-  [fn [let conn-ch config]
-    [out: [channel 100]]
-    [task [loop [fn [let]
-      [raw: [recv conn-ch]]
-      [task [send out [accept-fn raw config]]]]]]
+# stdlib/async.llt
+
+# 1:1 — apply f to each element concurrently, collect results.
+# buf: output channel buffer size; tune to match downstream consumption rate.
+# (TLS handshake, WireGuard upgrade, JSON parsing, format conversion, ...)
+channel-map: [fn@[bind: [element result]] [let f@[Fn [element] result]]
+  [fn@[return: [Channel result]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 64]]
+    [out: [channel buffer-size]]
+    [task [loop [fn []
+      [x: [recv in-ch]]
+      [task [send out [f x]]]]]]
     out]]
 
-# 1:N — each incoming connection produces multiple items.
-# (HTTP/1.1 keep-alive, HTTP/2 streams, HTTP/3 QUIC streams, WebSocket frames, ...)
-make-multiplex-serve: [fn [let conn-fn]
-  [fn [let conn-ch]
-    [out: [channel 1000]]
-    [task [loop [fn [let]
-      [conn: [recv conn-ch]]
-      [task [conn-fn conn out]]]]]
+# 1:N — apply f to each element; f emits multiple items to the shared out channel.
+# buf: output buffer; size to absorb bursts when concurrent f calls complete together.
+# (HTTP/1.1 keep-alive requests, HTTP/2 streams, log lines from files, ...)
+channel-flat-map: [fn@[bind: [element item]] [let f@[Fn [element [Channel item]] Null]]
+  [fn@[return: [Channel item]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 256]]
+    [out: [channel buffer-size]]
+    [task [loop [fn []
+      [x: [recv in-ch]]
+      [task [f x out]]]]]
     out]]
 ```
 
 Both loops are fire-and-forget tasks (`[task [loop ...]]`). `recv` returns `T` directly and suspends until a value is available — it does not return `Result`. Loop termination happens via context cancellation: when the server shuts down (e.g., `exit` or `drain` from `stdlib/async.llt`), `recv` on a cancelled context raises a cancellation error that propagates out of the loop task. No channel-closed signalling or explicit break is needed.
 
-The inner handshake tasks (`[task [send out [accept-fn raw config]]]`) are also fire-and-forget and are **not** cancelled when the outer loop exits — they run to completion or until they error. This is correct: aborting a half-completed TLS handshake would leave the client in a broken state. For clean server shutdown that waits for in-flight handshakes to complete, call `drain` from `stdlib/async.llt` at the top level before `exit`.
+The inner tasks (`[task [send out [f x]]]`) are also fire-and-forget and are **not** cancelled when the outer loop exits — they run to completion or until they error. This is correct: aborting a half-completed TLS handshake would leave the client in a broken state. For clean server shutdown that waits for in-flight handshakes to complete, call `drain` from `stdlib/async.llt` at the top level before `exit`.
 
 Concrete serve layers:
 
 ```tinct
-# Connection-promotion: one connection in, one upgraded connection out
-tls-serve:       [make-serve-layer tls-accept]        # ByteStream → TlsConnection
-wireguard-serve: [make-serve-layer wireguard-accept]  # ByteStream → WireguardConnection
-noise-serve:     [make-serve-layer noise-accept]      # ByteStream → NoiseConnection
-h2-serve:        [make-serve-layer h2-accept]         # ByteStream → Http2Connection
-h3-serve:        [make-serve-layer h3-accept]         # QuicConnection  → Http3Connection
-ws-serve:        [make-serve-layer ws-accept]         # ByteStream → WebSocketConnection (MessageStream WsFrame)
+# stdlib/serve.llt
+
+# Connection-promotion: one connection in, one upgraded connection out.
+# *-accept functions that need a config argument close over it; channel-map
+# is applied to a 1-arg closure so f: [Fn [element] result] is satisfied.
+tls-serve:       [fn [let in-ch cfg@TlsServerConfig]
+                   [channel-map [fn [let h] [tls-accept h cfg]] in-ch]]
+wireguard-serve: [fn [let in-ch cfg@WireguardConfig]
+                   [channel-map [fn [let h] [wireguard-accept h cfg]] in-ch]]
+noise-serve:     [fn [let in-ch cfg@NoiseConfig]
+                   [channel-map [fn [let h] [noise-accept h cfg]] in-ch]]
+h2-serve:        [fn [let in-ch] [channel-map h2-accept in-ch]]   # h2-accept takes only h
+h3-serve:        [fn [let in-ch] [channel-map h3-accept in-ch]]   # QuicConnection → Http3Connection
+ws-serve:        [fn [let in-ch] [channel-map ws-accept in-ch]]   # ByteStream → WebSocketConnection
 
 # Message-extraction: one connection in, many protocol messages out
-http1-serve:     [make-multiplex-serve http1-conn]    # ByteStream → RawRequest*
-http2-requests:  [make-multiplex-serve http2-req-conn]# Http2Connection → RawRequest*
-http3-requests:  [make-multiplex-serve http3-req-conn]# Http3Connection → RawRequest*
+http1-serve:     [fn [let in-ch] [channel-flat-map http1-conn in-ch]]
+http2-requests:  [fn [let in-ch] [channel-flat-map http2-req-conn in-ch]]
+http3-requests:  [fn [let in-ch] [channel-flat-map http3-req-conn in-ch]]
 ```
 
-`wireguard-serve`, `noise-serve`, `ws-serve`, and `tls-serve` call tinct-implemented handshake functions in `stdlib/protocols/`. Each returns a typed tinct record (`WireguardConnection`, `NoiseConnection`, `WebSocketConnection`, `TlsConnection`) that implements `ByteStream`. Because all `*-serve` and `*-accept` functions are parametric over `ByteStream`, these records compose directly — `h2-serve` accepts `Channel@WireguardConnection` as readily as `Channel@Handle`. WireGuard is a user-mode protocol: Noise_IKpsk2 handshake in tinct, data plane over `udp-socket`, no kernel TUN/TAP.
+The serve layers that need configuration (`tls-serve`, `wireguard-serve`, `noise-serve`) close over their config and pass a 1-arg closure to `channel-map` — satisfying `channel-map`'s `f: [Fn [element] result]` type. Config-free layers (`h2-serve`, `ws-serve`, etc.) pass `*-accept` directly since those functions take only the connection handle.
+
+Constraint propagation: the closure `[fn [let h] [tls-accept h cfg]]` has type `[Fn [t] TlsConnection constraint: [t: ByteStream]]`. When `channel-map` unifies this with `f: [Fn [element] result]`, the `ByteStream` constraint on `element` propagates to `in-ch: [Channel element]` — passing `Channel@QuicConnection` is caught at the call site as a compile-time type error.
+
+WireGuard is a user-mode protocol: Noise_IKpsk2 handshake in tinct, data plane over `udp-socket`, no kernel TUN/TAP.
 
 `h2-serve` and `h3-serve` call tinct-implemented `h2-accept`/`h3-accept` from `stdlib/protocols/h2.llt` and `stdlib/protocols/h3.llt`. `Http2Connection` and `Http3Connection` are tinct records holding frame-parsing state, HPACK/QPACK tables, and stream channels — not opaque Rust types. They do **not** implement `ByteStream` — they are stream multiplexers, not byte pipes. Individual streams are accessed via `h2-open-stream`/`h3-open-stream` which return `Handle` (a `ByteStream`). The extraction layers (`http2-requests`, `http3-requests`) pull request streams from those records using tinct loops and channels.
 
@@ -264,7 +279,7 @@ reqs: [http1-serve tls]
 
 ## Client Layers
 
-Client-side 1:1 layers (`*-layer`) are the dual of `make-serve-layer` applied to a single connection. `connect-host` (from `stdlib/net.llt`) implements RFC 8305 Happy Eyeballs entirely in tinct using runtime-v2 primitives:
+Client-side 1:1 layers (`*-layer`) are the dual of `channel-map` applied to a single connection. `connect-host` (from `stdlib/net.llt`) implements RFC 8305 Happy Eyeballs entirely in tinct using runtime-v2 primitives:
 
 ```tinct
 # stdlib/net.llt — RFC 8305 Happy Eyeballs v2
@@ -459,6 +474,59 @@ dns-server-loop [dns-https-server [http3-requests [h3-serve [quic-listen net-cap
 
 ---
 
+## Worked Example: Simple HTTP Server
+
+The NetCap is not a binary "can access the network" flag — it is a specific grant of address and port. A development server that only needs to listen on localhost gets a minimal, precise capability:
+
+```
+tinct run --cap-net 127.0.0.1:8080 server.llt
+```
+
+This grant lets the program bind on localhost:8080 and do nothing else with the network. It cannot connect to external hosts, cannot bind on other ports, and cannot accidentally become a public-facing server. The capability model makes the program's intent explicit and verifiable from the command line.
+
+```tinct
+# Run with: tinct run --cap-net server@b=127.0.0.1:8080 server.llt
+[
+  cap:      %server                     # Bindable on 127.0.0.1:8080 only
+  port:     @Port: 8080
+  requests: [http-channel cap port]    # tcp-listen + http1-serve on localhost
+
+  handler: [router
+    ["/hello":   [fn [let _] [ok "world"]]]
+    ["/healthz": [fn [let _] [ok "ok"]]]]
+]
+[loop [fn []
+  [req: [recv requests]]
+  [task [req.respond [handler req]]]]]
+```
+
+**What this demonstrates:** the full TCP → HTTP/1.1 stack hidden behind `http-channel`; `router` for path dispatch; `ok` for text responses; a `loop` that concurrently handles each request in its own task via `req.respond`; and the NetCap as a precise, minimal network grant rather than a broad permission.
+
+Extending to a public HTTPS server requires a wider cap and a certificate:
+
+```
+tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
+```
+
+```tinct
+[
+  cap:      %listen                              # Bindable on 0.0.0.0:443 only
+  key-cap:  %certs                              # ./certs read-only
+  port:     @Port: 443
+  cert:     [slurp-secret key-cap "server.pem"]
+  requests: [http-channel cap port cert]         # tcp-listen + tls-serve + http1-serve
+
+  handler: [router
+    ["/hello":   [fn [let _] [ok "world"]]]
+    ["/healthz": [fn [let _] [ok "ok"]]]]
+]
+[loop [fn []
+  [req: [recv requests]]
+  [task [req.respond [handler req]]]]]
+```
+
+---
+
 ## Worked Example: HTTP Client with SVCB/HTTPS Records
 
 HTTPS DNS records (RFC 9460) add a protocol dimension to Happy Eyeballs. An HTTPS record contains three things relevant to connection establishment:
@@ -584,18 +652,19 @@ These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStrea
 
 | Primitive | Signature | Description | Why Rust |
 |-----------|-----------|-------------|----------|
-| `tcp-bind` | `[Fn [cap@NetCap port@Int] TcpListener]` | Bind and listen on a TCP port | OS syscall (socket + bind + listen); cap-std capability enforcement; produces `TcpListener` opaque handle |
-| `tcp-accept` | `[Fn [listener@TcpListener] Handle]` | Accept one incoming TCP connection (async, suspends until one arrives) | OS accept() syscall + tokio reactor registration; tinct tasks cannot make socket syscalls |
-| `tcp-connect` | `[Fn [cap@NetCap addr@SocketAddress] Handle]` | Connect to a TCP endpoint | cap-std `Pool::connect(SocketAddress)` — capability check and socket syscall are one indivisible operation; no TOCTOU window |
-| `udp-socket` | `[Fn [cap@NetCap port@Int] UdpSocket]` | Bind a UDP socket — use port 0 for ephemeral (client use) | OS syscall; cap-std UdpSocket capability enforcement; produces `UdpSocket` opaque handle |
+| `tcp-bind` | `[Fn [cap@NetCap addr@SocketAddress] TcpListener]` | Bind and listen on a TCP socket | `pool.bind_tcp_listener(addr)` where pool is the NetCap's backing `cap_std::net::Pool` — capability check, OS bind, and listen are one indivisible operation; produces `TcpListener` opaque handle |
+| `tcp-accept` | `[Fn [h@TcpListener] Handle]` | Accept one incoming TCP connection (async) | OS accept() syscall on a `TcpListener` handle + tokio reactor registration; tinct cannot make socket syscalls |
+| `tcp-connect` | `[Fn [cap@NetCap addr@SocketAddress] Handle]` | Connect to a TCP endpoint | `pool.connect_tcp_stream(addr)` — capability check and socket syscall are one indivisible operation; no TOCTOU window |
+| `udp-socket` | `[Fn [cap@NetCap addr@SocketAddress] UdpSocket]` | Bind a UDP socket (`addr.port = 0` for ephemeral) | `pool.bind_udp_socket(addr)` — capability check and OS bind are one indivisible operation |
 | `udp-recv` | `[Fn [sock@UdpSocket] UdpDatagram]` | Receive one UDP datagram with source address (async) | Reads from `UdpSocket` opaque Rust state; tinct cannot access UdpSocket internals |
 | `udp-send` | `[Fn [sock@UdpSocket addr@SocketAddress data@Bytes] Null]` | Send a datagram to a specific address | Writes through `UdpSocket` opaque Rust state |
-| `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not implemented in cap-std upstream; this primitive wraps the accept loop internally using `openat2(RESOLVE_BENEATH)` + raw `UnixListener`. When cap-std adds `UnixListener`, this refactors to `unix-bind` + `unix-accept` following the same pattern as `tcp-bind`/`tcp-accept` |
+| `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not yet implemented upstream; wraps the accept loop internally using `openat2(RESOLVE_BENEATH)` + raw `UnixListener`. When cap-std adds `UnixListener`, two new Rust primitives appear: `unix-bind: [Fn [DirCap String] UnixListener]` and `unix-accept: [Fn [UnixListener] Handle]`; one `[instance [Listener UnixListener] accept: unix-accept]` declaration is added; `unix-listen` becomes pure tinct using `listen-loop` |
 | `read-bytes` | `[Fn [h@Handle n@Int] Bytes]` | Read exactly n bytes from a Handle (async, suspends until available) | Handle is opaque Rust state backed by tokio `AsyncRead`; tinct cannot access Handle internals or call tokio I/O directly |
 | `write-bytes` | `[Fn [h@Handle b@Bytes] Null]` | Write bytes to a Handle (async) | Handle is opaque Rust state backed by tokio `AsyncWrite` |
 | `try-recv` | `[Fn [ch@[Channel t]] [Result t]]` | Non-blocking recv — `Err` if no item immediately available | Requires reading Channel's internal buffer occupancy without consuming an item; `select-once` + 0ms-timer is scheduler-dependent and not guaranteed non-blocking |
+| `channel-count` | `[Fn [ch@[Channel t]] Int]` | Current number of items in the channel buffer | Reads `Arc<ChannelInner>` buffer count without consuming; tinct cannot access Channel internals; used by `collect-channel` to snapshot size before draining |
 
-`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct. `read-bytes` and `write-bytes` are the `Handle` instance methods for `ByteStream`; `udp-recv` and `udp-send` are the `UdpSocket` instance methods for `Datagram`. All are called through typeclass dispatch in tinct code.
+`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct. The `Listener` typeclass (same pattern as `ByteStream`, `Datagram`, `MessageStream`) provides `accept` as a polymorphic dispatch method. `TcpListener` and `UnixListener` are opaque Rust types with `Listener` instances that delegate to `tcp-accept`/`unix-accept`. `listen-loop` is parametric over any `Listener l`. Adding a new listener type requires one Rust primitive pair and one `[instance [Listener ...] ...]` declaration — no changes to `accept`, `listen-loop`, or any call site. `read-bytes` and `write-bytes` are the `Handle` instance methods for `ByteStream`; `udp-recv` and `udp-send` are the `UdpSocket` instance methods for `Datagram`. All are called through typeclass dispatch in tinct code.
 
 ### Crypto Primitives
 
@@ -691,10 +760,24 @@ stdlib/
                           calls per field — OrderedBytes is not suitable for heterogeneous structs.
 
                       Nameserver ([union UdpNameserver DotNameserver DohNameserver DoqNameserver]); ns-to-resolver
-                      tcp-listen  (tcp-bind + tinct accept loop)
+                      Listener typeclass + instances for TcpListener, UnixListener:
+                        [class [Listener l]  accept: [Fn [l@l] Handle]]
+                        [instance [Listener TcpListener]  accept: tcp-accept]
+                        [instance [Listener UnixListener] accept: unix-accept]  # pending cap-std
+                        — same pattern as ByteStream/Datagram/MessageStream; adding a new listener
+                          type (SCTP, etc.) requires only one Rust primitive + one new instance.
+                      listen-loop: [fn@[bind: [l]  constraint: [l: Listener]]
+                                     [let l@l  buffer-size@[type: Int  default: 100]]
+                                     [out: [channel buffer-size]]
+                                     [task [loop [fn [] [send out [accept l]]]]]
+                                     out]
+                        — parametric tinct accept loop; buffer-size tunes backpressure;
+                          when buffer fills, tcp-accept suspends (backpressure to OS listen queue)
+                      tcp-listen  (tcp-bind → TcpListener → listen-loop via Listener typeclass)
+                      unix-listen (unix-bind → UnixListener → listen-loop, pending cap-std UnixListener)
                       udp-bind    (udp-socket + tinct recv loop, Channel@UdpDatagram)
                       quic-listen (udp-socket + quic.llt accept loop, Channel@QuicConnection)
-                      tcp-connect (takes SocketAddress — calls pool.connect atomically)
+                      tcp-connect (takes SocketAddress — pool.connect_tcp_stream, atomic)
                       resolve-host  (tries each %dns.nameserver in order; returns [Seq IpAddress])
                       dns-query-first, ns-to-resolver
                       connect-host  (RFC 8305 Happy Eyeballs — resolve-host + happy-connect)
@@ -714,6 +797,13 @@ stdlib/
                         decode:       [Fn [c@c b@Bytes]  [Result String]]
                         decode-lossy: [Fn [c@c b@Bytes]  String]
                         codec-name:   [Fn [c@c] String]]
+
+                      TextCodec and ByteLabel both define encode/decode. Disambiguation:
+                      UTF8 is a TextCodec typeclass INSTANCE (compile-time), not a Codec
+                      RECORD (runtime). [encode UTF8 "hello"] dispatches to TextCodec.encode
+                      because UTF8 is not a Codec value; [encode some-codec-record "hello"]
+                      dispatches to ByteLabel.encode because some-codec-record: Codec. The
+                      type checker resolves which class method applies from the argument type.
 
                       # compile-time polymorphic dispatch
                       encode:       [fn@[bind: [c]  return: [Result Bytes]   constraint: [c: TextCodec]] [let c@c s@String] ...]
@@ -844,7 +934,7 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
                               verify-cert-chain, cert-public-key, cert-san
                       Key wrappers: parse-rsa-public-key, parse-ec-public-key
                       No arithmetic — all crypto math is in Rust primitives above
-  serve.llt         — make-serve-layer, make-multiplex-serve
+  serve.llt         — channel-map, channel-flat-map (re-exported from async.llt)
                       Connection-promotion: tls-serve, wireguard-serve, noise-serve,
                         h2-serve, h3-serve, ws-serve
                       Message-extraction: http1-serve, http2-requests, http3-requests
@@ -860,9 +950,11 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
                       name is tried. For latency-sensitive resolution, limit attempts to 1
                       or use a single fast nameserver.
   async.llt         — (extended from runtime-v2) adds:
-                        collect-channel: drain immediately-available items using try-recv,
-                          bounded to items present at call time (snapshots channel size
-                          before draining to prevent racing a concurrent producer)
+                        channel-map:      concurrent 1:1 transform over a channel
+                        channel-flat-map: concurrent 1:N transform over a channel
+                        collect-channel:  drain immediately-available items; calls channel-count
+                          to snapshot the buffer size at call time, then drains exactly that many
+                          items via try-recv — prevents racing a concurrent producer
   protocols/
     tls.llt         — TLS 1.3 record layer (read-bytes/write-bytes framing) + handshake
                       state machine + certificate chain verification (via crypto.llt);
@@ -889,7 +981,13 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
     http1.llt       — HTTP/1.1 framing in pure tinct on top of read-bytes/write-bytes:
                         parse-request, write-response, serve-conn (server)
                         build-request, send-request, parse-response (client)
-    http.llt        — http-channel (unified server: TCP+QUIC via serve.llt)
+    http.llt        — http-channel: [Fn [cap@NetCap port@Port] [Channel RawRequest]]
+                                   [Fn [cap@NetCap port@Port cert@TlsServerConfig] [Channel RawRequest]]
+                        — convenience: binds on ALL interfaces (0.0.0.0/::) at the given port;
+                          for interface-specific binding use tcp-listen + http1-serve directly;
+                          the cert overload inserts tls-serve into the stack automatically;
+                          TlsServerConfig carries the certificate, private key, and ALPN config
+                      http-channel — see signature above; unified server: TCP+QUIC via serve.llt
                       SvcbRecord ([union AliasMode ServiceMode]), resolve-svcb (alias chain)
                       http-connect (SVCB-aware: IP hints + h3/h2 protocol race)
                       http-protocol-race, quic-h3-connect, tcp-h2-connect
@@ -1081,31 +1179,118 @@ All primitives in the New Rust Primitives table above, registered in `standard_b
 
 `stdlib/net.llt`, `stdlib/text.llt`, `stdlib/compress.llt`, `stdlib/crypto.llt`, `stdlib/serve.llt`, `stdlib/dns.llt`, extend `stdlib/async.llt`; `stdlib/protocols/` (tls, quic, h2, h3, http1, http, compress, wireguard, noise, websocket, icmp, socks5, grpc, mqtt).
 
-### Restructure `Value::NetCap` — hostname entries + cap-std Pool
+### Unified capability flag syntax — `+flags` for both DirCap and NetCap
 
-`Value::NetCap` currently holds `Rc<Vec<NetCapEntry>>` and is checked by a custom `check_net_cap_allowlist` function in `builtins_io.rs`. This design does not use cap-std's networking capability primitives.
+Both `--cap-fs` (DirCap) and `--cap-net` (NetCap) use the same `resource+flags` syntax. The `+` separator is unambiguous: it cannot appear in filesystem paths, IP addresses, ports, or hostnames, so everything before `+` is the resource and everything after is flags. This replaces the existing DirCap `:flags` suffix (which is not extended to NetCap because colons already appear in network addresses).
 
-Replace with a hybrid backed by cap-std's `Pool`:
+**NetCap flags** (same `@` syntax as tinct type annotations):
+
+| Flag | Name | Gates |
+|---|---|---|
+| `b` | Bindable | `tcp-bind`, `udp-socket` (listen/receive on this address) |
+| `c` | Connectable | `tcp-connect`, `udp-send` (connect/send to this address) |
+| (no `@`) | both | default when flags omitted — equivalent to `@bc` |
+
+DNS resolution is **implied** by any named hostname entry — if you grant `api@c=api.example.com:443`, you implicitly can resolve `api.example.com` to reach it. A separate `Resolvable` flag is unnecessary: a hostname in the NetCap serves no purpose unless the program can resolve it.
+
+NetCap entries use the same `name@flags=resource` pattern as DirCap. The `@` mirrors tinct's annotation syntax — the same character that annotates a type annotates a capability. The `name` becomes `%name` in the program. Because the resource (address or path) always follows `=`, any `@` or `+` inside the resource is unambiguous — it comes after the split point.
+
+**Parsing rule:** find `=`, split the left side on `@` for name and flags. The resource is everything after `=`.
+
+```
+# Named network caps
+tinct run --cap-net server@b=127.0.0.1:8080 server.llt
+  # %server: Bindable on localhost:8080; cannot connect to anything
+
+tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
+  # %listen: Bindable all interfaces port 443; %certs: ./certs read-only
+
+tinct run --cap-net api@c=api.example.com:443 client.llt
+  # %api: Connectable to api.example.com:443 (implies DNS resolution)
+
+# Proxy — separate named caps for each network role
+tinct run --cap-net listen@b=127.0.0.1:8080 --cap-net upstream@c=10.0.0.0/8 proxy.llt
+  # %listen: Bindable; %upstream: Connectable to internal range
+
+# Bracket form — exactly like tinct @[...] annotations, always unambiguous
+tinct run --cap-net "server@[Bindable]=127.0.0.1:8080" server.llt
+
+# IPv6 — resource follows =, so brackets in address cause no ambiguity
+tinct run --cap-net "server@b=[::1]:8080" server.llt
+
+# Paths with + are fine — + appears after = in the resource
+tinct run --cap-fs "code@r=./src/c++/lib" build.llt
+
+# Anonymous (no name) — goes into default %net-cap or %cap-fs
+tinct run --cap-net @b=127.0.0.1:8080 server.llt
+
+# Backward compatible — existing name=resource form, default flags assumed
+tinct run --cap-net server=127.0.0.1:8080 server.llt
+```
+
+**DirCap flags** (same `@flags` separator, replacing the old `:flags` suffix):
+
+```
+--cap-fs data@rw=./data          # was: --cap-fs data=./data:rw
+--cap-fs logs@a=./logs
+--cap-fs config@r=./config
+--cap-fs "code@[Readable]=./src/c++/lib"  # + in path: no problem, it's after =
+```
+
+With named caps, each network operation receives the minimal capability it needs:
+
+```tinct
+[
+  listen-cap:   %listen    # Bindable on 127.0.0.1:8080 only
+  upstream-cap: %upstream  # Connectable to 10.0.0.0/8 only
+]
+```
+
+A compromised component holding `%upstream` can only connect to the internal range — it cannot bind on any port, cannot reach external hosts. The capability surface is explicit in both the command line and the code.
+
+**DirCap flags** (unchanged letters, updated separator):
+
+```
+--cap-fs data=./data+rw      # was: --cap-fs data=./data:rw
+--cap-fs logs=./logs+a       # append-only
+--cap-fs config=./config+r   # read-only
+```
+
+### Restructure `Value::NetCap` — action-split Pools
+
+`Value::NetCap` currently holds `Rc<Vec<NetCapEntry>>` with a single allowlist checked by `check_net_cap_allowlist`. This design conflates listening and connecting, and does not use cap-std's networking capability primitives.
+
+Replace with two cap-std Pools — one for each action — plus hostname entries for glob/wildcard support:
 
 ```rust
 struct NetCapInner {
-    // Hostname-level allowlist: checked by resolve-host/dns-resolve in tinct
-    // before DNS resolution. Supports glob patterns that Pool cannot express.
-    hostname_entries: Vec<NetCapEntry>,   // Hostname, HostPort, HostnameGlob, Any
+    // Hostname-level entries (globs, wildcards) checked before DNS resolution.
+    // Resolution is always implied for any named entry.
+    hostname_entries: Vec<NetCapEntry>,   // Hostname, HostPort, HostnameGlob, Any + action
 
-    // IP-level allowlist: CIDR ranges and exact addresses, backed by cap-std.
-    // tcp-bind, tcp-accept, udp-socket, tcp-connect all go through pool.
-    pool: cap_std::net::Pool,
+    // Bindable addresses: tcp-bind, udp-socket go through listen_pool.
+    listen_pool:  cap_std::net::Pool,
+
+    // Connectable addresses: tcp-connect, udp-send go through connect_pool.
+    connect_pool: cap_std::net::Pool,
 }
 ```
 
-`tcp-connect: [Fn [cap@NetCap addr@SocketAddress] Handle]` takes a pre-resolved `SocketAddress` — it calls `pool.connect(SocketAddress)` directly. The pool check and the socket syscall are one indivisible operation; there is no window between the capability check and the actual connect. This eliminates the TOCTOU hazard present in the current design (hostname check → DNS resolution → connect to potentially different IP).
+`--cap-net` parsing routes entries by flag: `@b` entries populate `listen_pool`; `@c` entries populate `connect_pool`; `@bc` or no-flag (default) populates both. Named hostname entries with `@c` also populate `hostname_entries` (for glob support) AND `connect_pool` (for IP-level enforcement after resolution).
 
-`resolve-host: [Fn [cap@NetCap host@String] IpAddress]` in `stdlib/net.llt` checks `hostname_entries` against the hostname before resolving, then validates the resolved `IpAddress` against the pool's CIDR entries as a defence-in-depth step (the pool check at `tcp-connect` is the authoritative gate, but catching the mismatch earlier produces a clearer error). The validated `IpAddress` is composed with a port into a `SocketAddress` and passed to `tcp-connect`.
+**Flag parsing:** flags are parsed character-by-character from the `@flags` suffix; `@bc` means Bindable (`b`) + Connectable (`c`). The bracket form `@[Bindable Connectable]` accepts full names space-separated.
 
-`--cap-net` parsing splits entries by type: glob/hostname entries populate `hostname_entries`; CIDR and IP-literal entries populate the pool via `Pool::insert_ip_net` and `Pool::insert`.
+**Hostname+Bindable rejected at startup:** `--cap-net server@b=api.example.com:8080` is rejected at parse time with a clear error: `"@b (Bindable) entries must be IP literals, not hostnames — you cannot bind() on a remote address"`. Bindable requires a local address; a hostname that resolves to a remote IP would always fail `bind()` with `EADDRNOTAVAIL`.
 
-`tcp-bind` and `udp-socket` similarly go through `pool.bind(SocketAddress)` rather than the custom allowlist check.
+`tcp-bind` calls `listen_pool.bind_tcp_listener(addr)` — atomic capability check + OS bind + listen. `tcp-connect` calls `connect_pool.connect_tcp_stream(addr)` — atomic capability check + OS connect. `udp-socket` calls `listen_pool.bind_udp_socket(addr)`. All are indivisible Pool operations with no TOCTOU window.
+
+**Capability error messages:** when a Bindable-only cap is used where Connectable is needed, tinct produces a clear structured error — not an opaque pool failure:
+- `tcp-connect %server some-addr` with `%server@b=...` → `"cap %server has no Connectable grant (@c) — cannot tcp-connect"`
+- `resolve-host %server "api.example.com"` with `%server@b=...` → `"cap %server has no Connectable grant — resolve-host requires @c to send DNS queries"`
+
+`resolve-host` checks upfront whether `connect_pool` is empty and errors immediately with a capability message, not a DNS failure.
+
+`resolve-host` checks `hostname_entries` for the name, then validates the resolved IP against `connect_pool`'s CIDR entries as a defence-in-depth step before returning the `IpAddress`.
 
 ### `tcp-connect` takes an IP address, not a hostname
 
@@ -1126,16 +1311,21 @@ Nameserver: [union
   [DohNameserver  addr@SocketAddress  sni@String  path@String] # DNS-over-HTTPS
   [DoqNameserver  addr@SocketAddress  sni@String]]             # DNS-over-QUIC (port 853)
 
-DnsConfig: [type {
-  nameservers: [Seq Nameserver]  # pre-resolved SocketAddresses — no circular DNS dependency
-  search:      [Seq String]      # search domain list: "search corp.example.com example.com"
-  ndots:       Int               # dot threshold for search-first vs absolute-first; default 1
-  timeout:     Duration          # per-query timeout; default [seconds 5]
-  attempts:    Int               # retries per nameserver before moving to next; default 2
-  rotate:      Bool              # round-robin across nameservers; default false
-  no-aaaa:     Bool              # suppress AAAA queries; default false
-  edns0:       Bool              # EDNS0 extended responses; default true
-}]
+DnsConfig: [type
+  [nameservers:    [Seq Nameserver]  # pre-resolved SocketAddresses — no circular DNS dependency
+   search:         [Seq String]      # search domain list (search/domain keywords)
+   ndots:          Int               # dot threshold for search-first vs absolute; default 1, max 15
+   timeout:        Duration          # per-query timeout; default [seconds 5], max [seconds 30]
+   attempts:       Int               # retries across all nameservers before giving up; default 2, max 5
+   rotate:         Bool              # round-robin nameserver selection; default false
+   no-aaaa:        Bool              # suppress AAAA queries (glibc 2.36+); default false
+   edns0:          Bool              # EDNS0 extended query size (RFC 2671); default true
+   use-vc:         Bool              # force TCP instead of UDP for all queries; default false
+   no-check-names: Bool              # skip BIND hostname character validation (underscore etc); default false
+   trust-ad:       Bool              # trust DNSSEC AD bit in responses (glibc 2.31+); default false
+   single-request: Bool              # make A and AAAA queries sequential not concurrent; default false
+                                     # (needed for appliances that mishandle parallel DNS queries)
+   sortlist:       [Seq String]]]    # IP/mask pairs for sorting returned addresses; rarely used
 ```
 
 All `Nameserver` variants take a pre-resolved `SocketAddress` — no DNS needed to reach the nameserver itself. `/etc/resolv.conf` has no protocol-selection syntax (only `options use-vc` for TCP/53, not TLS), so parsing always produces `UdpNameserver` entries. On modern Linux with systemd-resolved, `/etc/resolv.conf` typically lists `127.0.0.53` — the local stub. DoT/DoH configuration in `/etc/systemd/resolved.conf` affects the stub invisibly; tinct sees `UdpNameserver { addr: 127.0.0.53:53 }` and the stub handles upstream protocol. Users who want tinct itself to speak DoT/DoH to a remote resolver set `--nameservers` explicitly.

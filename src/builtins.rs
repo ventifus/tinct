@@ -520,8 +520,8 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResul
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let arg0_span = args[0].span;
         let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span)?;
+        let arg0_span = args[0].span;
         let s = require_string("to-int", val, arg0_span)?;
         match s.parse::<i64>() {
             Ok(n) => ok_val(Value::Int(n), call_span),
@@ -548,8 +548,8 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let arg0_span = args[0].span;
         let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span)?;
+        let arg0_span = args[0].span;
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
@@ -6858,8 +6858,8 @@ mod tests {
         );
         assert_eq!(
             names.len(),
-            228,
-            "expected 228 builtins, got {} — update this assertion if adding/removing builtins",
+            233,
+            "expected 233 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

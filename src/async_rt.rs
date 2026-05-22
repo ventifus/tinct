@@ -38,15 +38,13 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
 /// - **Multi-thread runtime**: uses `block_in_place` to step the current thread out of
 ///   the async context before driving the future synchronously.
 /// - **Current-thread runtime** (e.g. `#[tokio::test]` or the test helper `mat()`):
-///   `block_in_place` is not supported. Uses a minimal spin-poll executor that drives
-///   the future to completion without entering any tokio runtime context. This works
-///   correctly for pure-compute futures (eval, materialize) that have no I/O awaits.
-/// - **No runtime** (called from a plain sync thread): creates a fresh `current_thread`
-///   runtime directly.
-///
-/// Use this for pure eval futures (`materialize`, `eval`, `invoke_function`) that do
-/// not need the `LocalSet` background driver. IO builtins that require `LocalSet`
-/// (QUIC, HTTP/3 driver tasks) must continue to use [`block_on`].
+///   `block_in_place` is not supported. Wraps the future in the thread-local
+///   `LocalSet::run_until()` and spin-polls the combined future. This drives both
+///   the caller's future and any tasks spawned via [`spawn_local`] concurrently,
+///   enabling `task`/`await` to work correctly from within existing async contexts.
+/// - **No runtime** (called from a plain sync thread): delegates to [`block_on`], which
+///   uses the thread-local `TOKIO_RT` + `LOCAL_SET`. This ensures `spawn_local` calls
+///   inside `fut` are driven by the same LocalSet.
 pub fn block_on_anywhere<F>(fut: F) -> F::Output
 where
     F: std::future::Future,
@@ -57,20 +55,41 @@ where
             if handle.runtime_flavor() == RuntimeFlavor::MultiThread {
                 tokio::task::block_in_place(|| handle.block_on(fut))
             } else {
-                // current_thread runtime: block_in_place panics, and creating a new
-                // Runtime::block_on also panics ("cannot start a runtime from within a
-                // runtime"). Use a minimal spin-poll executor that is completely
-                // independent of tokio's runtime context. This is correct for
-                // pure-compute eval/materialize futures that have no real I/O awaits.
-                poll_future_sync(fut)
+                // current_thread runtime: block_in_place panics, and Handle::block_on
+                // panics ("cannot call block_on from within an async context"). Use the
+                // thread-local LocalSet's run_until to drive both the future and any
+                // spawn_local tasks concurrently. We spin-poll the combined future so
+                // spawned tasks make progress while the caller awaits their handles.
+                LOCAL_SET.with(|ls| {
+                    // SAFETY: `ls` is a thread-local static whose address is valid for
+                    // the entire lifetime of this thread. We raw-pointer-cast it to `&'static`
+                    // only to satisfy `LocalSet::run_until`'s `&self` lifetime requirement
+                    // inside `poll_future_sync`, which is otherwise unable to hold a
+                    // reference into the `with` closure. The raw pointer remains valid
+                    // throughout because:
+                    //
+                    // 1. `poll_future_sync` completes synchronously on this same thread
+                    //    before `with` returns, so the thread-local is alive for the
+                    //    entire duration.
+                    // 2. No other thread can access this thread-local.
+                    // 3. Spawned tasks do not capture `ls_static` itself — they are
+                    //    `'static` futures that write into heap allocations such as
+                    //    `Arc<Thunk>` or `Arc<Mutex<TaskState>>`. The reference to the
+                    //    LocalSet is not reachable from any spawned task's data, so
+                    //    there is no risk of `ls_static` escaping via an Arc or similar.
+                    let ls_static: &'static tokio::task::LocalSet =
+                        unsafe { &*(ls as *const tokio::task::LocalSet) };
+                    poll_future_sync(ls_static.run_until(fut))
+                })
             }
         }
         Err(_) => {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("async_rt: failed to create tokio runtime");
-            rt.block_on(fut)
+            // No existing runtime: use the thread-local runtime and LocalSet so
+            // that any spawn_local calls from within `fut` are driven by the same
+            // LocalSet that spawn_local writes into. Using a fresh LocalSet here
+            // would cause spawn_local tasks to accumulate in LOCAL_SET and never
+            // be polled during this block_on call.
+            block_on(fut)
         }
     }
 }
@@ -81,9 +100,10 @@ where
 /// `Poll::Ready`. It does NOT enter any tokio runtime context, making it safe
 /// to call from within a `current_thread` tokio runtime.
 ///
-/// Only use this for futures that are known to be purely synchronous under the
-/// hood (i.e., all `.await` points resolve immediately without blocking on I/O).
-/// The eval/materialize futures satisfy this property.
+/// The caller wraps the target future in `LocalSet::run_until()`, so any
+/// `spawn_local` tasks queued during evaluation are driven concurrently on
+/// each spin iteration. This handles futures that spawn concurrent tasks via
+/// `LOCAL_SET`; the spin loop gives those tasks opportunities to progress.
 fn poll_future_sync<F: Future>(fut: F) -> F::Output {
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
