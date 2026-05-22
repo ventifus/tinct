@@ -1007,6 +1007,95 @@ fn entry_to_surface(entry: &Entry) -> SurfaceEntry {
     }
 }
 
+/// Convert a `SurfaceDeclaration` back to the corresponding `Spanned<Expr>`.
+///
+/// This is the reverse of `expr_to_surface_item` for declaration forms.
+/// Used by `parse_expression()` to handle top-level declaration items.
+/// Deleted in Part E when `parse_expression()` is retired.
+pub fn surface_decl_to_expr(decl: &Spanned<SurfaceDeclaration>) -> Spanned<Expr> {
+    use std::rc::Rc;
+
+    let expr = match &decl.node {
+        SurfaceDeclaration::TypeAlias { params, body } => Expr::TypeAlias {
+            params: params.clone(),
+            body: Box::new(surface_node_to_expr(body)),
+        },
+        SurfaceDeclaration::ClassDecl {
+            name,
+            params,
+            superclasses,
+            methods,
+            determines,
+            resolver,
+            resolver_injective,
+        } => Expr::ClassDecl {
+            name: name.clone(),
+            params: params.clone(),
+            superclasses: superclasses.clone(),
+            methods: methods
+                .iter()
+                .map(|se| {
+                    Spanned::new(
+                        Entry {
+                            key: se.node.key.as_ref().map(|k| surface_node_to_expr(k)),
+                            value: Rc::new(surface_node_to_expr(&se.node.value)),
+                        },
+                        se.span,
+                    )
+                })
+                .collect(),
+            determines: determines.iter().map(|n| surface_node_to_expr(n)).collect(),
+            resolver: resolver.as_ref().map(|r| Box::new(surface_node_to_expr(r))),
+            resolver_injective: *resolver_injective,
+        },
+        SurfaceDeclaration::InstanceDecl { class_name, arms } => Expr::InstanceDecl {
+            class_name: class_name.clone(),
+            arms: arms
+                .iter()
+                .map(|(pattern, methods)| {
+                    let old_pattern = surface_node_to_expr(pattern);
+                    let old_methods = methods
+                        .iter()
+                        .map(|se| {
+                            Spanned::new(
+                                Entry {
+                                    key: se.node.key.as_ref().map(|k| surface_node_to_expr(k)),
+                                    value: Rc::new(surface_node_to_expr(&se.node.value)),
+                                },
+                                se.span,
+                            )
+                        })
+                        .collect();
+                    (old_pattern, old_methods)
+                })
+                .collect(),
+        },
+        SurfaceDeclaration::DefMacro { name, params, body } => Expr::DefMacro {
+            name: name.clone(),
+            params: Rc::new(surface_node_to_expr(params)),
+            body: Rc::new(surface_node_to_expr(body)),
+        },
+        SurfaceDeclaration::MacroDecl { name, params, body } => Expr::MacroDecl {
+            name: name.clone(),
+            params: Box::new(surface_node_to_expr(params)),
+            body: Box::new(surface_node_to_expr(body)),
+        },
+        SurfaceDeclaration::SyntaxClass {
+            name,
+            pattern,
+            message,
+        } => Expr::SyntaxClass {
+            name: name.clone(),
+            pattern: Box::new(surface_node_to_expr(pattern)),
+            message: message.clone(),
+        },
+        SurfaceDeclaration::Splice(forms) => {
+            Expr::Splice(forms.iter().map(|n| surface_node_to_expr(n)).collect())
+        }
+    };
+    Spanned::new(expr, decl.span)
+}
+
 fn match_arm_to_surface(arm: &MatchArm) -> SurfaceMatchArm {
     SurfaceMatchArm {
         pattern: arm.pattern.clone(),

@@ -3,6 +3,8 @@
 # Exports dns-resolve-host and dns-resolve-ip; re-exported by net.llt as resolve-host/dns-resolve.
 
 [include %libdir "net.llt"]
+[include %libdir "protocols/quic.llt"]   # quic-connect, quic-open-stream (DoQ resolver)
+[include %libdir "protocols/h3.llt"]     # http3-client, h3-http-request (DoH resolver)
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -56,7 +58,8 @@
          [cons absolute searched]
          [append searched [list absolute]]]]]]
 
-  dns-try-names: [fn [let cap@NetCap config@DnsConfig names@[Seq String] qtype@DnsQtype]
+  dns-try-names: [fn [let cap@NetCap config@DnsConfig names@[Seq String] qtype@DnsQtype
+                       cname-depth@[type: Int  default: 0]]
     [match names
       []: [error "DNS: all candidates exhausted"]
       [let [name ...rest]]:
@@ -64,25 +67,28 @@
                                          config.attempts config.rotate config.timeout]]
           [Ok resp]:
             [match resp.rcode
-              [NXDomain]: [dns-try-names cap config rest qtype]
-              _:          [records->addrs resp.answers qtype cap]]
-          [Err _]: [dns-try-names cap config rest qtype]]]]
+              [NXDomain]: [dns-try-names cap config rest qtype cname-depth]
+              _:          [records->addrs resp.answers qtype cap cname-depth]]
+          [Err _]: [dns-try-names cap config rest qtype cname-depth]]]]
 
-  records->addrs: [fn [let records@[Seq DnsRecord] qtype@DnsQtype cap@NetCap]
-    [concat-map [fn [let r]
-      [match r
-        [let [ARecord    addr _]]: [if [= qtype [A]]    [list [Ipv4 addr]] []]
-        [let [AAAARecord addr _]]: [if [= qtype [AAAA]] [list [Ipv6 addr]] []]
-        [let [CNameRecord name _]]:
-          [match [try [dns-try-names cap %dns [list [str name "."]] qtype]]
-            [Ok addrs]: addrs
-            [Err _]:    []]
-        _: []]]
-     records]]
+  # cname-depth: current CNAME chain depth; error at 8 per RFC 1034 §3.6.2 guidance.
+  records->addrs: [fn [let records@[Seq DnsRecord] qtype@DnsQtype cap@NetCap cname-depth@[type: Int  default: 0]]
+    [if [>= cname-depth 8]
+      [error "DNS: CNAME chain too long (max 8)"]
+      [concat-map [fn [let r]
+        [match r
+          [let [ARecord    addr _]]: [if [= qtype [A]]    [list [Ipv4 addr]] []]
+          [let [AAAARecord addr _]]: [if [= qtype [AAAA]] [list [Ipv6 addr]] []]
+          [let [CNameRecord name _]]:
+            [match [try [dns-try-names cap %dns [list [str name "."]] qtype [+ cname-depth 1]]]
+              [Ok addrs]: addrs
+              [Err _]:    []]
+          _: []]]
+       records]]]
 
   dns-https-send: [fn [let client path@String q@DnsQuery]
     [wire: [encode-dns-wire q]]
-    [resp: [await [http-request client
+    [resp: [await [h3-http-request client
       [method:  "POST"
        path:    path
        headers: [map-from-pairs
@@ -136,7 +142,8 @@
     [id:        Int
      name:      String
      qtype:     DnsQtype
-     recursive: Bool]]
+     recursive: Bool
+     respond:   [or [Fn [DnsResponse] Null] Null]]]  # null for client queries; set by dns-udp-server
 
   DnsResponse: [type
     [id:         Int

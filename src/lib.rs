@@ -2159,7 +2159,7 @@ mod tests {
     /// Two arms with same determining positions (Int, Int) but different determined types
     /// (Int vs Float) must produce a "consistency violation" type error.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: parser rejects [class ...]/[instance ...] syntax; tracked in TODO.md runtime-v2-fix-adt-class-instance-corpus sprint"]
+    #[ignore = "class/instance inside dict values not yet supported — needs parser extension"]
     fn test_instance_fd_consistency_violation() {
         let input = r#"[
   TestAdd: [class [let TestAdd a b c] [determines: [[[a b] c]]]

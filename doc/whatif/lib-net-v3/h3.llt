@@ -1,39 +1,13 @@
 # stdlib/protocols/h3.llt — HTTP/3 (RFC 9114) + QPACK (RFC 9204) in tinct.
 # Part of: lib-net-v3
-# Depends on: quic.llt (QuicConnection, quic-open-stream), http1.llt (RawRequest, RawResponse)
 
-[include %libdir "quic.llt"]
-[include %libdir "http1.llt"]
+[include %libdir "async.llt"]
+[include %include-dir "quic.llt"]
+[include %include-dir "http1.llt"]
 
-# ── Types ────────────────────────────────────────────────────────────────────────
-
-Http3Connection: [type
-  [quic:         QuicConnection
-   control-send: QuicStream     # unidirectional: our control stream
-   control-recv: QuicStream     # unidirectional: peer's control stream
-   qpack-enc:    QuicStream     # QPACK encoder instructions (to peer)
-   qpack-dec:    QuicStream     # QPACK decoder instructions (to peer)
-   settings:     [Map String Int]]]
-
-# HTTP/3 frame types (RFC 9114 §7.2).
-H3FrameType: [union
-  [H3Data]          # 0x0
-  [H3Headers]       # 0x1
-  [H3CancelPush]    # 0x3
-  [H3Settings]      # 0x4
-  [H3PushPromise]   # 0x5
-  [H3Goaway]        # 0x7
-  [H3MaxPushId]]    # 0xd
-
-H3Frame: [type
-  [type:    H3FrameType
-   payload: Bytes]]
+# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # ── Frame I/O ─────────────────────────────────────────────────────────────────
-  # HTTP/3 frames use QUIC variable-length integer encoding (RFC 9000 §16).
-
-  # QUIC varint: 1, 2, 4, or 8 bytes depending on high 2 bits of first byte.
   read-varint: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [b0: [get [read-bytes h 1] 0]]
     [prefix: [bit-shift-right [bit-and b0 0xC0] 6]]
@@ -51,19 +25,6 @@ H3Frame: [type
         [concat [bytes [bit-or 0x40 [/ n 256]]] [bytes [mod n 256]]]
         [error "TODO: encode-varint 4/8 byte"]]]]
 
-  read-h3-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [type-int: [read-varint h]]
-    [length:   [read-varint h]]
-    [payload:  [read-bytes h length]]
-    [H3Frame [type: [int->h3-frame-type type-int]  payload: payload]]]
-
-  write-h3-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h frame@H3Frame]
-    [write-bytes h
-      [concat
-        [encode-varint [h3-frame-type->int frame.type]]
-        [encode-varint [length frame.payload]]
-        frame.payload]]]
-
   int->h3-frame-type: [fn [let n@Int]
     [match n
       0: [H3Data]  1: [H3Headers]  3: [H3CancelPush]
@@ -75,25 +36,48 @@ H3Frame: [type
       [H3Data]: 0  [H3Headers]: 1  [H3CancelPush]: 3  [H3Settings]: 4
       [H3PushPromise]: 5  [H3Goaway]: 7  [H3MaxPushId]: 13]]
 
-  # ── Connection Setup ──────────────────────────────────────────────────────────
+  read-h3-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [H3Frame
+      [type:    [int->h3-frame-type [read-varint h]]
+       payload: [read-bytes h [read-varint h]]]]]
+
+  write-h3-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h frame@H3Frame]
+    [write-bytes h
+      [concat
+        [encode-varint [h3-frame-type->int frame.type]]
+        [encode-varint [length frame.payload]]
+        frame.payload]]]
+]
+
+# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+
+[
+  H3FrameType: [union
+    [H3Data] [H3Headers] [H3CancelPush] [H3Settings] [H3PushPromise] [H3Goaway] [H3MaxPushId]]
+
+  H3Frame: [type [type: H3FrameType  payload: Bytes]]
+
+  Http3Connection: [type
+    [quic:         QuicConnection
+     control-send: QuicStream
+     control-recv: QuicStream
+     qpack-enc:    QuicStream
+     qpack-dec:    QuicStream
+     settings:     [Map String Int]]]
 
   h3-accept: [fn [let conn@QuicConnection]
-    [error "TODO: h3-accept — open control/QPACK streams, send SETTINGS frame, receive peer SETTINGS, return Http3Connection"]]
+    [error "TODO: h3-accept — open control/QPACK streams, send SETTINGS, recv peer SETTINGS"]]
 
   h3-connect: [fn [let conn@QuicConnection]
-    [error "TODO: h3-connect — open control/QPACK streams, send SETTINGS frame, receive peer SETTINGS, return Http3Connection"]]
+    [error "TODO: h3-connect — open control/QPACK streams, send SETTINGS, recv peer SETTINGS"]]
 
-  http3-client: [fn [let conn@QuicConnection]
-    [h3-connect conn]]
-
-  # ── Request/Response ──────────────────────────────────────────────────────────
+  http3-client: [fn [let conn@QuicConnection] [h3-connect conn]]
 
   h3-http-request: [fn [let conn@Http3Connection req@RawRequest]
-    [error "TODO: h3-http-request — open QUIC stream, send HEADERS frame (QPACK-encoded pseudo-headers + real headers), send DATA frames, read response HEADERS+DATA frames, return Task@RawResponse"]]
+    [error "TODO: h3-http-request — open QUIC stream, send HEADERS (qpack-encode), send DATA, read response HEADERS+DATA"]]
 
-  # Extract incoming request streams.
   http3-req-conn: [fn [let conn@Http3Connection out@[Channel RawRequest]]
-    [error "TODO: http3-req-conn — read incoming QUIC streams, parse HEADERS frames via qpack-decode, emit RawRequest with respond fn"]]
+    [error "TODO: http3-req-conn — read incoming QUIC streams, qpack-decode HEADERS, emit RawRequest with respond fn"]]
 
   h3-open-stream: [fn [let conn@Http3Connection]
     [quic-open-stream conn.quic]]
@@ -101,13 +85,9 @@ H3Frame: [type
   h3-stream-ch: [fn [let ch@[Channel Http3Connection]]
     [channel-map [fn [let conn] [h3-open-stream conn]] ch]]
 
-  # ── QPACK ─────────────────────────────────────────────────────────────────────
-  # QPACK (RFC 9204) differs from HPACK by supporting out-of-order streams.
-  # Uses three streams: request stream (encoded field lines) + encoder/decoder streams.
-
   qpack-decode: [fn [let data@Bytes]
-    [error "TODO: qpack-decode — Required Insert Count + S + Delta Base (§3.2.1), field line representations (§4.5)"]]
+    [error "TODO: qpack-decode — Required Insert Count + S + Delta Base (RFC 9204 §3.2.1), field line representations (§4.5)"]]
 
   qpack-encode: [fn [let headers@[Map String String]]
-    [error "TODO: qpack-encode — literal field line without name reference for simplicity; add indexed references in follow-up sprint"]]
+    [error "TODO: qpack-encode — literal field line without name reference (safe default)"]]
 ]

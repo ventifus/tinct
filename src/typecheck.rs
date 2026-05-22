@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     node_id, Annotation, Document, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
-    SurfaceDocument, SurfaceItem, SurfaceProgram, TypeAnnotationTable,
+    SurfaceDeclaration, SurfaceDocument, SurfaceItem, SurfaceProgram, TypeAnnotationTable,
 };
 use crate::coverage;
 use crate::types::{
@@ -548,6 +548,118 @@ fn typecheck_surface_document(
     let mut result_type = Type::Record(Row {
         fields: HashMap::new(),
     });
+
+    // Process declarations first (TypeAlias, ClassDecl, InstanceDecl)
+    // These register into env/state before expressions are type-checked.
+    for item in &doc.items {
+        if let SurfaceItem::Decl(decl_spanned) = item {
+            match &decl_spanned.node {
+                SurfaceDeclaration::TypeAlias { params: _, body: _ } => {
+                    // Register type alias directly into env
+                    // Note: top-level [type ...] declarations don't have a name; they're
+                    // typically used as `MyType: [type ...]` dict entries. For now, skip
+                    // standalone [type ...] declarations at the top level.
+                    // TODO: Once we support named type declarations ([type MyType [...]]),
+                    // extract the name and register here.
+                }
+                SurfaceDeclaration::ClassDecl {
+                    name,
+                    params,
+                    superclasses,
+                    methods,
+                    determines,
+                    resolver,
+                    resolver_injective,
+                } => {
+                    // Convert to Expr::ClassDecl and infer to register into state.class_env
+                    let methods_exprs: Vec<Spanned<crate::ast::Entry>> = methods
+                        .iter()
+                        .map(|m| {
+                            let key = m
+                                .node
+                                .key
+                                .as_ref()
+                                .map(|k| crate::ast_convert::surface_node_to_expr(k));
+                            let value = crate::ast_convert::surface_node_to_expr(&m.node.value);
+                            Spanned::new(
+                                crate::ast::Entry {
+                                    key,
+                                    value: Rc::new(value),
+                                },
+                                m.span,
+                            )
+                        })
+                        .collect();
+                    let determines_exprs: Vec<Spanned<Expr>> = determines
+                        .iter()
+                        .map(|d| crate::ast_convert::surface_node_to_expr(d))
+                        .collect();
+                    let resolver_expr = resolver
+                        .as_ref()
+                        .map(|r| Box::new(crate::ast_convert::surface_node_to_expr(r)));
+                    let class_expr = Spanned::new(
+                        Expr::ClassDecl {
+                            name: name.clone(),
+                            params: params.clone(),
+                            superclasses: superclasses.clone(),
+                            methods: methods_exprs,
+                            determines: determines_exprs,
+                            resolver: resolver_expr,
+                            resolver_injective: *resolver_injective,
+                        },
+                        decl_spanned.span,
+                    );
+                    // Infer the class expression to register it into state.class_env
+                    match infer_expr(&class_expr, &env, state, &mut None) {
+                        Ok(_) => {}
+                        Err(mut errs) => errors.append(&mut errs),
+                    }
+                }
+                SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+                    // Convert to Expr::InstanceDecl and infer to register into state
+                    let arms_exprs: Vec<(Spanned<Expr>, Vec<Spanned<crate::ast::Entry>>)> = arms
+                        .iter()
+                        .map(|(pattern, methods)| {
+                            let pattern_expr = crate::ast_convert::surface_node_to_expr(pattern);
+                            let methods_exprs: Vec<Spanned<crate::ast::Entry>> = methods
+                                .iter()
+                                .map(|m| {
+                                    let key = m
+                                        .node
+                                        .key
+                                        .as_ref()
+                                        .map(|k| crate::ast_convert::surface_node_to_expr(k));
+                                    let value =
+                                        crate::ast_convert::surface_node_to_expr(&m.node.value);
+                                    Spanned::new(
+                                        crate::ast::Entry {
+                                            key,
+                                            value: Rc::new(value),
+                                        },
+                                        m.span,
+                                    )
+                                })
+                                .collect();
+                            (pattern_expr, methods_exprs)
+                        })
+                        .collect();
+                    let instance_expr = Spanned::new(
+                        Expr::InstanceDecl {
+                            class_name: class_name.clone(),
+                            arms: arms_exprs,
+                        },
+                        decl_spanned.span,
+                    );
+                    // Infer the instance expression to register it
+                    match infer_expr(&instance_expr, &env, state, &mut None) {
+                        Ok(_) => {}
+                        Err(mut errs) => errors.append(&mut errs),
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 
     // Extract only expression items (skip declarations)
     let expr_items: Vec<_> = doc

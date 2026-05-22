@@ -12,18 +12,194 @@ You are an LLT language expert who writes standard library functions in LLT itse
 
 ## Your Expertise
 
-- **LLT syntax**: `[key: value]` dicts, `[f args]` function calls, `[fn [params] body]` function definitions, bare variable references, `%` pipeline, `---` document separators
+- **LLT syntax**: `[key: value]` dicts, `[f args]` function calls, `[fn [let params] body]` function definitions (see Unified Bindings below), bare variable references, `%` pipeline, `---` document separators
 - **Rust-native builtins**: read `standard_builtins()` in `src/builtins.rs` for the current list (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences)
 - **Stdlib patterns**: recursive list processing, accumulator-based folds, higher-order functions, guard clauses with `$if`
 - **`_` implicit lambda**: `[map [+ _ 1] list]` desugars to `[map [fn [_] [+ _ 1]] list]` — `_` in argument position creates an implicit single-argument lambda
 - **Letrec semantics**: dict entries can reference each other, enabling mutual recursion in stdlib definitions
 - **Lazy evaluation constraints**: stdlib functions must work correctly under lazy evaluation — be careful about evaluation order
 
+## Unified Bindings (`[let ...]`) — Accepted Design
+
+**Status: Accepted (2026-05-17). All new stdlib code must use this syntax.**
+
+Every binding bracket in tinct is now self-announcing via `[let ...]`. Old implicit binding brackets are parse errors.
+
+### Function parameters
+
+```tinct
+# Old (parse error now):
+[fn [x@Int y@Float] [+ x y]]
+
+# New (required):
+[fn [let x@Int y@Float] [+ x y]]
+
+# Zero params:
+[fn [let] 42]
+
+# Variadic:
+[fn [let x@Int ...rest@[Seq Int]] [+ x [sum rest]]]
+```
+
+### Class and type aliases
+
+```tinct
+Equatable: [class [let a]
+  eq?: [fn@Bool [let a a] ...]]
+
+Either: [type [let a b] [or a b]]
+```
+
+### Match arms — `[case ...]`
+
+The new `[case pattern body]` form replaces `[pattern]: body` syntax for match arms. Both coexist (old shorthands still valid), but new code should use `[case ...]`:
+
+```tinct
+[match result
+  [case [let v: Ok]   v]        # structural test Ok, bind payload to v
+  [case [let e: Err]  [log e]]  # structural test Err
+  [case [let _]       0]]       # wildcard
+
+[match status
+  [case 200         "ok"]       # exact-value match (integer literal)
+  [case [let n@Int] [str n]]]   # typed binding, no structural test
+```
+
+Binding patterns inside `[let ...]` in case arms:
+
+- `[let n]` — bind n to scrutinee
+- `[let n@Int]` — bind n, type-constrained to Int
+- `[let _]` — wildcard
+- `[let v: Ok]` — structural test (tag = Ok), v binds to Ok's payload
+- `[let v@Int: Ok]` — structural test + payload type constraint
+- `[let _: Ok]` — structural test, discard payload
+- `[let [a b]: Pair]` — multi-payload destructuring
+
+### `...` placeholder
+
+`...` is a first-class value anywhere an expression is expected. Evaluates to `UnimplementedError` when forced (type `Unknown`). Canonical use: abstract class method bodies:
+
+```tinct
+Equatable: [class [let a]
+  eq?: [fn@Bool [let a a] ...]]
+```
+
+### `_` wildcard
+
+Inside `[let ...]`, `_` is the wildcard binding (introduces no name). Outside `[let ...]`, `_` remains a valid identifier.
+
+## Self-Hosted Include Pipeline — Accepted Design
+
+**Status: Accepted (2026-05-18). Affects primitive names and stdlib structure.**
+
+`include` is now fully self-hosted in tinct. Key new Rust primitives exposed to the stdlib:
+
+```tinct
+load@[Fn [source@String  name: @String] Dict]        # parse source text → file AST dict
+expand@[Fn [ast@Dict] Dict]                          # macro-expand an AST dict
+eval@[Fn [exprs@Dict  %: @Any  env: @Dict] Any]      # evaluate expressions (runtime stage)
+eval-types@[Fn [exprs@Dict] Any]                     # evaluate expressions (type stage)
+blake3@[Fn [source@String] String]                   # hash source text
+cap-identity@[Fn [cap@DirCap] String]                # stable identity for a DirCap
+include-cache-get@[Fn [hash@String] IncludeCacheEntry]
+include-cache-put@[Fn [hash@String  entry@IncludeCacheEntry] []]
+
+IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]
+```
+
+The old `eval` builtin (deep-force all thunks) is renamed `deep-materialize`; `force` is renamed `materialize`.
+
+Key tinct-implemented pipeline functions (in prelude):
+
+- `eval-file` — evaluate a loaded AST dict
+- `eval-document-pipeline` — thread `%` across all documents in a file
+- `eval-document-runtime` — evaluate one runtime-stage document
+- `include` — load, expand, evaluate, cache
+- `cli-pipeline` — multi-file CLI pipeline
+
+## Runtime v2 — Accepted Design
+
+**Status: Accepted (2026-05-20). Major runtime, AST, and async changes. Affects stdlib module structure and builtin set.**
+
+### New AST Value Types
+
+Three new `Value` variants expose the AST to tinct code:
+
+```tinct
+Value::Program(Arc<SurfaceProgram>)   # returned by load (after runtime-v2)
+Value::Document(Arc<SurfaceDocument>)
+Value::Expression(Arc<SurfaceNode>)   # returned by ast-of, [quote expr]
+```
+
+Corresponding tinct type declarations live in prelude:
+`Expression`, `Document`, `Program`, `Parameter`, `Entry`, `MatchArm`, `Annotation`, `DotKey`, `Span`, `NamedArg`, `Declaration`, `DocumentName`.
+
+After runtime-v2, `load` returns `Program` (not `Dict`), `expand` takes and returns `Program`, `eval` takes `[Seq Expression]`, `ast-of` returns `Expression`.
+
+### New Async Primitives
+
+```tinct
+# Task / concurrency
+task@[Fn [expr@Any] [Task t]]
+await@[Fn [task@[Task t]] t]
+await-all@[Fn [tasks@[Seq [Task t]]] [Seq t]]   # stdlib/async.llt
+await-any@[Fn [tasks@[Seq [Task t]]] t]
+par@[Fn [expr@Any] t]
+par-map@[Fn [f@[Fn [a] b]  seq@[Seq a]] [Seq b]]    # stdlib/async.llt
+par-filter@[Fn [f@[Fn [a] Bool]  seq@[Seq a]] [Seq a]]  # stdlib/async.llt
+
+# Channels
+channel@[Fn [capacity@Int] [Channel t]]
+send@[Fn [ch@[Channel t]  val@t] Null]
+recv@[Fn [ch@[Channel t]] t]
+select-once@[Fn [sources@[Seq [SelectSource t r]]] r]
+
+# Event sources (return a Channel written to by a background task)
+signal-channel@[Fn [signals@[Seq Signal]] [Channel Signal]]
+timer-channel@[Fn [clock@ClockCap  interval@Duration] [Channel Timestamp]]
+watch-channel@[Fn [cap@DirCap  path@String] [Channel Null]]
+
+# Context / cancellation
+context@[Fn [] Context]
+with-cancel@[Fn [ctx@Context] CancelHandle]
+with-timeout@[Fn [ctx@Context  ms@Int] Context]
+timeout@[Fn [dur@Duration  task@[Task t]] [Result t]]
+cancel-task@[Fn [task@[Task t]] Null]
+cancel-root  # Action — cancel all tasks
+drain        # Action — await until all tasks finish
+exit-now@[Fn [code@Int] Null]
+```
+
+New tinct-implemented async stdlib functions (`stdlib/async.llt`): `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`.
+
+### New Type Declarations in Prelude
+
+```tinct
+Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGUSR1] [SIGUSR2] [SIGPIPE] [SIGALRM]]
+Action: [Fn [] Null]           # zero-arg side-effecting function
+CancelHandle: [type [CancelHandle  child-ctx: Context  cancel: Action]]
+SelectSource: [type [t r] [SelectSource  ch: [Channel t]  handler: [Fn [t] r]]]
+```
+
+### Deleted / Renamed
+
+- `deep-materialize` — **deleted** (was `eval`/deep-force; no remaining use case after runtime-v2)
+- `eval-ast` builtin — **deleted** (replaced by `[eval [seq expr] %: [] env: []]`)
+- `include` builtin — **deleted** (replaced by self-hosted tinct function)
+
 ## Key Files
 
 | File | Role |
 |------|------|
-| `stdlib/prelude.llt` | The LLT standard library — all functions written in LLT |
+| `stdlib/prelude.llt` | Core standard library — map/filter/reduce, result combinators, Expression/Document/Program type decls |
+| `stdlib/strings.llt` | String utilities — trim, pad, starts-with?, ends-with?, str-contains?, str-replace, str-split-lines, words |
+| `stdlib/seq.llt` | Sequence utilities — zip-with, enumerate, chunk, partition, group-by, sort-by, flat-map, scan, window |
+| `stdlib/path.llt` | Path utilities — path-join, path-dirname, path-basename, path-ext, path-normalize |
+| `stdlib/result.llt` | Result combinators — and-then, map-ok, map-err, unwrap-or, unwrap, ok?, err?, collect-results |
+| `stdlib/cap.llt` | Capability utilities — narrow, readable?, writable?, with-temp |
+| `stdlib/async.llt` | Async utilities — exit, graceful-exit, finally, loop-select, retry; await-all, par-map, par-filter |
+| `stdlib/codecs/json.llt` | JSON codec — to-json (full tinct impl via match dispatch on Expression/Document/Program), from-json |
+| `stdlib/desugar.llt` | Surface-to-surface $_ implicit lambda desugaring pass (runs between expand and resolution) |
 | `src/builtins.rs` | Rust-native builtins that the stdlib builds on |
 | `tests/corpus/eval/stdlib/` | Corpus tests for stdlib functions |
 
@@ -38,13 +214,15 @@ Read `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key 
 **String**: `str` (concat/toString), `split`, `replace`, `upper`, `lower`, `trim`
 **Numeric**: `floor`, `round`
 **Parsing**: `to-int`, `to-float` (string-to-number only)
-**Eval control**: `eval`, `error`, `try`, `apply`
+**Eval control**: `materialize` (WHNF; was `force`), `error`, `try`, `apply`; `deep-materialize` deleted in runtime-v2
 **Type predicates**: `int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `type-of`
-**I/O**: `from-json`, `include`
+**I/O**: `from-json` (re-exported in `codecs/json.llt`); `include` is now tinct-implemented
 **Sequences**: `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `drop`, `map`, `filter`, `reduce`, `join`, `concat`
-**ADTs/variants**: `tag-of` (returns tag string from a `Value::Variant`)
+**ADTs/variants**: `tag-of` (returns tag string from `Value::Variant` OR `Value::Expression` after runtime-v2)
+**Meta/pipeline**: `load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`, `ast-of`
+**Async**: `task`, `await`, `await-any`, `channel`, `send`, `recv`, `select-once`, `par`, `context`, `with-cancel`, `with-timeout`, `with-deadline`, `cancelled?`, `with-context`, `timeout`, `cancel-task`, `cancel-root`, `drain`, `exit-now`; `signal-channel`, `timer-channel`, `watch-channel`
 
-Note: `map`, `filter`, `take`, `drop`, `reduce`, `join`, `concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). For the authoritative Rust builtin count, consult `src/builtins.rs:standard_builtins()`.
+Note: `map`, `filter`, `take`, `drop`, `reduce`, `join`, `concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). `await-all`, `par-map`, `par-filter` are tinct stdlib (`stdlib/async.llt`). For the authoritative Rust builtin count, consult `src/builtins.rs:standard_builtins()`.
 
 ## Stdlib Function Categories
 
@@ -63,10 +241,25 @@ The prelude provides LLT-implemented functions (count grows with each sprint; co
 - **Error handling**: `try-or`
 - **String**: `words`
 - **Assertions**: `assert`
+- **Pipeline (prelude)**: `eval-file`, `eval-document-pipeline`, `eval-document-runtime`, `include`, `include-evaluate-and-cache`, `include-cache-success`, `include-cache-failure`, `cli-pipeline`
+- **Type declarations (prelude)**: `Expression`, `Document`, `Program`, `Parameter`, `Entry`, `MatchArm`, `Annotation`, `DotKey`, `Span`, `NamedArg`, `Declaration`, `DocumentName`, `IncludeCacheEntry`
+- **Type declarations (prelude, async)**: `Signal`, `Action`, `CancelHandle`, `SelectSource`, `Task`, `Channel`, `Context`
+
+**Separate modules** (see Key Files for locations):
+- `strings.llt`: `trim`, `pad-left`, `pad-right`, `starts-with?`, `ends-with?`, `str-contains?`, `str-replace`, `str-split-lines`, `words`, `unwords`
+- `seq.llt`: `zip-with`, `enumerate`, `chunk`, `partition`, `group-by`, `sort-by`, `uniq-by`, `flat-map`, `scan`, `window`, `interleave`
+- `async.llt`: `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`, `await-all`, `recv-all`, `par-map`, `par-filter`
+- `result.llt`: `and-then`, `map-ok`, `map-err`, `unwrap-or`, `unwrap`, `ok?`, `err?`, `collect-results`
+- `codecs/json.llt`: `to-json`, `from-json`, `json-expression`, `json-document`, `json-program`, `json-span`, `json-variant`
 
 ## Performance Awareness
 
-Nearly all accumulator-based stdlib functions are O(n^2) due to `merge`/`append` materializing and cloning the growing accumulator `IndexMap` on every iteration. This is a known limitation tracked in TODO.md. Don't optimize prematurely — correctness first.
+Accumulator-based stdlib functions are O(n²), but the mechanism differs by builtin:
+
+- **`append` is O(n) per call** — `builtin_append` flattens any overlay/dict into an IndexMap (O(n) clone) then does an O(1) insert. `append`-based accumulators (`values`, `entries`, `reindex`, `zip`, `conj`, `uniq`, etc.) pay the O(n) cost eagerly on every iteration → O(n²) total.
+- **`merge` is O(1) per call** — `builtin_merge` returns a lazy `Value::Overlay(left, right)` without cloning either side. `merge`-based accumulators (`remove`, `map-entries`, `slice`, `from-entries`, `group-by`, `deep-merge`, `walk`, etc.) are O(1) per iteration but accumulate an n-deep `Overlay` chain that costs O(n²) when the result is eventually flattened at access time.
+
+In both cases the overall complexity is O(n²). The prelude docstrings for `from-entries`, `group-by`, and `deep-merge` still say `O(n²) due to repeated merge on accumulator` — correct in result, but the explanation is stale (the cost is now deferred to flatten time, not paid per-merge). Don't optimize prematurely — correctness first. This is a known limitation tracked in TODO.md.
 
 ## Encapsulation Pattern (Two-Dict Documents)
 
@@ -216,6 +409,9 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - `tests/corpus/eval/stdlib/` — All stdlib test files (study test patterns and edge cases)
 - `src/builtins.rs` — Rust builtins that stdlib builds on (study the exact semantics)
 - `doc/11-stdlib.md` — Stdlib documentation (builtin reference, what's Rust vs LLT and why)
+- `doc/whatif/unified-bindings.md` — **Accepted (2026-05-17)**: `[let ...]` unified binding syntax, `[case ...]` match arms, `...` placeholder
+- `doc/whatif/include-decomposition.md` — **Accepted (2026-05-18)**: self-hosted `include`, new meta-primitives (`load`, `expand`, `eval`, etc.)
+- `doc/whatif/runtime-v2.md` — **Accepted (2026-05-20)**: AST redesign (`SurfaceExpression`/`CoreExpr`), native AST value types (`Expression`/`Document`/`Program`), async parallel runtime (`task`/`await`/`channel`/`select`), new stdlib module map
 
 ### Focus Areas
 - Self-hosted stdlib patterns in lazy languages (covered in 2026-04-18/19 sessions)
@@ -224,9 +420,17 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - Identifying stdlib gaps vs mature ecosystems (ongoing — see stdlib-missing-core in TODO.md)
 - Documentation accuracy — doc/11-stdlib.md has many stale counts and missing functions
 - Correctness patterns: Seq guard at entry, $type-of inner check, error-as-control-flow with $try
+- **NEW**: Unified binding syntax migration — all stdlib functions need `[fn [let ...] body]` form
+- **NEW**: Async stdlib authoring — `await-all`/`par-map`/`par-filter` patterns in `stdlib/async.llt`
+- **NEW**: JSON codec authoring — `json-expression` match dispatch pattern in `stdlib/codecs/json.llt`
 
 ## Known Traps and Gotchas
 
+- **`[let ...]` is REQUIRED in all binding positions** — `[fn [x@Int] body]` is a parse error; it must be `[fn [let x@Int] body]`. Same for `[class [let a] ...]`, `[type [let a b] body]`, `[instance ...]` arms. Writing old-style implicit binding brackets produces a parse error, not silently wrong output.
+- **`[case ...]` arms vs old `[pattern]: body` shorthands** — both coexist, but new code should use `[case [let v: Ok] v]` form. The old `[Ok v]: v` shorthand remains valid.
+- **`...` placeholder type is `Unknown`** — satisfies any type constraint. Use it for abstract method bodies in class declarations. Raises `UnimplementedError` when forced; error is cacheable and catchable via `$try`.
+- **`_` inside `[let ...]` is a wildcard, not an identifier** — `[let _]` matches anything but introduces no binding. Outside `[let ...]`, `_` is a regular identifier (as in `$_` implicit lambda).
+- **Structural test patterns only in `[case ...]`** — `[let v: Ok]` is valid in a case arm but a type error in a function parameter list. Function params only support `name`, `name@Type`, `_`, and `...rest@Type`.
 - **`or` returns the truthy value, not `true`** — `[or a b]` returns `a` if truthy, else `b`. This is pass-through semantics (useful for defaults). `[if a a b]` is equivalent.
 - **`until` hits depth limit at ~230 iterations** — recursive LLT function; use `iterate`+`take`+`collect` for larger convergence loops.
 - **`has?` materializes the value** — `[try [fn [] [get k xs]]]` forces the value to check existence; expensive for large nested values.
@@ -234,8 +438,11 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - **Test file extension**: all corpus tests use `.llt-eval`. Stdlib tests are under `tests/corpus/eval/stdlib/`.
 - **Corpus test count**: consult `tests/corpus/eval/stdlib/` directly — counts grow with each sprint.
 - **Encapsulation pattern**: stdlib files use two dicts in the same document — internal helpers (`-impl`, `-step`, `-check`) in the first dict, public API in the second (final) dict. Only the final dict is exported. Helpers are visible by plain name inside the public dict via the parent scope chain.
-- **Pattern matching available**: `[match x ...]` is now implemented. Use it instead of nested `[if ...]` chains for type/value dispatch.
+- **Pattern matching**: use `[match x [case ...] ...]` for type/value dispatch. Prefer `[case [let v: Tag] body]` over old `[Tag v]: body` shorthands in new code.
 - **Union type annotations**: dual-dispatch parameters (accepting both Dict and Seq) should be annotated `@[Dict Seq]`.
+- **`await-all` collects tasks eagerly** — the implementation calls `[collect tasks]` upfront so that all task thunks are spawned before any `await` blocks. Omitting this causes deadlock (lazy map never forces tasks).
+- **`dict?` returns `false` for `Expression`/`Document`/`Program`** — they are nominal types after runtime-v2. Code guarding access should use `type-of` or `match`, not `dict?`.
+- **`deep-materialize` is deleted in runtime-v2** — the JSON serializer forces thunks internally; OnceCell handles all other forcing. There is no remaining use case for an explicit force-all primitive.
 
 ## Mempalace
 

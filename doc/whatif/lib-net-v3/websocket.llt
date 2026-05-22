@@ -1,150 +1,118 @@
 # stdlib/protocols/websocket.llt — WebSocket (RFC 6455) in tinct.
 # Part of: lib-net-v3
-# Depends on: net.llt (ByteStream, MessageStream), http1.llt (RawRequest)
 # Rust primitives: sha1, crypto-random, bytes-xor
 
 [include %libdir "net.llt"]
-[include %libdir "http1.llt"]
-
-# ── Types ────────────────────────────────────────────────────────────────────────
-
-WsFrame: [union
-  [Text   data@String]
-  [Binary data@Bytes]
-  [Ping   data@Bytes]
-  [Pong   data@Bytes]
-  [Close  code@Int  reason@String]]
-
-WebSocketConnection: [type
-  [underlying:   Handle
-   server-side:  Bool]]   # client must mask frames; server must not
+[include %include-dir "http1.llt"]
 
 [instance [MessageStream WebSocketConnection WsFrame]
   send-message: ws-send-frame
   recv-message: ws-recv-frame]
 
-[
-  # ── WebSocket Upgrade (Server) ─────────────────────────────────────────────────
+# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
-  # Upgrade an HTTP/1.1 connection that sent an Upgrade: websocket request.
+[
+  bytes-xor-mask: [fn [let data@Bytes key@Bytes]
+    [collect [map-indexed [fn [let i b] [bit-xor b [get key [mod i 4]]]] data]]]
+
+  int->ws-frame: [fn [let opcode@Int payload@Bytes]
+    [match opcode
+      1:  [Text   [bytes-str payload]]
+      2:  [Binary payload]
+      8:  [Close  [if [>= [length payload] 2]
+                    [+ [* [get payload 0] 256] [get payload 1]] 1000]
+                  [if [> [length payload] 2] [bytes-str [slice payload 2 [- [length payload] 2]]] ""]]
+      9:  [Ping   payload]
+      10: [Pong   payload]
+      _:  [error [str "WebSocket: unknown opcode: " opcode]]]]
+
+  ws-frame->opcode-payload: [fn [let frame@WsFrame]
+    [match frame
+      [let [Text   s]]:            [1  [str-bytes s]]
+      [let [Binary b]]:            [2  b]
+      [let [Close  code reason]]:  [8  [concat [encode BigEndian [@UInt16 code]] [str-bytes reason]]]
+      [let [Ping   b]]:            [9  b]
+      [let [Pong   b]]:            [10 b]]]
+
+  base64-encode: [fn [let data@Bytes] [error "TODO: base64-encode — RFC 4648 §4"]]
+]
+
+# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+
+[
+  WsFrame: [union
+    [Text   data@String]
+    [Binary data@Bytes]
+    [Ping   data@Bytes]
+    [Pong   data@Bytes]
+    [Close  code@Int  reason@String]]
+
+  WebSocketConnection: [type
+    [underlying:  Handle
+     server-side: Bool]]
+
   ws-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [req: [parse-request h [fn [let _] null]]]   # read the upgrade request
-    [ws-accept-request h req]]
+    [ws-accept-request h [parse-request h [fn [let _] null]]]]
 
   ws-accept-request: [fn@[bind: [h]  constraint: [h: ByteStream]]
                        [let h@h req@RawRequest]
-    # Validate upgrade headers.
     [if [not [= [str-lower [or [get? req.headers "upgrade"] ""]] "websocket"]]
-      [error "WebSocket: missing Upgrade: websocket header"]]
+      [error "WebSocket: missing Upgrade: websocket"]]
     [key: [match [get? req.headers "sec-websocket-key"]
       [Some k]: k
-      [None]:   [error "WebSocket: missing Sec-WebSocket-Key header"]]]
-    # Compute accept key: SHA1(key + magic) base64-encoded (RFC 6455 §1.3).
-    [magic: "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"]
-    [accept-hash: [sha1 [str-bytes [str key magic]]]]
-    [accept-key:  [base64-encode accept-hash]]
-    # Send 101 Switching Protocols.
+      [None]:   [error "WebSocket: missing Sec-WebSocket-Key"]]]
+    [accept-key: [base64-encode [sha1 [str-bytes [str key "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"]]]]]
     [write-response h
       [RawResponse
         [status: 101
          headers: [map-from-pairs
-           [["upgrade"                "websocket"]
-            ["connection"             "Upgrade"]
-            ["sec-websocket-accept"   accept-key]]]
+           [["upgrade"              "websocket"]
+            ["connection"          "Upgrade"]
+            ["sec-websocket-accept" accept-key]]]
          body: []]]]
     [WebSocketConnection [underlying: h  server-side: true]]]
 
-  # ── WebSocket Upgrade (Client) ─────────────────────────────────────────────────
-
   ws-connect: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h host@String path@String]
-    [key-bytes: [crypto-random 16]]
-    [key: [base64-encode key-bytes]]
+    [key: [base64-encode [crypto-random 16]]]
     [http1-request h "GET" path
       [map-from-pairs
-        [["host"                   host]
-         ["upgrade"                "websocket"]
-         ["connection"             "Upgrade"]
-         ["sec-websocket-key"      key]
-         ["sec-websocket-version"  "13"]]]
-      []
-      host]
-    # TODO: verify 101 response and Sec-WebSocket-Accept.
+        [["upgrade"               "websocket"]
+         ["connection"            "Upgrade"]
+         ["sec-websocket-key"     key]
+         ["sec-websocket-version" "13"]]]
+      [] host]
     [WebSocketConnection [underlying: h  server-side: false]]]
 
-  # ── Frame Framing ─────────────────────────────────────────────────────────────
-
-  # Read one complete WebSocket frame from the underlying ByteStream.
   ws-recv-frame: [fn [let conn@WebSocketConnection]
-    [h: conn.underlying]
-    [b0: [get [read-bytes h 1] 0]]
-    [b1: [get [read-bytes h 1] 0]]
-    [fin:    [= [bit-and b0 0x80] 0x80]]
+    [h:    conn.underlying]
+    [b0:   [get [read-bytes h 1] 0]]
+    [b1:   [get [read-bytes h 1] 0]]
     [opcode: [bit-and b0 0x0F]]
     [masked: [= [bit-and b1 0x80] 0x80]]
     [len1:   [bit-and b1 0x7F]]
-    [payload-len:
-      [match len1
-        126: [+ [* [get [read-bytes h 1] 0] 256] [get [read-bytes h 1] 0]]
-        127: [error "WebSocket: 64-bit frame lengths not yet supported"]
-        _:   len1]]
-    [masking-key: [if masked [read-bytes h 4] []]]
-    [raw: [read-bytes h payload-len]]
-    [payload: [if masked [bytes-xor-mask raw masking-key] raw]]
-    # Fragmentation: if not FIN, accumulate continuation frames (TODO).
-    [if [not fin] [error "WebSocket: fragmented frames not yet supported"] null]
+    # RFC 6455 §5.1: server MUST reject unmasked client frames; client MUST reject masked server frames.
+    [if [and conn.server-side [not masked]] [error "WebSocket: client frame must be masked (RFC 6455 §5.1)"] null]
+    [if [and [not conn.server-side] masked] [error "WebSocket: server frame must not be masked (RFC 6455 §5.1)"] null]
+    [payload-len: [match len1
+      126: [let lb: [read-bytes h 2]  [+ [* [get lb 0] 256] [get lb 1]]]   # one 2-byte read
+      127: [error "WebSocket: 64-bit frame lengths not supported (max 65535 bytes)"]
+      _:   len1]]
+    [mask-key: [if masked [read-bytes h 4] []]]
+    [raw:      [read-bytes h payload-len]]
+    [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
+    [if [not [= [bit-and b0 0x80] 0x80]] [error "WebSocket: fragmented frames not supported"] null]
     [int->ws-frame opcode payload]]
 
-  # Write one WebSocket frame.
   ws-send-frame: [fn [let conn@WebSocketConnection frame@WsFrame]
-    [h:          conn.underlying]
-    [client?:    [not conn.server-side]]
-    [opcode payload: [ws-frame->int-payload frame]]
-    [mask-bit:   [if client? 0x80 0x00]]
-    [len:        [length payload]]
-    [len-bytes:
-      [if [<= len 125]
-        [bytes [bit-or len mask-bit]]
-        [concat
-          [bytes [bit-or 126 mask-bit]]
-          [bytes [/ len 256]]
-          [bytes [mod len 256]]]]]
-    [mask-key:   [if client? [crypto-random 4] []]]
-    [masked-payload: [if client? [bytes-xor-mask payload mask-key] payload]]
-    [write-bytes h
-      [concat
-        [bytes [bit-or 0x80 opcode]]   # FIN=1, opcode
-        len-bytes
-        mask-key
-        masked-payload]]]
-
-  # XOR payload with 4-byte masking key (RFC 6455 §5.3).
-  bytes-xor-mask: [fn [let data@Bytes key@Bytes]
-    [n: [length data]]
-    [collect [map-indexed [fn [let i b]
-      [bit-xor b [get key [mod i 4]]]]
-     data]]]
-
-  int->ws-frame: [fn [let opcode@Int payload@Bytes]
-    [match opcode
-      1: [Text   [bytes-str payload]]
-      2: [Binary payload]
-      8: [Close  [if [>= [length payload] 2]
-                   [+ [* [get payload 0] 256] [get payload 1]]
-                   1000]
-                 [if [> [length payload] 2] [bytes-str [slice payload 2 [- [length payload] 2]]] ""]]
-      9: [Ping   payload]
-      10:[Pong   payload]
-      _: [error [str "WebSocket: unknown opcode: " opcode]]]]
-
-  ws-frame->int-payload: [fn [let frame@WsFrame]
-    [match frame
-      [let [Text   s]]:       [1  [str-bytes s]]
-      [let [Binary b]]:       [2  b]
-      [let [Close  code reason]]:
-        [8  [concat [encode BigEndian [@UInt16 code]] [str-bytes reason]]]
-      [let [Ping   b]]:       [9  b]
-      [let [Pong   b]]:       [10 b]]]
-
-  # base64 encoding for WebSocket key (RFC 4648).
-  base64-encode: [fn [let data@Bytes] [error "TODO: base64-encode"]]
+    [h:      conn.underlying]
+    [client: [not conn.server-side]]
+    [opcode payload: [ws-frame->opcode-payload frame]]
+    [len:    [length payload]]
+    [mask-bit: [if client 0x80 0x00]]
+    [len-bytes: [if [<= len 125]
+      [bytes [bit-or len mask-bit]]
+      [concat [bytes [bit-or 126 mask-bit]] [bytes [/ len 256]] [bytes [mod len 256]]]]]
+    [mask-key:       [if client [crypto-random 4] []]]
+    [masked-payload: [if client [bytes-xor-mask payload mask-key] payload]]
+    [write-bytes h [concat [bytes [bit-or 0x80 opcode]] len-bytes mask-key masked-payload]]]
 ]

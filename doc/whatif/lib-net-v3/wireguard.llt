@@ -1,185 +1,138 @@
 # stdlib/protocols/wireguard.llt — WireGuard user-mode (Noise_IKpsk2) in tinct.
 # Part of: lib-net-v3
-# Depends on: net.llt (ByteStream, Datagram, udp-ephemeral)
 # Rust primitives: x25519-keypair, x25519-dh, chacha20-poly1305-seal/open,
-#   blake2s, blake2s-mac, hkdf-extract, crypto-random
-#
-# WireGuard operates over UDP (not TCP). wireguard-accept and wireguard-layer
-# take a ByteStream underneath — WireGuard tunnels TCP-like streams over UDP packets.
-# The underlying ByteStream is the transport for WG handshake and data packets.
+#   blake2s, blake2s-mac, hkdf-extract, hkdf-expand, crypto-random
 
-[include %libdir "tls.llt"]   # for HkdfHash ([Blake2s] etc.)
-
-# ── Types ────────────────────────────────────────────────────────────────────────
-
-WireguardConfig: [type
-  [private-key:  [Bytes 32]      # own X25519 private key
-   public-key:   [Bytes 32]      # own X25519 public key
-   peer-key:     [Bytes 32]      # peer's X25519 public key
-   preshared-key:[Bytes 32]      # optional PSK; all-zero to disable
-   local-index:  Int]]           # sender index (random 32-bit value)
-
-# Nonce is a [Channel Int] so only one writer can hold it at a time.
-# Single-writer invariant: violating it causes nonce reuse → keystream reuse →
-# full confidentiality loss. Application must not share a WireguardConnection
-# across concurrent writers.
-WireguardConnection: [type
-  [underlying: Handle
-   tx-key:     [Bytes 32]
-   rx-key:     [Bytes 32]
-   tx-nonce:   [Channel Int]]]   # monotonically incrementing; error at 2^64-1
+[include %libdir "async.llt"]
+[include %include-dir "tls.llt"]   # for HkdfHash ([Blake2s] etc.) — sibling in protocols/
 
 [instance [ByteStream WireguardConnection]
   read-bytes:  wg-read-bytes
   write-bytes: wg-write-bytes]
 
-# ── Noise_IKpsk2 Constants (from WireGuard paper / RFC draft) ─────────────────────
+# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
   wg-construction: "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s"
   wg-identifier:   "WireGuard v1 zx2c4 Jason@zx2c4.com"
   wg-label-mac1:   "mac1----"
-  wg-label-cookie: "cookie--"
 
-  wg-hash: [fn [let data@Bytes] [blake2s data]]
-  wg-mac:  [fn [let key@[Bytes 32] data@Bytes] [blake2s-mac key data]]
-  wg-mix-hash: [fn [let h@[Bytes 32] data@Bytes] [wg-hash [concat h data]]]
+  wg-hash:     [fn [let data@Bytes]     [blake2s data]]
+  wg-mac:      [fn [let key@[Bytes 32] data@Bytes]  [blake2s-mac key data]]
+  wg-mix-hash: [fn [let h@[Bytes 32] data@Bytes]    [wg-hash [concat h data]]]
+
   # Returns [ck: new-chaining-key  k: new-symmetric-key]
-  wg-mix-key:  [fn [let ck@[Bytes 32] data@Bytes]
-    [t:      [hkdf-extract [Blake2s] ck data]]
-    [ck-new: [hkdf-expand-wg t "wg-ck" 32]]   # first output = new chaining key
-    [k:      [hkdf-expand-wg t "wg-k"  32]]   # second output = new symmetric key
-    [ck: ck-new  k: k]]
+  wg-mix-key: [fn [let ck@[Bytes 32] data@Bytes]
+    [prk:    [hkdf-extract [Blake2s] ck data]]
+    [ck-new: [hkdf-expand  [Blake2s] prk []        32]]   # first output = new chaining key
+    [k-new:  [hkdf-expand  [Blake2s] prk [bytes 1] 32]]   # second output = new symmetric key
+    [ck: ck-new  k: k-new]]
 
   hkdf-expand-wg: [fn [let prk@[Bytes 32] label@String len@Int]
-    [hkdf-expand Blake2s prk [str-bytes label] len]]
-
-  # ── Handshake ─────────────────────────────────────────────────────────────────
-
-  # Initiation message (type=1). Sent by the peer initiating the handshake.
-  wg-build-initiation: [fn [let cfg@WireguardConfig sender-index@Int]
-    [# Noise_IKpsk2 initiation: encrypt ephemeral + static keys.
-     eph-kp: [x25519-keypair]
-     h0:     [wg-hash [str-bytes wg-construction]]
-     ck0:    h0
-     h1:     [wg-mix-hash h0 [str-bytes wg-identifier]]
-     h2:     [wg-mix-hash h1 cfg.peer-key]
-     # Mix ephemeral public key (only the new ck matters; k is discarded for this step).
-     mix0:   [wg-mix-key ck0 eph-kp.public]
-     ck1:    mix0.ck
-     h3:     [wg-mix-hash h2 eph-kp.public]
-     # DH(ephemeral, peer static) → mix into chaining key.
-     dh1:      [x25519-dh eph-kp.private cfg.peer-key]
-     mix1:     [wg-mix-key ck1 dh1]
-     ck2: mix1.ck  k1: mix1.k
-     # Encrypt own static key.
-     static-ct: [chacha20-poly1305-seal k1 [bytes-repeat 0 12] cfg.public-key h3]
-     h4:     [wg-mix-hash h3 static-ct]
-     # DH(static, peer static) → mix.
-     dh2:      [x25519-dh cfg.private-key cfg.peer-key]
-     mix2:     [wg-mix-key ck2 dh2]
-     ck3: mix2.ck  k2: mix2.k
-     # Encrypt timestamp (TAI64N format).
-     ts:     [wg-timestamp]
-     ts-ct:  [chacha20-poly1305-seal k2 [bytes-repeat 0 12] ts h4]
-     h5:     [wg-mix-hash h4 ts-ct]
-     # MAC fields (mac1 = BLAKE2s(BLAKE2s("mac1----" || peer-key), msg-so-far)).
-     mac1-key: [wg-hash [concat [str-bytes wg-label-mac1] cfg.peer-key]]
-     msg-body: [concat
-       [encode BigEndian [@UInt32 1]]   # type=1 (initiation)
-       [encode BigEndian [@UInt32 sender-index]]
-       eph-kp.public                    # 32 bytes
-       static-ct                        # 48 bytes (32 + 16 poly tag)
-       ts-ct]                           # 28 bytes (12 + 16 poly tag)
-     mac1: [wg-mac mac1-key msg-body]
-     [concat msg-body mac1 [bytes-repeat 0 16]]]]  # mac2=zero (no cookie)
+    [hkdf-expand [Blake2s] prk [str-bytes label] len]]
 
   wg-timestamp: [fn []
-    # TAI64N: 8-byte seconds since 1970-01-01 (TAI), 4-byte nanoseconds.
-    # Use current monotonic clock for ordering; exact TAI is not critical.
     [now-ns: [timestamp-nanos [now %clock]]]
-    [secs: [/ now-ns 1000000000]]
-    [nanos: [mod now-ns 1000000000]]
     [concat
-      [encode BigEndian [@UInt64 [+ secs 4611686018427387914]]]  # TAI offset
-      [encode BigEndian [@UInt32 nanos]]]]
+      [encode BigEndian [@UInt64 [+ [/ now-ns 1000000000] 4611686018427387914]]]
+      [encode BigEndian [@UInt32 [mod now-ns 1000000000]]]]]
 
-  # Process a WireGuard response message (type=2).
-  wg-process-response: [fn [let cfg@WireguardConfig eph-private@[Bytes 32] msg@Bytes]
-    [error "TODO: wg-process-response — validate response, complete Noise_IKpsk2 exchange, derive tx/rx session keys"]]
-
-  # Server: accept and process an initiation, build response.
-  wg-process-initiation: [fn [let cfg@WireguardConfig msg@Bytes]
-    [error "TODO: wg-process-initiation — validate initiation MAC, decrypt fields, build response, derive session keys"]]
-
-  # Server handshake entry point.
-  wireguard-accept: [fn@[bind: [h]  constraint: [h: ByteStream]]
-                      [let h@h cfg@WireguardConfig]
-    [# Read initiation message (type=1, 148 bytes).
-     msg: [read-bytes h 148]
-     result: [wg-process-initiation cfg msg]
-     # Send response (type=2, 92 bytes).
-     write-bytes h result.response
-     [WireguardConnection
-       [underlying: h
-        tx-key: result.tx-key
-        rx-key: result.rx-key
-        tx-nonce: [init-nonce-ch]]]]]
-
-  # Client handshake entry point.
-  wireguard-layer: [fn@[bind: [h]  constraint: [h: ByteStream]]
-                     [let h@h cfg@WireguardConfig]
+  wg-build-initiation: [fn [let cfg@WireguardConfig sender-index@Int]
     [eph-kp: [x25519-keypair]]
-    [init: [wg-build-initiation cfg cfg.local-index]]
-    [write-bytes h init]
-    [resp: [read-bytes h 92]]
-    [result: [wg-process-response cfg eph-kp.private resp]]
-    [WireguardConnection
-      [underlying: h
-       tx-key: result.tx-key
-       rx-key: result.rx-key
-       tx-nonce: [init-nonce-ch]]]]
+    [h0:     [wg-hash [str-bytes wg-construction]]]
+    [h1:     [wg-mix-hash h0 [str-bytes wg-identifier]]]
+    [h2:     [wg-mix-hash h1 cfg.peer-key]]
+    [mix0:   [wg-mix-key h0 eph-kp.public]]    # ck0 is h0; discard mix0.k for this step
+    [ck1:    mix0.ck]
+    [h3:     [wg-mix-hash h2 eph-kp.public]]
+    [dh1:    [x25519-dh eph-kp.private cfg.peer-key]]
+    [mix1:   [wg-mix-key ck1 dh1]]
+    [ck2: mix1.ck  k1: mix1.k]
+    [static-ct: [chacha20-poly1305-seal k1 [bytes-zero 12] cfg.public-key h3]]
+    [h4:     [wg-mix-hash h3 static-ct]]
+    [dh2:    [x25519-dh cfg.private-key cfg.peer-key]]
+    [mix2:   [wg-mix-key ck2 dh2]]
+    [ck3: mix2.ck  k2: mix2.k]
+    [ts-ct:  [chacha20-poly1305-seal k2 [bytes-zero 12] [wg-timestamp] h4]]
+    [h5:     [wg-mix-hash h4 ts-ct]]
+    [mac1-key: [wg-hash [concat [str-bytes wg-label-mac1] cfg.peer-key]]]
+    [msg-body: [concat
+      [encode BigEndian [@UInt32 1]]
+      [encode BigEndian [@UInt32 sender-index]]
+      eph-kp.public static-ct ts-ct]]
+    [concat msg-body [wg-mac mac1-key msg-body] [bytes-zero 16]]]
+
+  wg-process-response:   [fn [let cfg@WireguardConfig eph-private@[Bytes 32] msg@Bytes]
+    [error "TODO: wg-process-response — validate response, derive tx/rx session keys"]]
+
+  wg-process-initiation: [fn [let cfg@WireguardConfig msg@Bytes]
+    [error "TODO: wg-process-initiation — validate initiation MAC, derive session keys, build response"]]
 
   init-nonce-ch: [fn []
     [ch: [channel 1]]
     [send ch 0]
     ch]
 
-  # ── Data Plane ───────────────────────────────────────────────────────────────
+  bytes-zero: [fn [let n@Int]
+    [reduce [fn [let acc _] [concat acc [bytes 0]]] [] [range 0 n]]]
+]
 
-  # WireGuard data packet: type(4) | receiver-index(4) | counter(8) | encrypted-payload.
+# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+
+[
+  WireguardConfig: [type
+    [private-key:   [Bytes 32]
+     public-key:    [Bytes 32]
+     peer-key:      [Bytes 32]
+     preshared-key: [Bytes 32]
+     local-index:   Int]]
+
+  # Single-writer invariant on tx-nonce: two concurrent writers cause nonce reuse
+  # → ChaCha20-Poly1305 keystream reuse → full confidentiality loss.
+  WireguardConnection: [type
+    [underlying: Handle
+     tx-key:     [Bytes 32]
+     rx-key:     [Bytes 32]
+     tx-nonce:   [Channel Int]]]
+
+  # Serve layer: promotes a Channel@ByteStream to Channel@WireguardConnection.
+  # Lives here (not serve.llt) because it closes over WireguardConfig.
+  wireguard-serve: [fn [let in-ch cfg@WireguardConfig]
+    [channel-map [fn [let h] [wireguard-accept h cfg]] in-ch]]
+
+  wireguard-accept: [fn@[bind: [h]  return: WireguardConnection  constraint: [h: ByteStream]]
+                      [let h@h cfg@WireguardConfig]
+    [msg:    [read-bytes h 148]]
+    [result: [wg-process-initiation cfg msg]]
+    [write-bytes h result.response]
+    [WireguardConnection
+      [underlying: h  tx-key: result.tx-key
+       rx-key: result.rx-key  tx-nonce: [init-nonce-ch]]]]
+
+  wireguard-layer: [fn@[bind: [h]  return: WireguardConnection  constraint: [h: ByteStream]]
+                     [let h@h cfg@WireguardConfig]
+    [eph-kp: [x25519-keypair]]
+    [write-bytes h [wg-build-initiation cfg cfg.local-index]]
+    [result: [wg-process-response cfg eph-kp.private [read-bytes h 92]]]
+    [WireguardConnection
+      [underlying: h  tx-key: result.tx-key
+       rx-key: result.rx-key  tx-nonce: [init-nonce-ch]]]]
+
   wg-write-bytes: [fn [let conn@WireguardConnection data@Bytes]
     [nonce: [recv conn.tx-nonce]]
-    [if [= nonce [- [pow 2 64] 1]]
-      [error "WireGuard: nonce counter exhausted — rekey required"]]
+    [if [= nonce [- [pow 2 64] 1]] [error "WireGuard: nonce exhausted — rekey required"] null]
     [send conn.tx-nonce [+ nonce 1]]
-    [nonce-bytes: [encode BigEndian [@UInt64 nonce]]]
-    [nonce12: [concat [0 0 0 0] nonce-bytes]]   # 4-byte pad + 8-byte counter
-    [ciphertext: [chacha20-poly1305-seal conn.tx-key nonce12 data []]]
-    # Packet format (simplified — receiver index tracked at higher layer).
-    [write-bytes conn.underlying
-      [concat
-        [bytes 4]                                    # type=4 (data)
-        [0 0 0 0]                                    # receiver index (TODO: track)
-        nonce-bytes
-        ciphertext]]]
+    [nonce-bytes: [encode LittleEndian [@UInt64 nonce]]]   # WireGuard §5.4.6: little-endian counter
+    [ciphertext: [chacha20-poly1305-seal conn.tx-key [concat [0 0 0 0] nonce-bytes] data []]]
+    [write-bytes conn.underlying [concat [bytes 4] [0 0 0 0] nonce-bytes ciphertext]]]
 
   wg-read-bytes: [fn [let conn@WireguardConnection n@Int]
-    [# Read header: type(1) + padding(3) + receiver-index(4) + counter(8) = 16 bytes.
-     header: [read-bytes conn.underlying 16]
-     pkt-type: [get header 0]
-     if [not [= pkt-type 4]]
-       [error [str "WireGuard: unexpected packet type: " pkt-type]]
-       null
-     counter: [+ [* [get header 8] [pow 2 56]]   # decode 8-byte counter
-                  0]                              # TODO: full 64-bit decode
-     nonce12: [concat [0 0 0 0] [slice header 8 8]]
-     # Read remaining encrypted bytes (n + 16-byte poly tag).
-     ct: [read-bytes conn.underlying [+ n 16]]
-     [match [chacha20-poly1305-open conn.rx-key nonce12 ct []]
-       [Ok plain]: [slice plain 0 n]
-       [Err _]:    [error "WireGuard: decryption failed — bad packet or replay"]]]]
-
-  bytes-repeat: [fn [let val@Int n@Int]
-    [collect [map [fn [let _] val] [range 0 n]]]]
+    [header:   [read-bytes conn.underlying 16]]
+    [pkt-type: [get header 0]]
+    [if [not [= pkt-type 4]] [error [str "WireGuard: unexpected packet type: " pkt-type]] null]
+    [nonce12:  [concat [0 0 0 0] [slice header 8 8]]]
+    [ct:       [read-bytes conn.underlying [+ n 16]]]
+    [match [chacha20-poly1305-open conn.rx-key nonce12 ct []]
+      [Ok plain]: [slice plain 0 n]
+      [Err _]:    [error "WireGuard: decryption failed"]]]
 ]

@@ -1,85 +1,39 @@
-# stdlib/serve.llt — serve layers and async channel operators.
+# stdlib/serve.llt — protocol serve layers.
 # Part of: lib-net-v3
-# Depends on: net.llt (ByteStream), protocols/tls.llt (TlsConnection), etc.
-#
-# channel-map and channel-flat-map are general async operators.
-# The serve layers are just applications of channel-map with protocol-specific accept-fns.
+# channel-map and channel-flat-map live in async.llt (not networking-specific).
+# Config-bearing layers (tls-serve, wireguard-serve, noise-serve) live in their protocol files.
+# h2-stream-ch and h3-stream-ch are defined in h2.llt and h3.llt respectively.
 
+[include %libdir "async.llt"]
 [include %libdir "net.llt"]
-[include %libdir "protocols/tls.llt"]
-[include %libdir "protocols/wireguard.llt"]
-[include %libdir "protocols/noise.llt"]
+[include %libdir "protocols/quic.llt"]
 [include %libdir "protocols/h2.llt"]
 [include %libdir "protocols/h3.llt"]
 [include %libdir "protocols/websocket.llt"]
 [include %libdir "protocols/http1.llt"]
 
+# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
+
 [
-  # ── Async Channel Operators ────────────────────────────────────────────────────
+  # (no private helpers)
+]
 
-  # 1:1 — apply f concurrently to each element; results flow to output channel.
-  # Inner tasks run to completion even after outer loop exits (clean shutdown).
-  # Constraint on element propagates from f's argument type through channel-map.
-  channel-map: [fn@[bind: [element result]] [let f@[Fn [element] result]]
-    [fn@[return: [Channel result]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 64]]
-      [out: [channel buffer-size]]
-      [task [loop [fn []
-        [x: [recv in-ch]]
-        [task [send out [f x]]]]]]
-      out]]
+# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
-  # 1:N — apply f to each element; f emits multiple items to the shared output channel.
-  # Used for request multiplexing: one connection → many request messages.
-  channel-flat-map: [fn@[bind: [element item]] [let f@[Fn [element [Channel item]] Null]]
-    [fn@[return: [Channel item]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 256]]
-      [out: [channel buffer-size]]
-      [task [loop [fn []
-        [x: [recv in-ch]]
-        [task [f x out]]]]]
-      out]]
+[
+  # Config-free connection-promotion layers (1:1 via channel-map).
+  # Config-bearing layers (tls-serve, wireguard-serve, noise-serve) live in their
+  # respective protocol files where they close over protocol-specific config types.
+  h2-serve:        [fn [let in-ch] [channel-map h2-accept    in-ch]]
+  h3-serve:        [fn [let in-ch] [channel-map h3-accept    in-ch]]
+  ws-serve:        [fn [let in-ch] [channel-map ws-accept    in-ch]]
 
-  # ── Connection-Promotion Layers ────────────────────────────────────────────────
-  # Each upgrades a Channel@A to a Channel@B via the corresponding *-accept function.
-  # Config-bearing layers close over their config argument.
+  # Request-extraction layers (1:N via channel-flat-map).
+  http1-serve:     [fn [let in-ch] [channel-flat-map http1-conn      in-ch]]
+  http2-requests:  [fn [let in-ch] [channel-flat-map http2-req-conn  in-ch]]
+  http3-requests:  [fn [let in-ch] [channel-flat-map http3-req-conn  in-ch]]
 
-  tls-serve: [fn [let in-ch cfg@TlsServerConfig]
-    [channel-map [fn [let h] [tls-accept h cfg]] in-ch]]
-
-  wireguard-serve: [fn [let in-ch cfg@WireguardConfig]
-    [channel-map [fn [let h] [wireguard-accept h cfg]] in-ch]]
-
-  noise-serve: [fn [let in-ch cfg@NoiseConfig]
-    [channel-map [fn [let h] [noise-accept h cfg]] in-ch]]
-
-  # Config-free layers pass the accept-fn directly.
-  h2-serve: [fn [let in-ch] [channel-map h2-accept in-ch]]
-  h3-serve: [fn [let in-ch] [channel-map h3-accept in-ch]]
-  ws-serve: [fn [let in-ch] [channel-map ws-accept in-ch]]
-
-  # ── Request-Extraction Layers ──────────────────────────────────────────────────
-  # Each demultiplexes one connection into many protocol messages.
-
-  http1-serve:    [fn [let in-ch] [channel-flat-map http1-conn    in-ch]]
-  http2-requests: [fn [let in-ch] [channel-flat-map http2-req-conn in-ch]]
-  http3-requests: [fn [let in-ch] [channel-flat-map http3-req-conn in-ch]]
-
-  # ── Stream Adapters ────────────────────────────────────────────────────────────
-  # Open one stream per incoming connection; forward as Handle.
-
-  quic-stream-ch: [fn [let ch@[Channel QuicConnection]]
-    [channel-map [fn [let conn] [quic-open-stream conn]] ch]]
-
-  h2-stream-ch: [fn [let ch@[Channel Http2Connection]]
-    [channel-map [fn [let conn] [h2-open-stream conn]] ch]]
-
-  h3-stream-ch: [fn [let ch@[Channel Http3Connection]]
-    [channel-map [fn [let conn] [h3-open-stream conn]] ch]]
-
-  # ── collect-channel ────────────────────────────────────────────────────────────
-  # Snapshot: drain exactly as many items as are buffered at call time.
-  # channel-count gives the count; try-recv drains without blocking.
-  # Prevents racing a concurrent producer that may add items after we start.
-  collect-channel: [fn [let ch@[Channel t]]
-    [n: [channel-count ch]]
-    [collect [map [fn [let _] [try-recv ch]] [range 0 n]]]]
+  # Stream adapters: open one stream per incoming connection.
+  # h2-stream-ch and h3-stream-ch are in h2.llt and h3.llt respectively.
+  quic-stream-ch:  [fn [let ch@[Channel QuicConnection]]    [channel-map [fn [let c] [quic-open-stream c]] ch]]
 ]

@@ -6044,15 +6044,10 @@ pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
     }
 
     let first_doc = &surface.documents[0];
-    // Convert the first item (must be an expression) via the bridge
+    // Convert the first item via the bridge — supports both expressions and top-level declarations.
     let first_expr = match first_doc.node.items.first() {
         Some(SurfaceItem::Expr(node)) => crate::ast_convert::surface_node_to_expr(node),
-        Some(SurfaceItem::Decl(_)) => {
-            return Err(ParseError {
-                message: "first item is a declaration, not an expression".to_string(),
-                span: Some(first_doc.span),
-            });
-        }
+        Some(SurfaceItem::Decl(decl)) => crate::ast_convert::surface_decl_to_expr(decl),
         None => {
             return Err(ParseError {
                 message: "no items in first document".to_string(),

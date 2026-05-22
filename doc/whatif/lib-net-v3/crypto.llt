@@ -1,190 +1,129 @@
 # stdlib/crypto.llt — X.509 certificate parsing and chain verification.
 # Part of: lib-net-v3
-# Depends on: net.llt ([Bytes N], Bytes utilities)
 # Rust primitives: rsa-pss-verify, rsa-pkcs1-verify, p256-verify, p384-verify, ed25519-verify,
-#   sha256, sha384, sha512
-#
-# ASN.1 DER parsing is pure tinct: tag(1-3 bytes) | length(variable) | value.
-# No arithmetic on secret material; this module is parsing only.
+#   sha256, sha384, sha512 (for signature algorithm dispatch)
 
 [include %libdir "net.llt"]
 
-# ── ASN.1 DER Types ──────────────────────────────────────────────────────────────
-
-# Universal ASN.1 tags (first byte of TLV).
-AsnTag: [union
-  [Boolean] [Integer] [BitString] [OctetString] [Null] [OID]
-  [Utf8String] [Sequence] [Set] [PrintableString] [IA5String]
-  [UTCTime] [GeneralizedTime] [UnknownTag tag@Int]]
-
-AsnValue: [union
-  [AsnBool       Bool]
-  [AsnInt        Bytes]       # big-endian bytes (arbitrary precision)
-  [AsnBitStr     Bytes]       # unused-bits byte prepended
-  [AsnOctetStr   Bytes]
-  [AsnNull]
-  [AsnOid        [Seq Int]]   # decoded OID arc list [1 2 840 113549 ...]
-  [AsnStr        String]
-  [AsnSeq        [Seq AsnValue]]
-  [AsnSet        [Seq AsnValue]]
-  [AsnTime       String]      # raw time string; parse as needed
-  [AsnRaw        tag@Int  data@Bytes]]  # unrecognized tag — keep raw
-
-# ── DER Parser ───────────────────────────────────────────────────────────────────
+# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # Parse one DER TLV from bytes at offset. Returns [value: AsnValue  next: Int].
+  decode-be-int: [fn [let b@Bytes offset@Int len@Int]
+    [reduce [fn [let acc i] [+ [* acc 256] [get b [+ offset i]]]] 0 [range 0 len]]]
+
   der-parse-one: [fn [let b@Bytes offset@Int]
-    [tag-byte: [get b offset]]
+    [tag-byte:    [get b offset]]
     [constructed: [= [bit-and tag-byte 0x20] 0x20]]
-    [tag-class:   [bit-shift-right [bit-and tag-byte 0xC0] 6]]  # 0=universal 1=app 2=ctx 3=private
-    [tag-num: [bit-and tag-byte 0x1F]]
+    [tag-num:     [bit-and tag-byte 0x1F]]
+    [if [= tag-num 31] [error "DER: long-form tag not supported"] null]
+    [len-byte:    [get b [+ offset 1]]]
+    [len-result:
+      [if [= [bit-and len-byte 0x80] 0]
+        [len: len-byte  value-offset: [+ offset 2]]
+        [n-len-bytes: [bit-and len-byte 0x7F]
+         big-len:     [decode-be-int b [+ offset 2] n-len-bytes]
+         len:         big-len
+         value-offset: [+ offset 2 n-len-bytes]]]]
+    [raw: [slice b len-result.value-offset len-result.len]]
+    [value:
+      [if constructed
+        [children: [der-parse-seq raw 0 []]]
+        [match tag-num 16: [AsnSeq children] 17: [AsnSet children] _: [AsnSeq children]]
+        [match tag-num
+          1:  [AsnBool [not [= [get raw 0] 0]]]
+          2:  [AsnInt raw]
+          3:  [AsnBitStr raw]
+          4:  [AsnOctetStr raw]
+          5:  [AsnNull]
+          6:  [AsnOid [decode-oid raw]]
+          12: [AsnStr [bytes-str raw]]
+          19: [AsnStr [bytes-str raw]]
+          22: [AsnStr [bytes-str raw]]
+          23: [AsnTime [bytes-str raw]]
+          24: [AsnTime [bytes-str raw]]
+          _:  [AsnRaw tag-num raw]]]]
+    [value: value  next: [+ len-result.value-offset len-result.len]]]
 
-    # Long-form tag (≥31) — rare; stub.
-    [if [= tag-num 31] [error "DER: long-form tag not supported"]]
-
-    # Decode length.
-    [len-byte: [get b [+ offset 1]]]
-    [len-result: [if [= [bit-and len-byte 0x80] 0]
-      # Short form.
-      [len: len-byte  value-offset: [+ offset 2]]
-      # Long form: next N bytes encode the length.
-      [n-len-bytes: [bit-and len-byte 0x7F]
-       big-len:     [decode-be-int b [+ offset 2] n-len-bytes]
-       len:         big-len
-       value-offset: [+ offset 2 n-len-bytes]]]]
-
-    [len:          len-result.len]
-    [value-offset: len-result.value-offset]
-    [raw: [slice b value-offset len]]
-
-    [value: [if constructed
-      # Sequence/Set/context-constructed: parse children recursively.
-      [children: [der-parse-seq raw 0 []]]
-      [match tag-num
-        16: [AsnSeq children]
-        17: [AsnSet children]
-        _:  [AsnSeq children]]    # context-constructed treated as sequence
-      # Primitive.
-      [match tag-num
-        1:  [AsnBool [not [= [get raw 0] 0]]]
-        2:  [AsnInt raw]
-        3:  [AsnBitStr raw]
-        4:  [AsnOctetStr raw]
-        5:  [AsnNull]
-        6:  [AsnOid [decode-oid raw]]
-        12: [AsnStr [bytes-str raw]]   # UTF8String
-        19: [AsnStr [bytes-str raw]]   # PrintableString
-        22: [AsnStr [bytes-str raw]]   # IA5String
-        23: [AsnTime [bytes-str raw]]  # UTCTime
-        24: [AsnTime [bytes-str raw]]  # GeneralizedTime
-        _:  [AsnRaw tag-num raw]]]]
-
-    [value: value  next: [+ value-offset len]]]
-
-  # Recursively parse a sequence of DER values until end of bytes.
   der-parse-seq: [fn [let b@Bytes offset@Int acc@[Seq AsnValue]]
     [if [>= offset [length b]]
       acc
       [result: [der-parse-one b offset]]
       [der-parse-seq b result.next [append acc [list result.value]]]]]
 
-  # Decode OID from DER bytes (RFC 5280 §4.1).
   decode-oid: [fn [let b@Bytes]
-    [if [= [length b] 0] [error "DER: empty OID"]]
+    [if [= [length b] 0] [error "DER: empty OID"] null]
     [first-byte: [get b 0]]
-    [a0: [/ first-byte 40]]
-    [a1: [mod first-byte 40]]
-    [rest-arcs: [decode-oid-arcs b 1 []]]
-    [cons a0 [cons a1 rest-arcs]]]
+    # X.680 §B.8: first-byte = 40*arc1 + arc2 for arc1 < 2;
+    # for arc1 = 2: first-byte = 80 + arc2 (arc2 may exceed 39).
+    [arc1: [if [< first-byte 80] [/ first-byte 40] 2]]
+    [arc2: [if [< first-byte 80] [mod first-byte 40] [- first-byte 80]]]
+    [cons arc1 [cons arc2 [decode-oid-arcs b 1 []]]]]
 
   decode-oid-arcs: [fn [let b@Bytes offset@Int acc@[Seq Int]]
-    [if [>= offset [length b]]
-      acc
+    [if [>= offset [length b]] acc
       [arc-result: [decode-oid-arc b offset 0]]
       [decode-oid-arcs b arc-result.next [append acc [list arc-result.arc]]]]]
 
   decode-oid-arc: [fn [let b@Bytes offset@Int acc@Int]
-    [byte: [get b offset]]
+    [byte:    [get b offset]]
     [new-acc: [+ [* acc 128] [bit-and byte 0x7F]]]
     [if [= [bit-and byte 0x80] 0]
       [arc: new-acc  next: [+ offset 1]]
       [decode-oid-arc b [+ offset 1] new-acc]]]
 
-  decode-be-int: [fn [let b@Bytes offset@Int len@Int]
-    [reduce [fn [let acc i]
-      [+ [* acc 256] [get b [+ offset i]]]]
-     0
-     [range 0 len]]]
-
-  # ── X.509 Certificate ─────────────────────────────────────────────────────────
-
-  # Parse a DER-encoded X.509 certificate. Returns a structured dict.
-  parse-cert: [fn [let der@Bytes]
-    [result: [der-parse-one der 0]]
-    [tbs: [extract-tbs result.value]]
-    tbs]
-
-  # Extract TBSCertificate fields from parsed ASN.1.
-  # X.509 structure: SEQUENCE { TBSCertificate, AlgorithmIdentifier, BIT STRING sig }
   extract-tbs: [fn [let cert@AsnValue]
-    [match cert
-      [let [AsnSeq [tbs-seq alg-seq sig-seq]]]:
-        [match tbs-seq
-          [let [AsnSeq fields]]:
-            # TBSCertificate fields (RFC 5280 §4.1):
-            # version(0 opt), serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo, ...
-            [error "TODO: extract-tbs — parse version/serial/issuer/validity/subject/spki from TBS fields"]
-          _: [error "DER: TBSCertificate is not a SEQUENCE"]]
-      _: [error "DER: Certificate is not a SEQUENCE"]]]
-
-  # Extract the Subject Alternative Names from a parsed certificate.
-  cert-san: [fn [let cert-der@Bytes]
-    [error "TODO: cert-san — parse extensions (OID 2.5.29.17), decode GeneralNames, extract dNSName entries"]]
-
-  # Extract public key bytes from a DER certificate.
-  cert-public-key: [fn [let cert-der@Bytes]
-    [error "TODO: cert-public-key — parse subjectPublicKeyInfo, return BIT STRING content"]]
-
-  # ── Certificate Chain Verification ────────────────────────────────────────────
-
-  # Verify a DER certificate chain (leaf first). Returns Bool.
-  # trust-roots: [Seq Bytes] (DER) or SystemRoots symbol.
-  # sni: expected hostname for SAN/CN validation.
-  verify-cert-chain: [fn [let chain@[Seq Bytes] trust-roots@[or [Seq Bytes] Symbol] sni@String]
-    [if [empty? chain]
-      [error "verify-cert-chain: empty chain"]
-      [leaf: [get chain 0]]
-      [# Validate leaf: not expired, hostname matches SAN/CN.
-       if [not [cert-valid-for-host? leaf sni]]
-         false
-         # Validate each link: signature on cert[i] by cert[i+1].
-         [chain-valid?: [chain-sigs-valid? chain]]
-         [if [not chain-valid?] false
-           # Validate root: chain[-1] must be signed by a trust root.
-           [root-trusted? [last chain] trust-roots]]]]]
+    [error "TODO: extract-tbs — parse version/serial/issuer/validity/subject/subjectPublicKeyInfo from TBSCertificate SEQUENCE"]]
 
   cert-valid-for-host?: [fn [let cert-der@Bytes hostname@String]
-    [error "TODO: cert-valid-for-host? — check validity period (not-before/not-after vs now), check SAN dNSName matches hostname (wildcard support)"]]
+    [error "TODO: cert-valid-for-host? — check validity period vs now, check SAN dNSName matches hostname (with wildcard support)"]]
 
   chain-sigs-valid?: [fn [let chain@[Seq Bytes]]
     [if [<= [length chain] 1]
       true
-      [leaf: [get chain 0]]
-      [issuer: [get chain 1]]
-      [if [not [cert-signed-by? leaf issuer]]
+      [if [not [cert-signed-by? [get chain 0] [get chain 1]]]
         false
         [chain-sigs-valid? [rest chain]]]]]
 
   cert-signed-by?: [fn [let cert-der@Bytes issuer-der@Bytes]
-    [error "TODO: cert-signed-by? — extract TBS bytes (bytes before signature), extract signature, extract issuer public key, verify signature algorithm (dispatch to rsa-pkcs1-verify / rsa-pss-verify / p256-verify / p384-verify / ed25519-verify)"]]
+    [error "TODO: cert-signed-by? — extract TBS bytes, signature, issuer public key; dispatch to rsa-pkcs1-verify/rsa-pss-verify/p256-verify/p384-verify/ed25519-verify"]]
 
   root-trusted?: [fn [let cert-der@Bytes trust-roots@[or [Seq Bytes] Symbol]]
     [match trust-roots
-      [let [SystemRoots]]: [builtin-verify-cert-trusted cert-der]  # OS trust store via Rust
-      [let roots@[Seq Bytes]]:
-        [any? [fn [let root] [cert-signed-by? cert-der root]] roots]]]
+      [let [SystemRoots]]:      [builtin-verify-cert-trusted cert-der]
+      [let roots@[Seq Bytes]]:  [any? [fn [let root] [cert-signed-by? cert-der root]] roots]]]
+]
 
-  last: [fn [let xs@[Seq t]]
-    [get xs [- [length xs] 1]]]
+# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+
+[
+  AsnValue: [union
+    [AsnBool    Bool]
+    [AsnInt     Bytes]
+    [AsnBitStr  Bytes]
+    [AsnOctetStr Bytes]
+    [AsnNull]
+    [AsnOid     [Seq Int]]
+    [AsnStr     String]
+    [AsnSeq     [Seq AsnValue]]
+    [AsnSet     [Seq AsnValue]]
+    [AsnTime    String]
+    [AsnRaw     tag@Int  data@Bytes]]
+
+  parse-cert: [fn [let der@Bytes]
+    [result: [der-parse-one der 0]]
+    [extract-tbs result.value]]
+
+  cert-san: [fn [let cert-der@Bytes]
+    [error "TODO: cert-san — parse extensions (OID 2.5.29.17), decode GeneralNames, extract dNSName"]]
+
+  cert-public-key: [fn [let cert-der@Bytes]
+    [error "TODO: cert-public-key — parse subjectPublicKeyInfo BIT STRING"]]
+
+  verify-cert-chain: [fn [let chain@[Seq Bytes] trust-roots@[or [Seq Bytes] Symbol] sni@String]
+    [if [empty? chain]
+      [error "verify-cert-chain: empty chain"]
+      [and
+        [cert-valid-for-host? [get chain 0] sni]
+        [chain-sigs-valid? chain]
+        [root-trusted? [get chain [- [length chain] 1]] trust-roots]]]]
 ]
