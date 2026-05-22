@@ -22,7 +22,7 @@ use crate::eval::{
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{eval_call, invoke_function, CallContext};
 use crate::types::Type;
-use crate::value::{string_val, Environment, Thunk, ThunkState, Value};
+use crate::value::{string_val, Environment, Thunk, Value};
 
 /// Maximum continuation stack depth. Prevents resource exhaustion from deeply
 /// nested evaluation chains that would otherwise exhaust heap memory.
@@ -108,30 +108,28 @@ pub(crate) enum RestoreState {
 
 impl RestoreState {
     pub(crate) fn restore(self, thunk: &Thunk) {
-        match self {
-            RestoreState::Unevaluated { expr, env, ctx } => {
-                thunk.set_state(ThunkState::Unevaluated {
-                    expr,
-                    env,
-                    env_id: None,
-                    ctx,
-                });
-            }
+        use crate::value::UnevaluatedState;
+
+        let unevaled = match self {
+            RestoreState::Unevaluated { expr, env, ctx } => UnevaluatedState::Expr {
+                expr,
+                env,
+                env_id: None,
+                ctx,
+            },
             RestoreState::PendingBuiltin {
                 def,
                 args,
                 named,
                 call_span,
                 ctx,
-            } => {
-                thunk.set_state(ThunkState::PendingBuiltin {
-                    def,
-                    args,
-                    named,
-                    call_span,
-                    ctx,
-                });
-            }
+            } => UnevaluatedState::Builtin {
+                def,
+                args,
+                named,
+                call_span,
+                ctx,
+            },
             RestoreState::PendingCall {
                 func,
                 args,
@@ -139,16 +137,14 @@ impl RestoreState {
                 call_span,
                 caller_env,
                 ctx,
-            } => {
-                thunk.set_state(ThunkState::PendingCall {
-                    func,
-                    args,
-                    named,
-                    call_span,
-                    caller_env,
-                    ctx,
-                });
-            }
+            } => UnevaluatedState::Call {
+                func,
+                args,
+                named,
+                call_span,
+                caller_env,
+                ctx,
+            },
             RestoreState::Guarded {
                 inner,
                 expected,
@@ -156,17 +152,17 @@ impl RestoreState {
                 guard_span,
                 blame_label,
                 default,
-            } => {
-                thunk.set_state(ThunkState::Guarded {
-                    inner,
-                    expected,
-                    field_path,
-                    guard_span,
-                    blame_label,
-                    default,
-                });
-            }
-        }
+            } => UnevaluatedState::Guarded {
+                inner,
+                expected,
+                field_path,
+                guard_span,
+                blame_label,
+                default,
+            },
+        };
+
+        thunk.restore_unevaluated(unevaled);
     }
 }
 
@@ -336,7 +332,7 @@ pub(crate) enum Action {
 
 /// Process one thunk and return either a result or a sub-thunk to force.
 /// This mirrors the logic of `materialize()` but pushes continuations instead of recursing.
-pub(crate) fn force_step(
+pub(crate) async fn force_step(
     thunk: &Arc<Thunk>,
     mat_span: Option<Span>,
     stack: &mut Vec<Cont>,
@@ -404,7 +400,7 @@ pub(crate) fn force_step(
     //
     // 1. SHARING PRESERVATION: Arc<Thunk> identity is preserved through Cont dispatch.
     //    The Cont::Memoize handler (apply_cont, line 724) caches the materialization
-    //    result back into the ORIGINAL thunk via thunk.set_state(), not a copy.
+    //    result back into the ORIGINAL thunk via thunk.set_materialized(), not a copy.
     //    This ensures `Arc::ptr_eq` holds across all references to the same thunk.
     //
     // 2. MONOTONICITY: State transitions are one-way (Unevaluated/PendingBuiltin/
@@ -446,7 +442,7 @@ pub(crate) fn force_step(
         } = &expr.node
         {
             // Evaluate target expression
-            match eval(Rc::new((**target).clone()), Arc::clone(&env), &thunk_ctx) {
+            match eval(Rc::new((**target).clone()), Arc::clone(&env), &thunk_ctx).await {
                 Ok(target_thunk) => {
                     // Push Memoize for the outer thunk (the access result)
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
@@ -507,25 +503,30 @@ pub(crate) fn force_step(
             resolved_type,
         } = &expr.node
         {
-            let inner_thunk =
-                match eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), &thunk_ctx) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        let decorated = attach_materialization_context(
-                            e,
-                            mat_span.as_ref(),
-                            origin.as_deref(),
-                            thunk_span,
-                        );
-                        thunk_ctx.state.lock().unwrap().eval_stack.pop();
-                        if decorated.kind.is_cacheable() {
-                            thunk.cache_failure(&decorated);
-                        } else {
-                            restore.restore(thunk);
-                        }
-                        return Action::Continue(Err(decorated));
+            let inner_thunk = match eval_recursive(
+                Rc::new((**inner).clone()),
+                Arc::clone(&env),
+                &thunk_ctx,
+            )
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    let decorated = attach_materialization_context(
+                        e,
+                        mat_span.as_ref(),
+                        origin.as_deref(),
+                        thunk_span,
+                    );
+                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                    if decorated.kind.is_cacheable() {
+                        thunk.cache_failure(&decorated);
+                    } else {
+                        restore.restore(thunk);
                     }
-                };
+                    return Action::Continue(Err(decorated));
+                }
+            };
             let resolved = resolved_type.borrow().clone();
 
             // Fast path: no type to check → pass inner value through.
@@ -582,7 +583,7 @@ pub(crate) fn force_step(
             };
         }
 
-        match eval(expr, Arc::clone(&env), &thunk_ctx) {
+        match eval(expr, Arc::clone(&env), &thunk_ctx).await {
             Ok(result_thunk) => {
                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                     thunk: Arc::clone(thunk),
@@ -747,7 +748,7 @@ pub(crate) fn force_step(
                     thunk.cache_failure(&decorated);
                 } else {
                     // Move args/named into PendingBuiltin — no clone needed.
-                    thunk.set_state(ThunkState::PendingBuiltin {
+                    thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                         def,
                         args: Box::new(args.take().expect("args set above")),
                         named: named.take().expect("named set above"),
@@ -838,7 +839,11 @@ pub(crate) fn force_step(
 }
 
 /// Apply a continuation to a materialization result.
-pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<Cont>) -> Action {
+pub(crate) async fn apply_cont(
+    cont: Cont,
+    result: EvalResult<Value>,
+    stack: &mut Vec<Cont>,
+) -> Action {
     match cont {
         Cont::Memoize(data) => {
             let MemoizeData {
@@ -923,7 +928,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 origin: origin.clone(),
                                 ctx: &thunk_ctx,
                             };
-                            invoke_function(&call_ctx)
+                            invoke_function(&call_ctx).await
                         };
 
                         match invoke_result.map_err(&decorate) {
@@ -963,14 +968,16 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     thunk.cache_failure(&e);
                                 } else {
                                     // Move args/named into PendingCall — no clone needed.
-                                    thunk.set_state(ThunkState::PendingCall {
-                                        func: func_thunk,
-                                        args: args.take().expect("args set above"),
-                                        named: named.take().expect("named set above"),
-                                        call_span,
-                                        caller_env,
-                                        ctx: thunk_ctx,
-                                    });
+                                    thunk.restore_unevaluated(
+                                        crate::value::UnevaluatedState::Call {
+                                            func: func_thunk,
+                                            args: args.take().expect("args set above"),
+                                            named: named.take().expect("named set above"),
+                                            call_span,
+                                            caller_env,
+                                            ctx: thunk_ctx,
+                                        },
+                                    );
                                 }
                                 Action::Continue(Err(e))
                             }
@@ -1012,7 +1019,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             // Transition thunk from InProgress → PendingBuiltin.
                             // args is Box<Vec<...>> (matches ThunkState::PendingBuiltin.args).
                             // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
-                            thunk.set_state(ThunkState::PendingBuiltin {
+                            thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                                 def,
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above").map(|b| *b),
@@ -1074,14 +1081,16 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                     thunk.cache_failure(&e);
                                 } else {
                                     // Move args/named into PendingCall — no clone needed.
-                                    thunk.set_state(ThunkState::PendingCall {
-                                        func: func_thunk,
-                                        args: args.take().expect("args set above"),
-                                        named: named.take().expect("named set above"),
-                                        call_span,
-                                        caller_env,
-                                        ctx: thunk_ctx,
-                                    });
+                                    thunk.restore_unevaluated(
+                                        crate::value::UnevaluatedState::Call {
+                                            func: func_thunk,
+                                            args: args.take().expect("args set above"),
+                                            named: named.take().expect("named set above"),
+                                            call_span,
+                                            caller_env,
+                                            ctx: thunk_ctx,
+                                        },
+                                    );
                                 }
                                 Action::Continue(Err(e))
                             }
@@ -1100,7 +1109,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                             thunk.cache_failure(&decorated);
                         } else {
                             // Move args/named into PendingCall — no clone needed.
-                            thunk.set_state(ThunkState::PendingCall {
+                            thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                                 func: func_thunk,
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above"),
@@ -1120,7 +1129,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         thunk.cache_failure(&e);
                     } else {
                         // Move args/named into PendingCall — no clone needed.
-                        thunk.set_state(ThunkState::PendingCall {
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                             func: func_thunk,
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
@@ -1503,13 +1512,15 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 thunk.cache_failure(&e);
                             } else {
                                 // Move args/named into PendingBuiltin — no clone needed.
-                                thunk.set_state(ThunkState::PendingBuiltin {
-                                    def,
-                                    args: Box::new(args.take().expect("args set above")),
-                                    named: named.take().expect("named set above"),
-                                    call_span,
-                                    ctx: thunk_ctx,
-                                });
+                                thunk.restore_unevaluated(
+                                    crate::value::UnevaluatedState::Builtin {
+                                        def,
+                                        args: Box::new(args.take().expect("args set above")),
+                                        named: named.take().expect("named set above"),
+                                        call_span,
+                                        ctx: thunk_ctx,
+                                    },
+                                );
                             }
                             Action::Continue(Err(e))
                         }
@@ -1523,7 +1534,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         thunk.cache_failure(&e);
                     } else {
                         // Move args/named into PendingBuiltin — no clone needed.
-                        thunk.set_state(ThunkState::PendingBuiltin {
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                             def,
                             args: Box::new(args.take().expect("args set above")),
                             named: named.take().expect("named set above"),
@@ -1619,7 +1630,9 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                                 string_val(&field_str),
                                 &ctx,
                                 &access_span,
-                            ) {
+                            )
+                            .await
+                            {
                                 Ok(thunk) => {
                                     // Use outer_mat_span for proxy handler results (same as Dict case above).
                                     Action::Materialize {
@@ -1950,7 +1963,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
 ///
 /// Future sprints will move individual expression handlers from `eval()` into this function,
 /// converting them to push continuations instead of recursing.
-pub(crate) fn eval_step(
+pub(crate) async fn eval_step(
     expr: Rc<Spanned<Expr>>,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
@@ -1999,7 +2012,7 @@ pub(crate) fn eval_step(
                 }
             }
         }
-        Expr::Dict(entries) => wrap_thunk(eval_dict(entries, &env, ctx, &expr.span)),
+        Expr::Dict(entries) => wrap_thunk(eval_dict(entries, &env, ctx, &expr.span).await),
         Expr::DotAccess { .. } => {
             // Return Unevaluated thunk — force_step handles these iteratively via
             // DotAccessForce continuation
@@ -2021,7 +2034,7 @@ pub(crate) fn eval_step(
             // The TypeAssertCheck continuation below will materialize it and validate.
             // This is the correct pattern: eval → thunk → push continuation → materialize.
             let inner_thunk =
-                match eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), ctx) {
+                match eval_recursive(Rc::new((**inner).clone()), Arc::clone(&env), ctx).await {
                     Ok(t) => t,
                     Err(e) => return Action::Continue(Err(e)),
                 };
@@ -2078,7 +2091,7 @@ pub(crate) fn eval_step(
             args,
             named_args,
             implied: _,
-        } => wrap_thunk(eval_call(func, args, named_args, &env, ctx, &expr.span)),
+        } => wrap_thunk(eval_call(func, args, named_args, &env, ctx, &expr.span).await),
         // Type alias entries are compile-time-only constructs consumed by the type checker.
         // At runtime, they evaluate to an empty dict to maintain dict structure without
         // contributing runtime values.
@@ -2183,7 +2196,7 @@ pub(crate) fn eval_step(
 /// This would save 1 branch misprediction per tail-call. However, it adds complexity
 /// (need to check stack.is_empty() after each step or pass it in).
 /// DECISION: Defer until profiling shows this is a bottleneck (likely negligible).
-pub(crate) fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
+pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
     let mut stack: Vec<Cont> = Vec::new();
     let mut action = initial;
 
@@ -2194,15 +2207,15 @@ pub(crate) fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<Value> 
                 env,
                 ctx: action_ctx,
             } => {
-                action = eval_step(expr, env, &action_ctx, &mut stack);
+                action = eval_step(expr, env, &action_ctx, &mut stack).await;
             }
             Action::Materialize { thunk, mat_span } => {
-                action = force_step(&thunk, mat_span, &mut stack, ctx);
+                action = force_step(&thunk, mat_span, &mut stack, ctx).await;
             }
             Action::Continue(result) => match stack.pop() {
                 None => return result,
                 Some(cont) => {
-                    action = apply_cont(cont, result, &mut stack);
+                    action = apply_cont(cont, result, &mut stack).await;
                 }
             },
         }
@@ -2214,7 +2227,7 @@ mod tests {
     use super::*;
     use crate::ast::Expr;
     use crate::test_util::{sp, test_span};
-    use crate::value::{Environment, Key, Thunk, ThunkState};
+    use crate::value::{Environment, Key, Thunk};
 
     fn empty_env() -> Arc<RwLock<Environment>> {
         Arc::new(RwLock::new(Environment::new()))
@@ -2229,6 +2242,20 @@ mod tests {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
+    }
+
+    /// Synchronous shadow of `materialize()` for test contexts.
+    fn materialize(
+        thunk: &crate::value::Thunk,
+        mat_span: Option<&crate::ast::Span>,
+        ctx: &Arc<EvalContext>,
+    ) -> crate::error::EvalResult<Value> {
+        crate::async_rt::block_on_anywhere(crate::eval::materialize(thunk, mat_span, ctx))
+    }
+
+    /// Synchronous shadow of `run()` for test contexts.
+    fn run(initial: Action, ctx: &Arc<EvalContext>) -> crate::error::EvalResult<Value> {
+        crate::async_rt::block_on_anywhere(super::run(initial, ctx))
     }
 
     #[test]
@@ -2253,11 +2280,10 @@ mod tests {
         restore.restore(&thunk);
 
         // Verify state is restored
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Unevaluated { .. } => {} // Success
-            other => panic!("Expected Unevaluated state, got {:?}", other),
-        }
+        assert!(
+            thunk.peek_expr().is_some(),
+            "Expected Unevaluated state (peek_expr should return Some)"
+        );
     }
 
     #[test]
@@ -2306,11 +2332,10 @@ mod tests {
         restore.restore(&pending_thunk);
 
         // Verify state is restored
-        let state = pending_thunk.state();
-        match &*state {
-            ThunkState::PendingBuiltin { .. } => {} // Success
-            other => panic!("Expected PendingBuiltin state, got {:?}", other),
-        }
+        assert!(
+            pending_thunk.peek_builtin_def().is_some(),
+            "Expected PendingBuiltin state (peek_builtin_def should return Some)"
+        );
     }
 
     #[test]
@@ -2364,11 +2389,10 @@ mod tests {
         restore.restore(&pending_thunk);
 
         // Verify state is restored
-        let state = pending_thunk.state();
-        match &*state {
-            ThunkState::PendingCall { .. } => {} // Success
-            other => panic!("Expected PendingCall state, got {:?}", other),
-        }
+        assert!(
+            pending_thunk.is_pending_call(),
+            "Expected PendingCall state (is_pending_call should return true)"
+        );
     }
 
     #[test]
@@ -2431,45 +2455,42 @@ mod tests {
         restore.restore(&pending_thunk);
 
         // Verify the args are preserved
-        let state = pending_thunk.state();
-        match &*state {
-            ThunkState::PendingCall {
-                args: restored_args,
-                named: restored_named,
-                ..
-            } => {
-                // Check arg count
-                assert_eq!(
-                    restored_args.len(),
-                    3,
-                    "Expected 3 positional args, got {}",
-                    restored_args.len()
-                );
+        let taken = pending_thunk.take_pending_call();
+        assert!(
+            taken.is_some(),
+            "Expected PendingCall state (take_pending_call should return Some)"
+        );
+        let (_func, restored_args, restored_named, _call_span, _caller_env, _ctx) = taken.unwrap();
 
-                // Check that the actual arg values are correct
-                use crate::eval::materialize;
-                let ctx_ref = test_ctx();
-                let v0 = materialize(&restored_args[0], None, &ctx_ref).unwrap();
-                let v1 = materialize(&restored_args[1], None, &ctx_ref).unwrap();
-                let v2 = materialize(&restored_args[2], None, &ctx_ref).unwrap();
+        // Check arg count
+        assert_eq!(
+            restored_args.len(),
+            3,
+            "Expected 3 positional args, got {}",
+            restored_args.len()
+        );
 
-                assert_eq!(v0, Value::Int(1));
-                assert_eq!(v1, Value::Int(2));
-                assert_eq!(v2, string_val("test"));
+        // Check that the actual arg values are correct
+        // materialize is the local sync shadow defined at the top of this test module
+        let ctx_ref = test_ctx();
+        let v0 = materialize(&restored_args[0], None, &ctx_ref).unwrap();
+        let v1 = materialize(&restored_args[1], None, &ctx_ref).unwrap();
+        let v2 = materialize(&restored_args[2], None, &ctx_ref).unwrap();
 
-                // Check named arg count and value
-                let named_map = restored_named.as_ref().expect("Expected Some named args");
-                assert_eq!(
-                    named_map.len(),
-                    1,
-                    "Expected 1 named arg, got {}",
-                    named_map.len()
-                );
-                let named_val = materialize(named_map.get("key").unwrap(), None, &ctx_ref).unwrap();
-                assert_eq!(named_val, Value::Bool(true));
-            }
-            other => panic!("Expected PendingCall state, got {:?}", other),
-        }
+        assert_eq!(v0, Value::Int(1));
+        assert_eq!(v1, Value::Int(2));
+        assert_eq!(v2, string_val("test"));
+
+        // Check named arg count and value
+        let named_map = restored_named.as_ref().expect("Expected Some named args");
+        assert_eq!(
+            named_map.len(),
+            1,
+            "Expected 1 named arg, got {}",
+            named_map.len()
+        );
+        let named_val = materialize(named_map.get("key").unwrap(), None, &ctx_ref).unwrap();
+        assert_eq!(named_val, Value::Bool(true));
     }
 
     #[test]
@@ -2503,7 +2524,7 @@ mod tests {
         // a secondary_span pointing to where the value was produced (if different
         // from the assertion site).
         use crate::ast::Expr;
-        use crate::eval::materialize;
+        // materialize is the local sync shadow defined at the top of this test module
         use crate::types::Type;
 
         // Create a simple expression that produces an Int
@@ -2557,7 +2578,7 @@ mod tests {
         // Test that when the value production site is the same as the assertion site,
         // secondary_span is NOT set (would be redundant).
         use crate::ast::Expr;
-        use crate::eval::materialize;
+        // materialize is the local sync shadow defined at the top of this test module
         use crate::types::Type;
 
         let same_span = test_span(1, 1, 1, 10);
@@ -2608,13 +2629,10 @@ mod tests {
         let thunk = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
 
         // Verify initial state is Unevaluated
-        {
-            let state = thunk.state();
-            assert!(
-                matches!(&*state, ThunkState::Unevaluated { .. }),
-                "Expected Unevaluated state before forcing"
-            );
-        }
+        assert!(
+            thunk.peek_expr().is_some() && thunk.try_get_materialized().is_none(),
+            "Expected Unevaluated state before forcing"
+        );
 
         // Force the thunk via the CEK machine
         let result = run(
@@ -2630,15 +2648,11 @@ mod tests {
         assert_eq!(result.unwrap(), Value::Int(42));
 
         // Verify the thunk transitioned to Materialized state
-        {
-            let state = thunk.state();
-            match &*state {
-                ThunkState::Materialized(v) => {
-                    assert_eq!(*v, Value::Int(42), "Cached value should be Int(42)");
-                }
-                other => panic!("Expected Materialized state, got {:?}", other),
-            }
-        }
+        assert_eq!(
+            thunk.try_get_materialized(),
+            Some(Value::Int(42)),
+            "Cached value should be Int(42)"
+        );
 
         // Verify that a second materialization returns the cached value immediately
         // (no re-evaluation)
@@ -2665,13 +2679,10 @@ mod tests {
         let thunk = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
 
         // Verify initial state is Unevaluated
-        {
-            let state = thunk.state();
-            assert!(
-                matches!(&*state, ThunkState::Unevaluated { .. }),
-                "Expected Unevaluated state before forcing"
-            );
-        }
+        assert!(
+            thunk.peek_expr().is_some() && thunk.try_get_materialized().is_none(),
+            "Expected Unevaluated state before forcing"
+        );
 
         // Force the thunk — should fail with undefined variable error
         let result = run(
@@ -2692,19 +2703,16 @@ mod tests {
         );
 
         // Verify the thunk transitioned to Failed state
-        {
-            let state = thunk.state();
-            match &*state {
-                ThunkState::Failed(cached_err) => {
-                    assert!(
-                        cached_err.kind.to_string().contains("undefined_var"),
-                        "Cached error should be undefined variable error, got: {}",
-                        cached_err.kind.to_string()
-                    );
-                }
-                other => panic!("Expected Failed state, got {:?}", other),
-            }
-        }
+        let cached_err = thunk.get_cached_error();
+        assert!(cached_err.is_some(), "Expected Failed state");
+        assert!(
+            cached_err
+                .unwrap()
+                .kind
+                .to_string()
+                .contains("undefined_var"),
+            "Cached error should be undefined variable error"
+        );
 
         // Verify that a second materialization returns the cached error
         let result2 = run(
@@ -2805,7 +2813,7 @@ mod tests {
         // Branch 1: inner value matches expected type.
         // A Guarded thunk wrapping an Int value with an Int type expectation
         // should succeed and leave the thunk in Materialized state.
-        use crate::eval::materialize;
+        // materialize is the local sync shadow defined at the top of this test module
         use crate::types::Type;
 
         let span = test_span(1, 1, 1, 10);
@@ -2830,11 +2838,10 @@ mod tests {
         assert_eq!(result.unwrap(), Value::Int(42));
 
         // After success, thunk must be in Materialized state (memoized).
-        let state = guarded.state();
-        assert!(
-            matches!(&*state, ThunkState::Materialized(Value::Int(42))),
-            "after successful validation, thunk should be Materialized(Int(42)), got {:?}",
-            &*state
+        assert_eq!(
+            guarded.try_get_materialized(),
+            Some(Value::Int(42)),
+            "after successful validation, thunk should be Materialized(Int(42))"
         );
     }
 
@@ -2843,7 +2850,7 @@ mod tests {
         // Branch 2: inner value fails type check but a default expression is present.
         // The default expression should be evaluated in the caller's environment,
         // and the thunk should memoize the default result.
-        use crate::eval::materialize;
+        // materialize is the local sync shadow defined at the top of this test module
         use crate::types::Type;
 
         let span = test_span(1, 1, 1, 10);
@@ -2892,11 +2899,10 @@ mod tests {
         );
 
         // Thunk should be Materialized with the default value, not Failed.
-        let state = guarded.state();
-        assert!(
-            matches!(&*state, ThunkState::Materialized(Value::Int(99))),
-            "after default fallback, thunk should be Materialized(Int(99)), got {:?}",
-            &*state
+        assert_eq!(
+            guarded.try_get_materialized(),
+            Some(Value::Int(99)),
+            "after default fallback, thunk should be Materialized(Int(99))"
         );
     }
 
@@ -2906,7 +2912,7 @@ mod tests {
         // The error should propagate to the caller and the thunk should cache the
         // failure (transition to Failed state) so subsequent access returns the
         // cached error without re-running the guard.
-        use crate::eval::materialize;
+        // materialize is the local sync shadow defined at the top of this test module
         use crate::types::Type;
 
         let span = test_span(1, 1, 1, 10);
@@ -2936,14 +2942,10 @@ mod tests {
         );
 
         // After failure, thunk must be in Failed state (cacheable error).
-        {
-            let state = guarded.state();
-            assert!(
-                matches!(&*state, ThunkState::Failed(_)),
-                "after validation failure (no default) thunk should be Failed, got {:?}",
-                &*state
-            );
-        }
+        assert!(
+            guarded.get_cached_error().is_some(),
+            "after validation failure (no default) thunk should be Failed"
+        );
 
         // Second materialization: returns cached error, does not re-run guard.
         let result2 = materialize(&guarded, None, &ctx);
@@ -2975,7 +2977,7 @@ mod tests {
     /// `builtin_keys` will panic at `try_get_materialized().expect(...)`.
     #[test]
     fn test_builtin_force_arg_cek_forces_arg_before_dispatch() {
-        use crate::value::{BuiltinDef, BuiltinFn, Strictness, ThunkState};
+        use crate::value::{BuiltinDef, BuiltinFn, Strictness};
 
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
@@ -3009,14 +3011,14 @@ mod tests {
         };
 
         // Create a PendingBuiltin thunk for the CEK machine to force.
-        let outer_thunk = Arc::new(Thunk::new_placeholder(span));
-        outer_thunk.set_state(ThunkState::PendingBuiltin {
-            def: keys_def,
-            args: Box::new(vec![Arc::clone(&unevaluated_arg)]),
-            named: None,
-            call_span: span,
-            ctx: Arc::clone(&ctx),
-        });
+        let outer_thunk = Arc::new(Thunk::new_pending_builtin(
+            keys_def,
+            vec![Arc::clone(&unevaluated_arg)],
+            None,
+            span,
+            None,
+            Arc::clone(&ctx),
+        ));
 
         // Force via the CEK machine (not via materialize() recursive path).
         // This exercises the force_step(PendingBuiltin) path → Cont::BuiltinForceArg push.
@@ -3059,7 +3061,7 @@ mod tests {
     /// force_count positions before dispatching.
     #[test]
     fn test_builtin_force_arg_cek_force_count_two() {
-        use crate::value::{BuiltinDef, BuiltinFn, Strictness, ThunkState};
+        use crate::value::{BuiltinDef, BuiltinFn, Strictness};
 
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
@@ -3125,17 +3127,14 @@ mod tests {
             force_count: 2,
         };
 
-        let outer_thunk = Arc::new(Thunk::new_placeholder(span));
-        outer_thunk.set_state(ThunkState::PendingBuiltin {
-            def: dummy_def,
-            args: Box::new(vec![
-                Arc::clone(&unevaluated_arg0),
-                Arc::clone(&unevaluated_arg1),
-            ]),
-            named: None,
-            call_span: span,
-            ctx: Arc::clone(&ctx),
-        });
+        let outer_thunk = Arc::new(Thunk::new_pending_builtin(
+            dummy_def,
+            vec![Arc::clone(&unevaluated_arg0), Arc::clone(&unevaluated_arg1)],
+            None,
+            span,
+            None,
+            Arc::clone(&ctx),
+        ));
 
         // Force via CEK — exercises BuiltinForceArg loop for both positions.
         let result = run(

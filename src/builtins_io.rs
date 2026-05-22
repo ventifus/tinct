@@ -45,7 +45,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{builtin, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
+use crate::eval::materialize_sync as materialize;
 use crate::value::{string_val, BuiltinArgs, DirPerms, Thunk, Value};
 
 /// Extract DirCap from a Value, checking revocation and returning (dir, perms).

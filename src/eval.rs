@@ -37,7 +37,7 @@ use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::value::{string_val, Environment, Key, Thunk, ThunkState, Value};
+use crate::value::{string_val, Environment, Key, Thunk, Value};
 
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -798,14 +798,14 @@ pub(crate) fn validate_and_wrap_record(
 ///
 /// E1-eval-cutover: This now routes through CoreExpr evaluation instead of directly
 /// matching on Expr variants.
-pub(crate) fn eval_recursive(
+pub(crate) async fn eval_recursive(
     expr: Rc<Spanned<Expr>>,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     // Convert Expr to CoreExpr and evaluate
     let core_expr = crate::ast_convert::expr_to_core_expr(&expr);
-    eval_core_expr(&core_expr, &env, ctx)
+    eval_core_expr(&core_expr, &env, ctx).await
 }
 
 // Old eval_recursive implementation deleted in E1-eval-cutover remediation.
@@ -891,12 +891,12 @@ pub(crate) fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
 
 /// Evaluate a [quote ...] expression, walking the quoted AST and evaluating
 /// any [unquote ...] or [unquote-splice ...] subexpressions.
-fn eval_quote(
+async fn eval_quote(
     quoted_expr: &Spanned<Expr>,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    eval_quote_walk(&quoted_expr.node, quoted_expr.span, env, ctx)
+    eval_quote_walk(&quoted_expr.node, quoted_expr.span, env, ctx).await
 }
 
 /// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
@@ -904,14 +904,14 @@ fn eval_quote(
 /// Returns `Value::Expression(Arc<SurfaceNode>)` — the runtime-v2 representation.
 /// macros.llt has been updated to handle both Expression (new) and Variant (old) inputs
 /// via dual dispatch (tag-of works on both), so this migration is safe.
-fn eval_quote_walk(
+async fn eval_quote_walk(
     expr: &Expr,
     span: Span,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
-    let processed_expr = eval_quote_preprocess(expr, span, &env, ctx)?;
+    let processed_expr = eval_quote_preprocess(expr, span, &env, ctx).await?;
 
     // runtime-v2 Part G: return Value::Expression (was: ast_to_dict_expr returning Variant Dict)
     // macros.llt is dual-dispatch ready (tag-of handles both Expression and Variant).
@@ -983,270 +983,270 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResul
 /// - Evaluates `Unquote` nodes, converting the result back to AST
 /// - Recurses into all child expressions
 /// - Leaves non-unquote nodes unchanged
-fn eval_quote_preprocess(
-    expr: &Expr,
+fn eval_quote_preprocess<'a>(
+    expr: &'a Expr,
     span: Span,
-    env: &Arc<RwLock<Environment>>,
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Spanned<Expr>> {
-    match expr {
-        Expr::Unquote(inner) => {
-            // Evaluate the unquoted expression
-            let thunk = eval_recursive(Rc::new((**inner).clone()), env.clone(), ctx)?;
-            let value = materialize(&thunk, Some(&inner.span), ctx)?;
+    env: &'a Arc<RwLock<Environment>>,
+    ctx: &'a Arc<EvalContext>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Spanned<Expr>>> + 'a>> {
+    Box::pin(async move {
+        match expr {
+            Expr::Unquote(inner) => {
+                // Evaluate the unquoted expression
+                let thunk = eval_recursive(Rc::new((**inner).clone()), env.clone(), ctx).await?;
+                let value = materialize(&thunk, Some(&inner.span), ctx).await?;
 
-            // Convert the value back to AST
-            value_to_expr(&value, inner.span, ctx)
-        }
-        Expr::UnquoteSplice(_) => {
-            // UnquoteSplice at non-list position is an error
-            Err(EvalError::internal(
-                "unquote-splice must be in a list position (inside call args or dict entries)"
-                    .to_string(),
-                span,
-            )
-            .into())
-        }
+                // Convert the value back to AST
+                value_to_expr(&value, inner.span, ctx)
+            }
+            Expr::UnquoteSplice(_) => {
+                // UnquoteSplice at non-list position is an error
+                Err(EvalError::internal(
+                    "unquote-splice must be in a list position (inside call args or dict entries)"
+                        .to_string(),
+                    span,
+                )
+                .into())
+            }
 
-        // Recursively process composite expressions
-        Expr::Dict(entries) => {
-            let processed_entries = entries
-                .iter()
-                .map(|entry| {
+            // Recursively process composite expressions
+            Expr::Dict(entries) => {
+                let mut processed_entries = Vec::with_capacity(entries.len());
+                for entry in entries {
                     let processed_value = eval_quote_preprocess(
                         &entry.node.value.node,
                         entry.node.value.span,
                         env,
                         ctx,
-                    )?;
+                    )
+                    .await?;
                     let processed_key = if let Some(ref key_expr) = entry.node.key {
-                        Some(eval_quote_preprocess(
-                            &key_expr.node,
-                            key_expr.span,
-                            env,
-                            ctx,
-                        )?)
+                        Some(eval_quote_preprocess(&key_expr.node, key_expr.span, env, ctx).await?)
                     } else {
                         None
                     };
-                    Ok(Spanned::new(
+                    processed_entries.push(Spanned::new(
                         Entry {
                             key: processed_key,
                             value: Rc::new(processed_value),
                         },
                         entry.span,
-                    ))
-                })
-                .collect::<EvalResult<Vec<_>>>()?;
-            Ok(Spanned::new(Expr::Dict(processed_entries), span))
-        }
+                    ));
+                }
+                Ok(Spanned::new(Expr::Dict(processed_entries), span))
+            }
 
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            implied,
-        } => {
-            let processed_func = eval_quote_preprocess(&func.node, func.span, env, ctx)?;
-            let processed_args = args
-                .iter()
-                .map(|arg| eval_quote_preprocess(&arg.node, arg.span, env, ctx).map(Rc::new))
-                .collect::<EvalResult<Vec<_>>>()?;
-            let processed_named_args = named_args
-                .iter()
-                .map(|na| {
+            Expr::Call {
+                func,
+                args,
+                named_args,
+                implied,
+            } => {
+                let processed_func = eval_quote_preprocess(&func.node, func.span, env, ctx).await?;
+                let mut processed_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    processed_args.push(Rc::new(
+                        eval_quote_preprocess(&arg.node, arg.span, env, ctx).await?,
+                    ));
+                }
+                let mut processed_named_args = Vec::with_capacity(named_args.len());
+                for na in named_args {
                     let processed_value =
-                        eval_quote_preprocess(&na.node.value.node, na.node.value.span, env, ctx)?;
-                    Ok(Spanned::new(
+                        eval_quote_preprocess(&na.node.value.node, na.node.value.span, env, ctx)
+                            .await?;
+                    processed_named_args.push(Spanned::new(
                         NamedArg {
                             name: na.node.name.clone(),
                             value: Rc::new(processed_value),
                         },
                         na.span,
-                    ))
-                })
-                .collect::<EvalResult<Vec<_>>>()?;
-            Ok(Spanned::new(
-                Expr::Call {
-                    func: Box::new(processed_func),
-                    args: processed_args,
-                    named_args: processed_named_args,
-                    implied: *implied,
-                },
-                span,
-            ))
-        }
+                    ));
+                }
+                Ok(Spanned::new(
+                    Expr::Call {
+                        func: Box::new(processed_func),
+                        args: processed_args,
+                        named_args: processed_named_args,
+                        implied: *implied,
+                    },
+                    span,
+                ))
+            }
 
-        Expr::Fn {
-            return_ann,
-            params,
-            body,
-            desugared,
-        } => {
-            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::Fn {
-                    return_ann: return_ann.clone(),
-                    params: params.clone(),
-                    body: Rc::new(processed_body),
-                    desugared: *desugared,
-                },
-                span,
-            ))
-        }
+            Expr::Fn {
+                return_ann,
+                params,
+                body,
+                desugared,
+            } => {
+                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::Fn {
+                        return_ann: return_ann.clone(),
+                        params: params.clone(),
+                        body: Rc::new(processed_body),
+                        desugared: *desugared,
+                    },
+                    span,
+                ))
+            }
 
-        Expr::DotAccess {
-            expr: target,
-            field,
-        } => {
-            let processed_target = eval_quote_preprocess(&target.node, target.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::DotAccess {
-                    expr: Box::new(processed_target),
-                    field: field.clone(),
-                },
-                span,
-            ))
-        }
+            Expr::DotAccess {
+                expr: target,
+                field,
+            } => {
+                let processed_target =
+                    eval_quote_preprocess(&target.node, target.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::DotAccess {
+                        expr: Box::new(processed_target),
+                        field: field.clone(),
+                    },
+                    span,
+                ))
+            }
 
-        Expr::Pipe { lhs, rhs } => {
-            let processed_lhs = eval_quote_preprocess(&lhs.node, lhs.span, env, ctx)?;
-            let processed_rhs = eval_quote_preprocess(&rhs.node, rhs.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::Pipe {
-                    lhs: Box::new(processed_lhs),
-                    rhs: Box::new(processed_rhs),
-                },
-                span,
-            ))
-        }
+            Expr::Pipe { lhs, rhs } => {
+                let processed_lhs = eval_quote_preprocess(&lhs.node, lhs.span, env, ctx).await?;
+                let processed_rhs = eval_quote_preprocess(&rhs.node, rhs.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::Pipe {
+                        lhs: Box::new(processed_lhs),
+                        rhs: Box::new(processed_rhs),
+                    },
+                    span,
+                ))
+            }
 
-        Expr::Sequential(exprs) => {
-            let processed_exprs = exprs
-                .iter()
-                .map(|e| eval_quote_preprocess(&e.node, e.span, env, ctx).map(Rc::new))
-                .collect::<EvalResult<Vec<_>>>()?;
-            Ok(Spanned::new(Expr::Sequential(processed_exprs), span))
-        }
+            Expr::Sequential(exprs) => {
+                let mut processed_exprs = Vec::with_capacity(exprs.len());
+                for e in exprs {
+                    processed_exprs.push(Rc::new(
+                        eval_quote_preprocess(&e.node, e.span, env, ctx).await?,
+                    ));
+                }
+                Ok(Spanned::new(Expr::Sequential(processed_exprs), span))
+            }
 
-        Expr::TypeAlias { params, body } => {
-            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::TypeAlias {
-                    params: params.clone(),
-                    body: Box::new(processed_body),
-                },
-                span,
-            ))
-        }
+            Expr::TypeAlias { params, body } => {
+                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::TypeAlias {
+                        params: params.clone(),
+                        body: Box::new(processed_body),
+                    },
+                    span,
+                ))
+            }
 
-        Expr::TypeAssert {
-            annotation,
-            expr: inner,
-            resolved_type,
-        } => {
-            let processed_expr = eval_quote_preprocess(&inner.node, inner.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::TypeAssert {
-                    annotation: annotation.clone(),
-                    expr: Box::new(processed_expr),
-                    resolved_type: resolved_type.clone(),
-                },
-                span,
-            ))
-        }
+            Expr::TypeAssert {
+                annotation,
+                expr: inner,
+                resolved_type,
+            } => {
+                let processed_expr =
+                    eval_quote_preprocess(&inner.node, inner.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::TypeAssert {
+                        annotation: annotation.clone(),
+                        expr: Box::new(processed_expr),
+                        resolved_type: resolved_type.clone(),
+                    },
+                    span,
+                ))
+            }
 
-        Expr::Quote(inner) => {
-            let processed_inner = eval_quote_preprocess(&inner.node, inner.span, env, ctx)?;
-            Ok(Spanned::new(Expr::Quote(Box::new(processed_inner)), span))
-        }
+            Expr::Quote(inner) => {
+                let processed_inner =
+                    eval_quote_preprocess(&inner.node, inner.span, env, ctx).await?;
+                Ok(Spanned::new(Expr::Quote(Box::new(processed_inner)), span))
+            }
 
-        Expr::Match { scrutinee, arms } => {
-            let processed_scrutinee =
-                eval_quote_preprocess(&scrutinee.node, scrutinee.span, env, ctx)?;
-            let processed_arms = arms
-                .iter()
-                .map(|arm| {
+            Expr::Match { scrutinee, arms } => {
+                let processed_scrutinee =
+                    eval_quote_preprocess(&scrutinee.node, scrutinee.span, env, ctx).await?;
+                let mut processed_arms = Vec::with_capacity(arms.len());
+                for arm in arms {
                     let processed_body =
-                        eval_quote_preprocess(&arm.body.node, arm.body.span, env, ctx)?;
+                        eval_quote_preprocess(&arm.body.node, arm.body.span, env, ctx).await?;
                     let processed_guard = if let Some(ref guard) = arm.guard {
-                        Some(Box::new(eval_quote_preprocess(
-                            &guard.node,
-                            guard.span,
-                            env,
-                            ctx,
-                        )?))
+                        Some(Box::new(
+                            eval_quote_preprocess(&guard.node, guard.span, env, ctx).await?,
+                        ))
                     } else {
                         None
                     };
-                    Ok(MatchArm {
+                    processed_arms.push(MatchArm {
                         pattern: arm.pattern.clone(),
                         guard: processed_guard,
                         body: Box::new(processed_body),
-                    })
-                })
-                .collect::<EvalResult<Vec<_>>>()?;
-            Ok(Spanned::new(
-                Expr::Match {
-                    scrutinee: Box::new(processed_scrutinee),
-                    arms: processed_arms,
-                },
-                span,
-            ))
-        }
+                    });
+                }
+                Ok(Spanned::new(
+                    Expr::Match {
+                        scrutinee: Box::new(processed_scrutinee),
+                        arms: processed_arms,
+                    },
+                    span,
+                ))
+            }
 
-        Expr::DefMacro { name, params, body } => {
-            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::DefMacro {
-                    name: name.clone(),
-                    params: params.clone(),
-                    body: Rc::new(processed_body),
-                },
-                span,
-            ))
-        }
+            Expr::DefMacro { name, params, body } => {
+                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::DefMacro {
+                        name: name.clone(),
+                        params: params.clone(),
+                        body: Rc::new(processed_body),
+                    },
+                    span,
+                ))
+            }
 
-        Expr::MacroDecl { name, params, body } => {
-            let processed_params = eval_quote_preprocess(&params.node, params.span, env, ctx)?;
-            let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::MacroDecl {
-                    name: name.clone(),
-                    params: Box::new(processed_params),
-                    body: Box::new(processed_body),
-                },
-                span,
-            ))
-        }
+            Expr::MacroDecl { name, params, body } => {
+                let processed_params =
+                    eval_quote_preprocess(&params.node, params.span, env, ctx).await?;
+                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::MacroDecl {
+                        name: name.clone(),
+                        params: Box::new(processed_params),
+                        body: Box::new(processed_body),
+                    },
+                    span,
+                ))
+            }
 
-        Expr::Splice(forms) => {
-            let processed_forms = forms
-                .iter()
-                .map(|form| eval_quote_preprocess(&form.node, form.span, env, ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
-            Ok(Spanned::new(Expr::Splice(processed_forms), span))
-        }
+            Expr::Splice(forms) => {
+                let mut processed_forms = Vec::with_capacity(forms.len());
+                for form in forms {
+                    processed_forms
+                        .push(eval_quote_preprocess(&form.node, form.span, env, ctx).await?);
+                }
+                Ok(Spanned::new(Expr::Splice(processed_forms), span))
+            }
 
-        Expr::SyntaxClass {
-            name,
-            pattern,
-            message,
-        } => {
-            let processed_pattern = eval_quote_preprocess(&pattern.node, pattern.span, env, ctx)?;
-            Ok(Spanned::new(
-                Expr::SyntaxClass {
-                    name: name.clone(),
-                    pattern: Box::new(processed_pattern),
-                    message: message.clone(),
-                },
-                span,
-            ))
-        }
+            Expr::SyntaxClass {
+                name,
+                pattern,
+                message,
+            } => {
+                let processed_pattern =
+                    eval_quote_preprocess(&pattern.node, pattern.span, env, ctx).await?;
+                Ok(Spanned::new(
+                    Expr::SyntaxClass {
+                        name: name.clone(),
+                        pattern: Box::new(processed_pattern),
+                        message: message.clone(),
+                    },
+                    span,
+                ))
+            }
 
-        // All other expressions don't have child expressions, just clone them
-        _ => Ok(Spanned::new(expr.clone(), span)),
-    }
+            // All other expressions don't have child expressions, just clone them
+            _ => Ok(Spanned::new(expr.clone(), span)),
+        }
+    }) // end Box::pin(async move {
 }
 
 /// Evaluate an expression to a thunk without forcing it.
@@ -1254,27 +1254,31 @@ fn eval_quote_preprocess(
 /// Returns `Arc<Thunk>` in Unevaluated state (or pre-materialized for literals).
 /// Materialization is deferred until `materialize()` is called on the thunk.
 ///
-/// # Async Migration (sprint-2b-async step 4)
+/// # Async Implementation
 ///
-/// Like `materialize()`, this function is synchronous but async-capable.
-/// Full async transformation deferred to preserve compatibility with call sites.
+/// Returns `Pin<Box<dyn Future>>` to break the recursive cycle
+/// `eval → eval_recursive → eval_core_expr → eval`. Non-recursive helpers
+/// use `async fn` directly. See `materialize()` for the same pattern.
 pub fn eval(
     expr: Rc<Spanned<Expr>>,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    let span = expr.span;
-    let thunk = eval_recursive(expr, env, ctx)?;
-    // If the type checker recorded a boundary guard for this expression's span,
-    // wrap the thunk in a ThunkState::Guarded. The guard fires lazily — only
-    // when the thunk is forced — so this preserves call-by-need semantics.
-    // Fast-path: boundary_guards is empty for programs run without type checking,
-    // so the borrow and HashMap lookup add no overhead in the common case.
-    if ctx.boundary_guards.read().unwrap().is_empty() {
-        Ok(thunk)
-    } else {
-        Ok(maybe_wrap_guard(thunk, span, ctx))
-    }
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + '_>> {
+    let ctx = ctx.clone();
+    Box::pin(async move {
+        let span = expr.span;
+        let thunk = eval_recursive(expr, env, &ctx).await?;
+        // If the type checker recorded a boundary guard for this expression's span,
+        // wrap the thunk in a ThunkState::Guarded. The guard fires lazily — only
+        // when the thunk is forced — so this preserves call-by-need semantics.
+        // Fast-path: boundary_guards is empty for programs run without type checking,
+        // so the borrow and HashMap lookup add no overhead in the common case.
+        if ctx.boundary_guards.read().unwrap().is_empty() {
+            Ok(thunk)
+        } else {
+            Ok(maybe_wrap_guard(thunk, span, &ctx))
+        }
+    }) // end Box::pin(async move {
 }
 
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
@@ -1288,371 +1292,382 @@ pub fn eval(
 /// This is intentionally TRANSITIONAL. The round-trips to Expr are ACCEPTED for this
 /// sprint (E1). Future sprints (E2/E3) will implement native CoreExpr handlers for
 /// Dict/Call/Fn to eliminate the bridge conversions.
-fn eval_core_expr(
-    expr: &Spanned<CoreExpr>,
-    env: &Arc<RwLock<Environment>>,
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    match &expr.node {
-        // Fast path: literals materialize directly without wrapping in Unevaluated
-        CoreExpr::Int(n) => Ok(Arc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
-        CoreExpr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
-            Value::Float(*f),
-            expr.span,
-        ))),
-        CoreExpr::Bool(b) => Ok(Arc::new(Thunk::new_materialized(
-            Value::Bool(*b),
-            expr.span,
-        ))),
-        CoreExpr::Str(s) => Ok(Arc::new(Thunk::new_materialized(string_val(s), expr.span))),
+fn eval_core_expr<'a>(
+    expr: &'a Spanned<CoreExpr>,
+    env: &'a Arc<RwLock<Environment>>,
+    ctx: &'a Arc<EvalContext>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
+    Box::pin(async move {
+        match &expr.node {
+            // Fast path: literals materialize directly without wrapping in Unevaluated
+            CoreExpr::Int(n) => Ok(Arc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
+            CoreExpr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
+                Value::Float(*f),
+                expr.span,
+            ))),
+            CoreExpr::Bool(b) => Ok(Arc::new(Thunk::new_materialized(
+                Value::Bool(*b),
+                expr.span,
+            ))),
+            CoreExpr::Str(s) => Ok(Arc::new(Thunk::new_materialized(string_val(s), expr.span))),
 
-        // Variable lookup with de Bruijn coordinates (fast path)
-        CoreExpr::Var { name, level, slot } => {
-            let env_lock = env.read().unwrap();
-            // Try slot-based lookup first (O(1) when level and slot are correct)
-            if let Some(thunk) = env_lock.get_by_slot(*level, *slot) {
-                Ok(thunk)
-            } else {
-                // Fallback to name-based lookup (for stale slot references)
+            // Variable lookup with de Bruijn coordinates (fast path)
+            CoreExpr::Var { name, level, slot } => {
+                let env_lock = env.read().unwrap();
+                // Try slot-based lookup first (O(1) when level and slot are correct)
+                if let Some(thunk) = env_lock.get_by_slot(*level, *slot) {
+                    Ok(thunk)
+                } else {
+                    // Fallback to name-based lookup (for stale slot references)
+                    let name_owned = name.clone();
+                    env_lock
+                        .get(name)
+                        .ok_or_else(|| EvalError::undefined_variable(name_owned, expr.span).into())
+                }
+            }
+
+            // Free variable: name-based lookup only (no slot available)
+            CoreExpr::FreeVar(name) => {
                 let name_owned = name.clone();
+                let env_lock = env.read().unwrap();
                 env_lock
                     .get(name)
                     .ok_or_else(|| EvalError::undefined_variable(name_owned, expr.span).into())
             }
-        }
 
-        // Free variable: name-based lookup only (no slot available)
-        CoreExpr::FreeVar(name) => {
-            let name_owned = name.clone();
-            let env_lock = env.read().unwrap();
-            env_lock
-                .get(name)
-                .ok_or_else(|| EvalError::undefined_variable(name_owned, expr.span).into())
-        }
-
-        // DotAccess: convert to Expr and use existing unevaluated thunk infrastructure
-        CoreExpr::DotAccess { .. } => {
-            let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
-            Ok(Arc::new(Thunk::new_unevaluated(
-                old_expr,
-                Arc::clone(env),
-                Arc::clone(ctx),
-                expr.span,
-            )))
-        }
-
-        // Sequential: evaluate each expression in order, return the last result
-        CoreExpr::Sequential(exprs) => {
-            if exprs.is_empty() {
-                return Ok(Arc::new(Thunk::new_materialized(
-                    Value::Dict(IndexMap::new()),
+            // DotAccess: convert to Expr and use existing unevaluated thunk infrastructure
+            CoreExpr::DotAccess { .. } => {
+                let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
+                Ok(Arc::new(Thunk::new_unevaluated(
+                    old_expr,
+                    Arc::clone(env),
+                    Arc::clone(ctx),
                     expr.span,
-                )));
+                )))
             }
 
-            let mut current_env = Arc::clone(env);
+            // Sequential: evaluate each expression in order, return the last result
+            CoreExpr::Sequential(exprs) => {
+                if exprs.is_empty() {
+                    return Ok(Arc::new(Thunk::new_materialized(
+                        Value::Dict(IndexMap::new()),
+                        expr.span,
+                    )));
+                }
 
-            for (i, seq_expr) in exprs.iter().enumerate() {
-                let is_last = i == exprs.len() - 1;
+                let mut current_env = Arc::clone(env);
 
-                if is_last {
-                    // Last expression: convert to Expr and evaluate
+                for (i, seq_expr) in exprs.iter().enumerate() {
+                    let is_last = i == exprs.len() - 1;
+
+                    if is_last {
+                        // Last expression: convert to Expr and evaluate
+                        let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(seq_expr));
+                        return Box::pin(eval(old_expr, current_env, ctx)).await;
+                    }
+
+                    // Intermediate expression: convert to Expr, materialize, and extract dict bindings
                     let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(seq_expr));
-                    return eval(old_expr, current_env, ctx);
-                }
+                    let thunk = Box::pin(eval(old_expr, Arc::clone(&current_env), ctx)).await?;
+                    let value = materialize(&thunk, Some(&seq_expr.span), ctx).await?;
 
-                // Intermediate expression: convert to Expr, materialize, and extract dict bindings
-                let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(seq_expr));
-                let thunk = eval(old_expr, Arc::clone(&current_env), ctx)?;
-                let value = materialize(&thunk, Some(&seq_expr.span), ctx)?;
-
-                // Flatten Overlay to Dict for scope chain binding
-                let map = match value {
-                    Value::Dict(map) => map,
-                    Value::Overlay(l, r) => crate::builtins::flatten_overlay(
-                        &l,
-                        &r,
-                        "sequential expression",
-                        ctx,
-                        seq_expr.span,
-                    )?,
-                    _ => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            format!("sequential expression #{}", i + 1),
-                            "Dict",
-                            value.type_name(),
+                    // Flatten Overlay to Dict for scope chain binding
+                    let map = match value {
+                        Value::Dict(map) => map,
+                        Value::Overlay(l, r) => crate::builtins::flatten_overlay(
+                            &l,
+                            &r,
+                            "sequential expression",
+                            ctx,
                             seq_expr.span,
-                        )
-                        .into());
-                    }
-                };
+                        )?,
+                        _ => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                format!("sequential expression #{}", i + 1),
+                                "Dict",
+                                value.type_name(),
+                                seq_expr.span,
+                            )
+                            .into());
+                        }
+                    };
 
-                // Create child environment with bindings from intermediate expression
-                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-                    &current_env,
-                ))));
-                for (key, val_thunk_id) in map {
-                    if let Key::String(name) = key {
-                        let val_thunk = ctx.get_thunk(val_thunk_id);
-                        child_env.write().unwrap().insert(name, val_thunk);
+                    // Create child environment with bindings from intermediate expression
+                    let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+                        &current_env,
+                    ))));
+                    for (key, val_thunk_id) in map {
+                        if let Key::String(name) = key {
+                            let val_thunk = ctx.get_thunk(val_thunk_id);
+                            child_env.write().unwrap().insert(name, val_thunk);
+                        }
                     }
+                    current_env = child_env;
                 }
-                current_env = child_env;
+
+                unreachable!("eval_core_expr Sequential: loop did not return")
             }
 
-            unreachable!("eval_core_expr Sequential: loop did not return")
-        }
+            // Dict: convert entries to old format and call eval_dict
+            CoreExpr::Dict(entries) => {
+                let old_entries: Vec<Spanned<Entry>> = entries
+                    .iter()
+                    .map(|ce| {
+                        Spanned::new(
+                            Entry {
+                                key: ce
+                                    .node
+                                    .key
+                                    .as_ref()
+                                    .map(|k| crate::ast_convert::core_expr_to_expr(k)),
+                                value: Rc::new(crate::ast_convert::core_expr_to_expr(
+                                    &ce.node.value,
+                                )),
+                            },
+                            ce.span,
+                        )
+                    })
+                    .collect();
+                eval_dict(&old_entries, env, ctx, &expr.span).await
+            }
 
-        // Dict: convert entries to old format and call eval_dict
-        CoreExpr::Dict(entries) => {
-            let old_entries: Vec<Spanned<Entry>> = entries
-                .iter()
-                .map(|ce| {
-                    Spanned::new(
-                        Entry {
-                            key: ce
-                                .node
-                                .key
-                                .as_ref()
-                                .map(|k| crate::ast_convert::core_expr_to_expr(k)),
-                            value: Rc::new(crate::ast_convert::core_expr_to_expr(&ce.node.value)),
-                        },
-                        ce.span,
-                    )
-                })
-                .collect();
-            eval_dict(&old_entries, env, ctx, &expr.span)
-        }
+            // Call: convert to Expr and use eval_call
+            CoreExpr::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } => {
+                let old_func = Box::new(crate::ast_convert::core_expr_to_expr(func));
+                let old_args: Vec<Rc<Spanned<Expr>>> = args
+                    .iter()
+                    .map(|a| Rc::new(crate::ast_convert::core_expr_to_expr(a)))
+                    .collect();
+                let old_named: Vec<Spanned<NamedArg>> = named_args
+                    .iter()
+                    .map(|na| {
+                        Spanned::new(
+                            NamedArg {
+                                name: na.node.name.clone(),
+                                value: Rc::new(crate::ast_convert::core_expr_to_expr(
+                                    &na.node.value,
+                                )),
+                            },
+                            na.span,
+                        )
+                    })
+                    .collect();
+                eval_call(&old_func, &old_args, &old_named, env, ctx, &expr.span).await
+            }
 
-        // Call: convert to Expr and use eval_call
-        CoreExpr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            let old_func = Box::new(crate::ast_convert::core_expr_to_expr(func));
-            let old_args: Vec<Rc<Spanned<Expr>>> = args
-                .iter()
-                .map(|a| Rc::new(crate::ast_convert::core_expr_to_expr(a)))
-                .collect();
-            let old_named: Vec<Spanned<NamedArg>> = named_args
-                .iter()
-                .map(|na| {
-                    Spanned::new(
-                        NamedArg {
-                            name: na.node.name.clone(),
-                            value: Rc::new(crate::ast_convert::core_expr_to_expr(&na.node.value)),
-                        },
-                        na.span,
-                    )
-                })
-                .collect();
-            eval_call(&old_func, &old_args, &old_named, env, ctx, &expr.span)
-        }
+            // Fn: convert body to Expr and create Value::Function
+            CoreExpr::Fn {
+                return_ann,
+                params,
+                body,
+                ..
+            } => {
+                let fn_params: Vec<Param> = params
+                    .iter()
+                    .map(|p| Param {
+                        name: p.node.name.clone(),
+                        annotation: p.node.annotation.clone(),
+                        variadic: p.node.variadic,
+                    })
+                    .collect();
 
-        // Fn: convert body to Expr and create Value::Function
-        CoreExpr::Fn {
-            return_ann,
-            params,
-            body,
-            ..
-        } => {
-            let fn_params: Vec<Param> = params
-                .iter()
-                .map(|p| Param {
-                    name: p.node.name.clone(),
-                    annotation: p.node.annotation.clone(),
-                    variadic: p.node.variadic,
-                })
-                .collect();
-
-            // Extract doc string from annotation if present
-            let annotation = return_ann.as_ref().and_then(|ann_spanned| {
-                let doc = match &ann_spanned.node {
-                    Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
-                        let key = entry.node.key.as_ref()?;
-                        if let Expr::Str(key_str) = &key.node {
-                            if key_str == "doc" {
-                                if let Expr::Str(doc_str) = &entry.node.value.node {
-                                    return Some(doc_str.clone());
+                // Extract doc string from annotation if present
+                let annotation = return_ann.as_ref().and_then(|ann_spanned| {
+                    let doc = match &ann_spanned.node {
+                        Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
+                            let key = entry.node.key.as_ref()?;
+                            if let Expr::Str(key_str) = &key.node {
+                                if key_str == "doc" {
+                                    if let Expr::Str(doc_str) = &entry.node.value.node {
+                                        return Some(doc_str.clone());
+                                    }
                                 }
                             }
-                        }
-                        None
-                    }),
-                    _ => None,
-                };
+                            None
+                        }),
+                        _ => None,
+                    };
 
-                doc.map(|doc_str| {
-                    Box::new(crate::value::FnAnnotation {
-                        doc: Some(doc_str),
-                        source_file: ctx.config.source_file.clone(),
+                    doc.map(|doc_str| {
+                        Box::new(crate::value::FnAnnotation {
+                            doc: Some(doc_str),
+                            source_file: ctx.config.source_file.clone(),
+                        })
                     })
-                })
-            });
+                });
 
-            // Convert body back to Expr (Value::Function stores Rc<Spanned<Expr>>)
-            let old_body = Rc::new(crate::ast_convert::core_expr_to_expr(body));
+                // Convert body back to Expr (Value::Function stores Rc<Spanned<Expr>>)
+                let old_body = Rc::new(crate::ast_convert::core_expr_to_expr(body));
 
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Function {
-                    params: Rc::new(fn_params),
-                    body: old_body,
-                    env: Arc::clone(env),
-                    annotation,
-                },
-                expr.span,
-            )))
-        }
-
-        // TypeAssert: convert to Expr::TypeAssert and wrap in an Unevaluated thunk.
-        // Do NOT call eval_recursive — that would convert back to CoreExpr::TypeAssert
-        // and loop. Instead, wrap as Unevaluated so the CEK machine's eval_step handles
-        // it via the Expr::TypeAssert branch, which pushes a TypeAssertCheck continuation
-        // and calls eval_recursive only on the INNER expression.
-        CoreExpr::TypeAssert { .. } => {
-            let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
-            Ok(Arc::new(Thunk::new_unevaluated(
-                old_expr,
-                Arc::clone(env),
-                Arc::clone(ctx),
-                expr.span,
-            )))
-        }
-
-        // RuntimeTypeCheck: same fix as TypeAssert. core_expr_to_expr produces
-        // Expr::TypeAssert { resolved_type: None }, which the CEK machine handles
-        // correctly without recursing back through eval_recursive.
-        CoreExpr::RuntimeTypeCheck { .. } => {
-            let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
-            Ok(Arc::new(Thunk::new_unevaluated(
-                old_expr,
-                Arc::clone(env),
-                Arc::clone(ctx),
-                expr.span,
-            )))
-        }
-
-        // Annotated: evaluate as bare string
-        CoreExpr::Annotated { name, .. } => Ok(Arc::new(Thunk::new_materialized(
-            string_val(name),
-            expr.span,
-        ))),
-
-        // Rest: error (only valid in type expressions)
-        CoreExpr::Rest(_) => Err(EvalError::internal(
-            "rest marker (...) is only valid inside type expressions".to_string(),
-            expr.span,
-        )
-        .into()),
-
-        // Match: implement natively — materialize the scrutinee, then try each arm
-        // in order. Do NOT call eval_recursive: that would convert to Expr::Match and
-        // loop back here via expr_to_core_expr → CoreExpr::Match → eval_core_expr.
-        CoreExpr::Match { scrutinee, arms } => {
-            // Evaluate the scrutinee to a thunk, then force it.
-            let scrutinee_thunk = eval_core_expr(scrutinee, env, ctx)?;
-            let scrutinee_value = materialize(&scrutinee_thunk, Some(&scrutinee.span), ctx)?;
-
-            // Try each arm in order.
-            for arm in arms {
-                // Try the pattern.
-                let matched_env = match_pattern(
-                    &arm.pattern.node,
-                    &scrutinee_value,
-                    env,
-                    &arm.pattern.span,
-                    ctx,
-                )?;
-
-                if let Some(arm_env) = matched_env {
-                    // Pattern matched. If there is a guard, evaluate it.
-                    if let Some(guard_expr) = &arm.guard {
-                        let guard_thunk = eval_core_expr(guard_expr, &arm_env, ctx)?;
-                        let guard_value = materialize(&guard_thunk, Some(&guard_expr.span), ctx)?;
-                        // Guard is not Bool(true) — skip this arm and try the next one.
-                        if !matches!(guard_value, Value::Bool(true)) {
-                            continue;
-                        }
-                    }
-                    // Arm matched (and guard passed). Evaluate the body.
-                    return eval_core_expr(&arm.body, &arm_env, ctx);
-                }
-                // Pattern did not match — try the next arm.
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Function {
+                        params: Rc::new(fn_params),
+                        body: old_body,
+                        env: Arc::clone(env),
+                        annotation,
+                    },
+                    expr.span,
+                )))
             }
 
-            // No arm matched: non-exhaustive match.
-            Err(EvalError::internal(
-                "non-exhaustive match: no pattern matched the scrutinee".to_string(),
+            // TypeAssert: convert to Expr::TypeAssert and wrap in an Unevaluated thunk.
+            // Do NOT call eval_recursive — that would convert back to CoreExpr::TypeAssert
+            // and loop. Instead, wrap as Unevaluated so the CEK machine's eval_step handles
+            // it via the Expr::TypeAssert branch, which pushes a TypeAssertCheck continuation
+            // and calls eval_recursive only on the INNER expression.
+            CoreExpr::TypeAssert { .. } => {
+                let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
+                Ok(Arc::new(Thunk::new_unevaluated(
+                    old_expr,
+                    Arc::clone(env),
+                    Arc::clone(ctx),
+                    expr.span,
+                )))
+            }
+
+            // RuntimeTypeCheck: same fix as TypeAssert. core_expr_to_expr produces
+            // Expr::TypeAssert { resolved_type: None }, which the CEK machine handles
+            // correctly without recursing back through eval_recursive.
+            CoreExpr::RuntimeTypeCheck { .. } => {
+                let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
+                Ok(Arc::new(Thunk::new_unevaluated(
+                    old_expr,
+                    Arc::clone(env),
+                    Arc::clone(ctx),
+                    expr.span,
+                )))
+            }
+
+            // Annotated: evaluate as bare string
+            CoreExpr::Annotated { name, .. } => Ok(Arc::new(Thunk::new_materialized(
+                string_val(name),
+                expr.span,
+            ))),
+
+            // Rest: error (only valid in type expressions)
+            CoreExpr::Rest(_) => Err(EvalError::internal(
+                "rest marker (...) is only valid inside type expressions".to_string(),
                 expr.span,
             )
-            .into())
+            .into()),
+
+            // Match: implement natively — materialize the scrutinee, then try each arm
+            // in order. Do NOT call eval_recursive: that would convert to Expr::Match and
+            // loop back here via expr_to_core_expr → CoreExpr::Match → eval_core_expr.
+            CoreExpr::Match { scrutinee, arms } => {
+                // Evaluate the scrutinee to a thunk, then force it.
+                let scrutinee_thunk = eval_core_expr(scrutinee, env, ctx).await?;
+                let scrutinee_value =
+                    materialize(&scrutinee_thunk, Some(&scrutinee.span), ctx).await?;
+
+                // Try each arm in order.
+                for arm in arms {
+                    // Try the pattern.
+                    let matched_env = match_pattern(
+                        &arm.pattern.node,
+                        &scrutinee_value,
+                        env,
+                        &arm.pattern.span,
+                        ctx,
+                    )
+                    .await?;
+
+                    if let Some(arm_env) = matched_env {
+                        // Pattern matched. If there is a guard, evaluate it.
+                        if let Some(guard_expr) = &arm.guard {
+                            let guard_thunk = eval_core_expr(guard_expr, &arm_env, ctx).await?;
+                            let guard_value =
+                                materialize(&guard_thunk, Some(&guard_expr.span), ctx).await?;
+                            // Guard is not Bool(true) — skip this arm and try the next one.
+                            if !matches!(guard_value, Value::Bool(true)) {
+                                continue;
+                            }
+                        }
+                        // Arm matched (and guard passed). Evaluate the body.
+                        return eval_core_expr(&arm.body, &arm_env, ctx).await;
+                    }
+                    // Pattern did not match — try the next arm.
+                }
+
+                // No arm matched: non-exhaustive match.
+                Err(EvalError::internal(
+                    "non-exhaustive match: no pattern matched the scrutinee".to_string(),
+                    expr.span,
+                )
+                .into())
+            }
+
+            // Quote: convert to Expr and use eval_quote
+            CoreExpr::Quote(inner) => {
+                let old_inner = Box::new(crate::ast_convert::core_expr_to_expr(inner));
+                eval_quote(&old_inner, env.clone(), ctx).await
+            }
+
+            // Unquote: error (only valid inside quote)
+            CoreExpr::Unquote(_) => Err(EvalError::internal(
+                "unquote is only valid inside [quote ...]".to_string(),
+                expr.span,
+            )
+            .into()),
+
+            // UnquoteSplice: error (only valid inside quote)
+            CoreExpr::UnquoteSplice(_) => Err(EvalError::internal(
+                "unquote-splice is only valid inside [quote ...]".to_string(),
+                expr.span,
+            )
+            .into()),
+
+            // PatternDecl: error (not an expression)
+            CoreExpr::PatternDecl { .. } => Err(EvalError::internal(
+                "pattern declaration is only valid in instance match arms".to_string(),
+                expr.span,
+            )
+            .into()),
+
+            // LetDecl: error (not an expression)
+            CoreExpr::LetDecl { .. } => Err(EvalError::internal(
+                "let declarations are not expressions".to_string(),
+                expr.span,
+            )
+            .into()),
+
+            // CaseArm: error (not an expression)
+            CoreExpr::CaseArm { .. } => Err(EvalError::internal(
+                "case arms are not expressions".to_string(),
+                expr.span,
+            )
+            .into()),
+
+            // TypeApp: error (type annotation node)
+            CoreExpr::TypeApp { .. } => Err(EvalError::internal(
+                "TypeApp is a type annotation node and cannot be evaluated".to_string(),
+                expr.span,
+            )
+            .into()),
+
+            // Placeholder: error on evaluation
+            CoreExpr::Placeholder => Err(EvalError::unimplemented(
+                "placeholder `...` was evaluated — replace with an implementation".to_string(),
+                expr.span,
+            )
+            .into()),
+
+            // Error: propagate as internal error
+            CoreExpr::Error(span) => Err(EvalError::internal(
+                format!(
+                    "syntax error at {}:{} (cannot evaluate error node)",
+                    span.start.line, span.start.column
+                ),
+                expr.span,
+            )
+            .into()),
         }
-
-        // Quote: convert to Expr and use eval_quote
-        CoreExpr::Quote(inner) => {
-            let old_inner = Box::new(crate::ast_convert::core_expr_to_expr(inner));
-            eval_quote(&old_inner, env.clone(), ctx)
-        }
-
-        // Unquote: error (only valid inside quote)
-        CoreExpr::Unquote(_) => Err(EvalError::internal(
-            "unquote is only valid inside [quote ...]".to_string(),
-            expr.span,
-        )
-        .into()),
-
-        // UnquoteSplice: error (only valid inside quote)
-        CoreExpr::UnquoteSplice(_) => Err(EvalError::internal(
-            "unquote-splice is only valid inside [quote ...]".to_string(),
-            expr.span,
-        )
-        .into()),
-
-        // PatternDecl: error (not an expression)
-        CoreExpr::PatternDecl { .. } => Err(EvalError::internal(
-            "pattern declaration is only valid in instance match arms".to_string(),
-            expr.span,
-        )
-        .into()),
-
-        // LetDecl: error (not an expression)
-        CoreExpr::LetDecl { .. } => Err(EvalError::internal(
-            "let declarations are not expressions".to_string(),
-            expr.span,
-        )
-        .into()),
-
-        // CaseArm: error (not an expression)
-        CoreExpr::CaseArm { .. } => {
-            Err(EvalError::internal("case arms are not expressions".to_string(), expr.span).into())
-        }
-
-        // TypeApp: error (type annotation node)
-        CoreExpr::TypeApp { .. } => Err(EvalError::internal(
-            "TypeApp is a type annotation node and cannot be evaluated".to_string(),
-            expr.span,
-        )
-        .into()),
-
-        // Placeholder: error on evaluation
-        CoreExpr::Placeholder => Err(EvalError::unimplemented(
-            "placeholder `...` was evaluated — replace with an implementation".to_string(),
-            expr.span,
-        )
-        .into()),
-
-        // Error: propagate as internal error
-        CoreExpr::Error(span) => Err(EvalError::internal(
-            format!(
-                "syntax error at {}:{} (cannot evaluate error node)",
-                span.start.line, span.start.column
-            ),
-            expr.span,
-        )
-        .into()),
-    }
+    }) // end Box::pin(async move {
 }
 
 /// Force a thunk to its concrete value, memoizing the result.
@@ -1661,58 +1676,54 @@ fn eval_core_expr(
 /// Subsequent calls return the cached value without re-evaluation. This implements
 /// call-by-need semantics: lazy evaluation with sharing.
 ///
-/// # ThunkState transitions
+/// # State transitions
 ///
 /// - `Materialized`: returns cached value immediately
 /// - `Failed`: returns cached error (with updated materialization_span)
-/// - `InProgress`: returns circular dependency error
+/// - `InProgress`: returns circular dependency error (uses `ctx.eval_stack` for cycle path)
 /// - `Unevaluated`: evaluates expr in env, memoizes result or error
 /// - `PendingBuiltin`: calls builtin with args, memoizes result or error
 /// - `PendingCall`: materializes func, invokes it with args, memoizes result or error
 ///
 /// # Side effects
 ///
-/// Mutates the thunk's internal state via `RefCell`. On success, transitions to
-/// `Materialized`. On failure, transitions to `Failed` (caching the error).
+/// Mutates the thunk's internal state via `ThunkInner`. On success, transitions to
+/// `Materialized` via `set_materialized()`. On failure, transitions to `Failed` via
+/// `cache_failure()`.
 ///
 /// # Parameters
 ///
 /// - `mat_span`: the span of the expression that triggered materialization
 ///   (e.g., an access chain). Attached to errors so users can see both where
 ///   a value was defined and where it was forced.
-/// - `_ctx`: intentionally unused. Each thunk captures its creation-time
-///   `EvalContext` in its `ThunkState` variant (`Unevaluated`, `PendingBuiltin`,
-///   `PendingCall`, `Guarded`), and evaluates in that context rather than the caller's.
-///   This follows Launchbury (1993): thunks are closures over their birth
-///   environment, so forcing a thunk must use the context in which it was
-///   allocated, not the context of the demand site. The parameter exists for
-///   API symmetry with `eval()`.
+/// - `ctx`: the caller's `EvalContext`. Each thunk captures its creation-time context
+///   inside its `UnevaluatedState`, so `ctx` is used only for the `InProgress`
+///   cycle-detection path (`ctx.state.eval_stack`). This follows Launchbury (1993):
+///   thunks are closures over their birth environment, so forcing a thunk evaluates
+///   in the context in which it was allocated, not the context of the demand site.
 ///
-/// # Async Migration (sprint-2b-async step 4)
+/// # Async implementation
 ///
-/// This function is synchronous but async-capable: it can call async builtins
-/// via `crate::async_rt::block_on()`. The full async transformation (making this
-/// `async fn materialize()`) is deferred to preserve compatibility with 568 call sites.
-/// Future migration path: create `async fn materialize_async()`, wrap it here with
-/// `async_rt::block_on(materialize_async(...))`, then incrementally migrate callers.
-pub fn materialize(
-    thunk: &Thunk,
-    mat_span: Option<&Span>,
-    _ctx: &Arc<EvalContext>,
-) -> EvalResult<Value> {
-    // Read origin before checking state (InProgress may not preserve it)
-    let origin = thunk.origin.clone();
-    let thunk_span = thunk.span;
+/// Returns `Pin<Box<dyn Future>>` to break the recursive cycle
+/// `materialize → eval → run → force_step → materialize`. Non-recursive helpers
+/// use `async fn` directly.
+pub fn materialize<'a>(
+    thunk: &'a Thunk,
+    mat_span: Option<&'a Span>,
+    ctx: &'a Arc<EvalContext>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + 'a>> {
+    Box::pin(async move {
+        // Read origin before checking state (InProgress may not preserve it)
+        let origin = thunk.origin.clone();
+        let thunk_span = thunk.span;
 
-    // Fast path: check if already materialized
-    if let Some(v) = thunk.try_get_materialized() {
-        return Ok(v);
-    }
+        // Fast path: check if already materialized
+        if let Some(v) = thunk.try_get_materialized() {
+            return Ok(v);
+        }
 
-    // Check for Failed state (need to read full state for error handling)
-    {
-        let state = thunk.state();
-        match &*state {
+        // Check for Failed state (need to read cached error for stack frame enrichment)
+        if let Some(err) = thunk.get_cached_error() {
             // Failed state: dual-span error caching model.
             //
             // First failure sets both definition_span and materialization_span.
@@ -1722,78 +1733,57 @@ pub fn materialize(
             // - If materialization_span differs from current mat_span and current mat_span
             //   is not already in the stack, add current mat_span as a stack frame.
             //   The original materialization_span is preserved.
-            ThunkState::Failed(ref err) => {
-                let mut cloned = (**err).clone();
-                let mut should_update_cache = false;
-                if let Some(span) = mat_span {
-                    if cloned.materialization_span.is_none() {
-                        // First access via Failed path (edge case: error cached without mat_span)
-                        cloned.materialization_span = Some(*span);
-                        should_update_cache = true;
-                    } else if cloned.materialization_span != Some(*span)
-                        && !cloned.stack.iter().any(|f| f.span == *span)
-                    {
-                        // Different access site: add as stack frame, preserve original mat_span
-                        cloned.push_frame("materialized".to_string(), *span);
-                        should_update_cache = true;
-                    }
+            let mut cloned = (*err).clone();
+            let mut should_update_cache = false;
+            if let Some(span) = mat_span {
+                if cloned.materialization_span.is_none() {
+                    // First access via Failed path (edge case: error cached without mat_span)
+                    cloned.materialization_span = Some(*span);
+                    should_update_cache = true;
+                } else if cloned.materialization_span != Some(*span)
+                    && !cloned.stack.iter().any(|f| f.span == *span)
+                {
+                    // Different access site: add as stack frame, preserve original mat_span
+                    cloned.push_frame("materialized".to_string(), *span);
+                    should_update_cache = true;
                 }
-                // Update cached error if we modified it
-                if should_update_cache && cloned.kind.is_cacheable() {
-                    drop(state);
-                    thunk.cache_failure(&cloned);
-                }
-                return Err(Box::new(cloned));
             }
-            ThunkState::InProgress => {
-                // PROP-CYCLE: circular dependency detected during InProgress state check.
-                // Error is constructed and decorated manually via with_materialization_span(),
-                // rather than using the decorate closure (defined below), because we need to
-                // immediately cache the error in the Failed state before returning.
-                let label = origin.as_deref().unwrap_or("thunk");
-                // Capture the eval_stack for cycle path reconstruction
-                let cycle_path = _ctx.state.lock().unwrap().eval_stack.clone();
-                let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
-                if let Some(span) = mat_span {
-                    err = err.with_materialization_span(*span);
-                }
-                let err_boxed: Box<EvalError> = err.into();
-                drop(state);
-                thunk.cache_failure(&err_boxed);
-                return Err(err_boxed);
+            // Update cached error if we modified it
+            if should_update_cache && cloned.kind.is_cacheable() {
+                thunk.cache_failure(&cloned);
             }
-            ThunkState::Placeholder => {
-                panic!(
-                    "attempted to force a Placeholder thunk (span {:?}). \
-                     This indicates a letrec construction bug: all placeholder \
-                     slots must be filled via set_state() before evaluation begins.",
-                    thunk.span
-                );
-            }
-            ThunkState::Materialized(_) => {
-                // Already handled by try_get_materialized() fast path above.
-                // If we reach here, it means the thunk became Materialized between
-                // the fast path check and this match (shouldn't happen in single-threaded
-                // execution, but handle it gracefully).
-                unreachable!(
-                    "Materialized state should have been caught by try_get_materialized() fast path"
-                )
-            }
-            ThunkState::Unevaluated { .. }
-            | ThunkState::PendingBuiltin { .. }
-            | ThunkState::PendingCall { .. }
-            | ThunkState::Guarded { .. }
-            | ThunkState::Surface { .. }
-            | ThunkState::AstNodeField { .. } => {}
+            return Err(Box::new(cloned));
         }
-    }
 
-    let origin_opt: Option<&str> = origin.as_deref();
-    let decorate = |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span);
+        // Check for InProgress (cycle detection)
+        if thunk.is_in_progress() {
+            // PROP-CYCLE: circular dependency detected during InProgress state check.
+            // Error is constructed and decorated manually via with_materialization_span(),
+            // rather than using the decorate closure (defined below), because we need to
+            // immediately cache the error in the Failed state before returning.
+            let label = origin.as_deref().unwrap_or("thunk");
+            // Capture the eval_stack for cycle path reconstruction
+            let cycle_path = ctx.state.lock().unwrap().eval_stack.clone();
+            let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
+            if let Some(span) = mat_span {
+                err = err.with_materialization_span(*span);
+            }
+            let err_boxed: Box<EvalError> = err.into();
+            thunk.cache_failure(&err_boxed);
+            return Err(err_boxed);
+        }
 
-    if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
-        let result = eval(Rc::clone(&expr), Arc::clone(&env), &thunk_ctx)
-            .and_then(|result_thunk| {
+        // Note: Placeholder state cannot be detected without full state inspection.
+        // If we reach a Placeholder thunk, force_step will panic when it tries to take_*
+        // and finds no unevaluated state. This is acceptable — Placeholder forcing is a
+        // letrec construction bug.
+
+        let origin_opt: Option<&str> = origin.as_deref();
+        let decorate = |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span);
+
+        if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
+            let result = async {
+                let result_thunk = eval(Rc::clone(&expr), Arc::clone(&env), &thunk_ctx).await?;
                 run(
                     Action::Materialize {
                         thunk: result_thunk,
@@ -1801,206 +1791,110 @@ pub fn materialize(
                     },
                     &thunk_ctx,
                 )
-            })
+                .await
+            }
+            .await
             .map_err(&decorate);
 
-        match result {
-            Ok(value) => {
-                thunk.set_materialized(value.clone());
-                Ok(value)
-            }
-            Err(e) => {
-                // Restore Unevaluated state for non-cacheable errors (e.g., DepthExceeded)
-                // so the thunk can be re-evaluated at a shallower continuation stack depth.
-                if e.kind.is_cacheable() {
-                    thunk.cache_failure(&e);
-                } else {
-                    thunk.set_state(ThunkState::Unevaluated {
-                        expr,
-                        env,
-                        env_id: None,
-                        ctx: thunk_ctx,
-                    });
+            match result {
+                Ok(value) => {
+                    thunk.set_materialized(value.clone());
+                    Ok(value)
                 }
-                Err(e)
-            }
-        }
-    } else if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
-        // Pre-materialize strict args before calling the builtin.
-        //
-        // The CEK machine (eval_materialize.rs::force_step) handles force_count and
-        // pos_strictness W1 pre-materialization iteratively via BuiltinForceArg continuations.
-        // This recursive path bypasses the CEK machine entirely, so it must replicate
-        // force_count + W1 semantics here to prevent builtins using
-        // `try_get_materialized().expect("pre-materialized by force_count/pos_strictness")` from panicking.
-        //
-        // Without this, any builtin with force_count > 0 (e.g. $take, $map, $drop) panics
-        // when materialized via the recursive path (e.g. from builtin_collect's loop,
-        // from builtin_filter_seq_step's materialize() call on the tail, etc.).
-        //
-        // On error during pre-materialization, restore PendingBuiltin state for
-        // non-cacheable errors (DepthExceeded) to allow retry at a shallower depth.
-        {
-            use crate::value::Strictness;
-            let mut premat_err: Option<Box<EvalError>> = None;
-            // H1: force_count range — unconditional pre-materialization
-            for i in 0..def.force_count.min(args.len()) {
-                if args[i].try_get_materialized().is_none() {
-                    if let Err(e) = materialize(&args[i], None, &thunk_ctx).map_err(&decorate) {
-                        premat_err = Some(e);
-                        break;
+                Err(e) => {
+                    // Restore Unevaluated state for non-cacheable errors (e.g., DepthExceeded)
+                    // so the thunk can be re-evaluated at a shallower continuation stack depth.
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Expr {
+                            expr,
+                            env,
+                            env_id: None,
+                            ctx: thunk_ctx,
+                        });
                     }
+                    Err(e)
                 }
             }
-            // W1: pos_strictness Seq/Spine — dispatch-time materialization
-            if premat_err.is_none() {
-                for (i, &s) in def.pos_strictness.iter().enumerate() {
-                    if i < args.len()
-                        && (s == Strictness::Seq || s == Strictness::Spine)
-                        && args[i].try_get_materialized().is_none()
-                    {
-                        if let Err(e) = materialize(&args[i], None, &thunk_ctx).map_err(&decorate) {
+        } else if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin()
+        {
+            // Pre-materialize strict args before calling the builtin.
+            //
+            // The CEK machine (eval_materialize.rs::force_step) handles force_count and
+            // pos_strictness W1 pre-materialization iteratively via BuiltinForceArg continuations.
+            // This recursive path bypasses the CEK machine entirely, so it must replicate
+            // force_count + W1 semantics here to prevent builtins using
+            // `try_get_materialized().expect("pre-materialized by force_count/pos_strictness")` from panicking.
+            //
+            // Without this, any builtin with force_count > 0 (e.g. $take, $map, $drop) panics
+            // when materialized via the recursive path (e.g. from builtin_collect's loop,
+            // from builtin_filter_seq_step's materialize() call on the tail, etc.).
+            //
+            // On error during pre-materialization, restore PendingBuiltin state for
+            // non-cacheable errors (DepthExceeded) to allow retry at a shallower depth.
+            {
+                use crate::value::Strictness;
+                let mut premat_err: Option<Box<EvalError>> = None;
+                // H1: force_count range — unconditional pre-materialization
+                for i in 0..def.force_count.min(args.len()) {
+                    if args[i].try_get_materialized().is_none() {
+                        if let Err(e) = materialize(&args[i], None, &thunk_ctx)
+                            .await
+                            .map_err(&decorate)
+                        {
                             premat_err = Some(e);
                             break;
                         }
                     }
                 }
-            }
-            if let Some(e) = premat_err {
-                if e.kind.is_cacheable() {
-                    thunk.cache_failure(&e);
-                } else {
-                    thunk.set_state(ThunkState::PendingBuiltin {
-                        def,
-                        args: Box::new(args),
-                        named,
-                        call_span,
-                        ctx: thunk_ctx,
-                    });
-                }
-                return Err(e);
-            }
-        }
-        // `named` is None for internally-created thunks (common case); only $apply
-        // passes named args through. Use an empty map ref for the None case.
-        let builtin_args = crate::value::BuiltinArgs {
-            args: &args,
-            named: named.as_ref(),
-            call_span,
-            ctx: Arc::clone(&thunk_ctx),
-        };
-        match (def.func)(builtin_args).map_err(&decorate) {
-            Ok(result_thunk) => {
-                // Fast path: if the builtin already materialized its result, skip recursion.
-                if let Some(value) = result_thunk.try_get_materialized() {
-                    thunk.set_materialized(value.clone());
-                    Ok(value)
-                } else {
-                    match run(
-                        Action::Materialize {
-                            thunk: result_thunk,
-                            mat_span: mat_span.copied(),
-                        },
-                        &thunk_ctx,
-                    )
-                    .map_err(&decorate)
-                    {
-                        Ok(value) => {
-                            thunk.set_materialized(value.clone());
-                            Ok(value)
-                        }
-                        Err(e) => {
-                            // Restore PendingBuiltin for non-cacheable errors (e.g., DepthExceeded).
-                            if e.kind.is_cacheable() {
-                                thunk.cache_failure(&e);
-                            } else {
-                                thunk.set_state(ThunkState::PendingBuiltin {
-                                    def,
-                                    args: Box::new(args),
-                                    named,
-                                    call_span,
-                                    ctx: thunk_ctx,
-                                });
+                // W1: pos_strictness Seq/Spine — dispatch-time materialization
+                if premat_err.is_none() {
+                    for (i, &s) in def.pos_strictness.iter().enumerate() {
+                        if i < args.len()
+                            && (s == Strictness::Seq || s == Strictness::Spine)
+                            && args[i].try_get_materialized().is_none()
+                        {
+                            if let Err(e) = materialize(&args[i], None, &thunk_ctx)
+                                .await
+                                .map_err(&decorate)
+                            {
+                                premat_err = Some(e);
+                                break;
                             }
-                            Err(e)
                         }
                     }
                 }
-            }
-            Err(e) => {
-                // Restore PendingBuiltin for non-cacheable errors (e.g., DepthExceeded).
-                if e.kind.is_cacheable() {
-                    thunk.cache_failure(&e);
-                } else {
-                    thunk.set_state(ThunkState::PendingBuiltin {
-                        def,
-                        args: Box::new(args),
-                        named,
-                        call_span,
-                        ctx: thunk_ctx,
-                    });
+                if let Some(e) = premat_err {
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
+                            def,
+                            args: Box::new(args),
+                            named,
+                            call_span,
+                            ctx: thunk_ctx,
+                        });
+                    }
+                    return Err(e);
                 }
-                Err(e)
             }
-        }
-    } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
-        thunk.take_pending_call()
-    {
-        // Materialize the function thunk to determine if it's a Function or Builtin
-        let func_value = match run(
-            Action::Materialize {
-                thunk: Arc::clone(&func_thunk),
-                mat_span: Some(call_span),
-            },
-            &thunk_ctx,
-        )
-        .map_err(&decorate)
-        {
-            Ok(v) => v,
-            Err(e) => {
-                // Restore PendingCall for non-cacheable errors (e.g., DepthExceeded).
-                if e.kind.is_cacheable() {
-                    thunk.cache_failure(&e);
-                } else {
-                    thunk.set_state(ThunkState::PendingCall {
-                        func: func_thunk.clone(),
-                        args: Box::new(args.clone()),
-                        named: named.clone().map(Box::new),
-                        call_span,
-                        caller_env: caller_env.clone(),
-                        ctx: thunk_ctx.clone(),
-                    });
-                }
-                return Err(e);
-            }
-        };
-
-        match func_value {
-            Value::Function {
-                params, body, env, ..
-            } => {
-                // Build CallContext and invoke the function
-                let call_ctx = CallContext {
-                    params: &params,
-                    body: &body,
-                    closure_env: &env,
-                    positional: &args,
-                    named: named.as_ref(),
-                    // For normal calls, `default_env` is the caller's environment (the env at
-                    // the call site where the PendingCall thunk was created by `eval_call`).
-                    // When forcing a PendingCall, `caller_env` is preserved from creation time
-                    // (iterative-eval-b1) — it is the env captured in the thunk, not the env
-                    // of whoever triggered materialization. `$apply` diverges: it uses the
-                    // closure env as `default_env` so that defaults see the function's own scope.
-                    default_env: &caller_env,
-                    call_span,
-                    origin: origin.clone(),
-                    ctx: &thunk_ctx,
-                };
-
-                match invoke_function(&call_ctx).map_err(&decorate) {
-                    Ok(result_thunk) => {
-                        // Materialize the result and memoize
+            // `named` is None for internally-created thunks (common case); only $apply
+            // passes named args through. Use an empty map ref for the None case.
+            let builtin_args = crate::value::BuiltinArgs {
+                args: &args,
+                named: named.as_ref(),
+                call_span,
+                ctx: Arc::clone(&thunk_ctx),
+            };
+            match (def.func)(builtin_args).map_err(&decorate) {
+                Ok(result_thunk) => {
+                    // Fast path: if the builtin already materialized its result, skip recursion.
+                    if let Some(value) = result_thunk.try_get_materialized() {
+                        thunk.set_materialized(value.clone());
+                        Ok(value)
+                    } else {
                         match run(
                             Action::Materialize {
                                 thunk: result_thunk,
@@ -2008,6 +1902,7 @@ pub fn materialize(
                             },
                             &thunk_ctx,
                         )
+                        .await
                         .map_err(&decorate)
                         {
                             Ok(value) => {
@@ -2015,115 +1910,100 @@ pub fn materialize(
                                 Ok(value)
                             }
                             Err(e) => {
-                                // Restore PendingCall for non-cacheable errors (e.g., DepthExceeded).
+                                // Restore PendingBuiltin for non-cacheable errors (e.g., DepthExceeded).
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure(&e);
                                 } else {
-                                    thunk.set_state(ThunkState::PendingCall {
-                                        func: func_thunk.clone(),
-                                        args: Box::new(args.clone()),
-                                        named: named.clone().map(Box::new),
-                                        call_span,
-                                        caller_env: caller_env.clone(),
-                                        ctx: thunk_ctx.clone(),
-                                    });
+                                    thunk.restore_unevaluated(
+                                        crate::value::UnevaluatedState::Builtin {
+                                            def,
+                                            args: Box::new(args),
+                                            named,
+                                            call_span,
+                                            ctx: thunk_ctx,
+                                        },
+                                    );
                                 }
                                 Err(e)
                             }
                         }
                     }
-                    Err(mut e) => {
-                        // Add stack frame for function call site.
-                        // Success path doesn't need call site tracking - only errors
-                        // need stack traces for debugging. The thunk's span is the
-                        // definition site, which is sufficient for successful results.
-                        if let Some(label) = origin.as_deref() {
-                            e.push_frame(label.to_string(), call_span);
-                        }
-                        if e.kind.is_cacheable() {
-                            thunk.cache_failure(&e);
-                        } else {
-                            thunk.set_state(ThunkState::PendingCall {
-                                func: func_thunk.clone(),
-                                args: Box::new(args.clone()),
-                                named: named.clone().map(Box::new),
-                                call_span,
-                                caller_env: caller_env.clone(),
-                                ctx: thunk_ctx.clone(),
-                            });
-                        }
-                        Err(e)
+                }
+                Err(e) => {
+                    // Restore PendingBuiltin for non-cacheable errors (e.g., DepthExceeded).
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
+                            def,
+                            args: Box::new(args),
+                            named,
+                            call_span,
+                            ctx: thunk_ctx,
+                        });
                     }
+                    Err(e)
                 }
             }
-            Value::Builtin(def) => {
-                // Pre-materialize strict args before calling the builtin.
-                //
-                // The CEK machine (eval_materialize.rs::PendingCallDispatch) handles
-                // force_count and pos_strictness W1 pre-materialization via the
-                // PendingBuiltin transition. This recursive path bypasses the CEK machine
-                // for PendingCall→Builtin dispatch, so it must replicate force_count + W1
-                // semantics here to prevent builtins using
-                // `try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`
-                // from panicking (e.g. builtin_add when called via a reduce PendingCall chain).
-                {
-                    use crate::value::Strictness;
-                    let mut premat_err: Option<Box<EvalError>> = None;
-                    // H1: force_count range — unconditional pre-materialization
-                    for i in 0..def.force_count.min(args.len()) {
-                        if args[i].try_get_materialized().is_none() {
-                            if let Err(e) =
-                                materialize(&args[i], None, &thunk_ctx).map_err(&decorate)
-                            {
-                                premat_err = Some(e);
-                                break;
-                            }
-                        }
+        } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
+            thunk.take_pending_call()
+        {
+            // Materialize the function thunk to determine if it's a Function or Builtin
+            let func_value = match run(
+                Action::Materialize {
+                    thunk: Arc::clone(&func_thunk),
+                    mat_span: Some(call_span),
+                },
+                &thunk_ctx,
+            )
+            .await
+            .map_err(&decorate)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    // Restore PendingCall for non-cacheable errors (e.g., DepthExceeded).
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
+                            func: func_thunk.clone(),
+                            args: Box::new(args.clone()),
+                            named: named.clone().map(Box::new),
+                            call_span,
+                            caller_env: caller_env.clone(),
+                            ctx: thunk_ctx.clone(),
+                        });
                     }
-                    // W1: pos_strictness Seq/Spine — dispatch-time materialization
-                    if premat_err.is_none() {
-                        for (i, &s) in def.pos_strictness.iter().enumerate() {
-                            if i < args.len()
-                                && (s == Strictness::Seq || s == Strictness::Spine)
-                                && args[i].try_get_materialized().is_none()
-                            {
-                                if let Err(e) =
-                                    materialize(&args[i], None, &thunk_ctx).map_err(&decorate)
-                                {
-                                    premat_err = Some(e);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if let Some(e) = premat_err {
-                        if e.kind.is_cacheable() {
-                            thunk.cache_failure(&e);
-                        } else {
-                            thunk.set_state(ThunkState::PendingCall {
-                                func: func_thunk.clone(),
-                                args: Box::new(args.clone()),
-                                named: named.clone().map(Box::new),
-                                call_span,
-                                caller_env: caller_env.clone(),
-                                ctx: thunk_ctx.clone(),
-                            });
-                        }
-                        return Err(e);
-                    }
+                    return Err(e);
                 }
-                let builtin_args = crate::value::BuiltinArgs {
-                    args: &args,
-                    named: named.as_ref(),
-                    call_span,
-                    ctx: Arc::clone(&thunk_ctx),
-                };
-                match (def.func)(builtin_args).map_err(&decorate) {
-                    Ok(result_thunk) => {
-                        if let Some(value) = result_thunk.try_get_materialized() {
-                            thunk.set_materialized(value.clone());
-                            Ok(value)
-                        } else {
+            };
+
+            match func_value {
+                Value::Function {
+                    params, body, env, ..
+                } => {
+                    // Build CallContext and invoke the function
+                    let call_ctx = CallContext {
+                        params: &params,
+                        body: &body,
+                        closure_env: &env,
+                        positional: &args,
+                        named: named.as_ref(),
+                        // For normal calls, `default_env` is the caller's environment (the env at
+                        // the call site where the PendingCall thunk was created by `eval_call`).
+                        // When forcing a PendingCall, `caller_env` is preserved from creation time
+                        // (iterative-eval-b1) — it is the env captured in the thunk, not the env
+                        // of whoever triggered materialization. `$apply` diverges: it uses the
+                        // closure env as `default_env` so that defaults see the function's own scope.
+                        default_env: &caller_env,
+                        call_span,
+                        origin: origin.clone(),
+                        ctx: &thunk_ctx,
+                    };
+
+                    match invoke_function(&call_ctx).await.map_err(&decorate) {
+                        Ok(result_thunk) => {
+                            // Materialize the result and memoize
                             match run(
                                 Action::Materialize {
                                     thunk: result_thunk,
@@ -2131,6 +2011,7 @@ pub fn materialize(
                                 },
                                 &thunk_ctx,
                             )
+                            .await
                             .map_err(&decorate)
                             {
                                 Ok(value) => {
@@ -2138,339 +2019,511 @@ pub fn materialize(
                                     Ok(value)
                                 }
                                 Err(e) => {
+                                    // Restore PendingCall for non-cacheable errors (e.g., DepthExceeded).
                                     if e.kind.is_cacheable() {
                                         thunk.cache_failure(&e);
                                     } else {
-                                        thunk.set_state(ThunkState::PendingCall {
-                                            func: func_thunk.clone(),
-                                            args: Box::new(args.clone()),
-                                            named: named.clone().map(Box::new),
-                                            call_span,
-                                            caller_env: caller_env.clone(),
-                                            ctx: thunk_ctx.clone(),
-                                        });
+                                        thunk.restore_unevaluated(
+                                            crate::value::UnevaluatedState::Call {
+                                                func: func_thunk.clone(),
+                                                args: Box::new(args.clone()),
+                                                named: named.clone().map(Box::new),
+                                                call_span,
+                                                caller_env: caller_env.clone(),
+                                                ctx: thunk_ctx.clone(),
+                                            },
+                                        );
                                     }
                                     Err(e)
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        if e.kind.is_cacheable() {
-                            thunk.cache_failure(&e);
-                        } else {
-                            thunk.set_state(ThunkState::PendingCall {
-                                func: func_thunk.clone(),
-                                args: Box::new(args.clone()),
-                                named: named.clone().map(Box::new),
-                                call_span,
-                                caller_env: caller_env.clone(),
-                                ctx: thunk_ctx.clone(),
-                            });
+                        Err(mut e) => {
+                            // Add stack frame for function call site.
+                            // Success path doesn't need call site tracking - only errors
+                            // need stack traces for debugging. The thunk's span is the
+                            // definition site, which is sufficient for successful results.
+                            if let Some(label) = origin.as_deref() {
+                                e.push_frame(label.to_string(), call_span);
+                            }
+                            if e.kind.is_cacheable() {
+                                thunk.cache_failure(&e);
+                            } else {
+                                thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
+                                    func: func_thunk.clone(),
+                                    args: Box::new(args.clone()),
+                                    named: named.clone().map(Box::new),
+                                    call_span,
+                                    caller_env: caller_env.clone(),
+                                    ctx: thunk_ctx.clone(),
+                                });
+                            }
+                            Err(e)
                         }
-                        Err(e)
                     }
                 }
-            }
-            other => {
-                let err =
-                    EvalError::type_mismatch("Function or Builtin", other.type_name(), call_span);
-                let decorated = decorate(Box::new(err));
-                if decorated.kind.is_cacheable() {
-                    thunk.cache_failure(&decorated);
-                } else {
-                    thunk.set_state(ThunkState::PendingCall {
-                        func: func_thunk,
-                        args: Box::new(args),
-                        named: named.map(Box::new),
+                Value::Builtin(def) => {
+                    // Pre-materialize strict args before calling the builtin.
+                    //
+                    // The CEK machine (eval_materialize.rs::PendingCallDispatch) handles
+                    // force_count and pos_strictness W1 pre-materialization via the
+                    // PendingBuiltin transition. This recursive path bypasses the CEK machine
+                    // for PendingCall→Builtin dispatch, so it must replicate force_count + W1
+                    // semantics here to prevent builtins using
+                    // `try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`
+                    // from panicking (e.g. builtin_add when called via a reduce PendingCall chain).
+                    {
+                        use crate::value::Strictness;
+                        let mut premat_err: Option<Box<EvalError>> = None;
+                        // H1: force_count range — unconditional pre-materialization
+                        for i in 0..def.force_count.min(args.len()) {
+                            if args[i].try_get_materialized().is_none() {
+                                if let Err(e) = materialize(&args[i], None, &thunk_ctx)
+                                    .await
+                                    .map_err(&decorate)
+                                {
+                                    premat_err = Some(e);
+                                    break;
+                                }
+                            }
+                        }
+                        // W1: pos_strictness Seq/Spine — dispatch-time materialization
+                        if premat_err.is_none() {
+                            for (i, &s) in def.pos_strictness.iter().enumerate() {
+                                if i < args.len()
+                                    && (s == Strictness::Seq || s == Strictness::Spine)
+                                    && args[i].try_get_materialized().is_none()
+                                {
+                                    if let Err(e) = materialize(&args[i], None, &thunk_ctx)
+                                        .await
+                                        .map_err(&decorate)
+                                    {
+                                        premat_err = Some(e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(e) = premat_err {
+                            if e.kind.is_cacheable() {
+                                thunk.cache_failure(&e);
+                            } else {
+                                thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
+                                    func: func_thunk.clone(),
+                                    args: Box::new(args.clone()),
+                                    named: named.clone().map(Box::new),
+                                    call_span,
+                                    caller_env: caller_env.clone(),
+                                    ctx: thunk_ctx.clone(),
+                                });
+                            }
+                            return Err(e);
+                        }
+                    }
+                    let builtin_args = crate::value::BuiltinArgs {
+                        args: &args,
+                        named: named.as_ref(),
                         call_span,
-                        caller_env,
-                        ctx: thunk_ctx,
-                    });
+                        ctx: Arc::clone(&thunk_ctx),
+                    };
+                    match (def.func)(builtin_args).map_err(&decorate) {
+                        Ok(result_thunk) => {
+                            if let Some(value) = result_thunk.try_get_materialized() {
+                                thunk.set_materialized(value.clone());
+                                Ok(value)
+                            } else {
+                                match run(
+                                    Action::Materialize {
+                                        thunk: result_thunk,
+                                        mat_span: mat_span.copied(),
+                                    },
+                                    &thunk_ctx,
+                                )
+                                .await
+                                .map_err(&decorate)
+                                {
+                                    Ok(value) => {
+                                        thunk.set_materialized(value.clone());
+                                        Ok(value)
+                                    }
+                                    Err(e) => {
+                                        if e.kind.is_cacheable() {
+                                            thunk.cache_failure(&e);
+                                        } else {
+                                            thunk.restore_unevaluated(
+                                                crate::value::UnevaluatedState::Call {
+                                                    func: func_thunk.clone(),
+                                                    args: Box::new(args.clone()),
+                                                    named: named.clone().map(Box::new),
+                                                    call_span,
+                                                    caller_env: caller_env.clone(),
+                                                    ctx: thunk_ctx.clone(),
+                                                },
+                                            );
+                                        }
+                                        Err(e)
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if e.kind.is_cacheable() {
+                                thunk.cache_failure(&e);
+                            } else {
+                                thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
+                                    func: func_thunk.clone(),
+                                    args: Box::new(args.clone()),
+                                    named: named.clone().map(Box::new),
+                                    call_span,
+                                    caller_env: caller_env.clone(),
+                                    ctx: thunk_ctx.clone(),
+                                });
+                            }
+                            Err(e)
+                        }
+                    }
                 }
-                Err(decorated)
+                other => {
+                    let err = EvalError::type_mismatch(
+                        "Function or Builtin",
+                        other.type_name(),
+                        call_span,
+                    );
+                    let decorated = decorate(Box::new(err));
+                    if decorated.kind.is_cacheable() {
+                        thunk.cache_failure(&decorated);
+                    } else {
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
+                            func: func_thunk,
+                            args: Box::new(args),
+                            named: named.map(Box::new),
+                            call_span,
+                            caller_env,
+                            ctx: thunk_ctx,
+                        });
+                    }
+                    Err(decorated)
+                }
             }
-        }
-    } else if let Some((inner, expected, mut field_path, guard_span, blame_label, default)) =
-        thunk.take_guarded()
-    {
-        // Materialize the inner thunk first.
-        // Guarded thunks now carry default: expressions from TypeAssert annotations.
-        // When guard validation fails, the default is evaluated and used as the fallback.
+        } else if let Some((inner, expected, mut field_path, guard_span, blame_label, default)) =
+            thunk.take_guarded()
+        {
+            // Materialize the inner thunk first.
+            // Guarded thunks now carry default: expressions from TypeAssert annotations.
+            // When guard validation fails, the default is evaluated and used as the fallback.
 
-        // Capture inner thunk's span before materializing — used as data_span for error reporting
-        let inner_span = inner.span;
+            // Capture inner thunk's span before materializing — used as data_span for error reporting
+            let inner_span = inner.span;
 
-        let result = run(
-            Action::Materialize {
-                thunk: Arc::clone(&inner),
-                mat_span: mat_span.copied(),
-            },
-            _ctx,
-        );
+            let result = run(
+                Action::Materialize {
+                    thunk: Arc::clone(&inner),
+                    mat_span: mat_span.copied(),
+                },
+                ctx,
+            )
+            .await;
 
-        match result {
-            Ok(value) => {
-                // For Record types (and Intersection-of-Records), apply proxy contract wrapping.
-                // as_record_row_merged handles both Type::Record and Intersection-of-Records
-                // by merging all required fields into a single Row.
-                if let Some(row) = as_record_row_merged(&expected) {
-                    if let Value::Dict(ref entries) = value {
-                        // Use helper to validate and wrap record
-                        match validate_and_wrap_record(
-                            entries,
-                            row.as_ref(),
-                            &mut field_path,
+            match result {
+                Ok(value) => {
+                    // For Record types (and Intersection-of-Records), apply proxy contract wrapping.
+                    // as_record_row_merged handles both Type::Record and Intersection-of-Records
+                    // by merging all required fields into a single Row.
+                    if let Some(row) = as_record_row_merged(&expected) {
+                        if let Value::Dict(ref entries) = value {
+                            // Use helper to validate and wrap record
+                            match validate_and_wrap_record(
+                                entries,
+                                row.as_ref(),
+                                &mut field_path,
+                                guard_span,
+                                inner_span,
+                                ctx,
+                                default.clone(),
+                            ) {
+                                Ok(new_entries) => {
+                                    let guarded_value = Value::Dict(new_entries);
+                                    thunk.set_materialized(guarded_value.clone());
+                                    Ok(guarded_value)
+                                }
+                                Err(err) => {
+                                    // Guard validation failed - use default if present
+                                    if let Some((default_expr, default_env)) = default {
+                                        let default_thunk = match eval_recursive(
+                                            Rc::clone(&default_expr),
+                                            Arc::clone(&default_env),
+                                            ctx,
+                                        )
+                                        .await
+                                        {
+                                            Ok(t) => t,
+                                            Err(e) => {
+                                                // Restore Guarded state for non-cacheable errors.
+                                                if e.kind.is_cacheable() {
+                                                    thunk.cache_failure(&e);
+                                                } else {
+                                                    thunk.restore_unevaluated(
+                                                        crate::value::UnevaluatedState::Guarded {
+                                                            inner,
+                                                            expected,
+                                                            field_path: Box::new(field_path),
+                                                            guard_span,
+                                                            blame_label,
+                                                            default: Some((
+                                                                default_expr,
+                                                                default_env,
+                                                            )),
+                                                        },
+                                                    );
+                                                }
+                                                return Err(e);
+                                            }
+                                        };
+                                        let default_value = match run(
+                                            Action::Materialize {
+                                                thunk: default_thunk,
+                                                mat_span: mat_span.copied(),
+                                            },
+                                            ctx,
+                                        )
+                                        .await
+                                        {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                // Restore Guarded state for non-cacheable errors.
+                                                if e.kind.is_cacheable() {
+                                                    thunk.cache_failure(&e);
+                                                } else {
+                                                    thunk.restore_unevaluated(
+                                                        crate::value::UnevaluatedState::Guarded {
+                                                            inner,
+                                                            expected,
+                                                            field_path: Box::new(field_path),
+                                                            guard_span,
+                                                            blame_label,
+                                                            default: Some((
+                                                                default_expr,
+                                                                default_env,
+                                                            )),
+                                                        },
+                                                    );
+                                                }
+                                                return Err(e);
+                                            }
+                                        };
+                                        thunk.set_materialized(default_value.clone());
+                                        return Ok(default_value);
+                                    }
+                                    let err = decorate(err);
+                                    thunk.cache_failure(&err);
+                                    Err(err)
+                                }
+                            }
+                        } else {
+                            // Expected Record/Intersection but got non-Dict - use default if present
+                            if let Some((default_expr, default_env)) = default {
+                                let default_thunk = match eval_recursive(
+                                    Rc::clone(&default_expr),
+                                    Arc::clone(&default_env),
+                                    ctx,
+                                )
+                                .await
+                                {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        if e.kind.is_cacheable() {
+                                            thunk.cache_failure(&e);
+                                        } else {
+                                            thunk.restore_unevaluated(
+                                                crate::value::UnevaluatedState::Guarded {
+                                                    inner,
+                                                    expected,
+                                                    field_path: Box::new(field_path),
+                                                    guard_span,
+                                                    blame_label,
+                                                    default: Some((default_expr, default_env)),
+                                                },
+                                            );
+                                        }
+                                        return Err(e);
+                                    }
+                                };
+                                let default_value = match run(
+                                    Action::Materialize {
+                                        thunk: default_thunk,
+                                        mat_span: mat_span.copied(),
+                                    },
+                                    ctx,
+                                )
+                                .await
+                                {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        if e.kind.is_cacheable() {
+                                            thunk.cache_failure(&e);
+                                        } else {
+                                            thunk.restore_unevaluated(
+                                                crate::value::UnevaluatedState::Guarded {
+                                                    inner,
+                                                    expected,
+                                                    field_path: Box::new(field_path),
+                                                    guard_span,
+                                                    blame_label,
+                                                    default: Some((default_expr, default_env)),
+                                                },
+                                            );
+                                        }
+                                        return Err(e);
+                                    }
+                                };
+                                thunk.set_materialized(default_value.clone());
+                                return Ok(default_value);
+                            }
+                            let field_path_prefix = if field_path.is_empty() {
+                                String::new()
+                            } else {
+                                format!("field {}: ", format_field_path(&field_path))
+                            };
+                            let mut err = EvalError::type_assert_failed(
+                                &format!(
+                                    "{}{}",
+                                    field_path_prefix,
+                                    format_type_for_assert(&expected)
+                                ),
+                                &value.type_name(),
+                                inner_span,
+                            );
+                            // Add secondary span if inner value was produced at a different
+                            // location than the assertion site (guard_span).
+                            if inner_span != guard_span {
+                                err = err.with_secondary_span(inner_span, "value produced here");
+                            }
+                            let err = decorate(err.into());
+                            thunk.cache_failure(&err);
+                            Err(err)
+                        }
+                    } else {
+                        // For non-Record types, simple value check
+                        if value_matches_type(&value, &expected) {
+                            thunk.set_materialized(value.clone());
+                            Ok(value)
+                        } else {
+                            // Type mismatch for non-Record types - use default if present
+                            if let Some((default_expr, default_env)) = default {
+                                let default_thunk = match eval_recursive(
+                                    Rc::clone(&default_expr),
+                                    Arc::clone(&default_env),
+                                    ctx,
+                                )
+                                .await
+                                {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        if e.kind.is_cacheable() {
+                                            thunk.cache_failure(&e);
+                                        } else {
+                                            thunk.restore_unevaluated(
+                                                crate::value::UnevaluatedState::Guarded {
+                                                    inner,
+                                                    expected,
+                                                    field_path: Box::new(field_path),
+                                                    guard_span,
+                                                    blame_label,
+                                                    default: Some((default_expr, default_env)),
+                                                },
+                                            );
+                                        }
+                                        return Err(e);
+                                    }
+                                };
+                                let default_value = match run(
+                                    Action::Materialize {
+                                        thunk: default_thunk,
+                                        mat_span: mat_span.copied(),
+                                    },
+                                    ctx,
+                                )
+                                .await
+                                {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        if e.kind.is_cacheable() {
+                                            thunk.cache_failure(&e);
+                                        } else {
+                                            thunk.restore_unevaluated(
+                                                crate::value::UnevaluatedState::Guarded {
+                                                    inner,
+                                                    expected,
+                                                    field_path: Box::new(field_path),
+                                                    guard_span,
+                                                    blame_label,
+                                                    default: Some((default_expr, default_env)),
+                                                },
+                                            );
+                                        }
+                                        return Err(e);
+                                    }
+                                };
+                                thunk.set_materialized(default_value.clone());
+                                return Ok(default_value);
+                            }
+                            let field_path_prefix = if field_path.is_empty() {
+                                String::new()
+                            } else {
+                                format!("field {}: ", format_field_path(&field_path))
+                            };
+                            let mut err = EvalError::type_assert_failed(
+                                &format!(
+                                    "{}{}",
+                                    field_path_prefix,
+                                    format_type_for_assert(&expected)
+                                ),
+                                &value.type_name(),
+                                inner_span,
+                            );
+                            // Add secondary span if inner value was produced at a different
+                            // location than the assertion site (guard_span).
+                            if inner_span != guard_span {
+                                err = err.with_secondary_span(inner_span, "value produced here");
+                            }
+                            let err = decorate(err.into());
+                            thunk.cache_failure(&err);
+                            Err(err)
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Inner materialization error propagates (not a type mismatch)
+                    let e = decorate(e);
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        // Non-cacheable error (e.g., DepthExceeded): restore Guarded state
+                        // so the thunk can be re-evaluated at a shallower depth.
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Guarded {
+                            inner,
+                            expected,
+                            field_path: Box::new(field_path),
                             guard_span,
-                            inner_span,
-                            _ctx,
-                            default.clone(),
-                        ) {
-                            Ok(new_entries) => {
-                                let guarded_value = Value::Dict(new_entries);
-                                thunk.set_materialized(guarded_value.clone());
-                                Ok(guarded_value)
-                            }
-                            Err(err) => {
-                                // Guard validation failed - use default if present
-                                if let Some((default_expr, default_env)) = default {
-                                    let default_thunk = match eval_recursive(
-                                        Rc::clone(&default_expr),
-                                        Arc::clone(&default_env),
-                                        _ctx,
-                                    ) {
-                                        Ok(t) => t,
-                                        Err(e) => {
-                                            // Restore Guarded state for non-cacheable errors.
-                                            if e.kind.is_cacheable() {
-                                                thunk.cache_failure(&e);
-                                            } else {
-                                                thunk.set_state(ThunkState::Guarded {
-                                                    inner,
-                                                    expected,
-                                                    field_path: Box::new(field_path),
-                                                    guard_span,
-                                                    blame_label,
-                                                    default: Some((default_expr, default_env)),
-                                                });
-                                            }
-                                            return Err(e);
-                                        }
-                                    };
-                                    let default_value = match run(
-                                        Action::Materialize {
-                                            thunk: default_thunk,
-                                            mat_span: mat_span.copied(),
-                                        },
-                                        _ctx,
-                                    ) {
-                                        Ok(v) => v,
-                                        Err(e) => {
-                                            // Restore Guarded state for non-cacheable errors.
-                                            if e.kind.is_cacheable() {
-                                                thunk.cache_failure(&e);
-                                            } else {
-                                                thunk.set_state(ThunkState::Guarded {
-                                                    inner,
-                                                    expected,
-                                                    field_path: Box::new(field_path),
-                                                    guard_span,
-                                                    blame_label,
-                                                    default: Some((default_expr, default_env)),
-                                                });
-                                            }
-                                            return Err(e);
-                                        }
-                                    };
-                                    thunk.set_materialized(default_value.clone());
-                                    return Ok(default_value);
-                                }
-                                let err = decorate(err);
-                                thunk.cache_failure(&err);
-                                Err(err)
-                            }
-                        }
-                    } else {
-                        // Expected Record/Intersection but got non-Dict - use default if present
-                        if let Some((default_expr, default_env)) = default {
-                            let default_thunk = match eval_recursive(
-                                Rc::clone(&default_expr),
-                                Arc::clone(&default_env),
-                                _ctx,
-                            ) {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    if e.kind.is_cacheable() {
-                                        thunk.cache_failure(&e);
-                                    } else {
-                                        thunk.set_state(ThunkState::Guarded {
-                                            inner,
-                                            expected,
-                                            field_path: Box::new(field_path),
-                                            guard_span,
-                                            blame_label,
-                                            default: Some((default_expr, default_env)),
-                                        });
-                                    }
-                                    return Err(e);
-                                }
-                            };
-                            let default_value = match run(
-                                Action::Materialize {
-                                    thunk: default_thunk,
-                                    mat_span: mat_span.copied(),
-                                },
-                                _ctx,
-                            ) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    if e.kind.is_cacheable() {
-                                        thunk.cache_failure(&e);
-                                    } else {
-                                        thunk.set_state(ThunkState::Guarded {
-                                            inner,
-                                            expected,
-                                            field_path: Box::new(field_path),
-                                            guard_span,
-                                            blame_label,
-                                            default: Some((default_expr, default_env)),
-                                        });
-                                    }
-                                    return Err(e);
-                                }
-                            };
-                            thunk.set_materialized(default_value.clone());
-                            return Ok(default_value);
-                        }
-                        let field_path_prefix = if field_path.is_empty() {
-                            String::new()
-                        } else {
-                            format!("field {}: ", format_field_path(&field_path))
-                        };
-                        let mut err = EvalError::type_assert_failed(
-                            &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
-                            &value.type_name(),
-                            inner_span,
-                        );
-                        // Add secondary span if inner value was produced at a different
-                        // location than the assertion site (guard_span).
-                        if inner_span != guard_span {
-                            err = err.with_secondary_span(inner_span, "value produced here");
-                        }
-                        let err = decorate(err.into());
-                        thunk.cache_failure(&err);
-                        Err(err)
+                            blame_label,
+                            default,
+                        });
                     }
-                } else {
-                    // For non-Record types, simple value check
-                    if value_matches_type(&value, &expected) {
-                        thunk.set_materialized(value.clone());
-                        Ok(value)
-                    } else {
-                        // Type mismatch for non-Record types - use default if present
-                        if let Some((default_expr, default_env)) = default {
-                            let default_thunk = match eval_recursive(
-                                Rc::clone(&default_expr),
-                                Arc::clone(&default_env),
-                                _ctx,
-                            ) {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    if e.kind.is_cacheable() {
-                                        thunk.cache_failure(&e);
-                                    } else {
-                                        thunk.set_state(ThunkState::Guarded {
-                                            inner,
-                                            expected,
-                                            field_path: Box::new(field_path),
-                                            guard_span,
-                                            blame_label,
-                                            default: Some((default_expr, default_env)),
-                                        });
-                                    }
-                                    return Err(e);
-                                }
-                            };
-                            let default_value = match run(
-                                Action::Materialize {
-                                    thunk: default_thunk,
-                                    mat_span: mat_span.copied(),
-                                },
-                                _ctx,
-                            ) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    if e.kind.is_cacheable() {
-                                        thunk.cache_failure(&e);
-                                    } else {
-                                        thunk.set_state(ThunkState::Guarded {
-                                            inner,
-                                            expected,
-                                            field_path: Box::new(field_path),
-                                            guard_span,
-                                            blame_label,
-                                            default: Some((default_expr, default_env)),
-                                        });
-                                    }
-                                    return Err(e);
-                                }
-                            };
-                            thunk.set_materialized(default_value.clone());
-                            return Ok(default_value);
-                        }
-                        let field_path_prefix = if field_path.is_empty() {
-                            String::new()
-                        } else {
-                            format!("field {}: ", format_field_path(&field_path))
-                        };
-                        let mut err = EvalError::type_assert_failed(
-                            &format!("{}{}", field_path_prefix, format_type_for_assert(&expected)),
-                            &value.type_name(),
-                            inner_span,
-                        );
-                        // Add secondary span if inner value was produced at a different
-                        // location than the assertion site (guard_span).
-                        if inner_span != guard_span {
-                            err = err.with_secondary_span(inner_span, "value produced here");
-                        }
-                        let err = decorate(err.into());
-                        thunk.cache_failure(&err);
-                        Err(err)
-                    }
+                    Err(e)
                 }
             }
-            Err(e) => {
-                // Inner materialization error propagates (not a type mismatch)
-                let e = decorate(e);
-                if e.kind.is_cacheable() {
-                    thunk.cache_failure(&e);
-                } else {
-                    // Non-cacheable error (e.g., DepthExceeded): restore Guarded state
-                    // so the thunk can be re-evaluated at a shallower depth.
-                    thunk.set_state(ThunkState::Guarded {
-                        inner,
-                        expected,
-                        field_path: Box::new(field_path),
-                        guard_span,
-                        blame_label,
-                        default,
-                    });
-                }
-                Err(e)
-            }
-        }
-    } else if let Some((node, res, types, env, thunk_ctx)) = thunk.take_surface() {
-        // runtime-v2 Sprint 1: Surface thunk handling via lower() → CoreExpr → eval_core_expr().
-        //
-        // 1. Lower the SurfaceNode to CoreExpr using lower()
-        // 2. Evaluate the CoreExpr using eval_core_expr()
-        // 3. Materialize the result thunk
-        //
-        // This is the new CoreExpr evaluation path. eval_core_expr() handles literals and
-        // variable lookups directly, and falls back to the Expr bridge for complex constructs.
-        let lowered = crate::lower::lower(&node, &res, &types);
-        let result = eval_core_expr(&lowered, &env, &thunk_ctx)
-            .and_then(|result_thunk| {
+        } else if let Some((node, res, types, env, thunk_ctx)) = thunk.take_surface() {
+            // runtime-v2 Sprint 1: Surface thunk handling via lower() → CoreExpr → eval_core_expr().
+            //
+            // 1. Lower the SurfaceNode to CoreExpr using lower()
+            // 2. Evaluate the CoreExpr using eval_core_expr()
+            // 3. Materialize the result thunk
+            //
+            // This is the new CoreExpr evaluation path. eval_core_expr() handles literals and
+            // variable lookups directly, and falls back to the Expr bridge for complex constructs.
+            let lowered = crate::lower::lower(&node, &res, &types);
+            let result = async {
+                let result_thunk = eval_core_expr(&lowered, &env, &thunk_ctx).await?;
                 run(
                     Action::Materialize {
                         thunk: result_thunk,
@@ -2478,66 +2531,70 @@ pub fn materialize(
                     },
                     &thunk_ctx,
                 )
-            })
+                .await
+            }
+            .await
             .map_err(&decorate);
 
-        match result {
-            Ok(value) => {
-                thunk.set_materialized(value.clone());
-                Ok(value)
-            }
-            Err(e) => {
-                if e.kind.is_cacheable() {
-                    thunk.cache_failure(&e);
-                } else {
-                    // Restore Surface state for non-cacheable errors
-                    thunk.set_state(ThunkState::Surface {
-                        node,
-                        res,
-                        types,
-                        env,
-                        ctx: thunk_ctx,
-                    });
+            match result {
+                Ok(value) => {
+                    thunk.set_materialized(value.clone());
+                    Ok(value)
                 }
-                Err(e)
+                Err(e) => {
+                    if e.kind.is_cacheable() {
+                        thunk.cache_failure(&e);
+                    } else {
+                        // Restore Surface state for non-cacheable errors
+                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Surface {
+                            node,
+                            res,
+                            types,
+                            env,
+                            ctx: thunk_ctx,
+                        });
+                    }
+                    Err(e)
+                }
             }
-        }
-    } else if let Some((node, field, thunk_ctx)) = thunk.take_ast_node_field() {
-        // runtime-v2: AstNodeField thunk — lazily evaluate a named field from a SurfaceNode.
-        //
-        // Created by match dispatch on Value::Expression. Evaluates on demand when the
-        // arm body accesses the bound variable. Unused bindings are never forced.
-        let value = crate::surface_fields::surface_node_get_field(&node, field, &thunk_ctx);
-        thunk.set_materialized(value.clone());
-        Ok(value)
-    } else {
-        unreachable!(
-            "state must be Unevaluated, PendingBuiltin, PendingCall, Guarded, \
+        } else if let Some((node, field, thunk_ctx)) = thunk.take_ast_node_field() {
+            // runtime-v2: AstNodeField thunk — lazily evaluate a named field from a SurfaceNode.
+            //
+            // Created by match dispatch on Value::Expression. Evaluates on demand when the
+            // arm body accesses the bound variable. Unused bindings are never forced.
+            let value = crate::surface_fields::surface_node_get_field(&node, field, &thunk_ctx);
+            thunk.set_materialized(value.clone());
+            Ok(value)
+        } else {
+            unreachable!(
+                "state must be Unevaluated, PendingBuiltin, PendingCall, Guarded, \
              Surface, or AstNodeField. \
              All other ThunkState variants are handled in the early-return section at the \
              top of this function: Materialized returns early, Failed returns early, \
              InProgress returns early and caches circular dependency error."
-        )
-    }
+            )
+        }
+    }) // end Box::pin(async move {
 }
 
 // Re-export deep_materialize from eval_deep module
 pub use crate::eval_deep::deep_materialize;
 
-/// Check if a value is truthy (for `is:` guard evaluation).
+/// Synchronous compatibility wrapper around the async `materialize()`.
 ///
-/// Falsy values: `false`, and empty dict `[]` (null in LLT convention).
-/// All other values are truthy, including non-empty dicts, integers, strings, and sequences.
+/// Used by synchronous call sites (builtins, expand.rs, arena.rs, etc.) that cannot
+/// `.await` the async `materialize()`. Uses `async_rt::block_on_anywhere()` which is
+/// safe to call both outside any tokio runtime and from within one (e.g. from a
+/// builtin called inside an outer `materialize` future).
 ///
-/// This matches the LLT convention where predicates signal "no match" by returning
-/// either `false` or `[]` (null), and signal "match" by returning any truthy value.
-#[allow(dead_code)]
-fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Bool(false) => false,
-        Value::Dict(entries) if entries.is_empty() => false,
-        _ => true,
-    }
+/// New async code should call `materialize(...).await` directly. This wrapper exists
+/// only for call sites that must remain synchronous during the async migration (Phase 2).
+pub fn materialize_sync(
+    thunk: &Thunk,
+    mat_span: Option<&Span>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Value> {
+    crate::async_rt::block_on_anywhere(materialize(thunk, mat_span, ctx))
 }
 
 /// Match a pattern against a value, returning the extended environment if the pattern matches.
@@ -2545,297 +2602,318 @@ fn is_truthy(value: &Value) -> bool {
 /// Returns Ok(Some(env)) if the pattern matches (env contains any bindings from the pattern).
 /// Returns Ok(None) if the pattern does not match.
 /// Returns Err if there's an evaluation error (e.g., undefined pin variable).
-fn match_pattern(
-    pattern: &Pattern,
-    value: &Value,
-    env: &Arc<RwLock<Environment>>,
-    value_span: &Span,
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Option<Arc<RwLock<Environment>>>> {
-    match pattern {
-        Pattern::Wildcard => {
-            // Wildcard always matches, no bindings
-            Ok(Some(Arc::clone(env)))
-        }
-        Pattern::Variable(name) => {
-            // Variable always matches and binds the value
-            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
-            let value_thunk = Arc::new(Thunk::new_materialized(value.clone(), *value_span));
-            child_env.write().unwrap().insert(name.clone(), value_thunk);
-            Ok(Some(child_env))
-        }
-        Pattern::TypeTag(tag) => {
-            // TypeTag matches if type-of the value equals the tag.
-            // Also matches unit-variant values whose tag equals the pattern tag.
-            // A bare uppercase identifier like `None` in a match arm is parsed as
-            // Pattern::TypeTag("None"). For unit constructors (Value::Variant with
-            // no payload), we check the variant tag directly so that:
-            //   match ma
-            //     [Some a]: ...
-            //     None:     ...    <- TypeTag("None") matches Variant{tag:"None",payload:None}
-            let type_name = value.type_name();
-            // Handle supertypes and aliases:
-            //   Number matches both Int and Float
-            //   Str is an alias for String (type_name returns "String")
-            let matches = if tag == "Number" {
-                type_name == "Int" || type_name == "Float"
-            } else if tag == "Str" {
-                type_name == "String"
-            } else if let Value::Variant {
-                tag: variant_tag,
-                payload: None,
-            } = value
-            {
-                // Unit variant: match by tag name, not by type_name() (which returns "Variant")
-                variant_tag == tag
-            } else if let Value::Expression(node) = value {
-                // Expression: match by surface tag (e.g., "IntLiteral", "Var", "Call")
-                // or by the type name "Expression" itself
-                let surf_tag = crate::surface_fields::surface_expr_tag(&node.expr);
-                tag == surf_tag || tag == "Expression"
-            } else {
-                type_name == tag
-            };
-            if matches {
+fn match_pattern<'a>(
+    pattern: &'a Pattern,
+    value: &'a Value,
+    env: &'a Arc<RwLock<Environment>>,
+    value_span: &'a Span,
+    ctx: &'a Arc<EvalContext>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Environment>>>>> + 'a>,
+> {
+    Box::pin(async move {
+        match pattern {
+            Pattern::Wildcard => {
+                // Wildcard always matches, no bindings
                 Ok(Some(Arc::clone(env)))
-            } else {
-                Ok(None)
             }
-        }
-        Pattern::Literal(lit) => {
-            // Literal matches if the value equals the literal
-            let matches = match (lit, value) {
-                (LiteralPattern::Int(n), Value::Int(v)) => n == v,
-                (LiteralPattern::Float(f), Value::Float(v)) => f == v,
-                (LiteralPattern::Bool(b), Value::Bool(v)) => b == v,
-                (
-                    LiteralPattern::Str(s),
-                    Value::String {
-                        ref source,
-                        start,
-                        end,
-                    },
-                ) => s == &source[*start..*end],
-                _ => false,
-            };
-            if matches {
-                Ok(Some(Arc::clone(env)))
-            } else {
-                Ok(None)
+            Pattern::Variable(name) => {
+                // Variable always matches and binds the value
+                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
+                let value_thunk = Arc::new(Thunk::new_materialized(value.clone(), *value_span));
+                child_env.write().unwrap().insert(name.clone(), value_thunk);
+                Ok(Some(child_env))
             }
-        }
-        Pattern::Pin(name) => {
-            // Pin matches if the variable's value equals the scrutinee value
-            let var_thunk = env
-                .read()
-                .unwrap()
-                .get(name)
-                .ok_or_else(|| EvalError::undefined_variable(name.clone(), *value_span))?;
-            let var_value = materialize(&var_thunk, Some(value_span), ctx)?;
-
-            // Compare values for equality
-            let matches = values_equal(&var_value, value);
-            if matches {
-                Ok(Some(Arc::clone(env)))
-            } else {
-                Ok(None)
+            Pattern::TypeTag(tag) => {
+                // TypeTag matches if type-of the value equals the tag.
+                // Also matches unit-variant values whose tag equals the pattern tag.
+                // A bare uppercase identifier like `None` in a match arm is parsed as
+                // Pattern::TypeTag("None"). For unit constructors (Value::Variant with
+                // no payload), we check the variant tag directly so that:
+                //   match ma
+                //     [Some a]: ...
+                //     None:     ...    <- TypeTag("None") matches Variant{tag:"None",payload:None}
+                let type_name = value.type_name();
+                // Handle supertypes and aliases:
+                //   Number matches both Int and Float
+                //   Str is an alias for String (type_name returns "String")
+                let matches = if tag == "Number" {
+                    type_name == "Int" || type_name == "Float"
+                } else if tag == "Str" {
+                    type_name == "String"
+                } else if let Value::Variant {
+                    tag: variant_tag,
+                    payload: None,
+                } = value
+                {
+                    // Unit variant: match by tag name, not by type_name() (which returns "Variant")
+                    variant_tag == tag
+                } else if let Value::Expression(node) = value {
+                    // Expression: match by surface tag (e.g., "IntLiteral", "Var", "Call")
+                    // or by the type name "Expression" itself
+                    let surf_tag = crate::surface_fields::surface_expr_tag(&node.expr);
+                    tag == surf_tag || tag == "Expression"
+                } else {
+                    type_name == tag
+                };
+                if matches {
+                    Ok(Some(Arc::clone(env)))
+                } else {
+                    Ok(None)
+                }
             }
-        }
-        Pattern::Dict { fields, rest } => {
-            // Dict pattern: match dict by keys, bind values to pattern variables
-            // Only force the fields that are matched — other fields stay as thunks
-            match value {
-                Value::Dict(dict_thunk_ids) => {
-                    // Start with the current environment
-                    let mut result_env =
-                        Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
+            Pattern::Literal(lit) => {
+                // Literal matches if the value equals the literal
+                let matches = match (lit, value) {
+                    (LiteralPattern::Int(n), Value::Int(v)) => n == v,
+                    (LiteralPattern::Float(f), Value::Float(v)) => f == v,
+                    (LiteralPattern::Bool(b), Value::Bool(v)) => b == v,
+                    (
+                        LiteralPattern::Str(s),
+                        Value::String {
+                            ref source,
+                            start,
+                            end,
+                        },
+                    ) => s == &source[*start..*end],
+                    _ => false,
+                };
+                if matches {
+                    Ok(Some(Arc::clone(env)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Pattern::Pin(name) => {
+                // Pin matches if the variable's value equals the scrutinee value
+                let var_thunk = env
+                    .read()
+                    .unwrap()
+                    .get(name)
+                    .ok_or_else(|| EvalError::undefined_variable(name.clone(), *value_span))?;
+                let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
 
-                    // Check each pattern field
-                    for (key, field_pattern) in fields {
-                        // Look up the field in the dict
-                        if let Some(field_thunk_id) = dict_thunk_ids.get(&Key::String(key.clone()))
-                        {
-                            // Force the field value
-                            let field_thunk = ctx.get_thunk(*field_thunk_id);
-                            let field_value = materialize(&field_thunk, Some(value_span), ctx)?;
+                // Compare values for equality
+                let matches = values_equal(&var_value, value);
+                if matches {
+                    Ok(Some(Arc::clone(env)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Pattern::Dict { fields, rest } => {
+                // Dict pattern: match dict by keys, bind values to pattern variables
+                // Only force the fields that are matched — other fields stay as thunks
+                match value {
+                    Value::Dict(dict_thunk_ids) => {
+                        // Start with the current environment
+                        let mut result_env =
+                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
 
-                            // Recursively match the field pattern
-                            match match_pattern(
-                                &field_pattern.node,
-                                &field_value,
-                                &result_env,
-                                &field_pattern.span,
-                                ctx,
-                            )? {
-                                Some(new_env) => {
-                                    result_env = new_env;
+                        // Check each pattern field
+                        for (key, field_pattern) in fields {
+                            // Look up the field in the dict
+                            if let Some(field_thunk_id) =
+                                dict_thunk_ids.get(&Key::String(key.clone()))
+                            {
+                                // Force the field value
+                                let field_thunk = ctx.get_thunk(*field_thunk_id);
+                                let field_value =
+                                    materialize(&field_thunk, Some(value_span), ctx).await?;
+
+                                // Recursively match the field pattern
+                                match match_pattern(
+                                    &field_pattern.node,
+                                    &field_value,
+                                    &result_env,
+                                    &field_pattern.span,
+                                    ctx,
+                                )
+                                .await?
+                                {
+                                    Some(new_env) => {
+                                        result_env = new_env;
+                                    }
+                                    None => {
+                                        // Field pattern didn't match
+                                        return Ok(None);
+                                    }
                                 }
-                                None => {
-                                    // Field pattern didn't match
-                                    return Ok(None);
-                                }
-                            }
-                        } else {
-                            // Required field not present in dict
-                            return Ok(None);
-                        }
-                    }
-
-                    // If rest is false (closed matching), check for extra keys
-                    if !rest {
-                        let pattern_keys: std::collections::HashSet<&str> =
-                            fields.iter().map(|(k, _)| k.as_str()).collect();
-                        for dict_key in dict_thunk_ids.keys() {
-                            let key_matches = match dict_key {
-                                Key::String(s) => pattern_keys.contains(s.as_str()),
-                                Key::Int(_) => false,
-                            };
-                            if !key_matches {
-                                // Extra key found in closed matching mode
+                            } else {
+                                // Required field not present in dict
                                 return Ok(None);
                             }
                         }
-                    }
 
-                    Ok(Some(result_env))
-                }
-                _ => {
-                    // Value is not a dict
-                    Ok(None)
+                        // If rest is false (closed matching), check for extra keys
+                        if !rest {
+                            let pattern_keys: std::collections::HashSet<&str> =
+                                fields.iter().map(|(k, _)| k.as_str()).collect();
+                            for dict_key in dict_thunk_ids.keys() {
+                                let key_matches = match dict_key {
+                                    Key::String(s) => pattern_keys.contains(s.as_str()),
+                                    Key::Int(_) => false,
+                                };
+                                if !key_matches {
+                                    // Extra key found in closed matching mode
+                                    return Ok(None);
+                                }
+                            }
+                        }
+
+                        Ok(Some(result_env))
+                    }
+                    _ => {
+                        // Value is not a dict
+                        Ok(None)
+                    }
                 }
             }
-        }
-        Pattern::Seq { head, tail } => {
-            // Seq pattern: match Value::Seq, force head, bind tail
-            match value {
-                Value::Seq {
-                    head: head_thunk_id,
-                    tail: tail_thunk_id,
-                } => {
-                    // Force the head value
-                    let head_thunk = ctx.get_thunk(*head_thunk_id);
-                    let head_value = materialize(&head_thunk, Some(value_span), ctx)?;
+            Pattern::Seq { head, tail } => {
+                // Seq pattern: match Value::Seq, force head, bind tail
+                match value {
+                    Value::Seq {
+                        head: head_thunk_id,
+                        tail: tail_thunk_id,
+                    } => {
+                        // Force the head value
+                        let head_thunk = ctx.get_thunk(*head_thunk_id);
+                        let head_value = materialize(&head_thunk, Some(value_span), ctx).await?;
 
-                    // Match the head pattern
-                    let mut result_env =
-                        Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
-                    match match_pattern(&head.node, &head_value, &result_env, &head.span, ctx)? {
-                        Some(new_env) => {
-                            result_env = new_env;
+                        // Match the head pattern
+                        let mut result_env =
+                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
+                        match match_pattern(&head.node, &head_value, &result_env, &head.span, ctx)
+                            .await?
+                        {
+                            Some(new_env) => {
+                                result_env = new_env;
+                            }
+                            None => {
+                                // Head pattern didn't match
+                                return Ok(None);
+                            }
                         }
-                        None => {
-                            // Head pattern didn't match
+
+                        // Force the tail value and match against the tail pattern
+                        let tail_thunk = ctx.get_thunk(*tail_thunk_id);
+                        let tail_value = materialize(&tail_thunk, Some(value_span), ctx).await?;
+                        match match_pattern(&tail.node, &tail_value, &result_env, &tail.span, ctx)
+                            .await?
+                        {
+                            Some(new_env) => Ok(Some(new_env)),
+                            None => Ok(None),
+                        }
+                    }
+                    _ => {
+                        // Value is not a Seq
+                        Ok(None)
+                    }
+                }
+            }
+            Pattern::Constructor { tag, binding } => {
+                // Constructor pattern: match Value::Variant by tag, bind payload if present
+                match value {
+                    Value::Variant {
+                        tag: variant_tag,
+                        payload: variant_payload,
+                    } => {
+                        // Check if tags match
+                        if tag != variant_tag {
                             return Ok(None);
                         }
-                    }
 
-                    // Force the tail value and match against the tail pattern
-                    let tail_thunk = ctx.get_thunk(*tail_thunk_id);
-                    let tail_value = materialize(&tail_thunk, Some(value_span), ctx)?;
-                    match match_pattern(&tail.node, &tail_value, &result_env, &tail.span, ctx)? {
-                        Some(new_env) => Ok(Some(new_env)),
-                        None => Ok(None),
-                    }
-                }
-                _ => {
-                    // Value is not a Seq
-                    Ok(None)
-                }
-            }
-        }
-        Pattern::Constructor { tag, binding } => {
-            // Constructor pattern: match Value::Variant by tag, bind payload if present
-            match value {
-                Value::Variant {
-                    tag: variant_tag,
-                    payload: variant_payload,
-                } => {
-                    // Check if tags match
-                    if tag != variant_tag {
-                        return Ok(None);
-                    }
+                        // If pattern expects a payload, match it
+                        match (binding, variant_payload) {
+                            (Some(pattern), Some(payload_id)) => {
+                                // Force the payload value
+                                let payload_thunk = ctx.get_thunk(*payload_id);
+                                let payload_value =
+                                    materialize(&payload_thunk, Some(value_span), ctx).await?;
 
-                    // If pattern expects a payload, match it
-                    match (binding, variant_payload) {
-                        (Some(pattern), Some(payload_id)) => {
-                            // Force the payload value
-                            let payload_thunk = ctx.get_thunk(*payload_id);
-                            let payload_value = materialize(&payload_thunk, Some(value_span), ctx)?;
-
-                            // Match the payload pattern
-                            match_pattern(&pattern.node, &payload_value, env, &pattern.span, ctx)
-                        }
-                        (None, None) => {
-                            // Unit constructor - no payload to bind
-                            Ok(Some(Arc::clone(env)))
-                        }
-                        (Some(_), None) => {
-                            // Pattern expects payload but variant has none
-                            Ok(None)
-                        }
-                        (None, Some(_)) => {
-                            // Pattern expects no payload but variant has one
-                            Ok(None)
-                        }
-                    }
-                }
-                // runtime-v2: match on Value::Expression by surface tag
-                Value::Expression(node) => {
-                    let expr_tag = crate::surface_fields::surface_expr_tag(&node.expr);
-                    if tag.as_str() != expr_tag {
-                        return Ok(None);
-                    }
-                    match binding {
-                        None => Ok(Some(Arc::clone(env))),
-                        Some(payload_pattern) => {
-                            // Build a payload Dict from the Expression's fields for pattern binding.
-                            // Each field is a lazy AstNodeField thunk — only forced when demanded.
-                            // Binding invariant: ALL field names get thunks, even if unused by arm body.
-                            let field_names =
-                                crate::surface_fields::surface_expr_field_names(&node.expr);
-                            let mut payload_map = indexmap::IndexMap::new();
-                            for field_name in field_names {
-                                let thunk_id =
-                                    ctx.alloc_thunk(Arc::new(Thunk::new_ast_node_field(
-                                        std::sync::Arc::clone(&node),
-                                        field_name,
-                                        Arc::clone(ctx),
-                                        *value_span,
-                                    )));
-                                payload_map
-                                    .insert(Key::String((*field_name).to_string()), thunk_id);
+                                // Match the payload pattern
+                                match_pattern(
+                                    &pattern.node,
+                                    &payload_value,
+                                    env,
+                                    &pattern.span,
+                                    ctx,
+                                )
+                                .await
                             }
-                            let payload_val = Value::Dict(payload_map);
-                            match_pattern(
-                                &payload_pattern.node,
-                                &payload_val,
-                                env,
-                                &payload_pattern.span,
-                                ctx,
-                            )
+                            (None, None) => {
+                                // Unit constructor - no payload to bind
+                                Ok(Some(Arc::clone(env)))
+                            }
+                            (Some(_), None) => {
+                                // Pattern expects payload but variant has none
+                                Ok(None)
+                            }
+                            (None, Some(_)) => {
+                                // Pattern expects no payload but variant has one
+                                Ok(None)
+                            }
                         }
                     }
-                }
-                _ => {
-                    // Value is not a Variant
-                    Ok(None)
+                    // runtime-v2: match on Value::Expression by surface tag
+                    Value::Expression(node) => {
+                        let expr_tag = crate::surface_fields::surface_expr_tag(&node.expr);
+                        if tag.as_str() != expr_tag {
+                            return Ok(None);
+                        }
+                        match binding {
+                            None => Ok(Some(Arc::clone(env))),
+                            Some(payload_pattern) => {
+                                // Build a payload Dict from the Expression's fields for pattern binding.
+                                // Each field is a lazy AstNodeField thunk — only forced when demanded.
+                                // Binding invariant: ALL field names get thunks, even if unused by arm body.
+                                let field_names =
+                                    crate::surface_fields::surface_expr_field_names(&node.expr);
+                                let mut payload_map = indexmap::IndexMap::new();
+                                for field_name in field_names {
+                                    let thunk_id =
+                                        ctx.alloc_thunk(Arc::new(Thunk::new_ast_node_field(
+                                            std::sync::Arc::clone(&node),
+                                            field_name,
+                                            Arc::clone(ctx),
+                                            *value_span,
+                                        )));
+                                    payload_map
+                                        .insert(Key::String((*field_name).to_string()), thunk_id);
+                                }
+                                let payload_val = Value::Dict(payload_map);
+                                match_pattern(
+                                    &payload_pattern.node,
+                                    &payload_val,
+                                    env,
+                                    &payload_pattern.span,
+                                    ctx,
+                                )
+                                .await
+                            }
+                        }
+                    }
+                    _ => {
+                        // Value is not a Variant
+                        Ok(None)
+                    }
                 }
             }
-        }
-        Pattern::Or(patterns) => {
-            // Or-pattern: try each sub-pattern in order
-            // The first one that matches determines the bindings
-            for sub_pattern in patterns {
-                if let Some(bound_env) =
-                    match_pattern(&sub_pattern.node, value, env, value_span, ctx)?
-                {
-                    return Ok(Some(bound_env));
+            Pattern::Or(patterns) => {
+                // Or-pattern: try each sub-pattern in order
+                // The first one that matches determines the bindings
+                for sub_pattern in patterns {
+                    if let Some(bound_env) =
+                        match_pattern(&sub_pattern.node, value, env, value_span, ctx).await?
+                    {
+                        return Ok(Some(bound_env));
+                    }
                 }
+                // None of the sub-patterns matched
+                Ok(None)
             }
-            // None of the sub-patterns matched
-            Ok(None)
         }
-    }
+    }) // end Box::pin(async move {
 }
 
 /// Evaluate a CaseArm pattern against a scrutinee value.
@@ -2851,7 +2929,7 @@ fn match_pattern(
 /// - Structural tests (`[let v: Ok]`)
 /// - Multi-element destructuring
 #[allow(dead_code)]
-fn eval_case_arm(
+async fn eval_case_arm(
     pattern: &Spanned<Expr>,
     scrutinee_thunk: &Arc<Thunk>,
     env: &Arc<RwLock<Environment>>,
@@ -2864,11 +2942,11 @@ fn eval_case_arm(
         }
         _ => {
             // Exact-value match — evaluate the pattern expression and compare
-            let pattern_thunk = eval(Rc::new(pattern.clone()), Arc::clone(env), ctx)?;
-            let pattern_value = materialize(&pattern_thunk, Some(&pattern.span), ctx)?;
+            let pattern_thunk = eval(Rc::new(pattern.clone()), Arc::clone(env), ctx).await?;
+            let pattern_value = materialize(&pattern_thunk, Some(&pattern.span), ctx).await?;
 
             // Materialize scrutinee for comparison
-            let scrutinee_value = materialize(scrutinee_thunk, Some(&pattern.span), ctx)?;
+            let scrutinee_value = materialize(scrutinee_thunk, Some(&pattern.span), ctx).await?;
 
             // Compare values
             if values_equal(&pattern_value, &scrutinee_value) {
@@ -3007,6 +3085,46 @@ mod tests {
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
+    }
+
+    /// Synchronous shadow of `eval()` for test contexts.
+    /// Drives the async eval future on the thread-local tokio runtime.
+    /// Shadows the outer async `eval` so existing test code compiles unchanged.
+    fn eval(
+        expr: Rc<Spanned<Expr>>,
+        env: Arc<RwLock<Environment>>,
+        ctx: &Arc<EvalContext>,
+    ) -> EvalResult<Arc<Thunk>> {
+        crate::async_rt::block_on_anywhere(super::eval(expr, env, ctx))
+    }
+
+    /// Synchronous shadow of `materialize()` for test contexts.
+    /// Drives the async materialize future on the thread-local tokio runtime.
+    /// Shadows the outer async `materialize` so existing test code compiles unchanged.
+    fn materialize(
+        thunk: &Thunk,
+        mat_span: Option<&Span>,
+        ctx: &Arc<EvalContext>,
+    ) -> EvalResult<Value> {
+        crate::async_rt::block_on_anywhere(super::materialize(thunk, mat_span, ctx))
+    }
+
+    /// Synchronous shadow of `eval_document()` for test contexts.
+    fn eval_document(
+        doc: &crate::ast::Spanned<crate::ast::Document>,
+        env: Arc<RwLock<Environment>>,
+        ctx: &Arc<EvalContext>,
+    ) -> EvalResult<Arc<Thunk>> {
+        crate::async_rt::block_on_anywhere(super::eval_document(doc, env, ctx))
+    }
+
+    /// Synchronous shadow of `eval_file()` for test contexts.
+    fn eval_file(
+        file: &crate::ast::File,
+        env: Arc<RwLock<Environment>>,
+        ctx: &Arc<EvalContext>,
+    ) -> EvalResult<Arc<Thunk>> {
+        crate::async_rt::block_on_anywhere(super::eval_file(file, env, ctx))
     }
 
     /// Resolve a `ThunkId` from the arena in `ctx` and materialize it.
@@ -3328,16 +3446,14 @@ mod tests {
         );
 
         // Check that the thunk is now in Failed state, not stuck in InProgress
-        match &*x_thunk.state() {
-            ThunkState::Failed(cached_err) => {
-                assert!(
-                    cached_err.to_string().contains("circular dependency"),
-                    "cached error should mention circular dependency, got: {}",
-                    cached_err.to_string()
-                );
-            }
-            other => panic!("expected Failed state after cycle detection, got {other:?}"),
-        }
+        let cached_err = x_thunk
+            .get_cached_error()
+            .expect("thunk should be in Failed state");
+        assert!(
+            cached_err.to_string().contains("circular dependency"),
+            "cached error should mention circular dependency, got: {}",
+            cached_err.to_string()
+        );
 
         // Second materialization: should return the cached circular dependency error
         let err2 = materialize(&x_thunk, None, &ctx).unwrap_err();
@@ -7175,14 +7291,14 @@ mod tests {
         );
 
         // Check that the thunk is now in Failed state
-        match &*x_thunk.state() {
-            ThunkState::Failed(cached_err) => {
-                assert!(cached_err
-                    .kind
-                    .to_string()
-                    .contains("undefined variable: undefined"));
-            }
-            other => panic!("expected Failed state, got {other:?}"),
+        {
+            let cached_err = x_thunk
+                .get_cached_error()
+                .expect("thunk should be in Failed state");
+            assert!(cached_err
+                .kind
+                .to_string()
+                .contains("undefined variable: undefined"));
         }
 
         // Second materialization: should return the cached error
@@ -7328,10 +7444,10 @@ mod tests {
             .contains("builtin intentionally failed"));
 
         // Check that the thunk is now in Failed state
-        match &*thunk.state() {
-            ThunkState::Failed(_) => {}
-            other => panic!("expected Failed state after error, got {other:?}"),
-        }
+        assert!(
+            thunk.get_cached_error().is_some(),
+            "expected Failed state after error"
+        );
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, &test_ctx()).unwrap_err();
@@ -7375,10 +7491,10 @@ mod tests {
             .contains("undefined variable: does_not_exist"));
 
         // Check that the thunk is now in Failed state
-        match &*pending.state() {
-            ThunkState::Failed(_) => {}
-            other => panic!("expected Failed state after error, got {other:?}"),
-        }
+        assert!(
+            pending.get_cached_error().is_some(),
+            "expected Failed state after error"
+        );
 
         // Second materialization: should return cached error
         let err2 = materialize(&pending, None, &test_ctx()).unwrap_err();
@@ -7416,11 +7532,11 @@ mod tests {
             .contains("undefined variable: nonexistent_func"));
 
         // The thunk should be in Failed state, NOT InProgress
-        match &*pending.state() {
-            ThunkState::Failed(_) => {}
-            ThunkState::InProgress => panic!("BUG: thunk stuck in InProgress"),
-            other => panic!("unexpected state: {other:?}"),
-        }
+        assert!(!pending.is_in_progress(), "BUG: thunk stuck in InProgress");
+        assert!(
+            pending.get_cached_error().is_some(),
+            "expected Failed state"
+        );
 
         // Second access should return cached error, NOT "circular dependency"
         let err2 = materialize(&pending, None, &test_ctx()).unwrap_err();
@@ -7451,10 +7567,10 @@ mod tests {
             .contains("undefined variable: undefined_var"));
 
         // Check that the thunk is now in Failed state
-        match &*thunk.state() {
-            ThunkState::Failed(_) => {}
-            other => panic!("expected Failed state after error, got {other:?}"),
-        }
+        assert!(
+            thunk.get_cached_error().is_some(),
+            "expected Failed state after error"
+        );
 
         // Second materialization: should return cached error
         let err2 = materialize(&thunk, None, &test_ctx()).unwrap_err();
@@ -7625,19 +7741,17 @@ mod tests {
         );
 
         // The thunk SHOULD be in Failed state because UndefinedVariable is cacheable
-        match &*x_thunk.state() {
-            ThunkState::Failed(cached_err) => {
-                assert!(
-                    cached_err
-                        .kind
-                        .to_string()
-                        .contains("undefined variable: undefined"),
-                    "cached error mismatch: got: {}",
-                    cached_err.to_string()
-                );
-            }
-            other => panic!("expected Failed state, got: {:?}", other),
-        };
+        let cached_err = x_thunk
+            .get_cached_error()
+            .expect("expected Failed state with cached error after cacheable error");
+        assert!(
+            cached_err
+                .kind
+                .to_string()
+                .contains("undefined variable: undefined"),
+            "cached error mismatch: got: {}",
+            cached_err.to_string()
+        );
     }
 
     #[test]
@@ -8597,11 +8711,7 @@ mod tests {
 
         // Initial state must be Guarded.
         {
-            let state = guarded.state();
-            assert!(
-                matches!(&*state, ThunkState::Guarded { .. }),
-                "initial state should be Guarded"
-            );
+            assert!(guarded.is_guarded(), "initial state should be Guarded");
         }
 
         // First materialization: triggers guard, validates Int(42) against Type::Int → pass.
@@ -8667,14 +8777,10 @@ mod tests {
         );
 
         // After failure, thunk must be in Failed state (cacheable memoization of error).
-        {
-            let state = guarded.state();
-            assert!(
-                matches!(&*state, ThunkState::Failed(_)),
-                "after type guard failure thunk should be Failed, got {:?}",
-                &*state
-            );
-        }
+        assert!(
+            guarded.get_cached_error().is_some(),
+            "after type guard failure thunk should be Failed"
+        );
 
         // Second materialization: returns the cached error, not re-runs the guard.
         let result2 = materialize(&guarded, None, &ctx);
@@ -9186,18 +9292,13 @@ mod tests {
                     "unused thunk should not be materialized"
                 );
                 // Check it's not in Failed or InProgress state
-                let state = unused_thunk.state();
-                match &*state {
-                    ThunkState::Failed(_) => {
-                        panic!("unused thunk should not be in Failed state (error should not have triggered)")
-                    }
-                    ThunkState::InProgress => {
-                        panic!("unused thunk should not be InProgress")
-                    }
-                    _ => {
-                        // Unevaluated or other states like PendingCall are acceptable
-                    }
+                if let Some(_err) = unused_thunk.get_cached_error() {
+                    panic!("unused thunk should not be in Failed state (error should not have triggered)")
                 }
+                if unused_thunk.is_in_progress() {
+                    panic!("unused thunk should not be InProgress")
+                }
+                // Unevaluated or other states like PendingCall are acceptable
             }
             _ => panic!("expected Dict value, got {:?}", val),
         }
@@ -9233,7 +9334,7 @@ mod tests {
 
         // The outer thunk must be Guarded (not yet materialized).
         assert!(
-            matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            thunk.is_guarded(),
             "expected Guarded thunk when boundary guard matches span"
         );
 
@@ -9260,7 +9361,7 @@ mod tests {
 
         // The guard must be present.
         assert!(
-            matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            thunk.is_guarded(),
             "expected Guarded thunk for span with guard"
         );
 
@@ -9294,7 +9395,7 @@ mod tests {
 
         // Must NOT be Guarded — guard did not match.
         assert!(
-            !matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            !thunk.is_guarded(),
             "thunk must not be Guarded when span doesn't match any guard"
         );
 
@@ -9317,7 +9418,7 @@ mod tests {
 
         // Thunk must be Guarded (lazy wrap, inner not yet forced).
         assert!(
-            matches!(&*thunk.state(), ThunkState::Guarded { .. }),
+            thunk.is_guarded(),
             "guard wrap must be lazy — Guarded state expected before materialization"
         );
 
@@ -9377,14 +9478,14 @@ mod tests {
         };
 
         // Create a PendingBuiltin thunk wrapping `builtin_keys` with the unevaluated arg.
-        let outer = Arc::new(Thunk::new_placeholder(span));
-        outer.set_state(ThunkState::PendingBuiltin {
-            def: keys_def,
-            args: Box::new(vec![Arc::clone(&unevaluated_arg)]),
-            named: None,
-            call_span: span,
-            ctx: Arc::clone(&ctx),
-        });
+        let outer = Arc::new(Thunk::new_pending_builtin(
+            keys_def,
+            vec![Arc::clone(&unevaluated_arg)],
+            None,
+            span,
+            None,
+            Arc::clone(&ctx),
+        ));
 
         // Materialize via the recursive path. If force_count pre-materialization is
         // missing, this panics at `try_get_materialized().expect(...)` inside `builtin_keys`.
@@ -9446,15 +9547,16 @@ mod tests {
         let func_thunk = Arc::new(Thunk::new_materialized(Value::Builtin(keys_def), span));
 
         // Create a PendingCall thunk: calls builtin_keys with the unevaluated arg.
-        let outer = Arc::new(Thunk::new_placeholder(span));
-        outer.set_state(ThunkState::PendingCall {
-            func: func_thunk,
-            args: Box::new(vec![Arc::clone(&unevaluated_arg)]),
-            named: None,
-            call_span: span,
-            caller_env: empty_env(),
-            ctx: Arc::clone(&ctx),
-        });
+        let outer = Arc::new(Thunk::new_pending_call(
+            func_thunk,
+            vec![Arc::clone(&unevaluated_arg)],
+            IndexMap::new(),
+            span,
+            empty_env(),
+            span,
+            None,
+            Arc::clone(&ctx),
+        ));
 
         // Materialize via the recursive path. If force_count pre-materialization is
         // missing for the PendingCall→Builtin case, this panics inside `builtin_keys`.

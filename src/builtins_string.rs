@@ -25,8 +25,8 @@ use crate::builtins::{
     expect_one_arg, ok_val, reject_named, require_string, stringify, MAX_STRING_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
-use crate::eval_call::{invoke_function, CallContext};
+use crate::eval::materialize_sync as materialize;
+use crate::eval_call::{invoke_function_sync as invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Key, Thunk, ThunkId, Value};
 
 /// Maximum number of parts produced by `$split` (1,000,000 elements).
@@ -599,7 +599,7 @@ mod tests {
     use crate::ast::Span;
     use crate::builtins::create_root_env;
     use crate::error::ErrorKind;
-    use crate::eval::materialize;
+    use crate::eval::materialize_sync as materialize;
     use crate::test_util::test_span;
     use crate::value::{BuiltinArgs, Thunk, Value};
     use std::sync::Arc;

@@ -30,7 +30,7 @@ thread_local! {
 /// The dict's string-keyed entries become bindings in a new child environment that
 /// serves as the scope for the next expression. The last expression is returned
 /// as-is (lazy, any type). An empty document returns an empty dict.
-pub fn eval_document(
+pub async fn eval_document(
     doc: &Spanned<Document>,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
@@ -111,12 +111,12 @@ pub fn eval_document(
 
         if is_last {
             // Last expression: return its thunk as-is (lazy, any type)
-            return eval(Rc::clone(expr), current_env, ctx);
+            return eval(Rc::clone(expr), current_env, ctx).await;
         }
 
         // Intermediate expression: materialize and extract dict bindings
-        let thunk = eval(Rc::clone(expr), Arc::clone(&current_env), ctx)?;
-        let value = materialize(&thunk, Some(&expr.span), ctx)?;
+        let thunk = eval(Rc::clone(expr), Arc::clone(&current_env), ctx).await?;
+        let value = materialize(&thunk, Some(&expr.span), ctx).await?;
 
         // Flatten Overlay to Dict for scope chain binding.
         let map = match value {
@@ -146,7 +146,7 @@ pub fn eval_document(
                 // This means dead-but-erroring bindings fail eagerly.
                 if let Key::String(name) = key {
                     let val_thunk = ctx.get_thunk(val_thunk_id);
-                    let forced_value = materialize(&val_thunk, Some(&expr.span), ctx)?;
+                    let forced_value = materialize(&val_thunk, Some(&expr.span), ctx).await?;
                     let strict_thunk = Arc::new(Thunk::new_materialized(forced_value, expr.span));
                     child_env.write().unwrap().insert(name, strict_thunk);
                 }
@@ -236,12 +236,12 @@ fn wrap_with_nominal_validation(
 ///
 /// **Note:** Provide an `EvalContext` via `EvalContext::new()` to configure `$include`;
 /// no separate setup call required.
-pub fn eval_file(
+pub async fn eval_file(
     file: &File,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    eval_file_with_input(file, env, ctx, None)
+    eval_file_with_input(file, env, ctx, None).await
 }
 
 /// Evaluate a parsed [`File`], optionally injecting an initial `%` value for the first document.
@@ -257,7 +257,7 @@ pub fn eval_file(
 ///
 /// **Note:** Provide an `EvalContext` via `EvalContext::new()` to configure `$include`;
 /// no separate setup call required.
-pub fn eval_file_with_input(
+pub async fn eval_file_with_input(
     file: &File,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
@@ -301,7 +301,7 @@ pub fn eval_file_with_input(
                 .insert(format!("%{}", section_name), Arc::clone(section_thunk));
         }
 
-        let result = eval_document(doc, doc_env, ctx)?;
+        let result = eval_document(doc, doc_env, ctx).await?;
 
         // If this document is named, accumulate it in the named map
         if let Some(ref name) = doc.node.name {

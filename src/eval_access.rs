@@ -12,7 +12,7 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{Thunk, Value};
 
 /// Invoke a proxy handler with a key value, returning the result thunk.
-pub(crate) fn invoke_proxy_handler(
+pub(crate) async fn invoke_proxy_handler(
     handler: &Arc<Thunk>,
     key_val: Value,
     ctx: &Arc<EvalContext>,
@@ -21,7 +21,7 @@ pub(crate) fn invoke_proxy_handler(
     // Performance: handler thunk is memoized by Launchbury sharing, but each
     // access clones the materialized Value. Consider eager materialization in
     // builtin_proxy for hot proxy access.
-    let handler_val = materialize(handler, Some(access_span), ctx)?;
+    let handler_val = materialize(handler, Some(access_span), ctx).await?;
     let key_arg = Arc::new(Thunk::new_materialized(key_val, *access_span));
     match handler_val {
         Value::Function {
@@ -29,17 +29,20 @@ pub(crate) fn invoke_proxy_handler(
             body,
             env: closure_env,
             ..
-        } => invoke_function(&CallContext {
-            params: &params,
-            body: &body,
-            closure_env: &closure_env,
-            positional: &[key_arg],
-            named: None,
-            default_env: &closure_env,
-            call_span: *access_span,
-            origin: Some(Arc::from("proxy field access")),
-            ctx,
-        }),
+        } => {
+            invoke_function(&CallContext {
+                params: &params,
+                body: &body,
+                closure_env: &closure_env,
+                positional: &[key_arg],
+                named: None,
+                default_env: &closure_env,
+                call_span: *access_span,
+                origin: Some(Arc::from("proxy field access")),
+                ctx,
+            })
+            .await
+        }
         Value::Builtin(def) => Ok(Arc::new(Thunk::new_pending_builtin(
             def,
             vec![key_arg],

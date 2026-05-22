@@ -11,7 +11,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
     create_stdlib_env, deep_materialize, eval_file_with_input, format_with_json_llt, json_to_value,
-    literate, materialize, parse, value_to_json, EvalContext, Span, Thunk, MAX_FILE_SIZE,
+    literate, materialize_sync as materialize, parse, value_to_json, EvalContext, Span, Thunk,
+    MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -1885,17 +1886,20 @@ fn run_eval(
         eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
         // Evaluate file with pipeline input
-        let file_result =
-            eval_file_with_input(&ast.node, Arc::clone(&env), &eval_ctx, pipeline_input).map_err(
-                |e| {
-                    let mut error_str = format!("{e}");
-                    if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
-                        error_str.push('\n');
-                        error_str.push_str(&snippet);
-                    }
-                    error_str
-                },
-            )?;
+        let file_result = tinct::async_rt::block_on_anywhere(eval_file_with_input(
+            &ast.node,
+            Arc::clone(&env),
+            &eval_ctx,
+            pipeline_input,
+        ))
+        .map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?;
 
         // Record blame provenance for the pipeline boundary.
         // The producing stage label is the file path or expression index.
@@ -1911,7 +1915,9 @@ fn run_eval(
 
         // Record blame for the % thunk at this pipeline boundary.
         // This is used by contract violation errors to identify the producing stage.
-        if let Ok(tinct::Value::Dict(ref map)) = tinct::materialize(&file_result, None, &eval_ctx) {
+        if let Ok(tinct::Value::Dict(ref map)) =
+            tinct::materialize_sync(&file_result, None, &eval_ctx)
+        {
             for (_, thunk_id) in map {
                 eval_ctx.record_blame(*thunk_id, stage_label.clone());
             }
@@ -2574,15 +2580,20 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         Some(std::collections::HashSet::new()),
     );
 
-    let thunk =
-        eval_file_with_input(&ast.node, Arc::clone(&env), &eval_ctx, None).map_err(|e| {
-            let mut msg = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
-                msg.push('\n');
-                msg.push_str(&snippet);
-            }
-            msg
-        })?;
+    let thunk = tinct::async_rt::block_on_anywhere(eval_file_with_input(
+        &ast.node,
+        Arc::clone(&env),
+        &eval_ctx,
+        None,
+    ))
+    .map_err(|e| {
+        let mut msg = format!("{e}");
+        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
+            msg.push('\n');
+            msg.push_str(&snippet);
+        }
+        msg
+    })?;
 
     let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
         let mut msg = format!("{e}");
@@ -2923,12 +2934,12 @@ fn run_literate_weave(
 
         let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
 
-        let thunk_result = eval_file_with_input(
+        let thunk_result = tinct::async_rt::block_on_anywhere(eval_file_with_input(
             &ast.node,
             Arc::clone(&env),
             &eval_ctx,
             pipeline_input.clone(),
-        );
+        ));
         let thunk = match thunk_result {
             Ok(t) => t,
             Err(e) => {

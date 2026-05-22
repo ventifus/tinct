@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{create_stdlib_env_with_arena, MAX_FILE_SIZE};
-use crate::eval::{deep_materialize, eval_file_with_input, materialize};
+use crate::eval::{deep_materialize, eval_file_with_input, materialize_sync as materialize};
 use crate::parser::parse;
 use crate::typecheck::{DocMap, TypeMap};
 use crate::value::{Environment, Key, Thunk, Value};
@@ -216,12 +216,12 @@ impl ReplSession {
         }
 
         // Delegate to the same eval pipeline used by `llt eval`.
-        let result_thunk = eval_file_with_input(
+        let result_thunk = crate::async_rt::block_on_anywhere(eval_file_with_input(
             &file.node,
             Arc::clone(&self.env),
             &self.ctx,
             Some(Arc::clone(&self.prev_result)),
-        )
+        ))
         .map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {

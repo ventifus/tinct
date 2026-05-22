@@ -486,7 +486,7 @@ fn process_force(
     // Materialize the thunk one level.
     // Use the mat_span from the WorkItem::Force, which is either the original
     // call-site span from deep_materialize or the thunk's own span.
-    let v = match materialize(thunk, Some(&mat_span), ctx) {
+    let v = match crate::async_rt::block_on_anywhere(materialize(thunk, Some(&mat_span), ctx)) {
         Ok(v) => v,
         Err(e) => {
             // Clean up sentinel on error (same as old deep_materialize_thunk).
@@ -614,8 +614,18 @@ mod tests {
                 let b = &map[&Key::String("b".into())];
 
                 // Verify both entries resolve to the same value (ThunkId equality not guaranteed).
-                let va = crate::eval::materialize(&ctx.get_thunk(*a), None, &ctx).unwrap();
-                let vb = crate::eval::materialize(&ctx.get_thunk(*b), None, &ctx).unwrap();
+                let va = crate::async_rt::block_on_anywhere(crate::eval::materialize(
+                    &ctx.get_thunk(*a),
+                    None,
+                    &ctx,
+                ))
+                .unwrap();
+                let vb = crate::async_rt::block_on_anywhere(crate::eval::materialize(
+                    &ctx.get_thunk(*b),
+                    None,
+                    &ctx,
+                ))
+                .unwrap();
                 assert_eq!(va, Value::Int(42), "entry a should be Int(42)");
                 assert_eq!(vb, Value::Int(42), "entry b should be Int(42)");
             }

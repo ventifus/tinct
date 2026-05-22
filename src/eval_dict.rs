@@ -35,7 +35,7 @@ fn count_static_keys(entries: &[Spanned<Entry>]) -> usize {
         .count()
 }
 
-pub(crate) fn eval_dict(
+pub(crate) async fn eval_dict(
     entries: &[Spanned<Entry>],
     parent_env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
@@ -154,7 +154,7 @@ pub(crate) fn eval_dict(
             // expressions must not see sibling bindings. This prevents keys from
             // depending on values that are still unevaluated thunks and keeps
             // key evaluation deterministic regardless of entry order.
-            Some(key_expr) => eval_key(key_expr, parent_env, ctx)?,
+            Some(key_expr) => eval_key(key_expr, parent_env, ctx).await?,
             None => {
                 let k = Key::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
@@ -287,7 +287,7 @@ pub(crate) fn eval_dict(
     )))
 }
 
-pub(crate) fn eval_key(
+pub(crate) async fn eval_key(
     key_expr: &Spanned<Expr>,
     parent_env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
@@ -299,8 +299,8 @@ pub(crate) fn eval_key(
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete Key values
-    let thunk = eval(Rc::new(key_expr.clone()), Arc::clone(parent_env), ctx)?;
-    let value = materialize(&thunk, Some(&key_expr.span), ctx)?;
+    let thunk = eval(Rc::new(key_expr.clone()), Arc::clone(parent_env), ctx).await?;
+    let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span)
 }
 

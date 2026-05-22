@@ -721,7 +721,11 @@ fn pre_scan_expr(
                 desugared: false,
             };
             let fn_spanned = Spanned::new(fn_expr, expr.span);
-            let transformer_value = eval::eval(Rc::new(fn_spanned), Arc::clone(stdlib_env), ctx)?;
+            let transformer_value = crate::async_rt::block_on_anywhere(eval::eval(
+                Rc::new(fn_spanned),
+                Arc::clone(stdlib_env),
+                ctx,
+            ))?;
 
             // Register the macro with its params pattern and inject default
             env.register_macro(
@@ -940,7 +944,11 @@ fn pre_scan_expr(
             let fn_spanned = Spanned::new(fn_expr, expr.span);
 
             // Evaluate the function in the stdlib environment
-            let transformer_value = eval::eval(Rc::new(fn_spanned), Arc::clone(stdlib_env), ctx)?;
+            let transformer_value = crate::async_rt::block_on_anywhere(eval::eval(
+                Rc::new(fn_spanned),
+                Arc::clone(stdlib_env),
+                ctx,
+            ))?;
 
             // Register the macro (params_pattern is the LetDecl directly)
             env.register_macro(
@@ -1617,7 +1625,7 @@ fn expand_macro_call(
     for arg in args {
         let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
         // ARENA BOUNDARY: deep-materialize before crossing
-        let arg_val = eval::materialize(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
+        let arg_val = eval::materialize_sync(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
             EvalError::user_error(
                 format!(
                     "macro '{}': failed to quote argument for expansion: {}",
@@ -1650,7 +1658,7 @@ fn expand_macro_call(
         let binding_rc = Rc::new(binding_expr);
         let binding_thunk = ast_to_dict_expr(&binding_rc, &opts, ctx)?;
         let binding_val =
-            eval::materialize(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
+            eval::materialize_sync(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
                 EvalError::user_error(
                     format!(
                         "macro '{}': failed to quote binding name '{}': {}",
@@ -1674,15 +1682,16 @@ fn expand_macro_call(
     }
 
     // Materialize the transformer to get the function value
-    let transformer_val = eval::materialize(&transformer, Some(&call_span), ctx).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "macro '{}' transformer failed to evaluate: {}",
-                macro_name, e.kind
-            ),
-            call_span,
-        )
-    })?;
+    let transformer_val =
+        eval::materialize_sync(&transformer, Some(&call_span), ctx).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "macro '{}' transformer failed to evaluate: {}",
+                    macro_name, e.kind
+                ),
+                call_span,
+            )
+        })?;
 
     let result_thunk = match &transformer_val {
         Value::Function {
@@ -1691,7 +1700,7 @@ fn expand_macro_call(
             env: closure_env,
             ..
         } => {
-            use crate::eval_call::{invoke_function, CallContext};
+            use crate::eval_call::{invoke_function_sync as invoke_function, CallContext};
             let call_ctx = CallContext {
                 params: params.as_slice(),
                 body,
@@ -1724,7 +1733,7 @@ fn expand_macro_call(
         }
     };
 
-    let result_val = eval::materialize(&result_thunk, Some(&call_span), ctx).map_err(|e| {
+    let result_val = eval::materialize_sync(&result_thunk, Some(&call_span), ctx).map_err(|e| {
         // Build E080 wrapper that names the macro and error kind, then copy all
         // stack frames from the inner error so the full call stack is preserved.
         let mut err = EvalError::user_error(

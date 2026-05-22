@@ -29,6 +29,40 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
     TOKIO_RT.with(|rt| LOCAL_SET.with(|ls| ls.block_on(rt, fut)))
 }
 
+/// Like [`block_on`] but safe to call from within an existing tokio runtime context.
+///
+/// When already inside a tokio runtime (e.g. called from a `#[tokio::test]` or from
+/// `reqwest::blocking` internals), `LocalSet::block_on` panics with "cannot start a
+/// runtime from within a runtime". This variant uses `block_in_place` to step the
+/// current thread out of the async context before driving the future synchronously.
+///
+/// Use this for pure eval futures (`materialize`, `eval`, `invoke_function`) that do
+/// not need the `LocalSet` background driver. IO builtins that require `LocalSet`
+/// (QUIC, HTTP/3 driver tasks) must continue to use [`block_on`].
+///
+/// Falls back to a fresh `Runtime` when called outside any tokio context.
+///
+/// # Panics
+///
+/// Panics if called from within a `current_thread` tokio runtime context, such as
+/// from within [`block_on`] or a `spawn_local` task. `block_in_place` requires a
+/// multi-thread (work-stealing) runtime — calling it inside a `current_thread` runtime
+/// (e.g. `#[tokio::test(flavor = "current_thread")]`) will panic at runtime.
+/// All callers must be invoked outside any `block_on` context.
+pub fn block_on_anywhere<F>(fut: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => {
+            let rt =
+                tokio::runtime::Runtime::new().expect("async_rt: failed to create tokio runtime");
+            rt.block_on(fut)
+        }
+    }
+}
+
 /// Spawn a `!Send + 'static` future as a local task.
 ///
 /// The task is polled cooperatively on the next (and every subsequent)

@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_placeholder_force_panics() {
-        use crate::eval::materialize;
+        use crate::eval::materialize_sync as materialize;
         use crate::eval::EvalContext;
         use crate::value::Environment;
 

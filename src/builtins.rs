@@ -34,8 +34,8 @@ use crate::value::Strictness;
 // materialize/invoke_function (eval.rs), and eval calls standard_builtins (builtins.rs). This is
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
-use crate::eval::materialize;
-use crate::eval_call::{invoke_function, CallContext};
+use crate::eval::materialize_sync as materialize;
+use crate::eval_call::{invoke_function_sync as invoke_function, CallContext};
 use crate::value::{BuiltinArgs, Environment, Key, Thunk, Value};
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
@@ -298,7 +298,7 @@ pub(crate) fn require_dict(
                 Some(payload_id) => {
                     let payload_thunk = ctx.get_thunk(payload_id);
                     let payload_val =
-                        crate::eval::materialize(&payload_thunk, Some(&call_span), ctx)?;
+                        crate::eval::materialize_sync(&payload_thunk, Some(&call_span), ctx)?;
                     // Recursively try to extract dict from payload
                     require_dict(name, payload_val, def_span, ctx, call_span)
                 }
@@ -1861,8 +1861,12 @@ fn load_stdlib_module(
     // cost reduction (~5s per call in debug builds). The prelude's types are properly
     // checked in build_prelude_env_inner() via typecheck_and_merge_stdlib_module().
 
-    let thunk = crate::eval::eval_file(&file.node, Arc::clone(env), ctx)?;
-    let val = crate::eval::materialize(&thunk, None, ctx)?;
+    let thunk = crate::async_rt::block_on_anywhere(crate::eval::eval_file(
+        &file.node,
+        Arc::clone(env),
+        ctx,
+    ))?;
+    let val = crate::eval::materialize_sync(&thunk, None, ctx)?;
 
     let dict = match val {
         Value::Dict(map) => map,
@@ -2072,11 +2076,14 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     for doc in &file.node.documents {
         if doc.node.stage == Some(crate::ast::Stage::Type) {
             // Evaluate this type-stage document
-            let result =
-                crate::eval::eval_document(doc, Arc::clone(&type_stage_env), &bootstrap_ctx)?;
+            let result = crate::async_rt::block_on_anywhere(crate::eval::eval_document(
+                doc,
+                Arc::clone(&type_stage_env),
+                &bootstrap_ctx,
+            ))?;
 
             // Materialize and extract bindings
-            let val = crate::eval::materialize(&result, None, &bootstrap_ctx)?;
+            let val = crate::eval::materialize_sync(&result, None, &bootstrap_ctx)?;
 
             let dict = match val {
                 Value::Dict(map) => map,
@@ -2152,7 +2159,7 @@ mod tests {
     }
 
     fn mat(result: EvalResult<Arc<Thunk>>) -> Value {
-        crate::eval::materialize(&result.unwrap(), None, &test_ctx()).unwrap()
+        crate::eval::materialize_sync(&result.unwrap(), None, &test_ctx()).unwrap()
     }
 
     /// Parse and evaluate an LLT snippet, returning the result value.
@@ -2170,9 +2177,12 @@ mod tests {
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
         let env = Arc::clone(&ctx.config.stdlib_env);
-        let thunk = crate::eval::eval_file(&file.node, env, ctx)
-            .unwrap_or_else(|e| panic!("parse_eval: eval_file failed for {:?}: {}", llt_src, e));
-        crate::eval::materialize(&thunk, None, ctx)
+        let thunk =
+            crate::async_rt::block_on_anywhere(crate::eval::eval_file(&file.node, env, ctx))
+                .unwrap_or_else(|e| {
+                    panic!("parse_eval: eval_file failed for {:?}: {}", llt_src, e)
+                });
+        crate::eval::materialize_sync(&thunk, None, ctx)
             .unwrap_or_else(|e| panic!("parse_eval: materialize failed for {:?}: {}", llt_src, e))
     }
 
@@ -2231,7 +2241,7 @@ mod tests {
     /// Helper: materialize the thunk identified by `id` in `ctx`'s arena.
     fn mat_id(id: ThunkId, ctx: &Arc<crate::eval::EvalContext>) -> Value {
         let thunk = ctx.get_thunk(id);
-        crate::eval::materialize(&thunk, None, ctx).unwrap()
+        crate::eval::materialize_sync(&thunk, None, ctx).unwrap()
     }
 
     /// Helper: build a `Value::Seq` with both `head` and `tail` allocated into `ctx`.
@@ -3950,7 +3960,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
+        let err = crate::eval::materialize_sync(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -3979,7 +3989,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&apply_thunk, None, &ctx).unwrap_err();
+        let err = crate::eval::materialize_sync(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Function"),
             "got: {}",
@@ -3998,7 +4008,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
+        let err = crate::eval::materialize_sync(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Dict"),
             "got: {}",
@@ -4015,7 +4025,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
+        let err = crate::eval::materialize_sync(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
@@ -5044,7 +5054,7 @@ mod tests {
         });
         // builtin_merge itself succeeds — returns Overlay(Int(1), {})
         let overlay_thunk = result.unwrap();
-        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx).unwrap();
+        let overlay_val = crate::eval::materialize_sync(&overlay_thunk, None, &ctx).unwrap();
         // Flatten fires the type error: left side is Int, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
@@ -5077,7 +5087,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
         });
         let overlay_thunk = result.unwrap();
-        let overlay_val = crate::eval::materialize(&overlay_thunk, None, &ctx).unwrap();
+        let overlay_val = crate::eval::materialize_sync(&overlay_thunk, None, &ctx).unwrap();
         // Flatten fires the type error: right side is String, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
@@ -6476,7 +6486,7 @@ mod tests {
             ctx: test_ctx(),
         })
         .expect("should return thunk");
-        let err = crate::eval::materialize(&thunk, None, &test_ctx()).unwrap_err();
+        let err = crate::eval::materialize_sync(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
@@ -8413,7 +8423,7 @@ mod tests {
             collect_result.is_ok(),
             "collect should succeed for 200 elements"
         );
-        match crate::eval::materialize(&collect_result.unwrap(), None, &ctx).unwrap() {
+        match crate::eval::materialize_sync(&collect_result.unwrap(), None, &ctx).unwrap() {
             Value::Dict(map) => {
                 assert_eq!(map.len(), 200);
                 // Spot-check first and last elements
@@ -8875,7 +8885,7 @@ mod tests {
                         // Trying to materialize h2 (which is PendingCall(Int(999), [Int(0)]))
                         // will error because Int(999) is not a function
                         let h2_thunk = ctx.get_thunk(h2);
-                        let h2_result = crate::eval::materialize(&h2_thunk, None, &ctx);
+                        let h2_result = crate::eval::materialize_sync(&h2_thunk, None, &ctx);
                         assert!(h2_result.is_err());
                     }
                     other => panic!("expected Seq for tail, got {:?}", other),
@@ -9159,7 +9169,7 @@ mod tests {
         .unwrap();
 
         // Materialize the result to verify structure
-        let result_val = crate::eval::materialize(&result, None, &ctx).unwrap();
+        let result_val = crate::eval::materialize_sync(&result, None, &ctx).unwrap();
         match result_val {
             Value::Seq { head: h1, tail: t1 } => {
                 assert_eq!(mat_id(h1, &ctx), Value::Int(1));
@@ -9210,7 +9220,7 @@ mod tests {
         .unwrap();
 
         // Result should be ys — verify by materializing and checking value
-        let result_val = crate::eval::materialize(&result, None, &ctx).unwrap();
+        let result_val = crate::eval::materialize_sync(&result, None, &ctx).unwrap();
         match result_val {
             Value::Seq { head, .. } => {
                 assert_eq!(mat_id(head, &ctx), Value::Int(1));
@@ -9235,7 +9245,7 @@ mod tests {
         .unwrap();
 
         // Materialize to verify: Seq(1, {})
-        let result_val = crate::eval::materialize(&result, None, &ctx).unwrap();
+        let result_val = crate::eval::materialize_sync(&result, None, &ctx).unwrap();
         match result_val {
             Value::Seq { head, tail } => {
                 assert_eq!(mat_id(head, &ctx), Value::Int(1));
@@ -9440,7 +9450,7 @@ mod tests {
         // The predicate is implemented as a Rust builtin (not an LLT function) to avoid
         // needing a closure env with stdlib builtins.
         fn pred_eq_299(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let val = crate::eval::materialize(&ctx.args[0], None, &ctx.ctx)?;
+            let val = crate::eval::materialize_sync(&ctx.args[0], None, &ctx.ctx)?;
             ok_val(Value::Bool(matches!(val, Value::Int(299))), Span::origin())
         }
 
@@ -9476,11 +9486,12 @@ mod tests {
                 // Force the filter result. Before the fix this would fail with depth
                 // exceeded after ~128 consecutive failures. After the fix the internal
                 // loop handles all 299 failures at constant depth.
-                let val = crate::eval::materialize(&filter_result, None, &ctx).unwrap();
+                let val = crate::eval::materialize_sync(&filter_result, None, &ctx).unwrap();
                 match val {
                     Value::Seq { head, .. } => {
                         let head_thunk = ctx.get_thunk(head);
-                        let head_val = crate::eval::materialize(&head_thunk, None, &ctx).unwrap();
+                        let head_val =
+                            crate::eval::materialize_sync(&head_thunk, None, &ctx).unwrap();
                         assert_eq!(
                             head_val,
                             Value::Int(299),
@@ -9565,7 +9576,7 @@ mod tests {
                     Arc::clone(&ctx_inner),
                 ));
 
-                let val = crate::eval::materialize(&collect_thunk, None, &ctx_inner).unwrap();
+                let val = crate::eval::materialize_sync(&collect_thunk, None, &ctx_inner).unwrap();
                 match val {
                     Value::Dict(ref map) => {
                         assert_eq!(
@@ -9693,12 +9704,13 @@ mod tests {
                     collect_result.is_ok(),
                     "collect(take(300, range(0))) should succeed with iterative CEK machine"
                 );
-                let val = crate::eval::materialize(&collect_result.unwrap(), None, &ctx).unwrap();
+                let val =
+                    crate::eval::materialize_sync(&collect_result.unwrap(), None, &ctx).unwrap();
                 match val {
                     Value::Dict(ref map) => {
                         assert_eq!(map.len(), 300, "expected 300 elements in result dict");
                         assert_eq!(
-                            crate::eval::materialize(
+                            crate::eval::materialize_sync(
                                 &ctx.get_thunk(*map.get(&Key::Int(0)).unwrap()),
                                 None,
                                 &ctx
@@ -9707,7 +9719,7 @@ mod tests {
                             Value::Int(0)
                         );
                         assert_eq!(
-                            crate::eval::materialize(
+                            crate::eval::materialize_sync(
                                 &ctx.get_thunk(*map.get(&Key::Int(299)).unwrap()),
                                 None,
                                 &ctx
@@ -9840,7 +9852,7 @@ mod tests {
         ));
 
         // Materialize it and expect an error
-        let result = crate::eval::materialize(&pending_thunk, None, &ctx);
+        let result = crate::eval::materialize_sync(&pending_thunk, None, &ctx);
         let err = result.unwrap_err();
 
         // Verify it's a TypeMismatch error with the expected message
@@ -10100,7 +10112,7 @@ mod tests {
         ctx: &Arc<crate::eval::EvalContext>,
     ) -> i64 {
         let thunk = ctx.get_thunk(*map.get(&Key::Int(idx)).unwrap());
-        match crate::eval::materialize(&thunk, None, ctx).unwrap() {
+        match crate::eval::materialize_sync(&thunk, None, ctx).unwrap() {
             Value::Int(n) => n,
             other => panic!("expected Int at index {idx}, got {:?}", other),
         }
@@ -10314,7 +10326,7 @@ mod tests {
                 assert_eq!(head_val, Value::Int(10));
                 // Verify tail is also a Seq (not fully unwinding it here)
                 let tail_thunk = ctx.get_thunk(tail);
-                let tail_val = crate::eval::materialize(&tail_thunk, None, &ctx).unwrap();
+                let tail_val = crate::eval::materialize_sync(&tail_thunk, None, &ctx).unwrap();
                 assert!(matches!(tail_val, Value::Seq { .. }));
             }
             other => panic!("expected Seq, got {:?}", other),

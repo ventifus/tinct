@@ -15,7 +15,7 @@ use indexmap::IndexMap;
 
 use crate::builtins::{builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
+use crate::eval::materialize_sync as materialize;
 use crate::value::{BuiltinArgs, Key, Strictness, Thunk, ThunkId, Value};
 
 /// `map`: Apply a function to every element of a dict or sequence.

@@ -842,116 +842,19 @@ const _: () = {
     );
 };
 
-#[derive(Debug, Clone)]
-pub enum ThunkState {
-    /// Pre-allocation sentinel for letrec placeholder slots. Must be filled via
-    /// `set_state()` with a real state (Unevaluated, Materialized, etc.) before
-    /// any attempt to force/materialize. Forcing a Placeholder is a logic error
-    /// indicating the letrec construction failed to fill all slots.
-    ///
-    /// Monotonicity: Placeholder → {Unevaluated, Materialized, PendingBuiltin, ...}
-    /// is a forward state transition, unlike the previous Materialized(Bool(false)) →
-    /// Unevaluated hack which violated Launchbury's monotonicity invariant.
-    Placeholder,
-    Unevaluated {
-        expr: Rc<Spanned<Expr>>,
-        env: Arc<RwLock<Environment>>,
-        /// Optional flat environment ID for O(1) variable lookup (arena-phase3).
-        /// None for stdlib thunks or thunks created before flat environment migration.
-        /// Some(env_id) for user-scope thunks where the resolver populated VarRef coordinates.
-        /// The Arc<RwLock<Environment>> chain remains as a fallback for stdlib bindings.
-        env_id: Option<crate::arena::EnvId>,
-        ctx: Arc<crate::eval::EvalContext>,
-    },
-    PendingBuiltin {
-        def: BuiltinDef,
-        args: Box<Vec<Arc<Thunk>>>,
-        /// Named args for this builtin call. `None` means no named args (the common case);
-        /// avoids allocating an empty `IndexMap` for the many internal `PendingBuiltin`
-        /// thunks created by sequence generators and transforms.
-        named: Option<IndexMap<String, Arc<Thunk>>>,
-        call_span: Span,
-        ctx: Arc<crate::eval::EvalContext>,
-    },
-    PendingCall {
-        func: Arc<Thunk>,
-        args: Box<Vec<Arc<Thunk>>>,
-        /// Named args for this call. `None` means no named args (the common case);
-        /// avoids allocating an empty `IndexMap` for positional-only calls.
-        named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
-        call_span: Span,
-        caller_env: Arc<RwLock<Environment>>,
-        ctx: Arc<crate::eval::EvalContext>,
-    },
-    /// Wraps an inner thunk and validates its materialized value against an expected type.
-    /// Carries no `ctx` field because it does not evaluate AST directly; it forces the
-    /// inner thunk (which carries its own `ctx`) and then validates the result.
-    /// `blame_label` tracks the typed/untyped boundary for gradual typing (co-natural strategy).
-    /// `default` carries the fallback expression and environment from TypeAssert's `default:` annotation.
-    Guarded {
-        inner: Arc<Thunk>,
-        expected: Type,
-        field_path: Box<Vec<String>>,
-        guard_span: Span,
-        blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Arc<RwLock<Environment>>,
-        )>,
-    },
-    InProgress,
-    Materialized(Value),
-    Failed(Box<EvalError>),
-
-    // =========================================================================
-    // runtime-v2 thunk states (Sprint 1, Part E)
-    // =========================================================================
-    /// Pre-lowering Surface thunk — created by the `eval` builtin for each
-    /// `Value::Expression` in a `[Seq Expression]` argument.
-    ///
-    /// On first force: convert via bridge to old Expr, then evaluate.
-    /// (Full lowering to CoreExpr + CoreExpr evaluator is Sprint 2.)
-    ///
-    /// Uses Arc<SurfaceNode> because SurfaceNode is defined with Arc-recursive fields.
-    /// The `res` and `types` tables are Arc to be shareable across thunks from the
-    /// same file without cloning.
-    Surface {
-        node: std::sync::Arc<crate::ast::SurfaceNode>,
-        res: std::sync::Arc<crate::ast::ResolutionTable>,
-        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
-        env: Arc<RwLock<Environment>>,
-        ctx: Arc<crate::eval::EvalContext>,
-    },
-
-    /// Created by match dispatch on `Value::Expression` — evaluates a single
-    /// field from a SurfaceNode lazily via `surface_node_get_field`.
-    ///
-    /// Unused bindings in the match arm are never forced — their thunks exist
-    /// but `surface_node_get_field` is never called for undemanded fields.
-    /// The `ctx` field is needed to allocate ThunkIds for sequence-typed fields
-    /// (args, entries, params, bindings, arms) which return Value::Dict lists.
-    AstNodeField {
-        node: std::sync::Arc<crate::ast::SurfaceNode>,
-        field: &'static str,
-        ctx: Arc<crate::eval::EvalContext>,
-    },
-}
-
 // ============================================================================
-// Runtime v2 — Sprint 2B: ThunkInner + UnevaluatedState (ADDITIVE)
+// Runtime v2 — Sprint 2B: ThunkInner + UnevaluatedState
 // ============================================================================
 
-/// Pre-evaluation state variants for the new ThunkInner structure.
-/// Replaces the current ThunkState enum in Sprint 2B.
-///
-/// This is ADDITIVE — the existing ThunkState enum remains during the transition.
-/// Conversion methods below allow gradual migration.
+/// Pre-evaluation state variants for the ThunkInner structure.
+/// Stores the data needed to evaluate a thunk when it's first accessed.
 #[derive(Debug)]
 pub enum UnevaluatedState {
     /// AST expression from the old runtime (CoreExpr will replace this in full runtime-v2).
     Expr {
         expr: Rc<Spanned<Expr>>,
         env: Arc<RwLock<Environment>>,
+        #[allow(dead_code)]
         env_id: Option<crate::arena::EnvId>,
         ctx: Arc<crate::eval::EvalContext>,
     },
@@ -1014,178 +917,6 @@ pub struct ThunkInner {
     pub result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
 }
 
-// Conversion utilities for gradual migration
-impl ThunkState {
-    /// Convert ThunkState to UnevaluatedState if it's a deferred state.
-    /// Returns None for terminal states (Materialized, Failed, InProgress, Placeholder).
-    pub fn to_unevaluated(&self) -> Option<UnevaluatedState> {
-        match self {
-            ThunkState::Unevaluated {
-                expr,
-                env,
-                env_id,
-                ctx,
-            } => Some(UnevaluatedState::Expr {
-                expr: expr.clone(),
-                env: env.clone(),
-                env_id: *env_id,
-                ctx: ctx.clone(),
-            }),
-            ThunkState::Surface {
-                node,
-                res,
-                types,
-                env,
-                ctx,
-            } => Some(UnevaluatedState::Surface {
-                node: node.clone(),
-                res: res.clone(),
-                types: types.clone(),
-                env: env.clone(),
-                ctx: ctx.clone(),
-            }),
-            ThunkState::AstNodeField { node, field, ctx } => Some(UnevaluatedState::AstNodeField {
-                node: node.clone(),
-                field,
-                ctx: ctx.clone(),
-            }),
-            ThunkState::PendingBuiltin {
-                def,
-                args,
-                named,
-                call_span,
-                ctx,
-            } => Some(UnevaluatedState::Builtin {
-                def: def.clone(),
-                args: args.clone(),
-                named: named.clone(),
-                call_span: *call_span,
-                ctx: ctx.clone(),
-            }),
-            ThunkState::PendingCall {
-                func,
-                args,
-                named,
-                call_span,
-                caller_env,
-                ctx,
-            } => Some(UnevaluatedState::Call {
-                func: func.clone(),
-                args: args.clone(),
-                named: named.clone(),
-                call_span: *call_span,
-                caller_env: caller_env.clone(),
-                ctx: ctx.clone(),
-            }),
-            ThunkState::Guarded {
-                inner,
-                expected,
-                field_path,
-                guard_span,
-                blame_label,
-                default,
-            } => Some(UnevaluatedState::Guarded {
-                inner: inner.clone(),
-                expected: expected.clone(),
-                field_path: field_path.clone(),
-                guard_span: *guard_span,
-                blame_label: blame_label.clone(),
-                default: default.clone(),
-            }),
-            // Terminal states have no unevaluated representation
-            ThunkState::Placeholder
-            | ThunkState::InProgress
-            | ThunkState::Materialized(_)
-            | ThunkState::Failed(_) => None,
-        }
-    }
-}
-
-impl UnevaluatedState {
-    /// Convert UnevaluatedState back to ThunkState.
-    /// Used for state restoration on non-cacheable errors.
-    pub fn to_thunk_state(&self) -> ThunkState {
-        match self {
-            UnevaluatedState::Expr {
-                expr,
-                env,
-                env_id,
-                ctx,
-            } => ThunkState::Unevaluated {
-                expr: expr.clone(),
-                env: env.clone(),
-                env_id: *env_id,
-                ctx: ctx.clone(),
-            },
-            UnevaluatedState::Surface {
-                node,
-                res,
-                types,
-                env,
-                ctx,
-            } => ThunkState::Surface {
-                node: node.clone(),
-                res: res.clone(),
-                types: types.clone(),
-                env: env.clone(),
-                ctx: ctx.clone(),
-            },
-            UnevaluatedState::AstNodeField { node, field, ctx } => ThunkState::AstNodeField {
-                node: node.clone(),
-                field,
-                ctx: ctx.clone(),
-            },
-            UnevaluatedState::Builtin {
-                def,
-                args,
-                named,
-                call_span,
-                ctx,
-            } => ThunkState::PendingBuiltin {
-                def: def.clone(),
-                args: args.clone(),
-                named: named.clone(),
-                call_span: *call_span,
-                ctx: ctx.clone(),
-            },
-            UnevaluatedState::Call {
-                func,
-                args,
-                named,
-                call_span,
-                caller_env,
-                ctx,
-            } => ThunkState::PendingCall {
-                func: func.clone(),
-                args: args.clone(),
-                named: named.clone(),
-                call_span: *call_span,
-                caller_env: caller_env.clone(),
-                ctx: ctx.clone(),
-            },
-            UnevaluatedState::Guarded {
-                inner,
-                expected,
-                field_path,
-                guard_span,
-                blame_label,
-                default,
-            } => ThunkState::Guarded {
-                inner: inner.clone(),
-                expected: expected.clone(),
-                field_path: field_path.clone(),
-                guard_span: *guard_span,
-                blame_label: blame_label.clone(),
-                default: default.clone(),
-            },
-        }
-    }
-}
-
-// ============================================================================
-// End Runtime v2 additions
-// ============================================================================
-
 /// Lazy evaluation cell: wraps an unevaluated expression, a pending builtin call,
 /// or a materialized value with memoization (evaluate-at-most-once semantics).
 pub struct Thunk {
@@ -1197,127 +928,7 @@ pub struct Thunk {
     pub(crate) origin: Option<Arc<str>>,
 }
 
-// Module-level thread-locals for ThunkStateGuard.
-//
-// These MUST be module-level (not function-level) so that both `Deref::deref`
-// and `Drop::drop` share the same storage. Function-level `thread_local!` blocks
-// each create a distinct static, causing the Drop to clear a different cell than
-// the one Deref set — leaving GUARD_ACTIVE permanently true and causing every
-// subsequent guard creation to panic.
-thread_local! {
-    /// Scratch space for the ThunkState value constructed by ThunkStateGuard::deref.
-    /// Valid only while a ThunkStateGuard is live (GUARD_ACTIVE == true).
-    static GUARD_STATE: RefCell<ThunkState> = RefCell::new(ThunkState::Placeholder);
-    /// True while a ThunkStateGuard is live. Guards the aliasing invariant:
-    /// at most one ThunkStateGuard may exist per thread at any time.
-    static GUARD_ACTIVE: RefCell<bool> = RefCell::new(false);
-}
-
-/// Compatibility guard that provides a ThunkState view over ThunkInner.
-/// This allows existing code to continue using pattern matching on ThunkState.
-///
-/// # Safety Hazard
-///
-/// **ALIASING HAZARD**: This type uses `unsafe` to return references to thread-local storage.
-/// If two `ThunkStateGuard` instances exist simultaneously on the same thread (or any code
-/// between guard creation and use calls `.state()` again), the first guard's reference becomes
-/// dangling — it aliases overwritten memory.
-///
-/// Example of unsound code:
-/// ```ignore
-/// let guard1 = thunk1.state();
-/// let guard2 = thunk2.state(); // Overwrites GUARD_STATE
-/// match &*guard1 { // UB: guard1 now aliases guard2's data
-///     ThunkState::Materialized(_) => { ... }
-/// }
-/// ```
-///
-/// **Mitigation**: A debug assertion catches double-guard creation on the same thread.
-/// This is not a complete fix — the full fix is to migrate all remaining `.state()` call
-/// sites to use `take_*` methods, `try_get_materialized()`, `get_cached_error()`, or
-/// `is_in_progress()` instead of returning references.
-///
-/// Tracked in TODO.md as "MAJOR: ThunkStateGuard unsafe aliasing hazard".
-#[derive(Debug)]
-pub struct ThunkStateGuard<'a> {
-    thunk: &'a Thunk,
-}
-
-impl<'a> std::ops::Deref for ThunkStateGuard<'a> {
-    type Target = ThunkState;
-
-    fn deref(&self) -> &Self::Target {
-        let state = self.thunk.get_thunk_state();
-        GUARD_STATE.with(|state_cell| {
-            GUARD_ACTIVE.with(|guard_cell| {
-                // Debug assertion: catch double-guard creation.
-                // A guard is "double" if GUARD_ACTIVE is already true when deref is
-                // called — either from a second ThunkStateGuard on the same thread,
-                // or from a re-entrant call (e.g., force_step → eval → materialize →
-                // force_step where the outer force_step's guard is still live).
-                debug_assert!(
-                    !*guard_cell.borrow(),
-                    "ThunkStateGuard aliasing hazard: another guard is already active on this thread. \
-                     This is undefined behavior. Migrate to take_* methods or owned ThunkState."
-                );
-
-                *guard_cell.borrow_mut() = true;
-                *state_cell.borrow_mut() = state;
-
-                // SAFETY: This is unsafe because we're returning a reference to thread-local storage.
-                //
-                // INVARIANT VIOLATION: The returned reference is only valid until:
-                // 1. The next call to `.state()` on this thread (overwrites GUARD_STATE), OR
-                // 2. The guard is dropped (clears GUARD_ACTIVE but doesn't invalidate the pointer)
-                //
-                // This violates Rust's aliasing rules. If two guards exist simultaneously,
-                // the first becomes a dangling reference to overwritten memory.
-                //
-                // The debug assertion above catches this in debug builds, but does NOT prevent
-                // the UB in release builds.
-                //
-                // This is acceptable ONLY as a temporary compatibility shim. The full fix is
-                // to migrate all call sites away from `.state()` to direct `take_*` methods
-                // or return owned `ThunkState` values.
-                unsafe { &*(state_cell.as_ptr() as *const ThunkState) }
-            })
-        })
-    }
-}
-
-impl<'a> Drop for ThunkStateGuard<'a> {
-    fn drop(&mut self) {
-        // Use the same module-level GUARD_ACTIVE that deref() set.
-        // (Previously this used a function-level thread_local!, which created a
-        // distinct static and never actually cleared the flag set by deref().)
-        GUARD_ACTIVE.with(|cell| {
-            *cell.borrow_mut() = false;
-        });
-    }
-}
-
 impl Thunk {
-    /// Internal helper to construct a ThunkState from the current ThunkInner.
-    fn get_thunk_state(&self) -> ThunkState {
-        // Check if we have a result first
-        if let Some(result) = self.inner.result.get() {
-            return match result {
-                Ok(value) => ThunkState::Materialized(value.clone()),
-                Err(err) => ThunkState::Failed(Box::new((**err).clone())),
-            };
-        }
-
-        // Check unevaluated state
-        let guard = self.inner.unevaluated.lock().unwrap();
-        match &*guard {
-            Some(unevaled) => unevaled.to_thunk_state(),
-            None => {
-                // No unevaluated state and no result = InProgress or Placeholder
-                // We can't distinguish, so assume InProgress (the more common case during evaluation)
-                ThunkState::InProgress
-            }
-        }
-    }
     /// Create a placeholder thunk for letrec pre-allocation. Must be filled via
     /// `set_state()` before use. Panics at materialization if still in Placeholder state.
     pub fn new_placeholder(span: Span) -> Self {
@@ -1553,42 +1164,10 @@ impl Thunk {
         self
     }
 
-    /// Get the current thunk state as a ThunkState enum.
-    /// This is a compatibility shim — the underlying storage uses ThunkInner.
-    pub fn state(&self) -> ThunkStateGuard<'_> {
-        ThunkStateGuard { thunk: self }
-    }
-
-    /// Set the thunk state directly. Use this when the new state doesn't depend
-    /// on the old state.
-    pub fn set_state(&self, new_state: ThunkState) {
-        match new_state {
-            ThunkState::Placeholder => {
-                // Clear both fields
-                *self.inner.unevaluated.lock().unwrap() = None;
-                // result stays empty
-            }
-            ThunkState::Materialized(value) => {
-                // Clear unevaluated, set result
-                *self.inner.unevaluated.lock().unwrap() = None;
-                let _ = self.inner.result.set(Ok(value));
-            }
-            ThunkState::Failed(err) => {
-                // Clear unevaluated, set error result
-                *self.inner.unevaluated.lock().unwrap() = None;
-                let _ = self.inner.result.set(Err(Arc::new(*err)));
-            }
-            ThunkState::InProgress => {
-                // Just clear unevaluated
-                *self.inner.unevaluated.lock().unwrap() = None;
-            }
-            other => {
-                // Convert to UnevaluatedState
-                if let Some(unevaled) = other.to_unevaluated() {
-                    *self.inner.unevaluated.lock().unwrap() = Some(unevaled);
-                }
-            }
-        }
+    /// Restore unevaluated state after a non-cacheable error.
+    /// Used only for error recovery in eval.rs and eval_materialize.rs.
+    pub(crate) fn restore_unevaluated(&self, state: UnevaluatedState) {
+        *self.inner.unevaluated.lock().unwrap() = Some(state);
     }
 
     pub fn try_get_materialized(&self) -> Option<Value> {
@@ -1604,38 +1183,10 @@ impl Thunk {
     }
 
     /// Set the thunk to materialized state with the given value.
-    /// Equivalent to `set_state(ThunkState::Materialized(value))`.
+    /// Clears the unevaluated slot and writes `Ok(value)` to the result OnceCell.
     pub fn set_materialized(&self, value: Value) {
         *self.inner.unevaluated.lock().unwrap() = None;
         let _ = self.inner.result.set(Ok(value));
-    }
-
-    /// Atomically read the current state, compute a new state, and write it back.
-    ///
-    /// The closure receives an immutable reference to the current [`ThunkState`].
-    /// The guard from `lock().unwrap()` is dropped **before** the second `lock().unwrap()` is called,
-    /// so this avoids the double-lock panic that occurs when callers hold a
-    /// `state()` lock while trying to mutate:
-    ///
-    /// ```ignore
-    /// // BAD: lock while lock is live → panic
-    /// match &*thunk.state() {
-    ///     ThunkState::Unevaluated { .. } => { /* mutate thunk here */ }
-    /// }
-    /// ```
-    ///
-    /// Use `transition` instead:
-    ///
-    /// ```ignore
-    /// thunk.transition(|s| match s {
-    ///     ThunkState::Unevaluated { .. } => ThunkState::InProgress,
-    ///     other => other.clone(),
-    /// });
-    /// ```
-    pub fn transition(&self, f: impl FnOnce(&ThunkState) -> ThunkState) {
-        let current_state = self.get_thunk_state();
-        let new_state = f(&current_state);
-        self.set_state(new_state);
     }
 
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
@@ -1885,6 +1436,69 @@ impl Thunk {
         // Clear unevaluated state and set error result
         *self.inner.unevaluated.lock().unwrap() = None;
         let _ = self.inner.result.set(Err(Arc::new(err.clone())));
+    }
+
+    // ========================================================================
+    // Non-destructive introspection methods (for builtin_ast_of, debugging)
+    // ========================================================================
+
+    /// Peek at the expression if this thunk is in Unevaluated Expr state.
+    /// Does not force or transition the thunk.
+    pub fn peek_expr(&self) -> Option<Rc<Spanned<Expr>>> {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        match &*guard {
+            Some(UnevaluatedState::Expr { expr, .. }) => Some(expr.clone()),
+            _ => None,
+        }
+    }
+
+    /// Peek at the builtin def if this thunk is in Unevaluated Builtin state.
+    /// Does not force or transition the thunk.
+    pub fn peek_builtin_def(&self) -> Option<BuiltinDef> {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        match &*guard {
+            Some(UnevaluatedState::Builtin { def, .. }) => Some(def.clone()),
+            _ => None,
+        }
+    }
+
+    /// Check if this thunk is in Guarded state.
+    /// Does not force or transition the thunk.
+    pub fn is_guarded(&self) -> bool {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        matches!(&*guard, Some(UnevaluatedState::Guarded { .. }))
+    }
+
+    /// Check if this thunk is in PendingCall state.
+    /// Does not force or transition the thunk.
+    pub fn is_pending_call(&self) -> bool {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        matches!(&*guard, Some(UnevaluatedState::Call { .. }))
+    }
+
+    /// Peek at the SurfaceNode if this thunk is in Surface state.
+    /// Does not force or transition the thunk.
+    pub fn peek_surface_node(&self) -> Option<std::sync::Arc<crate::ast::SurfaceNode>> {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        match &*guard {
+            Some(UnevaluatedState::Surface { node, .. }) => Some(std::sync::Arc::clone(node)),
+            _ => None,
+        }
+    }
+
+    /// Peek at the AstNodeField if this thunk is in AstNodeField state.
+    /// Returns (node, field_name) tuple.
+    /// Does not force or transition the thunk.
+    pub fn peek_ast_node_field(
+        &self,
+    ) -> Option<(std::sync::Arc<crate::ast::SurfaceNode>, &'static str)> {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        match &*guard {
+            Some(UnevaluatedState::AstNodeField { node, field, .. }) => {
+                Some((std::sync::Arc::clone(node), *field))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -2301,30 +1915,10 @@ mod tests {
     fn test_thunk_new_materialized() {
         let span = test_span(1, 1, 1, 5);
         let thunk = Thunk::new_materialized(Value::Int(7), span);
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(7)),
-            other => panic!("expected Materialized, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_thunk_transition() {
-        let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
-        let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
-
-        // Verify initial state
-        assert!(matches!(&*thunk.state(), ThunkState::Unevaluated { .. }));
-
-        // Transition to InProgress
-        thunk.transition(|s| match s {
-            ThunkState::Unevaluated { .. } => ThunkState::InProgress,
-            other => other.clone(),
-        });
-
-        assert!(matches!(&*thunk.state(), ThunkState::InProgress));
+        let val = thunk
+            .try_get_materialized()
+            .expect("expected Materialized state");
+        assert_eq!(val, Value::Int(7));
     }
 
     #[test]
@@ -2544,29 +2138,14 @@ mod tests {
         let thunk =
             Thunk::new_unevaluated(Rc::clone(&expr), Arc::clone(&env), Arc::clone(&ctx1), span);
 
-        // Verify the thunk captured ctx1 (before materialization)
-        {
-            let state = thunk.state();
-            match &*state {
-                ThunkState::Unevaluated {
-                    expr: _,
-                    env: _,
-                    env_id: _,
-                    ctx,
-                } => {
-                    // Use Arc::ptr_eq to verify it's the SAME Rc, not just equal content
-                    assert!(
-                        Arc::ptr_eq(ctx, &ctx1),
-                        "thunk should capture ctx1 before materialization"
-                    );
-                }
-                other => panic!("expected Unevaluated state, got {other:?}"),
-            }
-        } // state guard dropped here
+        // Verify the thunk is in Unevaluated state (peek_expr returns Some)
+        assert!(
+            thunk.peek_expr().is_some(),
+            "thunk should be in Unevaluated state before take_unevaluated"
+        );
 
         // Materialize the thunk using ctx1 (simulating normal evaluation)
-        // Note: materialize() is in eval.rs, but we can test the state transition
-        // by calling take_unevaluated and verifying it returns the captured ctx
+        // take_unevaluated atomically transitions to InProgress and returns (expr, env, ctx)
         let taken = thunk.take_unevaluated();
         assert!(
             taken.is_some(),
@@ -2575,22 +2154,17 @@ mod tests {
 
         let (_taken_expr, _taken_env, taken_ctx) = taken.unwrap();
 
-        // Verify the taken ctx is the same Rc as ctx1
+        // Verify the taken ctx is the same Arc as ctx1
         assert!(
             Arc::ptr_eq(&taken_ctx, &ctx1),
             "thunk should evaluate using the ctx it captured at creation (ctx1)"
         );
 
         // Verify that the thunk is now InProgress (after take_unevaluated)
-        {
-            let state = thunk.state();
-            match &*state {
-                ThunkState::InProgress => {
-                    // Expected: take_unevaluated sets state to InProgress
-                }
-                other => panic!("expected InProgress after take_unevaluated, got {other:?}"),
-            }
-        } // state guard dropped here
+        assert!(
+            thunk.is_in_progress(),
+            "thunk should be InProgress after take_unevaluated"
+        );
     }
 
     #[test]
@@ -2625,16 +2199,11 @@ mod tests {
             Arc::clone(&ctx1),
         );
 
-        // Verify the thunk captured ctx1
-        match &*thunk.state() {
-            ThunkState::PendingBuiltin { ctx, .. } => {
-                assert!(
-                    Arc::ptr_eq(ctx, &ctx1),
-                    "PendingBuiltin should capture ctx1"
-                );
-            }
-            other => panic!("expected PendingBuiltin state, got {other:?}"),
-        }
+        // Verify the thunk is in PendingBuiltin state (peek_builtin_def returns Some)
+        assert!(
+            thunk.peek_builtin_def().is_some(),
+            "thunk should be in PendingBuiltin state"
+        );
 
         // Take the pending builtin and verify ctx is preserved
         let taken = thunk.take_pending_builtin();
@@ -2681,13 +2250,11 @@ mod tests {
             Arc::clone(&ctx1),
         );
 
-        // Verify the thunk captured ctx1
-        match &*thunk.state() {
-            ThunkState::PendingCall { ctx, .. } => {
-                assert!(Arc::ptr_eq(ctx, &ctx1), "PendingCall should capture ctx1");
-            }
-            other => panic!("expected PendingCall state, got {other:?}"),
-        }
+        // Verify the thunk is in PendingCall state
+        assert!(
+            thunk.is_pending_call(),
+            "thunk should be in PendingCall state"
+        );
 
         // Take the pending call and verify ctx is preserved
         let taken = thunk.take_pending_call();
@@ -2771,18 +2338,16 @@ mod tests {
             vec!["field".to_string()],
             span,
         );
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Guarded {
-                expected,
-                field_path,
-                ..
-            } => {
-                assert_eq!(*expected, Type::Int);
-                assert_eq!(field_path.as_ref(), &vec!["field".to_string()]);
-            }
-            other => panic!("expected Guarded state, got {other:?}"),
-        }
+        assert!(
+            thunk.is_guarded(),
+            "expected Guarded state (is_guarded should return true)"
+        );
+        // Verify the components by taking them
+        let taken = thunk.take_guarded();
+        assert!(taken.is_some(), "should be able to take guarded state");
+        let (_inner, expected, field_path, _span, _blame, _default) = taken.unwrap();
+        assert_eq!(expected, Type::Int);
+        assert_eq!(field_path, vec!["field".to_string()]);
     }
 
     #[test]
@@ -2811,11 +2376,10 @@ mod tests {
         );
 
         // After take_guarded, thunk should be InProgress
-        let state = thunk.state();
-        match &*state {
-            ThunkState::InProgress => {}
-            other => panic!("expected InProgress after take_guarded, got {other:?}"),
-        }
+        assert!(
+            thunk.is_in_progress(),
+            "expected InProgress after take_guarded"
+        );
     }
 
     #[test]
@@ -2830,11 +2394,11 @@ mod tests {
         );
 
         // State should be unchanged (still Materialized)
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(7)),
-            other => panic!("expected Materialized state to be preserved, got {other:?}"),
-        }
+        assert_eq!(
+            thunk.try_get_materialized(),
+            Some(Value::Int(7)),
+            "expected Materialized state to be preserved"
+        );
     }
 
     #[test]
@@ -2866,26 +2430,19 @@ mod tests {
         let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec![], span);
 
         // Verify initial state is Guarded
-        {
-            let state = thunk.state();
-            assert!(
-                matches!(&*state, ThunkState::Guarded { .. }),
-                "initial state should be Guarded"
-            );
-        }
+        assert!(thunk.is_guarded(), "initial state should be Guarded");
 
         // Directly transition to Materialized to verify state is stable on re-access.
-        thunk.set_state(ThunkState::Materialized(Value::Int(100)));
+        thunk.set_materialized(Value::Int(100));
 
         // Re-access: should return cached Materialized value
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(100)),
-            other => panic!("expected Materialized after guard success, got {other:?}"),
-        }
+        assert_eq!(
+            thunk.try_get_materialized(),
+            Some(Value::Int(100)),
+            "expected Materialized after guard success"
+        );
 
         // try_get_materialized should also work
-        drop(state);
         let cached = thunk.try_get_materialized();
         assert_eq!(cached, Some(Value::Int(100)));
     }
@@ -2927,23 +2484,20 @@ mod tests {
         );
 
         // Verify initial state is PendingBuiltin
-        {
-            let state = thunk.state();
-            assert!(
-                matches!(&*state, ThunkState::PendingBuiltin { .. }),
-                "initial state should be PendingBuiltin"
-            );
-        }
+        assert!(
+            thunk.peek_builtin_def().is_some(),
+            "initial state should be PendingBuiltin"
+        );
 
         // Transition to Materialized
-        thunk.set_state(ThunkState::Materialized(Value::Int(42)));
+        thunk.set_materialized(Value::Int(42));
 
         // Verify final state is Materialized
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Materialized(v) => assert_eq!(*v, Value::Int(42)),
-            other => panic!("expected Materialized after builtin execution, got {other:?}"),
-        }
+        assert_eq!(
+            thunk.try_get_materialized(),
+            Some(Value::Int(42)),
+            "expected Materialized after builtin execution"
+        );
     }
 
     #[test]
@@ -2982,15 +2536,16 @@ mod tests {
         );
 
         // Transition to Failed
-        let err = Box::new(EvalError::internal("test error".into(), span));
-        thunk.set_state(ThunkState::Failed(err));
+        let err = EvalError::internal("test error".into(), span);
+        thunk.cache_failure(&err);
 
         // Verify final state is Failed
-        let state = thunk.state();
-        match &*state {
-            ThunkState::Failed(e) => assert!(e.kind.to_string().contains("test error")),
-            other => panic!("expected Failed state, got {other:?}"),
-        }
+        let cached = thunk.get_cached_error();
+        assert!(cached.is_some(), "expected Failed state");
+        assert!(
+            cached.unwrap().kind.to_string().contains("test error"),
+            "cached error should contain 'test error'"
+        );
     }
 
     #[test]
@@ -3038,7 +2593,7 @@ mod tests {
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
         let err = crate::error::EvalError::internal("sentinel error".into(), span);
-        thunk.set_state(ThunkState::Failed(Box::new(err.clone())));
+        thunk.cache_failure(&err);
 
         let result = thunk.get_cached_error();
         assert!(
@@ -3136,7 +2691,7 @@ mod tests {
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
         let err = crate::error::EvalError::internal("test".into(), span);
-        thunk.set_state(ThunkState::Failed(Box::new(err)));
+        thunk.cache_failure(&err);
         assert!(
             !thunk.is_in_progress(),
             "is_in_progress() must return false for Failed thunk"
@@ -3154,37 +2709,29 @@ mod tests {
         );
     }
 
-    // --- Drop bug regression test ---
+    // --- Thunk sequential access test ---
 
     #[test]
-    fn test_thunk_state_guard_drop_clears_guard_active() {
-        // Regression: the Drop bug occurred because Drop used a function-level
-        // thread_local! (a distinct static from the one Deref set), so GUARD_ACTIVE
-        // was never cleared after drop. The fix moves both statics to module level.
-        //
-        // This test verifies: create a guard, deref it (sets GUARD_ACTIVE=true), drop it
-        // explicitly, then create a second guard and deref it. Under the old bug the
-        // second deref would hit the debug_assert (GUARD_ACTIVE still true) and panic.
+    fn test_thunk_sequential_materialized_access() {
+        // Verify that two separate materialized thunks can be accessed sequentially
+        // without interference. In the new Mutex-based ThunkInner design, each thunk
+        // holds its own Mutex so there is no shared-lock contention between distinct thunks.
         let span = test_span(1, 1, 1, 5);
         let thunk1 = Thunk::new_materialized(Value::Int(1), span);
         let thunk2 = Thunk::new_materialized(Value::Int(2), span);
 
-        // First guard: create, deref, drop.
-        {
-            let guard = thunk1.state();
-            // Deref accesses state and sets GUARD_ACTIVE = true.
-            let _ = &*guard;
-            // guard drops here, clearing GUARD_ACTIVE.
-        }
+        // First access: verify thunk1 is materialized.
+        assert_eq!(
+            thunk1.try_get_materialized(),
+            Some(Value::Int(1)),
+            "expected Materialized(Int(1))"
+        );
 
-        // Second guard: must succeed without panic (GUARD_ACTIVE should be false).
-        {
-            let guard = thunk2.state();
-            let val = match &*guard {
-                ThunkState::Materialized(v) => v.clone(),
-                other => panic!("expected Materialized, got {other:?}"),
-            };
-            assert_eq!(val, Value::Int(2));
-        }
+        // Second access: verify thunk2 is still accessible (no cross-thunk locking issues).
+        assert_eq!(
+            thunk2.try_get_materialized(),
+            Some(Value::Int(2)),
+            "expected Materialized(Int(2))"
+        );
     }
 }

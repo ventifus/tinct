@@ -44,7 +44,7 @@ pub(crate) fn builtin_bytes(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let mut result = Vec::new();
 
     for arg_thunk in args {
-        let val = eval::materialize(arg_thunk, Some(&call_span), &ctx)?;
+        let val = eval::materialize_sync(arg_thunk, Some(&call_span), &ctx)?;
         match val.as_bytes() {
             Some(bytes) => {
                 result.extend_from_slice(bytes);
@@ -184,7 +184,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
             loop {
                 let head_thunk = ctx.get_thunk(current_head);
-                let head_val = eval::materialize(&head_thunk, Some(&call_span), &ctx)?;
+                let head_val = eval::materialize_sync(&head_thunk, Some(&call_span), &ctx)?;
 
                 match head_val {
                     Value::Int(n) if (0..=255).contains(&n) => {
@@ -209,7 +209,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                 }
 
                 let tail_thunk = ctx.get_thunk(current_tail);
-                let tail_val = eval::materialize(&tail_thunk, Some(&call_span), &ctx)?;
+                let tail_val = eval::materialize_sync(&tail_thunk, Some(&call_span), &ctx)?;
 
                 match tail_val {
                     Value::Dict(map) if map.is_empty() => {
@@ -236,7 +236,7 @@ pub(crate) fn builtin_bytes_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             // Iterate dict values in insertion order
             for (_key, thunk_id) in map {
                 let item_thunk = ctx.get_thunk(*thunk_id);
-                let item_val = eval::materialize(&item_thunk, Some(&call_span), &ctx)?;
+                let item_val = eval::materialize_sync(&item_thunk, Some(&call_span), &ctx)?;
 
                 match item_val {
                     Value::Int(n) if (0..=255).contains(&n) => {

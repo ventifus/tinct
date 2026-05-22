@@ -298,7 +298,7 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> 
     // Get kind field
     let kind_id = dict.get(&Key::String("kind".into()))?;
     let kind_thunk = ctx.get_thunk(*kind_id);
-    let kind_val = crate::eval::materialize(&kind_thunk, None, ctx).ok()?;
+    let kind_val = crate::eval::materialize_sync(&kind_thunk, None, ctx).ok()?;
     let kind = match kind_val.as_str() {
         Some(s) => s.to_string(),
         None => return None,
@@ -308,7 +308,7 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> 
         "named" => {
             let name_id = dict.get(&Key::String("name".into()))?;
             let name_thunk = ctx.get_thunk(*name_id);
-            let name_val = crate::eval::materialize(&name_thunk, None, ctx).ok()?;
+            let name_val = crate::eval::materialize_sync(&name_thunk, None, ctx).ok()?;
             let name = name_val.as_str()?.to_string();
             match name.as_str() {
                 "Int" => Some(Type::Int),
@@ -324,15 +324,15 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> 
         "seq" => {
             let elem_id = dict.get(&Key::String("element".into()))?;
             let elem_thunk = ctx.get_thunk(*elem_id);
-            let elem_val = crate::eval::materialize(&elem_thunk, None, ctx).ok()?;
+            let elem_val = crate::eval::materialize_sync(&elem_thunk, None, ctx).ok()?;
             let elem_ty = dict_to_type(&elem_val, ctx)?;
             Some(Type::Seq(Box::new(elem_ty)))
         }
         "map" => {
             let k_id = dict.get(&Key::String("key".into()))?;
             let v_id = dict.get(&Key::String("value".into()))?;
-            let k_val = crate::eval::materialize(&ctx.get_thunk(*k_id), None, ctx).ok()?;
-            let v_val = crate::eval::materialize(&ctx.get_thunk(*v_id), None, ctx).ok()?;
+            let k_val = crate::eval::materialize_sync(&ctx.get_thunk(*k_id), None, ctx).ok()?;
+            let v_val = crate::eval::materialize_sync(&ctx.get_thunk(*v_id), None, ctx).ok()?;
             let k_ty = dict_to_type(&k_val, ctx)?;
             let v_ty = dict_to_type(&v_val, ctx)?;
             Some(Type::Map(Box::new(k_ty), Box::new(v_ty)))
@@ -369,7 +369,7 @@ pub(crate) fn evaluate_resolver(
     let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(env), false);
 
     // Materialize the function value
-    let fn_val = crate::eval::materialize(&fn_thunk, None, &ctx).ok()?;
+    let fn_val = crate::eval::materialize_sync(&fn_thunk, None, &ctx).ok()?;
 
     // Convert each Type arg to a type-dict Value
     let arg_thunks: Vec<Arc<Thunk>> = args
@@ -402,14 +402,14 @@ pub(crate) fn evaluate_resolver(
                 origin: None,
                 ctx: &ctx,
             };
-            crate::eval_call::invoke_function(&call_ctx).ok()?
+            crate::async_rt::block_on_anywhere(crate::eval_call::invoke_function(&call_ctx)).ok()?
         }
         // Builtin resolvers are not expected — all resolvers are LLT-defined functions.
         _ => return None,
     };
 
     // Force evaluation (materialize the lazy result)
-    let result_val = crate::eval::materialize(&result_thunk, None, &ctx).ok()?;
+    let result_val = crate::eval::materialize_sync(&result_thunk, None, &ctx).ok()?;
 
     // Convert result dict back to Type
     dict_to_type(&result_val, &ctx)

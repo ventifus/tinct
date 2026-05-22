@@ -101,7 +101,10 @@ pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position
 pub use parser::{format_parse_error, parse, parse_expression, ParseError, ParseOutput};
 
 /// Evaluation functions.
-pub use eval::{eval_file, eval_file_with_input, materialize, EvalConfig, EvalContext, EvalState};
+pub use eval::{
+    eval_file, eval_file_with_input, materialize, materialize_sync, EvalConfig, EvalContext,
+    EvalState,
+};
 pub use eval_deep::deep_materialize;
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
@@ -293,8 +296,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             }
         }
     }
-    let thunk = eval::eval_file(&file.node, Arc::clone(&env), &ctx).map_err(&attach_provenance)?;
-    let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
+    let thunk =
+        crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, Arc::clone(&env), &ctx))
+            .map_err(&attach_provenance)?;
+    let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
+        .map_err(&attach_provenance)?;
     let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
     value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
 }
@@ -414,8 +420,11 @@ pub fn eval_source_with_cap_net(
         env.write().unwrap().insert(format!("%{}", name), cap_thunk);
     }
 
-    let thunk = eval::eval_file(&file.node, Arc::clone(&env), &ctx).map_err(&attach_provenance)?;
-    let val = eval::materialize(&thunk, None, &ctx).map_err(&attach_provenance)?;
+    let thunk =
+        crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, Arc::clone(&env), &ctx))
+            .map_err(&attach_provenance)?;
+    let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
+        .map_err(&attach_provenance)?;
     let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
     value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
 }
@@ -623,7 +632,7 @@ pub fn visit_value<V: ValueVisitor>(
             let mut entries = Vec::with_capacity(map.len());
             for (key, thunk_id) in map {
                 let thunk = ctx.get_thunk(*thunk_id);
-                let v = eval::materialize(&thunk, None, ctx)?;
+                let v = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
                 entries.push((key.clone(), visit_value(&v, ctx, depth + 1, visitor)?));
             }
             Ok(visitor.visit_dict(entries))
@@ -636,7 +645,8 @@ pub fn visit_value<V: ValueVisitor>(
         }
         value::Value::Seq { head, .. } => {
             let head_thunk = ctx.get_thunk(*head);
-            let head_val = eval::materialize(&head_thunk, None, ctx)?;
+            let head_val =
+                crate::async_rt::block_on_anywhere(eval::materialize(&head_thunk, None, ctx))?;
             let head_out = visit_value(&head_val, ctx, depth + 1, visitor)?;
             visitor.visit_seq_head(head_out)
         }
@@ -668,7 +678,8 @@ pub fn visit_value<V: ValueVisitor>(
             let payload_output = match payload {
                 Some(thunk_id) => {
                     let thunk = ctx.get_thunk(*thunk_id);
-                    let v = eval::materialize(&thunk, None, ctx)?;
+                    let v =
+                        crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
                     visit_value(&v, ctx, depth + 1, visitor)?
                 }
                 None => visitor.visit_null(),
@@ -1089,17 +1100,18 @@ pub fn format_with_json_llt(
     // from the result_thunk are resolvable when the json functions access dict entries.
     // The initial `%` = result_thunk; json.llt's `[emit [json %]]` is a lazy dict
     // entry (auto-index 0) that is never forced here.
-    let module_thunk = eval::eval_file_with_input(
+    let module_thunk = crate::async_rt::block_on_anywhere(eval::eval_file_with_input(
         &ast_file.node,
         Arc::clone(&env),
         eval_ctx,
         Some(Arc::clone(&result_thunk)),
-    )
+    ))
     .map_err(|e| format!("json.llt: eval error: {e}"))?;
 
     // Materialize the json module dict (forces the outer dict, not its entries).
-    let module_val = eval::materialize(&module_thunk, None, eval_ctx)
-        .map_err(|e| format!("json.llt: materialize module error: {e}"))?;
+    let module_val =
+        crate::async_rt::block_on_anywhere(eval::materialize(&module_thunk, None, eval_ctx))
+            .map_err(|e| format!("json.llt: materialize module error: {e}"))?;
 
     // Look up the `json` key from the module dict.
     let json_key = Key::String("json".into());
@@ -1119,8 +1131,9 @@ pub fn format_with_json_llt(
     };
 
     // Materialize the `json` function thunk.
-    let json_fn_val = eval::materialize(&json_fn_thunk, None, eval_ctx)
-        .map_err(|e| format!("json.llt: materialize json function error: {e}"))?;
+    let json_fn_val =
+        crate::async_rt::block_on_anywhere(eval::materialize(&json_fn_thunk, None, eval_ctx))
+            .map_err(|e| format!("json.llt: materialize json function error: {e}"))?;
 
     // Call `json(result_thunk)` via invoke_function.
     let call_span = ast::Span::origin();
@@ -1145,7 +1158,8 @@ pub fn format_with_json_llt(
                 origin: None,
                 ctx: eval_ctx,
             };
-            invoke_function(&call_ctx).map_err(|e| format!("json.llt: call error: {e}"))?
+            crate::async_rt::block_on_anywhere(invoke_function(&call_ctx))
+                .map_err(|e| format!("json.llt: call error: {e}"))?
         }
         other => {
             return Err(format!(
@@ -1156,8 +1170,9 @@ pub fn format_with_json_llt(
     };
 
     // Materialize the result — should be a String.
-    let result_val = eval::materialize(&result_call_thunk, None, eval_ctx)
-        .map_err(|e| format!("json.llt: serialize error: {e}"))?;
+    let result_val =
+        crate::async_rt::block_on_anywhere(eval::materialize(&result_call_thunk, None, eval_ctx))
+            .map_err(|e| format!("json.llt: serialize error: {e}"))?;
 
     match result_val {
         value::Value::String {
@@ -1537,9 +1552,15 @@ mod tests {
                 .expect("json_to_value failed")
         });
 
-        let thunk =
-            eval::eval_file_with_input(&file.node, env, &ctx, initial_input).expect("eval failed");
-        let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
+        let thunk = crate::async_rt::block_on_anywhere(eval::eval_file_with_input(
+            &file.node,
+            env,
+            &ctx,
+            initial_input,
+        ))
+        .expect("eval failed");
+        let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
+            .expect("materialize failed");
         value_to_json(&val, &ctx).expect("value_to_json failed")
     }
 
@@ -1610,8 +1631,10 @@ mod tests {
         let file = ast_convert::surface_program_to_file(&program);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = eval::eval_file(&file.node, env, &ctx).expect("eval failed");
-        let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
+        let thunk = crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, env, &ctx))
+            .expect("eval failed");
+        let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
+            .expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
         let json = value_to_json(&forced, &ctx).expect("value_to_json failed");
         assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
@@ -1626,8 +1649,10 @@ mod tests {
         let file = ast_convert::surface_program_to_file(&program);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = eval::eval_file(&file.node, env, &ctx).expect("eval failed");
-        let val = eval::materialize(&thunk, None, &ctx).expect("materialize failed");
+        let thunk = crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, env, &ctx))
+            .expect("eval failed");
+        let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
+            .expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
         let display = value_to_display_string(&forced, &ctx).expect("display failed");
         assert_eq!(display, "Dict({\"x\": Int(42)})");
@@ -1806,7 +1831,8 @@ mod tests {
         let ctx = test_ctx();
 
         // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result = eval::eval_file(&file.node, Arc::clone(&env), &ctx);
+        let eval_result =
+            crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, Arc::clone(&env), &ctx));
         assert!(
             eval_result.is_err(),
             "expected eval to fail for undefined variable"

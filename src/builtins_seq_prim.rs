@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 
 use crate::builtins::{expect_one_arg, ok_val, reject_named, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
+use crate::eval::materialize_sync as materialize;
 use crate::value::{BuiltinArgs, Key, Thunk, Value};
 
 /// `seq`: Low-level cons constructor for lazy linked-list sequences.

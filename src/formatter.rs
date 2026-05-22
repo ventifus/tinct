@@ -132,16 +132,16 @@ pub fn format_source_tinct_with_dir(
     .map_err(|e| format!("{e}"))?;
 
     // Evaluate formatter with AST as % (pipeline input).
-    let formatter_thunk = eval::eval_file_with_input(
+    let formatter_thunk = crate::async_rt::block_on_anywhere(eval::eval_file_with_input(
         &formatter_file.node,
         Arc::clone(&env),
         &ctx,
         Some(ast_thunk),
-    )
+    ))
     .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — should be [Ok String] or [Err msg].
-    let result_val = eval::materialize(&formatter_thunk, None, &ctx)
+    let result_val = eval::materialize_sync(&formatter_thunk, None, &ctx)
         .map_err(|e| format!("formatter materialize error: {e}"))?;
 
     // Unwrap [Ok s] / surface [Error msg].
@@ -152,7 +152,7 @@ pub fn format_source_tinct_with_dir(
         Value::Variant { tag, payload } if tag == "Ok" => {
             let payload_id = payload.ok_or_else(|| "formatter Ok has no payload".to_string())?;
             let payload_thunk = ctx.get_thunk(payload_id);
-            let ok_val = eval::materialize(&payload_thunk, None, &ctx)
+            let ok_val = eval::materialize_sync(&payload_thunk, None, &ctx)
                 .map_err(|e| format!("formatter Ok materialize error: {e}"))?;
             match ok_val {
                 Value::String {
@@ -170,7 +170,7 @@ pub fn format_source_tinct_with_dir(
         Value::Variant { tag, payload } if tag == "Error" => {
             let msg = if let Some(err_id) = payload {
                 let err_thunk = ctx.get_thunk(err_id);
-                let err_val = eval::materialize(&err_thunk, None, &ctx)
+                let err_val = eval::materialize_sync(&err_thunk, None, &ctx)
                     .map_err(|e| format!("formatter Error materialize error: {e}"))?;
                 crate::value_to_display_string(&err_val, &ctx)
                     .unwrap_or_else(|_| "<error displaying value>".to_string())

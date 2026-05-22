@@ -48,7 +48,7 @@ pub(crate) fn func_label(expr: &Expr) -> Option<Arc<str>> {
 /// Neither the function nor any argument is materialized here. The PendingCallDispatch
 /// continuation forces `func_thunk` when the result is needed, then dispatches to
 /// `invoke_function` (user functions) or the builtin handler.
-pub(crate) fn eval_call(
+pub(crate) async fn eval_call(
     func_expr: &Spanned<Expr>,
     args: &[Rc<Spanned<Expr>>],
     named_args: &[Spanned<NamedArg>],
@@ -57,7 +57,7 @@ pub(crate) fn eval_call(
     call_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
     // Evaluate the function as a thunk (lazy — no materialization).
-    let func_thunk = eval(Rc::new(func_expr.clone()), Arc::clone(env), ctx)?;
+    let func_thunk = eval(Rc::new(func_expr.clone()), Arc::clone(env), ctx).await?;
 
     // Wrap arguments as unevaluated thunks (lazy). This ensures expressions
     // like $xs[$i] in unselected $if branches are never evaluated.
@@ -132,7 +132,7 @@ pub struct CallContext<'a> {
 ///
 /// Special case: variant constructors (marked by VARIANT_TAG_MARKER in closure env)
 /// wrap their single argument in a Value::Variant instead of normal function invocation.
-pub fn invoke_function(ctx: &CallContext) -> EvalResult<Arc<Thunk>> {
+pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
     // Marker for variant constructor functions (defined in eval.rs)
     const VARIANT_TAG_MARKER: &str = "__variant_tag__";
 
@@ -152,7 +152,7 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Arc<Thunk>> {
         }
 
         // Extract the tag from the marker
-        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span), ctx.ctx)?;
+        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span), ctx.ctx).await?;
         let tag = match tag_value {
             Value::String {
                 ref source,
@@ -189,7 +189,8 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Arc<Thunk>> {
         ctx.closure_env,
         ctx.ctx,
         &ctx.call_span,
-    )?;
+    )
+    .await?;
     let mut thunk = Thunk::new_unevaluated(
         Rc::clone(ctx.body),
         call_env,
@@ -202,11 +203,21 @@ pub fn invoke_function(ctx: &CallContext) -> EvalResult<Arc<Thunk>> {
     Ok(Arc::new(thunk))
 }
 
+/// Synchronous compatibility wrapper around the async `invoke_function()`.
+///
+/// Used by synchronous call sites (sort comparators, builtins, etc.) that cannot
+/// `.await`. Uses `async_rt::block_on_anywhere()` which is safe to call both outside
+/// any tokio runtime and from within one (e.g. from a builtin executing inside an
+/// outer `materialize` future).
+pub fn invoke_function_sync(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
+    crate::async_rt::block_on_anywhere(invoke_function(ctx))
+}
+
 /// Bind pre-evaluated thunks to function parameters. Returns the new call environment.
 ///
 /// Handles positional args, named args (params with `default:` annotation),
 /// and variadic params (`...name`).
-pub(crate) fn bind_args_thunks(
+pub(crate) async fn bind_args_thunks(
     params: &[Param],
     positional: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
@@ -262,7 +273,7 @@ pub(crate) fn bind_args_thunks(
             Arc::clone(named_thunk)
         } else if let Some(default_val) = get_default(param) {
             // Case (iii): use default value
-            eval(Rc::new(default_val), Arc::clone(default_env), ctx)?
+            eval(Rc::new(default_val), Arc::clone(default_env), ctx).await?
         } else {
             // Unreachable: BIND-ARITY guarantees every required param is covered
             unreachable!(

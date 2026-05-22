@@ -8,7 +8,7 @@
 
 use crate::ast::Span;
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
+use crate::eval::materialize_sync as materialize;
 use crate::value::{string_val, BuiltinArgs, ClockCapInner, Key, Thunk, Value};
 use indexmap::IndexMap;
 use std::rc::Rc;

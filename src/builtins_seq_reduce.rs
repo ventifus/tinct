@@ -22,7 +22,7 @@ use crate::builtins::{
     MAX_COLLECT_SIZE, MAX_STRING_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
+use crate::eval::materialize_sync as materialize;
 use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
 /// `reduce`: Fold a function over a Dict or Seq.

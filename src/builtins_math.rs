@@ -19,8 +19,8 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::{materialize, EvalContext};
-use crate::eval_call::{invoke_function, CallContext};
+use crate::eval::{materialize_sync as materialize, EvalContext};
+use crate::eval_call::{invoke_function_sync as invoke_function, CallContext};
 use crate::value::Key;
 use crate::value::{BuiltinArgs, Thunk, Value};
 

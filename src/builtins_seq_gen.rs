@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 
 use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::eval::materialize;
+use crate::eval::materialize_sync as materialize;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
 /// `range`: Sequence of integers from start to end (exclusive), or infinite.
