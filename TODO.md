@@ -56,6 +56,13 @@ runtime-v2 PR #1 merge and need dedicated sprints to fix:
   `stdlib/cli/out/llt.llt` to use an alternative value representation approach.
   Sprint: runtime-v2-fix-llt-repr.
 
+- **Debug binary RLIMIT_AS self-OOM in CLI tests** (`tests/cli_tests.rs`, ~36 tests):
+  `main()` applies `RLIMIT_AS=512MB` to itself, but the debug binary exceeds that limit.
+  All CLI tests OOM with `memory allocation of 232 bytes failed` on trivial inputs like `42`.
+  Release binary is unaffected. Fix: add `#[cfg(not(debug_assertions))]` guard around the
+  `RLIMIT_AS` call in main.rs, or increase the debug limit, or disable during test builds.
+  Sprint: runtime-v2-fix-debug-rlimit.
+
 ---
 
 ⚠️ **Sprint ordering:** Health Review sprints come first — they fix real bugs and are independent of the runtime-v2 migration. The Parts B+E migration (massive compiler rewrite) follows.
@@ -181,33 +188,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Update `BuiltinFn` to use `Arc<Thunk>` — **DONE**
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
-
-### sprint-2b-async-eval-entry: Make eval + materialize async fn; wrap builtins; wire entry points
-
-**Depends on:** sprint-2b-builtins-cps
-
-**Why the order:** After `sprint-2b-builtins-cps`, no builtin calls `materialize()` directly — all materialization goes through `BuiltinForceArg` (H1) or `Cont::*` variants (H2/H3). Making `materialize()` async therefore does NOT break any builtin. `BuiltinFn` can then be changed to async and all builtin bodies wrapped in `Box::pin(async move { ... })` — trivially, since no body contains `.await`. Build gate passes at the end of this sprint.
-
-Also completes the one remaining blocked item from `sprint-2b-shim-removal` (panel: APPROVE 2026-05-21): deleting `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum was blocked on `builtins_meta.rs` using `.state()` — resolved in this sprint.
-
-#### eval-async: Make eval/materialize async + wrap builtins
-
-- [ ] **Delete `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum** from `src/value.rs` — restore paths move to `set_materialized()`; `builtins_meta.rs` ast-of migrated to `ThunkInner` API (`src/value.rs`, `src/builtins_meta.rs`)
-- [ ] Change `materialize()`, `eval()`, `force_step()`, `apply_cont()`, `run()` → `async fn`; add `.await` at all internal `materialize()` call sites (`src/eval.rs`, `src/eval_materialize.rs`)
-- [ ] Change helper functions in `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` → `async fn` and add `.await` at all `materialize()` call sites (`src/eval_dict.rs`, `src/eval_call.rs`, `src/eval_access.rs`)
-- [ ] Change `BuiltinFn` type alias from `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>` to `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send + 'static>>` in `src/value.rs` (`src/value.rs`)
-- [ ] Add helper macro `builtin_fn!(|args| async move { ... })` to reduce boilerplate (`src/builtins.rs`)
-- [ ] Wrap all builtin bodies in `Box::pin(async move { ... })` across all `src/builtins*.rs` — trivial since no body contains `.await` after CPS (`src/builtins*.rs`)
-- [ ] `just build` passes; `just test` passes
-
-#### entry-async: Wire async runtime at program entry points; preserve LSP synchrony
-
-- [ ] Add `#[tokio::main]` to `src/main.rs` `main()` function; replace `async_rt::block_on()` calls with direct `.await` (`src/main.rs`)
-- [ ] Update `src/lib.rs` eval_source/typecheck_source to be `async fn` or wrap in `tokio::runtime::Runtime::block_on()` for test compatibility (`src/lib.rs`)
-- [ ] Update `src/repl.rs` to use async eval in a `tokio::spawn` loop (`src/repl.rs`)
-- [ ] Update `src/lsp/` to keep `block_on` at the outermost LSP message dispatch boundary only — analysis functions become `async fn`, LSP event loop stays sync (`src/lsp/`)
-- [ ] Change all `#[test]` in test modules that call eval to `#[tokio::test(flavor = "current_thread")]` (`src/lib.rs`, `src/builtins.rs`, etc.)
-- [ ] `just build` + `just test` passes — this is the first fully async checkpoint
 
 ### sprint-2b-async-primitives: Implement task/channel/context/event primitives + stdlib/async.llt
 
@@ -364,6 +344,8 @@ Also fix: `builtins_datetime.rs` uses `materialize(&args.args[N])` (field-access
 ---
 
 ## Known Nits (from eval-hardening-perf panel)
+
+- [ ] `src/eval.rs` — `is_truthy` helper (falsy: `false` and empty dict `[]`) was written for `is:` guard evaluation but that feature is not yet implemented. Deleted the dead function. When `is:` guard syntax is added, re-implement truthy check at that time. (`src/eval.rs`, `src/match_pattern`, future guard eval)
 
 - [x] `doc/08-evaluation.md:358` — **FIXED (commit e169762)**
 - [x] `tests/corpus/eval/typecheck/constructor_payload_type_precision.llt-eval` — **FIXED (commit e169762)**: replaced with `[@Int p.n]`

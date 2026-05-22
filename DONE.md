@@ -8924,3 +8924,30 @@ Apply the three CPS heuristics to all 322 `materialize(&args[N])` call sites acr
 - [x] Add `just lint-builtins-cps` CI target — grep fails if `materialize(&args[` appears in any `builtins*.rs` body (`Justfile`)
 - [x] For each H1 builtin: sentinel unit test — pass `Thunk::new_pending_call($error "spurious force")` as each arg position beyond `force_count-1`; verify builtin never forces it (`src/builtins*.rs`)
 - [x] `just build` passes; `just test` passes; corpus tests for any H3 fixes (≥5000 elements)
+
+### sprint-2b-async-eval-entry: Make eval + materialize async fn; wrap builtins; wire entry points
+
+**Depends on:** sprint-2b-builtins-cps
+
+**Why the order:** After `sprint-2b-builtins-cps`, no builtin calls `materialize()` directly — all materialization goes through `BuiltinForceArg` (H1) or `Cont::*` variants (H2/H3). Making `materialize()` async therefore does NOT break any builtin. `BuiltinFn` can then be changed to async and all builtin bodies wrapped in `Box::pin(async move { ... })` — trivially, since no body contains `.await`. Build gate passes at the end of this sprint.
+
+Also completes the one remaining blocked item from `sprint-2b-shim-removal` (panel: APPROVE 2026-05-21): deleting `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum was blocked on `builtins_meta.rs` using `.state()` — resolved in this sprint.
+
+#### eval-async: Make eval/materialize async + wrap builtins
+
+- [x] **Delete `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum** from `src/value.rs` — restore paths move to `set_materialized()`; `builtins_meta.rs` ast-of migrated to `ThunkInner` API (`src/value.rs`, `src/builtins_meta.rs`)
+- [x] Change `materialize()`, `eval()`, `force_step()`, `apply_cont()`, `run()` → `async fn`; add `.await` at all internal `materialize()` call sites (`src/eval.rs`, `src/eval_materialize.rs`)
+- [x] Change helper functions in `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` → `async fn` and add `.await` at all `materialize()` call sites (`src/eval_dict.rs`, `src/eval_call.rs`, `src/eval_access.rs`)
+- [x] Change `BuiltinFn` type alias from `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>` to `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send + 'static>>` in `src/value.rs` (`src/value.rs`)
+- [x] Add helper macro `builtin_fn!(|args| async move { ... })` to reduce boilerplate (`src/builtins.rs`)
+- [x] Wrap all builtin bodies in `Box::pin(async move { ... })` across all `src/builtins*.rs` — trivial since no body contains `.await` after CPS (`src/builtins*.rs`)
+- [x] `just build` passes; `just test` passes
+
+#### entry-async: Wire async runtime at program entry points; preserve LSP synchrony
+
+- [x] Add `#[tokio::main]` to `src/main.rs` `main()` function; replace `async_rt::block_on()` calls with direct `.await` (`src/main.rs`)
+- [x] Update `src/lib.rs` eval_source/typecheck_source to be `async fn` or wrap in `tokio::runtime::Runtime::block_on()` for test compatibility (`src/lib.rs`)
+- [x] Update `src/repl.rs` to use async eval in a `tokio::spawn` loop (`src/repl.rs`)
+- [x] Update `src/lsp/` to keep `block_on` at the outermost LSP message dispatch boundary only — analysis functions become `async fn`, LSP event loop stays sync (`src/lsp/`)
+- [x] Change all `#[test]` in test modules that call eval to `#[tokio::test(flavor = "current_thread")]` (`src/lib.rs`, `src/builtins.rs`, etc.)
+- [x] `just build` + `just test` passes — this is the first fully async checkpoint
