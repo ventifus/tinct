@@ -36,7 +36,9 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::BufReader;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -101,56 +103,64 @@ fn check_perm(
 
 /// `emit`: Write a string to stdout.
 /// Takes a String argument, writes it to stdout, returns null (empty dict).
-pub(crate) fn builtin_emit(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_emit(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("emit", args, named, &ctx, call_span)?;
-    let s = require_string("emit", val, args[0].span)?;
+    Box::pin(async move {
+        let val = crate::builtins::expect_one_arg("emit", &args, named.as_ref(), &ctx, call_span)?;
+        let s = require_string("emit", val, args[0].span)?;
 
-    // Write to stdout
-    use std::io::Write;
-    std::io::stdout()
-        .write_all(s.as_bytes())
-        .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span))?;
+        // Write to stdout
+        use std::io::Write;
+        std::io::stdout()
+            .write_all(s.as_bytes())
+            .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span))?;
 
-    // Return null (empty dict)
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        // Return null (empty dict)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `env`: Read an environment variable by name.
 /// Returns the value as a String, or Null if not set or not allowed.
 /// Gated by ctx.env_allowed: None = all denied, Some(set) = only those allowed.
-pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_env(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("env", args, named, &ctx, call_span)?;
-    let name = require_string("env", val, args[0].span)?;
+    Box::pin(async move {
+        let val = crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span)?;
+        let name = require_string("env", val, args[0].span)?;
 
-    // Check env_allowed
-    // None = unrestricted (all allowed), Some(set) = only those in the set
-    let allowed = match &ctx.env_allowed {
-        None => true, // None means unrestricted access
-        Some(set) => set.contains(&name),
-    };
+        // Check env_allowed
+        // None = unrestricted (all allowed), Some(set) = only those in the set
+        let allowed = match &ctx.env_allowed {
+            None => true, // None means unrestricted access
+            Some(set) => set.contains(&name),
+        };
 
-    if !allowed {
-        // Return Null if not allowed
-        return ok_val(Value::Dict(IndexMap::new()), call_span);
-    }
+        if !allowed {
+            // Return Null if not allowed
+            return ok_val(Value::Dict(IndexMap::new()), call_span);
+        }
 
-    // Read env var
-    match std::env::var(name) {
-        Ok(value) => ok_val(string_val(&value), call_span),
-        Err(_) => ok_val(Value::Dict(IndexMap::new()), call_span), // Not set -> Null
-    }
+        // Read env var
+        match std::env::var(name) {
+            Ok(value) => ok_val(string_val(&value), call_span),
+            Err(_) => ok_val(Value::Dict(IndexMap::new()), call_span), // Not set -> Null
+        }
+    })
 }
 
 /// `open`: Open a file within a DirCap.
@@ -170,108 +180,111 @@ pub(crate) fn builtin_env(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///
 /// At least one flag is required in the new pattern. If neither Readable nor Writable is
 /// specified, an error is returned.
-pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_open(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
+    Box::pin(async move {
+        // Require at least 3 args: DirCap, String path, and at least one flag/mode
+        if args.len() < 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("open", named.as_ref(), call_span)?;
 
-    // Require at least 3 args: DirCap, String path, and at least one flag/mode
-    if args.len() < 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-    }
-    reject_named("open", named, call_span)?;
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
 
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[0]=Seq");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[1]=Seq");
+        // Extract DirCap and permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "open", args[0].span)?;
 
-    // Extract DirCap and permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "open", args[0].span)?;
+        let path = require_string("open", path_val, args[1].span)?;
 
-    let path = require_string("open", path_val, args[1].span)?;
+        // Parse flags from args[2..]
+        let mut caps = HashMap::new();
+        let mut has_readable = false;
+        let mut has_writable = false;
+        let mut has_appendable = false;
+        let mut has_binary = false;
+        let mut has_text = false;
+        let mut has_seekable = false;
 
-    // Parse flags from args[2..]
-    let mut caps = HashMap::new();
-    let mut has_readable = false;
-    let mut has_writable = false;
-    let mut has_appendable = false;
-    let mut has_binary = false;
-    let mut has_text = false;
-    let mut has_seekable = false;
+        for flag_arg in &args[2..] {
+            let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
 
-    for flag_arg in &args[2..] {
-        let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
-
-        match flag_val {
-            Value::Variant { ref tag, .. } => match tag.as_str() {
-                "Readable" => {
-                    if has_writable || has_appendable {
-                        return Err(EvalError::user_error(
-                            "open: cannot specify Readable with Writable or Appendable flags"
-                                .to_string(),
-                            call_span,
-                        )
-                        .into());
+            match flag_val {
+                Value::Variant { ref tag, .. } => match tag.as_str() {
+                    "Readable" => {
+                        if has_writable || has_appendable {
+                            return Err(EvalError::user_error(
+                                "open: cannot specify Readable with Writable or Appendable flags"
+                                    .to_string(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                        has_readable = true;
+                        caps.insert("Readable".to_string(), Value::Bool(true));
                     }
-                    has_readable = true;
-                    caps.insert("Readable".to_string(), Value::Bool(true));
-                }
-                "Writable" => {
-                    if has_readable {
-                        return Err(EvalError::user_error(
-                            "open: cannot specify both Readable and Writable flags".to_string(),
-                            call_span,
-                        )
-                        .into());
+                    "Writable" => {
+                        if has_readable {
+                            return Err(EvalError::user_error(
+                                "open: cannot specify both Readable and Writable flags".to_string(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                        has_writable = true;
+                        caps.insert("Writable".to_string(), Value::Bool(true));
                     }
-                    has_writable = true;
-                    caps.insert("Writable".to_string(), Value::Bool(true));
-                }
-                "Appendable" => {
-                    if has_readable {
-                        return Err(EvalError::user_error(
-                            "open: cannot specify both Readable and Appendable flags".to_string(),
-                            call_span,
-                        )
-                        .into());
+                    "Appendable" => {
+                        if has_readable {
+                            return Err(EvalError::user_error(
+                                "open: cannot specify both Readable and Appendable flags"
+                                    .to_string(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                        has_appendable = true;
+                        caps.insert("Appendable".to_string(), Value::Bool(true));
                     }
-                    has_appendable = true;
-                    caps.insert("Appendable".to_string(), Value::Bool(true));
-                }
-                "Binary" => {
-                    if has_text {
-                        return Err(EvalError::user_error(
-                            "open: cannot specify both Binary and Text flags".to_string(),
-                            call_span,
-                        )
-                        .into());
+                    "Binary" => {
+                        if has_text {
+                            return Err(EvalError::user_error(
+                                "open: cannot specify both Binary and Text flags".to_string(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                        has_binary = true;
+                        caps.insert("Binary".to_string(), Value::Bool(true));
                     }
-                    has_binary = true;
-                    caps.insert("Binary".to_string(), Value::Bool(true));
-                }
-                "Text" => {
-                    if has_binary {
-                        return Err(EvalError::user_error(
-                            "open: cannot specify both Binary and Text flags".to_string(),
-                            call_span,
-                        )
-                        .into());
+                    "Text" => {
+                        if has_binary {
+                            return Err(EvalError::user_error(
+                                "open: cannot specify both Binary and Text flags".to_string(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                        has_text = true;
+                        caps.insert("Text".to_string(), Value::Bool(true));
                     }
-                    has_text = true;
-                    caps.insert("Text".to_string(), Value::Bool(true));
-                }
-                "Seekable" => {
-                    has_seekable = true;
-                    caps.insert("Seekable".to_string(), Value::Bool(true));
-                }
-                other => {
-                    return Err(EvalError::user_error(
+                    "Seekable" => {
+                        has_seekable = true;
+                        caps.insert("Seekable".to_string(), Value::Bool(true));
+                    }
+                    other => {
+                        return Err(EvalError::user_error(
                             format!(
                                 "open: unknown capability flag '{}' (expected Readable, Writable, Appendable, Binary, Text, or Seekable)",
                                 other
@@ -279,186 +292,218 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                             call_span,
                         )
                         .into());
+                    }
+                },
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "open".to_string(),
+                        "Variant (capability flag)",
+                        other.type_name(),
+                        flag_arg.span,
+                    )
+                    .into());
                 }
-            },
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "open".to_string(),
-                    "Variant (capability flag)",
-                    other.type_name(),
-                    flag_arg.span,
-                )
-                .into());
             }
         }
-    }
 
-    // Require at least one of Readable, Writable, or Appendable
-    if !has_readable && !has_writable && !has_appendable {
-        return Err(EvalError::user_error(
-            "open: must specify at least one of Readable, Writable, or Appendable flags"
-                .to_string(),
-            call_span,
-        )
-        .into());
-    }
-
-    // Check DirCap permissions based on mode
-    if has_readable {
-        check_perm(perms, "Readable", perms.readable, "open", call_span)?;
-    }
-    if has_writable {
-        check_perm(perms, "Writable", perms.writable, "open", call_span)?;
-    }
-    if has_appendable {
-        check_perm(perms, "Appendable", perms.appendable, "open", call_span)?;
-    }
-
-    // Default to Text encoding if neither Binary nor Text specified
-    if !has_binary && !has_text {
-        caps.insert("Text".to_string(), Value::Bool(true));
-    }
-
-    // Open the file based on flags
-    use cap_std::fs::OpenOptions;
-    use std::io::{BufReader, BufWriter};
-    if has_readable {
-        // Read mode
-        let file = dir.open(&path).map_err(|e| {
-            EvalError::user_error(
-                format!("open: failed to open file '{}': {}", path, e),
+        // Require at least one of Readable, Writable, or Appendable
+        if !has_readable && !has_writable && !has_appendable {
+            return Err(EvalError::user_error(
+                "open: must specify at least one of Readable, Writable, or Appendable flags"
+                    .to_string(),
                 call_span,
             )
-        })?;
+            .into());
+        }
 
-        // If Seekable, clone the file handle for seeking operations
-        // We need two handles: one wrapped in BufReader for reading, one for seeking
-        let seek_inner = if has_seekable {
-            let seek_file = file.try_clone().map_err(|e| {
+        // Check DirCap permissions based on mode
+        if has_readable {
+            check_perm(perms, "Readable", perms.readable, "open", call_span)?;
+        }
+        if has_writable {
+            check_perm(perms, "Writable", perms.writable, "open", call_span)?;
+        }
+        if has_appendable {
+            check_perm(perms, "Appendable", perms.appendable, "open", call_span)?;
+        }
+
+        // Default to Text encoding if neither Binary nor Text specified
+        if !has_binary && !has_text {
+            caps.insert("Text".to_string(), Value::Bool(true));
+        }
+
+        // Open the file based on flags
+        use cap_std::fs::OpenOptions;
+        use std::io::{BufReader, BufWriter};
+        if has_readable {
+            // Read mode
+            let file = dir.open(&path).map_err(|e| {
                 EvalError::user_error(
-                    format!("open: failed to clone file handle for seeking: {}", e),
+                    format!("open: failed to open file '{}': {}", path, e),
                     call_span,
                 )
             })?;
-            Some(Rc::new(std::cell::RefCell::new(
-                Box::new(BufReader::new(seek_file)) as Box<dyn std::io::Seek>,
-            )))
-        } else {
-            None
-        };
 
-        let handle: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
+            // If Seekable, clone the file handle for seeking operations
+            // We need two handles: one wrapped in BufReader for reading, one for seeking
+            let seek_inner = if has_seekable {
+                let seek_file = file.try_clone().map_err(|e| {
+                    EvalError::user_error(
+                        format!("open: failed to clone file handle for seeking: {}", e),
+                        call_span,
+                    )
+                })?;
+                Some(Rc::new(std::cell::RefCell::new(
+                    Box::new(BufReader::new(seek_file)) as Box<dyn std::io::Seek>,
+                )))
+            } else {
+                None
+            };
 
-        ok_val(
-            Value::Handle {
-                caps,
-                inner: Rc::new(std::cell::RefCell::new(handle)),
-                write_inner: None,
-                seek_inner,
-                raw_tcp: None,
-                creation_span: call_span,
-            },
-            call_span,
-        )
-    } else if has_writable {
-        // Write mode: create/truncate
-        let file = dir
-            .open_with(
-                &path,
-                OpenOptions::new().write(true).create(true).truncate(true),
+            let handle: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
+
+            ok_val(
+                Value::Handle {
+                    caps,
+                    inner: Rc::new(std::cell::RefCell::new(handle)),
+                    write_inner: None,
+                    seek_inner,
+                    raw_tcp: None,
+                    creation_span: call_span,
+                },
+                call_span,
             )
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("open: failed to open file '{}' for writing: {}", path, e),
-                    call_span,
+        } else if has_writable {
+            // Write mode: create/truncate
+            let file = dir
+                .open_with(
+                    &path,
+                    OpenOptions::new().write(true).create(true).truncate(true),
                 )
-            })?;
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!("open: failed to open file '{}' for writing: {}", path, e),
+                        call_span,
+                    )
+                })?;
 
-        let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
+            let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
 
-        ok_val(
-            Value::WriteHandle {
-                caps,
-                inner: Rc::new(std::cell::RefCell::new(writer)),
-            },
-            call_span,
-        )
-    } else if has_appendable {
-        // Append mode: append/create
-        let file = dir
-            .open_with(&path, OpenOptions::new().append(true).create(true))
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("open: failed to open file '{}' for appending: {}", path, e),
-                    call_span,
-                )
-            })?;
+            ok_val(
+                Value::WriteHandle {
+                    caps,
+                    inner: Rc::new(std::cell::RefCell::new(writer)),
+                },
+                call_span,
+            )
+        } else if has_appendable {
+            // Append mode: append/create
+            let file = dir
+                .open_with(&path, OpenOptions::new().append(true).create(true))
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!("open: failed to open file '{}' for appending: {}", path, e),
+                        call_span,
+                    )
+                })?;
 
-        let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
+            let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
 
-        ok_val(
-            Value::WriteHandle {
-                caps,
-                inner: Rc::new(std::cell::RefCell::new(writer)),
-            },
-            call_span,
-        )
-    } else {
-        // Should never reach here due to earlier validation
-        Err(EvalError::user_error(
-            "open: internal error - no mode specified".to_string(),
-            call_span,
-        )
-        .into())
-    }
+            ok_val(
+                Value::WriteHandle {
+                    caps,
+                    inner: Rc::new(std::cell::RefCell::new(writer)),
+                },
+                call_span,
+            )
+        } else {
+            // Should never reach here due to earlier validation
+            Err(EvalError::user_error(
+                "open: internal error - no mode specified".to_string(),
+                call_span,
+            )
+            .into())
+        }
+    })
 }
 
 /// `slurp`: Read all bytes from a Handle to a String or Bytes.
 /// Takes a Handle, reads to EOF, returns String (if Text encoding) or Bytes (if Binary encoding).
-pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_slurp(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("slurp", args, named, &ctx, call_span)?;
+    Box::pin(async move {
+        let val = crate::builtins::expect_one_arg("slurp", &args, named.as_ref(), &ctx, call_span)?;
 
-    // Extract Handle
-    let (handle, caps) = match val {
-        Value::Handle { inner, caps, .. } => (inner, caps),
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "slurp".to_string(),
-                "Handle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+        // Extract Handle
+        let (handle, caps) = match val {
+            Value::Handle { inner, caps, .. } => (inner, caps),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "slurp".to_string(),
+                    "Handle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
 
-    // Check if Binary cap is set
-    let is_binary = caps.contains_key("Binary");
+        // Check if Binary cap is set
+        let is_binary = caps.contains_key("Binary");
 
-    use std::io::Read;
-    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+        use std::io::Read;
+        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 
-    if is_binary {
-        // Read to bytes with size limit (check length during read)
-        let mut contents = Vec::new();
-        const CHUNK_SIZE: usize = 8192;
-        loop {
-            let mut chunk = vec![0u8; CHUNK_SIZE];
-            let n = handle.borrow_mut().read(&mut chunk).map_err(|e| {
-                EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
-            })?;
+        if is_binary {
+            // Read to bytes with size limit (check length during read)
+            let mut contents = Vec::new();
+            const CHUNK_SIZE: usize = 8192;
+            loop {
+                let mut chunk = vec![0u8; CHUNK_SIZE];
+                let n = handle.borrow_mut().read(&mut chunk).map_err(|e| {
+                    EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
+                })?;
 
-            if n == 0 {
-                break; // EOF
+                if n == 0 {
+                    break; // EOF
+                }
+
+                contents.extend_from_slice(&chunk[..n]);
+
+                if contents.len() > MAX_FILE_SIZE as usize {
+                    return Err(EvalError::resource_limit_exceeded(
+                        format!("slurp: file exceeds maximum size ({} bytes)", MAX_FILE_SIZE),
+                        call_span,
+                    )
+                    .into());
+                }
             }
 
-            contents.extend_from_slice(&chunk[..n]);
+            let len = contents.len();
+            ok_val(
+                Value::Bytes {
+                    source: Rc::from(contents),
+                    start: 0,
+                    end: len,
+                },
+                call_span,
+            )
+        } else {
+            // Read to string (Text encoding) with size limit
+            let mut contents = String::new();
+            handle
+                .borrow_mut()
+                .read_to_string(&mut contents)
+                .map_err(|e| {
+                    EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
+                })?;
 
             if contents.len() > MAX_FILE_SIZE as usize {
                 return Err(EvalError::resource_limit_exceeded(
@@ -467,35 +512,10 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                 )
                 .into());
             }
+
+            ok_val(string_val(&contents), call_span)
         }
-
-        let len = contents.len();
-        ok_val(
-            Value::Bytes {
-                source: Rc::from(contents),
-                start: 0,
-                end: len,
-            },
-            call_span,
-        )
-    } else {
-        // Read to string (Text encoding) with size limit
-        let mut contents = String::new();
-        handle
-            .borrow_mut()
-            .read_to_string(&mut contents)
-            .map_err(|e| EvalError::user_error(format!("slurp: read failed: {}", e), call_span))?;
-
-        if contents.len() > MAX_FILE_SIZE as usize {
-            return Err(EvalError::resource_limit_exceeded(
-                format!("slurp: file exceeds maximum size ({} bytes)", MAX_FILE_SIZE),
-                call_span,
-            )
-            .into());
-        }
-
-        ok_val(string_val(&contents), call_span)
-    }
+    })
 }
 
 /// `narrow`: Attenuate a DirCap to a subdirectory or restrict permissions.
@@ -507,86 +527,88 @@ pub(crate) fn builtin_slurp(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///   - One or more Variant flags to restrict permissions (preserves directory)
 ///
 ///     Returns a new DirCap with the narrowed scope or restricted permissions.
-pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_narrow(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-
-    // Expect at least 2 args: DirCap, and either a subpath string or flag(s)
-    if args.len() < 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("narrow", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[0]=Seq");
-
-    // Extract DirCap and current permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span)?;
-
-    // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
-    let second_arg_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[1]=Seq");
-
-    if matches!(second_arg_val, Value::String { .. }) {
-        // Subtree narrowing: [narrow cap "path"]
-        if args.len() != 2 {
-            return Err(EvalError::user_error(
-                "narrow: subtree mode requires exactly 2 arguments (cap, subpath)".to_string(),
-                call_span,
-            )
-            .into());
+    Box::pin(async move {
+        // Expect at least 2 args: DirCap, and either a subpath string or flag(s)
+        if args.len() < 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
+        reject_named("narrow", named.as_ref(), call_span)?;
 
-        let subpath = require_string("narrow", second_arg_val, args[1].span)?;
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
 
-        // Open subdirectory (RESOLVE_BENEATH applies to subpath)
-        let narrowed = dir.open_dir(&subpath).map_err(|e| {
-            EvalError::user_error(
-                format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
+        // Extract DirCap and current permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span)?;
+
+        // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
+        let second_arg_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
+
+        if matches!(second_arg_val, Value::String { .. }) {
+            // Subtree narrowing: [narrow cap "path"]
+            if args.len() != 2 {
+                return Err(EvalError::user_error(
+                    "narrow: subtree mode requires exactly 2 arguments (cap, subpath)".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+
+            let subpath = require_string("narrow", second_arg_val, args[1].span)?;
+
+            // Open subdirectory (RESOLVE_BENEATH applies to subpath)
+            let narrowed = dir.open_dir(&subpath).map_err(|e| {
+                EvalError::user_error(
+                    format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
+                    call_span,
+                )
+            })?;
+
+            ok_val(
+                Value::DirCap {
+                    dir: Rc::new(narrowed),
+                    perms: perms.clone(),
+                },
                 call_span,
             )
-        })?;
+        } else if matches!(second_arg_val, Value::Variant { .. }) {
+            // Permission restriction: [narrow cap FlagName...]
+            // Parse requested flags from args[1..]
+            let mut requested = DirPerms {
+                readable: false,
+                statable: false,
+                listable: false,
+                writable: false,
+                appendable: false,
+                deletable: false,
+                renameable: false,
+            };
 
-        ok_val(
-            Value::DirCap {
-                dir: Rc::new(narrowed),
-                perms: perms.clone(),
-            },
-            call_span,
-        )
-    } else if matches!(second_arg_val, Value::Variant { .. }) {
-        // Permission restriction: [narrow cap FlagName...]
-        // Parse requested flags from args[1..]
-        let mut requested = DirPerms {
-            readable: false,
-            statable: false,
-            listable: false,
-            writable: false,
-            appendable: false,
-            deletable: false,
-            renameable: false,
-        };
+            for flag_arg in &args[1..] {
+                let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
 
-        for flag_arg in &args[1..] {
-            let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
-
-            match flag_val {
-                Value::Variant { ref tag, .. } => match tag.as_str() {
-                    "Readable" => requested.readable = true,
-                    "Statable" => requested.statable = true,
-                    "Listable" => requested.listable = true,
-                    "Writable" => requested.writable = true,
-                    "Appendable" => requested.appendable = true,
-                    "Deletable" => requested.deletable = true,
-                    "Renameable" => requested.renameable = true,
-                    other => {
-                        return Err(EvalError::user_error(
+                match flag_val {
+                    Value::Variant { ref tag, .. } => match tag.as_str() {
+                        "Readable" => requested.readable = true,
+                        "Statable" => requested.statable = true,
+                        "Listable" => requested.listable = true,
+                        "Writable" => requested.writable = true,
+                        "Appendable" => requested.appendable = true,
+                        "Deletable" => requested.deletable = true,
+                        "Renameable" => requested.renameable = true,
+                        other => {
+                            return Err(EvalError::user_error(
                             format!(
                                 "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable)",
                                 other
@@ -594,464 +616,395 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                             call_span,
                         )
                         .into());
+                        }
+                    },
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "narrow".to_string(),
+                            "Variant (capability flag) or String (subpath)",
+                            other.type_name(),
+                            flag_arg.span,
+                        )
+                        .into());
                     }
-                },
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "narrow".to_string(),
-                        "Variant (capability flag) or String (subpath)",
-                        other.type_name(),
-                        flag_arg.span,
-                    )
-                    .into());
                 }
             }
-        }
 
-        // Compute intersection: only grant flags that are BOTH requested AND held by source
-        let narrowed_perms = DirPerms {
-            readable: requested.readable && perms.readable,
-            statable: requested.statable && perms.statable,
-            listable: requested.listable && perms.listable,
-            writable: requested.writable && perms.writable,
-            appendable: requested.appendable && perms.appendable,
-            deletable: requested.deletable && perms.deletable,
-            renameable: requested.renameable && perms.renameable,
-        };
+            // Compute intersection: only grant flags that are BOTH requested AND held by source
+            let narrowed_perms = DirPerms {
+                readable: requested.readable && perms.readable,
+                statable: requested.statable && perms.statable,
+                listable: requested.listable && perms.listable,
+                writable: requested.writable && perms.writable,
+                appendable: requested.appendable && perms.appendable,
+                deletable: requested.deletable && perms.deletable,
+                renameable: requested.renameable && perms.renameable,
+            };
 
-        // Runtime error if a requested flag is not held in the source
-        if requested.readable && !perms.readable {
-            return Err(EvalError::user_error(
-                "narrow: source DirCap does not have Readable permission".to_string(),
-                call_span,
-            )
-            .into());
-        }
-        if requested.statable && !perms.statable {
-            return Err(EvalError::user_error(
-                "narrow: source DirCap does not have Statable permission".to_string(),
-                call_span,
-            )
-            .into());
-        }
-        if requested.listable && !perms.listable {
-            return Err(EvalError::user_error(
-                "narrow: source DirCap does not have Listable permission".to_string(),
-                call_span,
-            )
-            .into());
-        }
-        if requested.writable && !perms.writable {
-            return Err(EvalError::user_error(
-                "narrow: source DirCap does not have Writable permission".to_string(),
-                call_span,
-            )
-            .into());
-        }
-        if requested.appendable && !perms.appendable {
-            return Err(EvalError::user_error(
-                "narrow: source DirCap does not have Appendable permission".to_string(),
-                call_span,
-            )
-            .into());
-        }
-        if requested.deletable && !perms.deletable {
-            return Err(EvalError::user_error(
-                "narrow: source DirCap does not have Deletable permission".to_string(),
-                call_span,
-            )
-            .into());
-        }
-        if requested.renameable && !perms.renameable {
-            return Err(EvalError::user_error(
-                "narrow: source DirCap does not have Renameable permission".to_string(),
-                call_span,
-            )
-            .into());
-        }
+            // Runtime error if a requested flag is not held in the source
+            if requested.readable && !perms.readable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Readable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.statable && !perms.statable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Statable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.listable && !perms.listable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Listable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.writable && !perms.writable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Writable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.appendable && !perms.appendable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Appendable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.deletable && !perms.deletable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Deletable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.renameable && !perms.renameable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Renameable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
 
-        ok_val(
-            Value::DirCap {
-                dir: Rc::clone(dir),
-                perms: narrowed_perms,
-            },
-            call_span,
-        )
-    } else {
-        // Invalid second argument
-        Err(EvalError::type_mismatch_ctx(
-            "narrow".to_string(),
-            "String (subpath) or Variant (capability flag)",
-            second_arg_val.type_name(),
-            args[1].span,
-        )
-        .into())
-    }
+            ok_val(
+                Value::DirCap {
+                    dir: Rc::clone(dir),
+                    perms: narrowed_perms,
+                },
+                call_span,
+            )
+        } else {
+            // Invalid second argument
+            Err(EvalError::type_mismatch_ctx(
+                "narrow".to_string(),
+                "String (subpath) or Variant (capability flag)",
+                second_arg_val.type_name(),
+                args[1].span,
+            )
+            .into())
+        }
+    })
 }
 
 /// `revocable`: Wrap a DirCap in a RevocableDirCap.
 /// Takes a DirCap, returns a RevocableDirCap.
 /// The RevocableDirCap can be revoked later via `revoke-cap`.
-pub(crate) fn builtin_revocable(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_revocable(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("revocable", args, named, &ctx, call_span)?;
+    Box::pin(async move {
+        let val =
+            crate::builtins::expect_one_arg("revocable", &args, named.as_ref(), &ctx, call_span)?;
 
-    // Extract DirCap and preserve permissions
-    let (dir, perms) = match val {
-        Value::DirCap { dir, perms } => (Rc::clone(&dir), perms.clone()),
-        Value::RevocableDirCap {
-            inner,
-            perms,
-            revoked: _,
-        } => {
-            // Already revocable — return a new revocable wrapper with a new flag
-            // (allows independent revocation)
-            (Rc::clone(&inner), perms.clone())
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "revocable".to_string(),
-                "DirCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
+        // Extract DirCap and preserve permissions
+        let (dir, perms) = match val {
+            Value::DirCap { dir, perms } => (Rc::clone(&dir), perms.clone()),
+            Value::RevocableDirCap {
+                inner,
+                perms,
+                revoked: _,
+            } => {
+                // Already revocable — return a new revocable wrapper with a new flag
+                // (allows independent revocation)
+                (Rc::clone(&inner), perms.clone())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "revocable".to_string(),
+                    "DirCap",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
 
-    // Create a new revoked flag
-    let revoked = Rc::new(std::cell::Cell::new(false));
+        // Create a new revoked flag
+        let revoked = Rc::new(std::cell::Cell::new(false));
 
-    ok_val(
-        Value::RevocableDirCap {
-            inner: dir,
-            perms,
-            revoked,
-        },
-        call_span,
-    )
+        ok_val(
+            Value::RevocableDirCap {
+                inner: dir,
+                perms,
+                revoked,
+            },
+            call_span,
+        )
+    })
 }
 
 /// `revoke-cap`: Revoke a RevocableDirCap.
 /// Takes a RevocableDirCap, sets its revoked flag to true, returns null.
 /// Future operations on the cap will fail.
-pub(crate) fn builtin_revoke_cap(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_revoke_cap(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("revoke-cap", args, named, &ctx, call_span)?;
+    Box::pin(async move {
+        let val =
+            crate::builtins::expect_one_arg("revoke-cap", &args, named.as_ref(), &ctx, call_span)?;
 
-    // Extract RevocableDirCap
-    match val {
-        Value::RevocableDirCap { revoked, .. } => {
-            revoked.set(true);
-            ok_val(Value::Dict(IndexMap::new()), call_span)
+        // Extract RevocableDirCap
+        match val {
+            Value::RevocableDirCap { revoked, .. } => {
+                revoked.set(true);
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            other => Err(EvalError::type_mismatch_ctx(
+                "revoke-cap".to_string(),
+                "RevocableDirCap",
+                other.type_name(),
+                args[0].span,
+            )
+            .into()),
         }
-        other => Err(EvalError::type_mismatch_ctx(
-            "revoke-cap".to_string(),
-            "RevocableDirCap",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+    })
 }
 
 /// `connect`: Open a TCP or UDP connection within a NetCap.
 /// Takes a NetCap, hostname String, port Int, and optional Transport variant (default: Tcp).
 /// - `Tcp` (default) → Handle[Binary Readable Writable Stream]
 /// - `Udp` → error "UDP not yet supported, use Tcp" (reserved for Phase 2)
-pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+pub(crate) fn builtin_connect(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
+    Box::pin(async move {
+        reject_named("connect", named.as_ref(), call_span)?;
 
-    reject_named("connect", named, call_span)?;
-
-    // Force args[1] (Transport tag) first — this is a STRICTNESS POINT
-    // Minimum 2 args: cap and transport
-    if args.len() < 2 {
-        return Err(EvalError::user_error(
-            format!(
-                "connect: expected at least 2 arguments (cap transport [...address]), got {}",
-                args.len()
-            ),
-            call_span,
-        )
-        .into());
-    }
-
-    let cap_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[0]=Seq");
-    let transport_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[1]=Seq");
-
-    // Extract Transport variant tag
-    let transport_tag = match transport_val {
-        Value::Variant { tag, .. } => tag,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "connect".to_string(),
-                "Transport variant (e.g., Tcp, Udp)",
-                other.type_name(),
-                args[1].span,
-            )
-            .into())
-        }
-    };
-
-    // Dispatch on transport tag to determine address format and arg count
-    match transport_tag.as_str() {
-        "Tcp" => {
-            // Tcp requires: cap Tcp host port (4 args total)
-            if args.len() != 4 {
-                return Err(EvalError::user_error(
-                    format!(
-                        "connect: Tcp transport requires host and port (4 args total), got {}",
-                        args.len()
-                    ),
-                    call_span,
-                )
-                .into());
-            }
-            // Continue with TCP connection below
-        }
-        "Udp" => {
-            // Udp requires: cap Udp host port (4 args total)
-            if args.len() != 4 {
-                return Err(EvalError::user_error(
-                    format!(
-                        "connect: Udp transport requires host and port (4 args total), got {}",
-                        args.len()
-                    ),
-                    call_span,
-                )
-                .into());
-            }
-            // Continue with UDP connection below
-        }
-        "UnixStream" => {
-            // UnixStream requires: cap UnixStream path (3 args total)
-            if args.len() != 3 {
-                return Err(EvalError::user_error(
-                    format!(
-                        "connect: UnixStream transport requires path (3 args total), got {}",
-                        args.len()
-                    ),
-                    call_span,
-                )
-                .into());
-            }
-            // Continue with Unix stream connection below
-        }
-        "UnixDatagram" => {
-            // UnixDatagram requires: cap UnixDatagram path (3 args total)
-            if args.len() != 3 {
-                return Err(EvalError::user_error(
-                    format!(
-                        "connect: UnixDatagram transport requires path (3 args total), got {}",
-                        args.len()
-                    ),
-                    call_span,
-                )
-                .into());
-            }
-            // Continue with Unix datagram connection below
-        }
-        "NamedPipe" => {
-            // NamedPipe is a Windows-only IPC mechanism; not available on Unix platforms.
+        // Force args[1] (Transport tag) first — this is a STRICTNESS POINT
+        // Minimum 2 args: cap and transport
+        if args.len() < 2 {
             return Err(EvalError::user_error(
+                format!(
+                    "connect: expected at least 2 arguments (cap transport [...address]), got {}",
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let cap_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let transport_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
+
+        // Extract Transport variant tag
+        let transport_tag = match transport_val {
+            Value::Variant { tag, .. } => tag,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "connect".to_string(),
+                    "Transport variant (e.g., Tcp, Udp)",
+                    other.type_name(),
+                    args[1].span,
+                )
+                .into())
+            }
+        };
+
+        // Dispatch on transport tag to determine address format and arg count
+        match transport_tag.as_str() {
+            "Tcp" => {
+                // Tcp requires: cap Tcp host port (4 args total)
+                if args.len() != 4 {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "connect: Tcp transport requires host and port (4 args total), got {}",
+                            args.len()
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                // Continue with TCP connection below
+            }
+            "Udp" => {
+                // Udp requires: cap Udp host port (4 args total)
+                if args.len() != 4 {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "connect: Udp transport requires host and port (4 args total), got {}",
+                            args.len()
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                // Continue with UDP connection below
+            }
+            "UnixStream" => {
+                // UnixStream requires: cap UnixStream path (3 args total)
+                if args.len() != 3 {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "connect: UnixStream transport requires path (3 args total), got {}",
+                            args.len()
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                // Continue with Unix stream connection below
+            }
+            "UnixDatagram" => {
+                // UnixDatagram requires: cap UnixDatagram path (3 args total)
+                if args.len() != 3 {
+                    return Err(EvalError::user_error(
+                        format!(
+                            "connect: UnixDatagram transport requires path (3 args total), got {}",
+                            args.len()
+                        ),
+                        call_span,
+                    )
+                    .into());
+                }
+                // Continue with Unix datagram connection below
+            }
+            "NamedPipe" => {
+                // NamedPipe is a Windows-only IPC mechanism; not available on Unix platforms.
+                return Err(EvalError::user_error(
                 "connect: NamedPipe is a Windows-only transport and is not supported on this platform"
                     .to_string(),
                 call_span,
             )
             .into());
-        }
-        "Icmp" => {
-            // ICMP requires CAP_NET_RAW or root privileges; use icmp-ping builtin instead.
-            return Err(EvalError::user_error(
+            }
+            "Icmp" => {
+                // ICMP requires CAP_NET_RAW or root privileges; use icmp-ping builtin instead.
+                return Err(EvalError::user_error(
                 "connect: ICMP is not supported via connect; use the icmp-ping builtin for ICMP echo requests"
                     .to_string(),
                 call_span,
             )
             .into());
-        }
-        other => {
-            return Err(EvalError::user_error(
-                format!("connect: unsupported transport '{}'", other),
-                call_span,
-            )
-            .into());
-        }
-    }
-
-    // Branch based on transport type
-    match transport_tag.as_str() {
-        "Tcp" => {
-            // TCP path
-            let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
-            let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
-
-            // Extract NetCap
-            let entries = match cap_val {
-                Value::NetCap(e) => e,
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "connect".to_string(),
-                        "NetCap",
-                        other.type_name(),
-                        args[0].span,
-                    )
-                    .into())
-                }
-            };
-
-            let host = require_string("connect", host_val, args[2].span)?;
-            let port = match port_val {
-                Value::Int(n) if (1..=65535).contains(&n) => n as u16,
-                Value::Int(_) => {
-                    return Err(EvalError::user_error(
-                        "connect: port must be 1-65535".to_string(),
-                        args[3].span,
-                    )
-                    .into())
-                }
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "connect".to_string(),
-                        "Int",
-                        other.type_name(),
-                        args[3].span,
-                    )
-                    .into())
-                }
-            };
-
-            // Check NetCap allowlist before connecting
-            // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
-            let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
-
-            // Open TCP connection
-            // If DNS resolution was required, connect to the resolved IP to mitigate DNS rebinding
-            let addr = if let Some(ip) = resolved_ip {
-                format!("{}:{}", ip, port)
-            } else {
-                format!("{}:{}", host, port)
-            };
-            let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
-                EvalError::user_error(
-                    format!("connect: failed to connect to {}: {}", addr, e),
+            }
+            other => {
+                return Err(EvalError::user_error(
+                    format!("connect: unsupported transport '{}'", other),
                     call_span,
                 )
-            })?;
-
-            // Clone stream for write half before consuming the original into BufReader
-            let write_stream = stream.try_clone().map_err(|e| {
-                EvalError::user_error(
-                    format!("connect: failed to clone TcpStream for write half: {}", e),
-                    call_span,
-                )
-            })?;
-
-            // Clone stream for tls-layer extraction before consuming into BufReader
-            let raw_tcp_stream = stream.try_clone().map_err(|e| {
-                EvalError::user_error(
-                    format!("connect: failed to clone TcpStream for raw_tcp: {}", e),
-                    call_span,
-                )
-            })?;
-
-            let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
-                Some(Rc::new(RefCell::new(Box::new(write_stream))));
-
-            // Wrap read half in BufReader for Handle
-            let buf_reader = std::io::BufReader::new(stream);
-            let inner = Rc::new(RefCell::new(
-                Box::new(buf_reader) as Box<dyn std::io::BufRead>
-            ));
-
-            // Caps for TCP connection: Binary Readable Writable Stream
-            let mut caps = HashMap::new();
-            caps.insert("Readable".to_string(), Value::Bool(true));
-            caps.insert("Writable".to_string(), Value::Bool(true));
-            caps.insert("Binary".to_string(), Value::Bool(true));
-            caps.insert("Stream".to_string(), Value::Bool(true));
-
-            ok_val(
-                Value::Handle {
-                    caps,
-                    inner,
-                    write_inner,
-                    seek_inner: None,
-                    raw_tcp: Some(Rc::new(RefCell::new(Some(raw_tcp_stream)))),
-                    creation_span: call_span,
-                },
-                call_span,
-            )
+                .into());
+            }
         }
-        "UnixStream" => {
-            // Unix stream socket path
-            #[cfg(target_os = "linux")]
-            {
-                let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
-                // Extract DirCap for path validation (Unix socket)
-                let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
+        // Branch based on transport type
+        match transport_tag.as_str() {
+            "Tcp" => {
+                // TCP path
+                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
-                let path = require_string("connect", path_val, args[2].span)?;
+                // Extract NetCap
+                let entries = match cap_val {
+                    Value::NetCap(e) => e,
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "connect".to_string(),
+                            "NetCap",
+                            other.type_name(),
+                            args[0].span,
+                        )
+                        .into())
+                    }
+                };
 
-                // Validate path is relative (no absolute paths or '..' traversal)
-                if path.starts_with('/') || path.contains("..") {
-                    return Err(EvalError::user_error(
-                        "connect UnixStream: path must be relative (no absolute paths or '..' traversal)"
-                            .to_string(),
-                        call_span,
-                    )
-                    .into());
-                }
+                let host = require_string("connect", host_val, args[2].span)?;
+                let port = match port_val {
+                    Value::Int(n) if (1..=65535).contains(&n) => n as u16,
+                    Value::Int(_) => {
+                        return Err(EvalError::user_error(
+                            "connect: port must be 1-65535".to_string(),
+                            args[3].span,
+                        )
+                        .into())
+                    }
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "connect".to_string(),
+                            "Int",
+                            other.type_name(),
+                            args[3].span,
+                        )
+                        .into())
+                    }
+                };
 
-                // Get the directory's file descriptor and resolve the full path via /proc/self/fd
-                // This is necessary because Unix domain sockets need an absolute path to connect
-                // AMBIENT-OK: Unix socket connection requires resolving fd path via /proc/self/fd.
-                use std::os::unix::io::AsRawFd;
-                let dir_fd = dir.as_raw_fd();
-                let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
-                let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
+                // Check NetCap allowlist before connecting
+                // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
+                let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
+
+                // Open TCP connection
+                // If DNS resolution was required, connect to the resolved IP to mitigate DNS rebinding
+                let addr = if let Some(ip) = resolved_ip {
+                    format!("{}:{}", ip, port)
+                } else {
+                    format!("{}:{}", host, port)
+                };
+                let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
                     EvalError::user_error(
-                        format!("connect: failed to resolve DirCap path: {}", e),
-                        call_span,
-                    )
-                })?;
-                let full_path = dir_path.join(&path);
-
-                // Connect to Unix stream socket
-                let stream = std::os::unix::net::UnixStream::connect(&full_path).map_err(|e| {
-                    EvalError::user_error(
-                        format!(
-                            "connect: failed to connect to Unix socket '{}': {}",
-                            path, e
-                        ),
+                        format!("connect: failed to connect to {}: {}", addr, e),
                         call_span,
                     )
                 })?;
 
-                // Clone stream for write half
+                // Clone stream for write half before consuming the original into BufReader
                 let write_stream = stream.try_clone().map_err(|e| {
                     EvalError::user_error(
-                        format!("connect: failed to clone UnixStream for write half: {}", e),
+                        format!("connect: failed to clone TcpStream for write half: {}", e),
+                        call_span,
+                    )
+                })?;
+
+                // Clone stream for tls-layer extraction before consuming into BufReader
+                let raw_tcp_stream = stream.try_clone().map_err(|e| {
+                    EvalError::user_error(
+                        format!("connect: failed to clone TcpStream for raw_tcp: {}", e),
                         call_span,
                     )
                 })?;
@@ -1065,7 +1018,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                     Box::new(buf_reader) as Box<dyn std::io::BufRead>
                 ));
 
-                // Caps for Unix stream: Binary Readable Writable Stream
+                // Caps for TCP connection: Binary Readable Writable Stream
                 let mut caps = HashMap::new();
                 caps.insert("Readable".to_string(), Value::Bool(true));
                 caps.insert("Writable".to_string(), Value::Bool(true));
@@ -1078,145 +1031,165 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                         inner,
                         write_inner,
                         seek_inner: None,
-                        raw_tcp: None, // Not TCP
+                        raw_tcp: Some(Rc::new(RefCell::new(Some(raw_tcp_stream)))),
                         creation_span: call_span,
                     },
                     call_span,
                 )
             }
-            #[cfg(not(target_os = "linux"))]
-            {
-                Err(EvalError::user_error(
-                    "connect: Unix sockets not yet supported on this platform (requires Linux /proc/self/fd access)".to_string(),
-                    call_span,
-                )
-                .into())
-            }
-        }
-        "Udp" => {
-            // UDP datagram socket path
-            let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
-            let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+            "UnixStream" => {
+                // Unix stream socket path
+                #[cfg(target_os = "linux")]
+                {
+                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
-            // Extract NetCap
-            let entries = match cap_val {
-                Value::NetCap(e) => e,
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "connect".to_string(),
-                        "NetCap",
-                        other.type_name(),
-                        args[0].span,
-                    )
-                    .into())
-                }
-            };
+                    // Extract DirCap for path validation (Unix socket)
+                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
 
-            let host = require_string("connect", host_val, args[2].span)?;
-            let port = match port_val {
-                Value::Int(n) if (1..=65535).contains(&n) => n as u16,
-                Value::Int(_) => {
-                    return Err(EvalError::user_error(
-                        "connect: port must be 1-65535".to_string(),
-                        args[3].span,
-                    )
-                    .into())
-                }
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "connect".to_string(),
-                        "Int",
-                        other.type_name(),
-                        args[3].span,
-                    )
-                    .into())
-                }
-            };
+                    let path = require_string("connect", path_val, args[2].span)?;
 
-            // Check NetCap allowlist before connecting
-            let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
-
-            let addr = if let Some(ip) = resolved_ip {
-                format!("{}:{}", ip, port)
-            } else {
-                format!("{}:{}", host, port)
-            };
-
-            // Bind to any local address (OS assigns ephemeral port)
-            let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| {
-                EvalError::user_error(
-                    format!("connect: failed to bind UDP socket: {}", e),
-                    call_span,
-                )
-            })?;
-
-            // connect() associates the remote address so send()/recv() work without addresses
-            socket.connect(&addr).map_err(|e| {
-                EvalError::user_error(
-                    format!("connect: failed to connect UDP socket to {}: {}", addr, e),
-                    call_span,
-                )
-            })?;
-
-            use crate::value::DatagramSocket;
-            ok_val(
-                Value::DatagramHandle {
-                    socket: DatagramSocket::Udp(Rc::new(RefCell::new(socket))),
-                    creation_span: call_span,
-                },
-                call_span,
-            )
-        }
-        "UnixDatagram" => {
-            // Unix-domain datagram socket — uses DirCap for path-based capability enforcement.
-            #[cfg(unix)]
-            {
-                let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
-
-                // Extract DirCap for path validation (Unix socket)
-                let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
-
-                let path = require_string("connect", path_val, args[2].span)?;
-
-                // Validate path is relative (no absolute paths or '..' traversal)
-                if path.starts_with('/') || path.contains("..") {
-                    return Err(EvalError::user_error(
-                        "connect UnixDatagram: path must be relative (no absolute paths or '..' traversal)"
+                    // Validate path is relative (no absolute paths or '..' traversal)
+                    if path.starts_with('/') || path.contains("..") {
+                        return Err(EvalError::user_error(
+                        "connect UnixStream: path must be relative (no absolute paths or '..' traversal)"
                             .to_string(),
                         call_span,
                     )
                     .into());
+                    }
+
+                    // Get the directory's file descriptor and resolve the full path via /proc/self/fd
+                    // This is necessary because Unix domain sockets need an absolute path to connect
+                    // AMBIENT-OK: Unix socket connection requires resolving fd path via /proc/self/fd.
+                    use std::os::unix::io::AsRawFd;
+                    let dir_fd = dir.as_raw_fd();
+                    let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
+                    let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
+                        EvalError::user_error(
+                            format!("connect: failed to resolve DirCap path: {}", e),
+                            call_span,
+                        )
+                    })?;
+                    let full_path = dir_path.join(&path);
+
+                    // Connect to Unix stream socket
+                    let stream =
+                        std::os::unix::net::UnixStream::connect(&full_path).map_err(|e| {
+                            EvalError::user_error(
+                                format!(
+                                    "connect: failed to connect to Unix socket '{}': {}",
+                                    path, e
+                                ),
+                                call_span,
+                            )
+                        })?;
+
+                    // Clone stream for write half
+                    let write_stream = stream.try_clone().map_err(|e| {
+                        EvalError::user_error(
+                            format!("connect: failed to clone UnixStream for write half: {}", e),
+                            call_span,
+                        )
+                    })?;
+
+                    let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
+                        Some(Rc::new(RefCell::new(Box::new(write_stream))));
+
+                    // Wrap read half in BufReader for Handle
+                    let buf_reader = std::io::BufReader::new(stream);
+                    let inner = Rc::new(RefCell::new(
+                        Box::new(buf_reader) as Box<dyn std::io::BufRead>
+                    ));
+
+                    // Caps for Unix stream: Binary Readable Writable Stream
+                    let mut caps = HashMap::new();
+                    caps.insert("Readable".to_string(), Value::Bool(true));
+                    caps.insert("Writable".to_string(), Value::Bool(true));
+                    caps.insert("Binary".to_string(), Value::Bool(true));
+                    caps.insert("Stream".to_string(), Value::Bool(true));
+
+                    ok_val(
+                        Value::Handle {
+                            caps,
+                            inner,
+                            write_inner,
+                            seek_inner: None,
+                            raw_tcp: None, // Not TCP
+                            creation_span: call_span,
+                        },
+                        call_span,
+                    )
                 }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(EvalError::user_error(
+                    "connect: Unix sockets not yet supported on this platform (requires Linux /proc/self/fd access)".to_string(),
+                    call_span,
+                )
+                .into())
+                }
+            }
+            "Udp" => {
+                // UDP datagram socket path
+                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
-                // Resolve the full socket path via the DirCap's file descriptor
-                // AMBIENT-OK: Unix datagram socket requires resolving fd path via /proc/self/fd.
-                use std::os::unix::io::AsRawFd;
-                let dir_fd = dir.as_raw_fd();
-                let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
-                let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
+                // Extract NetCap
+                let entries = match cap_val {
+                    Value::NetCap(e) => e,
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "connect".to_string(),
+                            "NetCap",
+                            other.type_name(),
+                            args[0].span,
+                        )
+                        .into())
+                    }
+                };
+
+                let host = require_string("connect", host_val, args[2].span)?;
+                let port = match port_val {
+                    Value::Int(n) if (1..=65535).contains(&n) => n as u16,
+                    Value::Int(_) => {
+                        return Err(EvalError::user_error(
+                            "connect: port must be 1-65535".to_string(),
+                            args[3].span,
+                        )
+                        .into())
+                    }
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "connect".to_string(),
+                            "Int",
+                            other.type_name(),
+                            args[3].span,
+                        )
+                        .into())
+                    }
+                };
+
+                // Check NetCap allowlist before connecting
+                let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
+
+                let addr = if let Some(ip) = resolved_ip {
+                    format!("{}:{}", ip, port)
+                } else {
+                    format!("{}:{}", host, port)
+                };
+
+                // Bind to any local address (OS assigns ephemeral port)
+                let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| {
                     EvalError::user_error(
-                        format!("connect: failed to resolve DirCap path: {}", e),
+                        format!("connect: failed to bind UDP socket: {}", e),
                         call_span,
                     )
                 })?;
-                let full_path = dir_path.join(&path);
 
-                // Autobind (anonymous local address): bind to empty string so the OS
-                // assigns an abstract socket name in the Linux autobind namespace.
-                let socket = std::os::unix::net::UnixDatagram::bind("").map_err(|e| {
+                // connect() associates the remote address so send()/recv() work without addresses
+                socket.connect(&addr).map_err(|e| {
                     EvalError::user_error(
-                        format!("connect: failed to autobind Unix datagram socket: {}", e),
-                        call_span,
-                    )
-                })?;
-
-                // Connect to the remote path so send()/recv() work without addresses
-                socket.connect(&full_path).map_err(|e| {
-                    EvalError::user_error(
-                        format!(
-                            "connect: failed to connect Unix datagram socket to '{}': {}",
-                            path, e
-                        ),
+                        format!("connect: failed to connect UDP socket to {}: {}", addr, e),
                         call_span,
                     )
                 })?;
@@ -1224,30 +1197,94 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                 use crate::value::DatagramSocket;
                 ok_val(
                     Value::DatagramHandle {
-                        socket: DatagramSocket::UnixDgram(Rc::new(RefCell::new(socket))),
+                        socket: DatagramSocket::Udp(Rc::new(RefCell::new(socket))),
                         creation_span: call_span,
                     },
                     call_span,
                 )
             }
-            #[cfg(not(unix))]
-            {
-                Err(EvalError::user_error(
-                    "connect: UnixDatagram is not supported on this platform".to_string(),
-                    call_span,
+            "UnixDatagram" => {
+                // Unix-domain datagram socket — uses DirCap for path-based capability enforcement.
+                #[cfg(unix)]
+                {
+                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+
+                    // Extract DirCap for path validation (Unix socket)
+                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
+
+                    let path = require_string("connect", path_val, args[2].span)?;
+
+                    // Validate path is relative (no absolute paths or '..' traversal)
+                    if path.starts_with('/') || path.contains("..") {
+                        return Err(EvalError::user_error(
+                        "connect UnixDatagram: path must be relative (no absolute paths or '..' traversal)"
+                            .to_string(),
+                        call_span,
+                    )
+                    .into());
+                    }
+
+                    // Resolve the full socket path via the DirCap's file descriptor
+                    // AMBIENT-OK: Unix datagram socket requires resolving fd path via /proc/self/fd.
+                    use std::os::unix::io::AsRawFd;
+                    let dir_fd = dir.as_raw_fd();
+                    let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
+                    let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
+                        EvalError::user_error(
+                            format!("connect: failed to resolve DirCap path: {}", e),
+                            call_span,
+                        )
+                    })?;
+                    let full_path = dir_path.join(&path);
+
+                    // Autobind (anonymous local address): bind to empty string so the OS
+                    // assigns an abstract socket name in the Linux autobind namespace.
+                    let socket = std::os::unix::net::UnixDatagram::bind("").map_err(|e| {
+                        EvalError::user_error(
+                            format!("connect: failed to autobind Unix datagram socket: {}", e),
+                            call_span,
+                        )
+                    })?;
+
+                    // Connect to the remote path so send()/recv() work without addresses
+                    socket.connect(&full_path).map_err(|e| {
+                        EvalError::user_error(
+                            format!(
+                                "connect: failed to connect Unix datagram socket to '{}': {}",
+                                path, e
+                            ),
+                            call_span,
+                        )
+                    })?;
+
+                    use crate::value::DatagramSocket;
+                    ok_val(
+                        Value::DatagramHandle {
+                            socket: DatagramSocket::UnixDgram(Rc::new(RefCell::new(socket))),
+                            creation_span: call_span,
+                        },
+                        call_span,
+                    )
+                }
+                #[cfg(not(unix))]
+                {
+                    Err(EvalError::user_error(
+                        "connect: UnixDatagram is not supported on this platform".to_string(),
+                        call_span,
+                    )
+                    .into())
+                }
+            }
+            _ => {
+                // NamedPipe and Icmp already handled in first match with early returns.
+                // This is unreachable — all transport types have been handled above.
+                unreachable!(
+                    "connect: transport '{}' should have been handled in first match",
+                    transport_tag
                 )
-                .into())
             }
         }
-        _ => {
-            // NamedPipe and Icmp already handled in first match with early returns.
-            // This is unreachable — all transport types have been handled above.
-            unreachable!(
-                "connect: transport '{}' should have been handled in first match",
-                transport_tag
-            )
-        }
-    }
+    })
 }
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
@@ -1412,47 +1449,51 @@ fn resolve_hostname_for_cidr(
 /// Takes a Handle, returns a lazy Seq where each element is a line (without newline).
 /// This is a coinductive lazy sequence — each tail force reads the next line.
 /// Errors if the Handle has a Binary cap (lines requires Text encoding).
-pub(crate) fn builtin_lines(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("lines", args, named, &ctx, call_span)?;
-
-    // Extract Handle
-    let (handle, write_inner, caps) = match val {
-        Value::Handle {
-            inner,
-            write_inner,
-            caps,
-            ..
-        } => (inner, write_inner, caps),
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "lines".to_string(),
-                "Handle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    // Check if Binary cap is set — error if so
-    if caps.contains_key("Binary") {
-        return Err(EvalError::user_error(
-            "lines: requires Text encoding (cannot read lines from Binary handle)".to_string(),
+pub(crate) fn builtin_lines(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("lines", &args, named.as_ref(), &ctx, call_span)?;
 
-    // Wrap the Handle in a new Handle that the step function can use
-    // The step function will read one line, then return a Seq with the line as head
-    // and a PendingBuiltin thunk for the next line as tail
-    builtin_lines_step(handle, write_inner, caps, call_span, ctx)
+        // Extract Handle
+        let (handle, write_inner, caps) = match val {
+            Value::Handle {
+                inner,
+                write_inner,
+                caps,
+                ..
+            } => (inner, write_inner, caps),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "lines".to_string(),
+                    "Handle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Check if Binary cap is set — error if so
+        if caps.contains_key("Binary") {
+            return Err(EvalError::user_error(
+                "lines: requires Text encoding (cannot read lines from Binary handle)".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        // Wrap the Handle in a new Handle that the step function can use
+        // The step function will read one line, then return a Seq with the line as head
+        // and a PendingBuiltin thunk for the next line as tail
+        builtin_lines_step(handle, write_inner, caps, call_span, ctx)
+    })
 }
 
 /// Helper for `lines`: reads one line and returns Seq or null.
@@ -1525,203 +1566,215 @@ pub(crate) fn builtin_lines_step(
 /// `write`: Write a String to a file.
 /// Takes a DirCap, String path, and String content.
 /// Writes content to the file at path (creating or truncating), then returns empty dict `{}`.
-pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    // Expect 3 args: DirCap, String path, String content
-    if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-    }
-    reject_named("write", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let content_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "write", args[0].span)?;
-    check_perm(perms, "Writable", perms.writable, "write", call_span)?;
-
-    let path = require_string("write", path_val, args[1].span)?;
-    let content = require_string("write", content_val, args[2].span)?;
-
-    // Open file for writing (create or truncate)
-    use std::io::Write;
-    let mut file = dir.create(&path).map_err(|e| {
-        EvalError::user_error(
-            format!("write: failed to create file '{}': {}", path, e),
+pub(crate) fn builtin_write(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-    })?;
+            ctx: _,
+        } = ctx_arg;
 
-    // Write content
-    file.write_all(content.as_bytes()).map_err(|e| {
-        EvalError::user_error(
-            format!("write: failed to write to '{}': {}", path, e),
-            call_span,
-        )
-    })?;
+        // Expect 3 args: DirCap, String path, String content
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("write", named.as_ref(), call_span)?;
 
-    // Return null (empty dict)
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let content_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "write", args[0].span)?;
+        check_perm(perms, "Writable", perms.writable, "write", call_span)?;
+
+        let path = require_string("write", path_val, args[1].span)?;
+        let content = require_string("write", content_val, args[2].span)?;
+
+        // Open file for writing (create or truncate)
+        use std::io::Write;
+        let mut file = dir.create(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("write: failed to create file '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        // Write content
+        file.write_all(content.as_bytes()).map_err(|e| {
+            EvalError::user_error(
+                format!("write: failed to write to '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        // Return null (empty dict)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `write-atomic`: Atomically write a String to a file.
 /// Takes a DirCap, String path, and String content.
 /// Writes to a temp file in the same directory, then renames to the target path.
 /// This ensures the target file is never partially written.
-pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    // Expect 3 args: DirCap, String path, String content
-    if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-    }
-    reject_named("write-atomic", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let content_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", args[0].span)?;
-    check_perm(perms, "Writable", perms.writable, "write-atomic", call_span)?;
-
-    let path = require_string("write-atomic", path_val, args[1].span)?;
-    let content = require_string("write-atomic", content_val, args[2].span)?;
-
-    // Generate a unique temp filename in the same directory as the target
-    // Use process ID and a random suffix to avoid collisions
-    use std::io::Write;
-    let temp_name = format!(
-        ".tmp.{}.{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-
-    // Write to temp file
-    let mut temp_file = dir.create(&temp_name).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "write-atomic: failed to create temp file '{}': {}",
-                temp_name, e
-            ),
+pub(crate) fn builtin_write_atomic(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-    })?;
+            ctx: _,
+        } = ctx_arg;
 
-    temp_file.write_all(content.as_bytes()).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "write-atomic: failed to write to temp file '{}': {}",
-                temp_name, e
-            ),
-            call_span,
-        )
-    })?;
+        // Expect 3 args: DirCap, String path, String content
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("write-atomic", named.as_ref(), call_span)?;
 
-    // Ensure data is flushed before rename
-    temp_file.sync_all().map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "write-atomic: failed to sync temp file '{}': {}",
-                temp_name, e
-            ),
-            call_span,
-        )
-    })?;
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let content_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    // Drop the file handle before rename (required on Windows)
-    drop(temp_file);
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", args[0].span)?;
+        check_perm(perms, "Writable", perms.writable, "write-atomic", call_span)?;
 
-    // Atomically rename temp file to target path
-    dir.rename(&temp_name, dir, &path).map_err(|e| {
-        // Clean up temp file on rename failure
-        let _ = dir.remove_file(&temp_name);
-        EvalError::user_error(
-            format!(
-                "write-atomic: failed to rename temp file to '{}': {}",
-                path, e
-            ),
-            call_span,
-        )
-    })?;
+        let path = require_string("write-atomic", path_val, args[1].span)?;
+        let content = require_string("write-atomic", content_val, args[2].span)?;
 
-    // Return null (empty dict)
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        // Generate a unique temp filename in the same directory as the target
+        // Use process ID and a random suffix to avoid collisions
+        use std::io::Write;
+        let temp_name = format!(
+            ".tmp.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+
+        // Write to temp file
+        let mut temp_file = dir.create(&temp_name).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "write-atomic: failed to create temp file '{}': {}",
+                    temp_name, e
+                ),
+                call_span,
+            )
+        })?;
+
+        temp_file.write_all(content.as_bytes()).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "write-atomic: failed to write to temp file '{}': {}",
+                    temp_name, e
+                ),
+                call_span,
+            )
+        })?;
+
+        // Ensure data is flushed before rename
+        temp_file.sync_all().map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "write-atomic: failed to sync temp file '{}': {}",
+                    temp_name, e
+                ),
+                call_span,
+            )
+        })?;
+
+        // Drop the file handle before rename (required on Windows)
+        drop(temp_file);
+
+        // Atomically rename temp file to target path
+        dir.rename(&temp_name, dir, &path).map_err(|e| {
+            // Clean up temp file on rename failure
+            let _ = dir.remove_file(&temp_name);
+            EvalError::user_error(
+                format!(
+                    "write-atomic: failed to rename temp file to '{}': {}",
+                    path, e
+                ),
+                call_span,
+            )
+        })?;
+
+        // Return null (empty dict)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `cap-data`: Extract capability data from a Handle or WriteHandle.
 /// Takes a Handle/WriteHandle and a capability name (String).
 /// Returns the Value associated with that capability, or Null (empty dict) if the cap is absent.
-pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+pub(crate) fn builtin_cap_data(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
 
-    // Expect 2 args: Handle/WriteHandle, String cap_name
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("cap-data", named, call_span)?;
-
-    let handle_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let cap_name_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract caps from Handle or WriteHandle
-    let caps = match handle_val {
-        Value::Handle { caps, .. } => caps,
-        Value::WriteHandle { caps, .. } => caps,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "cap-data".to_string(),
-                "Handle or WriteHandle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
+        // Expect 2 args: Handle/WriteHandle, String cap_name
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-    };
+        reject_named("cap-data", named.as_ref(), call_span)?;
 
-    let cap_name = require_string("cap-data", cap_name_val, args[1].span)?;
+        let handle_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let cap_name_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    // Lookup capability — return empty dict (Null) on miss so callers can use null?
-    match caps.get(&cap_name) {
-        Some(cap_value) => ok_val(cap_value.clone(), call_span),
-        None => ok_val(Value::Dict(IndexMap::new()), call_span),
-    }
+        // Extract caps from Handle or WriteHandle
+        let caps = match handle_val {
+            Value::Handle { caps, .. } => caps,
+            Value::WriteHandle { caps, .. } => caps,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "cap-data".to_string(),
+                    "Handle or WriteHandle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        let cap_name = require_string("cap-data", cap_name_val, args[1].span)?;
+
+        // Lookup capability — return empty dict (Null) on miss so callers can use null?
+        match caps.get(&cap_name) {
+            Some(cap_value) => ok_val(cap_value.clone(), call_span),
+            None => ok_val(Value::Dict(IndexMap::new()), call_span),
+        }
+    })
 }
 
 /// `write-handle`: Write to a WriteHandle or a bidirectional Handle (e.g. TCP socket).
@@ -1729,268 +1782,280 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Checks encoding via Binary cap: if present, content must be Bytes; otherwise String.
 /// Uses `inner.borrow_mut().write_all(bytes)`.
 /// Returns the original handle (WriteHandle or Handle) for chaining.
-pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+pub(crate) fn builtin_write_handle(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
 
-    // Expect 2 args: WriteHandle or Handle, content
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("write-handle", named, call_span)?;
-
-    let handle_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let content_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Determine the writer and the return value (preserve original handle type for chaining)
-    enum HandleKind {
-        Write {
-            inner: Rc<RefCell<Box<dyn std::io::Write>>>,
-            caps: HashMap<String, Value>,
-        },
-        Bidirectional {
-            write_inner: Rc<RefCell<Box<dyn std::io::Write>>>,
-            read_inner: Rc<RefCell<Box<dyn std::io::BufRead>>>,
-            caps: HashMap<String, Value>,
-        },
-    }
-
-    let kind = match &handle_val {
-        Value::WriteHandle { inner, caps } => HandleKind::Write {
-            inner: Rc::clone(inner),
-            caps: caps.clone(),
-        },
-        Value::Handle {
-            write_inner: Some(w),
-            inner,
-            caps,
-            ..
-        } => HandleKind::Bidirectional {
-            write_inner: Rc::clone(w),
-            read_inner: Rc::clone(inner),
-            caps: caps.clone(),
-        },
-        Value::Handle {
-            write_inner: None, ..
-        } => {
-            return Err(EvalError::type_mismatch_ctx(
-                "write-handle".to_string(),
-                "WriteHandle or bidirectional Handle",
-                "read-only Handle",
-                args[0].span,
-            )
-            .into())
+        // Expect 2 args: WriteHandle or Handle, content
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "write-handle".to_string(),
-                "WriteHandle or bidirectional Handle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
+        reject_named("write-handle", named.as_ref(), call_span)?;
+
+        let handle_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let content_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Determine the writer and the return value (preserve original handle type for chaining)
+        enum HandleKind {
+            Write {
+                inner: Rc<RefCell<Box<dyn std::io::Write>>>,
+                caps: HashMap<String, Value>,
+            },
+            Bidirectional {
+                write_inner: Rc<RefCell<Box<dyn std::io::Write>>>,
+                read_inner: Rc<RefCell<Box<dyn std::io::BufRead>>>,
+                caps: HashMap<String, Value>,
+            },
         }
-    };
 
-    let caps_ref = match &kind {
-        HandleKind::Write { caps, .. } => caps,
-        HandleKind::Bidirectional { caps, .. } => caps,
-    };
-
-    // Check encoding
-    let is_binary = caps_ref.contains_key("Binary");
-
-    use std::io::Write;
-    let bytes: Vec<u8> = if is_binary {
-        // Content must be Bytes
-        match content_val {
-            Value::Bytes { source, start, end } => source[start..end].to_vec(),
-            other => {
+        let kind = match &handle_val {
+            Value::WriteHandle { inner, caps } => HandleKind::Write {
+                inner: Rc::clone(inner),
+                caps: caps.clone(),
+            },
+            Value::Handle {
+                write_inner: Some(w),
+                inner,
+                caps,
+                ..
+            } => HandleKind::Bidirectional {
+                write_inner: Rc::clone(w),
+                read_inner: Rc::clone(inner),
+                caps: caps.clone(),
+            },
+            Value::Handle {
+                write_inner: None, ..
+            } => {
                 return Err(EvalError::type_mismatch_ctx(
                     "write-handle".to_string(),
-                    "Bytes (Binary handle)",
-                    other.type_name(),
-                    args[1].span,
+                    "WriteHandle or bidirectional Handle",
+                    "read-only Handle",
+                    args[0].span,
                 )
                 .into())
             }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "write-handle".to_string(),
+                    "WriteHandle or bidirectional Handle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        let caps_ref = match &kind {
+            HandleKind::Write { caps, .. } => caps,
+            HandleKind::Bidirectional { caps, .. } => caps,
+        };
+
+        // Check encoding
+        let is_binary = caps_ref.contains_key("Binary");
+
+        use std::io::Write;
+        let bytes: Vec<u8> = if is_binary {
+            // Content must be Bytes
+            match content_val {
+                Value::Bytes { source, start, end } => source[start..end].to_vec(),
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "write-handle".to_string(),
+                        "Bytes (Binary handle)",
+                        other.type_name(),
+                        args[1].span,
+                    )
+                    .into())
+                }
+            }
+        } else {
+            // Content must be String (Text encoding)
+            let s = require_string("write-handle", content_val, args[1].span)?;
+            s.as_bytes().to_vec()
+        };
+
+        // Write to handle
+        match &kind {
+            HandleKind::Write { inner, .. } => {
+                inner.borrow_mut().write_all(&bytes).map_err(|e| {
+                    EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
+                })?;
+            }
+            HandleKind::Bidirectional { write_inner, .. } => {
+                write_inner.borrow_mut().write_all(&bytes).map_err(|e| {
+                    EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
+                })?;
+            }
         }
-    } else {
-        // Content must be String (Text encoding)
-        let s = require_string("write-handle", content_val, args[1].span)?;
-        s.as_bytes().to_vec()
-    };
 
-    // Write to handle
-    match &kind {
-        HandleKind::Write { inner, .. } => {
-            inner.borrow_mut().write_all(&bytes).map_err(|e| {
-                EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
-            })?;
-        }
-        HandleKind::Bidirectional { write_inner, .. } => {
-            write_inner.borrow_mut().write_all(&bytes).map_err(|e| {
-                EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
-            })?;
-        }
-    }
-
-    // Return the original handle (preserves type for chaining)
-    match kind {
-        HandleKind::Write { inner, caps } => ok_val(
-            Value::WriteHandle {
-                caps,
-                inner: Rc::clone(&inner),
-            },
-            call_span,
-        ),
-        HandleKind::Bidirectional {
-            write_inner,
-            read_inner,
-            caps,
-        } => ok_val(
-            Value::Handle {
-                caps,
-                inner: Rc::clone(&read_inner),
-                write_inner: Some(Rc::clone(&write_inner)),
-                seek_inner: None,
-                raw_tcp: None,
-                creation_span: call_span,
-            },
-            call_span,
-        ),
-    }
-}
-
-/// `flush`: Flush a WriteHandle or bidirectional Handle buffer.
-/// Takes a WriteHandle (or Handle with write_inner), flushes it, returns the same handle.
-pub(crate) fn builtin_flush(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    let val = crate::builtins::expect_one_arg("flush", args, named, &ctx, call_span)?;
-
-    use std::io::Write;
-    match val {
-        Value::WriteHandle {
-            ref inner,
-            ref caps,
-        } => {
-            inner.borrow_mut().flush().map_err(|e| {
-                EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
-            })?;
-            ok_val(
+        // Return the original handle (preserves type for chaining)
+        match kind {
+            HandleKind::Write { inner, caps } => ok_val(
                 Value::WriteHandle {
-                    caps: caps.clone(),
-                    inner: Rc::clone(inner),
+                    caps,
+                    inner: Rc::clone(&inner),
                 },
                 call_span,
-            )
-        }
-        Value::Handle {
-            write_inner: Some(ref w),
-            ref inner,
-            ref caps,
-            ..
-        } => {
-            w.borrow_mut().flush().map_err(|e| {
-                EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
-            })?;
-            ok_val(
+            ),
+            HandleKind::Bidirectional {
+                write_inner,
+                read_inner,
+                caps,
+            } => ok_val(
                 Value::Handle {
-                    caps: caps.clone(),
-                    inner: Rc::clone(inner),
-                    write_inner: Some(Rc::clone(w)),
+                    caps,
+                    inner: Rc::clone(&read_inner),
+                    write_inner: Some(Rc::clone(&write_inner)),
                     seek_inner: None,
                     raw_tcp: None,
                     creation_span: call_span,
                 },
                 call_span,
-            )
+            ),
         }
-        Value::Handle {
-            write_inner: None, ..
-        } => Err(EvalError::type_mismatch_ctx(
-            "flush".to_string(),
-            "WriteHandle or bidirectional Handle",
-            "read-only Handle",
-            args[0].span,
-        )
-        .into()),
-        other => Err(EvalError::type_mismatch_ctx(
-            "flush".to_string(),
-            "WriteHandle or bidirectional Handle",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+    })
+}
+
+/// `flush`: Flush a WriteHandle or bidirectional Handle buffer.
+/// Takes a WriteHandle (or Handle with write_inner), flushes it, returns the same handle.
+pub(crate) fn builtin_flush(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        let val = crate::builtins::expect_one_arg("flush", &args, named.as_ref(), &ctx, call_span)?;
+
+        use std::io::Write;
+        match val {
+            Value::WriteHandle {
+                ref inner,
+                ref caps,
+            } => {
+                inner.borrow_mut().flush().map_err(|e| {
+                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
+                })?;
+                ok_val(
+                    Value::WriteHandle {
+                        caps: caps.clone(),
+                        inner: Rc::clone(inner),
+                    },
+                    call_span,
+                )
+            }
+            Value::Handle {
+                write_inner: Some(ref w),
+                ref inner,
+                ref caps,
+                ..
+            } => {
+                w.borrow_mut().flush().map_err(|e| {
+                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
+                })?;
+                ok_val(
+                    Value::Handle {
+                        caps: caps.clone(),
+                        inner: Rc::clone(inner),
+                        write_inner: Some(Rc::clone(w)),
+                        seek_inner: None,
+                        raw_tcp: None,
+                        creation_span: call_span,
+                    },
+                    call_span,
+                )
+            }
+            Value::Handle {
+                write_inner: None, ..
+            } => Err(EvalError::type_mismatch_ctx(
+                "flush".to_string(),
+                "WriteHandle or bidirectional Handle",
+                "read-only Handle",
+                args[0].span,
+            )
+            .into()),
+            other => Err(EvalError::type_mismatch_ctx(
+                "flush".to_string(),
+                "WriteHandle or bidirectional Handle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into()),
+        }
+    })
 }
 
 /// `close`: Close a WriteHandle or bidirectional Handle.
 /// Takes a WriteHandle (or Handle with write_inner), flushes and returns Null.
 /// The inner writer is dropped when the last Rc is dropped.
-pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_close(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("close", args, named, &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg("close", &args, named.as_ref(), &ctx, call_span)?;
 
-    use std::io::Write;
-    match val {
-        Value::WriteHandle { inner, .. } => {
-            inner.borrow_mut().flush().map_err(|e| {
-                EvalError::user_error(format!("close: flush failed: {}", e), call_span)
-            })?;
+        use std::io::Write;
+        match val {
+            Value::WriteHandle { inner, .. } => {
+                inner.borrow_mut().flush().map_err(|e| {
+                    EvalError::user_error(format!("close: flush failed: {}", e), call_span)
+                })?;
+            }
+            Value::Handle {
+                write_inner: Some(w),
+                ..
+            } => {
+                w.borrow_mut().flush().map_err(|e| {
+                    EvalError::user_error(format!("close: flush failed: {}", e), call_span)
+                })?;
+            }
+            Value::Handle {
+                write_inner: None, ..
+            } => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "close".to_string(),
+                    "WriteHandle or bidirectional Handle",
+                    "read-only Handle",
+                    args[0].span,
+                )
+                .into())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "close".to_string(),
+                    "WriteHandle or bidirectional Handle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
         }
-        Value::Handle {
-            write_inner: Some(w),
-            ..
-        } => {
-            w.borrow_mut().flush().map_err(|e| {
-                EvalError::user_error(format!("close: flush failed: {}", e), call_span)
-            })?;
-        }
-        Value::Handle {
-            write_inner: None, ..
-        } => {
-            return Err(EvalError::type_mismatch_ctx(
-                "close".to_string(),
-                "WriteHandle or bidirectional Handle",
-                "read-only Handle",
-                args[0].span,
-            )
-            .into())
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "close".to_string(),
-                "WriteHandle or bidirectional Handle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    }
 
-    // Return Null (the inner writer is dropped when the Rc goes out of scope)
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        // Return Null (the inner writer is dropped when the Rc goes out of scope)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `raw-create`: Open a file for writing (create/truncate), returning a WriteHandle.
@@ -1998,405 +2063,528 @@ pub(crate) fn builtin_close(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Takes 2 args: `cap` (DirCap), `path` (String).
 /// Returns a WriteHandle with Writable and Text capabilities.
 /// This is a low-level primitive used to implement higher-level I/O functions in tinct.
-pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+pub(crate) fn builtin_raw_create(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
 
-    reject_named("raw-create", named, call_span)?;
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
+        reject_named("raw-create", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
 
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    // Extract DirCap and permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "raw-create", args[0].span)?;
+        // Extract DirCap and permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "raw-create", args[0].span)?;
 
-    // Check Writable permission
-    check_perm(perms, "Writable", perms.writable, "raw-create", call_span)?;
+        // Check Writable permission
+        check_perm(perms, "Writable", perms.writable, "raw-create", call_span)?;
 
-    let path = require_string("raw-create", path_val, args[1].span)?;
+        let path = require_string("raw-create", path_val, args[1].span)?;
 
-    // Open file for writing (create/truncate)
-    use cap_std::fs::OpenOptions;
-    let file = dir
-        .open_with(
-            &path,
-            OpenOptions::new().write(true).create(true).truncate(true),
-        )
-        .map_err(|e| {
-            EvalError::user_error(
-                format!("raw-create: failed to create file '{}': {}", path, e),
-                call_span,
+        // Open file for writing (create/truncate)
+        use cap_std::fs::OpenOptions;
+        let file = dir
+            .open_with(
+                &path,
+                OpenOptions::new().write(true).create(true).truncate(true),
             )
-        })?;
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("raw-create: failed to create file '{}': {}", path, e),
+                    call_span,
+                )
+            })?;
 
-    // Create WriteHandle with Writable and Text capabilities
-    let mut caps = HashMap::new();
-    caps.insert("Writable".to_string(), Value::Bool(true));
-    caps.insert("Text".to_string(), Value::Bool(true));
+        // Create WriteHandle with Writable and Text capabilities
+        let mut caps = HashMap::new();
+        caps.insert("Writable".to_string(), Value::Bool(true));
+        caps.insert("Text".to_string(), Value::Bool(true));
 
-    use std::io::BufWriter;
-    let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
+        use std::io::BufWriter;
+        let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
 
-    ok_val(
-        Value::WriteHandle {
-            caps,
-            inner: Rc::new(std::cell::RefCell::new(writer)),
-        },
-        call_span,
-    )
+        ok_val(
+            Value::WriteHandle {
+                caps,
+                inner: Rc::new(std::cell::RefCell::new(writer)),
+            },
+            call_span,
+        )
+    })
 }
 
 /// `seek`: Seek to a byte offset from the start of the file.
 /// Takes a Handle and an Int offset, returns the Handle for chaining.
 /// Requires the Seekable capability.
-pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+pub(crate) fn builtin_seek(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
 
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("seek", named, call_span)?;
-
-    let handle_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let offset_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract offset as Int
-    let offset = match offset_val {
-        Value::Int(i) => i,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "seek".to_string(),
-                "Int",
-                other.type_name(),
-                args[1].span,
-            )
-            .into())
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-    };
+        reject_named("seek", named.as_ref(), call_span)?;
 
-    // Extract Handle and check for Seekable capability
-    match handle_val {
-        Value::Handle {
-            ref caps,
-            ref inner,
-            ref write_inner,
-            ref seek_inner,
-            ..
-        } => {
-            // Check for Seekable capability
-            if !caps.contains_key("Seekable") {
-                return Err(EvalError::user_error(
-                    "seek: Handle does not have Seekable capability".to_string(),
-                    args[0].span,
+        let handle_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let offset_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract offset as Int
+        let offset = match offset_val {
+            Value::Int(i) => i,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "seek".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[1].span,
                 )
-                .into());
+                .into())
             }
+        };
 
-            // Get the seek_inner
-            let seek_handle = match seek_inner {
-                Some(s) => s,
-                None => {
+        // Extract Handle and check for Seekable capability
+        match handle_val {
+            Value::Handle {
+                ref caps,
+                ref inner,
+                ref write_inner,
+                ref seek_inner,
+                ..
+            } => {
+                // Check for Seekable capability
+                if !caps.contains_key("Seekable") {
                     return Err(EvalError::user_error(
-                        "seek: Handle has Seekable capability but no seek interface".to_string(),
+                        "seek: Handle does not have Seekable capability".to_string(),
                         args[0].span,
                     )
-                    .into())
+                    .into());
                 }
-            };
 
-            // Perform the seek on both the inner BufReader and seek_inner
-            // They are cloned File handles, so we need to seek both to keep them in sync
-            use std::io::Seek;
+                // Get the seek_inner
+                let seek_handle = match seek_inner {
+                    Some(s) => s,
+                    None => {
+                        return Err(EvalError::user_error(
+                            "seek: Handle has Seekable capability but no seek interface"
+                                .to_string(),
+                            args[0].span,
+                        )
+                        .into())
+                    }
+                };
 
-            // Seek the seek_inner first
-            seek_handle
-                .borrow_mut()
-                .seek(std::io::SeekFrom::Start(offset as u64))
-                .map_err(|e| {
-                    EvalError::user_error(format!("seek: seek failed: {}", e), call_span)
-                })?;
+                // Perform the seek on both the inner BufReader and seek_inner
+                // They are cloned File handles, so we need to seek both to keep them in sync
+                use std::io::Seek;
 
-            // Now seek the inner BufReader by downcasting
-            // Since both are BufReader<cap_std::fs::File>, we can use std::any::Any
-            use std::any::Any;
-            let mut inner_borrow = inner.borrow_mut();
-            if let Some(buf_reader) =
-                (&mut *inner_borrow as &mut dyn Any).downcast_mut::<BufReader<cap_std::fs::File>>()
-            {
-                buf_reader
+                // Seek the seek_inner first
+                seek_handle
+                    .borrow_mut()
                     .seek(std::io::SeekFrom::Start(offset as u64))
                     .map_err(|e| {
-                        EvalError::user_error(
-                            format!("seek: inner buffer seek failed: {}", e),
-                            call_span,
-                        )
+                        EvalError::user_error(format!("seek: seek failed: {}", e), call_span)
                     })?;
-            } else {
-                return Err(EvalError::user_error(
-                    "seek: failed to downcast BufRead to BufReader<File>".to_string(),
+
+                // Now seek the inner BufReader by downcasting
+                // Since both are BufReader<cap_std::fs::File>, we can use std::any::Any
+                use std::any::Any;
+                let mut inner_borrow = inner.borrow_mut();
+                if let Some(buf_reader) = (&mut *inner_borrow as &mut dyn Any)
+                    .downcast_mut::<BufReader<cap_std::fs::File>>()
+                {
+                    buf_reader
+                        .seek(std::io::SeekFrom::Start(offset as u64))
+                        .map_err(|e| {
+                            EvalError::user_error(
+                                format!("seek: inner buffer seek failed: {}", e),
+                                call_span,
+                            )
+                        })?;
+                } else {
+                    return Err(EvalError::user_error(
+                        "seek: failed to downcast BufRead to BufReader<File>".to_string(),
+                        call_span,
+                    )
+                    .into());
+                }
+                drop(inner_borrow); // Release the borrow before cloning
+
+                // Return the handle for chaining
+                ok_val(
+                    Value::Handle {
+                        caps: caps.clone(),
+                        inner: Rc::clone(inner),
+                        write_inner: write_inner.clone(),
+                        seek_inner: Some(Rc::clone(seek_handle)),
+                        raw_tcp: None,
+                        creation_span: call_span,
+                    },
                     call_span,
                 )
-                .into());
             }
-            drop(inner_borrow); // Release the borrow before cloning
-
-            // Return the handle for chaining
-            ok_val(
-                Value::Handle {
-                    caps: caps.clone(),
-                    inner: Rc::clone(inner),
-                    write_inner: write_inner.clone(),
-                    seek_inner: Some(Rc::clone(seek_handle)),
-                    raw_tcp: None,
-                    creation_span: call_span,
-                },
-                call_span,
+            other => Err(EvalError::type_mismatch_ctx(
+                "seek".to_string(),
+                "Handle",
+                other.type_name(),
+                args[0].span,
             )
+            .into()),
         }
-        other => Err(EvalError::type_mismatch_ctx(
-            "seek".to_string(),
-            "Handle",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+    })
 }
 
 /// `seek-end`: Seek to the end of the file.
 /// Takes a Handle, returns the Handle for chaining.
 /// Requires the Seekable capability.
-pub(crate) fn builtin_seek_end(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_seek_end(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("seek-end", args, named, &ctx, call_span)?;
+        let val =
+            crate::builtins::expect_one_arg("seek-end", &args, named.as_ref(), &ctx, call_span)?;
 
-    // Extract Handle and check for Seekable capability
-    match val {
-        Value::Handle {
-            ref caps,
-            ref inner,
-            ref write_inner,
-            ref seek_inner,
-            ..
-        } => {
-            // Check for Seekable capability
-            if !caps.contains_key("Seekable") {
-                return Err(EvalError::user_error(
-                    "seek-end: Handle does not have Seekable capability".to_string(),
-                    args[0].span,
-                )
-                .into());
-            }
-
-            // Get the seek_inner
-            let seek_handle = match seek_inner {
-                Some(s) => s,
-                None => {
+        // Extract Handle and check for Seekable capability
+        match val {
+            Value::Handle {
+                ref caps,
+                ref inner,
+                ref write_inner,
+                ref seek_inner,
+                ..
+            } => {
+                // Check for Seekable capability
+                if !caps.contains_key("Seekable") {
                     return Err(EvalError::user_error(
-                        "seek-end: Handle has Seekable capability but no seek interface"
-                            .to_string(),
+                        "seek-end: Handle does not have Seekable capability".to_string(),
                         args[0].span,
                     )
-                    .into())
+                    .into());
                 }
-            };
 
-            // Perform the seek on both the inner BufReader and seek_inner
-            use std::io::Seek;
+                // Get the seek_inner
+                let seek_handle = match seek_inner {
+                    Some(s) => s,
+                    None => {
+                        return Err(EvalError::user_error(
+                            "seek-end: Handle has Seekable capability but no seek interface"
+                                .to_string(),
+                            args[0].span,
+                        )
+                        .into())
+                    }
+                };
 
-            // Seek the seek_inner first
-            seek_handle
-                .borrow_mut()
-                .seek(std::io::SeekFrom::End(0))
-                .map_err(|e| {
-                    EvalError::user_error(format!("seek-end: seek failed: {}", e), call_span)
-                })?;
+                // Perform the seek on both the inner BufReader and seek_inner
+                use std::io::Seek;
 
-            // Now seek the inner BufReader by downcasting
-            use std::any::Any;
-            let mut inner_borrow = inner.borrow_mut();
-            if let Some(buf_reader) =
-                (&mut *inner_borrow as &mut dyn Any).downcast_mut::<BufReader<cap_std::fs::File>>()
-            {
-                buf_reader.seek(std::io::SeekFrom::End(0)).map_err(|e| {
-                    EvalError::user_error(
-                        format!("seek-end: inner buffer seek failed: {}", e),
+                // Seek the seek_inner first
+                seek_handle
+                    .borrow_mut()
+                    .seek(std::io::SeekFrom::End(0))
+                    .map_err(|e| {
+                        EvalError::user_error(format!("seek-end: seek failed: {}", e), call_span)
+                    })?;
+
+                // Now seek the inner BufReader by downcasting
+                use std::any::Any;
+                let mut inner_borrow = inner.borrow_mut();
+                if let Some(buf_reader) = (&mut *inner_borrow as &mut dyn Any)
+                    .downcast_mut::<BufReader<cap_std::fs::File>>()
+                {
+                    buf_reader.seek(std::io::SeekFrom::End(0)).map_err(|e| {
+                        EvalError::user_error(
+                            format!("seek-end: inner buffer seek failed: {}", e),
+                            call_span,
+                        )
+                    })?;
+                } else {
+                    return Err(EvalError::user_error(
+                        "seek-end: failed to downcast BufRead to BufReader<File>".to_string(),
                         call_span,
                     )
-                })?;
-            } else {
-                return Err(EvalError::user_error(
-                    "seek-end: failed to downcast BufRead to BufReader<File>".to_string(),
+                    .into());
+                }
+                drop(inner_borrow); // Release the borrow before cloning
+
+                // Return the handle for chaining
+                ok_val(
+                    Value::Handle {
+                        caps: caps.clone(),
+                        inner: Rc::clone(inner),
+                        write_inner: write_inner.clone(),
+                        seek_inner: Some(Rc::clone(seek_handle)),
+                        raw_tcp: None,
+                        creation_span: call_span,
+                    },
                     call_span,
                 )
-                .into());
             }
-            drop(inner_borrow); // Release the borrow before cloning
-
-            // Return the handle for chaining
-            ok_val(
-                Value::Handle {
-                    caps: caps.clone(),
-                    inner: Rc::clone(inner),
-                    write_inner: write_inner.clone(),
-                    seek_inner: Some(Rc::clone(seek_handle)),
-                    raw_tcp: None,
-                    creation_span: call_span,
-                },
-                call_span,
+            other => Err(EvalError::type_mismatch_ctx(
+                "seek-end".to_string(),
+                "Handle",
+                other.type_name(),
+                args[0].span,
             )
+            .into()),
         }
-        other => Err(EvalError::type_mismatch_ctx(
-            "seek-end".to_string(),
-            "Handle",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+    })
 }
 
 /// `position`: Get the current byte offset in the file.
 /// Takes a Handle, returns an Int.
 /// Requires the Seekable capability.
-pub(crate) fn builtin_position(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_position(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("position", args, named, &ctx, call_span)?;
+        let val =
+            crate::builtins::expect_one_arg("position", &args, named.as_ref(), &ctx, call_span)?;
 
-    // Extract Handle and check for Seekable capability
-    match val {
-        Value::Handle {
-            ref caps,
-            ref seek_inner,
-            ..
-        } => {
-            // Check for Seekable capability
-            if !caps.contains_key("Seekable") {
-                return Err(EvalError::user_error(
-                    "position: Handle does not have Seekable capability".to_string(),
-                    args[0].span,
-                )
-                .into());
-            }
-
-            // Get the seek_inner
-            let seek_handle = match seek_inner {
-                Some(s) => s,
-                None => {
+        // Extract Handle and check for Seekable capability
+        match val {
+            Value::Handle {
+                ref caps,
+                ref seek_inner,
+                ..
+            } => {
+                // Check for Seekable capability
+                if !caps.contains_key("Seekable") {
                     return Err(EvalError::user_error(
-                        "position: Handle has Seekable capability but no seek interface"
-                            .to_string(),
+                        "position: Handle does not have Seekable capability".to_string(),
                         args[0].span,
                     )
-                    .into())
+                    .into());
                 }
-            };
 
-            // Get the current position
-            use std::io::Seek;
-            let pos = seek_handle.borrow_mut().stream_position().map_err(|e| {
-                EvalError::user_error(
-                    format!("position: failed to get position: {}", e),
-                    call_span,
-                )
-            })?;
+                // Get the seek_inner
+                let seek_handle = match seek_inner {
+                    Some(s) => s,
+                    None => {
+                        return Err(EvalError::user_error(
+                            "position: Handle has Seekable capability but no seek interface"
+                                .to_string(),
+                            args[0].span,
+                        )
+                        .into())
+                    }
+                };
 
-            ok_val(Value::Int(pos as i64), call_span)
+                // Get the current position
+                use std::io::Seek;
+                let pos = seek_handle.borrow_mut().stream_position().map_err(|e| {
+                    EvalError::user_error(
+                        format!("position: failed to get position: {}", e),
+                        call_span,
+                    )
+                })?;
+
+                ok_val(Value::Int(pos as i64), call_span)
+            }
+            other => Err(EvalError::type_mismatch_ctx(
+                "position".to_string(),
+                "Handle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into()),
         }
-        other => Err(EvalError::type_mismatch_ctx(
-            "position".to_string(),
-            "Handle",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+    })
 }
 
 /// `list-dir`: List directory entries with metadata.
 /// Takes a DirCap and String path, returns a Seq of metadata Dicts.
 /// Each dict has keys: name, type, size, mtime.
-pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Expect 2 args: DirCap, String path
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("list-dir", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", args[0].span)?;
-    check_perm(perms, "Listable", perms.listable, "list-dir", call_span)?;
-
-    let path = require_string("list-dir", path_val, args[1].span)?;
-
-    // Read directory entries
-    let entries = dir.read_dir(&path).map_err(|e| {
-        EvalError::user_error(
-            format!("list-dir: failed to read directory '{}': {}", path, e),
+pub(crate) fn builtin_list_dir(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-    })?;
+            ctx,
+        } = ctx_arg;
 
-    // Collect entries into a vector
-    let mut entry_values = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| {
+        // Expect 2 args: DirCap, String path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("list-dir", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", args[0].span)?;
+        check_perm(perms, "Listable", perms.listable, "list-dir", call_span)?;
+
+        let path = require_string("list-dir", path_val, args[1].span)?;
+
+        // Read directory entries
+        let entries = dir.read_dir(&path).map_err(|e| {
             EvalError::user_error(
-                format!("list-dir: failed to read directory entry: {}", e),
+                format!("list-dir: failed to read directory '{}': {}", path, e),
                 call_span,
             )
         })?;
 
-        let name = entry.file_name().to_string_lossy().to_string();
-        let metadata = entry.metadata().map_err(|e| {
+        // Collect entries into a vector
+        let mut entry_values = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                EvalError::user_error(
+                    format!("list-dir: failed to read directory entry: {}", e),
+                    call_span,
+                )
+            })?;
+
+            let name = entry.file_name().to_string_lossy().to_string();
+            let metadata = entry.metadata().map_err(|e| {
+                EvalError::user_error(
+                    format!("list-dir: failed to read metadata for '{}': {}", name, e),
+                    call_span,
+                )
+            })?;
+
+            // Determine file type
+            let file_type = if metadata.is_dir() {
+                "dir"
+            } else if metadata.is_symlink() {
+                "symlink"
+            } else if metadata.is_file() {
+                "file"
+            } else {
+                "other"
+            };
+
+            // Get mtime as unix timestamp
+            let mtime = metadata
+                .modified()
+                .ok()
+                .and_then(|t| {
+                    use std::time::UNIX_EPOCH;
+                    t.into_std().duration_since(UNIX_EPOCH).ok()
+                })
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+
+            // Build metadata dict
+            use crate::value::Key;
+            let mut dict = IndexMap::new();
+            dict.insert(
+                Key::String("name".to_string()),
+                ctx.alloc_thunk(ok_val(string_val(&name), call_span)?),
+            );
+            dict.insert(
+                Key::String("type".to_string()),
+                ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
+            );
+            dict.insert(
+                Key::String("size".to_string()),
+                ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
+            );
+            dict.insert(
+                Key::String("mtime".to_string()),
+                ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
+            );
+
+            entry_values.push(Value::Dict(dict));
+        }
+
+        // Build a sequence from the collected entries
+        let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
+        for entry in entry_values.into_iter().rev() {
+            let head_id = ctx.alloc_thunk(ok_val(entry, call_span)?);
+            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span)?);
+            seq = Value::Seq {
+                head: head_id,
+                tail: tail_id,
+            };
+        }
+
+        ok_val(seq, call_span)
+    })
+}
+
+/// `stat`: Get metadata for a file or directory.
+/// Takes a DirCap and String path, returns a metadata Dict.
+/// Dict has keys: name, type, size, mtime, mode, is-dir, is-file, is-symlink.
+pub(crate) fn builtin_stat(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        // Expect 2 args: DirCap, String path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("stat", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "stat", args[0].span)?;
+        check_perm(perms, "Statable", perms.statable, "stat", call_span)?;
+
+        let path = require_string("stat", path_val, args[1].span)?;
+
+        // Get metadata
+        let metadata = dir.metadata(&path).map_err(|e| {
             EvalError::user_error(
-                format!("list-dir: failed to read metadata for '{}': {}", name, e),
+                format!("stat: failed to get metadata for '{}': {}", path, e),
                 call_span,
             )
         })?;
@@ -2423,12 +2611,21 @@ pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
+        // Get permissions (Unix-specific)
+        #[cfg(unix)]
+        let mode = {
+            use cap_std::fs::PermissionsExt;
+            metadata.permissions().mode() as i64
+        };
+        #[cfg(not(unix))]
+        let mode = 0i64;
+
         // Build metadata dict
         use crate::value::Key;
         let mut dict = IndexMap::new();
         dict.insert(
             Key::String("name".to_string()),
-            ctx.alloc_thunk(ok_val(string_val(&name), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
         );
         dict.insert(
             Key::String("type".to_string()),
@@ -2442,354 +2639,269 @@ pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             Key::String("mtime".to_string()),
             ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
         );
+        dict.insert(
+            Key::String("mode".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
+        );
+        dict.insert(
+            Key::String("is-dir".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
+        );
+        dict.insert(
+            Key::String("is-file".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
+        );
+        dict.insert(
+            Key::String("is-symlink".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
+        );
 
-        entry_values.push(Value::Dict(dict));
-    }
-
-    // Build a sequence from the collected entries
-    let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
-    for entry in entry_values.into_iter().rev() {
-        let head_id = ctx.alloc_thunk(ok_val(entry, call_span)?);
-        let tail_id = ctx.alloc_thunk(ok_val(seq, call_span)?);
-        seq = Value::Seq {
-            head: head_id,
-            tail: tail_id,
-        };
-    }
-
-    ok_val(seq, call_span)
-}
-
-/// `stat`: Get metadata for a file or directory.
-/// Takes a DirCap and String path, returns a metadata Dict.
-/// Dict has keys: name, type, size, mtime, mode, is-dir, is-file, is-symlink.
-pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Expect 2 args: DirCap, String path
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("stat", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "stat", args[0].span)?;
-    check_perm(perms, "Statable", perms.statable, "stat", call_span)?;
-
-    let path = require_string("stat", path_val, args[1].span)?;
-
-    // Get metadata
-    let metadata = dir.metadata(&path).map_err(|e| {
-        EvalError::user_error(
-            format!("stat: failed to get metadata for '{}': {}", path, e),
-            call_span,
-        )
-    })?;
-
-    // Determine file type
-    let file_type = if metadata.is_dir() {
-        "dir"
-    } else if metadata.is_symlink() {
-        "symlink"
-    } else if metadata.is_file() {
-        "file"
-    } else {
-        "other"
-    };
-
-    // Get mtime as unix timestamp
-    let mtime = metadata
-        .modified()
-        .ok()
-        .and_then(|t| {
-            use std::time::UNIX_EPOCH;
-            t.into_std().duration_since(UNIX_EPOCH).ok()
-        })
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    // Get permissions (Unix-specific)
-    #[cfg(unix)]
-    let mode = {
-        use cap_std::fs::PermissionsExt;
-        metadata.permissions().mode() as i64
-    };
-    #[cfg(not(unix))]
-    let mode = 0i64;
-
-    // Build metadata dict
-    use crate::value::Key;
-    let mut dict = IndexMap::new();
-    dict.insert(
-        Key::String("name".to_string()),
-        ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
-    );
-    dict.insert(
-        Key::String("type".to_string()),
-        ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
-    );
-    dict.insert(
-        Key::String("size".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
-    );
-    dict.insert(
-        Key::String("mtime".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
-    );
-    dict.insert(
-        Key::String("mode".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
-    );
-    dict.insert(
-        Key::String("is-dir".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
-    );
-    dict.insert(
-        Key::String("is-file".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
-    );
-    dict.insert(
-        Key::String("is-symlink".to_string()),
-        ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
-    );
-
-    ok_val(Value::Dict(dict), call_span)
+        ok_val(Value::Dict(dict), call_span)
+    })
 }
 
 /// `make-dir`: Create a directory (and parent directories if needed).
 /// Takes a DirCap and String path, returns Null.
-pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    // Expect 2 args: DirCap, String path
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("make-dir", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", args[0].span)?;
-    check_perm(perms, "Writable", perms.writable, "make-dir", call_span)?;
-
-    let path = require_string("make-dir", path_val, args[1].span)?;
-
-    // Create directory (and parents)
-    dir.create_dir_all(&path).map_err(|e| {
-        EvalError::user_error(
-            format!("make-dir: failed to create directory '{}': {}", path, e),
+pub(crate) fn builtin_make_dir(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-    })?;
+            ctx: _,
+        } = ctx_arg;
 
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        // Expect 2 args: DirCap, String path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("make-dir", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", args[0].span)?;
+        check_perm(perms, "Writable", perms.writable, "make-dir", call_span)?;
+
+        let path = require_string("make-dir", path_val, args[1].span)?;
+
+        // Create directory (and parents)
+        dir.create_dir_all(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("make-dir: failed to create directory '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `remove`: Remove a file or empty directory.
 /// Takes a DirCap and String path, returns Null.
 /// Tries to remove as file first, then as directory.
-pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+pub(crate) fn builtin_remove(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
 
-    // Expect 2 args: DirCap, String path
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("remove", named, call_span)?;
+        // Expect 2 args: DirCap, String path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("remove", named.as_ref(), call_span)?;
 
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "remove", args[0].span)?;
-    check_perm(perms, "Deletable", perms.deletable, "remove", call_span)?;
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "remove", args[0].span)?;
+        check_perm(perms, "Deletable", perms.deletable, "remove", call_span)?;
 
-    let path = require_string("remove", path_val, args[1].span)?;
+        let path = require_string("remove", path_val, args[1].span)?;
 
-    // Try to remove as file first, then as directory
-    if let Err(file_err) = dir.remove_file(&path) {
-        dir.remove_dir(&path).map_err(|dir_err| {
-            EvalError::user_error(
-                format!(
-                    "remove: failed to remove '{}' (as file: {}, as dir: {})",
-                    path, file_err, dir_err
-                ),
-                call_span,
-            )
-        })?;
-    }
+        // Try to remove as file first, then as directory
+        if let Err(file_err) = dir.remove_file(&path) {
+            dir.remove_dir(&path).map_err(|dir_err| {
+                EvalError::user_error(
+                    format!(
+                        "remove: failed to remove '{}' (as file: {}, as dir: {})",
+                        path, file_err, dir_err
+                    ),
+                    call_span,
+                )
+            })?;
+        }
 
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `rename`: Rename or move a file or directory.
 /// Takes a DirCap, old path String, and new path String, returns Null.
-pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    // Expect 3 args: DirCap, String old_path, String new_path
-    if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-    }
-    reject_named("rename", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let old_path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let new_path_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "rename", args[0].span)?;
-    check_perm(perms, "Renameable", perms.renameable, "rename", call_span)?;
-
-    let old_path = require_string("rename", old_path_val, args[1].span)?;
-    let new_path = require_string("rename", new_path_val, args[2].span)?;
-
-    // Rename (both source and dest are in the same DirCap)
-    dir.rename(&old_path, dir, &new_path).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "rename: failed to rename '{}' to '{}': {}",
-                old_path, new_path, e
-            ),
+pub(crate) fn builtin_rename(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-    })?;
+            ctx: _,
+        } = ctx_arg;
 
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        // Expect 3 args: DirCap, String old_path, String new_path
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("rename", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let old_path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let new_path_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "rename", args[0].span)?;
+        check_perm(perms, "Renameable", perms.renameable, "rename", call_span)?;
+
+        let old_path = require_string("rename", old_path_val, args[1].span)?;
+        let new_path = require_string("rename", new_path_val, args[2].span)?;
+
+        // Rename (both source and dest are in the same DirCap)
+        dir.rename(&old_path, dir, &new_path).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "rename: failed to rename '{}' to '{}': {}",
+                    old_path, new_path, e
+                ),
+                call_span,
+            )
+        })?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `copy`: Copy a file.
 /// Takes a DirCap, source path String, and destination path String, returns Null.
 /// `link`: Create a hard link.
 /// Takes a DirCap, existing path String, and link path String, returns Null.
-pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+pub(crate) fn builtin_link(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
 
-    // Expect 3 args: DirCap, String existing_path, String link_path
-    if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-    }
-    reject_named("link", named, call_span)?;
+        // Expect 3 args: DirCap, String existing_path, String link_path
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("link", named.as_ref(), call_span)?;
 
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let existing_path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let link_path_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let existing_path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let link_path_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "link", args[0].span)?;
-    check_perm(perms, "Writable", perms.writable, "link", call_span)?;
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "link", args[0].span)?;
+        check_perm(perms, "Writable", perms.writable, "link", call_span)?;
 
-    let existing_path = require_string("link", existing_path_val, args[1].span)?;
-    let link_path = require_string("link", link_path_val, args[2].span)?;
+        let existing_path = require_string("link", existing_path_val, args[1].span)?;
+        let link_path = require_string("link", link_path_val, args[2].span)?;
 
-    // Create hard link
-    dir.hard_link(&existing_path, dir, &link_path)
-        .map_err(|e| {
-            EvalError::user_error(
-                format!(
-                    "link: failed to create hard link from '{}' to '{}': {}",
-                    existing_path, link_path, e
-                ),
-                call_span,
-            )
-        })?;
+        // Create hard link
+        dir.hard_link(&existing_path, dir, &link_path)
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "link: failed to create hard link from '{}' to '{}': {}",
+                        existing_path, link_path, e
+                    ),
+                    call_span,
+                )
+            })?;
 
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 /// `read-link`: Read the target of a symbolic link.
 /// Takes a DirCap and String path, returns the target path as a String.
-pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    // Expect 2 args: DirCap, String path
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("read-link", named, call_span)?;
-
-    let dir_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract DirCap and check permissions
-    let (dir, perms) = extract_dir_cap(&dir_val, "read-link", args[0].span)?;
-    check_perm(perms, "Readable", perms.readable, "read-link", call_span)?;
-
-    let path = require_string("read-link", path_val, args[1].span)?;
-
-    // Read symlink target
-    let target = dir.read_link(&path).map_err(|e| {
-        EvalError::user_error(
-            format!("read-link: failed to read symlink '{}': {}", path, e),
+pub(crate) fn builtin_read_link(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-    })?;
+            ctx: _,
+        } = ctx_arg;
 
-    let target_str = target.to_string_lossy().to_string();
-    ok_val(string_val(&target_str), call_span)
+        // Expect 2 args: DirCap, String path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("read-link", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "read-link", args[0].span)?;
+        check_perm(perms, "Readable", perms.readable, "read-link", call_span)?;
+
+        let path = require_string("read-link", path_val, args[1].span)?;
+
+        // Read symlink target
+        let target = dir.read_link(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("read-link: failed to read symlink '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        let target_str = target.to_string_lossy().to_string();
+        ok_val(string_val(&target_str), call_span)
+    })
 }
 
 // ============================================================================
@@ -3367,7 +3479,7 @@ fn extract_cn(name: &x509_parser::x509::X509Name) -> Option<String> {
 /// Extract Subject Alternative Names (SANs) from an X.509 certificate
 /// Returns a Seq of strings (DNS names, IPs, emails, URIs)
 fn extract_sans(
-    cert: &x509_parser::certificate::X509Certificate,
+    cert: &x509_parser::certificate::X509Certificate<'_>,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Value> {
@@ -3447,317 +3559,339 @@ fn extract_sans(
 /// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
 /// Takes (handle, sni, opts). Extracts raw_tcp from Handle, wraps in TLS, returns new Handle.
 /// Signature: tls-layer handle@Handle sni@String opts@Dict → Handle[... Stream Tls]
-pub(crate) fn builtin_tls_layer(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Expect 3 args: handle, sni, opts
-    if args.len() != 3 {
-        return Err(EvalError::user_error(
-            format!(
-                "tls-layer: expected 3 arguments (handle sni opts), got {}",
-                args.len()
-            ),
+pub(crate) fn builtin_tls_layer(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
-    reject_named("tls-layer", named, call_span)?;
+            ctx,
+        } = ctx_arg;
 
-    let handle_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let sni_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let opts_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    let sni = require_string("tls-layer", sni_val, args[1].span)?;
-
-    // Extract Handle and its raw_tcp
-    let (raw_tcp_slot, caps, creation_span) = match handle_val {
-        Value::Handle {
-            raw_tcp: Some(slot),
-            caps,
-            creation_span,
-            ..
-        } => (slot, caps, creation_span),
-        Value::Handle {
-            raw_tcp: None,
-            creation_span,
-            ..
-        } => {
-            // Dual-span error: call_span (primary) + creation_span (secondary)
+        // Expect 3 args: handle, sni, opts
+        if args.len() != 3 {
             return Err(EvalError::user_error(
+                format!(
+                    "tls-layer: expected 3 arguments (handle sni opts), got {}",
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+        reject_named("tls-layer", named.as_ref(), call_span)?;
+
+        let handle_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let sni_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let opts_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        let sni = require_string("tls-layer", sni_val, args[1].span)?;
+
+        // Extract Handle and its raw_tcp
+        let (raw_tcp_slot, caps, creation_span) = match handle_val {
+            Value::Handle {
+                raw_tcp: Some(slot),
+                caps,
+                creation_span,
+                ..
+            } => (slot, caps, creation_span),
+            Value::Handle {
+                raw_tcp: None,
+                creation_span,
+                ..
+            } => {
+                // Dual-span error: call_span (primary) + creation_span (secondary)
+                return Err(EvalError::user_error(
                 "tls-layer: handle does not have a raw TCP stream (not created by connect cap Tcp)"
                     .to_string(),
                 call_span,
             )
             .with_secondary_span(creation_span, "handle created here")
             .into());
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "tls-layer".to_string(),
-                "Handle",
-                other.type_name(),
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "tls-layer".to_string(),
+                    "Handle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Check Handle has Stream capability
+        if !caps.contains_key("Stream") {
+            return Err(EvalError::user_error(
+                "tls-layer: handle must have Stream capability".to_string(),
                 args[0].span,
             )
-            .into())
+            .into());
         }
-    };
 
-    // Check Handle has Stream capability
-    if !caps.contains_key("Stream") {
-        return Err(EvalError::user_error(
-            "tls-layer: handle must have Stream capability".to_string(),
-            args[0].span,
-        )
-        .into());
-    }
-
-    // Take the TcpStream from the shared slot (invalidates all aliases)
-    let tcp_stream = raw_tcp_slot.borrow_mut().take().ok_or_else(|| {
-        // Dual-span error: call_span (primary) + creation_span (secondary)
-        EvalError::user_error(
-            "tls-layer: raw TCP stream already consumed by a previous tls-layer call".to_string(),
-            call_span,
-        )
-        .with_secondary_span(creation_span, "handle created here")
-    })?;
-
-    // Build TLS config
-    let tls_config = build_tls_config(&opts_val, args[2].span, &ctx)?;
-
-    // Create TLS connection
-    let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
-        .map_err(|e| {
+        // Take the TcpStream from the shared slot (invalidates all aliases)
+        let tcp_stream = raw_tcp_slot.borrow_mut().take().ok_or_else(|| {
+            // Dual-span error: call_span (primary) + creation_span (secondary)
             EvalError::user_error(
-                format!("tls-layer: invalid server name '{}': {}", sni, e),
-                args[1].span,
+                "tls-layer: raw TCP stream already consumed by a previous tls-layer call"
+                    .to_string(),
+                call_span,
             )
-        })?
-        .to_owned();
-
-    let client_conn = rustls::ClientConnection::new(std::sync::Arc::new(tls_config), server_name)
-        .map_err(|e| {
-        EvalError::user_error(
-            format!("tls-layer: failed to create TLS connection: {}", e),
-            call_span,
-        )
-    })?;
-
-    let tls_stream = rustls::StreamOwned::new(client_conn, tcp_stream);
-    let shared_stream = Rc::new(RefCell::new(tls_stream));
-
-    // Perform TLS handshake by attempting to flush
-    {
-        use std::io::Write;
-        shared_stream.borrow_mut().flush().map_err(|e| {
-            EvalError::user_error(format!("tls-layer: TLS handshake failed: {}", e), call_span)
+            .with_secondary_span(creation_span, "handle created here")
         })?;
-    }
 
-    // Validate SPKI pins if provided
-    if let Value::Dict(opts_map) = &opts_val {
-        if let Some(pins_thunk_id) = opts_map.get(&crate::value::Key::String("pins".to_string())) {
-            let pins_thunk = ctx.get_thunk(*pins_thunk_id);
-            let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
-            validate_spki_pins(&shared_stream.borrow().conn, &pins_val, call_span, &ctx)?;
+        // Build TLS config
+        let tls_config = build_tls_config(&opts_val, args[2].span, &ctx)?;
+
+        // Create TLS connection
+        let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("tls-layer: invalid server name '{}': {}", sni, e),
+                    args[1].span,
+                )
+            })?
+            .to_owned();
+
+        let client_conn =
+            rustls::ClientConnection::new(std::sync::Arc::new(tls_config), server_name).map_err(
+                |e| {
+                    EvalError::user_error(
+                        format!("tls-layer: failed to create TLS connection: {}", e),
+                        call_span,
+                    )
+                },
+            )?;
+
+        let tls_stream = rustls::StreamOwned::new(client_conn, tcp_stream);
+        let shared_stream = Rc::new(RefCell::new(tls_stream));
+
+        // Perform TLS handshake by attempting to flush
+        {
+            use std::io::Write;
+            shared_stream.borrow_mut().flush().map_err(|e| {
+                EvalError::user_error(format!("tls-layer: TLS handshake failed: {}", e), call_span)
+            })?;
         }
-    }
 
-    // Extract peer certificate info for the Tls capability
-    let tls_info = {
-        let stream_borrow = shared_stream.borrow();
-        let peer_certs = stream_borrow.conn.peer_certificates();
-        if let Some(certs) = peer_certs {
-            if !certs.is_empty() {
-                // Clone the cert DER bytes before dropping the borrow
-                let cert_der = certs[0].clone();
-                drop(stream_borrow);
-                extract_cert_info(&cert_der, call_span, &ctx)?
+        // Validate SPKI pins if provided
+        if let Value::Dict(opts_map) = &opts_val {
+            if let Some(pins_thunk_id) =
+                opts_map.get(&crate::value::Key::String("pins".to_string()))
+            {
+                let pins_thunk = ctx.get_thunk(*pins_thunk_id);
+                let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
+                validate_spki_pins(&shared_stream.borrow().conn, &pins_val, call_span, &ctx)?;
+            }
+        }
+
+        // Extract peer certificate info for the Tls capability
+        let tls_info = {
+            let stream_borrow = shared_stream.borrow();
+            let peer_certs = stream_borrow.conn.peer_certificates();
+            if let Some(certs) = peer_certs {
+                if !certs.is_empty() {
+                    // Clone the cert DER bytes before dropping the borrow
+                    let cert_der = certs[0].clone();
+                    drop(stream_borrow);
+                    extract_cert_info(&cert_der, call_span, &ctx)?
+                } else {
+                    Value::Dict(IndexMap::new()) // No cert
+                }
             } else {
                 Value::Dict(IndexMap::new()) // No cert
             }
-        } else {
-            Value::Dict(IndexMap::new()) // No cert
-        }
-    };
+        };
 
-    // Create read and write wrappers
-    let reader = TlsReader {
-        stream: Rc::clone(&shared_stream),
-        buf: Vec::new(),
-        buf_pos: 0,
-    };
-    let writer = TlsWriter {
-        stream: Rc::clone(&shared_stream),
-    };
+        // Create read and write wrappers
+        let reader = TlsReader {
+            stream: Rc::clone(&shared_stream),
+            buf: Vec::new(),
+            buf_pos: 0,
+        };
+        let writer = TlsWriter {
+            stream: Rc::clone(&shared_stream),
+        };
 
-    let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
-    let write_inner = Some(Rc::new(RefCell::new(
-        Box::new(writer) as Box<dyn std::io::Write>
-    )));
+        let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
+        let write_inner = Some(Rc::new(RefCell::new(
+            Box::new(writer) as Box<dyn std::io::Write>
+        )));
 
-    // Build capabilities: Binary Readable Writable Stream Tls
-    let mut new_caps = HashMap::new();
-    new_caps.insert("Readable".to_string(), Value::Bool(true));
-    new_caps.insert("Writable".to_string(), Value::Bool(true));
-    new_caps.insert("Binary".to_string(), Value::Bool(true));
-    new_caps.insert("Stream".to_string(), Value::Bool(true));
-    new_caps.insert("Tls".to_string(), tls_info);
+        // Build capabilities: Binary Readable Writable Stream Tls
+        let mut new_caps = HashMap::new();
+        new_caps.insert("Readable".to_string(), Value::Bool(true));
+        new_caps.insert("Writable".to_string(), Value::Bool(true));
+        new_caps.insert("Binary".to_string(), Value::Bool(true));
+        new_caps.insert("Stream".to_string(), Value::Bool(true));
+        new_caps.insert("Tls".to_string(), tls_info);
 
-    ok_val(
-        Value::Handle {
-            caps: new_caps,
-            inner,
-            write_inner,
-            seek_inner: None,
-            raw_tcp: None, // Consumed by this operation
-            creation_span: call_span,
-        },
-        call_span,
-    )
+        ok_val(
+            Value::Handle {
+                caps: new_caps,
+                inner,
+                write_inner,
+                seek_inner: None,
+                raw_tcp: None, // Consumed by this operation
+                creation_span: call_span,
+            },
+            call_span,
+        )
+    })
 }
 
 /// `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle.
 /// Requires Handle[... Tls ...].
 /// Returns a dict with: subject, issuer, sans, not-before, not-after, spki-sha256.
-pub(crate) fn builtin_tls_peer_cert(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    let val = crate::builtins::expect_one_arg("tls-peer-cert", args, named, &ctx, call_span)?;
-
-    // Extract Handle and check for Tls capability
-    let caps = match val {
-        Value::Handle { caps, .. } => caps,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "tls-peer-cert".to_string(),
-                "Handle",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    let tls_info = caps.get("Tls").ok_or_else(|| {
-        EvalError::user_error(
-            "tls-peer-cert: handle must have Tls capability (created by tls-connect)".to_string(),
+pub(crate) fn builtin_tls_peer_cert(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-    })?;
+            ctx,
+        } = ctx_arg;
 
-    // The TlsInfo is stored in the Tls capability — it's a dict with _raw_der
-    match tls_info {
-        Value::Dict(dict) => {
-            use crate::value::Key;
+        let val = crate::builtins::expect_one_arg(
+            "tls-peer-cert",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span,
+        )?;
 
-            // Extract the _raw_der bytes from the dict
-            let raw_der_thunk_id =
-                dict.get(&Key::String("_raw_der".to_string()))
-                    .ok_or_else(|| {
-                        EvalError::user_error(
-                            "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
+        // Extract Handle and check for Tls capability
+        let caps = match val {
+            Value::Handle { caps, .. } => caps,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "tls-peer-cert".to_string(),
+                    "Handle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        let tls_info = caps.get("Tls").ok_or_else(|| {
+            EvalError::user_error(
+                "tls-peer-cert: handle must have Tls capability (created by tls-connect)"
+                    .to_string(),
+                call_span,
+            )
+        })?;
+
+        // The TlsInfo is stored in the Tls capability — it's a dict with _raw_der
+        match tls_info {
+            Value::Dict(dict) => {
+                use crate::value::Key;
+
+                // Extract the _raw_der bytes from the dict
+                let raw_der_thunk_id =
+                    dict.get(&Key::String("_raw_der".to_string()))
+                        .ok_or_else(|| {
+                            EvalError::user_error(
+                                "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
+                                call_span,
+                            )
+                        })?;
+
+                // Get the thunk and materialize it
+                let raw_der_thunk = ctx.get_thunk(*raw_der_thunk_id);
+                let raw_der_val = materialize(&raw_der_thunk, Some(&call_span), &ctx)?;
+                let cert_der = match &raw_der_val {
+                    Value::Bytes { source, start, end } => &source[*start..*end],
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "tls-peer-cert".to_string(),
+                            "Bytes",
+                            other.type_name(),
                             call_span,
                         )
-                    })?;
+                        .into())
+                    }
+                };
 
-            // Get the thunk and materialize it
-            let raw_der_thunk = ctx.get_thunk(*raw_der_thunk_id);
-            let raw_der_val = materialize(&raw_der_thunk, Some(&call_span), &ctx)?;
-            let cert_der = match &raw_der_val {
-                Value::Bytes { source, start, end } => &source[*start..*end],
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "tls-peer-cert".to_string(),
-                        "Bytes",
-                        other.type_name(),
+                // Parse the X.509 certificate
+                let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
+                    EvalError::user_error(
+                        format!("tls-peer-cert: failed to parse certificate: {}", e),
                         call_span,
                     )
-                    .into())
-                }
-            };
+                })?;
 
-            // Parse the X.509 certificate
-            let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
-                EvalError::user_error(
-                    format!("tls-peer-cert: failed to parse certificate: {}", e),
-                    call_span,
-                )
-            })?;
+                // Extract subject CN (Common Name)
+                let subject =
+                    extract_cn(&cert.tbs_certificate.subject).unwrap_or("(none)".to_string());
 
-            // Extract subject CN (Common Name)
-            let subject = extract_cn(&cert.tbs_certificate.subject).unwrap_or("(none)".to_string());
+                // Extract issuer CN
+                let issuer =
+                    extract_cn(&cert.tbs_certificate.issuer).unwrap_or("(none)".to_string());
 
-            // Extract issuer CN
-            let issuer = extract_cn(&cert.tbs_certificate.issuer).unwrap_or("(none)".to_string());
+                // Extract validity dates (convert to Unix timestamps)
+                let not_before = cert.tbs_certificate.validity.not_before.timestamp();
+                let not_after = cert.tbs_certificate.validity.not_after.timestamp();
 
-            // Extract validity dates (convert to Unix timestamps)
-            let not_before = cert.tbs_certificate.validity.not_before.timestamp();
-            let not_after = cert.tbs_certificate.validity.not_after.timestamp();
+                // Extract SANs (Subject Alternative Names)
+                let sans = extract_sans(&cert, call_span, &ctx)?;
 
-            // Extract SANs (Subject Alternative Names)
-            let sans = extract_sans(&cert, call_span, &ctx)?;
+                // Compute SPKI SHA-256 hash
+                let spki_der = cert.tbs_certificate.subject_pki.raw;
+                let spki_hash = {
+                    use sha2::{Digest, Sha256};
+                    Sha256::digest(spki_der)
+                };
+                let spki_hex = hex::encode(spki_hash);
 
-            // Compute SPKI SHA-256 hash
-            let spki_der = cert.tbs_certificate.subject_pki.raw;
-            let spki_hash = {
-                use sha2::{Digest, Sha256};
-                Sha256::digest(spki_der)
-            };
-            let spki_hex = hex::encode(spki_hash);
+                // Build the result dict
+                let mut cert_info = IndexMap::new();
+                cert_info.insert(
+                    Key::String("subject".to_string()),
+                    ctx.alloc_thunk(ok_val(string_val(&subject), call_span)?),
+                );
+                cert_info.insert(
+                    Key::String("issuer".to_string()),
+                    ctx.alloc_thunk(ok_val(string_val(&issuer), call_span)?),
+                );
+                cert_info.insert(
+                    Key::String("sans".to_string()),
+                    ctx.alloc_thunk(ok_val(sans, call_span)?),
+                );
+                cert_info.insert(
+                    Key::String("not-before".to_string()),
+                    ctx.alloc_thunk(ok_val(Value::Int(not_before), call_span)?),
+                );
+                cert_info.insert(
+                    Key::String("not-after".to_string()),
+                    ctx.alloc_thunk(ok_val(Value::Int(not_after), call_span)?),
+                );
+                cert_info.insert(
+                    Key::String("spki-sha256".to_string()),
+                    ctx.alloc_thunk(ok_val(string_val(&spki_hex), call_span)?),
+                );
 
-            // Build the result dict
-            let mut cert_info = IndexMap::new();
-            cert_info.insert(
-                Key::String("subject".to_string()),
-                ctx.alloc_thunk(ok_val(string_val(&subject), call_span)?),
-            );
-            cert_info.insert(
-                Key::String("issuer".to_string()),
-                ctx.alloc_thunk(ok_val(string_val(&issuer), call_span)?),
-            );
-            cert_info.insert(
-                Key::String("sans".to_string()),
-                ctx.alloc_thunk(ok_val(sans, call_span)?),
-            );
-            cert_info.insert(
-                Key::String("not-before".to_string()),
-                ctx.alloc_thunk(ok_val(Value::Int(not_before), call_span)?),
-            );
-            cert_info.insert(
-                Key::String("not-after".to_string()),
-                ctx.alloc_thunk(ok_val(Value::Int(not_after), call_span)?),
-            );
-            cert_info.insert(
-                Key::String("spki-sha256".to_string()),
-                ctx.alloc_thunk(ok_val(string_val(&spki_hex), call_span)?),
-            );
-
-            ok_val(Value::Dict(cert_info), call_span)
+                ok_val(Value::Dict(cert_info), call_span)
+            }
+            other => Err(EvalError::type_mismatch_ctx(
+                "tls-peer-cert".to_string(),
+                "TlsInfo dict",
+                other.type_name(),
+                call_span,
+            )
+            .into()),
         }
-        other => Err(EvalError::type_mismatch_ctx(
-            "tls-peer-cert".to_string(),
-            "TlsInfo dict",
-            other.type_name(),
-            call_span,
-        )
-        .into()),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -3930,150 +4064,155 @@ impl std::io::Write for QuicSendWriter {
 ///   `mozilla-roots`, `ca-bundle`, `client-cert`, `client-key`, `alpn`, `pins`)
 ///
 /// Returns a `QuicSession` on success.
-pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    use std::net::{SocketAddr, ToSocketAddrs};
-    use std::sync::Arc;
+pub(crate) fn builtin_quic_session(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        use std::net::{SocketAddr, ToSocketAddrs};
+        use std::sync::Arc;
 
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    reject_named("quic-session", named, call_span)?;
-
-    if args.len() != 4 {
-        return Err(EvalError::user_error(
-            format!(
-                "quic-session: expected 4 arguments (cap host port opts), got {}",
-                args.len()
-            ),
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx,
+        } = ctx_arg;
 
-    // All args pre-materialized by force_count
-    let cap_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let host_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let port_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let opts_val = args[3]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        reject_named("quic-session", named.as_ref(), call_span)?;
 
-    // Extract NetCap
-    let entries = match cap_val {
-        Value::NetCap(e) => e,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "quic-session".to_string(),
-                "NetCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    let host_str = require_string("quic-session", host_val, args[1].span)?;
-
-    let port = match port_val {
-        Value::Int(n) if (1..=65535).contains(&n) => n as u16,
-        Value::Int(_) => {
+        if args.len() != 4 {
             return Err(EvalError::user_error(
-                "quic-session: port must be 1–65535".to_string(),
-                args[2].span,
+                format!(
+                    "quic-session: expected 4 arguments (cap host port opts), got {}",
+                    args.len()
+                ),
+                call_span,
             )
-            .into())
+            .into());
         }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "quic-session".to_string(),
-                "Int",
-                other.type_name(),
-                args[2].span,
-            )
-            .into())
-        }
-    };
 
-    // Validate against NetCap allowlist (DNS-rebinding mitigation)
-    let resolved_ip = check_net_cap_allowlist(&entries, &host_str, Some(port), call_span)?;
+        // All args pre-materialized by force_count
+        let cap_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let host_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let port_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let opts_val = args[3]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    // Determine server address for connection
-    let server_addr: SocketAddr = if let Some(ip) = resolved_ip {
-        SocketAddr::new(ip, port)
-    } else {
-        // Resolve hostname
-        format!("{}:{}", host_str, port)
-            .to_socket_addrs()
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("quic-session: failed to resolve '{}': {}", host_str, e),
-                    call_span,
+        // Extract NetCap
+        let entries = match cap_val {
+            Value::NetCap(e) => e,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "quic-session".to_string(),
+                    "NetCap",
+                    other.type_name(),
+                    args[0].span,
                 )
-            })?
-            .next()
-            .ok_or_else(|| {
-                EvalError::user_error(
-                    format!("quic-session: no addresses for '{}'", host_str),
-                    call_span,
+                .into())
+            }
+        };
+
+        let host_str = require_string("quic-session", host_val, args[1].span)?;
+
+        let port = match port_val {
+            Value::Int(n) if (1..=65535).contains(&n) => n as u16,
+            Value::Int(_) => {
+                return Err(EvalError::user_error(
+                    "quic-session: port must be 1–65535".to_string(),
+                    args[2].span,
                 )
-            })?
-    };
+                .into())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "quic-session".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[2].span,
+                )
+                .into())
+            }
+        };
 
-    // Build rustls ClientConfig, then adapt it for QUIC via quinn's rustls adapter.
-    // ALPN defaults to "h3" for QUIC sessions (RFC 9114 §3.1).
-    let mut tls_config = build_tls_config(&opts_val, args[3].span, &ctx)?;
+        // Validate against NetCap allowlist (DNS-rebinding mitigation)
+        let resolved_ip = check_net_cap_allowlist(&entries, &host_str, Some(port), call_span)?;
 
-    // Override ALPN to h3 unless caller specified explicit alpn in opts.
-    // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
-    // We check opts for an explicit alpn key to respect caller overrides.
-    let has_explicit_alpn = matches!(&opts_val, Value::Dict(d)
+        // Determine server address for connection
+        let server_addr: SocketAddr = if let Some(ip) = resolved_ip {
+            SocketAddr::new(ip, port)
+        } else {
+            // Resolve hostname
+            format!("{}:{}", host_str, port)
+                .to_socket_addrs()
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!("quic-session: failed to resolve '{}': {}", host_str, e),
+                        call_span,
+                    )
+                })?
+                .next()
+                .ok_or_else(|| {
+                    EvalError::user_error(
+                        format!("quic-session: no addresses for '{}'", host_str),
+                        call_span,
+                    )
+                })?
+        };
+
+        // Build rustls ClientConfig, then adapt it for QUIC via quinn's rustls adapter.
+        // ALPN defaults to "h3" for QUIC sessions (RFC 9114 §3.1).
+        let mut tls_config = build_tls_config(&opts_val, args[3].span, &ctx)?;
+
+        // Override ALPN to h3 unless caller specified explicit alpn in opts.
+        // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
+        // We check opts for an explicit alpn key to respect caller overrides.
+        let has_explicit_alpn = matches!(&opts_val, Value::Dict(d)
         if d.contains_key(&crate::value::Key::String("alpn".to_string())));
-    if !has_explicit_alpn {
-        tls_config.alpn_protocols = vec![b"h3".to_vec()];
-    }
+        if !has_explicit_alpn {
+            tls_config.alpn_protocols = vec![b"h3".to_vec()];
+        }
 
-    // Adapt rustls config for QUIC
-    let quic_tls = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).map_err(|e| {
-        EvalError::user_error(
-            format!("quic-session: TLS config not suitable for QUIC: {}", e),
-            call_span,
-        )
-    })?;
+        // Adapt rustls config for QUIC
+        let quic_tls =
+            quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).map_err(|e| {
+                EvalError::user_error(
+                    format!("quic-session: TLS config not suitable for QUIC: {}", e),
+                    call_span,
+                )
+            })?;
 
-    let client_config = quinn::ClientConfig::new(Arc::new(quic_tls));
+        let client_config = quinn::ClientConfig::new(Arc::new(quic_tls));
 
-    // Create a client endpoint bound to an ephemeral local UDP port
-    let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("valid bind addr");
-    let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(|e| {
-        EvalError::user_error(
-            format!("quic-session: failed to create QUIC endpoint: {}", e),
-            call_span,
-        )
-    })?;
-    endpoint.set_default_client_config(client_config);
+        // Create a client endpoint bound to an ephemeral local UDP port
+        let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("valid bind addr");
+        let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(|e| {
+            EvalError::user_error(
+                format!("quic-session: failed to create QUIC endpoint: {}", e),
+                call_span,
+            )
+        })?;
+        endpoint.set_default_client_config(client_config);
 
-    // Connect (async → sync via block_on on the thread-local tokio runtime)
-    let connection = crate::async_rt::block_on(async {
-        let connecting = endpoint
-            .connect(server_addr, &host_str)
-            .map_err(|e| format!("quic-session: connect error: {}", e))?;
-        connecting
-            .await
-            .map_err(|e| format!("quic-session: handshake failed: {}", e))
+        // Connect (async → sync via block_on on the thread-local tokio runtime)
+        let connection = crate::async_rt::block_on(async {
+            let connecting = endpoint
+                .connect(server_addr, &host_str)
+                .map_err(|e| format!("quic-session: connect error: {}", e))?;
+            connecting
+                .await
+                .map_err(|e| format!("quic-session: handshake failed: {}", e))
+        })
+        .map_err(|msg| EvalError::user_error(msg, call_span))?;
+
+        ok_val(Value::QuicSession(Rc::new(connection)), call_span)
     })
-    .map_err(|msg| EvalError::user_error(msg, call_span))?;
-
-    ok_val(Value::QuicSession(Rc::new(connection)), call_span)
 }
 
 /// `quic-open-stream`: Open a bidirectional QUIC stream on an existing session.
@@ -4082,82 +4221,86 @@ pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
 /// and `Stream` capabilities — the same interface as a TCP Handle.
 ///
 /// Both halves bridge async quinn I/O to synchronous BufRead/Write via block_on.
-pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    reject_named("quic-open-stream", named, call_span)?;
-
-    if args.len() != 1 {
-        return Err(EvalError::user_error(
-            format!(
-                "quic-open-stream: expected 1 argument (quic_session), got {}",
-                args.len()
-            ),
+pub(crate) fn builtin_quic_open_stream(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx: _,
+        } = ctx_arg;
 
-    let session_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        reject_named("quic-open-stream", named.as_ref(), call_span)?;
 
-    let conn = match session_val {
-        Value::QuicSession(c) => c,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "quic-open-stream".to_string(),
-                "QuicSession",
-                other.type_name(),
-                args[0].span,
+        if args.len() != 1 {
+            return Err(EvalError::user_error(
+                format!(
+                    "quic-open-stream: expected 1 argument (quic_session), got {}",
+                    args.len()
+                ),
+                call_span,
             )
-            .into())
+            .into());
         }
-    };
 
-    // Open a bidirectional stream (async → sync)
-    let (send, recv) = crate::async_rt::block_on(conn.open_bi()).map_err(|e| {
-        EvalError::user_error(
-            format!("quic-open-stream: failed to open stream: {}", e),
+        let session_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        let conn = match session_val {
+            Value::QuicSession(c) => c,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "quic-open-stream".to_string(),
+                    "QuicSession",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Open a bidirectional stream (async → sync)
+        let (send, recv) = crate::async_rt::block_on(conn.open_bi()).map_err(|e| {
+            EvalError::user_error(
+                format!("quic-open-stream: failed to open stream: {}", e),
+                call_span,
+            )
+        })?;
+
+        let reader = QuicRecvReader {
+            recv,
+            buf: Vec::new(),
+            buf_pos: 0,
+            bytes_read: 0,
+        };
+        let writer = QuicSendWriter { send };
+
+        let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
+        let write_inner = Some(Rc::new(RefCell::new(
+            Box::new(writer) as Box<dyn std::io::Write>
+        )));
+
+        let mut caps = HashMap::new();
+        caps.insert("Readable".to_string(), Value::Bool(true));
+        caps.insert("Writable".to_string(), Value::Bool(true));
+        caps.insert("Binary".to_string(), Value::Bool(true));
+        caps.insert("Stream".to_string(), Value::Bool(true));
+
+        ok_val(
+            Value::Handle {
+                caps,
+                inner,
+                write_inner,
+                seek_inner: None,
+                raw_tcp: None,
+                creation_span: call_span,
+            },
             call_span,
         )
-    })?;
-
-    let reader = QuicRecvReader {
-        recv,
-        buf: Vec::new(),
-        buf_pos: 0,
-        bytes_read: 0,
-    };
-    let writer = QuicSendWriter { send };
-
-    let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
-    let write_inner = Some(Rc::new(RefCell::new(
-        Box::new(writer) as Box<dyn std::io::Write>
-    )));
-
-    let mut caps = HashMap::new();
-    caps.insert("Readable".to_string(), Value::Bool(true));
-    caps.insert("Writable".to_string(), Value::Bool(true));
-    caps.insert("Binary".to_string(), Value::Bool(true));
-    caps.insert("Stream".to_string(), Value::Bool(true));
-
-    ok_val(
-        Value::Handle {
-            caps,
-            inner,
-            write_inner,
-            seek_inner: None,
-            raw_tcp: None,
-            creation_span: call_span,
-        },
-        call_span,
-    )
+    })
 }
 
 /// `quic-open-datagram`: Datagram channel on a QUIC session.
@@ -4171,48 +4314,52 @@ pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
 /// either (a) a new QuicDatagramHandle variant, or (b) async wrapper types.
 /// For now this returns a clear error directing users to `quic-open-stream`
 /// for reliable streaming, which is the common HTTP/3 use case.
-pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    reject_named("quic-open-datagram", named, call_span)?;
-
-    if args.len() != 1 {
-        return Err(EvalError::user_error(
-            format!(
-                "quic-open-datagram: expected 1 argument (quic_session), got {}",
-                args.len()
-            ),
+pub(crate) fn builtin_quic_open_datagram(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx: _,
+        } = ctx_arg;
 
-    let session_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let conn = match session_val {
-        Value::QuicSession(c) => c,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "quic-open-datagram".to_string(),
-                "QuicSession",
-                other.type_name(),
-                args[0].span,
+        reject_named("quic-open-datagram", named.as_ref(), call_span)?;
+
+        if args.len() != 1 {
+            return Err(EvalError::user_error(
+                format!(
+                    "quic-open-datagram: expected 1 argument (quic_session), got {}",
+                    args.len()
+                ),
+                call_span,
             )
-            .into())
+            .into());
         }
-    };
 
-    // Wrap the connection in a QuicDatagramHandle
-    // Note: send-datagram and recv-datagram builtins must handle QuicDatagramHandle
-    // separately from DatagramHandle, using async block_on(conn.send_datagram(...))
-    // and block_on(conn.read_datagram(...)) respectively.
-    ok_val(Value::QuicDatagramHandle(conn), call_span)
+        let session_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let conn = match session_val {
+            Value::QuicSession(c) => c,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "quic-open-datagram".to_string(),
+                    "QuicSession",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Wrap the connection in a QuicDatagramHandle
+        // Note: send-datagram and recv-datagram builtins must handle QuicDatagramHandle
+        // separately from DatagramHandle, using async block_on(conn.send_datagram(...))
+        // and block_on(conn.read_datagram(...)) respectively.
+        ok_val(Value::QuicDatagramHandle(conn), call_span)
+    })
 }
 
 /// `http2-session`: Establish an HTTP/2 session using reqwest.
@@ -4225,82 +4372,86 @@ pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc
 /// Returns an `Http2Session` wrapping a `reqwest::blocking::Client` configured
 /// to prefer HTTP/2 via ALPN for HTTPS connections. The client reuses the
 /// underlying connection pool across multiple `http-request` calls.
-pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    reject_named("http2-session", named, call_span)?;
-
-    if args.len() != 3 {
-        return Err(EvalError::user_error(
-            format!(
-                "http2-session: expected 3 arguments (cap base_url opts), got {}",
-                args.len()
-            ),
+pub(crate) fn builtin_http2_session(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx: _,
+        } = ctx_arg;
 
-    // All args pre-materialized by force_count
-    let cap_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let url_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    // opts reserved for future use (ca, client cert, timeouts, etc.)
-    let _opts_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        reject_named("http2-session", named.as_ref(), call_span)?;
 
-    // Validate cap
-    let entries = match cap_val {
-        Value::NetCap(e) => e,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "http2-session".to_string(),
-                "NetCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    let base_url = require_string("http2-session", url_val, args[1].span)?;
-
-    // Parse the base_url to extract host and port for cap validation.
-    // We need a host for the allowlist check. Parse scheme://host[:port].
-    let (host, port) = parse_origin_host_port(&base_url, call_span)?;
-
-    check_net_cap_allowlist(&entries, &host, port, call_span)?;
-
-    // Build the reqwest blocking client. Use rustls TLS (already the default via
-    // the "rustls" feature flag in Cargo.toml with default-features = false).
-    // The client automatically negotiates HTTP/2 via ALPN for HTTPS connections.
-    let client = reqwest::blocking::Client::builder()
-        .use_rustls_tls()
-        .user_agent("tinct/0.1 (https://github.com/anthropics/tinct)")
-        .build()
-        .map_err(|e| {
-            EvalError::user_error(
-                format!("http2-session: failed to build HTTP client: {}", e),
+        if args.len() != 3 {
+            return Err(EvalError::user_error(
+                format!(
+                    "http2-session: expected 3 arguments (cap base_url opts), got {}",
+                    args.len()
+                ),
                 call_span,
             )
-        })?;
+            .into());
+        }
 
-    ok_val(
-        Value::Http2Session {
-            client: Rc::new(client),
-            base_url,
-        },
-        call_span,
-    )
+        // All args pre-materialized by force_count
+        let cap_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let url_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        // opts reserved for future use (ca, client cert, timeouts, etc.)
+        let _opts_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Validate cap
+        let entries = match cap_val {
+            Value::NetCap(e) => e,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "http2-session".to_string(),
+                    "NetCap",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        let base_url = require_string("http2-session", url_val, args[1].span)?;
+
+        // Parse the base_url to extract host and port for cap validation.
+        // We need a host for the allowlist check. Parse scheme://host[:port].
+        let (host, port) = parse_origin_host_port(&base_url, call_span)?;
+
+        check_net_cap_allowlist(&entries, &host, port, call_span)?;
+
+        // Build the reqwest blocking client. Use rustls TLS (already the default via
+        // the "rustls" feature flag in Cargo.toml with default-features = false).
+        // The client automatically negotiates HTTP/2 via ALPN for HTTPS connections.
+        let client = reqwest::blocking::Client::builder()
+            .use_rustls_tls()
+            .user_agent("tinct/0.1 (https://github.com/anthropics/tinct)")
+            .build()
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("http2-session: failed to build HTTP client: {}", e),
+                    call_span,
+                )
+            })?;
+
+        ok_val(
+            Value::Http2Session {
+                client: Rc::new(client),
+                base_url,
+            },
+            call_span,
+        )
+    })
 }
 
 /// Parse `scheme://host[:port]` into `(host, Option<port>)`.
@@ -4358,88 +4509,92 @@ fn parse_origin_host_port(origin: &str, span: Span) -> EvalResult<(String, Optio
 /// Implementation: wraps quinn::Connection in h3_quinn::Connection, then drives
 /// the h3::client handshake via block_on. The returned SendRequest is stored in
 /// the Http3Session value.
-pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
-
-    reject_named("http3-session", named, call_span)?;
-
-    if args.len() != 1 {
-        return Err(EvalError::user_error(
-            format!(
-                "http3-session: expected 1 argument (quic_session), got {}",
-                args.len()
-            ),
+pub(crate) fn builtin_http3_session(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx: _,
+        } = ctx_arg;
 
-    let session_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        reject_named("http3-session", named.as_ref(), call_span)?;
 
-    let conn = match session_val {
-        Value::QuicSession(c) => c,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "http3-session".to_string(),
-                "QuicSession",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    // Adapt the quinn connection into an h3-quinn connection, then build the H3 client.
-    // `h3_quinn::Connection::new` takes ownership of a `quinn::Connection`.
-    // We Rc::clone the connection — quinn::Connection is Clone and the clone shares
-    // the same underlying QUIC connection state.
-    let quic_conn = (*conn).clone();
-    let h3_conn = h3_quinn::Connection::new(quic_conn);
-
-    // Drive the HTTP/3 handshake: returns (h3::client::Connection driver, SendRequest).
-    // The driver must be polled concurrently with request streams to process incoming
-    // QUIC frames (SETTINGS, GOAWAY, server push, etc.).
-    let (mut driver, send_request) =
-        crate::async_rt::block_on(h3::client::builder().build(h3_conn)).map_err(|e| {
-            EvalError::user_error(
-                format!("http3-session: HTTP/3 handshake failed: {}", e),
+        if args.len() != 1 {
+            return Err(EvalError::user_error(
+                format!(
+                    "http3-session: expected 1 argument (quic_session), got {}",
+                    args.len()
+                ),
                 call_span,
             )
-        })?;
+            .into());
+        }
 
-    // Spawn the driver as a local task so it is polled on every subsequent
-    // `async_rt::block_on` call (cooperative multitasking on the current-thread runtime).
-    // The JoinHandle is stored in Http3SessionState; dropping it aborts the driver task
-    // when the session is dropped (Rc refcount reaches zero).
-    //
-    // h3 0.0.8: `h3::client::Connection::poll_close(cx)` processes incoming QUIC frames
-    // (SETTINGS, GOAWAY, server push, connection error) and returns `Poll::Ready` when
-    // the connection closes. The h3 docs say: "It needs to be polled continuously via
-    // poll_close()." We wrap it in `std::future::poll_fn` to make it a proper `Future`.
-    let driver_handle = crate::async_rt::spawn_local(async move {
-        std::future::poll_fn(|cx| {
-            // poll_close returns Poll<ConnectionError> — ignore the error value;
-            // the request side will surface errors on the next send_request call.
-            driver.poll_close(cx).map(|_| ())
-        })
-        .await
-    });
+        let session_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    use crate::value::Http3SessionState;
-    ok_val(
-        Value::Http3Session(Rc::new(RefCell::new(Http3SessionState {
-            send_request,
-            _driver: driver_handle,
-        }))),
-        call_span,
-    )
+        let conn = match session_val {
+            Value::QuicSession(c) => c,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "http3-session".to_string(),
+                    "QuicSession",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Adapt the quinn connection into an h3-quinn connection, then build the H3 client.
+        // `h3_quinn::Connection::new` takes ownership of a `quinn::Connection`.
+        // We Rc::clone the connection — quinn::Connection is Clone and the clone shares
+        // the same underlying QUIC connection state.
+        let quic_conn = (*conn).clone();
+        let h3_conn = h3_quinn::Connection::new(quic_conn);
+
+        // Drive the HTTP/3 handshake: returns (h3::client::Connection driver, SendRequest).
+        // The driver must be polled concurrently with request streams to process incoming
+        // QUIC frames (SETTINGS, GOAWAY, server push, etc.).
+        let (mut driver, send_request) =
+            crate::async_rt::block_on(h3::client::builder().build(h3_conn)).map_err(|e| {
+                EvalError::user_error(
+                    format!("http3-session: HTTP/3 handshake failed: {}", e),
+                    call_span,
+                )
+            })?;
+
+        // Spawn the driver as a local task so it is polled on every subsequent
+        // `async_rt::block_on` call (cooperative multitasking on the current-thread runtime).
+        // The JoinHandle is stored in Http3SessionState; dropping it aborts the driver task
+        // when the session is dropped (Rc refcount reaches zero).
+        //
+        // h3 0.0.8: `h3::client::Connection::poll_close(cx)` processes incoming QUIC frames
+        // (SETTINGS, GOAWAY, server push, connection error) and returns `Poll::Ready` when
+        // the connection closes. The h3 docs say: "It needs to be polled continuously via
+        // poll_close()." We wrap it in `std::future::poll_fn` to make it a proper `Future`.
+        let driver_handle = crate::async_rt::spawn_local(async move {
+            std::future::poll_fn(|cx| {
+                // poll_close returns Poll<ConnectionError> — ignore the error value;
+                // the request side will surface errors on the next send_request call.
+                driver.poll_close(cx).map(|_| ())
+            })
+            .await
+        });
+
+        use crate::value::Http3SessionState;
+        ok_val(
+            Value::Http3Session(Rc::new(RefCell::new(Http3SessionState {
+                send_request,
+                _driver: driver_handle,
+            }))),
+            call_span,
+        )
+    })
 }
 
 /// `http-request`: Issue an HTTP request on an HTTP/2 or HTTP/3 session.
@@ -4452,105 +4607,109 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
 /// - `Http2Session`: uses reqwest blocking client (HTTP/2 via ALPN)
 /// - `Http3Session`: uses h3 over the existing QUIC connection
 /// - Other: type error (hard error, not Result variant)
-pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    reject_named("http-request", named, call_span)?;
-
-    if args.len() != 5 {
-        return Err(EvalError::user_error(
-            format!(
-                "http-request: expected 5 arguments (session method path headers body), got {}",
-                args.len()
-            ),
+pub(crate) fn builtin_http_request(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx,
+        } = ctx_arg;
 
-    // All args pre-materialized by force_count
-    let session_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let method_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let path_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let headers_val = args[3]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let body_val = args[4]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        reject_named("http-request", named.as_ref(), call_span)?;
 
-    let method_str = require_string("http-request", method_val, args[1].span)?;
-    let path_str = require_string("http-request", path_val, args[2].span)?;
-    let body_str = require_string("http-request", body_val, args[4].span)?;
-
-    // Collect request headers from the Dict argument.
-    // Each value is a ThunkId in the arena — resolve and materialize to extract the string.
-    let req_headers: Vec<(String, String)> = match headers_val {
-        Value::Dict(ref map) => {
-            let mut out = Vec::with_capacity(map.len());
-            for (key, val_id) in map.iter() {
-                let key_str = match key {
-                    crate::value::Key::String(s) => s.clone(),
-                    crate::value::Key::Int(i) => i.to_string(),
-                };
-                let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
-                let val_materialized = materialize(&thunk, Some(&call_span), &ctx)?;
-                let val_str =
-                    require_string("http-request header value", val_materialized, call_span)?;
-                out.push((key_str, val_str));
-            }
-            out
-        }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "http-request".to_string(),
-                "Dict",
-                other.type_name(),
-                args[3].span,
+        if args.len() != 5 {
+            return Err(EvalError::user_error(
+                format!(
+                    "http-request: expected 5 arguments (session method path headers body), got {}",
+                    args.len()
+                ),
+                call_span,
             )
-            .into())
+            .into());
         }
-    };
 
-    match session_val {
-        Value::Http3Session(session_rc) => http_request_h3(
-            session_rc,
-            method_str,
-            path_str,
-            req_headers,
-            body_str,
-            call_span,
-            &ctx,
-        ),
-        Value::Http2Session { client, base_url } => http_request_h2(&Http2RequestConfig {
-            client: &client,
-            base_url: &base_url,
-            method_str: &method_str,
-            path_str: &path_str,
-            req_headers: &req_headers,
-            body_str: &body_str,
-            span: call_span,
-            ctx: &ctx,
-        }),
-        other => Err(EvalError::type_mismatch_ctx(
-            "http-request".to_string(),
-            "Http2Session or Http3Session",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+        // All args pre-materialized by force_count
+        let session_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let method_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let headers_val = args[3]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let body_val = args[4]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        let method_str = require_string("http-request", method_val, args[1].span)?;
+        let path_str = require_string("http-request", path_val, args[2].span)?;
+        let body_str = require_string("http-request", body_val, args[4].span)?;
+
+        // Collect request headers from the Dict argument.
+        // Each value is a ThunkId in the arena — resolve and materialize to extract the string.
+        let req_headers: Vec<(String, String)> = match headers_val {
+            Value::Dict(ref map) => {
+                let mut out = Vec::with_capacity(map.len());
+                for (key, val_id) in map.iter() {
+                    let key_str = match key {
+                        crate::value::Key::String(s) => s.clone(),
+                        crate::value::Key::Int(i) => i.to_string(),
+                    };
+                    let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
+                    let val_materialized = materialize(&thunk, Some(&call_span), &ctx)?;
+                    let val_str =
+                        require_string("http-request header value", val_materialized, call_span)?;
+                    out.push((key_str, val_str));
+                }
+                out
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "http-request".to_string(),
+                    "Dict",
+                    other.type_name(),
+                    args[3].span,
+                )
+                .into())
+            }
+        };
+
+        match session_val {
+            Value::Http3Session(session_rc) => http_request_h3(
+                session_rc,
+                method_str,
+                path_str,
+                req_headers,
+                body_str,
+                call_span,
+                &ctx,
+            ),
+            Value::Http2Session { client, base_url } => http_request_h2(&Http2RequestConfig {
+                client: &client,
+                base_url: &base_url,
+                method_str: &method_str,
+                path_str: &path_str,
+                req_headers: &req_headers,
+                body_str: &body_str,
+                span: call_span,
+                ctx: &ctx,
+            }),
+            other => Err(EvalError::type_mismatch_ctx(
+                "http-request".to_string(),
+                "Http2Session or Http3Session",
+                other.type_name(),
+                args[0].span,
+            )
+            .into()),
+        }
+    })
 }
 
 /// Configuration for HTTP/2 requests.
@@ -4833,79 +4992,83 @@ fn http_request_err_val(
 /// Takes `(cap, host, timeout_ms)`.
 /// Returns `{ok: {latency-ms: Int}}` on success or `{err: String}` on failure.
 /// Uses unprivileged ICMP ping sockets (`SOCK_DGRAM + IPPROTO_ICMP`, Linux 3.11+).
-pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    reject_named("icmp-ping", named, call_span)?;
-
-    if args.len() != 3 {
-        return Err(EvalError::user_error(
-            format!(
-                "icmp-ping: expected 3 arguments (cap host timeout-ms), got {}",
-                args.len()
-            ),
+pub(crate) fn builtin_icmp_ping(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    }
+            ctx,
+        } = ctx_arg;
 
-    let cap_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let host_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let timeout_val = args[2]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        reject_named("icmp-ping", named.as_ref(), call_span)?;
 
-    // Extract NetCap entries
-    let entries = match cap_val {
-        Value::NetCap(e) => e,
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "icmp-ping".to_string(),
-                "NetCap",
-                other.type_name(),
-                args[0].span,
-            )
-            .into())
-        }
-    };
-
-    let host = require_string("icmp-ping", host_val, args[1].span)?;
-
-    let timeout_ms = match timeout_val {
-        Value::Int(n) if n >= 0 => n,
-        Value::Int(_) => {
+        if args.len() != 3 {
             return Err(EvalError::user_error(
-                "icmp-ping: timeout-ms must be a non-negative integer".to_string(),
-                args[2].span,
+                format!(
+                    "icmp-ping: expected 3 arguments (cap host timeout-ms), got {}",
+                    args.len()
+                ),
+                call_span,
             )
-            .into())
+            .into());
         }
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "icmp-ping".to_string(),
-                "Int",
-                other.type_name(),
-                args[2].span,
-            )
-            .into())
-        }
-    };
 
-    // Validate host against NetCap allowlist (ICMP has no port, pass None)
-    // This fires before any socket operations.
-    check_net_cap_allowlist(&entries, &host, None, call_span)?;
+        let cap_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let host_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let timeout_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    // Perform platform-specific ping and return result dict
-    icmp_ping_impl(&host, timeout_ms, call_span, &ctx)
+        // Extract NetCap entries
+        let entries = match cap_val {
+            Value::NetCap(e) => e,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "icmp-ping".to_string(),
+                    "NetCap",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        let host = require_string("icmp-ping", host_val, args[1].span)?;
+
+        let timeout_ms = match timeout_val {
+            Value::Int(n) if n >= 0 => n,
+            Value::Int(_) => {
+                return Err(EvalError::user_error(
+                    "icmp-ping: timeout-ms must be a non-negative integer".to_string(),
+                    args[2].span,
+                )
+                .into())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "icmp-ping".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[2].span,
+                )
+                .into())
+            }
+        };
+
+        // Validate host against NetCap allowlist (ICMP has no port, pass None)
+        // This fires before any socket operations.
+        check_net_cap_allowlist(&entries, &host, None, call_span)?;
+
+        // Perform platform-specific ping and return result dict
+        icmp_ping_impl(&host, timeout_ms, call_span, &ctx)
+    })
 }
 
 /// Build a `{err: String}` result dict value.
@@ -5190,80 +5353,84 @@ fn icmp_ping_impl(
 /// `send-datagram`: Send a message over a DatagramHandle.
 /// Signature: `[send-datagram handle data]` → null
 /// `data` must be a String or Bytes.
-pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+pub(crate) fn builtin_send_datagram(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
 
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    reject_named("send-datagram", named, call_span)?;
-
-    let handle_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let data_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Extract bytes to send (String or Bytes) — common to all handle variants.
-    let data_bytes: Vec<u8> = match data_val {
-        Value::String { source, start, end } => source[start..end].as_bytes().to_vec(),
-        Value::Bytes { source, start, end } => source[start..end].to_vec(),
-        other => {
-            return Err(EvalError::type_mismatch_ctx(
-                "send-datagram".to_string(),
-                "String or Bytes",
-                other.type_name(),
-                args[1].span,
-            )
-            .into())
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-    };
+        reject_named("send-datagram", named.as_ref(), call_span)?;
 
-    match handle_val {
-        // QUIC unreliable datagram (RFC 9221) — async send via block_on.
-        // `conn.send_datagram` returns immediately; the underlying QUIC stack
-        // handles retransmission of the UDP packet if necessary (implementation-defined).
-        // Returns `SendDatagramError::UnsupportedByPeer` if the remote did not advertise
-        // datagram support in its transport parameters.
-        Value::QuicDatagramHandle(conn) => {
-            let payload = bytes::Bytes::from(data_bytes);
-            crate::async_rt::block_on(conn.send_datagram_wait(payload)).map_err(|e| {
-                EvalError::user_error(
-                    format!("send-datagram: QUIC datagram send failed: {}", e),
-                    call_span,
+        let handle_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let data_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract bytes to send (String or Bytes) — common to all handle variants.
+        let data_bytes: Vec<u8> = match data_val {
+            Value::String { source, start, end } => source[start..end].as_bytes().to_vec(),
+            Value::Bytes { source, start, end } => source[start..end].to_vec(),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "send-datagram".to_string(),
+                    "String or Bytes",
+                    other.type_name(),
+                    args[1].span,
                 )
-            })?;
-            ok_val(Value::Dict(IndexMap::new()), call_span)
-        }
-
-        // UDP / Unix datagram socket — synchronous send()
-        Value::DatagramHandle { socket, .. } => {
-            use crate::value::DatagramSocket;
-            match &socket {
-                DatagramSocket::Udp(s) => s.borrow().send(&data_bytes),
-                #[cfg(unix)]
-                DatagramSocket::UnixDgram(s) => s.borrow().send(&data_bytes),
+                .into())
             }
-            .map_err(|e| {
-                EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span)
-            })?;
-            ok_val(Value::Dict(IndexMap::new()), call_span)
-        }
+        };
 
-        other => Err(EvalError::type_mismatch_ctx(
-            "send-datagram".to_string(),
-            "DatagramHandle or QuicDatagramHandle",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+        match handle_val {
+            // QUIC unreliable datagram (RFC 9221) — async send via block_on.
+            // `conn.send_datagram` returns immediately; the underlying QUIC stack
+            // handles retransmission of the UDP packet if necessary (implementation-defined).
+            // Returns `SendDatagramError::UnsupportedByPeer` if the remote did not advertise
+            // datagram support in its transport parameters.
+            Value::QuicDatagramHandle(conn) => {
+                let payload = bytes::Bytes::from(data_bytes);
+                crate::async_rt::block_on(conn.send_datagram_wait(payload)).map_err(|e| {
+                    EvalError::user_error(
+                        format!("send-datagram: QUIC datagram send failed: {}", e),
+                        call_span,
+                    )
+                })?;
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+
+            // UDP / Unix datagram socket — synchronous send()
+            Value::DatagramHandle { socket, .. } => {
+                use crate::value::DatagramSocket;
+                match &socket {
+                    DatagramSocket::Udp(s) => s.borrow().send(&data_bytes),
+                    #[cfg(unix)]
+                    DatagramSocket::UnixDgram(s) => s.borrow().send(&data_bytes),
+                }
+                .map_err(|e| {
+                    EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span)
+                })?;
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+
+            other => Err(EvalError::type_mismatch_ctx(
+                "send-datagram".to_string(),
+                "DatagramHandle or QuicDatagramHandle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into()),
+        }
+    })
 }
 
 /// `recv-datagram`: Receive a message from a DatagramHandle.
@@ -5271,71 +5438,82 @@ pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
 /// The socket must have been put into non-blocking mode or have a timeout set
 /// via the underlying OS to avoid blocking forever; this builtin blocks until
 /// a datagram arrives.
-pub(crate) fn builtin_recv_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_recv_datagram(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    let val = crate::builtins::expect_one_arg("recv-datagram", args, named, &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "recv-datagram",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span,
+        )?;
 
-    use crate::value::Key;
+        use crate::value::Key;
 
-    // Helper: build the `{data: Bytes}` result dict from a received byte buffer.
-    let make_data_dict = |buf: Vec<u8>, ctx: &crate::eval::EvalContext| -> EvalResult<Arc<Thunk>> {
-        let data_len = buf.len();
-        let data_bytes = Value::Bytes {
-            source: Rc::from(buf.as_slice()),
-            start: 0,
-            end: data_len,
-        };
-        let mut dict = IndexMap::new();
-        dict.insert(
-            Key::String("data".to_string()),
-            ctx.alloc_thunk(ok_val(data_bytes, call_span)?),
-        );
-        ok_val(Value::Dict(dict), call_span)
-    };
+        // Helper: build the `{data: Bytes}` result dict from a received byte buffer.
+        let make_data_dict =
+            |buf: Vec<u8>, ctx: &crate::eval::EvalContext| -> EvalResult<Arc<Thunk>> {
+                let data_len = buf.len();
+                let data_bytes = Value::Bytes {
+                    source: Rc::from(buf.as_slice()),
+                    start: 0,
+                    end: data_len,
+                };
+                let mut dict = IndexMap::new();
+                dict.insert(
+                    Key::String("data".to_string()),
+                    ctx.alloc_thunk(ok_val(data_bytes, call_span)?),
+                );
+                ok_val(Value::Dict(dict), call_span)
+            };
 
-    match val {
-        // QUIC unreliable datagram (RFC 9221) — async recv via block_on.
-        // `conn.read_datagram()` returns the next datagram payload as a `bytes::Bytes`.
-        // Blocks until a datagram arrives or the connection closes.
-        Value::QuicDatagramHandle(conn) => {
-            let payload = crate::async_rt::block_on(conn.read_datagram()).map_err(|e| {
-                EvalError::user_error(
-                    format!("recv-datagram: QUIC datagram recv failed: {}", e),
-                    call_span,
-                )
-            })?;
-            make_data_dict(payload.to_vec(), &ctx)
-        }
-
-        // UDP / Unix datagram socket — synchronous recv() into a fixed-size buffer.
-        // 65507 bytes is the maximum IPv4 UDP payload (65535 - 20 IP header - 8 UDP header).
-        Value::DatagramHandle { socket, .. } => {
-            use crate::value::DatagramSocket;
-            let mut buf = vec![0u8; 65507];
-            let n = match &socket {
-                DatagramSocket::Udp(s) => s.borrow().recv(&mut buf),
-                #[cfg(unix)]
-                DatagramSocket::UnixDgram(s) => s.borrow().recv(&mut buf),
+        match val {
+            // QUIC unreliable datagram (RFC 9221) — async recv via block_on.
+            // `conn.read_datagram()` returns the next datagram payload as a `bytes::Bytes`.
+            // Blocks until a datagram arrives or the connection closes.
+            Value::QuicDatagramHandle(conn) => {
+                let payload = crate::async_rt::block_on(conn.read_datagram()).map_err(|e| {
+                    EvalError::user_error(
+                        format!("recv-datagram: QUIC datagram recv failed: {}", e),
+                        call_span,
+                    )
+                })?;
+                make_data_dict(payload.to_vec(), &ctx)
             }
-            .map_err(|e| {
-                EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span)
-            })?;
-            buf.truncate(n);
-            make_data_dict(buf, &ctx)
-        }
 
-        other => Err(EvalError::type_mismatch_ctx(
-            "recv-datagram".to_string(),
-            "DatagramHandle or QuicDatagramHandle",
-            other.type_name(),
-            args[0].span,
-        )
-        .into()),
-    }
+            // UDP / Unix datagram socket — synchronous recv() into a fixed-size buffer.
+            // 65507 bytes is the maximum IPv4 UDP payload (65535 - 20 IP header - 8 UDP header).
+            Value::DatagramHandle { socket, .. } => {
+                use crate::value::DatagramSocket;
+                let mut buf = vec![0u8; 65507];
+                let n = match &socket {
+                    DatagramSocket::Udp(s) => s.borrow().recv(&mut buf),
+                    #[cfg(unix)]
+                    DatagramSocket::UnixDgram(s) => s.borrow().recv(&mut buf),
+                }
+                .map_err(|e| {
+                    EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span)
+                })?;
+                buf.truncate(n);
+                make_data_dict(buf, &ctx)
+            }
+
+            other => Err(EvalError::type_mismatch_ctx(
+                "recv-datagram".to_string(),
+                "DatagramHandle or QuicDatagramHandle",
+                other.type_name(),
+                args[0].span,
+            )
+            .into()),
+        }
+    })
 }

@@ -18,6 +18,8 @@
 //! **I/O:** `from-json`, `include`
 //! **Sequences:** `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
 
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -474,14 +476,16 @@ fn float_to_int_builtin(
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_floor(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    float_to_int_builtin("floor", f64::floor, args, named, &ctx, call_span)
+    Box::pin(async move {
+        float_to_int_builtin("floor", f64::floor, &args, named.as_ref(), &ctx, call_span)
+    })
 }
 
 /// `round`: Takes 1 numeric arg (Int or Float). Returns Int.
@@ -491,14 +495,16 @@ fn builtin_floor(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_round(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    float_to_int_builtin("round", f64::round, args, named, &ctx, call_span)
+    Box::pin(async move {
+        float_to_int_builtin("round", f64::round, &args, named.as_ref(), &ctx, call_span)
+    })
 }
 
 /// `to-int`: STRING-TO-NUMBER PARSING ONLY. Takes 1 String arg.
@@ -506,24 +512,27 @@ fn builtin_round(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse integer value.
-fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_to_int(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("to-int", args, named, &ctx, call_span)?;
-    let s = require_string("to-int", val, args[0].span)?;
-    match s.parse::<i64>() {
-        Ok(n) => ok_val(Value::Int(n), call_span),
-        Err(_) => {
-            Err(
-                EvalError::parse_conversion("to-int".to_string(), s.clone(), "Int", call_span)
-                    .into(),
-            )
+    Box::pin(async move {
+        let arg0_span = args[0].span;
+        let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span)?;
+        let s = require_string("to-int", val, arg0_span)?;
+        match s.parse::<i64>() {
+            Ok(n) => ok_val(Value::Int(n), call_span),
+            Err(_) => {
+                Err(
+                    EvalError::parse_conversion("to-int".to_string(), s.clone(), "Int", call_span)
+                        .into(),
+                )
+            }
         }
-    }
+    })
 }
 
 /// `to-float`: STRING-TO-NUMBER PARSING ONLY. Takes 1 String arg.
@@ -531,29 +540,35 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Parses the string as a float via `str::parse::<f64>()`. Returns Float.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse float value.
-fn builtin_to_float(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    let val = expect_one_arg("to-float", args, named, &ctx, call_span)?;
-    let s = require_string("to-float", val, args[0].span)?;
-    match s.parse::<f64>() {
-        Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
-        Ok(_f) => Err(EvalError::internal(
-            format!("to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"),
-            call_span,
-        )
-        .into()),
-        Err(_) => {
-            Err(
-                EvalError::parse_conversion("to-float".to_string(), s.clone(), "Float", call_span)
-                    .into(),
+    Box::pin(async move {
+        let arg0_span = args[0].span;
+        let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span)?;
+        let s = require_string("to-float", val, arg0_span)?;
+        match s.parse::<f64>() {
+            Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
+            Ok(_f) => Err(EvalError::internal(
+                format!(
+                    "to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"
+                ),
+                call_span,
             )
+            .into()),
+            Err(_) => Err(EvalError::parse_conversion(
+                "to-float".to_string(),
+                s.clone(),
+                "Float",
+                call_span,
+            )
+            .into()),
         }
-    }
+    })
 }
 
 // Seq primitive builtins: seq, head, tail, collect, seq?.
@@ -605,65 +620,67 @@ pub(crate) use crate::builtins_datetime::{
 /// - String path: O(1) — returns a single-char String slice of the first codepoint.
 /// - Bytes path: O(1) — returns the first byte as Value::Int.
 /// Inherently materializing: must access the value to determine type and extract first element.
-fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_first(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    reject_named("first", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[0]=Spine");
-    match val {
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => {
-            let s = &source[start..end];
-            if s.is_empty() {
-                return Err(EvalError::empty_collection("first".to_string(), call_span).into());
-            }
-            let ch = s
-                .chars()
-                .next()
-                .expect("non-empty string has at least one char");
-            let char_end = start + ch.len_utf8();
-            ok_val(
-                Value::String {
-                    source: Rc::clone(source),
-                    start,
-                    end: char_end,
-                },
-                call_span,
-            )
+    Box::pin(async move {
+        reject_named("first", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        Value::Bytes {
-            ref source,
-            start,
-            end,
-        } => {
-            if start >= end {
-                return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+        match val {
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                if s.is_empty() {
+                    return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+                }
+                let ch = s
+                    .chars()
+                    .next()
+                    .expect("non-empty string has at least one char");
+                let char_end = start + ch.len_utf8();
+                ok_val(
+                    Value::String {
+                        source: Rc::clone(source),
+                        start,
+                        end: char_end,
+                    },
+                    call_span,
+                )
             }
-            let byte = source[start];
-            ok_val(Value::Int(i64::from(byte)), call_span)
-        }
-        other => {
-            let map = require_dict("first", other, args[0].span, &ctx, call_span)?;
-            if map.is_empty() {
-                return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+            Value::Bytes {
+                ref source,
+                start,
+                end,
+            } => {
+                if start >= end {
+                    return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+                }
+                let byte = source[start];
+                ok_val(Value::Int(i64::from(byte)), call_span)
             }
-            let (_, first_id) = map.into_iter().next().expect("non-empty map");
-            let thunk = ctx.get_thunk(first_id);
-            Ok(thunk)
+            other => {
+                let map = require_dict("first", other, args[0].span, &ctx, call_span)?;
+                if map.is_empty() {
+                    return Err(EvalError::empty_collection("first".to_string(), call_span).into());
+                }
+                let (_, first_id) = map.into_iter().next().expect("non-empty map");
+                let thunk = ctx.get_thunk(first_id);
+                Ok(thunk)
+            }
         }
-    }
+    })
 }
 
 /// `last`: Return the last element of a Dict, the last character of a String,
@@ -674,66 +691,68 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// - String path: O(n) — must walk UTF-8 chars to find the last codepoint.
 /// - Bytes path: O(1) — returns the last byte as Value::Int.
 /// Inherently materializing: must access the value to determine type and extract last element.
-fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_last(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    reject_named("last", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[0]=Spine");
-    match val {
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => {
-            let s = &source[start..end];
-            if s.is_empty() {
-                return Err(EvalError::empty_collection("last".to_string(), call_span).into());
-            }
-            let (last_char_start, last_ch) = s
-                .char_indices()
-                .last()
-                .expect("non-empty string has at least one char");
-            let char_start = start + last_char_start;
-            let char_end = char_start + last_ch.len_utf8();
-            ok_val(
-                Value::String {
-                    source: Rc::clone(source),
-                    start: char_start,
-                    end: char_end,
-                },
-                call_span,
-            )
+    Box::pin(async move {
+        reject_named("last", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        Value::Bytes {
-            ref source,
-            start,
-            end,
-        } => {
-            if start >= end {
-                return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+        match val {
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                if s.is_empty() {
+                    return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+                }
+                let (last_char_start, last_ch) = s
+                    .char_indices()
+                    .last()
+                    .expect("non-empty string has at least one char");
+                let char_start = start + last_char_start;
+                let char_end = char_start + last_ch.len_utf8();
+                ok_val(
+                    Value::String {
+                        source: Rc::clone(source),
+                        start: char_start,
+                        end: char_end,
+                    },
+                    call_span,
+                )
             }
-            let byte = source[end - 1];
-            ok_val(Value::Int(i64::from(byte)), call_span)
-        }
-        other => {
-            let map = require_dict("last", other, args[0].span, &ctx, call_span)?;
-            if map.is_empty() {
-                return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+            Value::Bytes {
+                ref source,
+                start,
+                end,
+            } => {
+                if start >= end {
+                    return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+                }
+                let byte = source[end - 1];
+                ok_val(Value::Int(i64::from(byte)), call_span)
             }
-            let (_, last_id) = map.into_iter().last().expect("non-empty map");
-            let thunk = ctx.get_thunk(last_id);
-            Ok(thunk)
+            other => {
+                let map = require_dict("last", other, args[0].span, &ctx, call_span)?;
+                if map.is_empty() {
+                    return Err(EvalError::empty_collection("last".to_string(), call_span).into());
+                }
+                let (_, last_id) = map.into_iter().last().expect("non-empty map");
+                let thunk = ctx.get_thunk(last_id);
+                Ok(thunk)
+            }
         }
-    }
+    })
 }
 
 /// `rest`: Returns all elements of a collection except the first, reindexed 0..n-1.
@@ -745,40 +764,43 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///   avoids interpreter loop overhead.
 /// Inherently materializing for Dict: must copy all remaining entries.
 /// Lazy for Seq: O(1) tail extraction.
-fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_rest(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    reject_named("rest", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[0]=Spine");
-    // Seq path: delegate to $tail (O(1), preserves laziness).
-    if matches!(val, Value::Seq { .. }) {
-        return builtin_tail(BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        });
-    }
-    let map = require_dict("rest", val, args[0].span, &ctx, call_span)?;
+    Box::pin(async move {
+        reject_named("rest", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+        // Seq path: delegate to $tail (O(1), preserves laziness).
+        if matches!(val, Value::Seq { .. }) {
+            return builtin_tail(BuiltinArgs {
+                args: args.clone(),
+                named: named.clone(),
+                call_span,
+                ctx,
+            })
+            .await;
+        }
+        let map = require_dict("rest", val, args[0].span, &ctx, call_span)?;
 
-    // Skip the first entry (index 0 by insertion order), reindex rest as 0..n-1.
-    let mut result = IndexMap::with_capacity(map.len().saturating_sub(1));
-    for (new_idx, (_old_key, thunk)) in map.into_iter().skip(1).enumerate() {
-        let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
-            EvalError::internal("collection index overflow".to_string(), call_span)
-        })?);
-        result.insert(new_key, thunk);
-    }
-    ok_val(Value::Dict(result), call_span)
+        // Skip the first entry (index 0 by insertion order), reindex rest as 0..n-1.
+        let mut result = IndexMap::with_capacity(map.len().saturating_sub(1));
+        for (new_idx, (_old_key, thunk)) in map.into_iter().skip(1).enumerate() {
+            let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
+                EvalError::internal("collection index overflow".to_string(), call_span)
+            })?);
+            result.insert(new_key, thunk);
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
 }
 
 /// `cons`: Prepend an element to a collection, reindexing all entries from 0.
@@ -790,45 +812,48 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///   implementation, but avoids interpreter loop overhead.
 /// Inherently materializing for Dict: must copy all existing entries.
 /// Lazy for Seq: O(1) prepend.
-fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    reject_named("cons", named, call_span)?;
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    // args[0] is the element to prepend (kept as thunk — preserves laziness).
-    // args[1] is the collection to prepend to (must be materialized to dispatch on type).
-    let xs_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[1]=Spine");
-    // Seq path: delegate to $seq (O(1), preserves laziness).
-    if matches!(xs_val, Value::Seq { .. }) {
-        return builtin_seq(BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        });
-    }
-    let map = require_dict("cons", xs_val, args[1].span, &ctx, call_span)?;
+    Box::pin(async move {
+        reject_named("cons", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        // args[0] is the element to prepend (kept as thunk — preserves laziness).
+        // args[1] is the collection to prepend to (must be materialized to dispatch on type).
+        let xs_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Spine");
+        // Seq path: delegate to $seq (O(1), preserves laziness).
+        if matches!(xs_val, Value::Seq { .. }) {
+            return builtin_seq(BuiltinArgs {
+                args: args.clone(),
+                named: named.clone(),
+                call_span,
+                ctx,
+            })
+            .await;
+        }
+        let map = require_dict("cons", xs_val, args[1].span, &ctx, call_span)?;
 
-    let mut result = IndexMap::with_capacity(map.len() + 1);
-    // Insert the new element at key 0.
-    let elem_id = ctx.alloc_thunk(Arc::clone(&args[0]));
-    result.insert(Key::Int(0), elem_id);
-    // Insert existing entries reindexed as 1..n.
-    for (new_idx, (_old_key, thunk_id)) in map.into_iter().enumerate() {
-        let new_key = Key::Int(i64::try_from(new_idx + 1).map_err(|_| {
-            EvalError::internal("collection index overflow".to_string(), call_span)
-        })?);
-        result.insert(new_key, thunk_id);
-    }
-    ok_val(Value::Dict(result), call_span)
+        let mut result = IndexMap::with_capacity(map.len() + 1);
+        // Insert the new element at key 0.
+        let elem_id = ctx.alloc_thunk(Arc::clone(&args[0]));
+        result.insert(Key::Int(0), elem_id);
+        // Insert existing entries reindexed as 1..n.
+        for (new_idx, (_old_key, thunk_id)) in map.into_iter().enumerate() {
+            let new_key = Key::Int(i64::try_from(new_idx + 1).map_err(|_| {
+                EvalError::internal("collection index overflow".to_string(), call_span)
+            })?);
+            result.insert(new_key, thunk_id);
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
 }
 
 /// `reverse`: Reverse the entries of a dict list, reindexing from 0.
@@ -838,32 +863,34 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///   builds a new dict with dense integer keys 0..n-1.
 /// - O(n) — avoids the recursive LLT accumulator pattern.
 /// Inherently materializing: must know all entries to reverse order.
-fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_reverse(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    reject_named("reverse", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by pos_strictness[0]=Spine");
-    let map = require_dict("reverse", val, args[0].span, &ctx, call_span)?;
+    Box::pin(async move {
+        reject_named("reverse", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+        let map = require_dict("reverse", val, args[0].span, &ctx, call_span)?;
 
-    let mut result = IndexMap::with_capacity(map.len());
-    // Collect values in reverse insertion order.
-    let entries: Vec<_> = map.into_iter().collect();
-    for (new_idx, (_old_key, thunk)) in entries.into_iter().rev().enumerate() {
-        let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
-            EvalError::internal("collection index overflow".to_string(), call_span)
-        })?);
-        result.insert(new_key, thunk);
-    }
-    ok_val(Value::Dict(result), call_span)
+        let mut result = IndexMap::with_capacity(map.len());
+        // Collect values in reverse insertion order.
+        let entries: Vec<_> = map.into_iter().collect();
+        for (new_idx, (_old_key, thunk)) in entries.into_iter().rev().enumerate() {
+            let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
+                EvalError::internal("collection index overflow".to_string(), call_span)
+            })?);
+            result.insert(new_key, thunk);
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
 }
 
 /// Compare two materialized `Value`s for sort ordering.
@@ -923,192 +950,202 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
 /// - Errors on mixed incompatible types when using natural ordering.
 /// - Errors on Seq input (callers must `$collect` first).
 /// Inherently materializing: must inspect all values to determine sort order.
-fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
     } = ctx_arg;
-    reject_named("sort", named, call_span)?;
+    Box::pin(async move {
+        reject_named("sort", named.as_ref(), call_span)?;
 
-    // Accept 1 arg (dict only) or 2 args (comparator, dict)
-    if args.len() != 1 && args.len() != 2 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-
-    // Determine if we have a comparator function
-    let (comparator_opt, dict_arg_idx) = if args.len() == 2 {
-        // First arg is comparator, second is dict.
-        // args[0] is Spine-pre-materialized by pos_strictness[0].
-        let cmp_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Spine");
-        match cmp_val {
-            Value::Function { .. } | Value::Builtin(_) => (Some((cmp_val, args[0].span)), 1),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "sort".to_string(),
-                    "Function",
-                    other.type_name(),
-                    args[0].span,
-                )
-                .into());
-            }
+        // Accept 1 arg (dict only) or 2 args (comparator, dict)
+        if args.len() != 1 && args.len() != 2 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-    } else {
-        (None, 0)
-    };
 
-    let val = materialize(&args[dict_arg_idx], Some(&call_span), &ctx)?; // H2: dict_arg_idx=1 in 2-arg form not covered by pos_strictness — deferred to dispatch-cont sprint
-    let map = require_dict("sort", val, args[dict_arg_idx].span, &ctx, call_span)?;
-
-    // Materialize all values so we can compare them.
-    let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
-    for (_key, thunk_id) in &map {
-        let thunk = ctx.get_thunk(*thunk_id);
-        let mat = materialize(&thunk, Some(&call_span), &ctx)?;
-        pairs.push((mat, thunk.span));
-    }
-
-    // Sort using comparator or natural ordering. Collect any comparison error.
-    let mut sort_error: Option<Box<crate::error::EvalError>> = None;
-
-    if let Some((cmp_val, cmp_span)) = comparator_opt {
-        // Use custom comparator function
-        pairs.sort_by(|(a, a_span), (b, b_span)| {
-            if sort_error.is_some() {
-                return std::cmp::Ordering::Equal;
-            }
-
-            // Create thunks for the two values to pass to the comparator
-            let a_thunk = Arc::new(Thunk::new_materialized(a.clone(), *a_span));
-            let b_thunk = Arc::new(Thunk::new_materialized(b.clone(), *b_span));
-            let pos_args = vec![a_thunk, b_thunk];
-
-            // Call the comparator function
-            let result_thunk = match &cmp_val {
-                Value::Function {
-                    params,
-                    body,
-                    env: closure_env,
-                    ..
-                } => {
-                    match invoke_function(&CallContext {
-                        params,
-                        body,
-                        closure_env,
-                        positional: &pos_args,
-                        named: None,
-                        default_env: closure_env,
-                        call_span,
-                        origin: Some(Arc::from("sort")),
-                        ctx: &ctx,
-                    }) {
-                        Ok(thunk) => thunk,
-                        Err(e) => {
-                            sort_error = Some(e);
-                            return std::cmp::Ordering::Equal;
-                        }
-                    }
-                }
-                Value::Builtin(def) => {
-                    let builtin_args = BuiltinArgs {
-                        args: &pos_args,
-                        named: None,
-                        call_span,
-                        ctx: Arc::clone(&ctx),
-                    };
-                    match (def.func)(builtin_args) {
-                        Ok(thunk) => thunk,
-                        Err(e) => {
-                            sort_error = Some(e);
-                            return std::cmp::Ordering::Equal;
-                        }
-                    }
-                }
-                _ => {
-                    sort_error = Some(Box::new(EvalError::type_mismatch_ctx(
+        // Determine if we have a comparator function
+        let (comparator_opt, dict_arg_idx) = if args.len() == 2 {
+            // First arg is comparator, second is dict.
+            // args[0] is Spine-pre-materialized by pos_strictness[0].
+            let cmp_val = args[0]
+                .try_get_materialized()
+                .expect("pre-materialized by pos_strictness[0]=Spine");
+            let arg0_span = args[0].span;
+            match cmp_val {
+                Value::Function { .. } | Value::Builtin(_) => (Some((cmp_val, arg0_span)), 1),
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
                         "sort".to_string(),
                         "Function",
-                        cmp_val.type_name(),
-                        cmp_span,
-                    )));
+                        other.type_name(),
+                        arg0_span,
+                    )
+                    .into());
+                }
+            }
+        } else {
+            (None, 0)
+        };
+
+        let dict_span = args[dict_arg_idx].span;
+        let val = materialize(&args[dict_arg_idx], Some(&call_span), &ctx)?; // H2: dict_arg_idx=1 in 2-arg form not covered by pos_strictness — deferred to dispatch-cont sprint
+        let map = require_dict("sort", val, dict_span, &ctx, call_span)?;
+
+        // Materialize all values so we can compare them.
+        let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
+        for (_key, thunk_id) in &map {
+            let thunk = ctx.get_thunk(*thunk_id);
+            let mat = materialize(&thunk, Some(&call_span), &ctx)?;
+            pairs.push((mat, thunk.span));
+        }
+
+        // Sort using comparator or natural ordering. Collect any comparison error.
+        let mut sort_error: Option<Box<crate::error::EvalError>> = None;
+
+        if let Some((cmp_val, cmp_span)) = comparator_opt {
+            // Use custom comparator function
+            pairs.sort_by(|(a, a_span), (b, b_span)| {
+                if sort_error.is_some() {
                     return std::cmp::Ordering::Equal;
                 }
-            };
 
-            // Materialize the result and require it to be a Bool
-            match materialize(&result_thunk, Some(&call_span), &ctx) {
-                Ok(Value::Bool(true)) => std::cmp::Ordering::Less,
-                Ok(Value::Bool(false)) => std::cmp::Ordering::Greater,
-                Ok(other) => {
-                    sort_error = Some(Box::new(EvalError::type_mismatch_ctx(
-                        "sort".to_string(),
-                        "Bool",
-                        other.type_name(),
-                        result_thunk.span,
-                    )));
-                    std::cmp::Ordering::Equal
-                }
-                Err(e) => {
-                    sort_error = Some(e);
-                    std::cmp::Ordering::Equal
-                }
-            }
-        });
-    } else {
-        // Use natural ordering
-        pairs.sort_by(|(a, _), (b, _)| {
-            if sort_error.is_some() {
-                return std::cmp::Ordering::Equal;
-            }
-            match compare_values(a, b, call_span) {
-                Ok(ord) => ord,
-                Err(e) => {
-                    sort_error = Some(e);
-                    std::cmp::Ordering::Equal
-                }
-            }
-        });
-    }
+                // Create thunks for the two values to pass to the comparator
+                let a_thunk = Arc::new(Thunk::new_materialized(a.clone(), *a_span));
+                let b_thunk = Arc::new(Thunk::new_materialized(b.clone(), *b_span));
+                let pos_args = vec![a_thunk, b_thunk];
 
-    if let Some(e) = sort_error {
-        return Err(e);
-    }
+                // Call the comparator function
+                let result_thunk = match &cmp_val {
+                    Value::Function {
+                        params,
+                        body,
+                        env: closure_env,
+                        ..
+                    } => {
+                        match invoke_function(&CallContext {
+                            params,
+                            body,
+                            closure_env,
+                            positional: &pos_args,
+                            named: None,
+                            default_env: closure_env,
+                            call_span,
+                            origin: Some(Arc::from("sort")),
+                            ctx: &ctx,
+                        }) {
+                            Ok(thunk) => thunk,
+                            Err(e) => {
+                                sort_error = Some(e);
+                                return std::cmp::Ordering::Equal;
+                            }
+                        }
+                    }
+                    Value::Builtin(def) => {
+                        // Drive the async builtin future synchronously. The sort_by closure is
+                        // sync and cannot .await; block_on_anywhere handles this correctly
+                        // (using poll_future_sync when already inside a current_thread runtime).
+                        // Builtin comparators in sort are uncommon.
+                        let builtin_args = BuiltinArgs {
+                            args: pos_args,
+                            named: None,
+                            call_span,
+                            ctx: Arc::clone(&ctx),
+                        };
+                        let fut = (def.func)(builtin_args);
+                        match crate::async_rt::block_on_anywhere(fut) {
+                            Ok(thunk) => thunk,
+                            Err(e) => {
+                                sort_error = Some(e);
+                                return std::cmp::Ordering::Equal;
+                            }
+                        }
+                    }
+                    _ => {
+                        sort_error = Some(Box::new(EvalError::type_mismatch_ctx(
+                            "sort".to_string(),
+                            "Function",
+                            cmp_val.type_name(),
+                            cmp_span,
+                        )));
+                        return std::cmp::Ordering::Equal;
+                    }
+                };
 
-    // Build result dict with dense integer keys 0..n-1, wrapping sorted values as thunks.
-    let mut result = IndexMap::with_capacity(pairs.len());
-    for (new_idx, (mat_val, orig_span)) in pairs.into_iter().enumerate() {
-        let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
-            EvalError::internal("collection index overflow".to_string(), call_span)
-        })?);
-        let thunk = Arc::new(Thunk::new_materialized(mat_val, orig_span));
-        let thunk_id = ctx.alloc_thunk(thunk);
-        result.insert(new_key, thunk_id);
-    }
-    ok_val(Value::Dict(result), call_span)
+                // Materialize the result and require it to be a Bool
+                match materialize(&result_thunk, Some(&call_span), &ctx) {
+                    Ok(Value::Bool(true)) => std::cmp::Ordering::Less,
+                    Ok(Value::Bool(false)) => std::cmp::Ordering::Greater,
+                    Ok(other) => {
+                        sort_error = Some(Box::new(EvalError::type_mismatch_ctx(
+                            "sort".to_string(),
+                            "Bool",
+                            other.type_name(),
+                            result_thunk.span,
+                        )));
+                        std::cmp::Ordering::Equal
+                    }
+                    Err(e) => {
+                        sort_error = Some(e);
+                        std::cmp::Ordering::Equal
+                    }
+                }
+            });
+        } else {
+            // Use natural ordering
+            pairs.sort_by(|(a, _), (b, _)| {
+                if sort_error.is_some() {
+                    return std::cmp::Ordering::Equal;
+                }
+                match compare_values(a, b, call_span) {
+                    Ok(ord) => ord,
+                    Err(e) => {
+                        sort_error = Some(e);
+                        std::cmp::Ordering::Equal
+                    }
+                }
+            });
+        }
+
+        if let Some(e) = sort_error {
+            return Err(e);
+        }
+
+        // Build result dict with dense integer keys 0..n-1, wrapping sorted values as thunks.
+        let mut result = IndexMap::with_capacity(pairs.len());
+        for (new_idx, (mat_val, orig_span)) in pairs.into_iter().enumerate() {
+            let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
+                EvalError::internal("collection index overflow".to_string(), call_span)
+            })?);
+            let thunk = Arc::new(Thunk::new_materialized(mat_val, orig_span));
+            let thunk_id = ctx.alloc_thunk(thunk);
+            result.insert(new_key, thunk_id);
+        }
+        ok_val(Value::Dict(result), call_span)
+    })
 }
 
-fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
+fn builtin_proxy(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
         call_span,
         ctx,
-        ..
     } = ctx_arg;
-    reject_named("proxy", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let handler_id = ctx.alloc_thunk(Arc::clone(&args[0]));
-    Ok(Arc::new(Thunk::new_materialized(
-        Value::Proxy {
-            handler: handler_id,
-        },
-        call_span,
-    )))
+    Box::pin(async move {
+        reject_named("proxy", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        let handler_id = ctx.alloc_thunk(Arc::clone(&args[0]));
+        Ok(Arc::new(Thunk::new_materialized(
+            Value::Proxy {
+                handler: handler_id,
+            },
+            call_span,
+        )))
+    })
 }
 
 /// Returns all builtin definitions with strictness metadata.
@@ -2138,7 +2175,7 @@ mod tests {
         Arc::new(Thunk::new_materialized(val, span))
     }
 
-    fn no_named() -> Option<&'static IndexMap<String, Arc<Thunk>>> {
+    fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {
         None
     }
 
@@ -2158,8 +2195,18 @@ mod tests {
         )
     }
 
-    fn mat(result: EvalResult<Arc<Thunk>>) -> Value {
-        crate::eval::materialize_sync(&result.unwrap(), None, &test_ctx()).unwrap()
+    /// Drive an async builtin to completion synchronously in tests.
+    fn run(f: impl std::future::Future<Output = EvalResult<Arc<Thunk>>>) -> EvalResult<Arc<Thunk>> {
+        crate::async_rt::block_on(f)
+    }
+
+    fn mat(f: impl std::future::Future<Output = EvalResult<Arc<Thunk>>>) -> Value {
+        crate::eval::materialize_sync(&run(f).unwrap(), None, &test_ctx()).unwrap()
+    }
+
+    /// Materialize an already-resolved thunk (for `result: EvalResult<Arc<Thunk>>` cases).
+    fn mat_val(t: Arc<Thunk>) -> Value {
+        crate::eval::materialize_sync(&t, None, &test_ctx()).unwrap()
     }
 
     /// Parse and evaluate an LLT snippet, returning the result value.
@@ -2296,7 +2343,7 @@ mod tests {
     #[test]
     fn floor_int_passthrough() {
         let result = mat(builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2307,7 +2354,7 @@ mod tests {
     #[test]
     fn floor_negative_int_passthrough() {
         let result = mat(builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Int(-7))],
+            args: vec![thunk(Value::Int(-7))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2318,7 +2365,7 @@ mod tests {
     #[test]
     fn floor_zero_int() {
         let result = mat(builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Int(0))],
+            args: vec![thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2329,7 +2376,7 @@ mod tests {
     #[test]
     fn floor_positive_float() {
         let result = mat(builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(3.7))],
+            args: vec![thunk(Value::Float(3.7))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2341,7 +2388,7 @@ mod tests {
     fn floor_negative_float() {
         // floor(-3.2) = -4, not -3
         let result = mat(builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(-3.2))],
+            args: vec![thunk(Value::Float(-3.2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2352,7 +2399,7 @@ mod tests {
     #[test]
     fn floor_float_exact_integer() {
         let result = mat(builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(5.0))],
+            args: vec![thunk(Value::Float(5.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2363,7 +2410,7 @@ mod tests {
     #[test]
     fn floor_float_just_below_integer() {
         let result = mat(builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(2.9999999))],
+            args: vec![thunk(Value::Float(2.9999999))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2373,12 +2420,12 @@ mod tests {
 
     #[test]
     fn floor_nan_errors() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::NAN))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Float(f64::NAN))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("NaN"),
@@ -2389,12 +2436,12 @@ mod tests {
 
     #[test]
     fn floor_positive_infinity_errors() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::INFINITY))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Float(f64::INFINITY))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite number"),
@@ -2405,12 +2452,12 @@ mod tests {
 
     #[test]
     fn floor_negative_infinity_errors() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::NEG_INFINITY))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Float(f64::NEG_INFINITY))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite number"),
@@ -2421,12 +2468,12 @@ mod tests {
 
     #[test]
     fn floor_string_type_error() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(string_val("3.5".into()))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(string_val("3.5".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
@@ -2437,12 +2484,12 @@ mod tests {
 
     #[test]
     fn floor_bool_type_error() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
@@ -2453,12 +2500,12 @@ mod tests {
 
     #[test]
     fn floor_dict_type_error() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
@@ -2469,12 +2516,12 @@ mod tests {
 
     #[test]
     fn floor_wrong_arity_zero() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -2485,12 +2532,12 @@ mod tests {
 
     #[test]
     fn floor_wrong_arity_two() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -2503,12 +2550,12 @@ mod tests {
     fn floor_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(3.5))],
-            named: Some(&named),
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Float(3.5))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -2519,12 +2566,12 @@ mod tests {
 
     #[test]
     fn floor_large_positive_float_out_of_range() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(1e19))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Float(1e19))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("out of range for Int"),
@@ -2535,12 +2582,12 @@ mod tests {
 
     #[test]
     fn floor_large_negative_float_out_of_range() {
-        let err = builtin_floor(BuiltinArgs {
-            args: &[thunk(Value::Float(-1e19))],
+        let err = run(builtin_floor(BuiltinArgs {
+            args: vec![thunk(Value::Float(-1e19))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("out of range for Int"),
@@ -2552,7 +2599,7 @@ mod tests {
     #[test]
     fn round_int_passthrough() {
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2563,7 +2610,7 @@ mod tests {
     #[test]
     fn round_negative_int_passthrough() {
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Int(-7))],
+            args: vec![thunk(Value::Int(-7))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2575,7 +2622,7 @@ mod tests {
     fn round_positive_half_rounds_up() {
         // 0.5 rounds to 1 (half-away-from-zero)
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(0.5))],
+            args: vec![thunk(Value::Float(0.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2587,7 +2634,7 @@ mod tests {
     fn round_negative_half_rounds_down() {
         // -0.5 rounds to -1 (half-away-from-zero)
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(-0.5))],
+            args: vec![thunk(Value::Float(-0.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2598,7 +2645,7 @@ mod tests {
     #[test]
     fn round_positive_below_half() {
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(2.4))],
+            args: vec![thunk(Value::Float(2.4))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2609,7 +2656,7 @@ mod tests {
     #[test]
     fn round_positive_above_half() {
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(2.6))],
+            args: vec![thunk(Value::Float(2.6))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2621,7 +2668,7 @@ mod tests {
     fn round_negative_below_half() {
         // -2.4 rounds to -2
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(-2.4))],
+            args: vec![thunk(Value::Float(-2.4))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2633,7 +2680,7 @@ mod tests {
     fn round_negative_above_half() {
         // -2.6 rounds to -3
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(-2.6))],
+            args: vec![thunk(Value::Float(-2.6))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2644,7 +2691,7 @@ mod tests {
     #[test]
     fn round_1_5_rounds_to_2() {
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(1.5))],
+            args: vec![thunk(Value::Float(1.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2655,7 +2702,7 @@ mod tests {
     #[test]
     fn round_negative_1_5_rounds_to_negative_2() {
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(-1.5))],
+            args: vec![thunk(Value::Float(-1.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2666,7 +2713,7 @@ mod tests {
     #[test]
     fn round_float_exact_integer() {
         let result = mat(builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(5.0))],
+            args: vec![thunk(Value::Float(5.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2676,12 +2723,12 @@ mod tests {
 
     #[test]
     fn round_nan_errors() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::NAN))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(Value::Float(f64::NAN))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("NaN"),
@@ -2692,12 +2739,12 @@ mod tests {
 
     #[test]
     fn round_positive_infinity_errors() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::INFINITY))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(Value::Float(f64::INFINITY))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite number"),
@@ -2708,12 +2755,12 @@ mod tests {
 
     #[test]
     fn round_negative_infinity_errors() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::NEG_INFINITY))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(Value::Float(f64::NEG_INFINITY))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite number"),
@@ -2724,12 +2771,12 @@ mod tests {
 
     #[test]
     fn round_string_type_error() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(string_val("3.5".into()))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(string_val("3.5".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
@@ -2740,12 +2787,12 @@ mod tests {
 
     #[test]
     fn round_bool_type_error() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Bool(false))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(Value::Bool(false))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
@@ -2756,12 +2803,12 @@ mod tests {
 
     #[test]
     fn round_wrong_arity_zero() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -2772,12 +2819,12 @@ mod tests {
 
     #[test]
     fn round_wrong_arity_two() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -2788,12 +2835,12 @@ mod tests {
 
     #[test]
     fn round_large_positive_float_out_of_range() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(1e19))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(Value::Float(1e19))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("out of range for Int"),
@@ -2804,12 +2851,12 @@ mod tests {
 
     #[test]
     fn round_large_negative_float_out_of_range() {
-        let err = builtin_round(BuiltinArgs {
-            args: &[thunk(Value::Float(-1e19))],
+        let err = run(builtin_round(BuiltinArgs {
+            args: vec![thunk(Value::Float(-1e19))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("out of range for Int"),
@@ -2821,7 +2868,7 @@ mod tests {
     #[test]
     fn to_int_valid_positive() {
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("42".into()))],
+            args: vec![thunk(string_val("42".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2832,7 +2879,7 @@ mod tests {
     #[test]
     fn to_int_valid_negative() {
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("-7".into()))],
+            args: vec![thunk(string_val("-7".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2843,7 +2890,7 @@ mod tests {
     #[test]
     fn to_int_valid_zero() {
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("0".into()))],
+            args: vec![thunk(string_val("0".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2854,7 +2901,7 @@ mod tests {
     #[test]
     fn to_int_valid_large() {
         let result = mat(builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("9223372036854775807".into()))],
+            args: vec![thunk(string_val("9223372036854775807".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2864,12 +2911,12 @@ mod tests {
 
     #[test]
     fn to_int_invalid_float_string() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("3.14".into()))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(string_val("3.14".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
@@ -2880,12 +2927,12 @@ mod tests {
 
     #[test]
     fn to_int_invalid_text() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
@@ -2896,12 +2943,12 @@ mod tests {
 
     #[test]
     fn to_int_invalid_empty() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("".into()))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(string_val("".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
@@ -2912,12 +2959,12 @@ mod tests {
 
     #[test]
     fn to_int_invalid_with_spaces() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val(" 42 ".into()))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(string_val(" 42 ".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
@@ -2928,12 +2975,12 @@ mod tests {
 
     #[test]
     fn to_int_rejects_int_input() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -2949,12 +2996,12 @@ mod tests {
 
     #[test]
     fn to_int_rejects_float_input() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -2965,12 +3012,12 @@ mod tests {
 
     #[test]
     fn to_int_rejects_bool_input() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -2981,12 +3028,12 @@ mod tests {
 
     #[test]
     fn to_int_rejects_dict_input() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -2997,12 +3044,12 @@ mod tests {
 
     #[test]
     fn to_int_wrong_arity_zero() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -3013,12 +3060,12 @@ mod tests {
 
     #[test]
     fn to_int_wrong_arity_two() {
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("1".into())), thunk(string_val("2".into()))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(string_val("1".into())), thunk(string_val("2".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -3030,7 +3077,7 @@ mod tests {
     #[test]
     fn to_float_valid_decimal() {
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("3.14".into()))],
+            args: vec![thunk(string_val("3.14".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3042,7 +3089,7 @@ mod tests {
     fn to_float_valid_integer_string() {
         // "42" parses as 42.0
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("42".into()))],
+            args: vec![thunk(string_val("42".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3053,7 +3100,7 @@ mod tests {
     #[test]
     fn to_float_valid_negative() {
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("-2.5".into()))],
+            args: vec![thunk(string_val("-2.5".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3064,7 +3111,7 @@ mod tests {
     #[test]
     fn to_float_valid_scientific_notation() {
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("1.5e10".into()))],
+            args: vec![thunk(string_val("1.5e10".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3075,7 +3122,7 @@ mod tests {
     #[test]
     fn to_float_valid_negative_exponent() {
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("2.5e-3".into()))],
+            args: vec![thunk(string_val("2.5e-3".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3086,7 +3133,7 @@ mod tests {
     #[test]
     fn to_float_valid_zero() {
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("0.0".into()))],
+            args: vec![thunk(string_val("0.0".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3098,7 +3145,7 @@ mod tests {
     fn to_float_valid_leading_dot() {
         // ".5" parses to 0.5
         let result = mat(builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val(".5".into()))],
+            args: vec![thunk(string_val(".5".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3108,12 +3155,12 @@ mod tests {
 
     #[test]
     fn to_float_invalid_text() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
@@ -3124,12 +3171,12 @@ mod tests {
 
     #[test]
     fn to_float_invalid_empty() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("".into()))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(string_val("".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
@@ -3140,12 +3187,12 @@ mod tests {
 
     #[test]
     fn to_float_rejects_inf() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("inf".into()))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(string_val("inf".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind
@@ -3158,12 +3205,12 @@ mod tests {
 
     #[test]
     fn to_float_rejects_negative_inf() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("-inf".into()))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(string_val("-inf".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind
@@ -3176,12 +3223,12 @@ mod tests {
 
     #[test]
     fn to_float_rejects_infinity() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("infinity".into()))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(string_val("infinity".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind
@@ -3194,12 +3241,12 @@ mod tests {
 
     #[test]
     fn to_float_rejects_nan() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("NaN".into()))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(string_val("NaN".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind
@@ -3212,12 +3259,12 @@ mod tests {
 
     #[test]
     fn to_float_rejects_int_input() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -3228,12 +3275,12 @@ mod tests {
 
     #[test]
     fn to_float_rejects_float_input() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -3244,12 +3291,12 @@ mod tests {
 
     #[test]
     fn to_float_rejects_bool_input() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -3260,12 +3307,12 @@ mod tests {
 
     #[test]
     fn to_float_wrong_arity_zero() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -3276,15 +3323,15 @@ mod tests {
 
     #[test]
     fn to_float_wrong_arity_two() {
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![
                 thunk(string_val("1.0".into())),
                 thunk(string_val("2.0".into())),
             ],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -3297,12 +3344,12 @@ mod tests {
     fn to_float_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(string_val("1.0".into())));
-        let err = builtin_to_float(BuiltinArgs {
-            args: &[thunk(string_val("3.14".into()))],
-            named: Some(&named),
+        let err = run(builtin_to_float(BuiltinArgs {
+            args: vec![thunk(string_val("3.14".into()))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -3314,12 +3361,12 @@ mod tests {
     #[test]
     fn to_int_overflow() {
         // One past i64::MAX
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("9223372036854775808".into()))],
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(string_val("9223372036854775808".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
@@ -3331,7 +3378,7 @@ mod tests {
     #[test]
     fn deep_materialize_primitive_int() {
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3342,7 +3389,7 @@ mod tests {
     #[test]
     fn deep_materialize_primitive_string() {
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3353,7 +3400,7 @@ mod tests {
     #[test]
     fn deep_materialize_primitive_float() {
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14))],
+            args: vec![thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3364,7 +3411,7 @@ mod tests {
     #[test]
     fn deep_materialize_primitive_bool() {
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3376,7 +3423,7 @@ mod tests {
     fn deep_materialize_empty_dict() {
         let dict = Value::Dict(IndexMap::new());
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[thunk(dict)],
+            args: vec![thunk(dict)],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3400,7 +3447,7 @@ mod tests {
             &ctx,
         );
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3439,7 +3486,7 @@ mod tests {
         );
 
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[outer_dict],
+            args: vec![outer_dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3486,7 +3533,7 @@ mod tests {
         );
 
         let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3502,12 +3549,12 @@ mod tests {
 
     #[test]
     fn deep_materialize_arity_error() {
-        let err = builtin_deep_materialize(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_deep_materialize(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -3518,36 +3565,36 @@ mod tests {
 
     #[test]
     fn error_raises_with_message() {
-        let err = builtin_raise(BuiltinArgs {
-            args: &[thunk(string_val("boom".into()))],
+        let err = run(builtin_raise(BuiltinArgs {
+            args: vec![thunk(string_val("boom".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert_eq!(err.kind.to_string(), "boom");
     }
 
     #[test]
     fn error_custom_message() {
-        let err = builtin_raise(BuiltinArgs {
-            args: &[thunk(string_val("division by zero".into()))],
+        let err = run(builtin_raise(BuiltinArgs {
+            args: vec![thunk(string_val("division by zero".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert_eq!(err.kind.to_string(), "division by zero");
     }
 
     #[test]
     fn error_type_mismatch_on_non_string() {
-        let err = builtin_raise(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let err = run(builtin_raise(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -3563,12 +3610,12 @@ mod tests {
 
     #[test]
     fn error_arity_check() {
-        let err = builtin_raise(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_raise(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -3583,7 +3630,7 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [] 42]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
-            args: &[thunk(func)],
+            args: vec![thunk(func)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3603,7 +3650,7 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [] \"hello\"]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
-            args: &[thunk(func)],
+            args: vec![thunk(func)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3624,7 +3671,7 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [] $nonexistent]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
-            args: &[thunk(func)],
+            args: vec![thunk(func)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3654,12 +3701,12 @@ mod tests {
 
     #[test]
     fn try_non_function_type_error() {
-        let err = builtin_try(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let err = run(builtin_try(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Function"),
@@ -3672,12 +3719,12 @@ mod tests {
     fn try_non_zero_arg_function_error() {
         let ctx = test_ctx();
         let func = parse_eval("[fn [x] $x]", &ctx);
-        let err = builtin_try(BuiltinArgs {
-            args: &[thunk(func)],
+        let err = run(builtin_try(BuiltinArgs {
+            args: vec![thunk(func)],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("zero-argument function"),
@@ -3688,12 +3735,12 @@ mod tests {
 
     #[test]
     fn try_arity_check() {
-        let err = builtin_try(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_try(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -3704,8 +3751,10 @@ mod tests {
 
     #[test]
     fn try_with_builtin_success() {
-        fn ok_builtin(_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            ok_val(Value::Int(99), Span::origin())
+        fn ok_builtin(
+            _ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move { ok_val(Value::Int(99), Span::origin()) })
         }
         let ctx = test_ctx();
         let b = Value::Builtin(crate::value::BuiltinDef {
@@ -3715,7 +3764,7 @@ mod tests {
             force_count: 0,
         });
         let result = mat(builtin_try(BuiltinArgs {
-            args: &[thunk(b)],
+            args: vec![thunk(b)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3732,9 +3781,13 @@ mod tests {
 
     #[test]
     fn try_with_builtin_failure() {
-        fn err_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::internal("builtin error".to_string(), call_span).into())
+        fn err_builtin(
+            ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let call_span = ctx.call_span;
+                Err(EvalError::internal("builtin error".to_string(), call_span).into())
+            })
         }
         let ctx = test_ctx();
         let b = Value::Builtin(crate::value::BuiltinDef {
@@ -3744,7 +3797,7 @@ mod tests {
             force_count: 0,
         });
         let result = mat(builtin_try(BuiltinArgs {
-            args: &[thunk(b)],
+            args: vec![thunk(b)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3765,9 +3818,13 @@ mod tests {
         // NOTE: No corpus test exists for this because triggering DepthExceeded
         // reliably requires either a custom builtin (not available in corpus tests)
         // or recursive thunk forcing with 16MB stack (impractical in corpus format).
-        fn depth_exceeded_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::depth_exceeded(256, call_span).into())
+        fn depth_exceeded_builtin(
+            ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let call_span = ctx.call_span;
+                Err(EvalError::depth_exceeded(256, call_span).into())
+            })
         }
         let b = Value::Builtin(crate::value::BuiltinDef {
             func: depth_exceeded_builtin,
@@ -3775,12 +3832,12 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
         });
-        let err = builtin_try(BuiltinArgs {
-            args: &[thunk(b)],
+        let err = run(builtin_try(BuiltinArgs {
+            args: vec![thunk(b)],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         // Should propagate as error, not return err dict
         assert!(
@@ -3796,13 +3853,17 @@ mod tests {
     #[test]
     fn try_resource_limit_exceeded_not_catchable() {
         // ResourceLimitExceeded errors should NOT be caught by $try - they should propagate
-        fn resource_limit_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::resource_limit_exceeded(
-                "test: exceeded resource limit (1000000)".to_string(),
-                call_span,
-            )
-            .into())
+        fn resource_limit_builtin(
+            ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let call_span = ctx.call_span;
+                Err(EvalError::resource_limit_exceeded(
+                    "test: exceeded resource limit (1000000)".to_string(),
+                    call_span,
+                )
+                .into())
+            })
         }
         let b = Value::Builtin(crate::value::BuiltinDef {
             func: resource_limit_builtin,
@@ -3810,12 +3871,12 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
         });
-        let err = builtin_try(BuiltinArgs {
-            args: &[thunk(b)],
+        let err = run(builtin_try(BuiltinArgs {
+            args: vec![thunk(b)],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         // Should propagate as error, not return err dict
         assert!(
@@ -3841,7 +3902,7 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), args_val],
+            args: vec![thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3865,7 +3926,7 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), args_val],
+            args: vec![thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3889,7 +3950,7 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), args_val],
+            args: vec![thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3899,20 +3960,24 @@ mod tests {
 
     #[test]
     fn apply_with_builtin() {
-        fn add_builtin(builtin_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let BuiltinArgs {
-                args,
-                call_span,
-                ctx,
-                ..
-            } = builtin_ctx;
-            // TEST: test-only add_builtin with force_count=0 deliberately uses materialize directly
-            let a = materialize(&args[0], None, &ctx)?; // TEST: test-only inline builtin
-            let b = materialize(&args[1], None, &ctx)?; // TEST: test-only inline builtin
-            match (a, b) {
-                (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
-                _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
-            }
+        fn add_builtin(
+            builtin_ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let BuiltinArgs {
+                    args,
+                    call_span,
+                    ctx,
+                    ..
+                } = builtin_ctx;
+                // TEST: test-only add_builtin with force_count=0 deliberately uses materialize directly
+                let a = materialize(&args[0], None, &ctx)?; // TEST: test-only inline builtin
+                let b = materialize(&args[1], None, &ctx)?; // TEST: test-only inline builtin
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
+                    _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
+                }
+            })
         }
         let ctx = test_ctx();
         let func = Value::Builtin(crate::value::BuiltinDef {
@@ -3932,7 +3997,7 @@ mod tests {
         );
 
         let result = mat(builtin_apply(BuiltinArgs {
-            args: &[thunk(func), args_val],
+            args: vec![thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -3953,12 +4018,12 @@ mod tests {
             &ctx,
         );
 
-        let apply_thunk = builtin_apply(BuiltinArgs {
-            args: &[thunk(func), args_val],
+        let apply_thunk = run(builtin_apply(BuiltinArgs {
+            args: vec![thunk(func), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .expect("should return thunk");
         let err = crate::eval::materialize_sync(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
@@ -3982,12 +4047,12 @@ mod tests {
             &ctx,
         );
 
-        let apply_thunk = builtin_apply(BuiltinArgs {
-            args: &[thunk(Value::Int(42)), args_val],
+        let apply_thunk = run(builtin_apply(BuiltinArgs {
+            args: vec![thunk(Value::Int(42)), args_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .expect("should return thunk");
         let err = crate::eval::materialize_sync(&apply_thunk, None, &ctx).unwrap_err();
         assert!(
@@ -4001,14 +4066,14 @@ mod tests {
     fn apply_non_dict_args_type_error() {
         let ctx = test_ctx();
         let func = parse_eval("[fn [x] $x]", &ctx);
-        let thunk = builtin_apply(BuiltinArgs {
-            args: &[thunk(func), thunk(Value::Int(42))],
+        let apply_result = run(builtin_apply(BuiltinArgs {
+            args: vec![thunk(func), thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .expect("should return thunk");
-        let err = crate::eval::materialize_sync(&thunk, None, &test_ctx()).unwrap_err();
+        let err = crate::eval::materialize_sync(&apply_result, None, &test_ctx()).unwrap_err();
         assert!(
             err.kind.to_string().contains("expected Dict"),
             "got: {}",
@@ -4018,14 +4083,14 @@ mod tests {
 
     #[test]
     fn apply_wrong_arity() {
-        let thunk = builtin_apply(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let apply_result = run(builtin_apply(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .expect("should return thunk");
-        let err = crate::eval::materialize_sync(&thunk, None, &test_ctx()).unwrap_err();
+        let err = crate::eval::materialize_sync(&apply_result, None, &test_ctx()).unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
@@ -4036,7 +4101,7 @@ mod tests {
     #[test]
     fn type_of_int() {
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4047,7 +4112,7 @@ mod tests {
     #[test]
     fn type_of_float() {
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14))],
+            args: vec![thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4058,7 +4123,7 @@ mod tests {
     #[test]
     fn type_of_string() {
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(string_val("hi".into()))],
+            args: vec![thunk(string_val("hi".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4069,7 +4134,7 @@ mod tests {
     #[test]
     fn type_of_bool() {
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(Value::Bool(false))],
+            args: vec![thunk(Value::Bool(false))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4080,7 +4145,7 @@ mod tests {
     #[test]
     fn type_of_dict() {
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4093,7 +4158,7 @@ mod tests {
         let ctx = test_ctx();
         let func = parse_eval("[fn [] 0]", &ctx);
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(func)],
+            args: vec![thunk(func)],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4103,8 +4168,10 @@ mod tests {
 
     #[test]
     fn type_of_builtin_returns_function() {
-        fn dummy(_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            ok_val(Value::Int(0), Span::origin())
+        fn dummy(
+            _ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move { ok_val(Value::Int(0), Span::origin()) })
         }
         let builtin = Value::Builtin(crate::value::BuiltinDef {
             func: dummy,
@@ -4113,7 +4180,7 @@ mod tests {
             force_count: 0,
         });
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(builtin)],
+            args: vec![thunk(builtin)],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4132,7 +4199,7 @@ mod tests {
             tail: tail_id,
         };
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: &[thunk(seq)],
+            args: vec![thunk(seq)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4142,12 +4209,12 @@ mod tests {
 
     #[test]
     fn type_of_arity_check() {
-        let err = builtin_type_of(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_type_of(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4159,7 +4226,7 @@ mod tests {
     #[test]
     fn from_json_int() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("42".into()))],
+            args: vec![thunk(string_val("42".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4170,7 +4237,7 @@ mod tests {
     #[test]
     fn from_json_float() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("3.14".into()))],
+            args: vec![thunk(string_val("3.14".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4181,7 +4248,7 @@ mod tests {
     #[test]
     fn from_json_string() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val(r#""hello""#))],
+            args: vec![thunk(string_val(r#""hello""#))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4192,7 +4259,7 @@ mod tests {
     #[test]
     fn from_json_bool_true() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("true".into()))],
+            args: vec![thunk(string_val("true".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4203,7 +4270,7 @@ mod tests {
     #[test]
     fn from_json_bool_false() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("false".into()))],
+            args: vec![thunk(string_val("false".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4214,7 +4281,7 @@ mod tests {
     #[test]
     fn from_json_null_becomes_empty_dict() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("null".into()))],
+            args: vec![thunk(string_val("null".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4229,7 +4296,7 @@ mod tests {
     fn from_json_array() {
         let ctx = test_ctx();
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("[1, 2, 3]".into()))],
+            args: vec![thunk(string_val("[1, 2, 3]".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4252,7 +4319,7 @@ mod tests {
     fn from_json_object() {
         let ctx = test_ctx();
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val(r#"{"name": "Alice", "age": 30}"#))],
+            args: vec![thunk(string_val(r#"{"name": "Alice", "age": 30}"#))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4274,7 +4341,7 @@ mod tests {
         let ctx = test_ctx();
         let json = r#"{"users": [{"name": "Bob"}, {"name": "Eve"}]}"#;
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val(json))],
+            args: vec![thunk(string_val(json))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4303,12 +4370,12 @@ mod tests {
 
     #[test]
     fn from_json_invalid_json() {
-        let err = builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("{bad json".into()))],
+        let err = run(builtin_from_json(BuiltinArgs {
+            args: vec![thunk(string_val("{bad json".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("invalid JSON"),
@@ -4319,12 +4386,12 @@ mod tests {
 
     #[test]
     fn from_json_non_string_type_error() {
-        let err = builtin_from_json(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let err = run(builtin_from_json(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -4335,12 +4402,12 @@ mod tests {
 
     #[test]
     fn from_json_arity_check() {
-        let err = builtin_from_json(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_from_json(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4352,7 +4419,7 @@ mod tests {
     #[test]
     fn from_json_empty_object() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("{}".into()))],
+            args: vec![thunk(string_val("{}".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4366,7 +4433,7 @@ mod tests {
     #[test]
     fn from_json_empty_array() {
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("[]".into()))],
+            args: vec![thunk(string_val("[]".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4381,7 +4448,7 @@ mod tests {
     fn from_json_mixed_array() {
         let ctx = test_ctx();
         let result = mat(builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val(r#"[1, "two", true, null]"#))],
+            args: vec![thunk(string_val(r#"[1, "two", true, null]"#))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4439,12 +4506,15 @@ mod tests {
         // non-standard parsers or direct serde_json::Number construction.
         // Verify that a normal finite float passes through correctly.
         let ctx = test_ctx();
-        let result = mat(json_to_value(
-            &serde_json::Value::Number(serde_json::Number::from_f64(3.14).expect("finite")),
-            0,
-            call_span(),
-            &ctx,
-        ));
+        let result = mat_val(
+            json_to_value(
+                &serde_json::Value::Number(serde_json::Number::from_f64(3.14).expect("finite")),
+                0,
+                call_span(),
+                &ctx,
+            )
+            .unwrap(),
+        );
         assert_eq!(result, Value::Float(3.14));
     }
 
@@ -4453,7 +4523,7 @@ mod tests {
         let ctx = test_ctx();
         let dict = thunk_dict(IndexMap::new(), &ctx);
         let result = mat(builtin_keys(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4474,7 +4544,7 @@ mod tests {
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4503,7 +4573,7 @@ mod tests {
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4533,7 +4603,7 @@ mod tests {
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4562,7 +4632,7 @@ mod tests {
         let dict = thunk_dict(map, &ctx);
 
         let result = mat(builtin_keys(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4585,7 +4655,7 @@ mod tests {
         let ctx = test_ctx();
         let dict = thunk_dict(IndexMap::new(), &ctx);
         let result = mat(builtin_length(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4602,7 +4672,7 @@ mod tests {
         map.insert(Key::String("c".into()), thunk(Value::Int(3)));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4618,7 +4688,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(string_val("y".into())));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_length(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4637,7 +4707,7 @@ mod tests {
         right.insert(Key::String("d".into()), thunk(Value::Int(4)));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
+            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4662,7 +4732,7 @@ mod tests {
         right.insert(Key::String("z".into()), thunk(Value::Int(3)));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
+            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4681,7 +4751,7 @@ mod tests {
     fn merge_empty_dicts() {
         let ctx = test_ctx();
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk_dict(IndexMap::new(), &ctx),
                 thunk_dict(IndexMap::new(), &ctx),
             ],
@@ -4724,7 +4794,7 @@ mod tests {
         let mut right = IndexMap::new();
         right.insert(Key::Int(0), thunk(string_val("only".into())));
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(IndexMap::new(), &ctx), thunk_dict(right, &ctx)],
+            args: vec![thunk_dict(IndexMap::new(), &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4741,7 +4811,7 @@ mod tests {
         let mut left = IndexMap::new();
         left.insert(Key::Int(0), thunk(string_val("only".into())));
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left, &ctx), thunk_dict(IndexMap::new(), &ctx)],
+            args: vec![thunk_dict(left, &ctx), thunk_dict(IndexMap::new(), &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4767,7 +4837,7 @@ mod tests {
         right.insert(Key::String("b".into()), Arc::clone(&right_thunk));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
+            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4789,7 +4859,7 @@ mod tests {
         right.insert(Key::String("c".into()), thunk(Value::Int(4)));
 
         let result = mat(builtin_merge(BuiltinArgs {
-            args: &[thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
+            args: vec![thunk_dict(left, &ctx), thunk_dict(right, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4809,12 +4879,12 @@ mod tests {
 
     #[test]
     fn keys_wrong_arity_zero() {
-        let err = builtin_keys(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_keys(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4827,12 +4897,12 @@ mod tests {
     fn keys_wrong_arity_two() {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
-        let err = builtin_keys(BuiltinArgs {
-            args: &[d.clone(), d],
+        let err = run(builtin_keys(BuiltinArgs {
+            args: vec![d.clone(), d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4843,12 +4913,12 @@ mod tests {
 
     #[test]
     fn length_wrong_arity_zero() {
-        let err = builtin_length(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_length(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4861,12 +4931,12 @@ mod tests {
     fn length_wrong_arity_two() {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
-        let err = builtin_length(BuiltinArgs {
-            args: &[d.clone(), d],
+        let err = run(builtin_length(BuiltinArgs {
+            args: vec![d.clone(), d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4879,12 +4949,12 @@ mod tests {
     fn merge_wrong_arity_one() {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
-        let err = builtin_merge(BuiltinArgs {
-            args: &[d],
+        let err = run(builtin_merge(BuiltinArgs {
+            args: vec![d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4897,12 +4967,12 @@ mod tests {
     fn merge_wrong_arity_three() {
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
-        let err = builtin_merge(BuiltinArgs {
-            args: &[d.clone(), d.clone(), d],
+        let err = run(builtin_merge(BuiltinArgs {
+            args: vec![d.clone(), d.clone(), d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -4913,12 +4983,12 @@ mod tests {
 
     #[test]
     fn keys_non_dict_int() {
-        let err = builtin_keys(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let err = run(builtin_keys(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("keys"),
@@ -4939,12 +5009,12 @@ mod tests {
 
     #[test]
     fn keys_non_dict_string() {
-        let err = builtin_keys(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+        let err = run(builtin_keys(BuiltinArgs {
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("keys"),
@@ -4960,12 +5030,12 @@ mod tests {
 
     #[test]
     fn keys_non_dict_bool() {
-        let err = builtin_keys(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+        let err = run(builtin_keys(BuiltinArgs {
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("keys"),
@@ -4983,7 +5053,7 @@ mod tests {
     fn length_string() {
         // length now supports String inputs (returns character count)
         let result = mat(builtin_length(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -4994,7 +5064,7 @@ mod tests {
     #[test]
     fn length_string_empty() {
         let result = mat(builtin_length(BuiltinArgs {
-            args: &[thunk(string_val("".into()))],
+            args: vec![thunk(string_val("".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5006,7 +5076,7 @@ mod tests {
     fn length_string_unicode() {
         // Multi-byte characters: length returns char count, not byte count
         let result = mat(builtin_length(BuiltinArgs {
-            args: &[thunk(string_val("\u{1F600}\u{1F601}".into()))],
+            args: vec![thunk(string_val("\u{1F600}\u{1F601}".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5016,12 +5086,12 @@ mod tests {
 
     #[test]
     fn length_non_dict_non_string() {
-        let err = builtin_length(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+        let err = run(builtin_length(BuiltinArgs {
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("length"),
@@ -5046,12 +5116,12 @@ mod tests {
         // The type error fires when the overlay is flattened (at access time).
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
-        let result = builtin_merge(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), d],
+        let result = run(builtin_merge(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), d],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
         // builtin_merge itself succeeds — returns Overlay(Int(1), {})
         let overlay_thunk = result.unwrap();
         let overlay_val = crate::eval::materialize_sync(&overlay_thunk, None, &ctx).unwrap();
@@ -5080,12 +5150,12 @@ mod tests {
         // The type error fires when the overlay is flattened (at access time).
         let ctx = test_ctx();
         let d = thunk_dict(IndexMap::new(), &ctx);
-        let result = builtin_merge(BuiltinArgs {
-            args: &[d, thunk(string_val("nope".into()))],
+        let result = run(builtin_merge(BuiltinArgs {
+            args: vec![d, thunk(string_val("nope".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
         let overlay_thunk = result.unwrap();
         let overlay_val = crate::eval::materialize_sync(&overlay_thunk, None, &ctx).unwrap();
         // Flatten fires the type error: right side is String, not Dict
@@ -5112,7 +5182,7 @@ mod tests {
         let ctx = test_ctx();
         let empty = thunk_dict(IndexMap::new(), &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: &[empty, thunk(Value::Int(42))],
+            args: vec![empty, thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5135,7 +5205,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(string_val("b".into())));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: &[dict, thunk(string_val("c".into()))],
+            args: vec![dict, thunk(string_val("c".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5158,7 +5228,7 @@ mod tests {
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: &[dict, thunk(Value::Int(99))],
+            args: vec![dict, thunk(Value::Int(99))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5182,7 +5252,7 @@ mod tests {
         map.insert(Key::Int(5), thunk(Value::Int(50)));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: &[dict, thunk(Value::Int(60))],
+            args: vec![dict, thunk(Value::Int(60))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5204,7 +5274,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(string_val("first".into())));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: &[dict, thunk(string_val("second".into()))],
+            args: vec![dict, thunk(string_val("second".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5229,7 +5299,7 @@ mod tests {
         let empty = thunk_dict(IndexMap::new(), &ctx);
         let val_thunk = thunk(Value::Int(7));
         let result = mat(builtin_append(BuiltinArgs {
-            args: &[empty, Arc::clone(&val_thunk)],
+            args: vec![empty, Arc::clone(&val_thunk)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5246,12 +5316,12 @@ mod tests {
 
     #[test]
     fn append_wrong_arity_zero() {
-        let err = builtin_append(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_append(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("2"),
@@ -5263,8 +5333,8 @@ mod tests {
     #[test]
     fn append_wrong_arity_three() {
         let ctx = test_ctx();
-        let err = builtin_append(BuiltinArgs {
-            args: &[
+        let err = run(builtin_append(BuiltinArgs {
+            args: vec![
                 thunk_dict(IndexMap::new(), &ctx),
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
@@ -5272,7 +5342,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("2"),
@@ -5283,12 +5353,12 @@ mod tests {
 
     #[test]
     fn append_first_arg_non_dict() {
-        let err = builtin_append(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+        let err = run(builtin_append(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("append"),
@@ -5308,12 +5378,12 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(i64::MAX), thunk(Value::Int(1)));
         let dict = thunk_dict(map, &ctx);
-        let err = builtin_append(BuiltinArgs {
-            args: &[dict, thunk(Value::Int(2))],
+        let err = run(builtin_append(BuiltinArgs {
+            args: vec![dict, thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("integer overflow"),
@@ -5325,7 +5395,7 @@ mod tests {
     #[test]
     fn str_no_args() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[],
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5336,7 +5406,7 @@ mod tests {
     #[test]
     fn str_single_int() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5347,7 +5417,7 @@ mod tests {
     #[test]
     fn str_single_negative_int() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(Value::Int(-7))],
+            args: vec![thunk(Value::Int(-7))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5358,7 +5428,7 @@ mod tests {
     #[test]
     fn str_single_float() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14))],
+            args: vec![thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5369,7 +5439,7 @@ mod tests {
     #[test]
     fn str_single_string() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5380,7 +5450,7 @@ mod tests {
     #[test]
     fn str_single_bool_true() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5391,7 +5461,7 @@ mod tests {
     #[test]
     fn str_single_bool_false() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(Value::Bool(false))],
+            args: vec![thunk(Value::Bool(false))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5417,7 +5487,7 @@ mod tests {
             &ctx,
         );
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[dict],
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5428,7 +5498,7 @@ mod tests {
     #[test]
     fn str_single_empty_string() {
         let result = mat(builtin_str(BuiltinArgs {
-            args: &[thunk(string_val("".into()))],
+            args: vec![thunk(string_val("".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5444,7 +5514,7 @@ mod tests {
             thunk(string_val("World".into())),
         ];
         let result = mat(builtin_str(BuiltinArgs {
-            args: &args,
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5463,7 +5533,7 @@ mod tests {
             thunk(Value::Bool(true)),
         ];
         let result = mat(builtin_str(BuiltinArgs {
-            args: &args,
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5478,7 +5548,7 @@ mod tests {
     fn split_basic() {
         let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val(",".into())),
                 thunk(string_val("a,b,c".into())),
             ],
@@ -5504,7 +5574,7 @@ mod tests {
     fn split_empty_parts() {
         let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val(",".into())),
                 thunk(string_val("a,,b".into())),
             ],
@@ -5525,7 +5595,7 @@ mod tests {
     #[test]
     fn split_single_char_separator() {
         let result = mat(builtin_split(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("/".into())),
                 thunk(string_val("a/b/c/d".into())),
             ],
@@ -5543,7 +5613,7 @@ mod tests {
     fn split_no_match() {
         let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val(",".into())),
                 thunk(string_val("hello".into())),
             ],
@@ -5565,7 +5635,7 @@ mod tests {
     fn split_multi_char_separator() {
         let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("::".into())),
                 thunk(string_val("a::b::c".into())),
             ],
@@ -5591,7 +5661,7 @@ mod tests {
     fn split_empty_input() {
         let ctx = test_ctx();
         let result = mat(builtin_split(BuiltinArgs {
-            args: &[thunk(string_val(",".into())), thunk(string_val("".into()))],
+            args: vec![thunk(string_val(",".into())), thunk(string_val("".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -5615,12 +5685,12 @@ mod tests {
         // Note: corpus tests for this would be impractical (require >1M element inputs),
         // so we test the limit directly in unit tests.
         let input = "a".repeat(MAX_SPLIT_PARTS + 1);
-        let result = builtin_split(BuiltinArgs {
-            args: &[thunk(string_val("")), thunk(string_val(&input))],
+        let result = run(builtin_split(BuiltinArgs {
+            args: vec![thunk(string_val("")), thunk(string_val(&input))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err(), "expected Err for > MAX_SPLIT_PARTS parts");
         let err = result.unwrap_err();
         assert!(
@@ -5636,14 +5706,14 @@ mod tests {
         // (guard is `>`, not `>=`). Construct "a,a,a,...,a" with MAX_SPLIT_PARTS items
         // separated by commas, then split by "," — produces exactly MAX_SPLIT_PARTS parts.
         let input = vec!["a"; MAX_SPLIT_PARTS].join(",");
-        let result = builtin_split(BuiltinArgs {
-            args: &[thunk(string_val(",")), thunk(string_val(&input))],
+        let result = run(builtin_split(BuiltinArgs {
+            args: vec![thunk(string_val(",")), thunk(string_val(&input))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         let val = match result {
-            Ok(t) => mat(Ok(t)),
+            Ok(t) => mat_val(t),
             Err(e) => panic!("expected Ok for exactly MAX_SPLIT_PARTS parts, got Err: {e:?}"),
         };
         match val {
@@ -5655,7 +5725,7 @@ mod tests {
     #[test]
     fn replace_basic() {
         let result = mat(builtin_replace(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("world".into())),
                 thunk(string_val("Rust".into())),
                 thunk(string_val("hello world".into())),
@@ -5670,7 +5740,7 @@ mod tests {
     #[test]
     fn replace_multiple_occurrences() {
         let result = mat(builtin_replace(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("a".into())),
                 thunk(string_val("o".into())),
                 thunk(string_val("banana".into())),
@@ -5685,7 +5755,7 @@ mod tests {
     #[test]
     fn replace_no_match() {
         let result = mat(builtin_replace(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("xyz".into())),
                 thunk(string_val("abc".into())),
                 thunk(string_val("hello".into())),
@@ -5700,7 +5770,7 @@ mod tests {
     #[test]
     fn replace_empty_pattern() {
         let result = mat(builtin_replace(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("".into())),
                 thunk(string_val("-".into())),
                 thunk(string_val("abc".into())),
@@ -5715,7 +5785,7 @@ mod tests {
     #[test]
     fn replace_to_empty() {
         let result = mat(builtin_replace(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("l".into())),
                 thunk(string_val("".into())),
                 thunk(string_val("hello".into())),
@@ -5733,8 +5803,8 @@ mod tests {
         // 1000 chars input, 100k chars replacement -> output would be ~100MB.
         let input = "a".repeat(1000);
         let replacement = "x".repeat(100_000);
-        let result = builtin_replace(BuiltinArgs {
-            args: &[
+        let result = run(builtin_replace(BuiltinArgs {
+            args: vec![
                 thunk(string_val("")),
                 thunk(string_val(&replacement)),
                 thunk(string_val(&input)),
@@ -5742,7 +5812,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
         let err_msg = format!("{:?}", result.unwrap_err());
         assert!(err_msg.contains("replace: output would exceed"));
@@ -5753,7 +5823,7 @@ mod tests {
         // Normal pattern replacement should succeed even with moderate sizes.
         let input = "a".repeat(1000);
         let result = mat(builtin_replace(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("a")),
                 thunk(string_val("bb")),
                 thunk(string_val(&input)),
@@ -5769,7 +5839,7 @@ mod tests {
     #[test]
     fn trim_basic() {
         let result = mat(builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("  hello  ".into()))],
+            args: vec![thunk(string_val("  hello  ".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5780,7 +5850,7 @@ mod tests {
     #[test]
     fn trim_leading_only() {
         let result = mat(builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("   hello".into()))],
+            args: vec![thunk(string_val("   hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5791,7 +5861,7 @@ mod tests {
     #[test]
     fn trim_trailing_only() {
         let result = mat(builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("hello   ".into()))],
+            args: vec![thunk(string_val("hello   ".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5802,7 +5872,7 @@ mod tests {
     #[test]
     fn trim_no_whitespace() {
         let result = mat(builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5813,7 +5883,7 @@ mod tests {
     #[test]
     fn trim_all_whitespace() {
         let result = mat(builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("   ".into()))],
+            args: vec![thunk(string_val("   ".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5824,7 +5894,7 @@ mod tests {
     #[test]
     fn trim_tabs_and_newlines() {
         let result = mat(builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("\t\nhello\n\t".into()))],
+            args: vec![thunk(string_val("\t\nhello\n\t".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5835,7 +5905,7 @@ mod tests {
     #[test]
     fn trim_empty() {
         let result = mat(builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("".into()))],
+            args: vec![thunk(string_val("".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5845,12 +5915,12 @@ mod tests {
 
     #[test]
     fn split_wrong_arity_too_few() {
-        let err = builtin_split(BuiltinArgs {
-            args: &[thunk(string_val(",".into()))],
+        let err = run(builtin_split(BuiltinArgs {
+            args: vec![thunk(string_val(",".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -5866,8 +5936,8 @@ mod tests {
 
     #[test]
     fn split_wrong_arity_too_many() {
-        let err = builtin_split(BuiltinArgs {
-            args: &[
+        let err = run(builtin_split(BuiltinArgs {
+            args: vec![
                 thunk(string_val(",".into())),
                 thunk(string_val("a,b".into())),
                 thunk(string_val("extra".into())),
@@ -5875,7 +5945,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -5886,12 +5956,12 @@ mod tests {
 
     #[test]
     fn replace_wrong_arity() {
-        let err = builtin_replace(BuiltinArgs {
-            args: &[thunk(string_val("a".into())), thunk(string_val("b".into()))],
+        let err = run(builtin_replace(BuiltinArgs {
+            args: vec![thunk(string_val("a".into())), thunk(string_val("b".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -5907,12 +5977,12 @@ mod tests {
 
     #[test]
     fn trim_wrong_arity() {
-        let err = builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("a".into())), thunk(string_val("b".into()))],
+        let err = run(builtin_trim(BuiltinArgs {
+            args: vec![thunk(string_val("a".into())), thunk(string_val("b".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -5923,12 +5993,12 @@ mod tests {
 
     #[test]
     fn split_wrong_type_separator() {
-        let err = builtin_split(BuiltinArgs {
-            args: &[thunk(Value::Int(42)), thunk(string_val("hello".into()))],
+        let err = run(builtin_split(BuiltinArgs {
+            args: vec![thunk(Value::Int(42)), thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -5949,12 +6019,12 @@ mod tests {
 
     #[test]
     fn split_wrong_type_input() {
-        let err = builtin_split(BuiltinArgs {
-            args: &[thunk(string_val(",".into())), thunk(Value::Int(42))],
+        let err = run(builtin_split(BuiltinArgs {
+            args: vec![thunk(string_val(",".into())), thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -5970,8 +6040,8 @@ mod tests {
 
     #[test]
     fn replace_wrong_type_pattern() {
-        let err = builtin_replace(BuiltinArgs {
-            args: &[
+        let err = run(builtin_replace(BuiltinArgs {
+            args: vec![
                 thunk(Value::Int(1)),
                 thunk(string_val("b".into())),
                 thunk(string_val("abc".into())),
@@ -5979,7 +6049,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -5995,8 +6065,8 @@ mod tests {
 
     #[test]
     fn replace_wrong_type_replacement() {
-        let err = builtin_replace(BuiltinArgs {
-            args: &[
+        let err = run(builtin_replace(BuiltinArgs {
+            args: vec![
                 thunk(string_val("a".into())),
                 thunk(Value::Bool(true)),
                 thunk(string_val("abc".into())),
@@ -6004,7 +6074,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -6020,8 +6090,8 @@ mod tests {
 
     #[test]
     fn replace_wrong_type_input() {
-        let err = builtin_replace(BuiltinArgs {
-            args: &[
+        let err = run(builtin_replace(BuiltinArgs {
+            args: vec![
                 thunk(string_val("a".into())),
                 thunk(string_val("b".into())),
                 thunk(Value::Float(3.14)),
@@ -6029,7 +6099,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -6045,12 +6115,12 @@ mod tests {
 
     #[test]
     fn trim_wrong_type() {
-        let err = builtin_trim(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14))],
+        let err = run(builtin_trim(BuiltinArgs {
+            args: vec![thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
@@ -6073,12 +6143,12 @@ mod tests {
     fn trim_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(string_val("hi".into())));
-        let err = builtin_trim(BuiltinArgs {
-            args: &[thunk(string_val("  hello  ".into()))],
-            named: Some(&named),
+        let err = run(builtin_trim(BuiltinArgs {
+            args: vec![thunk(string_val("  hello  ".into()))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6091,12 +6161,12 @@ mod tests {
     fn deep_materialize_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_deep_materialize(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
-            named: Some(&named),
+        let err = run(builtin_deep_materialize(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6109,12 +6179,12 @@ mod tests {
     fn error_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_raise(BuiltinArgs {
-            args: &[thunk(string_val("boom".into()))],
-            named: Some(&named),
+        let err = run(builtin_raise(BuiltinArgs {
+            args: vec![thunk(string_val("boom".into()))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6127,12 +6197,12 @@ mod tests {
     fn type_of_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_type_of(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
-            named: Some(&named),
+        let err = run(builtin_type_of(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6145,12 +6215,12 @@ mod tests {
     fn from_json_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_from_json(BuiltinArgs {
-            args: &[thunk(string_val("42".into()))],
-            named: Some(&named),
+        let err = run(builtin_from_json(BuiltinArgs {
+            args: vec![thunk(string_val("42".into()))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6163,12 +6233,12 @@ mod tests {
     fn to_int_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_to_int(BuiltinArgs {
-            args: &[thunk(string_val("42".into()))],
-            named: Some(&named),
+        let err = run(builtin_to_int(BuiltinArgs {
+            args: vec![thunk(string_val("42".into()))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6181,15 +6251,15 @@ mod tests {
     fn split_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_split(BuiltinArgs {
-            args: &[
+        let err = run(builtin_split(BuiltinArgs {
+            args: vec![
                 thunk(string_val(",".into())),
                 thunk(string_val("a,b".into())),
             ],
-            named: Some(&named),
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6202,16 +6272,16 @@ mod tests {
     fn replace_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
-        let err = builtin_replace(BuiltinArgs {
-            args: &[
+        let err = run(builtin_replace(BuiltinArgs {
+            args: vec![
                 thunk(string_val("a".into())),
                 thunk(string_val("b".into())),
                 thunk(string_val("abc".into())),
             ],
-            named: Some(&named),
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6224,12 +6294,12 @@ mod tests {
     fn add_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(99)));
-        let err = builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
-            named: Some(&named),
+        let err = run(builtin_add(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6242,12 +6312,12 @@ mod tests {
     fn sub_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(3)), thunk(Value::Int(1))],
-            named: Some(&named),
+        let err = run(builtin_sub(BuiltinArgs {
+            args: vec![thunk(Value::Int(3)), thunk(Value::Int(1))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6260,12 +6330,12 @@ mod tests {
     fn mul_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Int(2)), thunk(Value::Int(3))],
-            named: Some(&named),
+        let err = run(builtin_mul(BuiltinArgs {
+            args: vec![thunk(Value::Int(2)), thunk(Value::Int(3))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6278,12 +6348,12 @@ mod tests {
     fn div_float_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Int(3))],
-            named: Some(&named),
+        let err = run(builtin_div_float(BuiltinArgs {
+            args: vec![thunk(Value::Int(10)), thunk(Value::Int(3))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6296,12 +6366,12 @@ mod tests {
     fn eq_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
-            named: Some(&named),
+        let err = run(builtin_eq(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6314,12 +6384,12 @@ mod tests {
     fn lt_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
-            named: Some(&named),
+        let err = run(builtin_lt(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6332,16 +6402,16 @@ mod tests {
     fn if_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_if(BuiltinArgs {
-            args: &[
+        let err = run(builtin_if(BuiltinArgs {
+            args: vec![
                 thunk(Value::Bool(true)),
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
             ],
-            named: Some(&named),
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6363,12 +6433,12 @@ mod tests {
             },
             &ctx,
         );
-        let err = builtin_keys(BuiltinArgs {
-            args: &[dict],
-            named: Some(&named),
+        let err = run(builtin_keys(BuiltinArgs {
+            args: vec![dict],
+            named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6382,12 +6452,12 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
         let map = IndexMap::new();
-        let err = builtin_length(BuiltinArgs {
-            args: &[thunk(Value::Dict(map))],
-            named: Some(&named),
+        let err = run(builtin_length(BuiltinArgs {
+            args: vec![thunk(Value::Dict(map))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6400,15 +6470,15 @@ mod tests {
     fn merge_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_merge(BuiltinArgs {
-            args: &[
+        let err = run(builtin_merge(BuiltinArgs {
+            args: vec![
                 thunk(Value::Dict(IndexMap::new())),
                 thunk(Value::Dict(IndexMap::new())),
             ],
-            named: Some(&named),
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6421,12 +6491,12 @@ mod tests {
     fn append_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_append(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new())), thunk(Value::Int(42))],
-            named: Some(&named),
+        let err = run(builtin_append(BuiltinArgs {
+            args: vec![thunk(Value::Dict(IndexMap::new())), thunk(Value::Int(42))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6439,12 +6509,12 @@ mod tests {
     fn str_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = builtin_str(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
-            named: Some(&named),
+        let err = run(builtin_str(BuiltinArgs {
+            args: vec![thunk(string_val("hello".into()))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6459,12 +6529,12 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
         let func = parse_eval("[fn [] 42]", &ctx);
-        let err = builtin_try(BuiltinArgs {
-            args: &[thunk(func)],
-            named: Some(&named),
+        let err = run(builtin_try(BuiltinArgs {
+            args: vec![thunk(func)],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
@@ -6479,14 +6549,14 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
         let func = parse_eval("[fn [] 42]", &ctx);
-        let thunk = builtin_apply(BuiltinArgs {
-            args: &[thunk(func), thunk(Value::Dict(IndexMap::new()))],
-            named: Some(&named),
+        let apply_result = run(builtin_apply(BuiltinArgs {
+            args: vec![thunk(func), thunk(Value::Dict(IndexMap::new()))],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .expect("should return thunk");
-        let err = crate::eval::materialize_sync(&thunk, None, &test_ctx()).unwrap_err();
+        let err = crate::eval::materialize_sync(&apply_result, None, &test_ctx()).unwrap_err();
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
@@ -6786,7 +6856,7 @@ mod tests {
     #[test]
     fn add_int_int() {
         let r = mat(builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(3)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(3)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6797,7 +6867,7 @@ mod tests {
     #[test]
     fn add_int_float() {
         let r = mat(builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(3)), thunk(Value::Float(2.5))],
+            args: vec![thunk(Value::Int(3)), thunk(Value::Float(2.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6808,7 +6878,7 @@ mod tests {
     #[test]
     fn add_float_int() {
         let r = mat(builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
+            args: vec![thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6819,7 +6889,7 @@ mod tests {
     #[test]
     fn add_float_float() {
         let r = mat(builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Float(1.5)), thunk(Value::Float(2.5))],
+            args: vec![thunk(Value::Float(1.5)), thunk(Value::Float(2.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6830,7 +6900,7 @@ mod tests {
     #[test]
     fn add_negative_ints() {
         let r = mat(builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(-10)), thunk(Value::Int(3))],
+            args: vec![thunk(Value::Int(-10)), thunk(Value::Int(3))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6841,7 +6911,7 @@ mod tests {
     #[test]
     fn add_zeros() {
         let r = mat(builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), thunk(Value::Int(0))],
+            args: vec![thunk(Value::Int(0)), thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6851,12 +6921,12 @@ mod tests {
 
     #[test]
     fn add_type_error_string() {
-        let e = builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(string_val("hello".into()))],
+        let e = run(builtin_add(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         // With operator-level dispatch, Int + String falls through to try_dispatch_method
         // which finds no Addable instance (no prelude loaded) → NoInstance error.
@@ -6870,12 +6940,12 @@ mod tests {
 
     #[test]
     fn add_arity_one_arg() {
-        let e = builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let e = run(builtin_add(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("arity mismatch"),
@@ -6888,7 +6958,7 @@ mod tests {
     fn add_arity_three_args() {
         // + now accepts 2+ args (uses first two). Three args succeed; result is 1+2=3.
         let result = mat(builtin_add(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
                 thunk(Value::Int(3)),
@@ -6902,12 +6972,12 @@ mod tests {
 
     #[test]
     fn add_overflow_error() {
-        let err = builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Int(i64::MAX)), thunk(Value::Int(1))],
+        let err = run(builtin_add(BuiltinArgs {
+            args: vec![thunk(Value::Int(i64::MAX)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("integer overflow"),
@@ -6918,12 +6988,12 @@ mod tests {
 
     #[test]
     fn sub_overflow_error() {
-        let err = builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(i64::MIN)), thunk(Value::Int(1))],
+        let err = run(builtin_sub(BuiltinArgs {
+            args: vec![thunk(Value::Int(i64::MIN)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("integer overflow"),
@@ -6935,7 +7005,7 @@ mod tests {
     #[test]
     fn sub_int_int() {
         let r = mat(builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Int(3))],
+            args: vec![thunk(Value::Int(10)), thunk(Value::Int(3))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6946,7 +7016,7 @@ mod tests {
     #[test]
     fn sub_int_float() {
         let r = mat(builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Float(3.5))],
+            args: vec![thunk(Value::Int(10)), thunk(Value::Float(3.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6957,7 +7027,7 @@ mod tests {
     #[test]
     fn sub_float_int() {
         let r = mat(builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Float(10.5)), thunk(Value::Int(3))],
+            args: vec![thunk(Value::Float(10.5)), thunk(Value::Int(3))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6968,7 +7038,7 @@ mod tests {
     #[test]
     fn sub_float_float() {
         let r = mat(builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Float(10.5)), thunk(Value::Float(3.5))],
+            args: vec![thunk(Value::Float(10.5)), thunk(Value::Float(3.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6979,7 +7049,7 @@ mod tests {
     #[test]
     fn sub_result_negative() {
         let r = mat(builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(3)), thunk(Value::Int(10))],
+            args: vec![thunk(Value::Int(3)), thunk(Value::Int(10))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6990,7 +7060,7 @@ mod tests {
     #[test]
     fn sub_to_zero() {
         let r = mat(builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7000,12 +7070,12 @@ mod tests {
 
     #[test]
     fn sub_arity_zero_args() {
-        let e = builtin_sub(BuiltinArgs {
-            args: &[],
+        let e = run(builtin_sub(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("arity mismatch"),
@@ -7016,12 +7086,12 @@ mod tests {
 
     #[test]
     fn sub_arity_one_arg() {
-        let e = builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let e = run(builtin_sub(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("arity mismatch"),
@@ -7034,7 +7104,7 @@ mod tests {
     fn sub_arity_three_args() {
         // - now accepts 2+ args (uses first two). Three args succeed; result is 1-2=-1.
         let result = mat(builtin_sub(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
                 thunk(Value::Int(3)),
@@ -7048,12 +7118,12 @@ mod tests {
 
     #[test]
     fn sub_type_error_string() {
-        let e = builtin_sub(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(string_val("hello".into()))],
+        let e = run(builtin_sub(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         // With operator-level dispatch, Int - String falls through to try_dispatch_method
         // which finds no Subtractable instance (no prelude loaded) → NoInstance error.
@@ -7068,7 +7138,7 @@ mod tests {
     #[test]
     fn mul_int_int() {
         let r = mat(builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Int(4)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(4)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7079,7 +7149,7 @@ mod tests {
     #[test]
     fn mul_int_float() {
         let r = mat(builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Int(4)), thunk(Value::Float(2.5))],
+            args: vec![thunk(Value::Int(4)), thunk(Value::Float(2.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7090,7 +7160,7 @@ mod tests {
     #[test]
     fn mul_float_int() {
         let r = mat(builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Float(2.5)), thunk(Value::Int(4))],
+            args: vec![thunk(Value::Float(2.5)), thunk(Value::Int(4))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7101,7 +7171,7 @@ mod tests {
     #[test]
     fn mul_float_float() {
         let r = mat(builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Float(2.5)), thunk(Value::Float(3.0))],
+            args: vec![thunk(Value::Float(2.5)), thunk(Value::Float(3.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7112,7 +7182,7 @@ mod tests {
     #[test]
     fn mul_by_zero() {
         let r = mat(builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Int(42)), thunk(Value::Int(0))],
+            args: vec![thunk(Value::Int(42)), thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7123,7 +7193,7 @@ mod tests {
     #[test]
     fn mul_negative() {
         let r = mat(builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Int(-3)), thunk(Value::Int(4))],
+            args: vec![thunk(Value::Int(-3)), thunk(Value::Int(4))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7134,7 +7204,7 @@ mod tests {
     #[test]
     fn mul_by_negative_one() {
         let r = mat(builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Int(42)), thunk(Value::Int(-1))],
+            args: vec![thunk(Value::Int(42)), thunk(Value::Int(-1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7144,12 +7214,12 @@ mod tests {
 
     #[test]
     fn mul_overflow_error() {
-        let err = builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Int(i64::MAX)), thunk(Value::Int(2))],
+        let err = run(builtin_mul(BuiltinArgs {
+            args: vec![thunk(Value::Int(i64::MAX)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("integer overflow"),
@@ -7160,12 +7230,12 @@ mod tests {
 
     #[test]
     fn add_float_overflow_to_infinity_is_error() {
-        let err = builtin_add(BuiltinArgs {
-            args: &[thunk(Value::Float(1e308)), thunk(Value::Float(1e308))],
+        let err = run(builtin_add(BuiltinArgs {
+            args: vec![thunk(Value::Float(1e308)), thunk(Value::Float(1e308))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite"),
@@ -7177,15 +7247,15 @@ mod tests {
     #[test]
     fn sub_float_nan_is_error() {
         // f64::INFINITY - f64::INFINITY = NaN
-        let err = builtin_sub(BuiltinArgs {
-            args: &[
+        let err = run(builtin_sub(BuiltinArgs {
+            args: vec![
                 thunk(Value::Float(f64::INFINITY)),
                 thunk(Value::Float(f64::INFINITY)),
             ],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite"),
@@ -7196,12 +7266,12 @@ mod tests {
 
     #[test]
     fn mul_float_overflow_to_infinity_is_error() {
-        let err = builtin_mul(BuiltinArgs {
-            args: &[thunk(Value::Float(1e308)), thunk(Value::Float(10.0))],
+        let err = run(builtin_mul(BuiltinArgs {
+            args: vec![thunk(Value::Float(1e308)), thunk(Value::Float(10.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite"),
@@ -7216,15 +7286,15 @@ mod tests {
         // but this test documents that NaN results from non-zero / 0-adjacent
         // ops are also caught. Use f64::NAN inputs via Float values directly:
         // f64::INFINITY / f64::INFINITY = NaN
-        let err = builtin_div_float(BuiltinArgs {
-            args: &[
+        let err = run(builtin_div_float(BuiltinArgs {
+            args: vec![
                 thunk(Value::Float(f64::INFINITY)),
                 thunk(Value::Float(f64::INFINITY)),
             ],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("is not a finite"),
@@ -7236,7 +7306,7 @@ mod tests {
     #[test]
     fn div_float_int_int_returns_float() {
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Int(3))],
+            args: vec![thunk(Value::Int(10)), thunk(Value::Int(3))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7252,7 +7322,7 @@ mod tests {
     #[test]
     fn div_float_int_int_exact_returns_float() {
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Int(2))],
+            args: vec![thunk(Value::Int(10)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7266,7 +7336,7 @@ mod tests {
     #[test]
     fn div_float_int_float() {
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Float(3.0))],
+            args: vec![thunk(Value::Int(10)), thunk(Value::Float(3.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7282,7 +7352,7 @@ mod tests {
     #[test]
     fn div_float_float_float() {
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Float(7.5)), thunk(Value::Float(2.5))],
+            args: vec![thunk(Value::Float(7.5)), thunk(Value::Float(2.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7292,12 +7362,12 @@ mod tests {
 
     #[test]
     fn div_float_by_zero_int() {
-        let e = builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Int(0))],
+        let e = run(builtin_div_float(BuiltinArgs {
+            args: vec![thunk(Value::Int(10)), thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("division by zero"),
@@ -7309,12 +7379,12 @@ mod tests {
     #[test]
     fn div_float_by_zero_float() {
         // Float / Float(0.0) produces Inf which check_float_result rejects as non-finite.
-        let e = builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Float(10.0)), thunk(Value::Float(0.0))],
+        let e = run(builtin_div_float(BuiltinArgs {
+            args: vec![thunk(Value::Float(10.0)), thunk(Value::Float(0.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("is not a finite number"),
@@ -7326,12 +7396,12 @@ mod tests {
     #[test]
     fn div_float_by_zero_mixed() {
         // Int / Float(0.0) produces Inf which check_float_result rejects as non-finite.
-        let e = builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Float(0.0))],
+        let e = run(builtin_div_float(BuiltinArgs {
+            args: vec![thunk(Value::Int(10)), thunk(Value::Float(0.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("is not a finite number"),
@@ -7343,7 +7413,7 @@ mod tests {
     #[test]
     fn div_float_negative_zero() {
         let r = mat(builtin_div_float(BuiltinArgs {
-            args: &[thunk(Value::Float(-0.0)), thunk(Value::Float(1.0))],
+            args: vec![thunk(Value::Float(-0.0)), thunk(Value::Float(1.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7354,7 +7424,7 @@ mod tests {
     #[test]
     fn eq_int_int_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7365,7 +7435,7 @@ mod tests {
     #[test]
     fn eq_int_int_not_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Int(6))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Int(6))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7376,7 +7446,7 @@ mod tests {
     #[test]
     fn eq_float_float_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14)), thunk(Value::Float(3.14))],
+            args: vec![thunk(Value::Float(3.14)), thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7387,7 +7457,7 @@ mod tests {
     #[test]
     fn eq_float_float_not_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Float(3.14)), thunk(Value::Float(2.71))],
+            args: vec![thunk(Value::Float(3.14)), thunk(Value::Float(2.71))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7398,7 +7468,7 @@ mod tests {
     #[test]
     fn eq_string_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("hello".into())),
                 thunk(string_val("hello".into())),
             ],
@@ -7412,7 +7482,7 @@ mod tests {
     #[test]
     fn eq_string_not_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("hello".into())),
                 thunk(string_val("world".into())),
             ],
@@ -7426,7 +7496,7 @@ mod tests {
     #[test]
     fn eq_bool_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
+            args: vec![thunk(Value::Bool(true)), thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7437,7 +7507,7 @@ mod tests {
     #[test]
     fn eq_bool_not_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
+            args: vec![thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7448,7 +7518,7 @@ mod tests {
     #[test]
     fn eq_cross_type_int_float_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7459,7 +7529,7 @@ mod tests {
     #[test]
     fn eq_cross_type_float_int_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Float(5.0)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Float(5.0)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7470,7 +7540,7 @@ mod tests {
     #[test]
     fn eq_cross_type_int_float_not_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Float(5.1))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Float(5.1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7482,7 +7552,7 @@ mod tests {
     fn eq_dict_structural_equality() {
         // Empty dicts are structurally equal
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(Value::Dict(IndexMap::new())),
                 thunk(Value::Dict(IndexMap::new())),
             ],
@@ -7496,7 +7566,7 @@ mod tests {
     #[test]
     fn eq_different_types_not_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(string_val("1".into()))],
+            args: vec![thunk(Value::Int(1)), thunk(string_val("1".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7507,7 +7577,7 @@ mod tests {
     #[test]
     fn eq_bool_vs_int_not_equal() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Bool(true)), thunk(Value::Int(1))],
+            args: vec![thunk(Value::Bool(true)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7518,7 +7588,7 @@ mod tests {
     #[test]
     fn eq_nan_not_equal_to_self() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
+            args: vec![thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7529,7 +7599,7 @@ mod tests {
     #[test]
     fn eq_negative_zero_float() {
         let r = mat(builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
+            args: vec![thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7539,12 +7609,12 @@ mod tests {
 
     #[test]
     fn eq_arity_error() {
-        let e = builtin_eq(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let e = run(builtin_eq(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("arity mismatch"),
@@ -7556,7 +7626,7 @@ mod tests {
     #[test]
     fn lt_int_int_true() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(3)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(3)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7567,7 +7637,7 @@ mod tests {
     #[test]
     fn lt_int_int_false() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Int(3))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Int(3))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7578,7 +7648,7 @@ mod tests {
     #[test]
     fn lt_int_int_equal_is_false() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7589,7 +7659,7 @@ mod tests {
     #[test]
     fn lt_float_float() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Float(2.5)), thunk(Value::Float(3.5))],
+            args: vec![thunk(Value::Float(2.5)), thunk(Value::Float(3.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7600,7 +7670,7 @@ mod tests {
     #[test]
     fn lt_string_lexicographic() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("apple".into())),
                 thunk(string_val("banana".into())),
             ],
@@ -7614,7 +7684,7 @@ mod tests {
     #[test]
     fn lt_string_lexicographic_reverse() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("banana".into())),
                 thunk(string_val("apple".into())),
             ],
@@ -7628,7 +7698,7 @@ mod tests {
     #[test]
     fn lt_string_equal_is_false() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("same".into())),
                 thunk(string_val("same".into())),
             ],
@@ -7642,7 +7712,7 @@ mod tests {
     #[test]
     fn lt_string_prefix() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[
+            args: vec![
                 thunk(string_val("ab".into())),
                 thunk(string_val("abc".into())),
             ],
@@ -7656,7 +7726,7 @@ mod tests {
     #[test]
     fn lt_cross_type_int_float() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(3)), thunk(Value::Float(3.5))],
+            args: vec![thunk(Value::Int(3)), thunk(Value::Float(3.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7667,7 +7737,7 @@ mod tests {
     #[test]
     fn lt_cross_type_float_int() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Float(2.5)), thunk(Value::Int(3))],
+            args: vec![thunk(Value::Float(2.5)), thunk(Value::Int(3))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7678,7 +7748,7 @@ mod tests {
     #[test]
     fn lt_cross_type_equal_values() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Float(5.0))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Float(5.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7688,12 +7758,12 @@ mod tests {
 
     #[test]
     fn lt_incompatible_types_error() {
-        let e = builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(string_val("hello".into()))],
+        let e = run(builtin_lt(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("expected"),
@@ -7705,7 +7775,7 @@ mod tests {
     #[test]
     fn lt_bool_false_lt_true() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Bool(false)), thunk(Value::Bool(true))],
+            args: vec![thunk(Value::Bool(false)), thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7716,7 +7786,7 @@ mod tests {
     #[test]
     fn lt_bool_true_lt_false() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Bool(true)), thunk(Value::Bool(false))],
+            args: vec![thunk(Value::Bool(true)), thunk(Value::Bool(false))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7727,7 +7797,7 @@ mod tests {
     #[test]
     fn lt_bool_false_lt_false() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Bool(false)), thunk(Value::Bool(false))],
+            args: vec![thunk(Value::Bool(false)), thunk(Value::Bool(false))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7738,7 +7808,7 @@ mod tests {
     #[test]
     fn lt_bool_true_lt_true() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Bool(true)), thunk(Value::Bool(true))],
+            args: vec![thunk(Value::Bool(true)), thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7748,15 +7818,15 @@ mod tests {
 
     #[test]
     fn lt_dict_error() {
-        let e = builtin_lt(BuiltinArgs {
-            args: &[
+        let e = run(builtin_lt(BuiltinArgs {
+            args: vec![
                 thunk(Value::Dict(IndexMap::new())),
                 thunk(Value::Dict(IndexMap::new())),
             ],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("expected"),
@@ -7767,12 +7837,12 @@ mod tests {
 
     #[test]
     fn lt_arity_error() {
-        let e = builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let e = run(builtin_lt(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("arity mismatch"),
@@ -7784,7 +7854,7 @@ mod tests {
     #[test]
     fn lt_negative_numbers() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Int(-10)), thunk(Value::Int(-5))],
+            args: vec![thunk(Value::Int(-10)), thunk(Value::Int(-5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7795,7 +7865,7 @@ mod tests {
     #[test]
     fn lt_nan_float() {
         let r = mat(builtin_lt(BuiltinArgs {
-            args: &[thunk(Value::Float(f64::NAN)), thunk(Value::Float(1.0))],
+            args: vec![thunk(Value::Float(f64::NAN)), thunk(Value::Float(1.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7811,7 +7881,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let result = mat(builtin_if(BuiltinArgs {
-            args: &args,
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7827,7 +7897,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let result = mat(builtin_if(BuiltinArgs {
-            args: &args,
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7842,7 +7912,7 @@ mod tests {
 
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42)), error_thunk];
         let result = mat(builtin_if(BuiltinArgs {
-            args: &args,
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7861,7 +7931,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let result = mat(builtin_if(BuiltinArgs {
-            args: &args,
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7876,12 +7946,12 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let e = builtin_if(BuiltinArgs {
-            args: &args,
+        let e = run(builtin_if(BuiltinArgs {
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("expected Bool"),
@@ -7902,12 +7972,12 @@ mod tests {
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
-        let e = builtin_if(BuiltinArgs {
-            args: &args,
+        let e = run(builtin_if(BuiltinArgs {
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("expected Bool"),
@@ -7919,12 +7989,12 @@ mod tests {
     #[test]
     fn if_arity_too_few() {
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42))];
-        let e = builtin_if(BuiltinArgs {
-            args: &args,
+        let e = run(builtin_if(BuiltinArgs {
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("arity mismatch"),
@@ -7941,12 +8011,12 @@ mod tests {
             thunk(Value::Int(2)),
             thunk(Value::Int(3)),
         ];
-        let e = builtin_if(BuiltinArgs {
-            args: &args,
+        let e = run(builtin_if(BuiltinArgs {
+            args: args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             e.kind.to_string().contains("arity mismatch"),
@@ -7968,12 +8038,12 @@ mod tests {
             thunk(Value::Int(99)),
         ];
 
-        let err = builtin_if(BuiltinArgs {
-            args: &args,
+        let err = run(builtin_if(BuiltinArgs {
+            args: args,
             named: no_named(),
             call_span: call_span_val,
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
 
         // Check that the error has a secondary_span
@@ -8011,12 +8081,12 @@ mod tests {
             thunk(Value::Int(99)),
         ];
 
-        let err = builtin_if(BuiltinArgs {
-            args: &args,
+        let err = run(builtin_if(BuiltinArgs {
+            args: args,
             named: no_named(),
             call_span: same_span,
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
 
         // Secondary span should NOT be set because it equals call_span
@@ -8124,7 +8194,7 @@ mod tests {
         let head_val = thunk(Value::Int(1));
         let tail_val = thunk(Value::Int(2));
         let result = mat(builtin_seq(BuiltinArgs {
-            args: &[head_val.clone(), tail_val.clone()],
+            args: vec![head_val.clone(), tail_val.clone()],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8140,30 +8210,30 @@ mod tests {
 
     #[test]
     fn seq_arity_zero() {
-        let result = builtin_seq(BuiltinArgs {
-            args: &[],
+        let result = run(builtin_seq(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn seq_arity_one() {
-        let result = builtin_seq(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let result = run(builtin_seq(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn seq_arity_three() {
-        let result = builtin_seq(BuiltinArgs {
-            args: &[
+        let result = run(builtin_seq(BuiltinArgs {
+            args: vec![
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
                 thunk(Value::Int(3)),
@@ -8171,7 +8241,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8184,15 +8254,15 @@ mod tests {
         let undef_thunk = make_undef_thunk(&ctx);
         let tail_val = thunk(Value::Int(2));
         // seq construction should succeed even though head would error if materialized
-        let result = builtin_seq(BuiltinArgs {
-            args: &[undef_thunk, tail_val],
+        let result = run(builtin_seq(BuiltinArgs {
+            args: vec![undef_thunk, tail_val],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_ok());
         // Verify the result is a Seq
-        match mat(result) {
+        match mat_val(result.unwrap()) {
             Value::Seq { .. } => {} // Success
             other => panic!("expected Seq, got {:?}", other),
         }
@@ -8202,58 +8272,58 @@ mod tests {
     fn head_basic() {
         let ctx = test_ctx();
         let seq_val = seq_thunk(thunk(string_val("first".into())), empty_dict_thunk(), &ctx);
-        let result = builtin_head(BuiltinArgs {
-            args: &[seq_val],
+        let result = run(builtin_head(BuiltinArgs {
+            args: vec![seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
         assert!(result.is_ok());
-        let head = mat(result);
+        let head = mat_val(result.unwrap());
         assert_eq!(head, string_val("first".into()));
     }
 
     #[test]
     fn head_non_seq() {
-        let result = builtin_head(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let result = run(builtin_head(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn head_arity_zero() {
-        let result = builtin_head(BuiltinArgs {
-            args: &[],
+        let result = run(builtin_head(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn head_arity_two() {
-        let result = builtin_head(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+        let result = run(builtin_head(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn head_empty_dict() {
-        let result = builtin_head(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+        let result = run(builtin_head(BuiltinArgs {
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         let err = result.unwrap_err();
         assert!(
             err.kind.to_string().contains("on empty collection"),
@@ -8264,12 +8334,12 @@ mod tests {
 
     #[test]
     fn tail_empty_dict() {
-        let result = builtin_tail(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+        let result = run(builtin_tail(BuiltinArgs {
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         let err = result.unwrap_err();
         assert!(
             err.kind.to_string().contains("on empty collection"),
@@ -8286,25 +8356,25 @@ mod tests {
             thunk(Value::Int(99)),
             &ctx,
         );
-        let result = builtin_tail(BuiltinArgs {
-            args: &[seq_val],
+        let result = run(builtin_tail(BuiltinArgs {
+            args: vec![seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
         assert!(result.is_ok());
-        let tail = mat(result);
+        let tail = mat_val(result.unwrap());
         assert_eq!(tail, Value::Int(99));
     }
 
     #[test]
     fn tail_non_seq() {
-        let result = builtin_tail(BuiltinArgs {
-            args: &[thunk(string_val("not a seq".into()))],
+        let result = run(builtin_tail(BuiltinArgs {
+            args: vec![thunk(string_val("not a seq".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8317,7 +8387,7 @@ mod tests {
         let seq_val = seq_thunk(thunk(Value::Int(1)), seq2, &ctx);
 
         let result = mat(builtin_collect(BuiltinArgs {
-            args: &[seq_val],
+            args: vec![seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8339,7 +8409,7 @@ mod tests {
         let ctx = test_ctx();
         let seq_val = seq_thunk(thunk(Value::Int(42)), empty_dict_thunk(), &ctx);
         let result = mat(builtin_collect(BuiltinArgs {
-            args: &[seq_val],
+            args: vec![seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8358,12 +8428,12 @@ mod tests {
 
     #[test]
     fn collect_non_seq() {
-        let result = builtin_collect(BuiltinArgs {
-            args: &[thunk(Value::Int(123))],
+        let result = run(builtin_collect(BuiltinArgs {
+            args: vec![thunk(Value::Int(123))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8380,12 +8450,12 @@ mod tests {
             &ctx,
         );
         let seq_val = seq_thunk(thunk(Value::Int(1)), tail_dict, &ctx);
-        let result = builtin_collect(BuiltinArgs {
-            args: &[seq_val],
+        let result = run(builtin_collect(BuiltinArgs {
+            args: vec![seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8396,28 +8466,28 @@ mod tests {
         // Testing at the actual MAX_COLLECT_SIZE (1M) would be too slow/memory-intensive,
         // and with depth increment fixes, sequences hit MAX_EVAL_DEPTH around 256 elements.
         let ctx = test_ctx();
-        let range_result = builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0))],
+        let range_result = run(builtin_range(BuiltinArgs {
+            args: vec![thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap();
 
-        let take_result = builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(200)), range_result],
+        let take_result = run(builtin_take(BuiltinArgs {
+            args: vec![thunk(Value::Int(200)), range_result],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap();
 
-        let collect_result = builtin_collect(BuiltinArgs {
-            args: &[take_result],
+        let collect_result = run(builtin_collect(BuiltinArgs {
+            args: vec![take_result],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
 
         assert!(
             collect_result.is_ok(),
@@ -8455,23 +8525,23 @@ mod tests {
             .spawn(|| {
                 // Single shared context — all ThunkIds must belong to the same arena.
                 let ctx = test_ctx();
-                let range_result = builtin_range(BuiltinArgs {
-                    args: &[thunk(Value::Int(0))],
+                let range_result = crate::async_rt::block_on(builtin_range(BuiltinArgs {
+                    args: vec![thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                })
+                }))
                 .unwrap();
 
                 // Attempt to collect infinite range without take
                 // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
                 // due to depth accumulation in the PendingBuiltin chain.
-                let collect_result = builtin_collect(BuiltinArgs {
-                    args: &[range_result],
+                let collect_result = crate::async_rt::block_on(builtin_collect(BuiltinArgs {
+                    args: vec![range_result],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                });
+                }));
 
                 // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
                 assert!(
@@ -8503,7 +8573,7 @@ mod tests {
         let ctx = test_ctx();
         let seq_val = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
         let result = mat(builtin_seq_check(BuiltinArgs {
-            args: &[seq_val],
+            args: vec![seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8514,7 +8584,7 @@ mod tests {
     #[test]
     fn seq_check_false() {
         let result = mat(builtin_seq_check(BuiltinArgs {
-            args: &[thunk(string_val("not a seq".into()))],
+            args: vec![thunk(string_val("not a seq".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8525,7 +8595,7 @@ mod tests {
     #[test]
     fn seq_check_dict() {
         let result = mat(builtin_seq_check(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8540,7 +8610,7 @@ mod tests {
         // range(0, 5) → 0, 1, 2, 3, 4
         let ctx = test_ctx();
         let result = mat(builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(0)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8565,7 +8635,7 @@ mod tests {
     fn range_empty() {
         // range(5, 5) → empty
         let result = mat(builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(5)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8580,7 +8650,7 @@ mod tests {
     fn range_negative_range() {
         // range(10, 5) → empty (start >= end)
         let result = mat(builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), thunk(Value::Int(5))],
+            args: vec![thunk(Value::Int(10)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8596,7 +8666,7 @@ mod tests {
         // range(0, 1) → 0
         let ctx = test_ctx();
         let result = mat(builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), thunk(Value::Int(1))],
+            args: vec![thunk(Value::Int(0)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8620,7 +8690,7 @@ mod tests {
         // range(0) → 0, 1, 2, ... (take first 3)
         let ctx = test_ctx();
         let result = mat(builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0))],
+            args: vec![thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8649,19 +8719,19 @@ mod tests {
 
     #[test]
     fn range_arity_zero() {
-        let result = builtin_range(BuiltinArgs {
-            args: &[],
+        let result = run(builtin_range(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn range_arity_three() {
-        let result = builtin_range(BuiltinArgs {
-            args: &[
+        let result = run(builtin_range(BuiltinArgs {
+            args: vec![
                 thunk(Value::Int(0)),
                 thunk(Value::Int(5)),
                 thunk(Value::Int(10)),
@@ -8669,29 +8739,29 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn range_non_int_start() {
-        let result = builtin_range(BuiltinArgs {
-            args: &[thunk(string_val("not an int".into()))],
+        let result = run(builtin_range(BuiltinArgs {
+            args: vec![thunk(string_val("not an int".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn range_non_int_end() {
-        let result = builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), thunk(Value::Float(5.5))],
+        let result = run(builtin_range(BuiltinArgs {
+            args: vec![thunk(Value::Int(0)), thunk(Value::Float(5.5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8702,7 +8772,7 @@ mod tests {
         // repeat(42) → 42, 42, 42, ... (take first 3)
         let ctx = test_ctx();
         let result = mat(builtin_repeat(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8735,14 +8805,14 @@ mod tests {
         let ctx = test_ctx();
         let undef_thunk = make_undef_thunk(&ctx);
         // repeat construction should succeed without materializing arg
-        let result = builtin_repeat(BuiltinArgs {
-            args: &[undef_thunk],
+        let result = run(builtin_repeat(BuiltinArgs {
+            args: vec![undef_thunk],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_ok());
-        match mat(result) {
+        match mat_val(result.unwrap()) {
             Value::Seq { .. } => {} // Success
             other => panic!("expected Seq, got {:?}", other),
         }
@@ -8750,23 +8820,23 @@ mod tests {
 
     #[test]
     fn repeat_arity_zero() {
-        let result = builtin_repeat(BuiltinArgs {
-            args: &[],
+        let result = run(builtin_repeat(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn repeat_arity_two() {
-        let result = builtin_repeat(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+        let result = run(builtin_repeat(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8782,7 +8852,7 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_cycle(BuiltinArgs {
-            args: &[dict_val],
+            args: vec![dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8822,35 +8892,35 @@ mod tests {
 
     #[test]
     fn cycle_empty_dict() {
-        let result = builtin_cycle(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+        let result = run(builtin_cycle(BuiltinArgs {
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
         assert!(result.unwrap_err().kind.to_string().contains("empty"));
     }
 
     #[test]
     fn cycle_non_dict() {
-        let result = builtin_cycle(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let result = run(builtin_cycle(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn cycle_arity_zero() {
-        let result = builtin_cycle(BuiltinArgs {
-            args: &[],
+        let result = run(builtin_cycle(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8868,7 +8938,7 @@ mod tests {
         let x_thunk = thunk(Value::Int(0));
 
         let result = mat(builtin_iterate(BuiltinArgs {
-            args: &[f_thunk, x_thunk.clone()],
+            args: vec![f_thunk, x_thunk.clone()],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -8901,14 +8971,14 @@ mod tests {
         let ctx = test_ctx();
         let undef_f = make_undef_thunk(&ctx);
         let undef_x = make_undef_thunk(&ctx);
-        let result = builtin_iterate(BuiltinArgs {
-            args: &[undef_f, undef_x],
+        let result = run(builtin_iterate(BuiltinArgs {
+            args: vec![undef_f, undef_x],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_ok());
-        match mat(result) {
+        match mat_val(result.unwrap()) {
             Value::Seq { .. } => {} // Success
             other => panic!("expected Seq, got {:?}", other),
         }
@@ -8916,12 +8986,12 @@ mod tests {
 
     #[test]
     fn iterate_arity_one() {
-        let result = builtin_iterate(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let result = run(builtin_iterate(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8935,12 +9005,12 @@ mod tests {
         let step_thunk = thunk(Value::Int(999)); // dummy
         let seed_thunk = thunk(Value::Int(0));
 
-        let result = builtin_unfold(BuiltinArgs {
-            args: &[step_thunk, seed_thunk],
+        let result = run(builtin_unfold(BuiltinArgs {
+            args: vec![step_thunk, seed_thunk],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_ok());
         // Result is a PendingBuiltin, not yet materialized
         // Materializing it would call unfold_step, which would error because
@@ -8951,12 +9021,12 @@ mod tests {
 
     #[test]
     fn unfold_arity_one() {
-        let result = builtin_unfold(BuiltinArgs {
-            args: &[thunk(Value::Int(1))],
+        let result = run(builtin_unfold(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -8973,7 +9043,7 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(2)), dict_val],
+            args: vec![thunk(Value::Int(2)), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9003,7 +9073,7 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), dict_val],
+            args: vec![thunk(Value::Int(0)), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9023,7 +9093,7 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(-5)), dict_val],
+            args: vec![thunk(Value::Int(-5)), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9044,7 +9114,7 @@ mod tests {
         let dict_val = thunk_dict(map, &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(10)), dict_val],
+            args: vec![thunk(Value::Int(10)), dict_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9067,7 +9137,7 @@ mod tests {
 
         // take(2, seq) → Seq(1, Seq(2, []))
         let result = mat(builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(2)), seq_val],
+            args: vec![thunk(Value::Int(2)), seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9100,7 +9170,7 @@ mod tests {
         let seq_val = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), seq_val],
+            args: vec![thunk(Value::Int(0)), seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9113,37 +9183,37 @@ mod tests {
 
     #[test]
     fn take_n_non_int() {
-        let result = builtin_take(BuiltinArgs {
-            args: &[thunk(string_val("not int".into())), thunk(Value::Int(1))],
+        let result = run(builtin_take(BuiltinArgs {
+            args: vec![thunk(string_val("not int".into())), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn take_xs_non_dict_or_seq() {
-        let result = builtin_take(BuiltinArgs {
-            args: &[
+        let result = run(builtin_take(BuiltinArgs {
+            args: vec![
                 thunk(Value::Int(5)),
                 thunk(string_val("not dict or seq".into())),
             ],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
     #[test]
     fn take_arity_one() {
-        let result = builtin_take(BuiltinArgs {
-            args: &[thunk(Value::Int(5))],
+        let result = run(builtin_take(BuiltinArgs {
+            args: vec![thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        });
+        }));
         assert!(result.is_err());
     }
 
@@ -9160,12 +9230,12 @@ mod tests {
         let ys = seq_thunk(thunk(Value::Int(3)), ys_inner, &ctx);
 
         // concat(xs, ys) should produce Seq(1, Seq(2, Seq(3, Seq(4, {}))))
-        let result = builtin_concat(BuiltinArgs {
-            args: &[xs, ys],
+        let result = run(builtin_concat(BuiltinArgs {
+            args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap();
 
         // Materialize the result to verify structure
@@ -9211,12 +9281,12 @@ mod tests {
         let xs = thunk(Value::Dict(IndexMap::new()));
         let ys = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
 
-        let result = builtin_concat(BuiltinArgs {
-            args: &[xs, ys.clone()],
+        let result = run(builtin_concat(BuiltinArgs {
+            args: vec![xs, ys.clone()],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap();
 
         // Result should be ys — verify by materializing and checking value
@@ -9236,12 +9306,12 @@ mod tests {
         let xs = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
         let ys = thunk(Value::Dict(IndexMap::new()));
 
-        let result = builtin_concat(BuiltinArgs {
-            args: &[xs, ys],
+        let result = run(builtin_concat(BuiltinArgs {
+            args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap();
 
         // Materialize to verify: Seq(1, {})
@@ -9274,7 +9344,7 @@ mod tests {
         let ys = thunk_dict(ys_map, &ctx);
 
         let result = mat(builtin_concat(BuiltinArgs {
-            args: &[xs, ys],
+            args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9312,12 +9382,12 @@ mod tests {
         let ys = thunk(Value::Int(42));
 
         // builtin_concat itself fails immediately because ys=42 is not a collection.
-        let err = builtin_concat(BuiltinArgs {
-            args: &[xs, ys],
+        let err = run(builtin_concat(BuiltinArgs {
+            args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap_err();
 
         match err.kind {
@@ -9347,23 +9417,23 @@ mod tests {
             .spawn(|| {
                 // Single shared context — all ThunkIds must belong to the same arena.
                 let ctx = test_ctx();
-                let range_result = builtin_range(BuiltinArgs {
-                    args: &[thunk(Value::Int(0))],
+                let range_result = crate::async_rt::block_on(builtin_range(BuiltinArgs {
+                    args: vec![thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                })
+                }))
                 .unwrap();
 
                 // Attempt to join infinite range without take
                 // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
                 // due to depth accumulation in the sequence traversal.
-                let join_result = builtin_join(BuiltinArgs {
-                    args: &[thunk(string_val(",")), range_result],
+                let join_result = crate::async_rt::block_on(builtin_join(BuiltinArgs {
+                    args: vec![thunk(string_val(",")), range_result],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                });
+                }));
 
                 // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
                 assert!(
@@ -9392,7 +9462,7 @@ mod tests {
         // Task 3: Test $join with empty Dict to verify the parts.is_empty() guard
         // prevents saturating_sub(1) wraparound
         let result = mat(builtin_join(BuiltinArgs {
-            args: &[thunk(string_val(",")), thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(string_val(",")), thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -9414,7 +9484,7 @@ mod tests {
         dict2.insert(Key::String("d".into()), thunk(Value::Int(4)));
 
         let result = mat(builtin_concat(BuiltinArgs {
-            args: &[thunk_dict(dict1, &ctx), thunk_dict(dict2, &ctx)],
+            args: vec![thunk_dict(dict1, &ctx), thunk_dict(dict2, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9449,9 +9519,13 @@ mod tests {
         //
         // The predicate is implemented as a Rust builtin (not an LLT function) to avoid
         // needing a closure env with stdlib builtins.
-        fn pred_eq_299(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let val = crate::eval::materialize_sync(&ctx.args[0], None, &ctx.ctx)?;
-            ok_val(Value::Bool(matches!(val, Value::Int(299))), Span::origin())
+        fn pred_eq_299(
+            ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let val = crate::eval::materialize_sync(&ctx.args[0], None, &ctx.ctx)?;
+                ok_val(Value::Bool(matches!(val, Value::Int(299))), Span::origin())
+            })
         }
 
         let result = std::thread::Builder::new()
@@ -9460,12 +9534,12 @@ mod tests {
                 // Single shared context — all ThunkIds must belong to the same arena.
                 let ctx = test_ctx();
                 // Create range(0, 300): lazy Seq(0, 1, ..., 299) via PendingBuiltin chain
-                let range_result = builtin_range(BuiltinArgs {
-                    args: &[thunk(Value::Int(0)), thunk(Value::Int(300))],
+                let range_result = crate::async_rt::block_on(builtin_range(BuiltinArgs {
+                    args: vec![thunk(Value::Int(0)), thunk(Value::Int(300))],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                })
+                }))
                 .unwrap();
 
                 let pred = thunk(Value::Builtin(crate::value::BuiltinDef {
@@ -9475,12 +9549,12 @@ mod tests {
                     force_count: 0,
                 }));
 
-                let filter_result = builtin_filter(BuiltinArgs {
-                    args: &[pred, range_result],
+                let filter_result = crate::async_rt::block_on(builtin_filter(BuiltinArgs {
+                    args: vec![pred, range_result],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                })
+                }))
                 .unwrap();
 
                 // Force the filter result. Before the fix this would fail with depth
@@ -9524,8 +9598,10 @@ mod tests {
         // Call builtin_filter with depth near MAX_EVAL_DEPTH (e.g., depth=200).
         // Collect the result via builtin_collect to force materialization.
         // Assert the result is an empty dict (no depth exceeded error).
-        fn pred_always_false(_ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            ok_val(Value::Bool(false), Span::origin())
+        fn pred_always_false(
+            _ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move { ok_val(Value::Bool(false), Span::origin()) })
         }
 
         let result = std::thread::Builder::new()
@@ -9550,13 +9626,12 @@ mod tests {
                 // If filter_dict_step accumulates depth incorrectly, this would hit
                 // DepthExceeded after ~27 entries (200 + 27*2 ≥ 256).
                 // With the fix, all 300 failures are handled at constant depth.
-                let filter_result = builtin_filter(BuiltinArgs {
-                    args: &[pred, dict_thunk],
+                let filter_result = crate::async_rt::block_on(builtin_filter(BuiltinArgs {
+                    args: vec![pred, dict_thunk],
                     named: no_named(),
-
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx_inner),
-                })
+                }))
                 .unwrap();
 
                 // Convert lazy Seq to Dict via builtin_collect.
@@ -9605,12 +9680,12 @@ mod tests {
         let xs = thunk(Value::Dict(IndexMap::new())); // empty dict
         let ys = thunk(Value::Int(42)); // not a collection
 
-        let err = builtin_concat(BuiltinArgs {
-            args: &[xs, ys],
+        let err = run(builtin_concat(BuiltinArgs {
+            args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
 
         // type_mismatch_ctx with a context produces "concat: expected ..., got ..."
@@ -9641,15 +9716,15 @@ mod tests {
         let ys = thunk_dict(ys_map, &ctx);
 
         // Should succeed and return ys (the same thunk or an equivalent materialized form)
-        let result = builtin_concat(BuiltinArgs {
-            args: &[xs, ys],
+        let result = run(builtin_concat(BuiltinArgs {
+            args: vec![xs, ys],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
 
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
-        let val = mat(result);
+        let val = mat_val(result.unwrap());
         match val {
             Value::Dict(ref m) => {
                 assert_eq!(m.len(), 1);
@@ -9673,32 +9748,32 @@ mod tests {
                 // Single shared context — all ThunkIds must belong to the same arena.
                 let ctx = test_ctx();
                 // Create infinite range starting at 0
-                let range_result = builtin_range(BuiltinArgs {
-                    args: &[thunk(Value::Int(0))],
+                let range_result = crate::async_rt::block_on(builtin_range(BuiltinArgs {
+                    args: vec![thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                })
+                }))
                 .unwrap();
 
                 // Take 300 elements (well above the old MAX_EVAL_DEPTH=256).
                 // The CEK machine handles this iteratively — no depth limit is hit.
-                let take_result = builtin_take(BuiltinArgs {
-                    args: &[thunk(Value::Int(300)), range_result],
+                let take_result = crate::async_rt::block_on(builtin_take(BuiltinArgs {
+                    args: vec![thunk(Value::Int(300)), range_result],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                })
+                }))
                 .unwrap();
 
                 // Force the entire sequence by calling collect.
                 // With the iterative CEK machine, 300 elements succeeds.
-                let collect_result = builtin_collect(BuiltinArgs {
-                    args: &[take_result],
+                let collect_result = crate::async_rt::block_on(builtin_collect(BuiltinArgs {
+                    args: vec![take_result],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
-                });
+                }));
 
                 assert!(
                     collect_result.is_ok(),
@@ -9741,15 +9816,15 @@ mod tests {
     fn test_proxy_returns_proxy_value() {
         let ctx = test_ctx();
         let handler = thunk(Value::Int(42));
-        let result = builtin_proxy(BuiltinArgs {
-            args: &[handler.clone()],
+        let result = run(builtin_proxy(BuiltinArgs {
+            args: vec![handler.clone()],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        })
+        }))
         .unwrap();
 
-        let val = mat(Ok(result));
+        let val = mat_val(result);
         match val {
             Value::Proxy { handler: h } => {
                 // Verify the handler thunk contains the expected value.
@@ -9763,12 +9838,12 @@ mod tests {
     #[test]
     fn test_proxy_arity_error() {
         // Zero args
-        let err = builtin_proxy(BuiltinArgs {
-            args: &[],
+        let err = run(builtin_proxy(BuiltinArgs {
+            args: vec![],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -9777,12 +9852,12 @@ mod tests {
         );
 
         // Two args
-        let err = builtin_proxy(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk(Value::Int(2))],
+        let err = run(builtin_proxy(BuiltinArgs {
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -9791,8 +9866,8 @@ mod tests {
         );
 
         // Three args
-        let err = builtin_proxy(BuiltinArgs {
-            args: &[
+        let err = run(builtin_proxy(BuiltinArgs {
+            args: vec![
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
                 thunk(Value::Int(3)),
@@ -9800,7 +9875,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
@@ -9814,12 +9889,12 @@ mod tests {
         let mut named = IndexMap::new();
         named.insert("handler".to_string(), thunk(Value::Int(42)));
 
-        let err = builtin_proxy(BuiltinArgs {
-            args: &[],
-            named: Some(&named),
+        let err = run(builtin_proxy(BuiltinArgs {
+            args: vec![],
+            named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        })
+        }))
         .unwrap_err();
         assert!(
             err.kind
@@ -9942,14 +10017,14 @@ mod tests {
         // drop(2, seq) should return a PendingBuiltin wrapping a chain of drop_seq_step calls
         let ctx = test_ctx();
         let seq = mat(builtin_range(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), thunk(Value::Int(10))],
+            args: vec![thunk(Value::Int(0)), thunk(Value::Int(10))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
 
         let result = mat(builtin_drop(BuiltinArgs {
-            args: &[thunk(Value::Int(2)), thunk(seq)],
+            args: vec![thunk(Value::Int(2)), thunk(seq)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9981,7 +10056,7 @@ mod tests {
             .unwrap();
 
         let result = mat(builtin_reduce(BuiltinArgs {
-            args: &[thunk(add_builtin), thunk(Value::Int(0)), seq_val],
+            args: vec![thunk(add_builtin), thunk(Value::Int(0)), seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10001,7 +10076,7 @@ mod tests {
         let seq_val = thunk_dict(m, &ctx);
 
         let result = mat(builtin_join(BuiltinArgs {
-            args: &[thunk(string_val(",".into())), seq_val],
+            args: vec![thunk(string_val(",".into())), seq_val],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10025,7 +10100,7 @@ mod tests {
                 let f = parse_eval("[fn [x] [+ $x 1]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
-                    args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
+                    args: vec![thunk(pred), thunk(f), thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
@@ -10052,7 +10127,7 @@ mod tests {
                 let f = parse_eval("[fn [x] [$error \"should not be called\"]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
-                    args: &[thunk(pred), thunk(f), thunk(Value::Int(42))],
+                    args: vec![thunk(pred), thunk(f), thunk(Value::Int(42))],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
@@ -10077,7 +10152,7 @@ mod tests {
                 let f = parse_eval("[fn [x] [+ $x 1]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
-                    args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
+                    args: vec![thunk(pred), thunk(f), thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
                     ctx: Arc::clone(&ctx),
@@ -10122,7 +10197,7 @@ mod tests {
     fn rest_three_elements_drops_first() {
         let ctx = test_ctx();
         let result = mat(builtin_rest(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
+            args: vec![thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10140,7 +10215,7 @@ mod tests {
     fn rest_single_element_returns_empty() {
         let ctx = test_ctx();
         let result = mat(builtin_rest(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[42], &ctx))],
+            args: vec![thunk(make_int_dict(&[42], &ctx))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10154,7 +10229,7 @@ mod tests {
     #[test]
     fn rest_empty_dict_returns_empty() {
         let result = mat(builtin_rest(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -10169,7 +10244,7 @@ mod tests {
     fn cons_prepends_element() {
         let ctx = test_ctx();
         let result = mat(builtin_cons(BuiltinArgs {
-            args: &[thunk(Value::Int(0)), thunk(make_int_dict(&[1, 2, 3], &ctx))],
+            args: vec![thunk(Value::Int(0)), thunk(make_int_dict(&[1, 2, 3], &ctx))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10188,7 +10263,7 @@ mod tests {
     fn cons_onto_empty_dict() {
         let ctx = test_ctx();
         let result = mat(builtin_cons(BuiltinArgs {
-            args: &[thunk(Value::Int(99)), thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Int(99)), thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10205,7 +10280,7 @@ mod tests {
     fn reverse_three_elements() {
         let ctx = test_ctx();
         let result = mat(builtin_reverse(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[10, 20, 30], &ctx))],
+            args: vec![thunk(make_int_dict(&[10, 20, 30], &ctx))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10223,7 +10298,7 @@ mod tests {
     #[test]
     fn reverse_empty_dict() {
         let result = mat(builtin_reverse(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -10238,7 +10313,7 @@ mod tests {
     fn sort_integers_ascending() {
         let ctx = test_ctx();
         let result = mat(builtin_sort(BuiltinArgs {
-            args: &[thunk(make_int_dict(&[3, 1, 4, 1, 5], &ctx))],
+            args: vec![thunk(make_int_dict(&[3, 1, 4, 1, 5], &ctx))],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10262,7 +10337,7 @@ mod tests {
             map.insert(Key::Int(i as i64), thunk(string_val(s)));
         }
         let result = mat(builtin_sort(BuiltinArgs {
-            args: &[thunk_dict(map, &ctx)],
+            args: vec![thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10278,7 +10353,7 @@ mod tests {
     #[test]
     fn sort_empty_dict() {
         let result = mat(builtin_sort(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -10294,7 +10369,7 @@ mod tests {
     #[test]
     fn each_empty_dict() {
         let result = mat(builtin_each(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -10314,7 +10389,7 @@ mod tests {
         map.insert(Key::String("b".into()), thunk(Value::Int(20)));
         map.insert(Key::String("c".into()), thunk(Value::Int(30)));
         let result = mat(builtin_each(BuiltinArgs {
-            args: &[thunk_dict(map, &ctx)],
+            args: vec![thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10336,12 +10411,12 @@ mod tests {
     #[test]
     fn each_type_error_int() {
         let ctx = test_ctx();
-        let result = builtin_each(BuiltinArgs {
-            args: &[thunk(Value::Int(42))],
+        let result = run(builtin_each(BuiltinArgs {
+            args: vec![thunk(Value::Int(42))],
             named: no_named(),
             call_span: call_span(),
             ctx,
-        });
+        }));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -10354,12 +10429,12 @@ mod tests {
     #[test]
     fn each_type_error_string() {
         let ctx = test_ctx();
-        let result = builtin_each(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+        let result = run(builtin_each(BuiltinArgs {
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx,
-        });
+        }));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -10372,12 +10447,12 @@ mod tests {
     #[test]
     fn each_type_error_bool() {
         let ctx = test_ctx();
-        let result = builtin_each(BuiltinArgs {
-            args: &[thunk(Value::Bool(true))],
+        let result = run(builtin_each(BuiltinArgs {
+            args: vec![thunk(Value::Bool(true))],
             named: no_named(),
             call_span: call_span(),
             ctx,
-        });
+        }));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -10390,7 +10465,7 @@ mod tests {
     #[test]
     fn each_key_empty_dict() {
         let result = mat(builtin_each_key(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -10404,12 +10479,12 @@ mod tests {
     #[test]
     fn each_key_type_error_string() {
         let ctx = test_ctx();
-        let result = builtin_each_key(BuiltinArgs {
-            args: &[thunk(string_val("hello".into()))],
+        let result = run(builtin_each_key(BuiltinArgs {
+            args: vec![thunk(string_val("hello".into()))],
             named: no_named(),
             call_span: call_span(),
             ctx,
-        });
+        }));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -10422,7 +10497,7 @@ mod tests {
     #[test]
     fn each_kv_empty_dict() {
         let result = mat(builtin_each_kv(BuiltinArgs {
-            args: &[thunk(Value::Dict(IndexMap::new()))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -10436,12 +10511,12 @@ mod tests {
     #[test]
     fn each_kv_type_error_bool() {
         let ctx = test_ctx();
-        let result = builtin_each_kv(BuiltinArgs {
-            args: &[thunk(Value::Bool(false))],
+        let result = run(builtin_each_kv(BuiltinArgs {
+            args: vec![thunk(Value::Bool(false))],
             named: no_named(),
             call_span: call_span(),
             ctx,
-        });
+        }));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -10459,7 +10534,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(string_val("second".into())));
         map.insert(Key::Int(2), thunk(string_val("third".into())));
         let result = mat(builtin_get(BuiltinArgs {
-            args: &[thunk(Value::Int(1)), thunk_dict(map, &ctx)],
+            args: vec![thunk(Value::Int(1)), thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -10473,12 +10548,12 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::String("a".into()), thunk(Value::Int(10)));
         map.insert(Key::String("b".into()), thunk(Value::Int(20)));
-        let result = builtin_get(BuiltinArgs {
-            args: &[thunk(string_val("z".into())), thunk_dict(map, &ctx)],
+        let result = run(builtin_get(BuiltinArgs {
+            args: vec![thunk(string_val("z".into())), thunk_dict(map, &ctx)],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-        });
+        }));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -10512,19 +10587,20 @@ mod tests {
         let dict = thunk_dict(map, &ctx);
 
         // builtin_keys should succeed: it only reads keys, not values.
-        let result = builtin_keys(BuiltinArgs {
-            args: &[dict],
+        let result = run(builtin_keys(BuiltinArgs {
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+        }));
+        let result_thunk = result.unwrap_or_else(|e| {
+            panic!(
+                "builtin_keys must not force dict values; got error: {:?}",
+                e
+            )
         });
-        assert!(
-            result.is_ok(),
-            "builtin_keys must not force dict values; got error: {:?}",
-            result.unwrap_err()
-        );
         // The result should be a dict with 3 entries (one per key).
-        let val = mat(result);
+        let val = mat_val(result_thunk);
         match val {
             Value::Dict(ref m) => {
                 assert_eq!(m.len(), 3, "expected 3 keys in result, got {}", m.len())
@@ -10551,18 +10627,19 @@ mod tests {
         let dict = thunk_dict(map, &ctx);
 
         // builtin_length should succeed: it only counts entries, not values.
-        let result = builtin_length(BuiltinArgs {
-            args: &[dict],
+        let result = run(builtin_length(BuiltinArgs {
+            args: vec![dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+        }));
+        let result_thunk = result.unwrap_or_else(|e| {
+            panic!(
+                "builtin_length must not force dict values; got error: {:?}",
+                e
+            )
         });
-        assert!(
-            result.is_ok(),
-            "builtin_length must not force dict values; got error: {:?}",
-            result.unwrap_err()
-        );
-        let val = mat(result);
+        let val = mat_val(result_thunk);
         assert_eq!(val, Value::Int(4), "expected length 4, got {:?}", val);
     }
 
@@ -10583,19 +10660,20 @@ mod tests {
         let bomb = make_undef_thunk(&ctx);
 
         // builtin_append should succeed: it inserts the thunk by Rc::clone, never forcing it.
-        let result = builtin_append(BuiltinArgs {
-            args: &[dict, bomb],
+        let result = run(builtin_append(BuiltinArgs {
+            args: vec![dict, bomb],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+        }));
+        let result_thunk = result.unwrap_or_else(|e| {
+            panic!(
+                "builtin_append must not force the appended value; got error: {:?}",
+                e
+            )
         });
-        assert!(
-            result.is_ok(),
-            "builtin_append must not force the appended value; got error: {:?}",
-            result.unwrap_err()
-        );
         // The result should be a dict with exactly one entry at key 0.
-        let val = mat(result);
+        let val = mat_val(result_thunk);
         match val {
             Value::Dict(ref m) => {
                 assert_eq!(m.len(), 1, "expected 1 entry after append, got {}", m.len());

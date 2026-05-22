@@ -82,6 +82,12 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Evaluation Semantics Verification](eval-semantics-verification.md) | Part A: `proptest` bisimulation tests (PendingBuiltin ≡ Unevaluated, PendingCall ≡ inline); Part B: confluence proof via determinism argument |
 
+## Security
+
+| Proposal | Summary |
+|----------|---------|
+| [Information Flow Control](information-flow.md) | `Tainted` and `Secret` type-level labels; label propagation through type inference; sanitizers strip taint after structural validation; declassifiers allow deliberate secret use; all network receive operations return `Tainted`; crypto primitives accept and return `Secret` key material; zero runtime overhead (erased at compile time). Depends on lib-net-v3. |
+
 ## I/O and Connectivity
 
 | Proposal | Summary |

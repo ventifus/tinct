@@ -299,13 +299,13 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
 
-1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all 191 builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `from-json`, `load`, `blake3`, etc.)
+1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all 228 builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `from-json`, `load`, `blake3`, etc.)
 2. `create_stdlib_env_inner()` parses and evaluates `stdlib/prelude.llt` in a child of the bootstrap env — prelude can access all builtins via the environment chain
 3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env, shadowing some builtin names with user-friendly wrappers
 4. User code inherits the stdlib env — `builtin-*` names are accessible via the environment chain, but shadowed by prelude wrappers where appropriate
 
 ```text
-Bootstrap env: all 191 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
+Bootstrap env: all 228 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
   └── Stdlib env: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
         └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
               └── User predicates and programs

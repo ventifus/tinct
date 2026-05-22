@@ -57,38 +57,44 @@ An ordered, reliable, connection-oriented byte pipe. Reading and writing are sym
   write-bytes: builtin-write-bytes]  # Rust: tokio AsyncWrite
 
 # stdlib/protocols/tls.llt
-TlsConnection: [type {
-  underlying: Handle
-  write-key:  [Bytes 32]
-  read-key:   [Bytes 32]
-  cipher:     Symbol            # ChaCha20Poly1305 | Aes128Gcm | Aes256Gcm
-  write-seq:  [Channel Int]     # TLS sequence number XOR'd with implicit IV
-  read-seq:   [Channel Int]
-}]
+TlsConnection: [type
+  [underlying: Handle
+   write-key:  [Bytes 32]
+   read-key:   [Bytes 32]
+   cipher:     Symbol            # ChaCha20Poly1305 | Aes128Gcm | Aes256Gcm
+   write-seq:  [Channel Int]     # TLS sequence number XOR'd with implicit IV
+   read-seq:   [Channel Int]]]
 [instance [ByteStream TlsConnection]
   read-bytes:  tls-read-bytes    # reads one TLS record, decrypts
   write-bytes: tls-write-bytes]  # encrypts, frames as TLS record
 
 # stdlib/protocols/wireguard.llt
-WireguardConnection: [type {
-  underlying: Handle             # the byte stream below (TCP or any ByteStream)
-  tx-key:     [Bytes 32]
-  rx-key:     [Bytes 32]
-  tx-nonce:   [Channel Int]      # atomic counter via channel
-}]
+WireguardConnection: [type
+  [underlying: Handle             # the byte stream below (TCP or any ByteStream)
+   tx-key:     [Bytes 32]
+   rx-key:     [Bytes 32]
+   tx-nonce:   [Channel Int]]]    # atomic counter via channel — single-writer invariant:
+                                  # only one task may call wg-write-bytes on a given
+                                  # WireguardConnection at a time. If violated, two tasks
+                                  # both recv the same nonce → same keystream for different
+                                  # plaintexts → ChaCha20-Poly1305 keystream reuse → full
+                                  # confidentiality loss for both messages.
+                                  # Nonce must not exceed 2^64−1; implementation must reject
+                                  # or trigger rekeying at the limit (WireGuard wire nonce
+                                  # is 64-bit; tinct Int is unbounded).
 [instance [ByteStream WireguardConnection]
   read-bytes:  wg-read-bytes     # reads one WG frame, decrypts
   write-bytes: wg-write-bytes]   # encrypts, stamps nonce, frames
 
 # stdlib/protocols/noise.llt
-NoiseConnection: [type { underlying: Handle  send-key: [Bytes 32]  recv-key: [Bytes 32]
-                   send-n: [Channel Int] }]
+NoiseConnection: [type [underlying: Handle  send-key: [Bytes 32]  recv-key: [Bytes 32]
+                        send-n: [Channel Int]]]
 [instance [ByteStream NoiseConnection] read-bytes: noise-read write-bytes: noise-write]
 
 # stdlib/protocols/websocket.llt — WebSocketConnection implements MessageStream, not ByteStream.
 # WebSocket frames carry semantic types (text/binary/ping/pong/close) that
 # ByteStream's read-bytes interface cannot express. See §MessageStream below.
-WebSocketConnection: [type { underlying: Handle  server-side: Bool }]
+WebSocketConnection: [type [underlying: Handle  server-side: Bool]]
 # (WebSocketConnection instance declared in the MessageStream section)
 ```
 
@@ -97,9 +103,9 @@ The `Channel Int` nonce pattern is the tinct-idiomatic atomic counter: the chann
 All `*-accept` and `*-layer` functions are parametric over `ByteStream`. This is what makes arbitrary layering possible — WireGuard carrying TLS carrying HTTP/2 carrying gRPC:
 
 ```tinct
-h2-accept:        [fn@Http2Connection      [let h cfg@Http2ServerConfig    constraint: [h: ByteStream]] ...]
-tls-accept:       [fn@TlsConnection        [let h cfg@TlsServerConfig      constraint: [h: ByteStream]] ...]
-wireguard-accept: [fn@WireguardConnection  [let h cfg@WireguardServerConfig constraint: [h: ByteStream]] ...]
+h2-accept:        [fn@Http2Connection      [let h@t cfg@Http2ServerConfig    constraint: [t: ByteStream]] ...]
+tls-accept:       [fn@TlsConnection        [let h@t cfg@TlsServerConfig      constraint: [t: ByteStream]] ...]
+wireguard-accept: [fn@WireguardConnection  [let h@t cfg@WireguardServerConfig constraint: [t: ByteStream]] ...]
 ```
 
 `wireguard-serve` produces `Channel@WireguardConnection`; `tls-serve` accepts `Channel@[ByteStream h]` — so `[tls-serve [wireguard-serve raw-ch] cert]` type-checks without any collapse to `Handle`.
@@ -141,6 +147,7 @@ A bidirectional typed-message interface. You write a typed value and the impleme
 
 ```tinct
 [class [MessageStream s t]
+  FD: [s → t]                        # knowing the stream type uniquely determines message type
   send-message: [Fn [s@s t] Null]   # serialize t → underlying transport
   recv-message: [Fn [s@s] t]]       # deserialize → one complete t
 ```
@@ -164,7 +171,7 @@ WsFrame: [union
   [Pong   data@Bytes]
   [Close  code@Int  reason@String]]
 
-WebSocketConnection: [type { underlying: Handle  server-side: Bool }]
+WebSocketConnection: [type [underlying: Handle  server-side: Bool]]
 
 [instance [MessageStream WebSocketConnection WsFrame]
   send-message: ws-send-frame    # encodes as WS frame, applies mask (client), writes to underlying
@@ -221,6 +228,8 @@ make-multiplex-serve: [fn [let conn-fn]
 
 Both loops are fire-and-forget tasks (`[task [loop ...]]`). `recv` returns `T` directly and suspends until a value is available — it does not return `Result`. Loop termination happens via context cancellation: when the server shuts down (e.g., `exit` or `drain` from `stdlib/async.llt`), `recv` on a cancelled context raises a cancellation error that propagates out of the loop task. No channel-closed signalling or explicit break is needed.
 
+The inner handshake tasks (`[task [send out [accept-fn raw config]]]`) are also fire-and-forget and are **not** cancelled when the outer loop exits — they run to completion or until they error. This is correct: aborting a half-completed TLS handshake would leave the client in a broken state. For clean server shutdown that waits for in-flight handshakes to complete, call `drain` from `stdlib/async.llt` at the top level before `exit`.
+
 Concrete serve layers:
 
 ```tinct
@@ -240,7 +249,7 @@ http3-requests:  [make-multiplex-serve http3-req-conn]# Http3Connection → RawR
 
 `wireguard-serve`, `noise-serve`, `ws-serve`, and `tls-serve` call tinct-implemented handshake functions in `stdlib/protocols/`. Each returns a typed tinct record (`WireguardConnection`, `NoiseConnection`, `WebSocketConnection`, `TlsConnection`) that implements `ByteStream`. Because all `*-serve` and `*-accept` functions are parametric over `ByteStream`, these records compose directly — `h2-serve` accepts `Channel@WireguardConnection` as readily as `Channel@Handle`. WireGuard is a user-mode protocol: Noise_IKpsk2 handshake in tinct, data plane over `udp-socket`, no kernel TUN/TAP.
 
-`h2-serve` and `h3-serve` call tinct-implemented `h2-accept`/`h3-accept` from `stdlib/protocols/h2.llt` and `stdlib/protocols/h3.llt`. `Http2Connection` and `Http3Connection` are tinct records holding frame-parsing state, HPACK/QPACK tables, and stream channels — not opaque Rust types. The extraction layers (`http2-requests`, `http3-requests`) pull request streams from those records using tinct loops and channels.
+`h2-serve` and `h3-serve` call tinct-implemented `h2-accept`/`h3-accept` from `stdlib/protocols/h2.llt` and `stdlib/protocols/h3.llt`. `Http2Connection` and `Http3Connection` are tinct records holding frame-parsing state, HPACK/QPACK tables, and stream channels — not opaque Rust types. They do **not** implement `ByteStream` — they are stream multiplexers, not byte pipes. Individual streams are accessed via `h2-open-stream`/`h3-open-stream` which return `Handle` (a `ByteStream`). The extraction layers (`http2-requests`, `http3-requests`) pull request streams from those records using tinct loops and channels.
 
 A complete stack (HTTP over TLS over WireGuard over Unix socket):
 
@@ -281,7 +290,7 @@ happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddress]]
   [tasks: [collect [map-indexed [fn [let i addr]
     [task
       [await [timer-channel %clock (* i attempt-ms)]]   # stagger start time
-      [match [try [tcp-connect cap {addr: addr  port: port}]]
+      [match [try [tcp-connect cap [addr: addr  port: port]]]
         [Ok  h]: [try [send result-ch h]]   # first success wins; try: ignores closed-ch error
         [Err _]: null]]]                     # connection failed — let others continue
     addrs]]]
@@ -292,7 +301,7 @@ happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddress]]
 
 ```tinct
 raw:    [connect-host cap "host" 443]      # DNS + Happy Eyeballs + tcp-connect
-tls:    [tls-layer raw {sni: "host" ...}]
+tls:    [tls-layer raw [sni: "host" ...]]
 wg:     [wireguard-layer tls wg-config]
 resp:   [http1-request wg [method: "GET" path: "/"]]
 ```
@@ -302,7 +311,7 @@ For 1:N multiplexing on the client — HTTP/2 and HTTP/3 — a **request client*
 ```tinct
 # HTTP/2: Happy Eyeballs connect → TLS with h2 ALPN → http2-client
 raw:    [connect-host cap "host" 443]
-tls:    [tls-layer raw {sni: "host" alpn: ["h2"] ...}]
+tls:    [tls-layer raw [sni: "host" alpn: ["h2"] ...]]
 client: [http2-client tls]
 r1:     [http-request client [method: "GET" path: "/api/users"]]
 r2:     [http-request client [method: "GET" path: "/api/posts"]]
@@ -347,19 +356,18 @@ Application protocols are codecs — pure marshal/unmarshal between transport me
 ```tinct
 # Protocol message type — fields are protocol-specific; respond: is the convention.
 # The respond closure hides the transport completely.
-AppMessage: [type {
-  id:      Int
-  payload: Bytes
-  respond: [Fn [Bytes] Null]   # send a response back to the peer
-}]
+AppMessage: [type
+  [id:      Int
+   payload: Bytes
+   respond: [Fn [Bytes] Null]]]   # send a response back to the peer
 
 # Codec adapter: Channel@RawRequest → Channel@AppMessage
 # Decodes the transport message and wraps its respond in a protocol-aware closure.
 my-codec: [fn [let raw-ch]
   [map [fn [let raw]
-    { id:      [decode-id raw.payload]
-      payload: [decode-payload raw.payload]
-      respond: [fn [let reply] [raw.respond [encode-reply reply]]] }]
+    [id:      [decode-id raw.payload]
+     payload: [decode-payload raw.payload]
+     respond: [fn [let reply] [raw.respond [encode-reply reply]]]]]
   raw-ch]]
 
 # Application layer sees only AppMessage — transport is invisible
@@ -390,7 +398,7 @@ dns-udp-resolver: [fn [let cap addr@SocketAddress]
 dns-tls-resolver: [fn [let cap addr@SocketAddress sni@String]
   [fn [let q] [task
     [raw: [tcp-connect cap addr]]
-    [tls: [tls-layer raw {sni: sni ...}]]
+    [tls: [tls-layer raw [sni: sni ...]]]
     [dns-framed-send tls q]]]]
 
 dns-https-resolver: [fn [let cap url]
@@ -515,7 +523,7 @@ http-connect: [fn [let cap@NetCap host@String port@Int]
         [match [try [await v6-task]] [Ok a]: a [Err _]: []]
         [await v4-task]]]
       [raw: [happy-connect cap port addrs]]
-      [tls-layer raw {sni: host  alpn: ["h2" "http/1.1"]}]]]
+      [tls-layer raw [sni: host  alpn: ["h2" "http/1.1"]]]]
 
 # Race h3/QUIC and h2/TCP with 250ms stagger in ALPN preference order.
 # QUIC gets a 250ms head start over TCP — enough to detect QUIC-blocking
@@ -551,14 +559,18 @@ http-protocol-race: [fn [let cap@NetCap host@String port@Int
   result]
 
 quic-h3-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
-  [quic-connect-addr cap {addr: addr  port: port} {sni: sni  ech: ech}]]
+  [quic-connect-addr cap [addr: addr  port: port] [sni: sni  ech: ech]]]
 
 tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
-  [tls-layer [tcp-connect cap {addr: addr  port: port}]
-             {sni: sni  alpn: ["h2"]  ech: ech}]]
+  [tls-layer [tcp-connect cap [addr: addr  port: port]]
+             [sni: sni  alpn: ["h2"]  ech: ech]]]
 ```
 
 **What this demonstrates:** recursive SVCB alias-chain following with depth limiting; parallel HTTPS + A/AAAA DNS lookups with 50ms window; IP hint extraction eliminating A/AAAA round-trips; simultaneous h3/QUIC and h2/TCP racing with 250ms stagger; ECH parameter threading end-to-end; first-success-wins with `par-map` cancellation — all in tinct, using only OS-level primitives and runtime-v2 async machinery.
+
+**SNI note:** `resolve-svcb` may follow one or more `AliasMode` redirections before returning a `ServiceMode` record. Throughout this chain, `http-connect` uses the original `host` argument as the TLS SNI value — never any alias target. This is correct per RFC 9460 §7.2: SNI must identify the service, not the CDN infrastructure that happens to serve it.
+
+**`make-serve-layer` and non-ByteStream connections:** `make-serve-layer` is fully polymorphic — it places no `ByteStream` constraint on the `accept-fn`. A function `my-proto-accept: [Fn [WebSocketConnection config] MyConnection]` composes with `make-serve-layer` just as `tls-accept` does. The serve layer model works for any connection type, not only `ByteStream` instances.
 
 ---
 
@@ -578,7 +590,7 @@ These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStrea
 | `udp-socket` | `[Fn [cap@NetCap port@Int] UdpSocket]` | Bind a UDP socket — use port 0 for ephemeral (client use) | OS syscall; cap-std UdpSocket capability enforcement; produces `UdpSocket` opaque handle |
 | `udp-recv` | `[Fn [sock@UdpSocket] UdpDatagram]` | Receive one UDP datagram with source address (async) | Reads from `UdpSocket` opaque Rust state; tinct cannot access UdpSocket internals |
 | `udp-send` | `[Fn [sock@UdpSocket addr@SocketAddress data@Bytes] Null]` | Send a datagram to a specific address | Writes through `UdpSocket` opaque Rust state |
-| `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not yet implemented upstream; produces `Channel` directly until cap-std support lands, at which point this decomposes into `unix-bind` + `unix-accept` |
+| `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not implemented in cap-std upstream; this primitive wraps the accept loop internally using `openat2(RESOLVE_BENEATH)` + raw `UnixListener`. When cap-std adds `UnixListener`, this refactors to `unix-bind` + `unix-accept` following the same pattern as `tcp-bind`/`tcp-accept` |
 | `read-bytes` | `[Fn [h@Handle n@Int] Bytes]` | Read exactly n bytes from a Handle (async, suspends until available) | Handle is opaque Rust state backed by tokio `AsyncRead`; tinct cannot access Handle internals or call tokio I/O directly |
 | `write-bytes` | `[Fn [h@Handle b@Bytes] Null]` | Write bytes to a Handle (async) | Handle is opaque Rust state backed by tokio `AsyncWrite` |
 | `try-recv` | `[Fn [ch@[Channel t]] [Result t]]` | Non-blocking recv — `Err` if no item immediately available | Requires reading Channel's internal buffer occupancy without consuming an item; `select-once` + 0ms-timer is scheduler-dependent and not guaranteed non-blocking |
@@ -630,8 +642,54 @@ stdlib/
   net.llt           — ByteStream typeclass + [instance [ByteStream Handle] ...]
                       Datagram typeclass + [instance [Datagram UdpSocket] ...]
                       MessageStream typeclass + [instance [MessageStream [Channel t] t] ...]
+                      ByteStream typeclass + [instance [ByteStream Handle] ...]
+                      Datagram typeclass + [instance [Datagram UdpSocket] ...]
+                      MessageStream typeclass + [instance [MessageStream [Channel t] t] ...]
                       IpAddress ([union [Ipv4 [Bytes 4]] [Ipv6 [Bytes 16]]])
                       Port, SocketAddress, UdpDatagram types
+
+                      ByteLabel — the unified encode/decode typeclass for all labeled bytes.
+                      TextCodec, ByteOrder, and CompressionCodec are all instances where
+                      encode means "serialize value → Bytes" and decode means "Bytes → value".
+                      The value type a and bytes type b vary per instance.
+
+                        [class [ByteLabel t a b]
+                          FD: [(t b) → a]   # knowing label type + bytes type uniquely determines value type;
+                                             # required to resolve [decode BigEndian some-bytes] unambiguously
+                          encode: [Fn [t@t a] b]
+                          decode: [Fn [t@t b] [Result a]]]
+
+                        # TextCodec: String ↔ Bytes (decode can fail on invalid sequences)
+                        [instance [ByteLabel Codec String Bytes] ...]
+
+                        # ByteOrder: UInt ↔ fixed-size Bytes (decode always succeeds)
+                        [instance [ByteLabel ByteOrder UInt16 [Bytes 2]] ...]
+                        [instance [ByteLabel ByteOrder UInt32 [Bytes 4]] ...]
+                        [instance [ByteLabel ByteOrder UInt64 [Bytes 8]] ...]
+
+                        # CompressionCodec: Bytes ↔ Bytes (decode fails on corrupt data)
+                        [instance [ByteLabel CompressionCodec Bytes Bytes] ...]
+
+                      Unified call syntax regardless of which label type t is:
+                        [encode UTF8      "hello"]           # → Bytes
+                        [encode BigEndian 80@UInt16]         # → [Bytes 2]
+                        [encode Gzip      body-bytes]        # → Bytes
+                        [decode UTF8      raw]               # → [Result String]
+                        [decode BigEndian @[Bytes 4]: ip]    # → [Result UInt32]
+                        [decode Gzip      compressed]        # → [Result Bytes]
+
+                      ByteOrder — wire endianness, independent of executing CPU:
+                        [type [BigEndian]]    — network byte order (IPv4, DNS, SNMP, HTTP/2, QUIC)
+                        [type [LittleEndian]] — Bluetooth LE integers, some Microsoft formats
+                        [type [NativeEndian]] — executing CPU; only for same-machine IPC;
+                                                silently wrong for cross-platform protocol code
+                        OrderedBytes: [type [data: Bytes  label: ByteOrder]]
+                          — bytes labeled with their wire endianness (e.g. SNMP counter).
+                          Note: labels a contiguous region with a SINGLE byte order. For
+                          mixed-endian protocols (SMB fields, SCTP chunk flags, some vendor
+                          formats), parse fields individually with explicit encode/decode
+                          calls per field — OrderedBytes is not suitable for heterogeneous structs.
+
                       Nameserver ([union UdpNameserver DotNameserver DohNameserver DoqNameserver]); ns-to-resolver
                       tcp-listen  (tcp-bind + tinct accept loop)
                       udp-bind    (udp-socket + tinct recv loop, Channel@UdpDatagram)
@@ -641,6 +699,147 @@ stdlib/
                       dns-query-first, ns-to-resolver
                       connect-host  (RFC 8305 Happy Eyeballs — resolve-host + happy-connect)
                       parse-url, url-encode/decode
+  text.llt          — Character encoding for text protocols and file I/O.
+                      String in tinct is always Unicode (UTF-8 internally). Encoding is a
+                      property of the wire representation, not the string.
+
+                      TextCodec is a compile-time typeclass. User code defines instances
+                      in tinct — no Rust changes required. Because tinct has structural
+                      typing, any record with the matching function fields satisfies
+                      TextCodec automatically; an explicit [instance ...] declaration is
+                      optional but makes intent clear and enables typeclass dispatch.
+
+                      [class [TextCodec c]
+                        encode:       [Fn [c@c s@String] [Result Bytes]]
+                        decode:       [Fn [c@c b@Bytes]  [Result String]]
+                        decode-lossy: [Fn [c@c b@Bytes]  String]
+                        codec-name:   [Fn [c@c] String]]
+
+                      # compile-time polymorphic dispatch
+                      encode:       [Fn [c s@String] [Result Bytes]  constraint: [c: TextCodec]]
+                      decode:       [Fn [c b@Bytes]  [Result String] constraint: [c: TextCodec]]
+                      decode-lossy: [Fn [c b@Bytes]  String          constraint: [c: TextCodec]]
+
+                      # Built-in codec types and instances (backed by encoding_rs Rust crate)
+                      [type [UTF8]] [instance [TextCodec UTF8] ...]
+                      [type [UTF16LE]] [instance [TextCodec UTF16LE] ...]
+                      [type [Windows1252]] [instance [TextCodec Windows1252] ...]
+                      # ... all ~38 WHATWG encodings
+
+                      # User-defined codec — declare type and instance in tinct; no Rust needed:
+                      # [type [EBCDIC037]]
+                      # [instance [TextCodec EBCDIC037]
+                      #   encode:     ebcdic037-encode
+                      #   decode:     ebcdic037-decode
+                      #   decode-lossy: ebcdic037-decode-lossy
+                      #   codec-name: [fn [_] "ibm037"]]
+
+                      # For dynamic dispatch (codec determined at runtime from Content-Type
+                      # header etc.), an explicit dictionary is needed. Codec is the runtime
+                      # representation of a TextCodec instance:
+                      Codec: [type
+                        [name:         String
+                         encode:       [Fn [String] [Result Bytes]]
+                         decode:       [Fn [Bytes]  [Result String]]
+                         decode-lossy: [Fn [Bytes]  String]]]
+
+                      to-codec: [Fn [c@t] Codec  constraint: [t: TextCodec]]
+                        — converts any TextCodec instance to an explicit Codec dictionary
+
+                      codec-for-name: [Fn [name@String] [Result Codec]]
+                        — dynamic lookup from IANA/WHATWG charset name;
+                          "utf-8", "windows-1252", "shift_jis", "x-sjis", "iso-8859-1" ...
+
+                      # decode notes:
+                      #   encode: Err if String contains chars not in codec's repertoire
+                      #   decode: Err if bytes invalid for codec; Shift-JIS/GBK byte ranges
+                      #           overlap valid UTF-8 — always specify codec, never guess
+                      #   decode-lossy: replaces undecodable bytes with U+FFFD
+
+                      TextBytes: [type [data: Bytes  codec: Codec]]
+                        — stores the explicit Codec dictionary for round-trip fidelity;
+                          used in HTTP response bodies, file reads, any boundary where the
+                          encoding must survive as a runtime value
+
+                      text-encode: [Fn [c@t s@String] TextBytes  constraint: [t: TextCodec]]
+                      text-decode: [Fn [b@TextBytes] [Result String]]
+```
+
+**Example — built-in codec, dynamic charset from HTTP header:**
+
+```tinct
+# Decode an HTTP response body using the charset declared in Content-Type.
+# Falls back to UTF-8 (the correct default per HTML5) if charset is absent or unknown.
+decode-http-body: [fn [let body@Bytes content-type@String]
+  [codec: [match [extract-charset content-type]  # parse "charset=windows-1252"
+    [Some name]: [match [codec-for-name name]
+      [Ok c]:   c
+      [Err _]:  UTF8]     # unknown charset → UTF-8 fallback
+    [None]:      UTF8]]   # no charset declared → UTF-8 default
+  [decode-lossy codec body]]  # decode-lossy: replace undecodable bytes with U+FFFD
+                               # rather than erroring on the common "mostly UTF-8" web page
+```
+
+**Example — user-defined EBCDIC-037 codec (no Rust changes required):**
+
+```tinct
+# EBCDIC-037 (IBM US English) implemented entirely in tinct using lookup tables.
+# No Char type in tinct — single-character String is the unit.
+# [Seq String] avoids integer dict keys: position = EBCDIC byte (0–255), value = character.
+
+ebcdic037-decode: @[Seq String]:
+  [" " "" "" "" "" "\t"     "" ""   # 0x00–0x07
+   "" "" "" "" "" "\r"     "" ""   # 0x08–0x0F
+   # ... (full 256-entry table omitted for brevity) ...
+   " "                                                                         # 0x40 = space
+   # ...
+   "A" "B" "C" "D" "E" "F" "G" "H" "I"                                       # 0xC1–0xC9
+   # ...
+   "0" "1" "2" "3" "4" "5" "6" "7" "8" "9"]                                  # 0xF0–0xF9
+
+# Reverse: single-character String → EBCDIC byte.
+# Built from the decode table so the two always stay in sync.
+ebcdic037-encode: [reduce
+  [fn [let table pair]
+    [let [idx: [nth pair 0]   ch: [nth pair 1]]]
+    [if [= ch ""] table [assoc table ch idx]]]
+  []
+  [map-indexed [fn [let i ch] [i ch]] ebcdic037-decode]]
+
+# Declare the type and instance
+[type [EBCDIC037]]
+
+[instance [TextCodec EBCDIC037]
+  codec-name:   [fn [_] "ibm037"]
+
+  encode: [fn [let _ s@String]
+    [match [try [map [fn [let c]
+          [match [get? ebcdic037-encode c]
+            [Some byte]: byte
+            [None]:      [error [str "Not in EBCDIC-037: " c]]]]
+        [str-to-chars s]]]
+      [Ok bytes]: [Ok [bytes-from-ints bytes]]
+      [Err e]:    [Err e]]]
+
+  decode: [fn [let _ b@Bytes]
+    [Ok [str-join "" [map [fn [let byte] [get ebcdic037-decode byte]] b]]]]
+
+  decode-lossy: [fn [let _ b@Bytes]
+    [str-join "" [map [fn [let byte]
+        [let [ch: [get ebcdic037-decode byte]]]
+        [if [= ch ""] "?" ch]]      # substitute "?" for undefined code points
+      b]]]]
+
+# Usage — identical call sites to built-in codecs; typeclass dispatch resolves the instance
+[encode EBCDIC037 "Hello, IBM!"]                         # → [Ok Bytes]
+[decode EBCDIC037 some-mainframe-bytes]                  # → [Ok String] or [Err ...]
+[text-encode [to-codec EBCDIC037] "Hello"]            # → TextBytes (explicit Codec)
+[text-decode [text-encode [to-codec EBCDIC037] "Hello"]]  # → [Ok "Hello"]
+```
+
+The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` identically to the built-in codecs. The only difference between `EBCDIC037` and `UTF8` at the call site is the name — they are both `Codec` records with the same three function fields.
+
+```text
   crypto.llt        — X.509: parse-cert (ASN.1 DER in tinct via read-bytes/bytes-get),
                               verify-cert-chain, cert-public-key, cert-san
                       Key wrappers: parse-rsa-public-key, parse-ec-public-key
@@ -653,24 +852,35 @@ stdlib/
   dns.llt           — dns-resolve (returns [Seq IpAddress] for A/AAAA/etc.)
                       resolver factories: dns-udp-resolver, dns-tls-resolver,
                         dns-https-resolver (all take SocketAddress, not hostname)
-                      dns-server-loop
+                      dns-server-loop.
+                      Note: dns-try-names tries candidates in order; for each candidate it
+                      tries all nameservers before moving to the next candidate. In
+                      Kubernetes (ndots:5, 5 search domains), a slow nameserver adds
+                      (attempts × nameserver-count) seconds of delay before the absolute
+                      name is tried. For latency-sensitive resolution, limit attempts to 1
+                      or use a single fast nameserver.
   async.llt         — (extended from runtime-v2) adds:
-                        collect-channel: drain immediately-available items using try-recv
+                        collect-channel: drain immediately-available items using try-recv,
+                          bounded to items present at call time (snapshots channel size
+                          before draining to prevent racing a concurrent producer)
   protocols/
     tls.llt         — TLS 1.3 record layer (read-bytes/write-bytes framing) + handshake
                       state machine + certificate chain verification (via crypto.llt);
-                      TlsConnection tinct record: { underlying: Handle  write-key/read-key: [Bytes 32]
-                        cipher: Symbol  write-seq/read-seq: [Channel Int] };
+                      TlsConnection tinct record: [underlying: Handle  write-key/read-key: [Bytes 32]
+                        cipher: Symbol  write-seq/read-seq: [Channel Int]];
                       [instance [ByteStream TlsConnection] ...];
                       tls-accept, tls-connect: [Fn [h cfg] TlsConnection  constraint: [h: ByteStream]]
     quic.llt        — QUIC built on udp-socket/recv/send + tls.llt:
                       connection ID parsing, packet number spaces, TLS integration,
                       stream multiplexing, flow control, loss detection, congestion control;
-                      QuicConnection tinct record: { socket streams crypto-state ... };
-                      quic-connect, h3-open-stream, h3-stream-ch
+                      QuicConnection tinct record: [socket streams crypto-state ...];
+                      quic-connect, h3-open-stream, h3-stream-ch.
+                      Known limitation: connection migration (RFC 9000 §9) is not supported
+                      in the initial implementation — packets arriving from a new source
+                      address are rejected. Migration is a future sprint.
     h2.llt          — HTTP/2 frame parsing, HPACK (static + dynamic table + Huffman in tinct),
                       stream multiplexing, flow control;
-                      Http2Connection tinct record: { handle streams hpack-table ... };
+                      Http2Connection tinct record: [handle streams hpack-table ...];
                       h2-accept, h2-connect, http-request, h2-push, h2-open-stream,
                       h2-incoming, http2-client, h2-stream-ch
     h3.llt          — HTTP/3 on top of quic.llt: QPACK header compression,
@@ -683,20 +893,39 @@ stdlib/
                       SvcbRecord ([union AliasMode ServiceMode]), resolve-svcb (alias chain)
                       http-connect (SVCB-aware: IP hints + h3/h2 protocol race)
                       http-protocol-race, quic-h3-connect, tcp-h2-connect
-                      fetch (calls http-connect; transparent h3/h2/h1 negotiation)
+                      fetch (calls http-connect; transparent h3/h2/h1 negotiation;
+                             negotiates Accept-Encoding and decompresses response body);
                       fetch-h1, fetch-h2, fetch-h3 (protocol-pinned variants)
                       router, headers-map, parse-query
                       ok, json-ok, redirect, not-found, server-error
+                      with-compression (adds Content-Encoding to responses;
+                        SECURITY: disable for endpoints that reflect user input alongside
+                        secrets — CRIME/BREACH attacks exploit compression ratio leakage
+                        when attacker-controlled and secret bytes share a compressed stream)
                       with-logging, with-cors, with-auth, with-timeout (middleware)
+    compress.llt    — CompressionCodec typeclass + built-in instances (Rust-backed;
+                      streaming compression through the thunk system would be impractically
+                      slow for multi-KB HTTP bodies):
+                      [class [CompressionCodec c]
+                        encode: [Fn [c@c b@Bytes] Bytes]           # compress
+                        decode: [Fn [c@c b@Bytes] [Result Bytes]]]  # decompress; Err if corrupt
+                      [type [Gzip]]    [instance [CompressionCodec Gzip] ...]     — gzip (RFC 1952)
+                      [type [Deflate]] [instance [CompressionCodec Deflate] ...]  — zlib (RFC 1950)
+                      [type [Brotli]]  [instance [CompressionCodec Brotli] ...]   — br (RFC 7932)
+                      [type [Zstd]]    [instance [CompressionCodec Zstd] ...]     — zstd (RFC 8878)
+                      [type [Identity]] — no-op passthrough; compress/decompress are identity
+                      CompressedBytes: [type [data: Bytes  label: CompressionCodec]]
+                        — LabeledBytes@CompressionCodec; used for raw HTTP response bodies
+                          before decompression, or for compressed file/stream data
     wireguard.llt   — WireGuard user-mode protocol (Noise_IKpsk2) using x25519-dh,
                       chacha20-poly1305, blake2s/blake2s-mac, hkdf-extract;
-                      WireguardConnection tinct record: { underlying: Handle  tx-key/rx-key: [Bytes 32]
-                        tx-nonce: [Channel Int] };
+                      WireguardConnection tinct record: [underlying: Handle
+                        tx-key/rx-key: [Bytes 32]  tx-nonce: [Channel Int]];
                       [instance [ByteStream WireguardConnection] ...];
                       wireguard-accept, wireguard-layer: [Fn [h cfg] WireguardConnection  constraint: [h: ByteStream]]
     noise.llt       — Generic Noise pattern combinator (XX, IK, NK, …);
-                      NoiseConnection tinct record: { underlying: Handle  send-key/recv-key: [Bytes 32]
-                        send-n: [Channel Int] };
+                      NoiseConnection tinct record: [underlying: Handle
+                        send-key/recv-key: [Bytes 32]  send-n: [Channel Int]];
                       [instance [ByteStream NoiseConnection] ...];
                       noise-accept, noise-layer: [Fn [h cfg] NoiseConnection  constraint: [h: ByteStream]]
     websocket.llt   — WebSocket upgrade (sha1), frame framing/deframing,
@@ -735,7 +964,7 @@ This whatif introduces `[Bytes N]` as a new type form — a fixed-size byte sequ
 
 A fixed-size byte string of length N is isomorphic to a closed Map from integer keys `{0, 1, …, N-1}` to `UInt8` values, or equivalently a Record with integer literal field names. This is the same structure as a C array: `uint8_t ip[4]` is a record `{ .0=uint8_t .1=uint8_t .2=uint8_t .3=uint8_t }`. The integer-key Record view justifies why `[Bytes N]` is not a wholly new concept: it is what you already get when you write a Record with `N` consecutive integer field names. `[Bytes N]` is notation for this concept with compact contiguous storage rather than a hash map of keys.
 
-The subtyping relationship follows from the closed-Map view: a `[Bytes N]` is also a valid `Bytes` (the Map with a fixed key set is also a Map with an unknown key set). So `[Bytes N] <: Bytes` — fixed-size byte sequences can be used anywhere variable-length `Bytes` are accepted.
+The subtyping relationship is that of refinement types: `[Bytes N]` is `Bytes` refined by the constraint `length = N`. A more constrained type is a subtype of its base type — the same relationship as `UInt8 <: Int`. So `[Bytes N] <: Bytes` — a fixed-size byte sequence is a valid `Bytes` value and can be used anywhere variable-length `Bytes` are accepted.
 
 ### Type system change
 
@@ -746,7 +975,7 @@ Add `Type::SizedBytes(usize)` alongside the existing `Type::Bytes`:
 - `Type::SizedBytes(M) ≠ Type::SizedBytes(N)` when `M ≠ N` — sizes are statically distinct
 - A `Bytes` value narrows to `[Bytes N]` at a `TypeAssert` boundary when the `is:` predicate validates the length — the same runtime validation mechanism used by `UInt8`, `Port`, etc.
 
-`Kind::Nat` is a bounded extension to the kind system: integer literals used as type arguments. Only `Bytes` takes a `Kind::Nat` argument initially. No type-level arithmetic over `Nat` is needed for this whatif — `[Bytes M+N]` (concatenation result type) is left as `Bytes`, and the caller annotates `@[Bytes K]` if the size is statically known.
+`Kind::Nat` is a bounded extension to the kind system: integer literals used as type arguments. Only `Bytes` takes a `Kind::Nat` argument initially. Type-level arithmetic over `Nat` is supported through the existing type-stage evaluator: `[+ m n]` in a return type position evaluates at type-check time when `m` and `n` are known `Kind::Nat` values. When either is unresolvable (because the caller passed a variable-length `Bytes`), the return type degrades to `Bytes` via the `[Bytes N] <: Bytes` subtyping. No new type-stage machinery is needed beyond `Kind::Nat` itself — `+` over `Nat` is just type-stage arithmetic. The `[instance [MessageStream [Channel t] t] ...]` declaration requires HKT instance head matching (matching on `App(Operator("Channel"), TypeVar("t"))` during instance resolution); this must be verified as supported or added alongside `Kind::Nat`.
 
 ### How it cleans up this whatif's signatures
 
@@ -770,43 +999,75 @@ UInt32: [type Int@[is: [between 0 4294967295]  repr: u32]]
 
 # Fixed-size addresses using [Bytes N]
 IpAddress: [union
-  [Ipv4 [Bytes 4]]     # [Ipv4 (bytes 192 168 1 1)]
-  [Ipv6 [Bytes 16]]]   # [Ipv6 (bytes ...16 bytes...)]
+  [Ipv4 [Bytes 4]]     # [Ipv4 @[Bytes 4]: [192 168 1 1]]
+  [Ipv6 [Bytes 16]]]   # [Ipv6 @[Bytes 16]: [32 1 13 184 0 0 0 0 0 0 0 0 0 0 0 1]]
 
 Port:      [type Int@[is: [between 1 65535]  repr: u16]]
-SocketAddress: [type { addr: IpAddress  port: Port }]
+SocketAddress: [type [addr: IpAddress  port: Port]]
 
 # UDP datagram as received — respond sends back to the peer
-UdpDatagram: [type {
-  src:     SocketAddress
-  data:    Bytes
-  respond: [Fn [Bytes] Null]
-}]
+UdpDatagram: [type
+  [src:     SocketAddress
+   data:    Bytes
+   respond: [Fn [Bytes] Null]]]
 ```
 
-`bytes-to-int` converts `[Bytes 4]` to `UInt32` for IPv4 CIDR masking arithmetic.
+`[decode BigEndian @[Bytes 4]: ip-bytes]` converts a `[Bytes 4]` to `[Result UInt32]` for IPv4 CIDR masking via the `ByteLabel ByteOrder UInt32 [Bytes 4]` instance. The byte order is always explicit — no implicit native-endian conversion. IPv4 and all standard internet protocols use `BigEndian` (network byte order).
 
-### New builtins for `[Bytes N]`
+### Construction and operations for `[Bytes N]`
 
-These are small additions — the type-level enforcement is the main value, not new operations:
+`[Bytes N]` values are constructed the same way as any other annotated value — the TypeAssert boundary validates the size using the existing `is:` predicate mechanism, exactly as `UInt8` and `Port` work:
 
 ```tinct
-bytes:        [Fn [...args@UInt8] [Bytes N]]    # N inferred from arity; macro form
-bytes-get:    [Fn [b@[Bytes N]  i@Int] UInt8]   # bounds-checked at type level
-bytes-slice:  [Fn [b@[Bytes N]  start@Int  len@Int] Bytes]   # result is Bytes (len runtime)
-bytes-to-int: [Fn [b@[Bytes 4]] UInt32]         # convert [Bytes 4] → UInt32 for arithmetic
-bytes-concat: [Fn [a@[Bytes M]  b@[Bytes N]] Bytes]   # [Bytes M+N] deferred; returns Bytes
+key@[Bytes 32]:  [192 168 1 1 ...]    # annotation validates: length = 32
+addr@[Bytes 4]:  [192 168 1 1]        # [Seq UInt8] narrows to [Bytes 4] at TypeAssert
+nonce@[Bytes 12]: crypto-random-bytes # result annotated at call site
 ```
 
-`bytes-to-int` and `bytes-from-int` bridge between the byte-string and integer representations needed for CIDR masking, port parsing, and BigInt serialization.
+No separate `bytes` constructor function — uppercase `[Bytes N]` is a type annotation, and seq literals with `@[Bytes N]` annotations handle construction uniformly.
+
+`get` and `slice` are generic indexed-access operations, shared with `String` and `[Seq T]` through the `Indexed` typeclass:
+
+```tinct
+[class [Indexed s e]
+  get:    [Fn [s@s i@Int] e]
+  slice:  [Fn [s@s start@Int len@Int] s]
+  length: [Fn [s@s] Int]]
+
+[instance [Indexed [Bytes N] UInt8] ...]   # element type is statically UInt8; index bounds
+                                            # are checked at runtime (not type level — that
+                                            # would require dependent types)
+[instance [Indexed String Char] ...]
+[instance [Indexed [Seq T] T] ...]
+```
+
+Integer interpretation of byte sequences uses `encode`/`decode` via the `ByteLabel ByteOrder` instances. The byte order is always explicit — there is no implicit native-endian conversion, which would silently produce wrong results when tinct runs on a CPU with different endianness than the protocol expects:
+
+```tinct
+[decode BigEndian @[Bytes 4]: ip-bytes]    # → [Result UInt32] — IPv4 for CIDR masking
+[decode BigEndian snmp-length]             # → [Result UInt16] — SNMP PDU length field
+[decode LittleEndian ble-bytes]            # → [Result UInt32] — Bluetooth LE 32-bit value
+[encode BigEndian 443@UInt16]              # → [Bytes 2] — port in network byte order
+```
+
+`concat` is variadic and works for all `Appendable` types — `String`, `Bytes`, `[Bytes N]`, and `[Seq T]`. No type-encoded name needed:
+
+```tinct
+concat: [fn@t [constraint: [t: Appendable]] [...args@t]
+  [reduce append empty args]]
+```
+
+`[concat a b]` where both `a: [Bytes 32]` and `b: [Bytes 32]` gives `[Bytes 64]` — the type-stage evaluator propagates `Kind::Nat` arithmetic through the `append` reduction. `[concat a b c]` gives `[Bytes [+ [+ m n] k]]`. When any argument is variable-length `Bytes`, the result is `Bytes`. The same `concat` works for strings: `[concat "hello" " " "world"]` → `String`.
 
 ### What changes in the implementation
 
-- **Parser**: `[Bytes N]` in annotation position — parse `N` as a `NatLit` type argument
-- **Type checker**: `Type::SizedBytes(usize)` variant; subtype rule `SizedBytes(N) <: Bytes`; `Kind::Nat` for the `N` position in `Bytes` type application
+- **Kind system**: add `Kind::Nat` — a new kind for integer literal type arguments. `Kind::Nat` does not exist today (`src/type_def.rs` has only `Kind::Type`, `Kind::Operator`, `Kind::Label`). This is a prerequisite for `[Bytes N]` and must be added in the same sprint. Type-stage arithmetic (`+`, `-`, `*` over `Kind::Nat`) plugs into the existing `NormCtxt::normalize()` infrastructure from the CHR sprint (`src/type_normalize.rs`): concrete `NatLit` values reduce immediately; unresolved `NatVar` variables produce a stuck `TypeStageApp` that is handled by `process_deferred_equalities`. When stuck, the return type of `[Bytes [+ m n]]` degrades to `Bytes` via the `SizedBytes(N) <: Bytes` subtyping rule — the same fallback already in place for other stuck `TypeStageApp` results. A new `NatVar` type variant (distinct from `TypeVar`) is needed to track kind correctly.
+- **Parser**: `[Bytes N]` in annotation position — parse `N` as a `NatLit` type argument of kind `Kind::Nat`
+- **Type checker**: `Type::SizedBytes(usize)` variant; subtype rule `SizedBytes(N) <: Bytes` (refinement); `Kind::Nat` for the `N` position in `Bytes` type application; well-formedness check that `N` is a positive integer literal
 - **Unification**: `SizedBytes(M)` unifies with `SizedBytes(N)` only if `M = N`; `SizedBytes(N)` unifies with `Bytes` (via subtyping)
+- **Instance resolution**: verify or add support for HKT instance heads — `[instance [MessageStream [Channel t] t] ...]` requires matching `App(Operator("Channel"), TypeVar("t"))` during instance lookup. If not yet supported, add alongside `Kind::Nat`.
 - **Eval/materialize**: no change — runtime representation is `Value::Bytes`; size is checked at `TypeAssert` boundaries via `is:` predicate on `bytes-length`
-- **Builtins**: update crypto primitive return type registrations; add `bytes`, `bytes-get`, `bytes-slice`, `bytes-to-int`, `bytes-concat`
+- **Builtins**: update crypto primitive return type registrations; add `bytes-to-int`; add `Indexed` typeclass with `Handle`/`String`/`[Bytes N]`/`[Seq T]` instances (making `get`, `slice`, `length` work uniformly); `concat` already exists via `Appendable` — extend `Appendable` instance for `Bytes` if not present
 
 ---
 
@@ -818,7 +1079,7 @@ All primitives in the New Rust Primitives table above, registered in `standard_b
 
 ### Add stdlib modules
 
-`stdlib/net.llt`, `stdlib/crypto.llt`, `stdlib/serve.llt`, `stdlib/dns.llt`, extend `stdlib/async.llt`; `stdlib/protocols/` (tls, quic, h2, h3, http1, http, wireguard, noise, websocket, icmp, socks5, grpc, mqtt).
+`stdlib/net.llt`, `stdlib/text.llt`, `stdlib/compress.llt`, `stdlib/crypto.llt`, `stdlib/serve.llt`, `stdlib/dns.llt`, extend `stdlib/async.llt`; `stdlib/protocols/` (tls, quic, h2, h3, http1, http, compress, wireguard, noise, websocket, icmp, socks5, grpc, mqtt).
 
 ### Restructure `Value::NetCap` — hostname entries + cap-std Pool
 
@@ -840,7 +1101,7 @@ struct NetCapInner {
 
 `tcp-connect: [Fn [cap@NetCap addr@SocketAddress] Handle]` takes a pre-resolved `SocketAddress` — it calls `pool.connect(SocketAddress)` directly. The pool check and the socket syscall are one indivisible operation; there is no window between the capability check and the actual connect. This eliminates the TOCTOU hazard present in the current design (hostname check → DNS resolution → connect to potentially different IP).
 
-`resolve-host: [Fn [cap@NetCap host@String] IpAddress]` in `stdlib/net.llt` checks `hostname_entries` against the hostname before resolving. The returned `IpAddress` is composed with a port into a `SocketAddress` and passed to `tcp-connect`.
+`resolve-host: [Fn [cap@NetCap host@String] IpAddress]` in `stdlib/net.llt` checks `hostname_entries` against the hostname before resolving, then validates the resolved `IpAddress` against the pool's CIDR entries as a defence-in-depth step (the pool check at `tcp-connect` is the authoritative gate, but catching the mismatch earlier produces a clearer error). The validated `IpAddress` is composed with a port into a `SocketAddress` and passed to `tcp-connect`.
 
 `--cap-net` parsing splits entries by type: glob/hostname entries populate `hostname_entries`; CIDR and IP-literal entries populate the pool via `Pool::insert_ip_net` and `Pool::insert`.
 
@@ -952,6 +1213,10 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 - `hmac`, `hkdf` — HMAC-SHA-256 and HKDF
 - `rsa` — RSA-PSS and PKCS#1 v1.5 sign/verify (`rsa-pss-sign`, `rsa-pss-verify`, `rsa-pkcs1-verify`)
 - `resolv-conf` — parse `/etc/resolv.conf` to populate default `%dns` at process start
+- `encoding_rs` — WHATWG-compliant character encoding library (~38 encodings); backs `Encoding` opaque type and `encode`/`decode`/`decode-lossy` in `stdlib/text.llt`
+- `flate2` — gzip and deflate compression (uses `miniz_oxide` pure-Rust backend); backs `Gzip` and `Deflate` instances in `stdlib/compress.llt`
+- `brotli` — Brotli compression; backs `Brotli` instance
+- `zstd` — Zstandard compression; backs `Zstd` instance
 
 `num-bigint` is already in `Cargo.toml` from the `numeric-bigint` sprint and is not re-added here. `BigInt` is available in tinct for general use; it plays no role in this whatif because tinct-side arithmetic on secret key material cannot be constant-time regardless of `BigInt` availability.
 

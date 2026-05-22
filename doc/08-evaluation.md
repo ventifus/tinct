@@ -521,7 +521,7 @@ Error semantics are specified in [Error Handling](10-errors.md). This section su
 
 ## Selective Materialization — Formal Specification
 
-Specifies which arguments each Rust-native builtin materializes before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering the core evaluation and collection builtins (auditable summary), plus **delta rules** for builtins whose materialization behavior cannot be captured by a flat per-argument annotation. I/O, capability, datetime, crypto, and network builtins are omitted as inherently materializing. See `doc/11a-builtins.md` for the full catalog of all 189 registered builtins.
+Specifies which arguments each Rust-native builtin materializes before execution and how the result is constructed. This is a two-tier specification: a **strictness signature table** covering the core evaluation and collection builtins (auditable summary), plus **delta rules** for builtins whose materialization behavior cannot be captured by a flat per-argument annotation. I/O, capability, datetime, crypto, and network builtins are omitted as inherently materializing. See `doc/11a-builtins.md` for the full catalog of registered builtins (count verified by `standard_builtins_count` test in `src/builtins.rs`).
 
 The signature notation draws on Mycroft's (1981) abstract interpretation framework for strictness analysis. The delta rules follow Plotkin's (1981) structural operational semantics, using the same judgment style as §Thunk Lifecycle — Formal Specification.
 

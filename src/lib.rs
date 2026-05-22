@@ -1477,11 +1477,17 @@ mod tests {
 
     #[test]
     fn test_json_builtin_error() {
-        fn dummy(_ctx: value::BuiltinArgs) -> Result<Arc<Thunk>, Box<error::EvalError>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(0),
-                ast::Span::origin(),
-            )))
+        fn dummy(
+            _ctx: value::BuiltinArgs,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Arc<Thunk>, Box<error::EvalError>>>>,
+        > {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(0),
+                    ast::Span::origin(),
+                )))
+            })
         }
         let b = Value::Builtin(value::BuiltinDef {
             func: dummy,

@@ -35,6 +35,8 @@
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -46,23 +48,33 @@ use crate::builtins::{
     builtin, ok_val, reject_named, require_string, JSON_DEPTH_LIMIT, MAX_COLLECT_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize_sync as materialize;
-use crate::eval_call::{invoke_function_sync as invoke_function, CallContext};
+use crate::eval::{materialize, materialize_sync};
+use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
 /// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
-pub(crate) fn builtin_deep_materialize(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("deep-materialize", args, named, &ctx, call_span)?;
-    let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
-    ok_val(deep, call_span)
+pub(crate) fn builtin_deep_materialize(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "deep-materialize",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span,
+        )?;
+        let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
+        ok_val(deep, call_span)
+    })
 }
 
 /// `builtin-to-json`: takes 1 arg, deep-materializes it and serializes to a JSON string.
@@ -73,32 +85,42 @@ pub(crate) fn builtin_deep_materialize(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
 ///
 /// Returns a String containing the compact JSON representation of the value.
 /// Errors on non-serializable values (Function, Builtin, Seq, NaN/Infinity floats).
-pub(crate) fn builtin_to_json(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("builtin-to-json", args, named, &ctx, call_span)?;
-    // Deep-materialize first so value_to_json can traverse the full structure.
-    let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
-    // LLT null compatibility: [] (empty dict) serializes as JSON null,
-    // matching the behavior of the old codecs/json.llt `null?` check.
-    if let crate::value::Value::Dict(ref map) = deep {
-        if map.is_empty() {
-            return ok_val(crate::value::string_val("null"), call_span);
+pub(crate) fn builtin_to_json(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "builtin-to-json",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span,
+        )?;
+        // Deep-materialize first so value_to_json can traverse the full structure.
+        let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
+        // LLT null compatibility: [] (empty dict) serializes as JSON null,
+        // matching the behavior of the old codecs/json.llt `null?` check.
+        if let crate::value::Value::Dict(ref map) = deep {
+            if map.is_empty() {
+                return ok_val(crate::value::string_val("null"), call_span);
+            }
         }
-    }
-    // Serialize to JSON using the Rust-native converter.
-    let json_val = crate::value_to_json(&deep, &ctx).map_err(|e| {
-        // Re-wrap the error with the call span for better diagnostics
-        let mut err = *e;
-        err.definition_span = call_span;
-        Box::new(err)
-    })?;
-    let json_str = json_val.to_string();
-    ok_val(crate::value::string_val(&json_str), call_span)
+        // Serialize to JSON using the Rust-native converter.
+        let json_val = crate::value_to_json(&deep, &ctx).map_err(|e| {
+            // Re-wrap the error with the call span for better diagnostics
+            let mut err = *e;
+            err.definition_span = call_span;
+            Box::new(err)
+        })?;
+        let json_str = json_val.to_string();
+        ok_val(crate::value::string_val(&json_str), call_span)
+    })
 }
 
 /// `materialize`: takes 1 arg, forces it to WHNF and returns it.
@@ -106,138 +128,155 @@ pub(crate) fn builtin_to_json(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Gives users explicit control over evaluation order. Equivalent to `$deep-materialize` for
 /// flat values, but only forces to weak head normal form (WHNF) — dicts remain
 /// dicts with unforced entries, not deep-forced. Use `$deep-materialize` for deep forcing.
-pub(crate) fn builtin_force(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let forced = crate::builtins::expect_one_arg("materialize", args, named, &ctx, call_span)?;
-    ok_val(forced, call_span)
+pub(crate) fn builtin_force(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let forced =
+            crate::builtins::expect_one_arg("materialize", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(forced, call_span)
+    })
 }
 
 /// `raise`: takes 1 arg (String message), always raises.
 /// Inherently materializing: constructs concrete error value.
-pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("raise", args, named, &ctx, call_span)?;
-    let msg = require_string("raise", val, args[0].span)?;
-    Err(EvalError::user_error(msg.to_string(), call_span).into())
+pub(crate) fn builtin_raise(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("raise", &args, named.as_ref(), &ctx, call_span)?;
+        let msg = require_string("raise", val, args[0].span)?;
+        Err(EvalError::user_error(msg.to_string(), call_span).into())
+    })
 }
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Ok value]`
 /// on success or `[Error message]` on failure.
 /// Inherently materializing: must materialize body to catch errors.
-pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    reject_named("try", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let func_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+pub(crate) fn builtin_try(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        reject_named("try", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        let func_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    let call_result = match func_val {
-        Value::Function {
-            params,
-            body,
-            env: closure_env,
-            ..
-        } => {
-            if !params.is_empty() {
+        let call_result = match func_val {
+            Value::Function {
+                params,
+                body,
+                env: closure_env,
+                ..
+            } => {
+                if !params.is_empty() {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "try".to_string(),
+                        "zero-argument function",
+                        &format!("{}-parameter function", params.len()),
+                        call_span,
+                    )
+                    .into());
+                }
+                // Create an empty call environment as a child of the closure env.
+                //
+                // This mirrors what invoke_function/bind_args_thunks does for zero-param
+                // functions: even with no parameters, a new child env is created so that
+                // the De Bruijn (level, slot) coordinates assigned by the resolver match
+                // the runtime env chain. Without this, the resolver's fn-params scope
+                // (which is always pushed, even for empty param lists) would be missing at
+                // runtime, causing all references inside the fn body to resolve to wrong
+                // slots (off-by-one in the parent chain).
+                let call_env = std::sync::Arc::new(std::sync::RwLock::new(
+                    crate::value::Environment::with_parent(Arc::clone(&closure_env)),
+                ));
+                let body_thunk = Arc::new(Thunk::new_unevaluated(
+                    Rc::clone(&body),
+                    call_env,
+                    Arc::clone(&ctx),
+                    body.span,
+                ));
+                materialize(&body_thunk, Some(&call_span), &ctx).await
+            }
+            Value::Builtin(def) => {
+                let builtin_args = BuiltinArgs {
+                    args: vec![],
+                    named: None,
+                    call_span,
+                    ctx: Arc::clone(&ctx),
+                };
+                match (def.func)(builtin_args).await {
+                    Ok(thunk) => materialize(&thunk, Some(&call_span), &ctx).await,
+                    Err(e) => Err(e),
+                }
+            }
+            _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "try".to_string(),
-                    "zero-argument function",
-                    &format!("{}-parameter function", params.len()),
+                    "Function",
+                    func_val.type_name(),
                     call_span,
                 )
-                .into());
+                .into())
             }
-            // Create an empty call environment as a child of the closure env.
-            //
-            // This mirrors what invoke_function/bind_args_thunks does for zero-param
-            // functions: even with no parameters, a new child env is created so that
-            // the De Bruijn (level, slot) coordinates assigned by the resolver match
-            // the runtime env chain. Without this, the resolver's fn-params scope
-            // (which is always pushed, even for empty param lists) would be missing at
-            // runtime, causing all references inside the fn body to resolve to wrong
-            // slots (off-by-one in the parent chain).
-            let call_env = std::sync::Arc::new(std::sync::RwLock::new(
-                crate::value::Environment::with_parent(Arc::clone(&closure_env)),
-            ));
-            let body_thunk = Arc::new(Thunk::new_unevaluated(
-                Rc::clone(&body),
-                call_env,
-                Arc::clone(&ctx),
-                body.span,
-            ));
-            materialize(&body_thunk, Some(&call_span), &ctx)
-        }
-        Value::Builtin(def) => {
-            let builtin_args = BuiltinArgs {
-                args: &[],
-                named: None,
-                call_span,
-                ctx: Arc::clone(&ctx),
-            };
-            (def.func)(builtin_args).and_then(|thunk| materialize(&thunk, Some(&call_span), &ctx))
-        }
-        _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                "try".to_string(),
-                "Function",
-                func_val.type_name(),
-                call_span,
-            )
-            .into())
-        }
-    };
+        };
 
-    match call_result {
-        Ok(val) => {
-            // Success: return Value::Variant { tag: "Ok", payload: Some(value) }
-            let payload_thunk_id = ctx.alloc_thunk(ok_val(val, call_span)?);
-            ok_val(
-                Value::Variant {
-                    tag: "Ok".to_string(),
-                    payload: Some(payload_thunk_id),
-                },
-                call_span,
-            )
-        }
-        Err(e) => {
-            // DepthExceeded and ResourceLimitExceeded are non-catchable:
-            // they indicate system-level limits, not user-level errors.
-            use crate::error::ErrorKind;
-            match &e.kind {
-                ErrorKind::DepthExceeded { .. } | ErrorKind::ResourceLimitExceeded { .. } => {
-                    return Err(e);
-                }
-                _ => {}
+        match call_result {
+            Ok(val) => {
+                // Success: return Value::Variant { tag: "Ok", payload: Some(value) }
+                let payload_thunk_id = ctx.alloc_thunk(ok_val(val, call_span)?);
+                ok_val(
+                    Value::Variant {
+                        tag: "Ok".to_string(),
+                        payload: Some(payload_thunk_id),
+                    },
+                    call_span,
+                )
             }
-            // Error: return Value::Variant { tag: "Error", payload: Some(message) }
-            let msg_thunk_id = ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span)?);
-            ok_val(
-                Value::Variant {
-                    tag: "Error".to_string(),
-                    payload: Some(msg_thunk_id),
-                },
-                call_span,
-            )
+            Err(e) => {
+                // DepthExceeded and ResourceLimitExceeded are non-catchable:
+                // they indicate system-level limits, not user-level errors.
+                use crate::error::ErrorKind;
+                match &e.kind {
+                    ErrorKind::DepthExceeded { .. } | ErrorKind::ResourceLimitExceeded { .. } => {
+                        return Err(e);
+                    }
+                    _ => {}
+                }
+                // Error: return Value::Variant { tag: "Error", payload: Some(message) }
+                let msg_thunk_id =
+                    ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span)?);
+                ok_val(
+                    Value::Variant {
+                        tag: "Error".to_string(),
+                        payload: Some(msg_thunk_id),
+                    },
+                    call_span,
+                )
+            }
         }
-    }
+    })
 }
 
 /// `until`: Repeat f(val) until predicate(val) returns true.
@@ -247,208 +286,224 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///
 /// This implementation uses a Rust loop with eager materialization at each step,
 /// avoiding both depth limits and stack overflow from long thunk chains.
-pub(crate) fn builtin_until(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    reject_named("until", named, call_span)?;
-    if args.len() != 3 {
-        return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-    }
-
-    let pred_thunk = Arc::clone(&args[0]);
-    let f_thunk = Arc::clone(&args[1]);
-    let mut val_thunk = Arc::clone(&args[2]);
-
-    loop {
-        // Create a pending call to pred(val) and materialize it
-        let pred_result = Arc::new(Thunk::new_pending_call(
-            Arc::clone(&pred_thunk),
-            vec![Arc::clone(&val_thunk)],
-            IndexMap::new(),
+pub(crate) fn builtin_until(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-            Arc::clone(&ctx.config.stdlib_env),
-            val_thunk.span,
-            Some(Arc::from("until")),
-            Arc::clone(&ctx),
-        ));
+            ctx,
+        } = ctx_arg;
+        reject_named("until", named.as_ref(), call_span)?;
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
 
-        let pred_val = materialize(&pred_result, Some(&call_span), &ctx)?;
+        let pred_thunk = Arc::clone(&args[0]);
+        let f_thunk = Arc::clone(&args[1]);
+        let mut val_thunk = Arc::clone(&args[2]);
 
-        match pred_val {
-            Value::Bool(true) => {
-                // Predicate holds, return the current value (as thunk)
-                return Ok(val_thunk);
-            }
-            Value::Bool(false) => {
-                // Predicate doesn't hold yet, apply f and materialize to get next value
-                let f_result = Arc::new(Thunk::new_pending_call(
-                    Arc::clone(&f_thunk),
-                    vec![val_thunk],
-                    IndexMap::new(),
-                    call_span,
-                    Arc::clone(&ctx.config.stdlib_env),
-                    call_span,
-                    Some(Arc::from("until")),
-                    Arc::clone(&ctx),
-                ));
+        loop {
+            // Create a pending call to pred(val) and materialize it
+            let pred_result = Arc::new(Thunk::new_pending_call(
+                Arc::clone(&pred_thunk),
+                vec![Arc::clone(&val_thunk)],
+                IndexMap::new(),
+                call_span,
+                Arc::clone(&ctx.config.stdlib_env),
+                val_thunk.span,
+                Some(Arc::from("until")),
+                Arc::clone(&ctx),
+            ));
 
-                // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
-                // This breaks the thunk chain and prevents stack overflow
-                let f_val = materialize(&f_result, Some(&call_span), &ctx)?;
-                val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span));
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "until".to_string(),
-                    "Bool",
-                    pred_val.type_name(),
-                    call_span,
-                )
-                .into())
+            let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
+
+            match pred_val {
+                Value::Bool(true) => {
+                    // Predicate holds, return the current value (as thunk)
+                    return Ok(val_thunk);
+                }
+                Value::Bool(false) => {
+                    // Predicate doesn't hold yet, apply f and materialize to get next value
+                    let f_result = Arc::new(Thunk::new_pending_call(
+                        Arc::clone(&f_thunk),
+                        vec![val_thunk],
+                        IndexMap::new(),
+                        call_span,
+                        Arc::clone(&ctx.config.stdlib_env),
+                        call_span,
+                        Some(Arc::from("until")),
+                        Arc::clone(&ctx),
+                    ));
+
+                    // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
+                    // This breaks the thunk chain and prevents stack overflow
+                    let f_val = materialize(&f_result, Some(&call_span), &ctx).await?;
+                    val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span));
+                }
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "until".to_string(),
+                        "Bool",
+                        pred_val.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
             }
         }
-    }
+    })
 }
 
 /// Helper that performs the actual $apply logic after args are pre-materialized.
 /// This is separated from builtin_apply so that builtin_apply can return a
 /// PendingBuiltin thunk, enabling iterative arg materialization via BuiltinForceArg.
-pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    reject_named("apply", named, call_span)?;
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
-    // Both args[0] and args[1] have been pre-materialized by force_count.
-    let func_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let args_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+pub(crate) fn builtin_apply_impl(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        reject_named("apply", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        // Both args[0] and args[1] have been pre-materialized by force_count.
+        let func_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let args_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    let arg_dict = crate::builtins::require_dict("apply", args_val, args[1].span, &ctx, call_span)?;
+        let arg_dict =
+            crate::builtins::require_dict("apply", args_val, args[1].span, &ctx, call_span)?;
 
-    // Split dict entries: integer-keyed → positional, string-keyed → named
-    let mut int_entries: Vec<(i64, Arc<Thunk>)> = Vec::with_capacity(arg_dict.len());
-    let mut named_args: IndexMap<String, Arc<Thunk>> = IndexMap::with_capacity(arg_dict.len());
-    for (key, thunk_id) in &arg_dict {
-        let thunk = ctx.get_thunk(*thunk_id);
-        match key {
-            Key::Int(n) => int_entries.push((*n, thunk)),
-            Key::String(s) => {
-                named_args.insert(s.clone(), thunk);
+        // Split dict entries: integer-keyed → positional, string-keyed → named
+        let mut int_entries: Vec<(i64, Arc<Thunk>)> = Vec::with_capacity(arg_dict.len());
+        let mut named_args: IndexMap<String, Arc<Thunk>> = IndexMap::with_capacity(arg_dict.len());
+        for (key, thunk_id) in &arg_dict {
+            let thunk = ctx.get_thunk(*thunk_id);
+            match key {
+                Key::Int(n) => int_entries.push((*n, thunk)),
+                Key::String(s) => {
+                    named_args.insert(s.clone(), thunk);
+                }
             }
         }
-    }
-    int_entries.sort_by_key(|(k, _)| *k);
-    let positional: Vec<Arc<Thunk>> = int_entries.into_iter().map(|(_, v)| v).collect();
+        int_entries.sort_by_key(|(k, _)| *k);
+        let positional: Vec<Arc<Thunk>> = int_entries.into_iter().map(|(_, v)| v).collect();
 
-    match func_val {
-        Value::Function {
-            params,
-            body,
-            env: closure_env,
-            ..
-        } => invoke_function(&CallContext {
-            params: &params,
-            body: &body,
-            closure_env: &closure_env,
-            positional: &positional,
-            named: if named_args.is_empty() {
-                None
-            } else {
-                Some(&named_args)
-            },
-            default_env: &closure_env,
-            ctx: &ctx,
-            call_span,
-            origin: Some(Arc::from("apply")),
-        }),
-        Value::Builtin(def) => {
-            // Pre-materialize strict args before calling the builtin.
-            // `builtin_apply_impl` calls `def.func` directly (not through the CEK machine),
-            // so `force_count` and `pos_strictness` pre-materialization do NOT happen
-            // automatically. Builtins that use `try_get_materialized().expect(...)` rely
-            // on force_count/pos_strictness having been applied; without this, passing a
-            // force_count>0 builtin like `$keys` through `$apply` would panic.
-            //
-            // Ordering: force_count range first (matches force_step dispatch order), then
-            // pos_strictness Seq/Spine. Both loops skip args that are already materialized.
-            for i in 0..def.force_count.min(positional.len()) {
-                if positional[i].try_get_materialized().is_none() {
-                    materialize(&positional[i], Some(&call_span), &ctx)?;
-                }
+        match func_val {
+            Value::Function {
+                params,
+                body,
+                env: closure_env,
+                ..
+            } => {
+                invoke_function(&CallContext {
+                    params: &params,
+                    body: &body,
+                    closure_env: &closure_env,
+                    positional: &positional,
+                    named: if named_args.is_empty() {
+                        None
+                    } else {
+                        Some(&named_args)
+                    },
+                    default_env: &closure_env,
+                    ctx: &ctx,
+                    call_span,
+                    origin: Some(Arc::from("apply")),
+                })
+                .await
             }
-            for (i, &s) in def.pos_strictness.iter().enumerate() {
-                if i < positional.len()
-                    && (s == Strictness::Seq || s == Strictness::Spine)
-                    && positional[i].try_get_materialized().is_none()
-                {
-                    materialize(&positional[i], Some(&call_span), &ctx)?;
+            Value::Builtin(def) => {
+                // Pre-materialize strict args before calling the builtin.
+                // `builtin_apply_impl` calls `def.func` directly (not through the CEK machine),
+                // so `force_count` and `pos_strictness` pre-materialization do NOT happen
+                // automatically. Builtins that use `try_get_materialized().expect(...)` rely
+                // on force_count/pos_strictness having been applied; without this, passing a
+                // force_count>0 builtin like `$keys` through `$apply` would panic.
+                //
+                // Ordering: force_count range first (matches force_step dispatch order), then
+                // pos_strictness Seq/Spine. Both loops skip args that are already materialized.
+                for i in 0..def.force_count.min(positional.len()) {
+                    if positional[i].try_get_materialized().is_none() {
+                        materialize(&positional[i], Some(&call_span), &ctx).await?;
+                    }
                 }
+                for (i, &s) in def.pos_strictness.iter().enumerate() {
+                    if i < positional.len()
+                        && (s == Strictness::Seq || s == Strictness::Spine)
+                        && positional[i].try_get_materialized().is_none()
+                    {
+                        materialize(&positional[i], Some(&call_span), &ctx).await?;
+                    }
+                }
+                let builtin_args = BuiltinArgs {
+                    args: positional,
+                    named: if named_args.is_empty() {
+                        None
+                    } else {
+                        Some(named_args)
+                    },
+                    call_span,
+                    ctx: Arc::clone(&ctx),
+                };
+                (def.func)(builtin_args).await
             }
-            let builtin_args = BuiltinArgs {
-                args: &positional,
-                named: if named_args.is_empty() {
-                    None
-                } else {
-                    Some(&named_args)
-                },
+            _ => Err(EvalError::type_mismatch_ctx(
+                "apply".to_string(),
+                "Function",
+                func_val.type_name(),
                 call_span,
-                ctx: Arc::clone(&ctx),
-            };
-            (def.func)(builtin_args)
+            )
+            .into()),
         }
-        _ => Err(EvalError::type_mismatch_ctx(
-            "apply".to_string(),
-            "Function",
-            func_val.type_name(),
-            call_span,
-        )
-        .into()),
-    }
+    })
 }
 
 /// `apply`: wrapper that returns a PendingBuiltin thunk for iterative arg materialization.
-pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    // Return a PendingBuiltin thunk that wraps builtin_apply_impl.
-    // When materialized, the PendingBuiltin handler will use BuiltinForceArg
-    // to pre-materialize both args[0] and args[1] iteratively, avoiding
-    // Rust stack growth.
-    // Pass named args through: $apply may forward named args to the target function.
-    // Use None when named is empty to skip the IndexMap allocation.
-    let named_opt = if named.map(|n| n.is_empty()).unwrap_or(true) {
-        None
-    } else {
-        Some(named.expect("checked by if condition above").clone())
-    };
-    Ok(Arc::new(Thunk::new_pending_builtin(
-        // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
-        // before calling builtin_apply_impl, which uses try_get_materialized().expect(...).
-        // Must match what builtin_apply_impl actually requires.
-        builtin!("apply", builtin_apply_impl, [], 2),
-        args.to_vec(),
-        named_opt,
-        call_span,
-        Some(Arc::from("apply")),
-        ctx,
-    )))
+pub(crate) fn builtin_apply(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        // Return a PendingBuiltin thunk that wraps builtin_apply_impl.
+        // When materialized, the PendingBuiltin handler will use BuiltinForceArg
+        // to pre-materialize both args[0] and args[1] iteratively, avoiding
+        // Rust stack growth.
+        // Pass named args through: $apply may forward named args to the target function.
+        // Use None when named is empty to skip the IndexMap allocation.
+        let named_opt = if named.as_ref().map(|n| n.is_empty()).unwrap_or(true) {
+            None
+        } else {
+            named
+        };
+        Ok(Arc::new(Thunk::new_pending_builtin(
+            // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
+            // before calling builtin_apply_impl, which uses try_get_materialized().expect(...).
+            // Must match what builtin_apply_impl actually requires.
+            builtin!("apply", builtin_apply_impl, [], 2),
+            args,
+            named_opt,
+            call_span,
+            Some(Arc::from("apply")),
+            ctx,
+        )))
+    })
 }
 
 /// `gensym`: Generate a unique symbol name for macro hygiene.
@@ -458,49 +513,53 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///
 /// The `:` prefix ensures these names cannot collide with user-written identifiers
 /// (`:` is not allowed in bare word identifiers).
-pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    use std::sync::atomic::{AtomicU64, Ordering};
+pub(crate) fn builtin_gensym(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        use std::sync::atomic::{AtomicU64, Ordering};
 
-    // Global counter for gensym IDs
-    static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+        // Global counter for gensym IDs
+        static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    reject_named("gensym", named, call_span)?;
-
-    // Accept 0 or 1 positional arguments
-    let prefix = if args.is_empty() {
-        "gensym".to_string()
-    } else if args.len() == 1 {
-        let prefix_val = materialize(&args[0], Some(&call_span), &ctx)?; // H2: conditional optional prefix arg — deferred to dispatch-cont sprint
-        match prefix_val {
-            Value::String { source, start, end } => source[start..end].to_string(),
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "gensym".to_string(),
-                    "String",
-                    prefix_val.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        }
-    } else {
-        return Err(EvalError::user_error(
-            format!("gensym takes 0 or 1 arguments, got {}", args.len()),
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )
-        .into());
-    };
+            ctx,
+        } = ctx_arg;
 
-    let id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let name = format!(":{}:{}", prefix, id);
-    ok_val(string_val(&name), call_span)
+        reject_named("gensym", named.as_ref(), call_span)?;
+
+        // Accept 0 or 1 positional arguments
+        let prefix = if args.is_empty() {
+            "gensym".to_string()
+        } else if args.len() == 1 {
+            let prefix_val = materialize(&args[0], Some(&call_span), &ctx).await?; // H2: conditional optional prefix arg — deferred to dispatch-cont sprint
+            match prefix_val {
+                Value::String { source, start, end } => source[start..end].to_string(),
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "gensym".to_string(),
+                        "String",
+                        prefix_val.type_name(),
+                        call_span,
+                    )
+                    .into());
+                }
+            }
+        } else {
+            return Err(EvalError::user_error(
+                format!("gensym takes 0 or 1 arguments, got {}", args.len()),
+                call_span,
+            )
+            .into());
+        };
+
+        let id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!(":{}:{}", prefix, id);
+        ok_val(string_val(&name), call_span)
+    })
 }
 
 /// `macro-injects`: Returns the inject: default name for a macro.
@@ -516,85 +575,104 @@ pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///   [macro-injects "swap"]  # → null  (if swap uses only gensym hygiene)
 ///
 /// Non-materializing: only inspects the macro_injects_map from EvalConfig.
-pub(crate) fn builtin_macro_injects(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_macro_injects(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    let macro_name_val =
-        crate::builtins::expect_one_arg("macro-injects", args, named, &ctx, call_span)?;
-    let macro_name = require_string("macro-injects", macro_name_val, args[0].span)?;
+        let macro_name_val = crate::builtins::expect_one_arg(
+            "macro-injects",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span,
+        )?;
+        let macro_name = require_string("macro-injects", macro_name_val, args[0].span)?;
 
-    // Look up the macro in the inject map
-    match ctx.config.macro_injects_map.get(&macro_name) {
-        Some(inject_default) => ok_val(string_val(inject_default), call_span),
-        None => ok_val(Value::Dict(IndexMap::new()), call_span), // Null = empty dict
-    }
+        // Look up the macro in the inject map
+        match ctx.config.macro_injects_map.get(&macro_name) {
+            Some(inject_default) => ok_val(string_val(inject_default), call_span),
+            None => ok_val(Value::Dict(IndexMap::new()), call_span), // Null = empty dict
+        }
+    })
 }
 
 /// `decimal`: Parse a string as an exact base-10 decimal (rust_decimal::Decimal).
 /// Returns Value::Decimal. Error on invalid format.
-pub(crate) fn builtin_decimal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("decimal", args, named, &ctx, call_span)?;
-    match val {
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => {
-            let s = &source[start..end];
-            use std::str::FromStr;
-            match rust_decimal::Decimal::from_str(s) {
-                Ok(d) => ok_val(Value::Decimal(d), call_span),
-                Err(e) => Err(EvalError::internal(
-                    format!("decimal: cannot parse \"{s}\": {e}"),
-                    call_span,
-                )
-                .into()),
+pub(crate) fn builtin_decimal(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("decimal", &args, named.as_ref(), &ctx, call_span)?;
+        match val {
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                use std::str::FromStr;
+                match rust_decimal::Decimal::from_str(s) {
+                    Ok(d) => ok_val(Value::Decimal(d), call_span),
+                    Err(e) => Err(EvalError::internal(
+                        format!("decimal: cannot parse \"{s}\": {e}"),
+                        call_span,
+                    )
+                    .into()),
+                }
             }
+            Value::Int(n) => ok_val(Value::Decimal(rust_decimal::Decimal::from(n)), call_span),
+            _ => Err(EvalError::type_mismatch("String or Int", &type_name(&val), call_span).into()),
         }
-        Value::Int(n) => ok_val(Value::Decimal(rust_decimal::Decimal::from(n)), call_span),
-        _ => Err(EvalError::type_mismatch("String or Int", &type_name(&val), call_span).into()),
-    }
+    })
 }
 
 /// `big-int`: Convert an Int or String to a BigInt (arbitrary-precision integer).
-pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("big-int", args, named, &ctx, call_span)?;
-    match val {
-        Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => {
-            let s = &source[start..end];
-            match s.parse::<num_bigint::BigInt>() {
-                Ok(n) => ok_val(Value::BigInt(n), call_span),
-                Err(e) => Err(EvalError::internal(
-                    format!("big-int: cannot parse \"{s}\": {e}"),
-                    call_span,
-                )
-                .into()),
+pub(crate) fn builtin_big_int(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("big-int", &args, named.as_ref(), &ctx, call_span)?;
+        match val {
+            Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                match s.parse::<num_bigint::BigInt>() {
+                    Ok(n) => ok_val(Value::BigInt(n), call_span),
+                    Err(e) => Err(EvalError::internal(
+                        format!("big-int: cannot parse \"{s}\": {e}"),
+                        call_span,
+                    )
+                    .into()),
+                }
             }
+            _ => Err(EvalError::type_mismatch("Int or String", &type_name(&val), call_span).into()),
         }
-        _ => Err(EvalError::type_mismatch("Int or String", &type_name(&val), call_span).into()),
-    }
+    })
 }
 
 /// `type-of`: takes 1 arg, materializes it, returns the type name.
@@ -602,19 +680,24 @@ pub(crate) fn builtin_big_int(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Returns "Dict" for all dicts, with no distinction between list-like (sequential int keys)
 /// and map-like dicts — the type system does not track key structure at runtime.
 /// Inherently materializing: must inspect value variant to determine type.
-pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("type-of", args, named, &ctx, call_span)?;
-    let name = match val.type_name() {
-        "Builtin" => "Function",
-        other => other,
-    };
-    ok_val(string_val(name), call_span)
+pub(crate) fn builtin_type_of(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("type-of", &args, named.as_ref(), &ctx, call_span)?;
+        let name = match val.type_name() {
+            "Builtin" => "Function",
+            other => other,
+        };
+        ok_val(string_val(name), call_span)
+    })
 }
 
 /// `ast-of`: returns metadata about a value's AST or thunk state.
@@ -626,301 +709,316 @@ pub(crate) fn builtin_type_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// - Unevaluated thunks → AST dict from stored expression
 /// - PendingCall/PendingBuiltin → descriptor dict
 /// - Other thunk states → descriptor dict with state name
-pub(crate) fn builtin_ast_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    // Reject named args and ensure exactly 1 arg
-    crate::builtins::reject_named("ast-of", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-
-    let thunk = &args[0];
-
-    // Inspect the thunk state WITHOUT forcing it using ThunkInner API
-
-    // Check for Unevaluated Expr state first (most common for ast-of introspection)
-    if let Some(expr) = thunk.peek_expr() {
-        // runtime-v2 Part G: return Value::Expression for unevaluated thunks.
-        let surface_node = crate::ast_convert::expr_to_surface_node(&expr);
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            Value::Expression(surface_node),
+pub(crate) fn builtin_ast_of(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        )));
-    }
+            ctx,
+        } = ctx_arg;
 
-    // Check for PendingBuiltin
-    if let Some(def) = thunk.peek_builtin_def() {
-        let mut entries = IndexMap::new();
-        entries.insert(
-            crate::value::Key::String("type".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("pending-builtin"),
-                call_span,
-            ))),
-        );
-        entries.insert(
-            crate::value::Key::String("name".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val(def.name),
-                call_span,
-            ))),
-        );
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            crate::value::Value::Dict(entries),
-            call_span,
-        )));
-    }
+        // Reject named args and ensure exactly 1 arg
+        crate::builtins::reject_named("ast-of", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
 
-    // Check for PendingCall
-    if thunk.is_pending_call() {
-        let mut entries = IndexMap::new();
-        entries.insert(
-            crate::value::Key::String("type".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("pending-call"),
-                call_span,
-            ))),
-        );
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            crate::value::Value::Dict(entries),
-            call_span,
-        )));
-    }
+        let thunk = &args[0];
 
-    // Check for Guarded
-    if thunk.is_guarded() {
-        let mut entries = IndexMap::new();
-        entries.insert(
-            crate::value::Key::String("type".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("thunk"),
-                call_span,
-            ))),
-        );
-        entries.insert(
-            crate::value::Key::String("state".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("guarded"),
-                call_span,
-            ))),
-        );
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            crate::value::Value::Dict(entries),
-            call_span,
-        )));
-    }
+        // Inspect the thunk state WITHOUT forcing it using ThunkInner API
 
-    // Check for InProgress
-    if thunk.is_in_progress() {
-        let mut entries = IndexMap::new();
-        entries.insert(
-            crate::value::Key::String("type".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("thunk"),
+        // Check for Unevaluated Expr state first (most common for ast-of introspection)
+        if let Some(expr) = thunk.peek_expr() {
+            // runtime-v2 Part G: return Value::Expression for unevaluated thunks.
+            let surface_node = crate::ast_convert::expr_to_surface_node(&expr);
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                Value::Expression(surface_node),
                 call_span,
-            ))),
-        );
-        entries.insert(
-            crate::value::Key::String("state".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("in-progress"),
+            )));
+        }
+
+        // Check for PendingBuiltin
+        if let Some(def) = thunk.peek_builtin_def() {
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("pending-builtin"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val(def.name),
+                    call_span,
+                ))),
+            );
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::Dict(entries),
                 call_span,
-            ))),
-        );
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            crate::value::Value::Dict(entries),
-            call_span,
-        )));
-    }
+            )));
+        }
 
-    // Check for Failed
-    if let Some(err) = thunk.get_cached_error() {
-        let mut entries = IndexMap::new();
-        entries.insert(
-            crate::value::Key::String("type".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("thunk"),
+        // Check for PendingCall
+        if thunk.is_pending_call() {
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("pending-call"),
+                    call_span,
+                ))),
+            );
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::Dict(entries),
                 call_span,
-            ))),
-        );
-        entries.insert(
-            crate::value::Key::String("state".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("failed"),
+            )));
+        }
+
+        // Check for Guarded
+        if thunk.is_guarded() {
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("guarded"),
+                    call_span,
+                ))),
+            );
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::Dict(entries),
                 call_span,
-            ))),
-        );
-        entries.insert(
-            crate::value::Key::String("error".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val(&err.kind.to_string()),
+            )));
+        }
+
+        // Check for InProgress
+        if thunk.is_in_progress() {
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("in-progress"),
+                    call_span,
+                ))),
+            );
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::Dict(entries),
                 call_span,
-            ))),
-        );
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            crate::value::Value::Dict(entries),
-            call_span,
-        )));
-    }
+            )));
+        }
 
-    // Check for Surface (runtime-v2: return Value::Expression directly)
-    if let Some(node) = thunk.peek_surface_node() {
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            Value::Expression(node),
-            call_span,
-        )));
-    }
+        // Check for Failed
+        if let Some(err) = thunk.get_cached_error() {
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("failed"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("error".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val(&err.kind.to_string()),
+                    call_span,
+                ))),
+            );
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                crate::value::Value::Dict(entries),
+                call_span,
+            )));
+        }
 
-    // Check for AstNodeField (runtime-v2: return the containing SurfaceNode)
-    if let Some((node, _field)) = thunk.peek_ast_node_field() {
-        return Ok(Arc::new(crate::value::Thunk::new_materialized(
-            Value::Expression(node),
-            call_span,
-        )));
-    }
+        // Check for Surface (runtime-v2: return Value::Expression directly)
+        if let Some(node) = thunk.peek_surface_node() {
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                Value::Expression(node),
+                call_span,
+            )));
+        }
 
-    // Check for Materialized
-    let dict_entries = if let Some(val) = thunk.try_get_materialized() {
-        // Value is already materialized — inspect it
-        match val {
-            crate::value::Value::Function {
-                params, annotation, ..
-            } => {
-                let mut entries = IndexMap::new();
+        // Check for AstNodeField (runtime-v2: return the containing SurfaceNode)
+        if let Some((node, _field)) = thunk.peek_ast_node_field() {
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                Value::Expression(node),
+                call_span,
+            )));
+        }
 
-                // Add type field
-                entries.insert(
-                    crate::value::Key::String("type".into()),
-                    ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                        string_val("function"),
-                        call_span,
-                    ))),
-                );
+        // Check for Materialized
+        let dict_entries = if let Some(val) = thunk.try_get_materialized() {
+            // Value is already materialized — inspect it
+            match val {
+                crate::value::Value::Function {
+                    params, annotation, ..
+                } => {
+                    let mut entries = IndexMap::new();
 
-                // Add params field as a list of param names
-                let param_names: Vec<ThunkId> = params
-                    .iter()
-                    .map(|p| {
+                    // Add type field
+                    entries.insert(
+                        crate::value::Key::String("type".into()),
                         ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                            string_val(&p.name),
-                            call_span,
-                        )))
-                    })
-                    .collect();
-
-                if !param_names.is_empty() {
-                    let params_seq = param_names.into_iter().rev().fold(
-                        ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                            crate::value::Value::Dict(IndexMap::new()),
+                            string_val("function"),
                             call_span,
                         ))),
-                        |tail, head| {
+                    );
+
+                    // Add params field as a list of param names
+                    let param_names: Vec<ThunkId> = params
+                        .iter()
+                        .map(|p| {
                             ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                                crate::value::Value::Seq { head, tail },
+                                string_val(&p.name),
                                 call_span,
                             )))
-                        },
-                    );
-                    entries.insert(crate::value::Key::String("params".into()), params_seq);
-                }
+                        })
+                        .collect();
 
-                // Add doc field if present
-                if let Some(ann) = annotation {
-                    if let Some(ref doc_str) = ann.doc {
-                        entries.insert(
-                            crate::value::Key::String("doc".into()),
+                    if !param_names.is_empty() {
+                        let params_seq = param_names.into_iter().rev().fold(
                             ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                                string_val(doc_str),
+                                crate::value::Value::Dict(IndexMap::new()),
                                 call_span,
                             ))),
+                            |tail, head| {
+                                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                                    crate::value::Value::Seq { head, tail },
+                                    call_span,
+                                )))
+                            },
                         );
+                        entries.insert(crate::value::Key::String("params".into()), params_seq);
                     }
+
+                    // Add doc field if present
+                    if let Some(ann) = annotation {
+                        if let Some(ref doc_str) = ann.doc {
+                            entries.insert(
+                                crate::value::Key::String("doc".into()),
+                                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                                    string_val(doc_str),
+                                    call_span,
+                                ))),
+                            );
+                        }
+                    }
+
+                    entries
                 }
-
-                entries
+                other => {
+                    let mut entries = IndexMap::new();
+                    entries.insert(
+                        crate::value::Key::String("type".into()),
+                        ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                            string_val(other.type_name()),
+                            call_span,
+                        ))),
+                    );
+                    entries
+                }
             }
-            other => {
-                let mut entries = IndexMap::new();
-                entries.insert(
-                    crate::value::Key::String("type".into()),
-                    ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                        string_val(other.type_name()),
-                        call_span,
-                    ))),
-                );
-                entries
-            }
-        }
-    } else {
-        // Placeholder or unknown state (should not be observable in user code)
-        let mut entries = IndexMap::new();
-        entries.insert(
-            crate::value::Key::String("type".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("thunk"),
-                call_span,
-            ))),
-        );
-        entries.insert(
-            crate::value::Key::String("state".into()),
-            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                string_val("placeholder"),
-                call_span,
-            ))),
-        );
-        entries
-    };
+        } else {
+            // Placeholder or unknown state (should not be observable in user code)
+            let mut entries = IndexMap::new();
+            entries.insert(
+                crate::value::Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("thunk"),
+                    call_span,
+                ))),
+            );
+            entries.insert(
+                crate::value::Key::String("state".into()),
+                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                    string_val("placeholder"),
+                    call_span,
+                ))),
+            );
+            entries
+        };
 
-    ok_val(crate::value::Value::Dict(dict_entries), call_span)
+        ok_val(crate::value::Value::Dict(dict_entries), call_span)
+    })
 }
 
 /// `llt-repr`: takes 1 arg, deep-materializes it, returns its LLT display string representation.
 /// This is the programmatic equivalent of the LLT display format (Int(42), Dict({...}), etc.).
 /// Used by the `-o llt` output formatter.
-pub(crate) fn builtin_llt_repr(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("llt-repr", args, named, &ctx, call_span)?;
-    // Deep-materialize the value first (value_to_display_string requires it)
-    let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
-    // Convert to display string
-    let display_str = crate::value_to_display_string(&deep_val, &ctx)
-        .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind.to_string()), call_span))?;
-    ok_val(string_val(&display_str), call_span)
+pub(crate) fn builtin_llt_repr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("llt-repr", &args, named.as_ref(), &ctx, call_span)?;
+        // Deep-materialize the value first (value_to_display_string requires it)
+        let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
+        // Convert to display string
+        let display_str = crate::value_to_display_string(&deep_val, &ctx).map_err(|e| {
+            EvalError::internal(format!("llt-repr: {}", e.kind.to_string()), call_span)
+        })?;
+        ok_val(string_val(&display_str), call_span)
+    })
 }
 
 /// `tag-of`: Return the tag of a Variant as a String.
-pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("tag-of", args, named, &ctx, call_span)?;
-    match val {
-        Value::Variant { tag, .. } => ok_val(string_val(&tag), call_span),
-        // runtime-v2: Value::Expression supports tag-of via surface_expr_tag
-        Value::Expression(node) => ok_val(
-            string_val(crate::surface_fields::surface_expr_tag(&node.expr)),
+pub(crate) fn builtin_tag_of(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        ),
-        _ => Err(Box::new(EvalError::type_mismatch(
-            "Variant",
-            val.type_name(),
-            call_span,
-        ))),
-    }
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("tag-of", &args, named.as_ref(), &ctx, call_span)?;
+        match val {
+            Value::Variant { tag, .. } => ok_val(string_val(&tag), call_span),
+            // runtime-v2: Value::Expression supports tag-of via surface_expr_tag
+            Value::Expression(node) => ok_val(
+                string_val(crate::surface_fields::surface_expr_tag(&node.expr)),
+                call_span,
+            ),
+            _ => Err(Box::new(EvalError::type_mismatch(
+                "Variant",
+                val.type_name(),
+                call_span,
+            ))),
+        }
+    })
 }
 
 /// `variant`: Create a variant with the given tag and optional payload.
@@ -928,187 +1026,225 @@ pub(crate) fn builtin_tag_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// Forms:
 /// - `[variant "Tag"]` — unit variant (no payload)
 /// - `[variant "Tag" payload]` — variant with payload (stored as ThunkId)
-pub(crate) fn builtin_variant(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    crate::builtins::reject_named("variant", named, call_span)?;
+pub(crate) fn builtin_variant(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        crate::builtins::reject_named("variant", named.as_ref(), call_span)?;
 
-    match args.len() {
-        1 => {
-            // Unit variant: [variant "Tag"]
-            let tag_thunk = &args[0];
-            let tag_val = crate::eval::materialize_sync(tag_thunk, Some(&call_span), &ctx)?;
-            match tag_val {
-                Value::String {
-                    ref source,
-                    start,
-                    end,
-                } => {
-                    let tag = &source[start..end];
-                    ok_val(
-                        Value::Variant {
-                            tag: tag.to_string(),
-                            payload: None,
-                        },
+        match args.len() {
+            1 => {
+                // Unit variant: [variant "Tag"]
+                let tag_thunk = &args[0];
+                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?;
+                match tag_val {
+                    Value::String {
+                        ref source,
+                        start,
+                        end,
+                    } => {
+                        let tag = &source[start..end];
+                        ok_val(
+                            Value::Variant {
+                                tag: tag.to_string(),
+                                payload: None,
+                            },
+                            call_span,
+                        )
+                    }
+                    _ => Err(Box::new(EvalError::type_mismatch(
+                        "String",
+                        tag_val.type_name(),
                         call_span,
-                    )
+                    ))),
                 }
-                _ => Err(Box::new(EvalError::type_mismatch(
-                    "String",
-                    tag_val.type_name(),
-                    call_span,
-                ))),
             }
-        }
-        2 => {
-            // Variant with payload: [variant "Tag" payload]
-            let tag_thunk = &args[0];
-            let payload_thunk = &args[1];
-            let tag_val = crate::eval::materialize_sync(tag_thunk, Some(&call_span), &ctx)?;
-            match tag_val {
-                Value::String {
-                    ref source,
-                    start,
-                    end,
-                } => {
-                    let tag = &source[start..end];
-                    // Store the payload as a ThunkId (lazy, won't be forced until accessed)
-                    let payload_id = ctx.alloc_thunk(Arc::clone(payload_thunk));
-                    ok_val(
-                        Value::Variant {
-                            tag: tag.to_string(),
-                            payload: Some(payload_id),
-                        },
+            2 => {
+                // Variant with payload: [variant "Tag" payload]
+                let tag_thunk = &args[0];
+                let payload_thunk = &args[1];
+                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?;
+                match tag_val {
+                    Value::String {
+                        ref source,
+                        start,
+                        end,
+                    } => {
+                        let tag = &source[start..end];
+                        // Store the payload as a ThunkId (lazy, won't be forced until accessed)
+                        let payload_id = ctx.alloc_thunk(Arc::clone(payload_thunk));
+                        ok_val(
+                            Value::Variant {
+                                tag: tag.to_string(),
+                                payload: Some(payload_id),
+                            },
+                            call_span,
+                        )
+                    }
+                    _ => Err(Box::new(EvalError::type_mismatch(
+                        "String",
+                        tag_val.type_name(),
                         call_span,
-                    )
+                    ))),
                 }
-                _ => Err(Box::new(EvalError::type_mismatch(
-                    "String",
-                    tag_val.type_name(),
-                    call_span,
-                ))),
             }
+            n => Err(Box::new(EvalError::arity_mismatch(2, n, call_span))),
         }
-        n => Err(Box::new(EvalError::arity_mismatch(2, n, call_span))),
-    }
+    })
 }
 
 /// `int?`: Return true if the argument is an Int.
-pub(crate) fn builtin_int_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("int?", args, named, &ctx, call_span)?;
-    ok_val(Value::Bool(matches!(val, Value::Int(_))), call_span)
+pub(crate) fn builtin_int_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("int?", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(Value::Bool(matches!(val, Value::Int(_))), call_span)
+    })
 }
 
 /// `float?`: Return true if the argument is a Float.
-pub(crate) fn builtin_float_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("float?", args, named, &ctx, call_span)?;
-    ok_val(Value::Bool(matches!(val, Value::Float(_))), call_span)
+pub(crate) fn builtin_float_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("float?", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(Value::Bool(matches!(val, Value::Float(_))), call_span)
+    })
 }
 
 // num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
 
 /// `str?`: Return true if the argument is a String.
-pub(crate) fn builtin_str_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("str?", args, named, &ctx, call_span)?;
-    ok_val(Value::Bool(matches!(val, Value::String { .. })), call_span)
+pub(crate) fn builtin_str_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("str?", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(Value::Bool(matches!(val, Value::String { .. })), call_span)
+    })
 }
 
 /// `bool?`: Return true if the argument is a Bool.
-pub(crate) fn builtin_bool_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("bool?", args, named, &ctx, call_span)?;
-    ok_val(Value::Bool(matches!(val, Value::Bool(_))), call_span)
+pub(crate) fn builtin_bool_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("bool?", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(Value::Bool(matches!(val, Value::Bool(_))), call_span)
+    })
 }
 
 /// `bytes?`: Return true if the argument is Bytes.
-pub(crate) fn builtin_bytes_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("bytes?", args, named, &ctx, call_span)?;
-    ok_val(Value::Bool(matches!(val, Value::Bytes { .. })), call_span)
+pub(crate) fn builtin_bytes_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("bytes?", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(Value::Bool(matches!(val, Value::Bytes { .. })), call_span)
+    })
 }
 
 /// `null?`: Return true if the argument is Null (represented as an empty Dict).
-pub(crate) fn builtin_null_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("null?", args, named, &ctx, call_span)?;
-    let is_null = match val {
-        Value::Dict(map) => map.is_empty(),
-        Value::Overlay(l, r) => {
-            let map = crate::builtins::flatten_overlay(&l, &r, "null?", &ctx, call_span)?;
-            map.is_empty()
-        }
-        _ => false,
-    };
-    ok_val(Value::Bool(is_null), call_span)
+pub(crate) fn builtin_null_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("null?", &args, named.as_ref(), &ctx, call_span)?;
+        let is_null = match val {
+            Value::Dict(map) => map.is_empty(),
+            Value::Overlay(l, r) => {
+                let map = crate::builtins::flatten_overlay(&l, &r, "null?", &ctx, call_span)?;
+                map.is_empty()
+            }
+            _ => false,
+        };
+        ok_val(Value::Bool(is_null), call_span)
+    })
 }
 
 /// `dict?`: Return true if the argument is a Dict (including lists and null).
-pub(crate) fn builtin_dict_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("dict?", args, named, &ctx, call_span)?;
-    ok_val(
-        Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
-        call_span,
-    )
+pub(crate) fn builtin_dict_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("dict?", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(
+            Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
+            call_span,
+        )
+    })
 }
 
 // record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
 
 /// `fn?`: Return true if the argument is callable (Function or Builtin).
-pub(crate) fn builtin_fn_check(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("fn?", args, named, &ctx, call_span)?;
-    ok_val(
-        Value::Bool(matches!(val, Value::Function { .. } | Value::Builtin(_))),
-        call_span,
-    )
+pub(crate) fn builtin_fn_check(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg("fn?", &args, named.as_ref(), &ctx, call_span)?;
+        ok_val(
+            Value::Bool(matches!(val, Value::Function { .. } | Value::Builtin(_))),
+            call_span,
+        )
+    })
 }
 
 /// Helper for runtime type name extraction.
@@ -1235,18 +1371,23 @@ pub fn json_to_value(
 
 /// `from-json`: takes 1 arg (String containing JSON), parses into LLT value.
 /// Inherently materializing: must parse entire JSON string to construct value.
-pub(crate) fn builtin_from_json(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("from-json", args, named, &ctx, call_span)?;
-    let json_str = require_string("from-json", val, args[0].span)?;
-    let parsed: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
-    json_to_value(&parsed, 0, call_span, &ctx)
+pub(crate) fn builtin_from_json(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("from-json", &args, named.as_ref(), &ctx, call_span)?;
+        let json_str = require_string("from-json", val, args[0].span)?;
+        let parsed: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
+        json_to_value(&parsed, 0, call_span, &ctx)
+    })
 }
 
 // DELETED: parse_integrity_hash (include-decomp-redelete sprint)
@@ -1264,17 +1405,22 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
 /// The string is encoded as UTF-8 bytes before hashing.
 ///
 /// Example: `[blake3 "hello"]` → `"ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"`
-pub(crate) fn builtin_blake3(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("blake3", args, named, &ctx, call_span)?;
-    let s = require_string("blake3", val, args[0].span)?;
-    let hex = blake3_hex(s.as_bytes());
-    ok_val(string_val(hex.as_str()), call_span)
+pub(crate) fn builtin_blake3(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val =
+            crate::builtins::expect_one_arg("blake3", &args, named.as_ref(), &ctx, call_span)?;
+        let s = require_string("blake3", val, args[0].span)?;
+        let hex = blake3_hex(s.as_bytes());
+        ok_val(string_val(hex.as_str()), call_span)
+    })
 }
 
 /// `cap-identity`: return the stable identity string `"dev:ino"` of a DirCap.
@@ -1285,57 +1431,69 @@ pub(crate) fn builtin_blake3(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 ///
 /// This stable identity can be combined with source text to form a content-addressed
 /// cache key: `blake3(cap-identity + "|" + source)`.
-pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("cap-identity", args, named, &ctx, call_span)?;
+pub(crate) fn builtin_cap_identity(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "cap-identity",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span,
+        )?;
 
-    let dir = match &val {
-        Value::DirCap { dir, .. } => Rc::clone(dir),
-        Value::RevocableDirCap { inner, revoked, .. } => {
-            if revoked.get() {
-                return Err(EvalError::internal(
-                    "cap-identity: capability has been revoked".to_string(),
+        let dir = match &val {
+            Value::DirCap { dir, .. } => Rc::clone(dir),
+            Value::RevocableDirCap { inner, revoked, .. } => {
+                if revoked.get() {
+                    return Err(EvalError::internal(
+                        "cap-identity: capability has been revoked".to_string(),
+                        call_span,
+                    )
+                    .into());
+                }
+                Rc::clone(inner)
+            }
+            _ => {
+                return Err(
+                    EvalError::type_mismatch("DirCap", val.type_name(), args[0].span).into(),
+                );
+            }
+        };
+
+        // Get the identity string from the directory's metadata.
+        // On Unix: "dev:ino" from fstat on the O_DIRECTORY fd.
+        // On non-Unix: "0:<hash>" as a best-effort fallback.
+        #[cfg(unix)]
+        let identity = {
+            use cap_std::fs::MetadataExt;
+            let meta = dir.open(".").and_then(|f| f.metadata()).map_err(|e| {
+                EvalError::internal(
+                    format!("cap-identity: failed to stat directory: {e}"),
                     call_span,
                 )
-                .into());
-            }
-            Rc::clone(inner)
-        }
-        _ => {
-            return Err(EvalError::type_mismatch("DirCap", val.type_name(), args[0].span).into());
-        }
-    };
+            })?;
+            format!("{}:{}", meta.dev(), meta.ino())
+        };
 
-    // Get the identity string from the directory's metadata.
-    // On Unix: "dev:ino" from fstat on the O_DIRECTORY fd.
-    // On non-Unix: "0:<hash>" as a best-effort fallback.
-    #[cfg(unix)]
-    let identity = {
-        use cap_std::fs::MetadataExt;
-        let meta = dir.open(".").and_then(|f| f.metadata()).map_err(|e| {
-            EvalError::internal(
-                format!("cap-identity: failed to stat directory: {e}"),
-                call_span,
-            )
-        })?;
-        format!("{}:{}", meta.dev(), meta.ino())
-    };
+        #[cfg(not(unix))]
+        let identity = {
+            // On non-Unix, use blake3 hash of the Debug representation of the Dir.
+            // This provides a stable, collision-resistant identity across process restarts.
+            let debug_repr = format!("{:?}", *dir);
+            let hash = blake3::hash(debug_repr.as_bytes());
+            format!("0:{}", hash.to_hex())
+        };
 
-    #[cfg(not(unix))]
-    let identity = {
-        // On non-Unix, use blake3 hash of the Debug representation of the Dir.
-        // This provides a stable, collision-resistant identity across process restarts.
-        let debug_repr = format!("{:?}", *dir);
-        let hash = blake3::hash(debug_repr.as_bytes());
-        format!("0:{}", hash.to_hex())
-    };
-
-    ok_val(string_val(identity.as_str()), call_span)
+        ok_val(string_val(identity.as_str()), call_span)
+    })
 }
 
 /// `load`: parse a source String into a file AST dict (same format as `ast-of`/`ast_to_dict`).
@@ -1348,21 +1506,25 @@ pub(crate) fn builtin_cap_identity(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
 ///
 /// This is the primitive underlying the `include` pipeline in the include-decomposition design.
 /// runtime-v2 Part G: changed from Dict schema to Value::Program.
-pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_load(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
 
-    // Extract optional name: and hash: named args
-    let (name_hint, expected_hash): (Option<String>, Option<String>) =
-        if let Some(named_map) = named {
+        // Extract optional name: and hash: named args
+        let (name_hint, expected_hash): (Option<String>, Option<String>) = if let Some(named_map) =
+            named
+        {
             // Reject unknown named args
             for key in named_map.keys() {
                 if key != "name" && key != "hash" {
@@ -1370,14 +1532,14 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                 }
             }
             let name_hint = if let Some(name_thunk) = named_map.get("name") {
-                let name_val = materialize(name_thunk, Some(&call_span), &ctx)?;
+                let name_val = materialize(name_thunk, Some(&call_span), &ctx).await?;
                 let name_str = require_string("load", name_val, name_thunk.span)?;
                 Some(name_str)
             } else {
                 None
             };
             let expected_hash = if let Some(hash_thunk) = named_map.get("hash") {
-                let hash_val = materialize(hash_thunk, Some(&call_span), &ctx)?;
+                let hash_val = materialize(hash_thunk, Some(&call_span), &ctx).await?;
                 let hash_str = require_string("load", hash_val, hash_thunk.span)?;
                 Some(hash_str)
             } else {
@@ -1388,62 +1550,65 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             (None, None)
         };
 
-    // Extract source string
-    let source_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let source = require_string("load", source_val, args[0].span)?;
+        // Extract source string
+        let source_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let source = require_string("load", source_val, args[0].span)?;
 
-    // Use name hint for error messages
-    let display_name = name_hint.as_deref().unwrap_or("<load>");
+        // Use name hint for error messages
+        let display_name = name_hint.as_deref().unwrap_or("<load>");
 
-    // Integrity hash verification
-    if let Some(expected) = &expected_hash {
-        let actual = blake3_hex(source.as_bytes());
-        if actual != *expected {
-            return Err(EvalError::include_hash_mismatch(
-                display_name.to_string(),
-                expected.clone(),
-                actual,
-                call_span,
-            )
-            .into());
+        // Integrity hash verification
+        if let Some(expected) = &expected_hash {
+            let actual = blake3_hex(source.as_bytes());
+            if actual != *expected {
+                return Err(EvalError::include_hash_mismatch(
+                    display_name.to_string(),
+                    expected.clone(),
+                    actual,
+                    call_span,
+                )
+                .into());
+            }
+        } else if ctx.config.require_integrity {
+            // --require-integrity flag is set but no hash: argument provided
+            return Err(
+                EvalError::include_hash_required(display_name.to_string(), call_span).into(),
+            );
         }
-    } else if ctx.config.require_integrity {
-        // --require-integrity flag is set but no hash: argument provided
-        return Err(EvalError::include_hash_required(display_name.to_string(), call_span).into());
-    }
 
-    // Parse
-    let parsed = crate::parser::parse(&source).map_err(|e| {
-        EvalError::include_parse_failed(display_name.to_string(), e.to_string(), call_span)
-    })?;
-
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve.
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    let mut program = parsed.program;
-    crate::expand::expand_surface_program(&mut program, ctx.config.no_fs, &ctx.config.base_dir)
-        .map_err(|e| {
-            EvalError::include_parse_failed(
-                display_name.to_string(),
-                format!("macro expansion error: {e}"),
-                call_span,
-            )
+        // Parse
+        let parsed = crate::parser::parse(&source).map_err(|e| {
+            EvalError::include_parse_failed(display_name.to_string(), e.to_string(), call_span)
         })?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
-    crate::desugar::desugar_surface_program(&mut program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let res_table = crate::resolve::resolve_surface_program(&program);
-    // The TypeAnnotationTable is empty here because the load builtin does not run the typechecker;
-    // typecheck is run separately on the expanded program before eval is called.
-    let program_value = Value::Program {
-        program: std::sync::Arc::new(program),
-        resolutions: std::sync::Arc::new(res_table),
-        types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
-    };
-    let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
-    Ok(thunk)
+
+        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve.
+        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+        let mut program = parsed.program;
+        crate::expand::expand_surface_program(&mut program, ctx.config.no_fs, &ctx.config.base_dir)
+            .map_err(|e| {
+                EvalError::include_parse_failed(
+                    display_name.to_string(),
+                    format!("macro expansion error: {e}"),
+                    call_span,
+                )
+            })?;
+        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+        crate::desugar::desugar_surface_program(&mut program);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        let res_table = crate::resolve::resolve_surface_program(&program);
+        // The TypeAnnotationTable is empty here because the load builtin does not run the typechecker;
+        // typecheck is run separately on the expanded program before eval is called.
+        let program_value = Value::Program {
+            program: std::sync::Arc::new(program),
+            resolutions: std::sync::Arc::new(res_table),
+            types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+        };
+        let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
+        Ok(thunk)
+    })
 }
 
 /// `expand`: takes a `Value::Program`, runs macro expansion, returns `Value::Program`.
@@ -1452,64 +1617,68 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// into distinct primitives.
 ///
 /// Pipeline: unwrap Program → run expand_surface_program → wrap back as Program.
-pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    crate::builtins::reject_named("expand", named, call_span)?;
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-    let val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    match val {
-        Value::Program {
-            program: surface_program,
-            resolutions: _old_resolutions,
-            types: _old_types,
-        } => {
-            // Run macro expansion using expand_surface_program so SurfaceItem::Decl macros are seen.
-            // PIPELINE INVARIANT: expand -> desugar -> resolve (macros can introduce $_ patterns).
-            let mut new_surface_program = (*surface_program).clone();
-            crate::expand::expand_surface_program(
-                &mut new_surface_program,
-                ctx.config.no_fs,
-                &ctx.config.base_dir,
-            )
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("expand: macro expansion error: {}", e.kind),
+pub(crate) fn builtin_expand(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        crate::builtins::reject_named("expand", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        match val {
+            Value::Program {
+                program: surface_program,
+                resolutions: _old_resolutions,
+                types: _old_types,
+            } => {
+                // Run macro expansion using expand_surface_program so SurfaceItem::Decl macros are seen.
+                // PIPELINE INVARIANT: expand -> desugar -> resolve (macros can introduce $_ patterns).
+                let mut new_surface_program = (*surface_program).clone();
+                crate::expand::expand_surface_program(
+                    &mut new_surface_program,
+                    ctx.config.no_fs,
+                    &ctx.config.base_dir,
+                )
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!("expand: macro expansion error: {}", e.kind),
+                        call_span,
+                    )
+                })?;
+                // Desugar $_ patterns introduced by macros.
+                crate::desugar::desugar_surface_program(&mut new_surface_program);
+
+                // Re-compute resolution table for the expanded and desugared program
+                let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
+
+                // Return as Value::Program with fresh resolution table
+                ok_val(
+                    Value::Program {
+                        program: std::sync::Arc::new(new_surface_program),
+                        resolutions: std::sync::Arc::new(new_resolutions),
+                        types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                    },
                     call_span,
                 )
-            })?;
-            // Desugar $_ patterns introduced by macros.
-            crate::desugar::desugar_surface_program(&mut new_surface_program);
-
-            // Re-compute resolution table for the expanded and desugared program
-            let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
-
-            // Return as Value::Program with fresh resolution table
-            ok_val(
-                Value::Program {
-                    program: std::sync::Arc::new(new_surface_program),
-                    resolutions: std::sync::Arc::new(new_resolutions),
-                    types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
-                },
+            }
+            _ => Err(EvalError::type_mismatch_ctx(
+                "expand".to_string(),
+                "Program",
+                val.type_name(),
                 call_span,
             )
+            .into()),
         }
-        _ => Err(EvalError::type_mismatch_ctx(
-            "expand".to_string(),
-            "Program",
-            val.type_name(),
-            call_span,
-        )
-        .into()),
-    }
+    })
 }
 
 /// `eval`: evaluates a sequence of Expression values in a given environment.
@@ -1526,329 +1695,339 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 /// - `program:` (Program) — the source Program providing resolution/type tables for the expressions (optional)
 ///
 /// Base environment: stdlib_env (the standard library prelude).
-pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-
-    // Extract optional env:, %:, and program: named args
-    let (env_dict, pipeline_input, program_opt) = if let Some(named_map) = named {
-        // Reject unknown named args
-        for key in named_map.keys() {
-            if key != "env" && key != "%" && key != "program" {
-                return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
-            }
-        }
-
-        let env_dict = named_map.get("env").map(|t| Arc::clone(t));
-        let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
-        let program_opt = named_map.get("program").map(|t| Arc::clone(t));
-        (env_dict, pipeline_input, program_opt)
-    } else {
-        (None, None, None)
-    };
-
-    // Start with stdlib environment
-    let base_env = Arc::clone(&ctx.config.stdlib_env);
-
-    // Add env: dict bindings if provided
-    let env_with_bindings = if let Some(env_thunk) = env_dict {
-        let env_val = materialize(&env_thunk, Some(&call_span), &ctx)?;
-        match env_val {
-            Value::Dict(entries) => {
-                // Create child environment with dict entries as bindings
-                let child_env = Arc::new(std::sync::RwLock::new(
-                    crate::value::Environment::with_parent(Arc::clone(&base_env)),
-                ));
-                for (key, thunk_id) in entries.iter() {
-                    if let Key::String(name) = key {
-                        child_env
-                            .write()
-                            .unwrap()
-                            .insert(name.clone(), ctx.get_thunk(*thunk_id));
-                    }
-                }
-                child_env
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval".to_string(),
-                    "Dict",
-                    env_val.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        }
-    } else {
-        base_env
-    };
-
-    // Add %: (pipeline input) as $ binding if provided
-    let final_env = if let Some(input_thunk) = pipeline_input {
-        let child_env = Arc::new(std::sync::RwLock::new(
-            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
-        ));
-        child_env
-            .write()
-            .unwrap()
-            .insert("$".to_string(), input_thunk);
-        child_env
-    } else {
-        env_with_bindings
-    };
-
-    // Materialize the sequence argument
-    let seq_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Collect Expression nodes from the sequence
-    let mut expression_nodes = Vec::new();
-    let mut current = seq_val;
-    loop {
-        match current {
-            Value::Seq { head, tail } => {
-                let head_val = materialize(&ctx.get_thunk(head), Some(&call_span), &ctx)?;
-                match head_val {
-                    Value::Expression(node) => {
-                        expression_nodes.push(node);
-                    }
-                    _ => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "eval".to_string(),
-                            "Seq of Expression",
-                            &format!("Seq containing {}", head_val.type_name()),
-                            call_span,
-                        )
-                        .into())
-                    }
-                }
-                current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx)?;
-            }
-            Value::Dict(ref entries) if entries.is_empty() => {
-                // Empty dict = end of sequence
-                break;
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval".to_string(),
-                    "Seq",
-                    current.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        }
-    }
-
-    // Get resolution and type tables from the program: argument if provided
-    let (res_table, types_table) = if let Some(program_thunk) = program_opt {
-        let program_val = materialize(&program_thunk, Some(&call_span), &ctx)?;
-        match program_val {
-            Value::Program {
-                resolutions, types, ..
-            } => (Arc::clone(&resolutions), Arc::clone(&types)),
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval".to_string(),
-                    "Program (for program: argument)",
-                    program_val.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        }
-    } else {
-        // No program provided - use empty tables (expressions won't have resolution info)
-        (
-            std::sync::Arc::new(crate::ast::ResolutionTable::new()),
-            std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
-        )
-    };
-
-    // Create Surface thunks for each expression
-    let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
-    for node in expression_nodes.into_iter().rev() {
-        // Create Surface thunk
-        let surface_thunk = Arc::new(Thunk::new_surface(
-            node,
-            Arc::clone(&res_table),
-            Arc::clone(&types_table),
-            Arc::clone(&final_env),
-            Arc::clone(&ctx),
+pub(crate) fn builtin_eval(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        ));
-        let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
+            ctx,
+        } = ctx_arg;
 
-        // Build cons cell (Seq)
-        let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
-        result_seq = Value::Seq {
-            head: surface_thunk_id,
-            tail: tail_thunk_id,
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // Extract optional env:, %:, and program: named args
+        let (env_dict, pipeline_input, program_opt) = if let Some(named_map) = named {
+            // Reject unknown named args
+            for key in named_map.keys() {
+                if key != "env" && key != "%" && key != "program" {
+                    return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
+                }
+            }
+
+            let env_dict = named_map.get("env").map(|t| Arc::clone(t));
+            let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
+            let program_opt = named_map.get("program").map(|t| Arc::clone(t));
+            (env_dict, pipeline_input, program_opt)
+        } else {
+            (None, None, None)
         };
-    }
 
-    ok_val(result_seq, call_span)
+        // Start with stdlib environment
+        let base_env = Arc::clone(&ctx.config.stdlib_env);
+
+        // Add env: dict bindings if provided
+        let env_with_bindings = if let Some(env_thunk) = env_dict {
+            let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
+            match env_val {
+                Value::Dict(entries) => {
+                    // Create child environment with dict entries as bindings
+                    let child_env = Arc::new(std::sync::RwLock::new(
+                        crate::value::Environment::with_parent(Arc::clone(&base_env)),
+                    ));
+                    for (key, thunk_id) in entries.iter() {
+                        if let Key::String(name) = key {
+                            child_env
+                                .write()
+                                .unwrap()
+                                .insert(name.clone(), ctx.get_thunk(*thunk_id));
+                        }
+                    }
+                    child_env
+                }
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval".to_string(),
+                        "Dict",
+                        env_val.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            }
+        } else {
+            base_env
+        };
+
+        // Add %: (pipeline input) as $ binding if provided
+        let final_env = if let Some(input_thunk) = pipeline_input {
+            let child_env = Arc::new(std::sync::RwLock::new(
+                crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
+            ));
+            child_env
+                .write()
+                .unwrap()
+                .insert("$".to_string(), input_thunk);
+            child_env
+        } else {
+            env_with_bindings
+        };
+
+        // Materialize the sequence argument
+        let seq_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Collect Expression nodes from the sequence
+        let mut expression_nodes = Vec::new();
+        let mut current = seq_val;
+        loop {
+            match current {
+                Value::Seq { head, tail } => {
+                    let head_val =
+                        materialize(&ctx.get_thunk(head), Some(&call_span), &ctx).await?;
+                    match head_val {
+                        Value::Expression(node) => {
+                            expression_nodes.push(node);
+                        }
+                        _ => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "eval".to_string(),
+                                "Seq of Expression",
+                                &format!("Seq containing {}", head_val.type_name()),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    }
+                    current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx).await?;
+                }
+                Value::Dict(ref entries) if entries.is_empty() => {
+                    // Empty dict = end of sequence
+                    break;
+                }
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval".to_string(),
+                        "Seq",
+                        current.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            }
+        }
+
+        // Get resolution and type tables from the program: argument if provided
+        let (res_table, types_table) = if let Some(program_thunk) = program_opt {
+            let program_val = materialize(&program_thunk, Some(&call_span), &ctx).await?;
+            match program_val {
+                Value::Program {
+                    resolutions, types, ..
+                } => (Arc::clone(&resolutions), Arc::clone(&types)),
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval".to_string(),
+                        "Program (for program: argument)",
+                        program_val.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            }
+        } else {
+            // No program provided - use empty tables (expressions won't have resolution info)
+            (
+                std::sync::Arc::new(crate::ast::ResolutionTable::new()),
+                std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+            )
+        };
+
+        // Create Surface thunks for each expression
+        let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
+        for node in expression_nodes.into_iter().rev() {
+            // Create Surface thunk
+            let surface_thunk = Arc::new(Thunk::new_surface(
+                node,
+                Arc::clone(&res_table),
+                Arc::clone(&types_table),
+                Arc::clone(&final_env),
+                Arc::clone(&ctx),
+                call_span,
+            ));
+            let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
+
+            // Build cons cell (Seq)
+            let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
+            result_seq = Value::Seq {
+                head: surface_thunk_id,
+                tail: tail_thunk_id,
+            };
+        }
+
+        ok_val(result_seq, call_span)
+    })
 }
 
 /// `eval-types`: same as `eval` but evaluates in the type-stage environment.
 ///
 /// This is used for evaluating type-level expressions (type aliases, class declarations).
 /// Base environment: ctx.config.type_stage_env (contains type-level bindings).
-pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-
-    if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-    }
-
-    // Extract optional env: and %: named args (same as eval)
-    let (env_dict, pipeline_input) = if let Some(named_map) = named {
-        for key in named_map.keys() {
-            if key != "env" && key != "%" {
-                return Err(
-                    EvalError::named_arg_rejected("eval-types".to_string(), call_span).into(),
-                );
-            }
-        }
-
-        let env_dict = named_map.get("env").map(|t| Arc::clone(t));
-        let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
-        (env_dict, pipeline_input)
-    } else {
-        (None, None)
-    };
-
-    // Use type_stage_env as the base: type-level evaluation builtins only, no IO, no caps, no runtime API.
-    let base_env = Arc::clone(&ctx.config.type_stage_env);
-
-    // Add env: dict bindings if provided
-    let env_with_bindings = if let Some(env_thunk) = env_dict {
-        let env_val = materialize(&env_thunk, Some(&call_span), &ctx)?;
-        match env_val {
-            Value::Dict(entries) => {
-                let child_env = Arc::new(std::sync::RwLock::new(
-                    crate::value::Environment::with_parent(Arc::clone(&base_env)),
-                ));
-                for (key, thunk_id) in entries.iter() {
-                    if let Key::String(name) = key {
-                        child_env
-                            .write()
-                            .unwrap()
-                            .insert(name.clone(), ctx.get_thunk(*thunk_id));
-                    }
-                }
-                child_env
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval-types".to_string(),
-                    "Dict",
-                    env_val.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        }
-    } else {
-        base_env
-    };
-
-    // Add %: (pipeline input) as $ binding if provided
-    let final_env = if let Some(input_thunk) = pipeline_input {
-        let child_env = Arc::new(std::sync::RwLock::new(
-            crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
-        ));
-        child_env
-            .write()
-            .unwrap()
-            .insert("$".to_string(), input_thunk);
-        child_env
-    } else {
-        env_with_bindings
-    };
-
-    // Materialize the sequence argument
-    let seq_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-
-    // Collect Expression nodes from the sequence
-    let mut expression_nodes = Vec::new();
-    let mut current = seq_val;
-    loop {
-        match current {
-            Value::Seq { head, tail } => {
-                let head_val = materialize(&ctx.get_thunk(head), Some(&call_span), &ctx)?;
-                match head_val {
-                    Value::Expression(node) => {
-                        expression_nodes.push(node);
-                    }
-                    _ => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "eval-types".to_string(),
-                            "Seq of Expression",
-                            &format!("Seq containing {}", head_val.type_name()),
-                            call_span,
-                        )
-                        .into())
-                    }
-                }
-                current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx)?;
-            }
-            Value::Dict(ref entries) if entries.is_empty() => {
-                break;
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval-types".to_string(),
-                    "Seq",
-                    current.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        }
-    }
-
-    // Create empty resolution and type tables
-    let res_table = std::sync::Arc::new(crate::ast::ResolutionTable::new());
-    let types_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
-
-    // Create Surface thunks for each expression
-    let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
-    for node in expression_nodes.into_iter().rev() {
-        let surface_thunk = Arc::new(Thunk::new_surface(
-            node,
-            Arc::clone(&res_table),
-            Arc::clone(&types_table),
-            Arc::clone(&final_env),
-            Arc::clone(&ctx),
+pub(crate) fn builtin_eval_types(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
             call_span,
-        ));
-        let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
+            ctx,
+        } = ctx_arg;
 
-        let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
-        result_seq = Value::Seq {
-            head: surface_thunk_id,
-            tail: tail_thunk_id,
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // Extract optional env: and %: named args (same as eval)
+        let (env_dict, pipeline_input) = if let Some(named_map) = named {
+            for key in named_map.keys() {
+                if key != "env" && key != "%" {
+                    return Err(
+                        EvalError::named_arg_rejected("eval-types".to_string(), call_span).into(),
+                    );
+                }
+            }
+
+            let env_dict = named_map.get("env").map(|t| Arc::clone(t));
+            let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
+            (env_dict, pipeline_input)
+        } else {
+            (None, None)
         };
-    }
 
-    ok_val(result_seq, call_span)
+        // Use type_stage_env as the base: type-level evaluation builtins only, no IO, no caps, no runtime API.
+        let base_env = Arc::clone(&ctx.config.type_stage_env);
+
+        // Add env: dict bindings if provided
+        let env_with_bindings = if let Some(env_thunk) = env_dict {
+            let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
+            match env_val {
+                Value::Dict(entries) => {
+                    let child_env = Arc::new(std::sync::RwLock::new(
+                        crate::value::Environment::with_parent(Arc::clone(&base_env)),
+                    ));
+                    for (key, thunk_id) in entries.iter() {
+                        if let Key::String(name) = key {
+                            child_env
+                                .write()
+                                .unwrap()
+                                .insert(name.clone(), ctx.get_thunk(*thunk_id));
+                        }
+                    }
+                    child_env
+                }
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval-types".to_string(),
+                        "Dict",
+                        env_val.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            }
+        } else {
+            base_env
+        };
+
+        // Add %: (pipeline input) as $ binding if provided
+        let final_env = if let Some(input_thunk) = pipeline_input {
+            let child_env = Arc::new(std::sync::RwLock::new(
+                crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
+            ));
+            child_env
+                .write()
+                .unwrap()
+                .insert("$".to_string(), input_thunk);
+            child_env
+        } else {
+            env_with_bindings
+        };
+
+        // Materialize the sequence argument
+        let seq_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Collect Expression nodes from the sequence
+        let mut expression_nodes = Vec::new();
+        let mut current = seq_val;
+        loop {
+            match current {
+                Value::Seq { head, tail } => {
+                    let head_val =
+                        materialize(&ctx.get_thunk(head), Some(&call_span), &ctx).await?;
+                    match head_val {
+                        Value::Expression(node) => {
+                            expression_nodes.push(node);
+                        }
+                        _ => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "eval-types".to_string(),
+                                "Seq of Expression",
+                                &format!("Seq containing {}", head_val.type_name()),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    }
+                    current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx).await?;
+                }
+                Value::Dict(ref entries) if entries.is_empty() => {
+                    break;
+                }
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval-types".to_string(),
+                        "Seq",
+                        current.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            }
+        }
+
+        // Create empty resolution and type tables
+        let res_table = std::sync::Arc::new(crate::ast::ResolutionTable::new());
+        let types_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+
+        // Create Surface thunks for each expression
+        let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
+        for node in expression_nodes.into_iter().rev() {
+            let surface_thunk = Arc::new(Thunk::new_surface(
+                node,
+                Arc::clone(&res_table),
+                Arc::clone(&types_table),
+                Arc::clone(&final_env),
+                Arc::clone(&ctx),
+                call_span,
+            ));
+            let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
+
+            let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
+            result_seq = Value::Seq {
+                head: surface_thunk_id,
+                tail: tail_thunk_id,
+            };
+        }
+
+        ok_val(result_seq, call_span)
+    })
 }
 
 /// `include-cache-get`: look up the string-keyed include cache by blake3 key.
@@ -1857,57 +2036,67 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
 /// - `[Missing]`       — key not in cache
 /// - `[Pending]`       — key is marked as in-progress (cycle detection)
 /// - `[Cached value]`  — cached result thunk
-pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    let val = crate::builtins::expect_one_arg("include-cache-get", args, named, &ctx, call_span)?;
-    let key = require_string("include-cache-get", val, args[0].span)?;
+pub(crate) fn builtin_include_cache_get(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "include-cache-get",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span,
+        )?;
+        let key = require_string("include-cache-get", val, args[0].span)?;
 
-    let entry = ctx
-        .state
-        .lock()
-        .unwrap()
-        .string_include_cache
-        .get(&key)
-        .cloned();
+        let entry = ctx
+            .state
+            .lock()
+            .unwrap()
+            .string_include_cache
+            .get(&key)
+            .cloned();
 
-    match entry {
-        None => ok_val(
-            Value::Variant {
-                tag: "Missing".to_string(),
-                payload: None,
-            },
-            call_span,
-        ),
-        Some(crate::eval::IncludeCacheEntry::Missing) => ok_val(
-            Value::Variant {
-                tag: "Missing".to_string(),
-                payload: None,
-            },
-            call_span,
-        ),
-        Some(crate::eval::IncludeCacheEntry::Pending) => ok_val(
-            Value::Variant {
-                tag: "Pending".to_string(),
-                payload: None,
-            },
-            call_span,
-        ),
-        Some(crate::eval::IncludeCacheEntry::Cached(thunk, _res, _types)) => {
-            let payload_id = ctx.alloc_thunk(Arc::clone(&thunk));
-            ok_val(
+        match entry {
+            None => ok_val(
                 Value::Variant {
-                    tag: "Cached".to_string(),
-                    payload: Some(payload_id),
+                    tag: "Missing".to_string(),
+                    payload: None,
                 },
                 call_span,
-            )
+            ),
+            Some(crate::eval::IncludeCacheEntry::Missing) => ok_val(
+                Value::Variant {
+                    tag: "Missing".to_string(),
+                    payload: None,
+                },
+                call_span,
+            ),
+            Some(crate::eval::IncludeCacheEntry::Pending) => ok_val(
+                Value::Variant {
+                    tag: "Pending".to_string(),
+                    payload: None,
+                },
+                call_span,
+            ),
+            Some(crate::eval::IncludeCacheEntry::Cached(thunk, _res, _types)) => {
+                let payload_id = ctx.alloc_thunk(Arc::clone(&thunk));
+                ok_val(
+                    Value::Variant {
+                        tag: "Cached".to_string(),
+                        payload: Some(payload_id),
+                    },
+                    call_span,
+                )
+            }
         }
-    }
+    })
 }
 
 /// `include-cache-put`: insert or update the string-keyed include cache.
@@ -1915,83 +2104,87 @@ pub(crate) fn builtin_include_cache_get(ctx_arg: BuiltinArgs) -> EvalResult<Arc<
 /// Takes 2 positional args: String key and a value.
 /// The value must be a `[Missing]`, `[Pending]`, or `[Cached x]` Variant.
 /// Returns the stored value (pass-through).
-pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_include_cache_put(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    reject_named("include-cache-put", named, call_span)?;
-    if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-    }
+        reject_named("include-cache-put", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
 
-    let key_val = args[0]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
-    let key = require_string("include-cache-put", key_val, args[0].span)?;
+        let key_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let key = require_string("include-cache-put", key_val, args[0].span)?;
 
-    // The second arg is the entry variant: [Missing], [Pending], or [Cached value]
-    let entry_val = args[1]
-        .try_get_materialized()
-        .expect("pre-materialized by force_count/pos_strictness");
+        // The second arg is the entry variant: [Missing], [Pending], or [Cached value]
+        let entry_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
 
-    let entry = match &entry_val {
-        Value::Variant { tag, payload } => match tag.as_str() {
-            "Missing" => crate::eval::IncludeCacheEntry::Missing,
-            "Pending" => crate::eval::IncludeCacheEntry::Pending,
-            "Cached" => {
-                let payload_thunk = match payload {
-                    Some(id) => ctx.get_thunk(*id),
-                    None => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "include-cache-put".to_string(),
-                            "[Cached value]",
-                            "[Cached]",
-                            args[1].span,
-                        )
-                        .into())
-                    }
-                };
-                crate::eval::IncludeCacheEntry::Cached(
-                    payload_thunk,
-                    std::sync::Arc::new(crate::ast::ResolutionTable::new()),
-                    std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
-                )
-            }
-            other => {
+        let entry = match &entry_val {
+            Value::Variant { tag, payload } => match tag.as_str() {
+                "Missing" => crate::eval::IncludeCacheEntry::Missing,
+                "Pending" => crate::eval::IncludeCacheEntry::Pending,
+                "Cached" => {
+                    let payload_thunk = match payload {
+                        Some(id) => ctx.get_thunk(*id),
+                        None => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "include-cache-put".to_string(),
+                                "[Cached value]",
+                                "[Cached]",
+                                args[1].span,
+                            )
+                            .into())
+                        }
+                    };
+                    crate::eval::IncludeCacheEntry::Cached(
+                        payload_thunk,
+                        std::sync::Arc::new(crate::ast::ResolutionTable::new()),
+                        std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                    )
+                }
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "include-cache-put".to_string(),
+                        "[Missing] | [Pending] | [Cached value]",
+                        &format!("[{other}]"),
+                        args[1].span,
+                    )
+                    .into())
+                }
+            },
+            _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "include-cache-put".to_string(),
                     "[Missing] | [Pending] | [Cached value]",
-                    &format!("[{other}]"),
+                    entry_val.type_name(),
                     args[1].span,
                 )
                 .into())
             }
-        },
-        _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                "include-cache-put".to_string(),
-                "[Missing] | [Pending] | [Cached value]",
-                entry_val.type_name(),
-                args[1].span,
-            )
-            .into())
-        }
-    };
+        };
 
-    ctx.state
-        .lock()
-        .unwrap()
-        .string_include_cache
-        .insert(key, entry);
+        ctx.state
+            .lock()
+            .unwrap()
+            .string_include_cache
+            .insert(key, entry);
 
-    // Return an empty dict [] so that include-cache-put can be used as an intermediate
-    // sequential expression in the scope chain (sequential expressions must return Dict).
-    // The stored value is available via include-cache-get; callers don't need the return.
-    ok_val(Value::Dict(IndexMap::new()), call_span)
+        // Return an empty dict [] so that include-cache-put can be used as an intermediate
+        // sequential expression in the scope chain (sequential expressions must return Dict).
+        // The stored value is available via include-cache-get; callers don't need the return.
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
 }
 
 // TOMBSTONE: builtin_include deleted in include-decomp-redelete sprint (2026-05-20).
@@ -2015,56 +2208,63 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Arc<
 /// - `enum`: list of allowed values (Seq)
 ///
 /// Returns the data value unchanged on success, throws SchemaViolation with all violations on failure.
-pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
+pub(crate) fn builtin_validate(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
 
-    // Expect exactly 2 args: schema, data
-    let (schema, data) = expect_two_args("validate", args, named, &ctx, call_span)?;
+        // Expect exactly 2 args: schema, data
+        let (schema, data) = expect_two_args("validate", &args, named.as_ref(), &ctx, call_span)?;
 
-    // Schema must be a Dict
-    let schema_dict = match schema {
-        Value::Dict(ref d) => d.clone(),
-        Value::Overlay(..) => {
-            // Materialize Overlay to Dict before validation
-            let schema_thunk_id =
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(schema.clone(), call_span)));
-            let schema_thunk = ctx.get_thunk(schema_thunk_id);
-            let materialized = materialize(&schema_thunk, Some(&call_span), &ctx)?;
-            match materialized {
-                Value::Dict(d) => d,
-                _ => {
-                    return Err(EvalError::type_mismatch(
-                        "Dict (schema)",
-                        &type_name(&materialized),
-                        call_span,
-                    )
-                    .into());
+        // Schema must be a Dict
+        let schema_dict = match schema {
+            Value::Dict(ref d) => d.clone(),
+            Value::Overlay(..) => {
+                // Materialize Overlay to Dict before validation
+                let schema_thunk_id =
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(schema.clone(), call_span)));
+                let schema_thunk = ctx.get_thunk(schema_thunk_id);
+                let materialized = materialize(&schema_thunk, Some(&call_span), &ctx).await?;
+                match materialized {
+                    Value::Dict(d) => d,
+                    _ => {
+                        return Err(EvalError::type_mismatch(
+                            "Dict (schema)",
+                            &type_name(&materialized),
+                            call_span,
+                        )
+                        .into());
+                    }
                 }
             }
-        }
-        _ => {
-            return Err(
-                EvalError::type_mismatch("Dict (schema)", &type_name(&schema), call_span).into(),
-            );
-        }
-    };
+            _ => {
+                return Err(EvalError::type_mismatch(
+                    "Dict (schema)",
+                    &type_name(&schema),
+                    call_span,
+                )
+                .into());
+            }
+        };
 
-    // Collect violations
-    let mut violations = Vec::new();
-    validate_value(&schema_dict, &data, "", &mut violations, &ctx, call_span)?;
+        // Collect violations
+        let mut violations = Vec::new();
+        validate_value(&schema_dict, &data, "", &mut violations, &ctx, call_span)?;
 
-    if violations.is_empty() {
-        // Success: return data unchanged
-        Ok(Arc::new(Thunk::new_materialized(data, call_span)))
-    } else {
-        // Failure: throw SchemaViolation with all violations
-        Err(EvalError::schema_violation(violations, call_span).into())
-    }
+        if violations.is_empty() {
+            // Success: return data unchanged
+            Ok(Arc::new(Thunk::new_materialized(data, call_span)))
+        } else {
+            // Failure: throw SchemaViolation with all violations
+            Err(EvalError::schema_violation(violations, call_span).into())
+        }
+    })
 }
 
 /// Helper: extract exactly 2 pre-materialized positional arguments, no named args.
@@ -2109,7 +2309,7 @@ fn validate_value(
     // Check `type` constraint
     if let Some(&type_thunk_id) = schema.get(&StrKey("type")) {
         let type_thunk = ctx.get_thunk(type_thunk_id);
-        let type_val = materialize(&type_thunk, Some(&span), &ctx)?;
+        let type_val = materialize_sync(&type_thunk, Some(&span), &ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -2130,7 +2330,7 @@ fn validate_value(
     // Check numeric range constraints (min, max)
     if let Some(&min_thunk_id) = schema.get(&StrKey("min")) {
         let min_thunk = ctx.get_thunk(min_thunk_id);
-        let min_val = materialize(&min_thunk, Some(&span), &ctx)?;
+        let min_val = materialize_sync(&min_thunk, Some(&span), &ctx)?;
         match (data, &min_val) {
             (Value::Int(n), Value::Int(min)) => {
                 if n < min {
@@ -2158,7 +2358,7 @@ fn validate_value(
 
     if let Some(&max_thunk_id) = schema.get(&StrKey("max")) {
         let max_thunk = ctx.get_thunk(max_thunk_id);
-        let max_val = materialize(&max_thunk, Some(&span), &ctx)?;
+        let max_val = materialize_sync(&max_thunk, Some(&span), &ctx)?;
         match (data, &max_val) {
             (Value::Int(n), Value::Int(max)) => {
                 if n > max {
@@ -2187,7 +2387,7 @@ fn validate_value(
     // Check string/sequence length constraints
     if let Some(&min_len_thunk_id) = schema.get(&StrKey("min-length")) {
         let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
-        let min_len_val = materialize(&min_len_thunk, Some(&span), &ctx)?;
+        let min_len_val = materialize_sync(&min_len_thunk, Some(&span), &ctx)?;
         if let Value::Int(min_len) = min_len_val {
             let actual_len = match data {
                 Value::String {
@@ -2213,7 +2413,7 @@ fn validate_value(
 
     if let Some(&max_len_thunk_id) = schema.get(&StrKey("max-length")) {
         let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
-        let max_len_val = materialize(&max_len_thunk, Some(&span), &ctx)?;
+        let max_len_val = materialize_sync(&max_len_thunk, Some(&span), &ctx)?;
         if let Value::Int(max_len) = max_len_val {
             let actual_len = match data {
                 Value::String {
@@ -2236,7 +2436,7 @@ fn validate_value(
     // Check pattern constraint (for strings)
     if let Some(&pattern_thunk_id) = schema.get(&StrKey("pattern")) {
         let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
-        let pattern_val = materialize(&pattern_thunk, Some(&span), &ctx)?;
+        let pattern_val = materialize_sync(&pattern_thunk, Some(&span), &ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -2268,7 +2468,7 @@ fn validate_value(
     // Check enum constraint
     if let Some(&enum_thunk_id) = schema.get(&StrKey("enum")) {
         let enum_thunk = ctx.get_thunk(enum_thunk_id);
-        let enum_val = materialize(&enum_thunk, Some(&span), &ctx)?;
+        let enum_val = materialize_sync(&enum_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref enum_dict) = enum_val {
             // Pre-materialize all enum values once, then check membership.
             // This avoids re-materializing on early-exit scenarios.
@@ -2276,7 +2476,7 @@ fn validate_value(
                 .iter()
                 .map(|(_key, &val_thunk_id)| {
                     let val_thunk = ctx.get_thunk(val_thunk_id);
-                    materialize(&val_thunk, Some(&span), &ctx)
+                    materialize_sync(&val_thunk, Some(&span), &ctx)
                 })
                 .collect::<EvalResult<Vec<Value>>>()?;
 
@@ -2290,13 +2490,14 @@ fn validate_value(
     // Check fields constraint (for dicts)
     if let Some(&fields_thunk_id) = schema.get(&StrKey("fields")) {
         let fields_thunk = ctx.get_thunk(fields_thunk_id);
-        let fields_val = materialize(&fields_thunk, Some(&span), &ctx)?;
+        let fields_val = materialize_sync(&fields_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref fields_schema) = fields_val {
             if let Value::Dict(ref data_dict) = data {
                 // Validate each field in the schema
                 for (field_key, &field_schema_thunk_id) in fields_schema {
                     let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
-                    let field_schema_val = materialize(&field_schema_thunk, Some(&span), &ctx)?;
+                    let field_schema_val =
+                        materialize_sync(&field_schema_thunk, Some(&span), &ctx)?;
                     if let Value::Dict(ref field_schema) = field_schema_val {
                         let field_name = match field_key {
                             Key::String(s) => s.clone(),
@@ -2313,7 +2514,7 @@ fn validate_value(
                         let is_required =
                             if let Some(&req_thunk_id) = field_schema.get(&StrKey("required")) {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
-                                let req_val = materialize(&req_thunk, Some(&span), &ctx)?;
+                                let req_val = materialize_sync(&req_thunk, Some(&span), &ctx)?;
                                 matches!(req_val, Value::Bool(true))
                             } else {
                                 false
@@ -2321,7 +2522,8 @@ fn validate_value(
 
                         if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
                             let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
-                            let field_value = materialize(&field_value_thunk, Some(&span), &ctx)?;
+                            let field_value =
+                                materialize_sync(&field_value_thunk, Some(&span), &ctx)?;
                             validate_value(
                                 field_schema,
                                 &field_value,
@@ -2342,13 +2544,13 @@ fn validate_value(
     // Check items constraint (for sequences/dicts with uniform element schema)
     if let Some(&items_thunk_id) = schema.get(&StrKey("items")) {
         let items_thunk = ctx.get_thunk(items_thunk_id);
-        let items_val = materialize(&items_thunk, Some(&span), &ctx)?;
+        let items_val = materialize_sync(&items_thunk, Some(&span), &ctx)?;
         if let Value::Dict(ref items_schema) = items_val {
             match data {
                 Value::Dict(ref data_dict) => {
                     for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
-                        let val = materialize(&val_thunk, Some(&span), &ctx)?;
+                        let val = materialize_sync(&val_thunk, Some(&span), &ctx)?;
                         let item_path = if path.is_empty() {
                             format!("[{}]", idx)
                         } else {
@@ -2372,7 +2574,7 @@ fn validate_value(
                         match seq_val {
                             Value::Seq { head, tail } => {
                                 let head_thunk = ctx.get_thunk(*head);
-                                let head_val = materialize(&head_thunk, Some(&span), &ctx)?;
+                                let head_val = materialize_sync(&head_thunk, Some(&span), &ctx)?;
                                 let item_path = if path.is_empty() {
                                     format!("[{}]", idx)
                                 } else {
@@ -2388,7 +2590,7 @@ fn validate_value(
                                 )?;
 
                                 let tail_thunk = ctx.get_thunk(*tail);
-                                let tail_val = materialize(&tail_thunk, Some(&span), &ctx)?;
+                                let tail_val = materialize_sync(&tail_thunk, Some(&span), &ctx)?;
                                 validate_seq_items(
                                     &tail_val,
                                     items_schema,

@@ -1883,12 +1883,12 @@ pub fn materialize<'a>(
             // `named` is None for internally-created thunks (common case); only $apply
             // passes named args through. Use an empty map ref for the None case.
             let builtin_args = crate::value::BuiltinArgs {
-                args: &args,
-                named: named.as_ref(),
+                args: args.clone(),
+                named: named.clone(),
                 call_span,
                 ctx: Arc::clone(&thunk_ctx),
             };
-            match (def.func)(builtin_args).map_err(&decorate) {
+            match (def.func)(builtin_args).await.map_err(&decorate) {
                 Ok(result_thunk) => {
                     // Fast path: if the builtin already materialized its result, skip recursion.
                     if let Some(value) = result_thunk.try_get_materialized() {
@@ -2121,12 +2121,12 @@ pub fn materialize<'a>(
                         }
                     }
                     let builtin_args = crate::value::BuiltinArgs {
-                        args: &args,
-                        named: named.as_ref(),
+                        args: args.clone(),
+                        named: named.clone(),
                         call_span,
                         ctx: Arc::clone(&thunk_ctx),
                     };
-                    match (def.func)(builtin_args).map_err(&decorate) {
+                    match (def.func)(builtin_args).await.map_err(&decorate) {
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
                                 thunk.set_materialized(value.clone());
@@ -2582,13 +2582,16 @@ pub use crate::eval_deep::deep_materialize;
 
 /// Synchronous compatibility wrapper around the async `materialize()`.
 ///
-/// Used by synchronous call sites (builtins, expand.rs, arena.rs, etc.) that cannot
-/// `.await` the async `materialize()`. Uses `async_rt::block_on_anywhere()` which is
-/// safe to call both outside any tokio runtime and from within one (e.g. from a
-/// builtin called inside an outer `materialize` future).
+/// Used by genuinely synchronous call sites that cannot `.await`:
+/// - Sync closures (e.g., `sort_by` comparator)
+/// - Macro expansion helpers (`expand.rs`)
+/// - Test helper shadows inside `#[cfg(test)]` modules
+/// - Bootstrap code (stdlib loading before the async runtime is entered)
 ///
-/// New async code should call `materialize(...).await` directly. This wrapper exists
-/// only for call sites that must remain synchronous during the async migration (Phase 2).
+/// Uses `async_rt::block_on_anywhere()` which is safe to call both from
+/// outside any tokio runtime and from within an existing one.
+///
+/// New async code should call `materialize(...).await` directly.
 pub fn materialize_sync(
     thunk: &Thunk,
     mat_span: Option<&Span>,
@@ -4083,17 +4086,21 @@ mod tests {
 
     #[test]
     fn test_call_builtin() {
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let crate::value::BuiltinArgs { args, .. } = ctx;
-            let a = materialize(&args[0], None, &test_ctx())?;
-            let b = materialize(&args[1], None, &test_ctx())?;
-            match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(x + y),
-                    test_span(1, 1, 1, 1),
-                ))),
-                _ => panic!("test expects Int args"),
-            }
+        fn add_builtin(
+            ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let crate::value::BuiltinArgs { args, .. } = ctx;
+                let a = materialize(&args[0], None, &test_ctx())?;
+                let b = materialize(&args[1], None, &test_ctx())?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
+                        Value::Int(x + y),
+                        test_span(1, 1, 1, 1),
+                    ))),
+                    _ => panic!("test expects Int args"),
+                }
+            })
         }
         let env = empty_env();
         env.write().unwrap().insert(
@@ -5945,11 +5952,15 @@ mod tests {
 
     #[test]
     fn test_deep_materialize_builtin_passthrough() {
-        fn dummy(_ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(0),
-                test_span(1, 1, 1, 1),
-            )))
+        fn dummy(
+            _ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(0),
+                    test_span(1, 1, 1, 1),
+                )))
+            })
         }
         let val = Value::Builtin(crate::value::BuiltinDef {
             func: dummy,
@@ -6750,11 +6761,16 @@ mod tests {
         // Calling a builtin that errors should include "call $builtin_name" in the stack.
         // We'll use $type-of with an intentionally broken setup to trigger an error.
         // Actually, let's use a custom failing builtin for clarity.
-        fn failing_builtin(_ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Err(
-                EvalError::internal("test builtin failure".to_string(), test_span(99, 1, 99, 10))
-                    .into(),
-            )
+        fn failing_builtin(
+            _ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Err(EvalError::internal(
+                    "test builtin failure".to_string(),
+                    test_span(99, 1, 99, 10),
+                )
+                .into())
+            })
         }
 
         let env = empty_env();
@@ -6841,17 +6857,21 @@ mod tests {
         };
 
         // Add the builtin $+ to the environment
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let crate::value::BuiltinArgs { args, .. } = ctx;
-            let a = materialize(&args[0], None, &test_ctx())?;
-            let b = materialize(&args[1], None, &test_ctx())?;
-            match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(x + y),
-                    test_span(1, 1, 1, 1),
-                ))),
-                _ => panic!("test expects Int args"),
-            }
+        fn add_builtin(
+            ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let crate::value::BuiltinArgs { args, .. } = ctx;
+                let a = materialize(&args[0], None, &test_ctx())?;
+                let b = materialize(&args[1], None, &test_ctx())?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
+                        Value::Int(x + y),
+                        test_span(1, 1, 1, 1),
+                    ))),
+                    _ => panic!("test expects Int args"),
+                }
+            })
         }
         env.write().unwrap().insert(
             "+".into(),
@@ -6897,17 +6917,21 @@ mod tests {
     #[test]
     fn test_pending_call_builtin_function() {
         // Create a PendingCall thunk where the function is a Builtin
-        fn multiply_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let crate::value::BuiltinArgs { args, .. } = ctx;
-            let a = materialize(&args[0], None, &test_ctx())?;
-            let b = materialize(&args[1], None, &test_ctx())?;
-            match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(x * y),
-                    test_span(1, 1, 1, 1),
-                ))),
-                _ => panic!("test expects Int args"),
-            }
+        fn multiply_builtin(
+            ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let crate::value::BuiltinArgs { args, .. } = ctx;
+                let a = materialize(&args[0], None, &test_ctx())?;
+                let b = materialize(&args[1], None, &test_ctx())?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
+                        Value::Int(x * y),
+                        test_span(1, 1, 1, 1),
+                    ))),
+                    _ => panic!("test expects Int args"),
+                }
+            })
         }
 
         let func_thunk = Arc::new(Thunk::new_materialized(
@@ -7077,17 +7101,21 @@ mod tests {
         let env = empty_env();
 
         // Install a built-in add function
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let crate::value::BuiltinArgs { args, .. } = ctx;
-            let a = materialize(&args[0], None, &test_ctx())?;
-            let b = materialize(&args[1], None, &test_ctx())?;
-            match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(x + y),
-                    test_span(1, 1, 1, 1),
-                ))),
-                _ => panic!("test expects Int args"),
-            }
+        fn add_builtin(
+            ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let crate::value::BuiltinArgs { args, .. } = ctx;
+                let a = materialize(&args[0], None, &test_ctx())?;
+                let b = materialize(&args[1], None, &test_ctx())?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
+                        Value::Int(x + y),
+                        test_span(1, 1, 1, 1),
+                    ))),
+                    _ => panic!("test expects Int args"),
+                }
+            })
         }
         env.write().unwrap().insert(
             "+".into(),
@@ -7176,17 +7204,21 @@ mod tests {
         let env = empty_env();
 
         // Install a built-in add function
-        fn add_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let crate::value::BuiltinArgs { args, .. } = ctx;
-            let a = materialize(&args[0], None, &test_ctx())?;
-            let b = materialize(&args[1], None, &test_ctx())?;
-            match (a, b) {
-                (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(x + y),
-                    test_span(1, 1, 1, 1),
-                ))),
-                _ => panic!("test expects Int args"),
-            }
+        fn add_builtin(
+            ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let crate::value::BuiltinArgs { args, .. } = ctx;
+                let a = materialize(&args[0], None, &test_ctx())?;
+                let b = materialize(&args[1], None, &test_ctx())?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Arc::new(Thunk::new_materialized(
+                        Value::Int(x + y),
+                        test_span(1, 1, 1, 1),
+                    ))),
+                    _ => panic!("test expects Int args"),
+                }
+            })
         }
         env.write().unwrap().insert(
             "+".into(),
@@ -7408,9 +7440,16 @@ mod tests {
     #[test]
     fn test_pending_builtin_error_becomes_failed() {
         // When a PendingBuiltin fails, it should transition to Failed state
-        fn failing_builtin(ctx: crate::value::BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            let crate::value::BuiltinArgs { call_span, .. } = ctx;
-            Err(EvalError::internal("builtin intentionally failed".to_string(), call_span).into())
+        fn failing_builtin(
+            ctx: crate::value::BuiltinArgs,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let crate::value::BuiltinArgs { call_span, .. } = ctx;
+                Err(
+                    EvalError::internal("builtin intentionally failed".to_string(), call_span)
+                        .into(),
+                )
+            })
         }
 
         let env = empty_env();

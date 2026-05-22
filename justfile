@@ -134,6 +134,14 @@ clean:
 check:
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo check
 
+# Show only error lines from a build (for CI / large output environments)
+build-errors:
+    -{{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo build --message-format short 2>&1 | grep -E 'error(\[E|:)' | grep -v 'previous errors' | head -8"
+
+# Check test code compilation (includes #[cfg(test)] modules) and show first errors
+check-test-errors:
+    -{{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --lib --no-run --message-format short 2>&1 | grep -E 'error(\[E|:)' | grep -v 'previous errors' | head -30"
+
 # Pin a specific dependency version
 update-precise PKG VER:
     {{container}} run {{run_flags}} {{rust_image}} cargo update {{PKG}} --precise {{VER}}

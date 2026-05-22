@@ -3,7 +3,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -27,17 +29,28 @@ pub struct FnAnnotation {
 }
 
 /// Arguments passed to built-in functions.
-pub struct BuiltinArgs<'a> {
-    pub args: &'a [Arc<Thunk>],
-    pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
+///
+/// Owns its arguments to allow capture in `async move` blocks that must be `'static`.
+/// Previously used `&[Arc<Thunk>]` (a borrow), which caused lifetime errors when moved
+/// into `Box<dyn Future>` (which has an implicit `'static` bound). Using owned `Vec`
+/// avoids allocating lifetimes in the async state machine.
+pub struct BuiltinArgs {
+    pub args: Vec<Arc<Thunk>>,
+    pub named: Option<IndexMap<String, Arc<Thunk>>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
 /// positional args, named args, and call-site span.
-/// Returns an `Arc<Thunk>` to allow builtins to participate in lazy evaluation.
-pub type BuiltinFn = fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>;
+/// Returns a Future that resolves to an `Arc<Thunk>` to allow builtins to participate
+/// in lazy evaluation and async operations.
+///
+/// Note: `+ Send` is intentionally absent. LLT uses a `current_thread` runtime
+/// (see `async_rt.rs`), so futures never cross thread boundaries. Builtins capture
+/// `Rc<...>`-containing types (e.g. `Arc<Thunk>`, `Value`) that are `!Send`; requiring
+/// `+ Send` would force unsafe workarounds with no actual thread-safety benefit.
+pub type BuiltinFn = fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>;
 
 /// Strictness annotation for builtin argument demand (Wadler & Hughes 1987).
 #[repr(u8)]
@@ -1740,11 +1753,13 @@ mod tests {
 
     #[test]
     fn test_value_partial_eq_builtin_always_false() {
-        fn dummy(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(0),
-                ctx.call_span,
-            )))
+        fn dummy(ctx: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(0),
+                    ctx.call_span,
+                )))
+            })
         }
         let b = Value::Builtin(BuiltinDef {
             func: dummy,
@@ -1760,17 +1775,21 @@ mod tests {
         // BuiltinDef equality is name-based, not function-pointer-based.
         // Two BuiltinDefs with the same name must compare equal regardless of their
         // function pointers; two with different names must compare unequal.
-        fn func_a(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(1),
-                ctx.call_span,
-            )))
+        fn func_a(ctx: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(1),
+                    ctx.call_span,
+                )))
+            })
         }
-        fn func_b(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(2),
-                ctx.call_span,
-            )))
+        fn func_b(ctx: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(2),
+                    ctx.call_span,
+                )))
+            })
         }
 
         let same_name_a = BuiltinDef {
@@ -2020,11 +2039,15 @@ mod tests {
 
     #[test]
     fn test_value_display_builtin() {
-        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(0),
-                ctx.call_span,
-            )))
+        fn dummy_builtin(
+            ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(0),
+                    ctx.call_span,
+                )))
+            })
         }
         let builtin = Value::Builtin(BuiltinDef {
             func: dummy_builtin,
@@ -2105,11 +2128,15 @@ mod tests {
 
     #[test]
     fn test_value_debug_builtin() {
-        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(0),
-                ctx.call_span,
-            )))
+        fn dummy_builtin(
+            ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(0),
+                    ctx.call_span,
+                )))
+            })
         }
         let builtin = Value::Builtin(BuiltinDef {
             func: dummy_builtin,
@@ -2169,11 +2196,15 @@ mod tests {
 
     #[test]
     fn test_thunk_pending_builtin_preserves_ctx() {
-        fn dummy_builtin(ctx: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(0),
-                ctx.call_span,
-            )))
+        fn dummy_builtin(
+            ctx: BuiltinArgs,
+        ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(0),
+                    ctx.call_span,
+                )))
+            })
         }
 
         // Create ctx1
@@ -2460,12 +2491,16 @@ mod tests {
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
         // Create a PendingBuiltin thunk (using a dummy builtin function)
-        fn dummy_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Arc<Thunk>> {
-            let _ = args; // silence unused warning
-            Ok(Arc::new(Thunk::new_materialized(
-                Value::Int(42),
-                test_span(1, 1, 1, 1),
-            )))
+        fn dummy_builtin(
+            args: BuiltinArgs,
+        ) -> Pin<Box<dyn Future<Output = crate::error::EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                let _ = args; // silence unused warning
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Int(42),
+                    test_span(1, 1, 1, 1),
+                )))
+            })
         }
 
         let dummy_def = BuiltinDef {
@@ -2513,11 +2548,15 @@ mod tests {
         let env = Arc::new(RwLock::new(Environment::new()));
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
-        fn error_builtin(args: BuiltinArgs) -> crate::error::EvalResult<Arc<Thunk>> {
-            Err(Box::new(EvalError::internal(
-                "test error".into(),
-                args.call_span,
-            )))
+        fn error_builtin(
+            args: BuiltinArgs,
+        ) -> Pin<Box<dyn Future<Output = crate::error::EvalResult<Arc<Thunk>>>>> {
+            Box::pin(async move {
+                Err(Box::new(EvalError::internal(
+                    "test error".into(),
+                    args.call_span,
+                )))
+            })
         }
 
         let error_def = BuiltinDef {

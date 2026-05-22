@@ -44,7 +44,7 @@
 
 **Key contracts:**
 
-- `BuiltinFn` signature: `fn(BuiltinArgs) -> EvalResult<Rc<Thunk>>` where `BuiltinArgs` carries `args: &[Rc<Thunk>]`, `named: &IndexMap<String, Rc<Thunk>>`, `call_span: Span`, `ctx: Rc<EvalContext>`
+- `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`, `call_span: Span`, `ctx: Arc<EvalContext>`
 - `Value` serialization: every `Value` variant must have handlers in both `value_to_json()` and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
 - AST coverage: every `Expr` variant requires both an `eval` handler (src/eval.rs) and a `typecheck` handler (src/typecheck.rs)
@@ -190,11 +190,11 @@ struct EvalContext {
 
 **Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping; depth is call-stack tracking. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope and depth increments per recursive call.
 
-**Threading pattern:** `Rc<EvalContext>` — thunks capture `Rc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. Unlike `Environment` (which uses `Rc<RefCell<...>>`), EvalContext does not need an outer RefCell because it achieves interior mutability through its `state: Rc<RefCell<EvalState>>` field — the config is immutable by construction and only the state needs mutation.
+**Threading pattern:** `Arc<EvalContext>` — thunks capture `Arc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. Unlike `Environment` (which uses `Arc<RwLock<...>>`), EvalContext does not need an outer lock because it achieves interior mutability through its `state: Arc<Mutex<EvalState>>` field — the config is immutable by construction and only the state needs mutation.
 
-**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Rc<EvalContext>` alongside their existing `env: Rc<RefCell<Environment>>`. When a thunk is materialized, it uses the captured context for include resolution, sandboxing, etc.
+**ThunkState captures EvalContext:** `Unevaluated`, `PendingBuiltin`, and `PendingCall` all store `ctx: Arc<EvalContext>` alongside their existing `env: Arc<RwLock<Environment>>`. When a thunk is materialized, it uses the captured context for include resolution, sandboxing, etc.
 
-**BuiltinArgs:** Carries `ctx: Rc<EvalContext>`. Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. There is no `depth` field — the iterative CEK machine (see §Iterative Evaluator) uses heap-allocated continuations rather than tracking recursion depth.
+**BuiltinArgs:** Carries `ctx: Arc<EvalContext>` (was `Rc<EvalContext>` before the runtime-v2 sprint). Data is owned (not borrowed) so the struct can be moved into `Box<dyn Future>` (which has an implicit `'static` bound). Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. There is no `depth` field — the iterative CEK machine (see §Iterative Evaluator) uses heap-allocated continuations rather than tracking recursion depth.
 
 **Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. Include context is passed as a parameter — no global set/clear functions.
 
@@ -223,9 +223,10 @@ enum Value {
         body: AstNode,
         env: Environment,
     },
-    Builtin(fn(BuiltinArgs) -> Result<Rc<Thunk>, Error>),
-    // BuiltinArgs<'a> { args: &'a [Rc<Thunk>], named: &'a IndexMap<String, Rc<Thunk>>,
-    //                   call_span: Span, ctx: Rc<EvalContext> }
+    Builtin(fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Error>>>>),
+    // BuiltinArgs { args: Vec<Arc<Thunk>>, named: Option<IndexMap<String, Arc<Thunk>>>,
+    //               call_span: Span, ctx: Arc<EvalContext> }
+    // (updated for async — see src/value.rs for current type alias)
 }
 
 struct Thunk {

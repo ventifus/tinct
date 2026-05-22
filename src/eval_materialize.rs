@@ -697,13 +697,13 @@ pub(crate) async fn force_step(
         // `named` is None for internally-created thunks (common case); only $apply
         // passes named args through. Use an empty map ref for the None case.
         let builtin_args = crate::value::BuiltinArgs {
-            args: args.as_ref().expect("args set above"),
-            named: named.as_ref().expect("named set above").as_ref(),
+            args: args.as_ref().expect("args set above").clone(),
+            named: named.as_ref().expect("named set above").clone(),
             call_span,
             ctx: Arc::clone(&thunk_ctx),
         };
 
-        match (def.func)(builtin_args) {
+        match (def.func)(builtin_args).await {
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion
                 if let Some(value) = result_thunk.try_get_materialized() {
@@ -713,7 +713,7 @@ pub(crate) async fn force_step(
                     thunk.set_materialized(value.clone());
                     Action::Continue(Ok(value))
                 } else {
-                    // Move args/named into RestoreState — no clone needed.
+                    // Move args/named into RestoreState — clone was taken above for BuiltinArgs.
                     let restore = RestoreState::PendingBuiltin {
                         def,
                         args: Box::new(args.take().expect("args set above")),
@@ -1034,12 +1034,12 @@ pub(crate) async fn apply_cont(
                         // checker allows args.take()/named.take() in the match arms below.
                         let builtin_result = {
                             let builtin_args = crate::value::BuiltinArgs {
-                                args: args.as_deref().expect("args set above"),
-                                named: named.as_ref().expect("named set above").as_deref(),
+                                args: args.as_deref().expect("args set above").to_vec(),
+                                named: named.as_ref().expect("named set above").as_deref().cloned(),
                                 call_span,
                                 ctx: Arc::clone(&thunk_ctx),
                             };
-                            (def.func)(builtin_args)
+                            (def.func)(builtin_args).await
                         };
                         match builtin_result.map_err(&decorate) {
                             Ok(result_thunk) => {
@@ -1469,12 +1469,12 @@ pub(crate) async fn apply_cont(
 
                     // All forced and strict args materialized — call the builtin.
                     let builtin_args = crate::value::BuiltinArgs {
-                        args: args.as_ref().expect("args set above"),
-                        named: named.as_ref().expect("named set above").as_ref(),
+                        args: args.as_ref().expect("args set above").clone(),
+                        named: named.as_ref().expect("named set above").clone(),
                         call_span,
                         ctx: Arc::clone(&thunk_ctx),
                     };
-                    match (def.func)(builtin_args).map_err(&decorate) {
+                    match (def.func)(builtin_args).await.map_err(&decorate) {
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
                                 // args/named are no longer needed; drop them implicitly.
@@ -2296,7 +2296,7 @@ mod tests {
         // Create a dummy builtin function
         let dummy_func: BuiltinFn = |_args| {
             let span = test_span(1, 1, 1, 10);
-            Ok(Arc::new(Thunk::new_materialized(Value::Int(99), span)))
+            Box::pin(async move { Ok(Arc::new(Thunk::new_materialized(Value::Int(99), span))) })
         };
         let dummy_def = crate::value::BuiltinDef {
             func: dummy_func,
@@ -3116,7 +3116,7 @@ mod tests {
                 .try_get_materialized()
                 .expect("pre-materialized by force_count/pos_strictness");
             let span = args.call_span;
-            Ok(Arc::new(Thunk::new_materialized(Value::Bool(true), span)))
+            Box::pin(async move { Ok(Arc::new(Thunk::new_materialized(Value::Bool(true), span))) })
         };
 
         const DUMMY_STRICTNESS: &[Strictness] = &[];
