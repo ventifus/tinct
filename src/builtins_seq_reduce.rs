@@ -46,7 +46,9 @@ pub(crate) fn builtin_reduce(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
     let f_thunk = Arc::clone(&args[0]);
     let init_thunk = Arc::clone(&args[1]);
-    let xs = materialize(&args[2], None, &ctx)?;
+    let xs = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Flatten Overlay to Dict before dispatch. Bytes → Seq of Int byte values.
     let xs = match xs {
@@ -153,10 +155,14 @@ pub(crate) fn builtin_join(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let sep = materialize(&args[0], None, &ctx)?;
+    let sep = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let sep_str = require_string("join", sep, args[0].span)?;
 
-    let xs = materialize(&args[1], None, &ctx)?;
+    let xs = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
         Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span)?),
@@ -293,7 +299,9 @@ pub(crate) fn builtin_concat(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
     let xs_span = args[0].span;
     let ys_span = args[1].span;
-    let xs = materialize(&args[0], None, &ctx)?;
+    let xs = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let ys_thunk = Arc::clone(&args[1]);
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {

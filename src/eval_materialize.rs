@@ -630,6 +630,39 @@ pub(crate) fn force_step(
         let mut args = Some(args);
         let mut named = Some(named);
 
+        // force_count pre-materialization: unconditionally materialize args[0..force_count].
+        // This is checked BEFORE pos_strictness W1 scanning to ensure forced args are
+        // always materialized regardless of their strictness annotation.
+        if def.force_count > 0 {
+            if let Some(arg_idx) = (0..def
+                .force_count
+                .min(args.as_ref().expect("args set above").len()))
+                .find(|&i| {
+                    args.as_ref().expect("args set above")[i]
+                        .try_get_materialized()
+                        .is_none()
+                })
+            {
+                let arg_thunk = Arc::clone(&args.as_ref().expect("args set above")[arg_idx]);
+                stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
+                    thunk: Arc::clone(thunk),
+                    def,
+                    args: args.take().expect("args set above"),
+                    named: named.take().expect("named set above"),
+                    call_span,
+                    ctx: thunk_ctx,
+                    origin,
+                    thunk_span,
+                    mat_span,
+                    arg_idx,
+                })));
+                return Action::Materialize {
+                    thunk: arg_thunk,
+                    mat_span: None,
+                };
+            }
+        }
+
         // W1 dispatch-time materialization: scan pos_strictness for first Seq/Spine position.
         // Pre-materialize strict args iteratively to prevent Rust stack growth and enable
         // the builtin to skip redundant materialize() calls (thunk memoization fast-path).
@@ -957,16 +990,22 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         // force_step(PendingBuiltin) can push a fresh entry — avoiding a
                         // duplicate that would cause an extra pop on completion.
                         use crate::value::Strictness;
+                        let args_ref = args.as_ref().expect("args set above");
+                        // Check if any force_count args need pre-materialization.
+                        // force_count specifies how many leading positional args must be
+                        // fully materialized (Seq) before the builtin is called.
+                        let has_force_count_unevaluated = def.force_count > 0
+                            && (0..def.force_count.min(args_ref.len()))
+                                .any(|i| args_ref[i].try_get_materialized().is_none());
+                        // Check if any W1 Seq/Spine positional args need pre-materialization.
                         let has_strict_unevaluated =
                             def.pos_strictness.iter().enumerate().any(|(i, &s)| {
-                                i < args.as_ref().expect("args set above").len()
+                                i < args_ref.len()
                                     && (s == Strictness::Seq || s == Strictness::Spine)
-                                    && args.as_ref().expect("args set above")[i]
-                                        .try_get_materialized()
-                                        .is_none()
+                                    && args_ref[i].try_get_materialized().is_none()
                             });
 
-                        if has_strict_unevaluated {
+                        if has_force_count_unevaluated || has_strict_unevaluated {
                             // Pop the eval_stack entry pushed by force_step(PendingCall).
                             // force_step(PendingBuiltin) will push a new entry for this thunk.
                             thunk_ctx.state.lock().unwrap().eval_stack.pop();
@@ -1341,11 +1380,50 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
             let mut args = Some(args);
             let mut named = Some(named);
 
-            // W1 dispatch-time materialization: after arg at arg_idx has been materialized,
-            // scan for the next Seq/Spine position. If found, force it; otherwise call builtin.
+            // force_count + W1 dispatch-time materialization: after arg at arg_idx has been materialized,
+            // first check for the next un-materialized arg in [0..force_count], then scan pos_strictness
+            // for the next Seq/Spine position. If found, force it; otherwise call builtin.
             match result {
                 Ok(_) => {
-                    // Scan from arg_idx + 1 for the next Seq/Spine position that needs forcing.
+                    // First check force_count range for next un-materialized arg
+                    if def.force_count > 0 {
+                        if let Some(next_idx) = (arg_idx + 1
+                            ..def
+                                .force_count
+                                .min(args.as_ref().expect("args set above").len()))
+                            .find(|&i| {
+                                args.as_ref().expect("args set above")[i]
+                                    .try_get_materialized()
+                                    .is_none()
+                            })
+                        {
+                            let next_arg =
+                                Arc::clone(&args.as_ref().expect("args set above")[next_idx]);
+                            stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
+                                thunk,
+                                def,
+                                args: args.take().expect("args set above"),
+                                named: named.take().expect("named set above"),
+                                call_span,
+                                ctx: thunk_ctx,
+                                origin,
+                                thunk_span,
+                                mat_span,
+                                arg_idx: next_idx,
+                            })));
+                            return Action::Materialize {
+                                thunk: next_arg,
+                                mat_span: None,
+                            };
+                        }
+                    }
+
+                    // Invariant: positions 0..=arg_idx have already been materialized — either
+                    // by the force_count pass above (unconditional leading args) or by a prior
+                    // BuiltinForceArg iteration (the W1 Seq/Spine scan). Skipping them is safe
+                    // because try_get_materialized() would return Some(...) for all of them,
+                    // so they would never be selected by the .find() predicate anyway. The skip
+                    // avoids re-scanning already-processed positions.
                     use crate::value::Strictness;
                     if let Some((next_idx, _)) = def
                         .pos_strictness
@@ -1380,7 +1458,7 @@ pub(crate) fn apply_cont(cont: Cont, result: EvalResult<Value>, stack: &mut Vec<
                         };
                     }
 
-                    // All strict args materialized — call the builtin.
+                    // All forced and strict args materialized — call the builtin.
                     let builtin_args = crate::value::BuiltinArgs {
                         args: args.as_ref().expect("args set above"),
                         named: named.as_ref().expect("named set above").as_ref(),
@@ -2198,6 +2276,7 @@ mod tests {
             func: dummy_func,
             name: "dummy",
             pos_strictness: &[],
+            force_count: 0,
         };
 
         let args = vec![Arc::clone(&thunk)];
@@ -2879,6 +2958,203 @@ mod tests {
                 .to_string()
                 .contains("type assertion failed"),
             "cached error should still report 'type assertion failed'"
+        );
+    }
+
+    // === Cont::BuiltinForceArg CEK tests ===
+
+    /// BuiltinForceArg CEK test: force_count=1 pre-materializes arg[0] via CEK machine.
+    ///
+    /// Creates a PendingBuiltin thunk for `builtin_keys` (force_count=1) with an
+    /// *unevaluated* dict argument. Forces the outer thunk through the CEK machine
+    /// via `run(Action::Materialize { ... })`. The CEK machine must push a
+    /// `Cont::BuiltinForceArg` continuation, materialize args[0], and then dispatch
+    /// to `builtin_keys` with a pre-materialized dict.
+    ///
+    /// If `Cont::BuiltinForceArg` is not reached or does not properly force the arg,
+    /// `builtin_keys` will panic at `try_get_materialized().expect(...)`.
+    #[test]
+    fn test_builtin_force_arg_cek_forces_arg_before_dispatch() {
+        use crate::value::{BuiltinDef, BuiltinFn, Strictness, ThunkState};
+
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 5);
+
+        // Create an unevaluated arg thunk: evaluates to an empty dict.
+        // `Expr::Dict(vec![])` produces `Value::Dict(IndexMap::new())`.
+        let dict_expr = Rc::new(Spanned {
+            node: Expr::Dict(vec![]),
+            span,
+        });
+        let unevaluated_arg = Arc::new(Thunk::new_unevaluated(
+            dict_expr,
+            empty_env(),
+            Arc::clone(&ctx),
+            span,
+        ));
+
+        // Verify the arg is NOT yet materialized.
+        assert!(
+            unevaluated_arg.try_get_materialized().is_none(),
+            "arg must be unevaluated before the PendingBuiltin is forced via CEK"
+        );
+
+        // Construct a BuiltinDef for `builtin_keys` with force_count=1.
+        const KEYS_STRICTNESS: &[Strictness] = &[];
+        let keys_def = BuiltinDef {
+            func: crate::builtins::builtin_keys as BuiltinFn,
+            name: "keys",
+            pos_strictness: KEYS_STRICTNESS,
+            force_count: 1,
+        };
+
+        // Create a PendingBuiltin thunk for the CEK machine to force.
+        let outer_thunk = Arc::new(Thunk::new_placeholder(span));
+        outer_thunk.set_state(ThunkState::PendingBuiltin {
+            def: keys_def,
+            args: Box::new(vec![Arc::clone(&unevaluated_arg)]),
+            named: None,
+            call_span: span,
+            ctx: Arc::clone(&ctx),
+        });
+
+        // Force via the CEK machine (not via materialize() recursive path).
+        // This exercises the force_step(PendingBuiltin) path → Cont::BuiltinForceArg push.
+        let result = run(
+            Action::Materialize {
+                thunk: Arc::clone(&outer_thunk),
+                mat_span: None,
+            },
+            &ctx,
+        );
+
+        assert!(
+            result.is_ok(),
+            "Cont::BuiltinForceArg must pre-materialize force_count args via CEK; got: {:?}",
+            result.unwrap_err()
+        );
+
+        // builtin_keys on an empty dict returns an empty dict.
+        let val = result.unwrap();
+        assert!(
+            matches!(val, Value::Dict(ref m) if m.is_empty()),
+            "expected empty dict from builtin_keys on empty dict, got {:?}",
+            val
+        );
+
+        // After successful CEK dispatch, outer thunk must be in Materialized state.
+        assert!(
+            outer_thunk.try_get_materialized().is_some(),
+            "outer PendingBuiltin thunk must be Materialized after CEK dispatch"
+        );
+    }
+
+    /// BuiltinForceArg CEK test: force_count=2 forces two args before dispatch.
+    ///
+    /// Uses `builtin_keys` with force_count=2 to verify the continuation loops
+    /// correctly through both arg positions (even though builtin_keys only uses args[0];
+    /// the force_count=2 registration forces the test to exercise the multi-arg path).
+    ///
+    /// This ensures the BuiltinForceArg continuation correctly iterates through all
+    /// force_count positions before dispatching.
+    #[test]
+    fn test_builtin_force_arg_cek_force_count_two() {
+        use crate::value::{BuiltinDef, BuiltinFn, Strictness, ThunkState};
+
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 5);
+
+        // Arg0: unevaluated dict (will be forced and used by builtin_keys).
+        let dict_expr = Rc::new(Spanned {
+            node: Expr::Dict(vec![]),
+            span,
+        });
+        let unevaluated_arg0 = Arc::new(Thunk::new_unevaluated(
+            dict_expr,
+            empty_env(),
+            Arc::clone(&ctx),
+            span,
+        ));
+
+        // Arg1: unevaluated int (will be force-materialized but not used by builtin_keys).
+        let int_expr = Rc::new(Spanned {
+            node: Expr::Int(42),
+            span,
+        });
+        let unevaluated_arg1 = Arc::new(Thunk::new_unevaluated(
+            int_expr,
+            empty_env(),
+            Arc::clone(&ctx),
+            span,
+        ));
+
+        assert!(
+            unevaluated_arg0.try_get_materialized().is_none(),
+            "arg0 must be unevaluated"
+        );
+        assert!(
+            unevaluated_arg1.try_get_materialized().is_none(),
+            "arg1 must be unevaluated"
+        );
+
+        // force_count=2 — both args pre-materialized before dispatch.
+        // builtin_keys only checks arity=1 and uses args[0], so arg1 being present
+        // will cause an arity error. Use a custom 2-arg builtin that succeeds.
+        // Instead, keep force_count=1 for the 2nd arg's CEK loop test via
+        // checking that arg1 IS materialized after forcing the outer thunk.
+        //
+        // Actually: use a custom dummy builtin that accepts any arity and checks
+        // that both args were pre-materialized.
+        let dummy_func: BuiltinFn = |args| {
+            // Both args must be materialized by force_count=2 before this is called.
+            let _ = args.args[0]
+                .try_get_materialized()
+                .expect("pre-materialized by force_count/pos_strictness");
+            let _ = args.args[1]
+                .try_get_materialized()
+                .expect("pre-materialized by force_count/pos_strictness");
+            let span = args.call_span;
+            Ok(Arc::new(Thunk::new_materialized(Value::Bool(true), span)))
+        };
+
+        const DUMMY_STRICTNESS: &[Strictness] = &[];
+        let dummy_def = BuiltinDef {
+            func: dummy_func,
+            name: "dummy-force2",
+            pos_strictness: DUMMY_STRICTNESS,
+            force_count: 2,
+        };
+
+        let outer_thunk = Arc::new(Thunk::new_placeholder(span));
+        outer_thunk.set_state(ThunkState::PendingBuiltin {
+            def: dummy_def,
+            args: Box::new(vec![
+                Arc::clone(&unevaluated_arg0),
+                Arc::clone(&unevaluated_arg1),
+            ]),
+            named: None,
+            call_span: span,
+            ctx: Arc::clone(&ctx),
+        });
+
+        // Force via CEK — exercises BuiltinForceArg loop for both positions.
+        let result = run(
+            Action::Materialize {
+                thunk: Arc::clone(&outer_thunk),
+                mat_span: None,
+            },
+            &ctx,
+        );
+
+        assert!(
+            result.is_ok(),
+            "BuiltinForceArg CEK must force both args when force_count=2; got: {:?}",
+            result.unwrap_err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            Value::Bool(true),
+            "dummy builtin must succeed with both args pre-materialized"
         );
     }
 }

@@ -1826,6 +1826,61 @@ pub fn materialize(
             }
         }
     } else if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
+        // Pre-materialize strict args before calling the builtin.
+        //
+        // The CEK machine (eval_materialize.rs::force_step) handles force_count and
+        // pos_strictness W1 pre-materialization iteratively via BuiltinForceArg continuations.
+        // This recursive path bypasses the CEK machine entirely, so it must replicate
+        // force_count + W1 semantics here to prevent builtins using
+        // `try_get_materialized().expect("pre-materialized by force_count/pos_strictness")` from panicking.
+        //
+        // Without this, any builtin with force_count > 0 (e.g. $take, $map, $drop) panics
+        // when materialized via the recursive path (e.g. from builtin_collect's loop,
+        // from builtin_filter_seq_step's materialize() call on the tail, etc.).
+        //
+        // On error during pre-materialization, restore PendingBuiltin state for
+        // non-cacheable errors (DepthExceeded) to allow retry at a shallower depth.
+        {
+            use crate::value::Strictness;
+            let mut premat_err: Option<Box<EvalError>> = None;
+            // H1: force_count range — unconditional pre-materialization
+            for i in 0..def.force_count.min(args.len()) {
+                if args[i].try_get_materialized().is_none() {
+                    if let Err(e) = materialize(&args[i], None, &thunk_ctx).map_err(&decorate) {
+                        premat_err = Some(e);
+                        break;
+                    }
+                }
+            }
+            // W1: pos_strictness Seq/Spine — dispatch-time materialization
+            if premat_err.is_none() {
+                for (i, &s) in def.pos_strictness.iter().enumerate() {
+                    if i < args.len()
+                        && (s == Strictness::Seq || s == Strictness::Spine)
+                        && args[i].try_get_materialized().is_none()
+                    {
+                        if let Err(e) = materialize(&args[i], None, &thunk_ctx).map_err(&decorate) {
+                            premat_err = Some(e);
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(e) = premat_err {
+                if e.kind.is_cacheable() {
+                    thunk.cache_failure(&e);
+                } else {
+                    thunk.set_state(ThunkState::PendingBuiltin {
+                        def,
+                        args: Box::new(args),
+                        named,
+                        call_span,
+                        ctx: thunk_ctx,
+                    });
+                }
+                return Err(e);
+            }
+        }
         // `named` is None for internally-created thunks (common case); only $apply
         // passes named args through. Use an empty map ref for the None case.
         let builtin_args = crate::value::BuiltinArgs {
@@ -2002,6 +2057,61 @@ pub fn materialize(
                 }
             }
             Value::Builtin(def) => {
+                // Pre-materialize strict args before calling the builtin.
+                //
+                // The CEK machine (eval_materialize.rs::PendingCallDispatch) handles
+                // force_count and pos_strictness W1 pre-materialization via the
+                // PendingBuiltin transition. This recursive path bypasses the CEK machine
+                // for PendingCall→Builtin dispatch, so it must replicate force_count + W1
+                // semantics here to prevent builtins using
+                // `try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`
+                // from panicking (e.g. builtin_add when called via a reduce PendingCall chain).
+                {
+                    use crate::value::Strictness;
+                    let mut premat_err: Option<Box<EvalError>> = None;
+                    // H1: force_count range — unconditional pre-materialization
+                    for i in 0..def.force_count.min(args.len()) {
+                        if args[i].try_get_materialized().is_none() {
+                            if let Err(e) =
+                                materialize(&args[i], None, &thunk_ctx).map_err(&decorate)
+                            {
+                                premat_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    // W1: pos_strictness Seq/Spine — dispatch-time materialization
+                    if premat_err.is_none() {
+                        for (i, &s) in def.pos_strictness.iter().enumerate() {
+                            if i < args.len()
+                                && (s == Strictness::Seq || s == Strictness::Spine)
+                                && args[i].try_get_materialized().is_none()
+                            {
+                                if let Err(e) =
+                                    materialize(&args[i], None, &thunk_ctx).map_err(&decorate)
+                                {
+                                    premat_err = Some(e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(e) = premat_err {
+                        if e.kind.is_cacheable() {
+                            thunk.cache_failure(&e);
+                        } else {
+                            thunk.set_state(ThunkState::PendingCall {
+                                func: func_thunk.clone(),
+                                args: Box::new(args.clone()),
+                                named: named.clone().map(Box::new),
+                                call_span,
+                                caller_env: caller_env.clone(),
+                                ctx: thunk_ctx.clone(),
+                            });
+                        }
+                        return Err(e);
+                    }
+                }
                 let builtin_args = crate::value::BuiltinArgs {
                     args: &args,
                     named: named.as_ref(),
@@ -3877,6 +3987,7 @@ mod tests {
                     func: add_builtin,
                     name: "add",
                     pos_strictness: &[],
+                    force_count: 0,
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -5728,6 +5839,7 @@ mod tests {
             func: dummy,
             name: "test",
             pos_strictness: &[],
+            force_count: 0,
         });
         let result = deep_materialize(&val, &test_ctx(), None).unwrap();
         match result {
@@ -6537,6 +6649,7 @@ mod tests {
                     func: failing_builtin,
                     name: "fail",
                     pos_strictness: &[],
+                    force_count: 0,
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -6631,6 +6744,7 @@ mod tests {
                     func: add_builtin,
                     name: "+",
                     pos_strictness: &[],
+                    force_count: 0,
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -6685,6 +6799,7 @@ mod tests {
                 func: multiply_builtin,
                 name: "*",
                 pos_strictness: &[],
+                force_count: 0,
             }),
             test_span(1, 1, 1, 5),
         ));
@@ -6865,6 +6980,7 @@ mod tests {
                     func: add_builtin,
                     name: "+",
                     pos_strictness: &[],
+                    force_count: 0,
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -6963,6 +7079,7 @@ mod tests {
                     func: add_builtin,
                     name: "+",
                     pos_strictness: &[],
+                    force_count: 0,
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -7188,6 +7305,7 @@ mod tests {
                     func: failing_builtin,
                     name: "fail",
                     pos_strictness: &[],
+                    force_count: 0,
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -9211,6 +9329,148 @@ mod tests {
         assert!(
             thunk.try_get_materialized().is_some(),
             "thunk must be Materialized after successful guard check"
+        );
+    }
+
+    // === Bypass path tests: force_count pre-materialization in eval.rs recursive paths ===
+
+    /// Bypass path test: PendingBuiltin materialization pre-materializes strict args.
+    ///
+    /// This tests the recursive bypass path in `eval.rs::materialize` (line ~1828).
+    /// When a PendingBuiltin thunk is materialized via the recursive `materialize()`
+    /// call (not through the CEK machine), the path must still apply force_count
+    /// pre-materialization before calling the builtin function.
+    ///
+    /// Setup: create a PendingBuiltin thunk for `builtin_keys` (force_count=1) with
+    /// an *unevaluated* dict-expr thunk as args[0]. The unevaluated thunk evaluates
+    /// to an empty dict. If the bypass path were to call `builtin_keys` without first
+    /// materializing args[0], `try_get_materialized().expect(...)` inside `builtin_keys`
+    /// would panic.
+    #[test]
+    fn pending_builtin_bypass_path_pre_materializes_args() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 5);
+
+        // Build an unevaluated thunk that evaluates to an empty dict.
+        // `Expr::Dict(vec![])` evaluates to `Value::Dict(IndexMap::new())`.
+        let dict_expr = Rc::new(sp(Expr::Dict(vec![])));
+        let unevaluated_arg = Arc::new(Thunk::new_unevaluated(
+            dict_expr,
+            empty_env(),
+            Arc::clone(&ctx),
+            span,
+        ));
+
+        // Verify the arg is NOT yet materialized (it is unevaluated).
+        assert!(
+            unevaluated_arg.try_get_materialized().is_none(),
+            "arg must be unevaluated before the PendingBuiltin is forced"
+        );
+
+        // Construct a BuiltinDef for `builtin_keys` with force_count=1.
+        const KEYS_STRICTNESS: &[Strictness] = &[];
+        let keys_def = BuiltinDef {
+            func: crate::builtins::builtin_keys as BuiltinFn,
+            name: "keys",
+            pos_strictness: KEYS_STRICTNESS,
+            force_count: 1,
+        };
+
+        // Create a PendingBuiltin thunk wrapping `builtin_keys` with the unevaluated arg.
+        let outer = Arc::new(Thunk::new_placeholder(span));
+        outer.set_state(ThunkState::PendingBuiltin {
+            def: keys_def,
+            args: Box::new(vec![Arc::clone(&unevaluated_arg)]),
+            named: None,
+            call_span: span,
+            ctx: Arc::clone(&ctx),
+        });
+
+        // Materialize via the recursive path. If force_count pre-materialization is
+        // missing, this panics at `try_get_materialized().expect(...)` inside `builtin_keys`.
+        let result = materialize(&outer, None, &ctx);
+        assert!(
+            result.is_ok(),
+            "PendingBuiltin bypass path must pre-materialize force_count args; got: {:?}",
+            result.unwrap_err()
+        );
+
+        // The result should be an empty dict (keys of empty dict = empty dict).
+        let val = result.unwrap();
+        assert!(
+            matches!(val, Value::Dict(ref m) if m.is_empty()),
+            "expected empty dict from builtin_keys on empty dict, got {:?}",
+            val
+        );
+    }
+
+    /// Bypass path test: PendingCall→Builtin materialization pre-materializes strict args.
+    ///
+    /// This tests the recursive bypass path in `eval.rs::materialize` for PendingCall
+    /// thunks (line ~2059) when the callee resolves to a `Value::Builtin`. When a
+    /// PendingCall thunk with a Builtin callee is materialized recursively, the path
+    /// must still apply force_count pre-materialization before calling the builtin.
+    ///
+    /// Setup: create a PendingCall thunk where the func thunk resolves to `Value::Builtin(keys_def)`
+    /// and args[0] is an unevaluated dict thunk. If force_count pre-materialization is
+    /// missing in the PendingCall→Builtin path, `builtin_keys` panics at
+    /// `try_get_materialized().expect(...)`.
+    #[test]
+    fn pending_call_builtin_bypass_path_pre_materializes_args() {
+        let ctx = test_ctx();
+        let span = test_span(1, 1, 1, 5);
+
+        // Build an unevaluated thunk that evaluates to an empty dict.
+        let dict_expr = Rc::new(sp(Expr::Dict(vec![])));
+        let unevaluated_arg = Arc::new(Thunk::new_unevaluated(
+            dict_expr,
+            empty_env(),
+            Arc::clone(&ctx),
+            span,
+        ));
+
+        // Verify the arg is NOT yet materialized.
+        assert!(
+            unevaluated_arg.try_get_materialized().is_none(),
+            "arg must be unevaluated before the PendingCall is forced"
+        );
+
+        // Create a materialized func thunk wrapping Value::Builtin(keys_def).
+        const KEYS_STRICTNESS: &[Strictness] = &[];
+        let keys_def = BuiltinDef {
+            func: crate::builtins::builtin_keys as BuiltinFn,
+            name: "keys",
+            pos_strictness: KEYS_STRICTNESS,
+            force_count: 1,
+        };
+        let func_thunk = Arc::new(Thunk::new_materialized(Value::Builtin(keys_def), span));
+
+        // Create a PendingCall thunk: calls builtin_keys with the unevaluated arg.
+        let outer = Arc::new(Thunk::new_placeholder(span));
+        outer.set_state(ThunkState::PendingCall {
+            func: func_thunk,
+            args: Box::new(vec![Arc::clone(&unevaluated_arg)]),
+            named: None,
+            call_span: span,
+            caller_env: empty_env(),
+            ctx: Arc::clone(&ctx),
+        });
+
+        // Materialize via the recursive path. If force_count pre-materialization is
+        // missing for the PendingCall→Builtin case, this panics inside `builtin_keys`.
+        let result = materialize(&outer, None, &ctx);
+        assert!(
+            result.is_ok(),
+            "PendingCall→Builtin bypass path must pre-materialize force_count args; got: {:?}",
+            result.unwrap_err()
+        );
+
+        // The result should be an empty dict (keys of empty dict = empty dict).
+        let val = result.unwrap();
+        assert!(
+            matches!(val, Value::Dict(ref m) if m.is_empty()),
+            "expected empty dict from builtin_keys on empty dict, got {:?}",
+            val
         );
     }
 }

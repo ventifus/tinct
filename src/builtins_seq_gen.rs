@@ -40,7 +40,11 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         .into());
     }
 
-    let start = materialize(&args[0], None, &ctx)?;
+    // args[0] is Seq-pre-materialized by pos_strictness[0] (public call) or passed as a
+    // materialized Int thunk (recursive tail call). Both paths guarantee materialization.
+    let start = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Seq");
     let start_int = match start {
         Value::Int(n) => n,
         other => {
@@ -80,7 +84,7 @@ pub(crate) fn builtin_range(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         )
     } else {
         // Finite range: [start, start+1, ..., end-1]
-        let end = materialize(&args[1], None, &ctx)?;
+        let end = materialize(&args[1], None, &ctx)?; // H2: conditional 2-arg form — deferred to dispatch-cont sprint
         let end_int = match end {
             Value::Int(n) => n,
             other => {
@@ -180,7 +184,9 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let dict = materialize(&args[0], None, &ctx)?;
+    let dict = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let map = match &dict {
         Value::Dict(m) => m,
         other => {
@@ -194,7 +200,9 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         }
     };
 
-    let idx = materialize(&args[1], None, &ctx)?;
+    let idx = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let idx_int = match idx {
         Value::Int(i) => i,
         other => {
@@ -228,7 +236,7 @@ pub(crate) fn builtin_cycle_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         ok_val(Value::Int(next_idx), call_span)?,
     ];
     let tail = Arc::new(Thunk::new_pending_builtin(
-        builtin!("cycle", builtin_cycle_step),
+        builtin!("cycle", builtin_cycle_step, [], 2),
         tail_args,
         None,
         call_span,
@@ -263,7 +271,9 @@ pub(crate) fn builtin_cycle(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
 
-    let val = materialize(&args[0], None, &ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     match val {
         Value::Dict(ref map) => {
             if map.is_empty() {

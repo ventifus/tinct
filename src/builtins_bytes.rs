@@ -79,7 +79,7 @@ pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     if let Some(named_map) = named {
@@ -103,8 +103,12 @@ pub(crate) fn builtin_bytes_find(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         .into());
     }
 
-    let haystack_val = eval::materialize(&args[0], Some(&call_span), &ctx)?;
-    let needle_val = eval::materialize(&args[1], Some(&call_span), &ctx)?;
+    let haystack_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let needle_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let haystack = match haystack_val.as_bytes() {
         Some(bytes) => bytes,
@@ -286,7 +290,7 @@ pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     if let Some(named_map) = named {
@@ -310,8 +314,12 @@ pub(crate) fn builtin_bytes_equal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>
         .into());
     }
 
-    let val1 = eval::materialize(&args[0], Some(&call_span), &ctx)?;
-    let val2 = eval::materialize(&args[1], Some(&call_span), &ctx)?;
+    let val1 = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let val2 = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let bytes1 = match val1.as_bytes() {
         Some(bytes) => bytes,
@@ -360,7 +368,7 @@ pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     if let Some(named_map) = named {
@@ -381,8 +389,12 @@ pub(crate) fn builtin_ct_equal(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         .into());
     }
 
-    let val1 = eval::materialize(&args[0], Some(&call_span), &ctx)?;
-    let val2 = eval::materialize(&args[1], Some(&call_span), &ctx)?;
+    let val1 = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let val2 = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let bytes1 = match val1.as_bytes() {
         Some(bytes) => bytes,

@@ -953,13 +953,27 @@ pub fn builtin_local_to_timestamp(args: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         ));
     }
 
-    let year_val = materialize(&args.args[0], Some(&args.call_span), &args.ctx)?;
-    let month_val = materialize(&args.args[1], Some(&args.call_span), &args.ctx)?;
-    let day_val = materialize(&args.args[2], Some(&args.call_span), &args.ctx)?;
-    let hour_val = materialize(&args.args[3], Some(&args.call_span), &args.ctx)?;
-    let minute_val = materialize(&args.args[4], Some(&args.call_span), &args.ctx)?;
-    let second_val = materialize(&args.args[5], Some(&args.call_span), &args.ctx)?;
-    let tz_val = materialize(&args.args[6], Some(&args.call_span), &args.ctx)?;
+    let year_val = args.args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let month_val = args.args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let day_val = args.args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let hour_val = args.args[3]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let minute_val = args.args[4]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let second_val = args.args[5]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let tz_val = args.args[6]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let year = match &year_val {
         Value::Int(n) => *n as i16,

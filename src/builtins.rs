@@ -50,22 +50,34 @@ use crate::value::{BuiltinArgs, Environment, Key, Thunk, Value};
 /// For operator names (`+`, `-`, `*`, `/`) and hyphenated names (`to-int`) the
 /// string literal must be written explicitly because they are not valid Rust identifiers.
 macro_rules! builtin {
-    // 2-arg form: all-lazy (empty strictness array)
+    // 2-arg form: all-lazy (empty strictness array, force_count=0)
     ($name:literal, $func:expr) => {{
         const S: &[crate::value::Strictness] = &[];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
+            force_count: 0,
         }
     }};
-    // 3-arg form: with strictness array
+    // 3-arg form: with strictness array (force_count=0)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
+            force_count: 0,
+        }
+    }};
+    // 4-arg form: with strictness array and force_count
+    ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr) => {{
+        const S: &[crate::value::Strictness] = &[$($strictness),*];
+        crate::value::BuiltinDef {
+            func: $func as crate::value::BuiltinFn,
+            name: $name,
+            pos_strictness: S,
+            force_count: $force_count,
         }
     }};
 }
@@ -113,13 +125,13 @@ pub(crate) fn bytes_to_seq(bytes: &[u8], span: Span, ctx: &Arc<crate::eval::Eval
 /// Maximum file size for reading LLT files: 10 MB.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
-/// Helper: materialize a single positional argument, enforcing exact arity of 1
-/// and rejecting named arguments. Used by many single-arg builtins.
+/// Helper: get a pre-materialized single positional argument, enforcing exact arity of 1
+/// and rejecting named arguments. Used by many single-arg builtins with force_count=1.
 pub(crate) fn expect_one_arg(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Value> {
     if args.len() != 1 {
@@ -128,7 +140,9 @@ pub(crate) fn expect_one_arg(
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
-    materialize(&args[0], Some(&call_span), ctx)
+    Ok(args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness"))
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
@@ -602,7 +616,9 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Spine");
     match val {
         Value::String {
             ref source,
@@ -669,7 +685,9 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Spine");
     match val {
         Value::String {
             ref source,
@@ -738,7 +756,9 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Spine");
     // Seq path: delegate to $tail (O(1), preserves laziness).
     if matches!(val, Value::Seq { .. }) {
         return builtin_tail(BuiltinArgs {
@@ -783,7 +803,9 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     // args[0] is the element to prepend (kept as thunk — preserves laziness).
     // args[1] is the collection to prepend to (must be materialized to dispatch on type).
-    let xs_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let xs_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[1]=Spine");
     // Seq path: delegate to $seq (O(1), preserves laziness).
     if matches!(xs_val, Value::Seq { .. }) {
         return builtin_seq(BuiltinArgs {
@@ -827,7 +849,9 @@ fn builtin_reverse(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Spine");
     let map = require_dict("reverse", val, args[0].span, &ctx, call_span)?;
 
     let mut result = IndexMap::with_capacity(map.len());
@@ -915,8 +939,11 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
     // Determine if we have a comparator function
     let (comparator_opt, dict_arg_idx) = if args.len() == 2 {
-        // First arg is comparator, second is dict
-        let cmp_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        // First arg is comparator, second is dict.
+        // args[0] is Spine-pre-materialized by pos_strictness[0].
+        let cmp_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
         match cmp_val {
             Value::Function { .. } | Value::Builtin(_) => (Some((cmp_val, args[0].span)), 1),
             other => {
@@ -933,7 +960,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         (None, 0)
     };
 
-    let val = materialize(&args[dict_arg_idx], Some(&call_span), &ctx)?;
+    let val = materialize(&args[dict_arg_idx], Some(&call_span), &ctx)?; // H2: dict_arg_idx=1 in 2-arg form not covered by pos_strictness — deferred to dispatch-cont sprint
     let map = require_dict("sort", val, args[dict_arg_idx].span, &ctx, call_span)?;
 
     // Materialize all values so we can compare them.
@@ -1092,69 +1119,98 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
     vec![
         // Arithmetic
-        builtin!("+", builtin_add, [Strictness::Seq, Strictness::Seq]),
-        builtin!("-", builtin_sub, [Strictness::Seq, Strictness::Seq]),
-        builtin!("*", builtin_mul, [Strictness::Seq, Strictness::Seq]),
-        builtin!("/", builtin_div_float, [Strictness::Seq, Strictness::Seq]),
+        builtin!("+", builtin_add, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("-", builtin_sub, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("*", builtin_mul, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!(
+            "/",
+            builtin_div_float,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         // Arithmetic stable aliases (used internally by prelude to allow shadowing)
         builtin!(
             "builtin-add",
             builtin_add,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "builtin-sub",
             builtin_sub,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "builtin-mul",
             builtin_mul,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "builtin-div",
             builtin_div_float,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         // Comparison
-        builtin!("=", builtin_eq, [Strictness::Seq, Strictness::Seq]),
-        builtin!("<", builtin_lt, [Strictness::Seq, Strictness::Seq]),
+        builtin!("=", builtin_eq, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("<", builtin_lt, [Strictness::Seq, Strictness::Seq], 2),
         // Comparison stable aliases (used internally by prelude to allow shadowing)
-        builtin!("builtin-eq", builtin_eq, [Strictness::Seq, Strictness::Seq]),
-        builtin!("builtin-lt", builtin_lt, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "builtin-eq",
+            builtin_eq,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-lt",
+            builtin_lt,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         // Control
         builtin!(
             "if",
             builtin_if,
-            [Strictness::Seq, Strictness::Id, Strictness::Id]
+            [Strictness::Seq, Strictness::Id, Strictness::Id],
+            1
         ),
         // Control stable alias (used internally by prelude to allow shadowing)
         builtin!(
             "builtin-if",
             builtin_if,
-            [Strictness::Seq, Strictness::Id, Strictness::Id]
+            [Strictness::Seq, Strictness::Id, Strictness::Id],
+            1
         ),
         // Dict primitives
-        builtin!("keys", builtin_keys, [Strictness::Spine]),
-        builtin!("length", builtin_length, [Strictness::Spine]),
-        builtin!("builtin-length", builtin_length, [Strictness::Spine]), // Stable alias
+        builtin!("keys", builtin_keys, [Strictness::Spine], 1),
+        builtin!("length", builtin_length, [Strictness::Spine], 1),
+        builtin!("builtin-length", builtin_length, [Strictness::Spine], 1), // Stable alias
         builtin!("merge", builtin_merge),
-        builtin!("append", builtin_append, [Strictness::Seq, Strictness::Id]),
+        builtin!(
+            "append",
+            builtin_append,
+            [Strictness::Seq, Strictness::Id],
+            1
+        ),
         builtin!(
             "builtin-append",
             builtin_append,
-            [Strictness::Seq, Strictness::Id]
+            [Strictness::Seq, Strictness::Id],
+            1
         ), // Stable alias
         builtin!(
             "builtin-get",
             builtin_get,
-            [Strictness::Seq, Strictness::Spine]
+            [Strictness::Seq, Strictness::Spine],
+            2
         ),
         builtin!(
             "get?",
             builtin_get_optional,
-            [Strictness::Seq, Strictness::Spine]
+            [Strictness::Seq, Strictness::Spine],
+            2
         ),
         // each: 2-strictness for both 1-arg (user) and 2-arg (internal offset) calls
         builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
@@ -1169,109 +1225,136 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Spine, Strictness::Spine]
         ),
         // Strings
-        builtin!("str", builtin_str, [Strictness::Seq]),
+        builtin!("str", builtin_str, [Strictness::Seq]), // variadic - can't use force_count
         builtin!("builtin-str", builtin_str, [Strictness::Seq]), // Stable alias
-        builtin!("split", builtin_split, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "split",
+            builtin_split,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         builtin!(
             "builtin-split",
             builtin_split,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ), // Stable alias
         builtin!(
             "replace",
             builtin_replace,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
-        builtin!("trim", builtin_trim, [Strictness::Seq]),
-        builtin!("str-length", builtin_str_length, [Strictness::Seq]),
-        builtin!("builtin-str-length", builtin_str_length, [Strictness::Seq]), // Stable alias
+        builtin!("trim", builtin_trim, [Strictness::Seq], 1),
+        builtin!("str-length", builtin_str_length, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-str-length",
+            builtin_str_length,
+            [Strictness::Seq],
+            1
+        ), // Stable alias
         builtin!(
             "str-slice",
             builtin_str_slice,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
         builtin!(
             "builtin-str-slice",
             builtin_str_slice,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ), // Stable alias
-        builtin!("str-chars", builtin_str_chars, [Strictness::Seq]),
-        builtin!("char-code", builtin_char_code, [Strictness::Seq]),
-        builtin!("chr", builtin_chr, [Strictness::Seq]),
-        builtin!("str-bytes", builtin_str_bytes, [Strictness::Seq]),
-        builtin!("bytes-str", builtin_bytes_str, [Strictness::Seq]),
+        builtin!("str-chars", builtin_str_chars, [Strictness::Seq], 1),
+        builtin!("char-code", builtin_char_code, [Strictness::Seq], 1),
+        builtin!("chr", builtin_chr, [Strictness::Seq], 1),
+        builtin!("str-bytes", builtin_str_bytes, [Strictness::Seq], 1),
+        builtin!("bytes-str", builtin_bytes_str, [Strictness::Seq], 1),
         builtin!(
             "str-index-of",
             builtin_str_index_of,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
-        builtin!("trim-start", builtin_trim_start, [Strictness::Seq]),
-        builtin!("trim-end", builtin_trim_end, [Strictness::Seq]),
+        builtin!("trim-start", builtin_trim_start, [Strictness::Seq], 1),
+        builtin!("trim-end", builtin_trim_end, [Strictness::Seq], 1),
         builtin!(
             "str-to-upper-char",
             builtin_str_to_upper_char,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "str-to-lower-char",
             builtin_str_to_lower_char,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "str-map-chars",
             builtin_str_map_chars,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "regex-match?",
             builtin_regex_match,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         // Bytes
         builtin!("bytes", builtin_bytes, []),
         builtin!(
             "bytes-find",
             builtin_bytes_find,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!("bytes-of", builtin_bytes_of, [Strictness::Seq]),
         builtin!(
             "bytes-equal?",
             builtin_bytes_equal,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "ct-equal?",
             builtin_ct_equal,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         // Numeric
-        builtin!("floor", builtin_floor, [Strictness::Seq]),
-        builtin!("round", builtin_round, [Strictness::Seq]),
-        builtin!("pow", builtin_pow, [Strictness::Seq, Strictness::Seq]),
-        builtin!("sqrt", builtin_sqrt, [Strictness::Seq]),
-        builtin!("log", builtin_log, [Strictness::Seq]),
-        builtin!("log2", builtin_log2, [Strictness::Seq]),
-        builtin!("log10", builtin_log10, [Strictness::Seq]),
-        builtin!("exp", builtin_exp, [Strictness::Seq]),
-        builtin!("sin", builtin_sin, [Strictness::Seq]),
-        builtin!("cos", builtin_cos, [Strictness::Seq]),
-        builtin!("tan", builtin_tan, [Strictness::Seq]),
-        builtin!("asin", builtin_asin, [Strictness::Seq]),
-        builtin!("acos", builtin_acos, [Strictness::Seq]),
-        builtin!("atan", builtin_atan, [Strictness::Seq]),
-        builtin!("atan2", builtin_atan2, [Strictness::Seq, Strictness::Seq]),
-        builtin!("nan?", builtin_nan_check, [Strictness::Seq]),
-        builtin!("inf?", builtin_inf_check, [Strictness::Seq]),
-        builtin!("finite?", builtin_finite_check, [Strictness::Seq]),
+        builtin!("floor", builtin_floor, [Strictness::Seq], 1),
+        builtin!("round", builtin_round, [Strictness::Seq], 1),
+        builtin!("pow", builtin_pow, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("sqrt", builtin_sqrt, [Strictness::Seq], 1),
+        builtin!("log", builtin_log, [Strictness::Seq], 1),
+        builtin!("log2", builtin_log2, [Strictness::Seq], 1),
+        builtin!("log10", builtin_log10, [Strictness::Seq], 1),
+        builtin!("exp", builtin_exp, [Strictness::Seq], 1),
+        builtin!("sin", builtin_sin, [Strictness::Seq], 1),
+        builtin!("cos", builtin_cos, [Strictness::Seq], 1),
+        builtin!("tan", builtin_tan, [Strictness::Seq], 1),
+        builtin!("asin", builtin_asin, [Strictness::Seq], 1),
+        builtin!("acos", builtin_acos, [Strictness::Seq], 1),
+        builtin!("atan", builtin_atan, [Strictness::Seq], 1),
+        builtin!(
+            "atan2",
+            builtin_atan2,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!("nan?", builtin_nan_check, [Strictness::Seq], 1),
+        builtin!("inf?", builtin_inf_check, [Strictness::Seq], 1),
+        builtin!("finite?", builtin_finite_check, [Strictness::Seq], 1),
         // Bitwise
-        builtin!("band", builtin_band, [Strictness::Seq, Strictness::Seq]),
-        builtin!("bor", builtin_bor, [Strictness::Seq, Strictness::Seq]),
-        builtin!("bxor", builtin_bxor, [Strictness::Seq, Strictness::Seq]),
-        builtin!("shl", builtin_shl, [Strictness::Seq, Strictness::Seq]),
-        builtin!("shr", builtin_shr, [Strictness::Seq, Strictness::Seq]),
+        builtin!("band", builtin_band, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("bor", builtin_bor, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("bxor", builtin_bxor, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("shl", builtin_shl, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!("shr", builtin_shr, [Strictness::Seq, Strictness::Seq], 2),
         // Type conversion
-        builtin!("float", builtin_float, [Strictness::Seq]),
+        builtin!("float", builtin_float, [Strictness::Seq], 1),
         // Parsing
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]), // Stable alias
@@ -1285,8 +1368,13 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("raise", builtin_raise, [Strictness::Seq]),
         builtin!("builtin-raise", builtin_raise, [Strictness::Seq]), // Stable alias
-        builtin!("try", builtin_try, [Strictness::Id]),
-        builtin!("apply", builtin_apply, [Strictness::Seq, Strictness::Seq]),
+        builtin!("try", builtin_try, [Strictness::Id], 1),
+        builtin!(
+            "apply",
+            builtin_apply,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         builtin!("until", builtin_until),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
@@ -1314,7 +1402,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "validate",
             builtin_validate,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         // I/O
         builtin!("emit", builtin_emit, [Strictness::Seq]),
@@ -1336,76 +1425,89 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "tls-layer",
             builtin_tls_layer,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
         builtin!("tls-peer-cert", builtin_tls_peer_cert, [Strictness::Seq]),
         builtin!("lines", builtin_lines, [Strictness::Seq]),
         builtin!(
             "write",
             builtin_write,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
         builtin!(
             "write-atomic",
             builtin_write_atomic,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
         builtin!(
             "cap-data",
             builtin_cap_data,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "write-handle",
             builtin_write_handle,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!("flush", builtin_flush, [Strictness::Seq]),
         builtin!("close", builtin_close, [Strictness::Seq]),
         builtin!(
             "raw-create",
             builtin_raw_create,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
-        builtin!("seek", builtin_seek, [Strictness::Seq, Strictness::Seq]),
+        builtin!("seek", builtin_seek, [Strictness::Seq, Strictness::Seq], 2),
         builtin!("seek-end", builtin_seek_end, [Strictness::Seq]),
         builtin!("position", builtin_position, [Strictness::Seq]),
         builtin!(
             "list-dir",
             builtin_list_dir,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
-        builtin!("stat", builtin_stat, [Strictness::Seq, Strictness::Seq]),
+        builtin!("stat", builtin_stat, [Strictness::Seq, Strictness::Seq], 2),
         builtin!(
             "make-dir",
             builtin_make_dir,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "builtin-remove",
             builtin_remove,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "rename",
             builtin_rename,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
         builtin!(
             "link",
             builtin_link,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
         builtin!(
             "read-link",
             builtin_read_link,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         // Datagram sockets (UDP, Unix datagram)
         builtin!(
             "send-datagram",
             builtin_send_datagram,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
@@ -1418,16 +1520,17 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("blake3", builtin_blake3, [Strictness::Seq]),
         builtin!("cap-identity", builtin_cap_identity, [Strictness::Seq]),
         // runtime-v2 Part F: expand/load/eval primitives for include-decomp pipeline
-        builtin!("expand", builtin_expand, [Strictness::Seq]),
-        builtin!("load", builtin_load, [Strictness::Seq]),
-        builtin!("eval", builtin_eval, [Strictness::Seq]),
-        builtin!("eval-types", builtin_eval_types, [Strictness::Seq]),
+        builtin!("expand", builtin_expand, [Strictness::Seq], 1),
+        builtin!("load", builtin_load, [Strictness::Seq], 1),
+        builtin!("eval", builtin_eval, [Strictness::Seq], 1),
+        builtin!("eval-types", builtin_eval_types, [Strictness::Seq], 1),
         builtin!(
             "include-cache-get",
             builtin_include_cache_get,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
-        builtin!("include-cache-put", builtin_include_cache_put),
+        builtin!("include-cache-put", builtin_include_cache_put, [], 2),
         // Sequences (registered under builtin-NAME; prelude exports the unwrapped names)
         builtin!("builtin-seq", builtin_seq),
         builtin!("builtin-head", builtin_head, [Strictness::Seq]),
@@ -1439,42 +1542,58 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq]
         ),
         builtin!("builtin-repeat", builtin_repeat),
-        builtin!("builtin-cycle", builtin_cycle, [Strictness::Spine]),
+        builtin!("builtin-cycle", builtin_cycle, [Strictness::Spine], 1),
         builtin!("builtin-iterate", builtin_iterate),
         builtin!("builtin-unfold", builtin_unfold),
-        builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine]),
+        builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine], 1),
         builtin!(
             "filter",
             builtin_filter,
-            [Strictness::Id, Strictness::Spine]
+            [Strictness::Id, Strictness::Spine],
+            1
         ),
-        builtin!("take", builtin_take, [Strictness::Seq, Strictness::Spine]),
-        builtin!("drop", builtin_drop, [Strictness::Seq, Strictness::Spine]),
+        builtin!(
+            "take",
+            builtin_take,
+            [Strictness::Seq, Strictness::Spine],
+            2
+        ),
+        builtin!(
+            "drop",
+            builtin_drop,
+            [Strictness::Seq, Strictness::Spine],
+            2
+        ),
         builtin!(
             "reduce",
             builtin_reduce,
-            [Strictness::Id, Strictness::Id, Strictness::Spine]
+            [Strictness::Id, Strictness::Id, Strictness::Spine],
+            1
         ),
         // Stable aliases for map/filter/take/drop/reduce (used internally by prelude to allow shadowing)
         builtin!(
             "builtin-map",
             builtin_map,
-            [Strictness::Id, Strictness::Spine]
+            [Strictness::Id, Strictness::Spine],
+            1
         ),
         builtin!(
             "builtin-filter",
             builtin_filter,
-            [Strictness::Id, Strictness::Spine]
+            [Strictness::Id, Strictness::Spine],
+            1
         ),
         builtin!(
             "builtin-take",
             builtin_take,
-            [Strictness::Seq, Strictness::Spine]
+            [Strictness::Seq, Strictness::Spine],
+            2
         ),
         builtin!(
             "builtin-drop",
             builtin_drop,
-            [Strictness::Seq, Strictness::Spine]
+            [Strictness::Seq, Strictness::Spine],
+            2
         ),
         builtin!(
             "builtin-reduce",
@@ -1484,12 +1603,14 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "builtin-join",
             builtin_join,
-            [Strictness::Seq, Strictness::Spine]
+            [Strictness::Seq, Strictness::Spine],
+            2
         ),
         builtin!(
             "builtin-concat",
             builtin_concat,
-            [Strictness::Spine, Strictness::Seq]
+            [Strictness::Spine, Strictness::Seq],
+            1
         ),
         // List operations (registered under builtin-NAME; prelude exports the unwrapped names)
         builtin!("builtin-first", builtin_first, [Strictness::Spine]),
@@ -1606,7 +1727,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_timestamp_in_tz,
             [Strictness::Seq, Strictness::Seq]
         ),
-        builtin!("local->timestamp", builtin_local_to_timestamp),
+        builtin!("local->timestamp", builtin_local_to_timestamp, [], 7),
         builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq]),
         // URI parsing
         builtin!("uri", builtin_uri, [Strictness::Seq]),
@@ -1621,28 +1742,28 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
                 Strictness::Seq,
                 Strictness::Seq,
                 Strictness::Seq
-            ]
+            ],
+            4
         ),
         builtin!(
             "quic-open-stream",
             builtin_quic_open_stream,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "quic-open-datagram",
             builtin_quic_open_datagram,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "http2-session",
             builtin_http2_session,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
-        builtin!(
-            "http3-session",
-            builtin_http3_session,
-            [Strictness::Seq, Strictness::Seq]
-        ),
+        builtin!("http3-session", builtin_http3_session, [Strictness::Seq], 1),
         builtin!(
             "http-request",
             builtin_http_request,
@@ -1652,12 +1773,14 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
                 Strictness::Seq,
                 Strictness::Seq,
                 Strictness::Seq
-            ]
+            ],
+            5
         ),
         builtin!(
             "icmp-ping",
             builtin_icmp_ping,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
         ),
         // Meta primitives
         // DELETED: builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq])
@@ -3579,6 +3702,7 @@ mod tests {
             func: ok_builtin,
             name: "ok",
             pos_strictness: &[],
+            force_count: 0,
         });
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(b)],
@@ -3607,6 +3731,7 @@ mod tests {
             func: err_builtin,
             name: "fail",
             pos_strictness: &[],
+            force_count: 0,
         });
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(b)],
@@ -3638,6 +3763,7 @@ mod tests {
             func: depth_exceeded_builtin,
             name: "depth_fail",
             pos_strictness: &[],
+            force_count: 0,
         });
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(b)],
@@ -3672,6 +3798,7 @@ mod tests {
             func: resource_limit_builtin,
             name: "resource_fail",
             pos_strictness: &[],
+            force_count: 0,
         });
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(b)],
@@ -3769,8 +3896,9 @@ mod tests {
                 ctx,
                 ..
             } = builtin_ctx;
-            let a = materialize(&args[0], None, &ctx)?;
-            let b = materialize(&args[1], None, &ctx)?;
+            // TEST: test-only add_builtin with force_count=0 deliberately uses materialize directly
+            let a = materialize(&args[0], None, &ctx)?; // TEST: test-only inline builtin
+            let b = materialize(&args[1], None, &ctx)?; // TEST: test-only inline builtin
             match (a, b) {
                 (Value::Int(x), Value::Int(y)) => ok_val(Value::Int(x + y), call_span),
                 _ => Err(EvalError::type_mismatch("Int", "non-Int", call_span).into()),
@@ -3781,6 +3909,7 @@ mod tests {
             func: add_builtin,
             name: "add",
             pos_strictness: &[],
+            force_count: 0,
         });
         let args_val = thunk_dict(
             {
@@ -3971,6 +4100,7 @@ mod tests {
             func: dummy,
             name: "dummy",
             pos_strictness: &[],
+            force_count: 0,
         });
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(builtin)],
@@ -9332,6 +9462,7 @@ mod tests {
                     func: pred_eq_299,
                     name: "pred_eq_299",
                     pos_strictness: &[],
+                    force_count: 0,
                 }));
 
                 let filter_result = builtin_filter(BuiltinArgs {
@@ -9401,6 +9532,7 @@ mod tests {
                     func: pred_always_false,
                     name: "pred_always_false",
                     pos_strictness: &[],
+                    force_count: 0,
                 }));
 
                 // Call filter at depth=200 (near MAX_EVAL_DEPTH=256)
@@ -9416,17 +9548,24 @@ mod tests {
                 })
                 .unwrap();
 
-                // Convert lazy Seq to Dict via builtin_collect, then materialize
-                let collect_result = builtin_collect(BuiltinArgs {
-                    args: &[filter_result],
-                    named: no_named(),
+                // Convert lazy Seq to Dict via builtin_collect.
+                // Must go through Thunk::new_pending_builtin + materialize rather than
+                // calling builtin_collect directly, because builtin_collect uses
+                // expect_one_arg which calls try_get_materialized().expect("pre-materialized
+                // by force_count"). Calling it directly with an unmaterialized thunk panics.
+                // The CEK machine (eval.rs::materialize PendingBuiltin handler) applies
+                // pos_strictness W1 (Spine) pre-materialization before dispatching.
+                let collect_def = builtin!("builtin-collect", builtin_collect, [Strictness::Spine]);
+                let collect_thunk = Arc::new(Thunk::new_pending_builtin(
+                    collect_def,
+                    vec![filter_result],
+                    None,
+                    call_span(),
+                    None,
+                    Arc::clone(&ctx_inner),
+                ));
 
-                    call_span: call_span(),
-                    ctx: Arc::clone(&ctx_inner),
-                })
-                .unwrap();
-
-                let val = crate::eval::materialize(&collect_result, None, &ctx_inner).unwrap();
+                let val = crate::eval::materialize(&collect_thunk, None, &ctx_inner).unwrap();
                 match val {
                     Value::Dict(ref map) => {
                         assert_eq!(
@@ -9692,7 +9831,7 @@ mod tests {
 
         // Create the PendingBuiltin thunk
         let pending_thunk = Arc::new(Thunk::new_pending_builtin(
-            builtin!("drop", builtin_drop_seq_step),
+            builtin!("drop", builtin_drop_seq_step, [], 2),
             vec![n_remaining, seq],
             None,
             call_span(),
@@ -10335,5 +10474,126 @@ mod tests {
             "expected KeyNotFound, got {:?}",
             err.kind
         );
+    }
+
+    // === H1 CPS sentinel tests: verify force_count builtins do NOT force lazy values ===
+
+    /// Body test: `builtin_keys` (force_count=1) must NOT force dict VALUES.
+    ///
+    /// `$keys` enumerates dictionary keys only. The values stored under those keys
+    /// must remain as unevaluated thunks throughout. If `builtin_keys` were to call
+    /// `materialize()` on any dict value, the undef thunk would fail with an
+    /// "undefined variable" error, causing this test to panic.
+    ///
+    /// This is a body test: it verifies that the builtin body does not over-materialize
+    /// beyond the args promised by force_count. The force_count dispatch mechanism itself
+    /// is tested separately by the CEK and bypass-path unit tests.
+    #[test]
+    fn builtin_keys_does_not_force_dict_values() {
+        let ctx = test_ctx();
+        // Build a dict whose VALUES are bomb thunks: materializing them would fail.
+        // `$keys` should enumerate the keys without ever touching the values.
+        let mut map = IndexMap::new();
+        map.insert(Key::String("a".into()), make_undef_thunk(&ctx));
+        map.insert(Key::String("b".into()), make_undef_thunk(&ctx));
+        map.insert(Key::String("c".into()), make_undef_thunk(&ctx));
+        let dict = thunk_dict(map, &ctx);
+
+        // builtin_keys should succeed: it only reads keys, not values.
+        let result = builtin_keys(BuiltinArgs {
+            args: &[dict],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: Arc::clone(&ctx),
+        });
+        assert!(
+            result.is_ok(),
+            "builtin_keys must not force dict values; got error: {:?}",
+            result.unwrap_err()
+        );
+        // The result should be a dict with 3 entries (one per key).
+        let val = mat(result);
+        match val {
+            Value::Dict(ref m) => {
+                assert_eq!(m.len(), 3, "expected 3 keys in result, got {}", m.len())
+            }
+            other => panic!("expected Dict from builtin_keys, got {:?}", other),
+        }
+    }
+
+    /// Body test: `builtin_length` (force_count=1) must NOT force dict VALUES.
+    ///
+    /// `$length` counts dictionary entries. The values stored under those keys
+    /// must remain unevaluated. Like `builtin_keys_does_not_force_dict_values`, this
+    /// is a body test: verifies the builtin body does not over-materialize beyond
+    /// the args promised by force_count.
+    #[test]
+    fn builtin_length_does_not_force_dict_values() {
+        let ctx = test_ctx();
+        // Build a dict with 4 bomb-value entries.
+        let mut map = IndexMap::new();
+        map.insert(Key::Int(0), make_undef_thunk(&ctx));
+        map.insert(Key::Int(1), make_undef_thunk(&ctx));
+        map.insert(Key::Int(2), make_undef_thunk(&ctx));
+        map.insert(Key::Int(3), make_undef_thunk(&ctx));
+        let dict = thunk_dict(map, &ctx);
+
+        // builtin_length should succeed: it only counts entries, not values.
+        let result = builtin_length(BuiltinArgs {
+            args: &[dict],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: Arc::clone(&ctx),
+        });
+        assert!(
+            result.is_ok(),
+            "builtin_length must not force dict values; got error: {:?}",
+            result.unwrap_err()
+        );
+        let val = mat(result);
+        assert_eq!(val, Value::Int(4), "expected length 4, got {:?}", val);
+    }
+
+    /// Body test: `builtin_append` (force_count=1) must NOT force the appended VALUE.
+    ///
+    /// `$append` takes a Dict and a value, inserting the value at the next integer key.
+    /// The VALUE being appended (args[1]) must stay as an unevaluated thunk — only
+    /// the dict structure (args[0]) needs to be materialized to determine the next key.
+    ///
+    /// If `builtin_append` were to force args[1], the undef thunk would produce an
+    /// "undefined variable" error. Passing this test proves args[1] is never forced
+    /// by the builtin body (body test — not testing the force_count dispatch mechanism).
+    #[test]
+    fn builtin_append_does_not_force_appended_value() {
+        let ctx = test_ctx();
+        // Start with an empty dict and append a bomb thunk as the value.
+        let dict = thunk(Value::Dict(IndexMap::new()));
+        let bomb = make_undef_thunk(&ctx);
+
+        // builtin_append should succeed: it inserts the thunk by Rc::clone, never forcing it.
+        let result = builtin_append(BuiltinArgs {
+            args: &[dict, bomb],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: Arc::clone(&ctx),
+        });
+        assert!(
+            result.is_ok(),
+            "builtin_append must not force the appended value; got error: {:?}",
+            result.unwrap_err()
+        );
+        // The result should be a dict with exactly one entry at key 0.
+        let val = mat(result);
+        match val {
+            Value::Dict(ref m) => {
+                assert_eq!(m.len(), 1, "expected 1 entry after append, got {}", m.len());
+                assert!(
+                    m.contains_key(&Key::Int(0)),
+                    "expected integer key 0, got {:?}",
+                    m.keys().collect::<Vec<_>>()
+                );
+            }
+            other => panic!("expected Dict from builtin_append, got {:?}", other),
+        }
     }
 }

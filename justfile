@@ -73,6 +73,8 @@ lint:
     @just lint-stdlib
     @echo ""
     @just lint-md
+    @echo ""
+    @just lint-builtins-cps
 
 lint-clippy:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy -- -D warnings"
@@ -85,6 +87,13 @@ lint-clippy-allows:
     @echo "  - If it's pending-feature scaffolding, track it in TODO.md and delete until needed."
     @echo "  - Allowing disallowed methods must be done very carefully, this is a security boundary. Verify this usage can't possibly leverage an existing cap"
     @fgrep -B1 -A1 -rn '#[allow' src/ || true
+
+# Verify no builtins call materialize() directly on args (all forced args must use force_count).
+# H2/H3/TEST annotated lines are intentional exceptions (conditional materialize, loop materialize,
+# or test-only code). Runs without container — it's a grep, not a build.
+lint-builtins-cps:
+    @! grep -Ern 'materialize\(&args(\.args)?\[' src/builtins*.rs | grep -v '// H2:\|// H3:\|// TEST:' || (echo "ERROR: builtins still call materialize directly (unannotated H1 call)" && exit 1)
+    @echo "OK: No unannotated builtins call materialize() directly"
 
 # Run tinct lint --strict on every .llt file in stdlib/
 lint-stdlib: build-release

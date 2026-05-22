@@ -48,7 +48,7 @@ use crate::builtins::{
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_call::{invoke_function, CallContext};
-use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
 /// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
 /// Delegates to [`crate::eval_deep::deep_materialize`].
@@ -145,7 +145,9 @@ pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let func_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let func_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let call_result = match func_val {
         Value::Function {
@@ -326,10 +328,13 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    // Both args[0] and args[1] have been pre-materialized by BuiltinForceArg,
-    // so these materialize() calls are O(1) cache hits.
-    let func_val = materialize(&args[0], None, &ctx)?;
-    let args_val = materialize(&args[1], None, &ctx)?;
+    // Both args[0] and args[1] have been pre-materialized by force_count.
+    let func_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let args_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let arg_dict = crate::builtins::require_dict("apply", args_val, args[1].span, &ctx, call_span)?;
 
@@ -370,6 +375,28 @@ pub(crate) fn builtin_apply_impl(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
             origin: Some(Arc::from("apply")),
         }),
         Value::Builtin(def) => {
+            // Pre-materialize strict args before calling the builtin.
+            // `builtin_apply_impl` calls `def.func` directly (not through the CEK machine),
+            // so `force_count` and `pos_strictness` pre-materialization do NOT happen
+            // automatically. Builtins that use `try_get_materialized().expect(...)` rely
+            // on force_count/pos_strictness having been applied; without this, passing a
+            // force_count>0 builtin like `$keys` through `$apply` would panic.
+            //
+            // Ordering: force_count range first (matches force_step dispatch order), then
+            // pos_strictness Seq/Spine. Both loops skip args that are already materialized.
+            for i in 0..def.force_count.min(positional.len()) {
+                if positional[i].try_get_materialized().is_none() {
+                    materialize(&positional[i], Some(&call_span), &ctx)?;
+                }
+            }
+            for (i, &s) in def.pos_strictness.iter().enumerate() {
+                if i < positional.len()
+                    && (s == Strictness::Seq || s == Strictness::Spine)
+                    && positional[i].try_get_materialized().is_none()
+                {
+                    materialize(&positional[i], Some(&call_span), &ctx)?;
+                }
+            }
             let builtin_args = BuiltinArgs {
                 args: &positional,
                 named: if named_args.is_empty() {
@@ -412,7 +439,10 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         Some(named.expect("checked by if condition above").clone())
     };
     Ok(Arc::new(Thunk::new_pending_builtin(
-        builtin!("apply", builtin_apply_impl),
+        // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
+        // before calling builtin_apply_impl, which uses try_get_materialized().expect(...).
+        // Must match what builtin_apply_impl actually requires.
+        builtin!("apply", builtin_apply_impl, [], 2),
         args.to_vec(),
         named_opt,
         call_span,
@@ -447,8 +477,7 @@ pub(crate) fn builtin_gensym(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let prefix = if args.is_empty() {
         "gensym".to_string()
     } else if args.len() == 1 {
-        // Materialize the first argument to get the prefix string
-        let prefix_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        let prefix_val = materialize(&args[0], Some(&call_span), &ctx)?; // H2: conditional optional prefix arg — deferred to dispatch-cont sprint
         match prefix_val {
             Value::String { source, start, end } => source[start..end].to_string(),
             _ => {
@@ -1342,7 +1371,9 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         };
 
     // Extract source string
-    let source_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let source_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let source = require_string("load", source_val, args[0].span)?;
 
     // Use name hint for error messages
@@ -1414,7 +1445,9 @@ pub(crate) fn builtin_expand(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     match val {
         Value::Program {
             program: surface_program,
@@ -1555,7 +1588,9 @@ pub(crate) fn builtin_eval(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     };
 
     // Materialize the sequence argument
-    let seq_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let seq_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Collect Expression nodes from the sequence
     let mut expression_nodes = Vec::new();
@@ -1729,7 +1764,9 @@ pub(crate) fn builtin_eval_types(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
     };
 
     // Materialize the sequence argument
-    let seq_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let seq_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Collect Expression nodes from the sequence
     let mut expression_nodes = Vec::new();
@@ -1873,11 +1910,15 @@ pub(crate) fn builtin_include_cache_put(ctx_arg: BuiltinArgs) -> EvalResult<Arc<
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let key_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let key_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let key = require_string("include-cache-put", key_val, args[0].span)?;
 
     // The second arg is the entry variant: [Missing], [Pending], or [Cached value]
-    let entry_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let entry_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let entry = match &entry_val {
         Value::Variant { tag, payload } => match tag.as_str() {
@@ -2008,12 +2049,12 @@ pub(crate) fn builtin_validate(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
 }
 
-/// Helper: materialize and extract exactly 2 positional arguments, no named args.
+/// Helper: extract exactly 2 pre-materialized positional arguments, no named args.
 fn expect_two_args(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<(Value, Value)> {
     if args.len() != 2 {
@@ -2023,8 +2064,12 @@ fn expect_two_args(
         return Err(EvalError::named_arg_rejected(name.to_string(), call_span).into());
     }
 
-    let val1 = materialize(&args[0], Some(&call_span), &ctx)?;
-    let val2 = materialize(&args[1], Some(&call_span), &ctx)?;
+    let val1 = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let val2 = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     Ok((val1, val2))
 }

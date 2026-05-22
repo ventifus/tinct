@@ -1258,7 +1258,7 @@ enum Cont {
     Memoize(Box<MemoizeData>),                       // cache result/error in thunk
     PendingCallDispatch(Box<PendingCallDispatchData>),// force callee, then invoke
     GuardedValidate(Box<GuardedValidateData>),        // validate against type annotation
-    BuiltinForceArg(Box<BuiltinForceArgData>),        // force arg[0] for builtins
+    BuiltinForceArg(Box<BuiltinForceArgData>),        // force args[0..force_count] then W1 Seq/Spine positions
 
     // eval() continuations
     DotAccessForce(Box<DotAccessForceData>),           // access field from materialized dict

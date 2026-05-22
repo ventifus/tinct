@@ -16,7 +16,7 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, Value};
+use crate::value::{BuiltinArgs, Key, Strictness, Thunk, ThunkId, Value};
 
 /// `map`: Apply a function to every element of a dict or sequence.
 ///
@@ -37,7 +37,9 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
 
     let f_thunk = Arc::clone(&args[0]);
-    let xs = materialize(&args[1], None, &ctx)?;
+    let xs = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
         Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span)?),
@@ -86,7 +88,12 @@ pub(crate) fn builtin_map(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             ));
             let tail_args = vec![Arc::clone(&f_thunk), Arc::clone(&tail_thunk)];
             let new_tail = Arc::new(Thunk::new_pending_builtin(
-                builtin!("map", builtin_map),
+                // Must match the standard_builtins() registration: force_count=1 forces
+                // args[0] (the function), and Spine on args[1] forces the tail sequence.
+                // Without force_count here, builtin_map would panic at its
+                // `args[1].try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`
+                // when the tail Seq is an unevaluated thunk.
+                builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine], 1),
                 tail_args,
                 None,
                 call_span,
@@ -130,7 +137,9 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
 
     let pred_thunk = Arc::clone(&args[0]);
-    let xs = materialize(&args[1], None, &ctx)?;
+    let xs = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     // Flatten Overlay to Dict before dispatch.
     let xs = match xs {
         Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span)?),
@@ -163,7 +172,7 @@ pub(crate) fn builtin_filter(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let filter_args = vec![Arc::clone(&pred_thunk), dict_thunk, idx_thunk];
 
             let result_thunk = Arc::new(Thunk::new_pending_builtin(
-                builtin!("filter", builtin_filter_dict_step),
+                builtin!("filter", builtin_filter_dict_step, [], 3),
                 filter_args,
                 None,
                 call_span,
@@ -219,7 +228,10 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
     let pred_thunk = Arc::clone(&args[0]);
     let dict_thunk = Arc::clone(&args[1]);
 
-    let mut idx_int = match materialize(&args[2], None, &ctx)? {
+    let mut idx_int = match args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness")
+    {
         Value::Int(i) => i,
         other => {
             return Err(EvalError::type_mismatch_ctx(
@@ -234,7 +246,9 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
 
     // dict_thunk is pre-wrapped as Materialized at the filter call site
     debug_assert!(dict_thunk.try_get_materialized().is_some());
-    let dict = materialize(&dict_thunk, None, &ctx)?;
+    let dict = dict_thunk
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let dict_map = match dict {
         Value::Dict(ref m) => m,
         other => {
@@ -305,7 +319,7 @@ pub(crate) fn builtin_filter_dict_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
                 next_idx_thunk,
             ];
             let tail = Arc::new(Thunk::new_pending_builtin(
-                builtin!("filter", builtin_filter_dict_step),
+                builtin!("filter", builtin_filter_dict_step, [], 3),
                 tail_args,
                 None,
                 call_span,
@@ -439,7 +453,9 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let n = materialize(&args[0], None, &ctx)?;
+    let n = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -458,7 +474,9 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return ok_val(Value::Dict(IndexMap::new()), call_span);
     }
 
-    let xs = materialize(&args[1], None, &ctx)?;
+    let xs = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     // Bytes: treat as Seq of Int byte values
     let xs = match xs {
         Value::Bytes {
@@ -486,7 +504,17 @@ pub(crate) fn builtin_take(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
                 Arc::clone(&tail_thunk),
             ];
             let new_tail = Arc::new(Thunk::new_pending_builtin(
-                builtin!("take", builtin_take),
+                // Must match the standard_builtins() registration: force_count=2 forces
+                // args[0] (the count) and args[1] (the sequence).
+                // args[0] is already Materialized (ok_val above), but args[1] (tail_thunk)
+                // may be unevaluated. Without force_count here, builtin_take would panic at
+                // `args[1].try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`.
+                builtin!(
+                    "take",
+                    builtin_take,
+                    [Strictness::Seq, Strictness::Spine],
+                    2
+                ),
                 tail_args,
                 None,
                 call_span,
@@ -529,7 +557,9 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let n = materialize(&args[0], None, &ctx)?;
+    let n = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -548,7 +578,9 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Ok(Arc::clone(&args[1]));
     }
 
-    let xs = materialize(&args[1], None, &ctx)?;
+    let xs = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     // Bytes: treat as Seq of Int byte values
     let xs = match xs {
         Value::Bytes {
@@ -574,7 +606,7 @@ pub(crate) fn builtin_drop(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             let tail_thunk = ctx.get_thunk(tail);
             let step_args = vec![n_minus_1, Arc::clone(&tail_thunk)];
             Ok(Arc::new(Thunk::new_pending_builtin(
-                builtin!("drop", builtin_drop_seq_step),
+                builtin!("drop", builtin_drop_seq_step, [], 2),
                 step_args,
                 None,
                 call_span,
@@ -603,7 +635,9 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         ..
     } = ctx_arg;
 
-    let n = materialize(&args[0], None, &ctx)?;
+    let n = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let n_int = match n {
         Value::Int(i) => i,
         other => {
@@ -622,7 +656,9 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         return Ok(Arc::clone(&args[1]));
     }
 
-    let seq = materialize(&args[1], None, &ctx)?;
+    let seq = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     match seq {
         Value::Dict(_) => {
             // End of sequence before we finished dropping
@@ -634,7 +670,7 @@ pub(crate) fn builtin_drop_seq_step(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
             let tail_thunk = ctx.get_thunk(tail);
             let step_args = vec![n_minus_1, Arc::clone(&tail_thunk)];
             Ok(Arc::new(Thunk::new_pending_builtin(
-                builtin!("drop", builtin_drop_seq_step),
+                builtin!("drop", builtin_drop_seq_step, [], 2),
                 step_args,
                 None,
                 call_span,

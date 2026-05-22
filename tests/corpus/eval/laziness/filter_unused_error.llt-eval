@@ -3,6 +3,12 @@
 # the predicate, so element 1 becomes the head of the resulting Seq. head returns after
 # finding the first element, so element 3 ([/ 1 0]) — the laziness sentinel — is never
 # forced and its division-by-zero error never fires.
+#
+# The evaluator resolves `filtered` correctly via letrec scoping (both entries share scope).
+# The type checker warns "undefined variable: filtered" because its letrec-scope analysis
+# does not yet implement cross-binding forward references for multi-entry dicts. The
+# warning is a known type checker limitation, not an evaluator bug. The === warn section
+# documents and pins this expected diagnostic so unexpected changes are caught.
 [filtered: [filter [fn [x] [> x 0]] [1 2 [/ 1 0]]]]
 [result: [head filtered]]
 === out

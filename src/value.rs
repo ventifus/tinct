@@ -58,6 +58,9 @@ pub struct BuiltinDef {
     pub func: BuiltinFn,
     pub name: &'static str,
     pub pos_strictness: &'static [Strictness],
+    /// Number of positional args to pre-materialize unconditionally before dispatch.
+    /// Independent of pos_strictness W1 scanning. Default 0 (no forced args).
+    pub force_count: usize,
 }
 
 impl PartialEq for BuiltinDef {
@@ -74,6 +77,7 @@ impl fmt::Debug for BuiltinDef {
         f.debug_struct("BuiltinDef")
             .field("name", &self.name)
             .field("pos_strictness", &self.pos_strictness)
+            .field("force_count", &self.force_count)
             .finish_non_exhaustive()
     }
 }
@@ -2132,6 +2136,7 @@ mod tests {
             func: dummy,
             name: "test",
             pos_strictness: &[],
+            force_count: 0,
         });
         assert_ne!(b.clone(), b);
     }
@@ -2158,16 +2163,19 @@ mod tests {
             func: func_a,
             name: "my-builtin",
             pos_strictness: &[],
+            force_count: 0,
         };
         let same_name_b = BuiltinDef {
             func: func_b, // different function pointer, same name
             name: "my-builtin",
             pos_strictness: &[Strictness::Seq],
+            force_count: 0,
         };
         let different_name = BuiltinDef {
             func: func_a,
             name: "other-builtin",
             pos_strictness: &[],
+            force_count: 0,
         };
 
         assert_eq!(
@@ -2428,6 +2436,7 @@ mod tests {
             func: dummy_builtin,
             name: "test_fn",
             pos_strictness: &[],
+            force_count: 0,
         });
         assert_eq!(format!("{builtin}"), "<builtin test_fn>");
     }
@@ -2512,6 +2521,7 @@ mod tests {
             func: dummy_builtin,
             name: "test_builtin",
             pos_strictness: &[],
+            force_count: 0,
         });
         assert_eq!(format!("{builtin:?}"), "Builtin(test_builtin)");
     }
@@ -2604,6 +2614,7 @@ mod tests {
             func: dummy_builtin,
             name: "test-builtin",
             pos_strictness: &[],
+            force_count: 0,
         };
         let thunk = Thunk::new_pending_builtin(
             dummy_def,
@@ -2904,6 +2915,7 @@ mod tests {
             func: dummy_builtin,
             name: "dummy",
             pos_strictness: &[],
+            force_count: 0,
         };
         let thunk = Thunk::new_pending_builtin(
             dummy_def,
@@ -2958,6 +2970,7 @@ mod tests {
             func: error_builtin,
             name: "error_builtin",
             pos_strictness: &[],
+            force_count: 0,
         };
         let thunk = Thunk::new_pending_builtin(
             error_def,

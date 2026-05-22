@@ -1472,6 +1472,7 @@ mod tests {
             func: dummy,
             name: "test",
             pos_strictness: &[],
+            force_count: 0,
         });
         let err = value_to_json(&b, &test_ctx()).unwrap_err();
         assert!(

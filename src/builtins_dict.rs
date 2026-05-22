@@ -28,7 +28,6 @@ use indexmap::IndexMap;
 
 use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
@@ -46,8 +45,10 @@ pub(crate) fn builtin_keys(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    // arg[0] is pre-forced by force_count.
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let map = crate::builtins::require_dict("keys", val, args[0].span, &ctx, call_span)?;
 
     let origin = call_span;
@@ -83,8 +84,10 @@ pub(crate) fn builtin_length(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    // arg[0] is pre-forced by force_count.
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     match val {
         Value::String { source, start, end } => {
             let s = &source[start..end];
@@ -161,10 +164,12 @@ pub(crate) fn builtin_append(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
+    // arg[0] is pre-forced by force_count.
     // arg[1] (the value to append) is NOT materialized — it is inserted as a thunk
     // (Arc::clone at line below), preserving laziness of the appended value.
-    let dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let dict_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let mut map = crate::builtins::require_dict("append", dict_val, args[0].span, &ctx, call_span)?;
 
     // Compute the next integer key: max existing int key + 1, or 0 if none.
@@ -209,7 +214,9 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
 
     // Materialize the key
-    let key_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let key_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let key = match key_val {
         Value::Int(n) => Key::Int(n),
         Value::String {
@@ -232,7 +239,9 @@ pub(crate) fn builtin_get(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     };
 
     // Materialize the dict (spine only, not values)
-    let dict_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dict_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     // Include the key in the context string so the error message identifies WHICH
     // [get ...] call received the wrong type. This makes macro-expansion bugs diagnosable.
     let key_display = match &key {
@@ -283,7 +292,9 @@ pub(crate) fn builtin_get_optional(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
     }
 
     // Materialize the key
-    let key_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let key_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let key = match key_val {
         Value::Int(n) => Key::Int(n),
         Value::String {
@@ -306,7 +317,9 @@ pub(crate) fn builtin_get_optional(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
     };
 
     // Materialize the dict (spine only, not values)
-    let dict_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dict_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let map = crate::builtins::require_dict("get?", dict_val, args[1].span, &ctx, call_span)?;
 
     // Look up the key
@@ -345,7 +358,11 @@ pub(crate) fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     // Parse offset from optional 2nd arg (internal recursive call).
     // O(n) fix: recursive tail carries the original dict + an index instead of rebuilding.
     let offset = if args.len() == 2 {
-        match materialize(&args[1], Some(&call_span), &ctx)? {
+        // args[1] is Spine-pre-materialized by pos_strictness[1] when present.
+        match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Spine")
+        {
             Value::Int(n) => n as usize,
             _ => 0,
         }
@@ -353,8 +370,11 @@ pub(crate) fn builtin_each(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         0
     };
 
-    // Materialize the dict (spine only, not values)
-    let dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    // Materialize the dict (spine only, not values).
+    // args[0] is Spine-pre-materialized by pos_strictness[0].
+    let dict_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Spine");
     let map = crate::builtins::require_dict("each", dict_val, args[0].span, &ctx, call_span)?;
 
     // Skip to current offset position in the dict.
@@ -428,7 +448,11 @@ pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
     // Parse offset from optional 2nd arg (internal recursive call).
     let offset = if args.len() == 2 {
-        match materialize(&args[1], Some(&call_span), &ctx)? {
+        // args[1] is Spine-pre-materialized by pos_strictness[1] when present.
+        match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Spine")
+        {
             Value::Int(n) => n as usize,
             _ => 0,
         }
@@ -436,8 +460,11 @@ pub(crate) fn builtin_each_key(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         0
     };
 
-    // Materialize the dict (spine only, not values)
-    let dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    // Materialize the dict (spine only, not values).
+    // args[0] is Spine-pre-materialized by pos_strictness[0].
+    let dict_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Spine");
     let map = crate::builtins::require_dict("each-key", dict_val, args[0].span, &ctx, call_span)?;
 
     // Skip to current offset position in the dict.
@@ -517,7 +544,11 @@ pub(crate) fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 
     // Parse offset from optional 2nd arg (internal recursive call).
     let offset = if args.len() == 2 {
-        match materialize(&args[1], Some(&call_span), &ctx)? {
+        // args[1] is Spine-pre-materialized by pos_strictness[1] when present.
+        match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Spine")
+        {
             Value::Int(n) => n as usize,
             _ => 0,
         }
@@ -525,8 +556,11 @@ pub(crate) fn builtin_each_kv(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         0
     };
 
-    // Materialize the dict (spine only, not values)
-    let dict_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    // Materialize the dict (spine only, not values).
+    // args[0] is Spine-pre-materialized by pos_strictness[0].
+    let dict_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Spine");
     let map = crate::builtins::require_dict("each-kv", dict_val, args[0].span, &ctx, call_span)?;
 
     // Skip to current offset position in the dict.

@@ -184,8 +184,12 @@ pub(crate) fn builtin_open(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("open", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Seq");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[1]=Seq");
 
     // Extract DirCap and permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "open", args[0].span)?;
@@ -517,13 +521,17 @@ pub(crate) fn builtin_narrow(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("narrow", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Seq");
 
     // Extract DirCap and current permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span)?;
 
     // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
-    let second_arg_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let second_arg_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[1]=Seq");
 
     if matches!(second_arg_val, Value::String { .. }) {
         // Subtree narrowing: [narrow cap "path"]
@@ -784,8 +792,12 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         .into());
     }
 
-    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let transport_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let cap_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[0]=Seq");
+    let transport_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by pos_strictness[1]=Seq");
 
     // Extract Transport variant tag
     let transport_tag = match transport_val {
@@ -890,8 +902,8 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     match transport_tag.as_str() {
         "Tcp" => {
             // TCP path
-            let host_val = materialize(&args[2], Some(&call_span), &ctx)?;
-            let port_val = materialize(&args[3], Some(&call_span), &ctx)?;
+            let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+            let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
             // Extract NetCap
             let entries = match cap_val {
@@ -994,7 +1006,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             // Unix stream socket path
             #[cfg(target_os = "linux")]
             {
-                let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
+                let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
                 // Extract DirCap for path validation (Unix socket)
                 let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
@@ -1083,8 +1095,8 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         }
         "Udp" => {
             // UDP datagram socket path
-            let host_val = materialize(&args[2], Some(&call_span), &ctx)?;
-            let port_val = materialize(&args[3], Some(&call_span), &ctx)?;
+            let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+            let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
             // Extract NetCap
             let entries = match cap_val {
@@ -1159,7 +1171,7 @@ pub(crate) fn builtin_connect(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
             // Unix-domain datagram socket — uses DirCap for path-based capability enforcement.
             #[cfg(unix)]
             {
-                let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
+                let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
 
                 // Extract DirCap for path validation (Unix socket)
                 let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
@@ -1518,7 +1530,7 @@ pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 3 args: DirCap, String path, String content
@@ -1527,9 +1539,15 @@ pub(crate) fn builtin_write(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("write", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let content_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let content_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "write", args[0].span)?;
@@ -1568,7 +1586,7 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 3 args: DirCap, String path, String content
@@ -1577,9 +1595,15 @@ pub(crate) fn builtin_write_atomic(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
     }
     reject_named("write-atomic", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let content_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let content_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", args[0].span)?;
@@ -1660,7 +1684,7 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 2 args: Handle/WriteHandle, String cap_name
@@ -1669,8 +1693,12 @@ pub(crate) fn builtin_cap_data(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("cap-data", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let cap_name_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let handle_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let cap_name_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract caps from Handle or WriteHandle
     let caps = match handle_val {
@@ -1706,7 +1734,7 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 2 args: WriteHandle or Handle, content
@@ -1715,8 +1743,12 @@ pub(crate) fn builtin_write_handle(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
     }
     reject_named("write-handle", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let content_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let handle_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let content_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Determine the writer and the return value (preserve original handle type for chaining)
     enum HandleKind {
@@ -1971,7 +2003,7 @@ pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     reject_named("raw-create", named, call_span)?;
@@ -1979,8 +2011,12 @@ pub(crate) fn builtin_raw_create(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>>
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "raw-create", args[0].span)?;
@@ -2029,7 +2065,7 @@ pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     if args.len() != 2 {
@@ -2037,8 +2073,12 @@ pub(crate) fn builtin_seek(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("seek", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let offset_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let handle_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let offset_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract offset as Int
     let offset = match offset_val {
@@ -2322,8 +2362,12 @@ pub(crate) fn builtin_list_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("list-dir", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", args[0].span)?;
@@ -2433,8 +2477,12 @@ pub(crate) fn builtin_stat(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("stat", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "stat", args[0].span)?;
@@ -2527,7 +2575,7 @@ pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 2 args: DirCap, String path
@@ -2536,8 +2584,12 @@ pub(crate) fn builtin_make_dir(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("make-dir", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", args[0].span)?;
@@ -2564,7 +2616,7 @@ pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 2 args: DirCap, String path
@@ -2573,8 +2625,12 @@ pub(crate) fn builtin_remove(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("remove", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "remove", args[0].span)?;
@@ -2605,7 +2661,7 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 3 args: DirCap, String old_path, String new_path
@@ -2614,9 +2670,15 @@ pub(crate) fn builtin_rename(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("rename", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let old_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let new_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let old_path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let new_path_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "rename", args[0].span)?;
@@ -2648,7 +2710,7 @@ pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 3 args: DirCap, String existing_path, String link_path
@@ -2657,9 +2719,15 @@ pub(crate) fn builtin_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     }
     reject_named("link", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let existing_path_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let link_path_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let existing_path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let link_path_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "link", args[0].span)?;
@@ -2690,7 +2758,7 @@ pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> 
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     // Expect 2 args: DirCap, String path
@@ -2699,8 +2767,12 @@ pub(crate) fn builtin_read_link(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> 
     }
     reject_named("read-link", named, call_span)?;
 
-    let dir_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let dir_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract DirCap and check permissions
     let (dir, perms) = extract_dir_cap(&dir_val, "read-link", args[0].span)?;
@@ -3396,9 +3468,15 @@ pub(crate) fn builtin_tls_layer(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> 
     }
     reject_named("tls-layer", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let sni_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let opts_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let handle_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let sni_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let opts_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let sni = require_string("tls-layer", sni_val, args[1].span)?;
 
@@ -3876,11 +3954,19 @@ pub(crate) fn builtin_quic_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
         .into());
     }
 
-    // Materialize all args — all are strict (cap, host, port, opts are all required immediately)
-    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let host_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let port_val = materialize(&args[2], Some(&call_span), &ctx)?;
-    let opts_val = materialize(&args[3], Some(&call_span), &ctx)?;
+    // All args pre-materialized by force_count
+    let cap_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let host_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let port_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let opts_val = args[3]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract NetCap
     let entries = match cap_val {
@@ -4001,7 +4087,7 @@ pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     reject_named("quic-open-stream", named, call_span)?;
@@ -4017,7 +4103,9 @@ pub(crate) fn builtin_quic_open_stream(ctx_arg: BuiltinArgs) -> EvalResult<Arc<T
         .into());
     }
 
-    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let session_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let conn = match session_val {
         Value::QuicSession(c) => c,
@@ -4088,7 +4176,7 @@ pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     reject_named("quic-open-datagram", named, call_span)?;
@@ -4104,7 +4192,9 @@ pub(crate) fn builtin_quic_open_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc
         .into());
     }
 
-    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let session_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     let conn = match session_val {
         Value::QuicSession(c) => c,
         other => {
@@ -4140,7 +4230,7 @@ pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     reject_named("http2-session", named, call_span)?;
@@ -4156,11 +4246,17 @@ pub(crate) fn builtin_http2_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         .into());
     }
 
-    // Materialize all args — all are required immediately.
-    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let url_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    // All args pre-materialized by force_count
+    let cap_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let url_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     // opts reserved for future use (ca, client cert, timeouts, etc.)
-    let _opts_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let _opts_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Validate cap
     let entries = match cap_val {
@@ -4267,7 +4363,7 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     reject_named("http3-session", named, call_span)?;
@@ -4283,7 +4379,9 @@ pub(crate) fn builtin_http3_session(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         .into());
     }
 
-    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let session_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let conn = match session_val {
         Value::QuicSession(c) => c,
@@ -4375,12 +4473,22 @@ pub(crate) fn builtin_http_request(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
         .into());
     }
 
-    // Materialize all args — all are required immediately.
-    let session_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let method_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let path_val = materialize(&args[2], Some(&call_span), &ctx)?;
-    let headers_val = materialize(&args[3], Some(&call_span), &ctx)?;
-    let body_val = materialize(&args[4], Some(&call_span), &ctx)?;
+    // All args pre-materialized by force_count
+    let session_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let method_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let path_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let headers_val = args[3]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let body_val = args[4]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let method_str = require_string("http-request", method_val, args[1].span)?;
     let path_str = require_string("http-request", path_val, args[2].span)?;
@@ -4746,9 +4854,15 @@ pub(crate) fn builtin_icmp_ping(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> 
         .into());
     }
 
-    let cap_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let host_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let timeout_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    let cap_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let host_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let timeout_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract NetCap entries
     let entries = match cap_val {
@@ -5081,7 +5195,7 @@ pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
 
     if args.len() != 2 {
@@ -5089,8 +5203,12 @@ pub(crate) fn builtin_send_datagram(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
     }
     reject_named("send-datagram", named, call_span)?;
 
-    let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let data_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let handle_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let data_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract bytes to send (String or Bytes) — common to all handle variants.
     let data_bytes: Vec<u8> = match data_val {

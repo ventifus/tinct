@@ -181,8 +181,12 @@ pub(crate) fn builtin_add(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let left = materialize(&args[0], Some(&call_span), &ctx)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a
@@ -226,8 +230,12 @@ pub(crate) fn builtin_sub(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let left = materialize(&args[0], Some(&call_span), &ctx)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a
@@ -274,8 +282,12 @@ pub(crate) fn builtin_mul(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let left = materialize(&args[0], Some(&call_span), &ctx)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a
@@ -323,8 +335,12 @@ pub(crate) fn builtin_div_float(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> 
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let left = materialize(&args[0], Some(&call_span), &ctx)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => {
@@ -379,8 +395,12 @@ pub(crate) fn builtin_eq(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     // NOTE: Int/Float/String/Bool fast paths MUST come before dispatch. This prevents
     // infinite recursion: EquatableInt.eq calls [builtin-eq a b] → hits (Int,Int) fast path
     // → returns immediately without dispatch. Safe.
-    let left = materialize(&args[0], Some(&call_span), &ctx)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Helper to compute structural equality (used for Dict/Variant arms below).
     // Inline closure captures ctx and call_span from the outer scope.
@@ -630,8 +650,12 @@ pub(crate) fn builtin_lt(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     // Int/Float/String/Bool fast paths are handled directly. Other types fall through
     // to Comparable instance dispatch. ComparableInt.lt calls [builtin-lt a b] which hits
     // the (Int,Int) fast path — no infinite recursion.
-    let left = materialize(&args[0], Some(&call_span), &ctx)?;
-    let right = materialize(&args[1], Some(&call_span), &ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let result = match (&left, &right) {
         (Value::Int(a), Value::Int(b)) => a < b,
@@ -707,15 +731,17 @@ pub(crate) fn builtin_if(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     reject_named("if", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
 
-    // Materialize only the condition
-    let condition = materialize(&args[0], Some(&call_span), &ctx)?;
+    // Get the pre-materialized condition
+    let condition = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     match condition {
         Value::Bool(true) => Ok(Arc::clone(&args[1])),
@@ -744,14 +770,16 @@ fn extract_single_float(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<f64> {
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let val = materialize(&args[0], Some(&call_span), ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     match val {
         Value::Int(n) => Ok(n as f64),
         Value::Float(f) => Ok(f),
@@ -770,15 +798,19 @@ fn extract_two_floats(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(f64, f64)> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let left = materialize(&args[0], Some(&call_span), ctx)?;
-    let right = materialize(&args[1], Some(&call_span), ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let a = match left {
         Value::Int(n) => n as f64,
@@ -1026,15 +1058,19 @@ fn extract_int_pair(
     name: &str,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
 ) -> EvalResult<(i64, i64)> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
-    let left = materialize(&args[0], Some(&call_span), ctx)?;
-    let right = materialize(&args[1], Some(&call_span), ctx)?;
+    let left = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let right = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let a = match left {
         Value::Int(n) => n,
@@ -1166,13 +1202,15 @@ pub(crate) fn builtin_float(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     reject_named("float", named, call_span)?;
     if args.len() != 1 {
         return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
     }
-    let val = materialize(&args[0], Some(&call_span), &ctx)?;
+    let val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
     match val {
         Value::Int(n) => ok_val(Value::Float(n as f64), call_span),
         Value::Float(f) => ok_val(Value::Float(f), call_span),

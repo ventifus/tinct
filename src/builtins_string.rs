@@ -53,6 +53,7 @@ pub(crate) fn builtin_str(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     // causing infinite recursion when dispatched back into builtin_str.
     // Estimate capacity: average string ~20 bytes, typical config keys ~10 bytes.
     // Conservative underestimate better than zero capacity.
+    // NOTE: variadic builtin - can't use force_count, must materialize in loop
     let estimated_capacity = args.len() * 10;
     let mut result = String::with_capacity(estimated_capacity);
     for arg in args {
@@ -81,11 +82,13 @@ pub(crate) fn builtin_split(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
-    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
-    let sep_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    // arg[1] is forced synchronously; BuiltinForceArg only covers arg[0].
-    // Acceptable: the input string is typically a small literal or bound variable.
-    let input_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    // Both args pre-materialized by force_count=2
+    let sep_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let input_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let sep = require_string("split", sep_val, args[0].span)?;
 
@@ -262,18 +265,22 @@ pub(crate) fn builtin_replace(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     reject_named("replace", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
-    // arg[0] is pre-forced by BuiltinForceArg; this call is an O(1) cache hit.
-    let pattern_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    // args[1] and args[2] are forced synchronously; BuiltinForceArg only covers arg[0].
-    // Acceptable: replacement and input strings are typically small literals or bound variables.
-    let replacement_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let input_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    // All args pre-materialized by force_count=3
+    let pattern_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let replacement_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let input_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let pattern = require_string("replace", pattern_val, args[0].span)?;
     let replacement = require_string("replace", replacement_val, args[1].span)?;
@@ -367,17 +374,23 @@ pub(crate) fn builtin_str_slice(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> 
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     reject_named("str-slice", named, call_span)?;
     if args.len() != 3 {
         return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
     }
 
-    // Materialize all arguments
-    let input_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let start_val = materialize(&args[1], Some(&call_span), &ctx)?;
-    let end_val = materialize(&args[2], Some(&call_span), &ctx)?;
+    // Get pre-materialized arguments
+    let input_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let start_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let end_val = args[2]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     // Extract the source Rc<str> from the input string
     let (input_source, input_start, input_end) = match input_val {
@@ -811,15 +824,19 @@ pub(crate) fn builtin_str_index_of(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     reject_named("str-index-of", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let haystack_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let needle_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let haystack_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let needle_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let haystack = require_string("str-index-of", haystack_val, args[0].span)?;
     let needle = require_string("str-index-of", needle_val, args[1].span)?;
@@ -967,9 +984,13 @@ pub(crate) fn builtin_str_map_chars(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thun
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    // Materialize the function (arg 0) and the input string (arg 1).
-    let func_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let input_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    // Get pre-materialized function (arg 0) and the input string (arg 1).
+    let func_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let input_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let s = require_string("str-map-chars", input_val, args[1].span)?;
 
@@ -1061,15 +1082,19 @@ pub(crate) fn builtin_regex_match(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     reject_named("regex-match?", named, call_span)?;
     if args.len() != 2 {
         return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
     }
 
-    let pattern_val = materialize(&args[0], Some(&call_span), &ctx)?;
-    let haystack_val = materialize(&args[1], Some(&call_span), &ctx)?;
+    let pattern_val = args[0]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
+    let haystack_val = args[1]
+        .try_get_materialized()
+        .expect("pre-materialized by force_count/pos_strictness");
 
     let pattern = require_string("regex-match?", pattern_val, args[0].span)?;
     let haystack = require_string("regex-match?", haystack_val, args[1].span)?;
