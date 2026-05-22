@@ -56,6 +56,11 @@ runtime-v2 PR #1 merge and need dedicated sprints to fix:
   `stdlib/cli/out/llt.llt` to use an alternative value representation approach.
   Sprint: runtime-v2-fix-llt-repr.
 
+- **`builtin_to_int`/`builtin_to_float` missing arity check** (`src/builtins_math.rs`, 2 tests):
+  `to_int_wrong_arity_zero` and `to_float_wrong_arity_zero` panic with `index out of bounds` at `builtins.rs:551`.
+  These builtins don't validate that at least 1 arg is provided. Fix: add arity check before accessing `args[0]`.
+  Sprint: runtime-v2-fix-builtin-arity.
+
 - **Debug binary RLIMIT_AS self-OOM in CLI tests** (`tests/cli_tests.rs`, ~36 tests):
   `main()` applies `RLIMIT_AS=512MB` to itself, but the debug binary exceeds that limit.
   All CLI tests OOM with `memory allocation of 232 bytes failed` on trivial inputs like `42`.
@@ -191,7 +196,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ### sprint-2b-async-primitives: Implement task/channel/context/event primitives + stdlib/async.llt
 
-**Depends on:** sprint-2b-async-eval-entry
+**Depends on:** sprint-2b-builtins-async
 
 Do in order: primitives → context → events → stdlib.
 
