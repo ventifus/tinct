@@ -45,17 +45,17 @@
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # Built-in codec lookup — checked after user registry in codec-for-encoding.
+  # Built-in codec lookup — returns CompressedCodec or null (not [Some ...]/[None]).
   builtin-codec-for-name: [fn [let lower@String]
     [match lower
-      "gzip":     [Some [to-compressed-codec Gzip]]
-      "deflate":  [Some [to-compressed-codec Deflate]]
-      "br":       [Some [to-compressed-codec Brotli]]
-      "brotli":   [Some [to-compressed-codec Brotli]]
-      "zstd":     [Some [to-compressed-codec Zstd]]
-      "identity": [Some [to-compressed-codec Identity]]
-      "*":        [Some [to-compressed-codec Gzip]]    # wildcard prefers gzip
-      _:          [None]]]
+      "gzip":     [to-compressed-codec Gzip]
+      "deflate":  [to-compressed-codec Deflate]
+      "br":       [to-compressed-codec Brotli]
+      "brotli":   [to-compressed-codec Brotli]
+      "zstd":     [to-compressed-codec Zstd]
+      "identity": [to-compressed-codec Identity]
+      "*":        [to-compressed-codec Gzip]    # wildcard prefers gzip
+      _:          null]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -92,12 +92,12 @@
 
   # Look up a codec by its HTTP Content-Encoding name.
   # registry: user-supplied [Map String CompressedCodec]; checked before built-ins.
-  # Returns [Some CompressedCodec] or [None].
+  # Returns CompressedCodec or null (bare value, same as get? — not [Some ...]/[None]).
   codec-for-encoding: [fn [let name@String  registry@[type: [Map String CompressedCodec]  default: []]]
     [lower: [str-lower name]]
-    [or
-      [get? registry lower]
-      [builtin-codec-for-name lower]]]
+    # get? returns bare value or null; builtin-codec-for-name also returns bare value or null.
+    # [or a b]: returns a if truthy (non-null CompressedCodec), else b.
+    [or [get? registry lower] [builtin-codec-for-name lower]]]
 
   # Pick the best codec from an Accept-Encoding header value.
   # registry: same as codec-for-encoding — pass your custom codecs here.

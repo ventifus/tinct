@@ -36,14 +36,15 @@
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
+  # Returns the charset name as a bare String, or null if not found.
   extract-charset: [fn [let content-type@String]
     [charset-parts: [filter [fn [let p] [str-contains? [str-lower p] "charset="]]
                      [str-split ";" content-type]]]
     [match charset-parts
-      []: [None]
+      []: null
       [let [first ...]]:
         [kv: [str-split "=" first]]
-        [if [>= [length kv] 2] [Some [str-trim [get kv 1]]] [None]]]]
+        [if [>= [length kv] 2] [str-trim [get kv 1]] null]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -64,15 +65,16 @@
        decode:       [fn [let b] [decode c b]]
        decode-lossy: [fn [let b] [decode-lossy c b]]]]]
 
+  # builtin-encoding-for-name returns the canonical WHATWG encoding name (bare String) or null.
   codec-for-name: [fn [let name@String]
-    [match [builtin-encoding-for-name [str-lower name]]
-      [Some internal]:
-        [Ok [Codec
-          [name:         internal
-           encode:       [fn [let s] [builtin-encoding-encode internal s]]
-           decode:       [fn [let b] [builtin-encoding-decode internal b]]
-           decode-lossy: [fn [let b] [builtin-encoding-decode-lossy internal b]]]]]
-      [None]: [Err [str "Unknown charset: " name]]]]
+    [internal: [builtin-encoding-for-name [str-lower name]]]
+    [if [null? internal]
+      [Err [str "Unknown charset: " name]]
+      [Ok [Codec
+        [name:         internal
+         encode:       [fn [let s] [builtin-encoding-encode internal s]]
+         decode:       [fn [let b] [builtin-encoding-decode internal b]]
+         decode-lossy: [fn [let b] [builtin-encoding-decode-lossy internal b]]]]]]]
 
   text-encode: [fn@[bind: [c]  return: TextBytes  constraint: [c: TextCodec]] [let c@c s@String]
     [match [encode c s]

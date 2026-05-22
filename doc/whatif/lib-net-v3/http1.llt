@@ -48,7 +48,8 @@
       [let [status-line ...header-lines]]:
         [status:  [to-int [get [str-split " " status-line] 1]]]
         [headers: [parse-header-lines header-lines]]
-        [body-len: [match [get? headers "content-length"] [Some n]: [to-int n] [None]: 0]]
+        [cl: [get? headers "content-length"]]
+        [body-len: [if [null? cl] 0 [to-int cl]]]
         [RawResponse
           [status:  status
            headers: headers
@@ -108,7 +109,8 @@
          parts2:  [str-split "?" target]
          path:    [get parts2 0]
          query:   [if [> [length parts2] 1] [get parts2 1] ""]
-         body-len:[match [get? headers "content-length"] [Some n]: [to-int n] [None]: 0]
+         cl:      [get? headers "content-length"]
+         body-len:[if [null? cl] 0 [to-int cl]]
          [RawRequest
            [method:  [get parts 0]   path:    path
             query:   query           version: [get parts 2]
@@ -132,7 +134,7 @@
       [match [try [parse-request h [fn [let resp] [write-response h resp]]]]
         [Ok req]:
           [send out req]
-          [if [= [get? req.headers "connection"] [Some "close"]] [exit] null]
+          [if [= [get? req.headers "connection"] "close"] [exit] null]
         [Err _]: [exit]]]]]
 
   http1-request: [fn@[bind: [h]  constraint: [h: ByteStream]]

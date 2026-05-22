@@ -302,7 +302,7 @@ connect-host: [fn [let cap@NetCap host@String port@Int]
       # Concurrent — both at once per RFC 8305 §5
       [v6-task: [task [dns-resolve cap host AAAA]]
        v4-task: [task [dns-resolve cap host A]]
-       v6-first: [match [timeout 50 v6-task]
+       v6-first: [match [timeout [millis 50] v6-task]
          [Ok addrs]: addrs
          [Err _]:    []]
        v4: [await v4-task]
@@ -735,12 +735,13 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 
 | Draft file | Target stdlib path | Key exports |
 |---|---|---|
-| [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Listener`, `Indexed`); `IpAddress`, `Port`, `SocketAddress`, `UdpDatagram`; `BindTarget`, `BindScope`; `ByteLabel`/`ByteOrder`; `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `connect-host` (RFC 8305), `ip->string`, `Url`, `parse-url` |
+| [`async.llt`](lib-net-v3/async.llt) | `stdlib/async.llt` | `channel-map`, `channel-flat-map`, `collect-channel` |
+| [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Listener`, `Indexed`); `IpAddress`, `Port`, `SocketAddress`, `UdpDatagram`; `BindTarget`, `BindScope`; `ByteLabel`/`ByteOrder`; `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `connect-host` (RFC 8305), `ip->string`, `Url`, `parse-url`, `url-decode` |
 | [`dns.llt`](lib-net-v3/dns.llt) | `stdlib/dns.llt` | `DnsQuery`, `DnsRecord`, `DnsResponse`, `Nameserver`, `DnsConfig`; `encode-dns-wire`, `decode-dns-wire`; resolver factories (`dns-udp-resolver`, `dns-tls-resolver`, `dns-https-resolver`, `dns-quic-resolver`); `dns-framed-send`; `resolve-host`, `dns-resolve`, `dns-server-loop` |
 | [`tls.llt`](lib-net-v3/tls.llt) | `stdlib/protocols/tls.llt` | `HkdfHash`, `TlsServerConfig`, `TlsClientConfig`, `CipherSuite`, `TlsConnection`; `hkdf-expand-label`, `derive-secret`, `tls13-key-schedule`; `tls-accept`, `tls-layer`, `tls-serve` |
 | [`quic.llt`](lib-net-v3/quic.llt) | `stdlib/protocols/quic.llt` | `QuicFrame` (all RFC 9000 types), `QuicConnection`, `QuicKeys`, `QuicLossState`; `quic-listen`, `quic-connect`, `quic-open-stream` |
 | [`h2.llt`](lib-net-v3/h2.llt) | `stdlib/protocols/h2.llt` | `H2Frame`, `HpackTable`, `Http2Connection`; `hpack-static-table` (61 entries); `hpack-decode`, `hpack-encode`, `h2-accept`, `h2-connect`, `http-request`, `http2-client` |
-| [`h3.llt`](lib-net-v3/h3.llt) | `stdlib/protocols/h3.llt` | `H3Frame`, `Http3Connection`; `read-varint`/`encode-varint`; `h3-accept`, `h3-connect`, `http3-client`, `h3-http-request`, `qpack-decode`, `qpack-encode` |
+| [`h3.llt`](lib-net-v3/h3.llt) | `stdlib/protocols/h3.llt` | `H3Frame`, `Http3Connection`; `read-varint`/`encode-varint`; `h3-accept`, `h3-connect`, `http3-client`, `h3-http-request`, `http3-req-conn`, `qpack-decode`, `qpack-encode` |
 | [`http1.llt`](lib-net-v3/http1.llt) | `stdlib/protocols/http1.llt` | `RawRequest`, `RawResponse`; `ok`, `json-ok`, `redirect`, `not-found`, `server-error`; `parse-request`, `write-response`, `http1-conn`, `http1-request` |
 | [`http.llt`](lib-net-v3/http.llt) | `stdlib/protocols/http.llt` | `SvcbRecord`; `http-channel`, `http-channel-tls`, `resolve-svcb`, `http-connect`, `fetch`; `router`, `headers-map`; `with-compression`, `with-logging`, `with-timeout`, `with-cors`, `with-auth` |
 | [`websocket.llt`](lib-net-v3/websocket.llt) | `stdlib/protocols/websocket.llt` | `WsFrame`, `WebSocketConnection`; `ws-accept`, `ws-connect`, `ws-recv-frame`, `ws-send-frame` |
@@ -749,7 +750,7 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 | [`crypto.llt`](lib-net-v3/crypto.llt) | `stdlib/crypto.llt` | `AsnValue` union; `parse-cert`, `cert-san`, `cert-public-key`, `verify-cert-chain` |
 | [`text.llt`](lib-net-v3/text.llt) | `stdlib/text.llt` | `TextCodec` typeclass + instances (UTF-8, UTF-16, Windows-1252, ~38 WHATWG encodings); `Codec`, `TextBytes`; `to-codec`, `codec-for-name`, `text-encode`, `text-decode`, `decode-http-body` |
 | [`compress.llt`](lib-net-v3/compress.llt) | `stdlib/compress.llt` | `CompressionCodec` typeclass (with `codec-name`) + instances (Gzip, Deflate, Brotli, Zstd, Identity); `CompressedCodec` runtime record; `to-compressed-codec`; `encode`, `decode`, `encode-compressed`, `decode-compressed`; `codec-for-encoding`, `negotiate-encoding` (both accept optional `registry@[Map String CompressedCodec]` for user codecs) |
-| [`serve.llt`](lib-net-v3/serve.llt) | `stdlib/serve.llt` | `channel-map`, `channel-flat-map`, `collect-channel`; `h2-serve`, `h3-serve`, `ws-serve`; `http1-serve`, `http2-requests`, `http3-requests`; `quic-stream-ch`, `h2-stream-ch`, `h3-stream-ch` |
+| [`serve.llt`](lib-net-v3/serve.llt) | `stdlib/serve.llt` | `h2-serve`, `h3-serve`, `ws-serve`; `http1-serve`, `http2-requests`, `http3-requests`; `quic-stream-ch` |
 | *(not yet written)* | `stdlib/protocols/icmp.llt` | `EchoRequest`, `EchoReply`; `read-icmp`, `send-icmp` |
 | *(not yet written)* | `stdlib/protocols/socks5.llt` | SOCKS5 proxy protocol |
 | *(not yet written)* | `stdlib/protocols/grpc.llt` | gRPC framing over `h2.llt` |

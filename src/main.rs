@@ -556,7 +556,7 @@ fn install_timeout(duration_str: &str) -> Result<(), String> {
 ///   chains; still leaves room for stdin/stdout/stderr + eval fds).
 ///
 /// A value of `Some(0)` disables that particular limit.
-#[cfg(unix)]
+#[cfg(all(unix, not(debug_assertions)))]
 fn setup_rlimits(
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
@@ -1152,11 +1152,13 @@ fn run_eval(
 
     // Apply rlimit resource caps (Unix only). Must happen early, before any
     // significant allocation, so that any heap limit is immediately enforced.
-    #[cfg(unix)]
+    // Skipped in debug builds: the default 512 MB RLIMIT_AS causes OOM when
+    // running CLI tests under `cargo test` (debug mode uses more virtual memory).
+    #[cfg(all(unix, not(debug_assertions)))]
     setup_rlimits(max_memory, max_cpu, max_fds)?;
-    // On non-Unix platforms, rlimit flags are accepted for CLI compatibility
-    // but have no effect (POSIX rlimits are not available).
-    #[cfg(not(unix))]
+    // On non-Unix platforms (or debug builds), rlimit flags are accepted for CLI
+    // compatibility but have no effect.
+    #[cfg(any(not(unix), debug_assertions))]
     {
         let _ = max_memory;
         let _ = max_cpu;

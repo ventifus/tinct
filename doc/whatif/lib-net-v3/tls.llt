@@ -12,7 +12,7 @@
 HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
 [type [Sha256]] [type [Sha384]] [type [Sha512]] [type [Blake2s]]
 
-[instance [ByteStream TlsConnection]
+[instance [ByteStream [TlsConnection h]]
   read-bytes:  tls-read-bytes
   write-bytes: tls-write-bytes]
 
@@ -155,8 +155,10 @@ HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
     [Aes256GcmSha384]
     [Chacha20Poly1305Sha256]]
 
-  TlsConnection: [type
-    [underlying:  Handle
+  # TlsConnection is parametric over its underlying ByteStream h so TLS can be stacked
+  # on top of any stream (TCP Handle, WireguardConnection, NoiseConnection, etc.).
+  TlsConnection: [type [h@ByteStream]
+    [underlying:  h
      write-key:   [Bytes 32]
      read-key:    [Bytes 32]
      write-iv:    [Bytes 12]
@@ -210,16 +212,17 @@ HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
      app-server-key: [hkdf-expand-label s-ap "key" [] 32]
      app-server-iv:  [hkdf-expand-label s-ap "iv"  [] 12]]]
 
-  tls-accept: [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]]
+  tls-accept: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
                 [let h@h cfg@TlsServerConfig]
     [error "TODO: tls-accept — read ClientHello, negotiate cipher/group, send ServerHello, derive keys via tls13-key-schedule, send EncryptedExtensions+Certificate+CertificateVerify+Finished, verify client Finished, install app keys"]]
 
-  tls-layer: [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]]
+  tls-layer: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
                [let h@h cfg@TlsClientConfig]
     [error "TODO: tls-layer — send ClientHello, read ServerHello, derive keys, read and verify server Finished + cert chain (verify-cert-chain), send client Finished, install app keys"]]
 
   # Serve layer: promotes a Channel@ByteStream to Channel@TlsConnection.
   # Lives here (not serve.llt) because it closes over TlsServerConfig.
-  tls-serve: [fn [let in-ch cfg@TlsServerConfig]
-    [channel-map [fn [let h] [tls-accept h cfg]] in-ch]]
+  tls-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
+               [let in-ch@[Channel h] cfg@TlsServerConfig]
+    [channel-map [fn [let s@h] [tls-accept s cfg]] in-ch]]
 ]

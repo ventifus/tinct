@@ -5,7 +5,7 @@
 [include %libdir "async.llt"]
 [include %libdir "net.llt"]
 
-[instance [ByteStream NoiseConnection]
+[instance [ByteStream [NoiseConnection h]]
   read-bytes:  noise-read
   write-bytes: noise-write]
 
@@ -102,9 +102,11 @@
      k:  [or [Bytes 32] Null]
      n:  Int]]
 
+  # NoiseConnection is parametric over its underlying ByteStream h so Noise
+  # can be stacked over any stream (Handle, TlsConnection, etc.).
   # send-n and recv-n are separate counters — one writer per direction.
-  NoiseConnection: [type
-    [underlying: Handle
+  NoiseConnection: [type [h@ByteStream]
+    [underlying: h
      send-key:   [Bytes 32]
      recv-key:   [Bytes 32]
      send-n:     [Channel Int]
@@ -112,17 +114,18 @@
 
   # Serve layer: promotes a Channel@ByteStream to Channel@NoiseConnection.
   # Lives here (not serve.llt) because it closes over NoiseConfig.
-  noise-serve: [fn [let in-ch cfg@NoiseConfig]
-    [channel-map [fn [let h] [noise-accept h cfg]] in-ch]]
+  noise-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                [let in-ch@[Channel h] cfg@NoiseConfig]
+    [channel-map [fn [let s@h] [noise-accept s cfg]] in-ch]]
 
-  noise-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
+  noise-accept: [fn@[bind: [h]  return: [NoiseConnection h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
     [match cfg.pattern
       [XX]: [noise-xx-accept h cfg]
       [IK]: [noise-ik-accept h cfg]
       [NK]: [noise-nk-accept h cfg]
       _:    [error "TODO: noise pattern not yet implemented"]]]
 
-  noise-layer: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
+  noise-layer: [fn@[bind: [h]  return: [NoiseConnection h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
     [match cfg.pattern
       [XX]: [noise-xx-connect h cfg]
       [IK]: [noise-ik-connect h cfg]

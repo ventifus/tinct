@@ -58,9 +58,8 @@
                        [let h@h req@RawRequest]
     [if [not [= [str-lower [or [get? req.headers "upgrade"] ""]] "websocket"]]
       [error "WebSocket: missing Upgrade: websocket"]]
-    [key: [match [get? req.headers "sec-websocket-key"]
-      [Some k]: k
-      [None]:   [error "WebSocket: missing Sec-WebSocket-Key"]]]
+    [key: [let raw: [get? req.headers "sec-websocket-key"]]
+          [if [null? raw] [error "WebSocket: missing Sec-WebSocket-Key"] raw]]
     [accept-key: [base64-encode [sha1 [str-bytes [str key "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"]]]]]
     [write-response h
       [RawResponse

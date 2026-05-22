@@ -55,11 +55,15 @@
     [match scheme "https": 443  "http": 80  _: 443]]
 
   decompress-response: [fn [let resp@RawResponse]
-    [match [get? resp.headers "content-encoding"]
-      [Some "gzip"]:  [RawResponse [status: resp.status  headers: resp.headers  body: [match [decode Gzip    resp.body] [Ok b]: b [Err _]: resp.body]]]
-      [Some "br"]:    [RawResponse [status: resp.status  headers: resp.headers  body: [match [decode Brotli  resp.body] [Ok b]: b [Err _]: resp.body]]]
-      [Some "zstd"]:  [RawResponse [status: resp.status  headers: resp.headers  body: [match [decode Zstd    resp.body] [Ok b]: b [Err _]: resp.body]]]
-      _: resp]]
+    [ce: [get? resp.headers "content-encoding"]]
+    [body:
+      [if [= ce "gzip"]    [match [decode Gzip    resp.body] [Ok b]: b [Err _]: resp.body]
+      [if [= ce "br"]      [match [decode Brotli  resp.body] [Ok b]: b [Err _]: resp.body]
+      [if [= ce "zstd"]    [match [decode Zstd    resp.body] [Ok b]: b [Err _]: resp.body]
+                            resp.body]]]]
+    [if [= body resp.body]
+      resp
+      [RawResponse [status: resp.status  headers: resp.headers  body: body]]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -150,16 +154,16 @@
                           registry@[type: [Map String CompressedCodec]  default: []]]
     [fn [let req@RawRequest]
       [resp: [handler req]]
-      [match [get? req.headers "accept-encoding"]
-        [Some ae]:
-          [codec: [negotiate-encoding ae registry]]
-          [if [= codec.name "identity"]
-            resp
-            [RawResponse
-              [status:  resp.status
-               headers: [assoc resp.headers "content-encoding" codec.name]
-               body:    [codec.encode resp.body]]]]
-        [None]: resp]]]
+      [ae: [get? req.headers "accept-encoding"]]
+      [if [null? ae]
+        resp
+        [codec: [negotiate-encoding ae registry]]
+        [if [= codec.name "identity"]
+          resp
+          [RawResponse
+            [status:  resp.status
+             headers: [assoc resp.headers "content-encoding" codec.name]
+             body:    [codec.encode resp.body]]]]]]]
 
   with-logging: [fn [let handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]

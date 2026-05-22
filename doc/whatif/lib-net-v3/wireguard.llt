@@ -6,7 +6,7 @@
 [include %libdir "async.llt"]
 [include %include-dir "tls.llt"]   # for HkdfHash ([Blake2s] etc.) — sibling in protocols/
 
-[instance [ByteStream WireguardConnection]
+[instance [ByteStream [WireguardConnection h]]
   read-bytes:  wg-read-bytes
   write-bytes: wg-write-bytes]
 
@@ -87,20 +87,23 @@
      preshared-key: [Bytes 32]
      local-index:   Int]]
 
+  # WireguardConnection is parametric over its underlying ByteStream h so WireGuard
+  # can be stacked over any stream (Handle, TlsConnection, etc.).
   # Single-writer invariant on tx-nonce: two concurrent writers cause nonce reuse
   # → ChaCha20-Poly1305 keystream reuse → full confidentiality loss.
-  WireguardConnection: [type
-    [underlying: Handle
+  WireguardConnection: [type [h@ByteStream]
+    [underlying: h
      tx-key:     [Bytes 32]
      rx-key:     [Bytes 32]
      tx-nonce:   [Channel Int]]]
 
   # Serve layer: promotes a Channel@ByteStream to Channel@WireguardConnection.
   # Lives here (not serve.llt) because it closes over WireguardConfig.
-  wireguard-serve: [fn [let in-ch cfg@WireguardConfig]
-    [channel-map [fn [let h] [wireguard-accept h cfg]] in-ch]]
+  wireguard-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                    [let in-ch@[Channel h] cfg@WireguardConfig]
+    [channel-map [fn [let s@h] [wireguard-accept s cfg]] in-ch]]
 
-  wireguard-accept: [fn@[bind: [h]  return: WireguardConnection  constraint: [h: ByteStream]]
+  wireguard-accept: [fn@[bind: [h]  return: [WireguardConnection h]  constraint: [h: ByteStream]]
                       [let h@h cfg@WireguardConfig]
     [msg:    [read-bytes h 148]]
     [result: [wg-process-initiation cfg msg]]
@@ -109,7 +112,7 @@
       [underlying: h  tx-key: result.tx-key
        rx-key: result.rx-key  tx-nonce: [init-nonce-ch]]]]
 
-  wireguard-layer: [fn@[bind: [h]  return: WireguardConnection  constraint: [h: ByteStream]]
+  wireguard-layer: [fn@[bind: [h]  return: [WireguardConnection h]  constraint: [h: ByteStream]]
                      [let h@h cfg@WireguardConfig]
     [eph-kp: [x25519-keypair]]
     [write-bytes h [wg-build-initiation cfg cfg.local-index]]

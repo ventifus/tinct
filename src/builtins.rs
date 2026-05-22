@@ -519,6 +519,11 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResul
         call_span,
         ctx,
     } = ctx_arg;
+    if args.is_empty() {
+        return Box::pin(async move {
+            Err(EvalError::arity_mismatch(1, 0, call_span).into())
+        });
+    }
     Box::pin(async move {
         let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span)?;
         let arg0_span = args[0].span;
@@ -547,6 +552,11 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         call_span,
         ctx,
     } = ctx_arg;
+    if args.is_empty() {
+        return Box::pin(async move {
+            Err(EvalError::arity_mismatch(1, 0, call_span).into())
+        });
+    }
     Box::pin(async move {
         let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span)?;
         let arg0_span = args[0].span;
