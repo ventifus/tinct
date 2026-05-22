@@ -103,9 +103,9 @@ The `Channel Int` nonce pattern is the tinct-idiomatic atomic counter: the chann
 All `*-accept` and `*-layer` functions are parametric over `ByteStream`. This is what makes arbitrary layering possible — WireGuard carrying TLS carrying HTTP/2 carrying gRPC:
 
 ```tinct
-h2-accept:        [fn@Http2Connection      [let h@t cfg@Http2ServerConfig    constraint: [t: ByteStream]] ...]
-tls-accept:       [fn@TlsConnection        [let h@t cfg@TlsServerConfig      constraint: [t: ByteStream]] ...]
-wireguard-accept: [fn@WireguardConnection  [let h@t cfg@WireguardServerConfig constraint: [t: ByteStream]] ...]
+h2-accept:        [fn@[bind: [t]  return: Http2Connection      constraint: [t: ByteStream]] [let h@t cfg@Http2ServerConfig]    ...]
+tls-accept:       [fn@[bind: [t]  return: TlsConnection        constraint: [t: ByteStream]] [let h@t cfg@TlsServerConfig]      ...]
+wireguard-accept: [fn@[bind: [t]  return: WireguardConnection  constraint: [t: ByteStream]] [let h@t cfg@WireguardServerConfig] ...]
 ```
 
 `wireguard-serve` produces `Channel@WireguardConnection`; `tls-serve` accepts `Channel@[ByteStream h]` — so `[tls-serve [wireguard-serve raw-ch] cert]` type-checks without any collapse to `Handle`.
@@ -716,9 +716,9 @@ stdlib/
                         codec-name:   [Fn [c@c] String]]
 
                       # compile-time polymorphic dispatch
-                      encode:       [Fn [c s@String] [Result Bytes]  constraint: [c: TextCodec]]
-                      decode:       [Fn [c b@Bytes]  [Result String] constraint: [c: TextCodec]]
-                      decode-lossy: [Fn [c b@Bytes]  String          constraint: [c: TextCodec]]
+                      encode:       [fn@[bind: [c]  return: [Result Bytes]   constraint: [c: TextCodec]] [let c@c s@String] ...]
+                      decode:       [fn@[bind: [c]  return: [Result String]  constraint: [c: TextCodec]] [let c@c b@Bytes] ...]
+                      decode-lossy: [fn@[bind: [c]  return: String           constraint: [c: TextCodec]] [let c@c b@Bytes] ...]
 
                       # Built-in codec types and instances (backed by encoding_rs Rust crate)
                       [type [UTF8]] [instance [TextCodec UTF8] ...]
@@ -743,7 +743,7 @@ stdlib/
                          decode:       [Fn [Bytes]  [Result String]]
                          decode-lossy: [Fn [Bytes]  String]]]
 
-                      to-codec: [Fn [c@t] Codec  constraint: [t: TextCodec]]
+                      to-codec: [fn@[bind: [t]  return: Codec  constraint: [t: TextCodec]] [let c@t] ...]
                         — converts any TextCodec instance to an explicit Codec dictionary
 
                       codec-for-name: [Fn [name@String] [Result Codec]]
@@ -761,7 +761,7 @@ stdlib/
                           used in HTTP response bodies, file reads, any boundary where the
                           encoding must survive as a runtime value
 
-                      text-encode: [Fn [c@t s@String] TextBytes  constraint: [t: TextCodec]]
+                      text-encode: [fn@[bind: [t]  return: TextBytes  constraint: [t: TextCodec]] [let c@t s@String] ...]
                       text-decode: [Fn [b@TextBytes] [Result String]]
 ```
 
@@ -869,7 +869,7 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
                       TlsConnection tinct record: [underlying: Handle  write-key/read-key: [Bytes 32]
                         cipher: Symbol  write-seq/read-seq: [Channel Int]];
                       [instance [ByteStream TlsConnection] ...];
-                      tls-accept, tls-connect: [Fn [h cfg] TlsConnection  constraint: [h: ByteStream]]
+                      tls-accept, tls-connect: [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]] ...]
     quic.llt        — QUIC built on udp-socket/recv/send + tls.llt:
                       connection ID parsing, packet number spaces, TLS integration,
                       stream multiplexing, flow control, loss detection, congestion control;
@@ -922,18 +922,18 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
                       WireguardConnection tinct record: [underlying: Handle
                         tx-key/rx-key: [Bytes 32]  tx-nonce: [Channel Int]];
                       [instance [ByteStream WireguardConnection] ...];
-                      wireguard-accept, wireguard-layer: [Fn [h cfg] WireguardConnection  constraint: [h: ByteStream]]
+                      wireguard-accept, wireguard-layer: [fn@[bind: [h]  return: WireguardConnection  constraint: [h: ByteStream]] ...]
     noise.llt       — Generic Noise pattern combinator (XX, IK, NK, …);
                       NoiseConnection tinct record: [underlying: Handle
                         send-key/recv-key: [Bytes 32]  send-n: [Channel Int]];
                       [instance [ByteStream NoiseConnection] ...];
-                      noise-accept, noise-layer: [Fn [h cfg] NoiseConnection  constraint: [h: ByteStream]]
+                      noise-accept, noise-layer: [fn@[bind: [h]  return: NoiseConnection  constraint: [h: ByteStream]] ...]
     websocket.llt   — WebSocket upgrade (sha1), frame framing/deframing,
                       masking (crypto-random + bytes-xor);
                       WsFrame: [union Text Binary Ping Pong Close];
-                      WebSocketConnection tinct record: { underlying: Handle  server-side: Bool };
+                      WebSocketConnection tinct record: [underlying: Handle  server-side: Bool];
                       [instance [MessageStream WebSocketConnection WsFrame] ...];
-                      ws-accept, ws-connect: [Fn [h cfg] WebSocketConnection  constraint: [h: ByteStream]]
+                      ws-accept, ws-connect: [fn@[bind: [h]  return: WebSocketConnection  constraint: [h: ByteStream]] ...]
     icmp.llt        — ICMP framing on top of connect cap Icmp Handle;
                       EchoRequest/EchoReply types, read-icmp, send-icmp
     socks5.llt      — SOCKS5 proxy protocol
@@ -1053,7 +1053,7 @@ Integer interpretation of byte sequences uses `encode`/`decode` via the `ByteLab
 `concat` is variadic and works for all `Appendable` types — `String`, `Bytes`, `[Bytes N]`, and `[Seq T]`. No type-encoded name needed:
 
 ```tinct
-concat: [fn@t [constraint: [t: Appendable]] [...args@t]
+concat: [fn@[bind: [t]  return: t  constraint: [t: Appendable]] [...args@t]
   [reduce append empty args]]
 ```
 
