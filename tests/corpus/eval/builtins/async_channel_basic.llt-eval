@@ -1,0 +1,8 @@
+# Basic channel creation - skeleton returns Channel type for now
+# TODO (runtime-v2 Sprint 2, Part B): Once full implementation is complete,
+# this should create a working channel with capacity 32
+
+[channel 32]
+
+---expect-output---
+Channel

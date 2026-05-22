@@ -612,6 +612,11 @@ pub(crate) use crate::builtins_datetime::{
     builtin_unix_to_timestamp,
 };
 
+// Async concurrency primitives: task, await, channel, send, recv
+pub(crate) use crate::builtins_async::{
+    builtin_await, builtin_channel, builtin_recv, builtin_send, builtin_task,
+};
+
 /// `first`: Return the first element of a Dict, the first character of a String,
 /// or the first byte (as Int) of a Bytes value.
 ///
@@ -1843,6 +1848,12 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_macro_injects,
             [Strictness::Seq]
         ),
+        // Async concurrency primitives (runtime-v2 Sprint 2, Part B — skeleton implementations)
+        builtin!("task", builtin_task),
+        builtin!("await", builtin_await),
+        builtin!("channel", builtin_channel),
+        builtin!("send", builtin_send),
+        builtin!("recv", builtin_recv),
     ]
 }
 
@@ -6603,7 +6614,7 @@ mod tests {
         // are now in standard_builtins.
         // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
         assert_eq!(
-            count, 228,
+            count, 233,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }

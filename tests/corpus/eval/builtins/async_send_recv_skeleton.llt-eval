@@ -1,0 +1,15 @@
+# Send and recv on skeleton channel - returns null for now
+# TODO (runtime-v2 Sprint 2, Part B): Once full implementation is complete,
+# this should actually send "hello" and receive it back
+
+[
+  ch: [channel 10]
+  _:  [send ch "hello"]
+  msg: [recv ch]
+]
+
+---expect-output---
+{
+  "ch": "Channel",
+  "msg": {}
+}

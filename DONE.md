@@ -6727,6 +6727,30 @@ See `doc/whatif/union-find-substitution.md §Prerequisites` for the documented b
 
 - [x] Research CHR-unified type constraints — see `doc/whatif/chr-unification.md`. Design: FDs (propagation rules) and type families (simplification rules) unified as CHRs (Sulzmann et al. 2007); `[class ...]` gains `fundeps:` and `resolver:` keys; FD improvement calls same type-stage function as explicit `@[Resolver a b]` annotations; arithmetic classes migrate from hardcoded Rust to prelude.llt declarations. FDs (propagation rules) and type families (simplification rules) are both instances of Constraint Handling Rules (CHRs, Sulzmann et al. 2007). Tinct's `--- stage: type` functions already implement type families. The unified design: `[class ...]` declarations carry a `resolver:` pointing to a type-stage function; FD improvement calls the same function during inference that `@[Resolver a b]` calls at annotation time. Missing: (1) Type ↔ type dict conversion during inference, (2) `resolver:` key in ClassDecl, (3) generalized `improve_functional_dependency` calling type-stage fn instead of hardcoded table, (4) Paterson condition checking. BAS constraint: FD improvement must only fire when determining positions are atomic monotypes.
 
+## Async Primitives
+
+### sprint-2b-async-primitives: API surface skeleton (task/await/channel/send/recv)
+
+**PARTIAL — API surface only; real concurrency deferred to runtime-v2-async-localset.**
+
+Created `src/builtins_async.rs` with skeleton implementations for 5 core async builtins. Registered in `standard_builtins()` (builtin count raised from 228 to 233). Added `mod builtins_async` to `src/lib.rs`. Added 5 corpus tests in `tests/corpus/eval/builtins/`.
+
+#### primitives: task/await/channel/send/recv
+
+- [x] Implement `task` builtin skeleton → `Value::Task` (`src/builtins_async.rs`)
+- [x] Implement `await` builtin skeleton → returns null for now (`src/builtins_async.rs`)
+- [x] Implement `channel` builtin skeleton → `Value::Channel`; capacity ≥ 1 validated (`src/builtins_async.rs`)
+- [x] Implement `send` builtin skeleton → returns null for now (`src/builtins_async.rs`)
+- [x] Implement `recv` builtin skeleton → returns null for now (`src/builtins_async.rs`)
+- [x] Register all builtins in `standard_builtins()` (`src/builtins.rs`)
+- [x] Add 5 corpus tests per whatif spec (`tests/corpus/eval/builtins/`)
+
+#### remaining work (tracked in runtime-v2-async-localset)
+
+- [ ] context/cancellation primitives — depends on runtime-v2-async-localset
+- [ ] event sources (signal-channel, timer-channel, watch-channel) — depends on runtime-v2-async-localset
+- [ ] stdlib/async.llt — depends on runtime-v2-async-localset
+
 - [x] Research isorecursive types (μ-types) — see `doc/whatif/isorecursive-types.md`. Design: equirecursive types via rational tree representation; `Type::Recursive { var, body }` + `Type::RecVar(String)`; cycle detection in alias expander produces μ-nodes instead of hitting depth limit; coinductive bisimulation for BAS subtype checking; `mu`/`recvar` combinators in type prelude; nominal variants remain the primary ADT mechanism.
 
 ## Inference Completeness

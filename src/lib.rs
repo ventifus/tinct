@@ -73,6 +73,8 @@ pub(crate) mod builtins_uri;
 pub(crate) mod builtins_bytes;
 // Date-time builtins: timestamps, durations, clock capabilities, timezones.
 pub(crate) mod builtins_datetime;
+// Async concurrency primitives: task, await, channel, send, recv.
+pub(crate) mod builtins_async;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // Macro expansion (pre-desugar AST transformation).

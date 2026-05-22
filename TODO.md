@@ -194,46 +194,15 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
 
-### sprint-2b-async-primitives: Implement task/channel/context/event primitives + stdlib/async.llt
+### runtime-v2-async-localset: Enable real concurrent task execution via LocalSet
 
-**Depends on:** sprint-2b-builtins-async
+**Context:** Value is `!Send` (Rc in UnevaluatedState::Expr). Prevents `tokio::spawn` (requires Send). Solution: `tokio::task::LocalSet` + `spawn_local` enables !Send futures. The API surface (task/await/channel/send/recv) exists as skeletons from sprint-2b-async-primitives; this sprint makes them actually concurrent.
 
-Do in order: primitives → context → events → stdlib.
-
-#### primitives: task/await/channel/select
-
-- [ ] Implement `task` builtin: `spawn_task(fut)` → `Value::Task(Arc<Mutex<TaskState>>)` (`src/builtins_async.rs` new file)
-- [ ] Implement `await` builtin: materialize a `Value::Task`, returning result or propagating error (`src/builtins_async.rs`)
-- [ ] Implement `await-all` in `stdlib/async.llt` (channels + with-cancel pattern per whatif design)
-- [ ] Implement `channel` builtin → `Value::Channel(Arc<ChannelInner>)` with bounded tokio mpsc channel (`src/builtins_async.rs`)
-- [ ] Implement `send` + `recv` builtins for channel communication (`src/builtins_async.rs`)
-- [ ] Implement `select-once` builtin with `[Seq [SelectSource t r]]` API (`src/builtins_async.rs`)
-- [ ] Implement `par`, `par-map`, `par-filter` via JoinSet fanout (`src/builtins_async.rs`)
-- [ ] Register all new builtins in `standard_builtins()` (`src/builtins.rs`)
-- [ ] `just test` passes; add 5 corpus tests per whatif spec
-
-#### context: cancellation primitives
-
-- [ ] Implement `context` builtin → `Value::Context(CancellationToken)` (`src/builtins_async.rs`)
-- [ ] Implement `with-cancel` → returns `CancelHandle { child-ctx, cancel }` (`src/builtins_async.rs`)
-- [ ] Implement `with-timeout`, `with-deadline`, `cancelled?`, `with-context`, `timeout` (`src/builtins_async.rs`)
-- [ ] Implement `cancel-task` builtin (cancel specific Task handle) (`src/builtins_async.rs`)
-- [ ] Implement `cancel-root`, `drain`, `exit-now` (`src/builtins_async.rs`)
-- [ ] Implement `finally` (non-cancellable cleanup context) (`src/builtins_async.rs`)
-- [ ] `EvalContext` gains `cancel: CancellationToken` field; propagate through async eval (`src/eval.rs`)
-
-#### events: signal/timer/watch event sources
-
-- [ ] Implement `signal-channel` using tokio signal handling → `Value::Channel<Signal>` (`src/builtins_async.rs`)
-- [ ] Implement `timer-channel` using tokio time → `Value::Channel<Null>` with periodic ticks (`src/builtins_async.rs`)
-- [ ] Implement `watch-channel` using tokio watch → `Value::Channel<Any>` for change notifications (`src/builtins_async.rs`)
-- [ ] Implement `loop-select` in `stdlib/async.llt` (recurring select pattern)
-
-#### stdlib/async.llt
-
-- [ ] Create `stdlib/async.llt` with: `cancel`, `await-all` (channels + with-cancel), `recv-all`, `par-map`, `par-filter`, `exit`, `graceful-exit`, `finally`, `loop-select`, `retry` (`stdlib/async.llt`)
-- [ ] `just test` full suite passes
-- [ ] Run `/review-whatif runtime-v2` to verify completeness
+- [ ] Wrap top-level eval in `LocalSet::run_until()` in main.rs + lib.rs
+- [ ] Replace skeleton in `builtin_task` with real `spawn_local` + JoinHandle
+- [ ] Replace skeleton in `builtin_await` with real JoinHandle.await
+- [ ] Replace skeletons in `builtin_channel/send/recv` with real tokio mpsc operations
+- [ ] `just test` passes; corpus tests produce real concurrent results
 
 ### sprint-2b-async: Async evaluation + primitives
 
@@ -581,6 +550,9 @@ Do in order within the sprint: class-instance → prelude → gaps.
 
 **Gap 4 — `resolver_injective` flag unused:**
 - [ ] Add parser support for `injective:` key in class declarations to set `ClassDecl.resolver_injective` — currently hardcoded `false` everywhere (`src/type_class.rs:88`, `src/typecheck.rs`); note: the `#[allow(dead_code)]` on `resolver_injective` in `type_class.rs:88` will clear once this is wired (`src/type_class.rs`, `src/typecheck.rs`)
+
+**Gap 5 — `lookup_mptc` broken for HKT instance heads:**
+- [ ] `InstanceEnv::lookup_mptc` in `src/type_class.rs` builds keys via `type_to_string_key` → `to_string()` on freshened types. For HKT instance heads like `App(Operator("Channel"), TypeVar("t"))`, the freshened key `"[Channel _t42]"` does not match a ground query key `"[Channel Int]"`, so FD improvement silently fails for these instances. Practical impact is limited — `resolve_instance` (linear scan + unify) still resolves the instance correctly in most cases — but FD improvement doesn't fire, requiring more type annotations at call sites. Fix: replace string-key lookup with structural unification over the raw (pre-freshening) instance type list, making it consistent with `resolve_instance`. (`src/type_class.rs`)
 
 - [ ] End-to-end test: `[class [Add a b c] fundeps: [[[a b] c]] resolver: AddResult +: [fn@c [a b]]]` with `[+ 1 2.0]` infers `c = Float` via FD improvement calling `AddResult` type-stage fn (`tests/corpus/eval/`)
 - [ ] `just test` passes

@@ -1,0 +1,6 @@
+# Await requires a Task value, not an Int
+
+[await 42]
+
+---expect-error---
+type mismatch: expected Task, got Int

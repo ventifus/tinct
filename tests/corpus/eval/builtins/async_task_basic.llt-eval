@@ -1,0 +1,8 @@
+# Basic task and await - skeleton returns null for now
+# TODO (runtime-v2 Sprint 2, Part B): Once full implementation is complete,
+# this should actually spawn and await the task, returning Int(42)
+
+[await [task [fn [] 42]]]
+
+---expect-output---
+{}

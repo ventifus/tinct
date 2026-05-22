@@ -1,0 +1,6 @@
+# Channel capacity must be ≥ 1
+
+[channel 0]
+
+---expect-error---
+channel capacity must be ≥ 1, got 0
