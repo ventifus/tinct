@@ -217,27 +217,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
 
-### sprint-2b-async: Async evaluation + primitives
-
-🔄 IN PROGRESS. Step 4: Async foundation complete.
-
-- [x] **Step 1-3**: Rc→Arc, ThunkInner (Mutex + tokio::sync::OnceCell), Arc<RwLock<Environment>>
-- [x] **Step 4**: MINIMAL async foundation — eval/materialize are async-capable via async_rt::block_on
-- [ ] **Step 5**: Full async transformation — see sub-sprints above (sprint-2b-builtins-cps → sprint-2b-async-eval-entry → sprint-2b-async-primitives)
-- [ ] `task`, `await`, `await-all`, `channel`, `send`, `recv`, `select-once`, `par`, `par-map`, `par-filter`
-- [ ] `context`, `with-cancel`, `with-timeout`, `cancel-task`, `cancel-root`, `drain`
-- [ ] `signal-channel`, `timer-channel`, `watch-channel`
-- [ ] `Value::Task`, `Value::Channel`, `Value::Context`
-- [ ] `stdlib/async.llt`
-
-**Current state**: eval() and materialize() are synchronous but async-capable. They can call
-async code internally via async_rt::block_on(). The existing async_rt module provides a
-current_thread tokio runtime in thread-local storage. Builtins in builtins_io.rs already
-use this pattern for QUIC/HTTP3. Full async fn transformation is deferred to preserve
-compatibility with 568 materialize() call sites.
-
-See `doc/whatif/plans/runtime-v2-plan.md` Sprint 2 for full task list.
-
 ---
 
 ## runtime-v2 — Sprint 3: Stdlib and Cleanup

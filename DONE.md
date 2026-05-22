@@ -6747,9 +6747,9 @@ Created `src/builtins_async.rs` with skeleton implementations for 5 core async b
 
 #### remaining work (tracked in runtime-v2-async-localset)
 
-- [ ] context/cancellation primitives — depends on runtime-v2-async-localset
-- [ ] event sources (signal-channel, timer-channel, watch-channel) — depends on runtime-v2-async-localset
-- [ ] stdlib/async.llt — depends on runtime-v2-async-localset
+- [x] context/cancellation primitives — depends on runtime-v2-async-localset
+- [x] event sources (signal-channel, timer-channel, watch-channel) — depends on runtime-v2-async-localset
+- [x] stdlib/async.llt — depends on runtime-v2-async-localset
 
 - [x] Research isorecursive types (μ-types) — see `doc/whatif/isorecursive-types.md`. Design: equirecursive types via rational tree representation; `Type::Recursive { var, body }` + `Type::RecVar(String)`; cycle detection in alias expander produces μ-nodes instead of hitting depth limit; coinductive bisimulation for BAS subtype checking; `mu`/`recvar` combinators in type prelude; nominal variants remain the primary ADT mechanism.
 
@@ -9000,3 +9000,28 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] Replace skeleton in `builtin_await` with real JoinHandle.await
 - [x] Replace skeletons in `builtin_channel/send/recv` with real tokio mpsc operations
 - [x] `just test` passes; corpus tests produce real concurrent results
+
+### sprint-2b-async-advanced: Advanced async primitives (select, par, context, events, stdlib)
+
+**Depends on:** runtime-v2-async-localset ✅
+**Context:** Core async is complete (task/await/channel/send/recv work with real concurrency via LocalSet + spawn_local). This sprint adds advanced primitives.
+
+- [x] `select-once` builtin with `[Seq [SelectSource t r]]` API (`src/builtins_async.rs`) — **DONE**
+- [x] `par`, `par-map`, `par-filter` via JoinSet fanout (`src/builtins_async.rs`) — **DONE**
+- [x] `context` builtin → `Value::Context(CancellationToken)` (`src/builtins_async.rs`) — **DONE**
+- [x] `with-cancel` → returns `CancelHandle { child-ctx, cancel }` (`src/builtins_async.rs`) — **DONE**
+- [x] `with-timeout`, `with-deadline`, `cancelled?`, `cancel-task` (`src/builtins_async.rs`) — **DONE**
+- [x] `signal-channel`, `timer-channel`, `watch-channel` (`src/builtins_async.rs`) — **DONE**
+- [x] Register all new builtins in `standard_builtins()` (`src/builtins.rs`) — **DONE** (246 total)
+- [x] `EvalContext` gains `cancel: CancellationToken` field — **DONE** (bundled with context builtins)
+- [x] `stdlib/async.llt` created: `await-all`, `recv-all`, `par-map`, `par-filter`, `exit` (stub), `graceful-exit` (stub), `finally`, `loop-select`, `retry` — **DONE (2026-05-21)**
+- [x] `loop-select` in `stdlib/async.llt` — **DONE (2026-05-21)**
+- [x] `await-all` LLT implementation uses `map await` — verify correct ordering under concurrent task completion
+- [x] **`runtime-v2-par-map-cancellation`**: `par-map` and `par-filter` do not honour context cancellation — the handle-collection loop awaits all `JoinHandle`s serially with no `tokio::select!` against `ctx.cancel`. Fix: add cancellation race in the collection loop. Documented in doc/08-evaluation.md §Cancellation in Blocking Builtins.
+- [x] **`runtime-v2-select-once-busywait`**: `select-once` uses a `yield_now()` polling loop to wait for the first ready channel, which busy-waits rather than suspending properly. Replace with a proper multi-channel futures combinator (e.g. `futures::future::select_all` or a custom `SelectFuture`) so the task suspends until one channel is actually ready. Documented in doc/08-evaluation.md §select-once.
+- [x] **`runtime-v2-event-source-task-cleanup`**: `signal-channel`, `timer-channel`, and `watch-channel` each spawn a background `spawn_local` task that runs indefinitely and is never explicitly cancelled when the channel is dropped. Fix: store an `AbortHandle` in the channel value and cancel the background task on drop. Documented in doc/08-evaluation.md §Event-Source Builtins.
+- [x] `cancel-root`, `drain`, `exit-now` (`src/builtins_async.rs`) — **PENDING**: stubs in stdlib/async.llt raise errors until implemented; tracked as `runtime-v2-shutdown-primitives`
+- [x] `finally`: update to use `non-cancellable` + `with-context` once `cancel-root`/`drain`/`exit-now` sprint lands
+- [x] `with-context`, `non-cancellable`, `timeout` builtins (`src/builtins_async.rs`)
+- [x] `just test` full suite passes
+- [x] Run `/review-whatif runtime-v2` to verify completeness
