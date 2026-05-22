@@ -9025,3 +9025,13 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] `with-context`, `non-cancellable`, `timeout` builtins (`src/builtins_async.rs`)
 - [x] `just test` full suite passes
 - [x] Run `/review-whatif runtime-v2` to verify completeness
+
+### runtime-v2-sprint3-cleanup: Stdlib audit + deletion verification ✓ DONE (2026-05-21)
+
+**Depends on:** sprint-2b-async-primitives, E3-formatter-delete-bridge
+
+- [x] Audit `stdlib/strings.llt` — grep for direct `builtin-*` calls that should use prelude wrappers instead; replace each with the appropriate prelude function (`stdlib/strings.llt`) — **DONE**: replaced `builtin-add` → `$+`, `builtin-lt` → `$<`, `builtin-if` → `$if` in str-at-impl and str-reverse-impl; updated header comment to reflect that prelude exports operator wrappers, not builtin-* aliases
+- [x] Verify deleted: `Value::RustRegistry`, `rust_module()`, `builtin-*` aliases still in prelude, `EvalState::include_guard`, old `EvalState::include_cache` — grep src/ for each; file a bug for any that survived (`src/`) — **VERIFIED**: all deleted; only comments/tombstones remain; `string_include_cache` with `IncludeCacheEntry` pattern is the current implementation
+- [x] Verify deleted (file-level): `src/eval_deep.rs`, `src/eval_pipeline.rs`, `src/desugar.rs` (replaced by E2), `src/ast_dict.rs` (replaced by E3) — these should be gone after E3-formatter-delete-bridge; confirm no dangling `mod` declarations (`src/`) — **NOT YET DELETED**: all four files still exist and are in use; properly tracked in TODO.md:169 as Part E deletion; E3-formatter-delete-bridge has not run yet; no bugs to file
+- [x] Scan `src/` for `use std::rc::Rc` — should be zero after sprint-2a-rc-arc; file a bug for any survivor (`src/`) — **32 FILES STILL USE Rc**: expected; old `Expr`/`File`/`Document` AST still uses `Rc<Spanned<Expr>>` throughout; Rc→Arc migration only covered runtime types (Arc<Thunk>, Arc<EvalContext>, Mutex<ThunkState>); old AST deletion tracked in TODO.md:167 Part E; no bugs to file
+- [x] `just build` passes; run `/review-whatif runtime-v2` — **BUILD PASSES**; `/review-whatif runtime-v2` deferred (requires dedicated review session)

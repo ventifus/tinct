@@ -226,16 +226,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `stdlib/desugar.llt` — **DONE (commit f6a41d2)**: 215-line pure-tinct desugaring (metaprogramming tool; pipeline desugar handled by E2-desugar-cutover in Rust)
 - [x] `stdlib/codecs/json.llt` `from-json` — **DONE (commit f6a41d2)**: switched to pure-tinct json-parse-value
 
-### runtime-v2-sprint3-cleanup: Stdlib audit + deletion verification
-
-**Depends on:** sprint-2b-async-primitives, E3-formatter-delete-bridge
-
-- [ ] Audit `stdlib/strings.llt` — grep for direct `builtin-*` calls that should use prelude wrappers instead; replace each with the appropriate prelude function (`stdlib/strings.llt`)
-- [ ] Verify deleted: `Value::RustRegistry`, `rust_module()`, `builtin-*` aliases still in prelude, `EvalState::include_guard`, old `EvalState::include_cache` — grep src/ for each; file a bug for any that survived (`src/`)
-- [ ] Verify deleted (file-level): `src/eval_deep.rs`, `src/eval_pipeline.rs`, `src/desugar.rs` (replaced by E2), `src/ast_dict.rs` (replaced by E3) — these should be gone after E3-formatter-delete-bridge; confirm no dangling `mod` declarations (`src/`)
-- [ ] Scan `src/` for `use std::rc::Rc` — should be zero after sprint-2a-rc-arc; file a bug for any survivor (`src/`)
-- [ ] `just test` passes; run `/review-whatif runtime-v2`
-
 ---
 
 ## Macro System v2
