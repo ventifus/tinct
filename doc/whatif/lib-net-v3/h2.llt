@@ -1,0 +1,214 @@
+# stdlib/protocols/h2.llt — HTTP/2 (RFC 7540) + HPACK (RFC 7541) in tinct.
+# Part of: lib-net-v3
+# Depends on: net.llt (ByteStream), tls.llt, http1.llt (RawRequest, RawResponse)
+
+[include %libdir "net.llt"]
+[include %libdir "http1.llt"]
+
+# ── Frame Types ──────────────────────────────────────────────────────────────────
+
+H2FrameType: [union
+  [H2Data]          # 0x0 — payload data
+  [H2Headers]       # 0x1 — header block
+  [H2Priority]      # 0x2 — stream priority (deprecated in RFC 9113)
+  [H2RstStream]     # 0x3 — stream reset
+  [H2Settings]      # 0x4 — connection settings
+  [H2PushPromise]   # 0x5 — server push (deprecated in RFC 9113)
+  [H2Ping]          # 0x6 — keepalive
+  [H2Goaway]        # 0x7 — graceful shutdown
+  [H2WindowUpdate]  # 0x8 — flow control
+  [H2Continuation]] # 0x9 — header block continuation
+
+H2Frame: [type
+  [type:      H2FrameType
+   flags:     Int
+   stream-id: Int     # 0 for connection-level frames
+   payload:   Bytes]]
+
+# ── HPACK Tables ─────────────────────────────────────────────────────────────────
+
+# HPACK static table (RFC 7541 Appendix A) — 61 entries.
+# Indexed 1–61; index 0 is invalid.
+HpackStaticEntry: [type [name: String  value: [or String Null]]]
+
+hpack-static-table: [
+  [name: ":authority"           value: null]               # 1
+  [name: ":method"              value: "GET"]              # 2
+  [name: ":method"              value: "POST"]             # 3
+  [name: ":path"                value: "/"]                # 4
+  [name: ":path"                value: "/index.html"]      # 5
+  [name: ":scheme"              value: "http"]             # 6
+  [name: ":scheme"              value: "https"]            # 7
+  [name: ":status"              value: "200"]              # 8
+  [name: ":status"              value: "204"]              # 9
+  [name: ":status"              value: "206"]              # 10
+  [name: ":status"              value: "304"]              # 11
+  [name: ":status"              value: "400"]              # 12
+  [name: ":status"              value: "404"]              # 13
+  [name: ":status"              value: "500"]              # 14
+  [name: "accept-charset"       value: null]               # 15
+  [name: "accept-encoding"      value: "gzip, deflate"]   # 16
+  [name: "accept-language"      value: null]               # 17
+  [name: "accept-ranges"        value: null]               # 18
+  [name: "accept"               value: null]               # 19
+  [name: "access-control-allow-origin" value: null]        # 20
+  [name: "age"                  value: null]               # 21
+  [name: "allow"                value: null]               # 22
+  [name: "authorization"        value: null]               # 23
+  [name: "cache-control"        value: null]               # 24
+  [name: "content-disposition"  value: null]               # 25
+  [name: "content-encoding"     value: null]               # 26
+  [name: "content-language"     value: null]               # 27
+  [name: "content-length"       value: null]               # 28
+  [name: "content-location"     value: null]               # 29
+  [name: "content-range"        value: null]               # 30
+  [name: "content-type"         value: null]               # 31
+  [name: "cookie"               value: null]               # 32
+  [name: "date"                 value: null]               # 33
+  [name: "etag"                 value: null]               # 34
+  [name: "expect"               value: null]               # 35
+  [name: "expires"              value: null]               # 36
+  [name: "from"                 value: null]               # 37
+  [name: "host"                 value: null]               # 38
+  [name: "if-match"             value: null]               # 39
+  [name: "if-modified-since"    value: null]               # 40
+  [name: "if-none-match"        value: null]               # 41
+  [name: "if-range"             value: null]               # 42
+  [name: "if-unmodified-since"  value: null]               # 43
+  [name: "last-modified"        value: null]               # 44
+  [name: "link"                 value: null]               # 45
+  [name: "location"             value: null]               # 46
+  [name: "max-forwards"         value: null]               # 47
+  [name: "proxy-authenticate"   value: null]               # 48
+  [name: "proxy-authorization"  value: null]               # 49
+  [name: "range"                value: null]               # 50
+  [name: "referer"              value: null]               # 51
+  [name: "refresh"              value: null]               # 52
+  [name: "retry-after"          value: null]               # 53
+  [name: "server"               value: null]               # 54
+  [name: "set-cookie"           value: null]               # 55
+  [name: "strict-transport-security" value: null]          # 56
+  [name: "transfer-encoding"    value: null]               # 57
+  [name: "user-agent"           value: null]               # 58
+  [name: "vary"                 value: null]               # 59
+  [name: "via"                  value: null]               # 60
+  [name: "www-authenticate"     value: null]]              # 61
+
+# HPACK dynamic table: insertion-order queue with total-size tracking.
+HpackTable: [type
+  [entries:   [Seq HpackStaticEntry]   # newest first
+   size:      Int                      # current size in HPACK octets
+   max-size:  Int]]                    # SETTINGS_HEADER_TABLE_SIZE (default 4096)
+
+Http2Connection: [type
+  [handle:        Handle
+   streams:       [Map Int H2Stream]
+   hpack-send:    HpackTable
+   hpack-recv:    HpackTable
+   next-stream:   [Channel Int]       # next client stream ID (odd)
+   send-window:   [Channel Int]       # connection-level flow control
+   recv-window:   [Channel Int]
+   settings:      [Map String Int]]]
+
+H2Stream: [type
+  [id:            Int
+   send-window:   [Channel Int]
+   recv-ch:       [Channel Bytes]
+   headers-ch:    [Channel [Map String String]]]]
+
+[
+  # ── Frame I/O ─────────────────────────────────────────────────────────────────
+
+  # HTTP/2 frame format: length(3) | type(1) | flags(1) | stream-id(4) | payload(length).
+  read-h2-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [header: [read-bytes h 9]]
+    [len:    [+ [+ [* [get header 0] 65536] [* [get header 1] 256]] [get header 2]]]
+    [type:   [int->h2-frame-type [get header 3]]]
+    [flags:  [get header 4]]
+    [sid:    [bit-and [+ [+ [+ [* [get header 5] 16777216]
+                              [* [get header 6] 65536]]
+                           [* [get header 7] 256]]
+                        [get header 8]]
+               0x7FFFFFFF]]   # strip reserved bit
+    [payload: [read-bytes h len]]
+    [H2Frame [type: type  flags: flags  stream-id: sid  payload: payload]]]
+
+  write-h2-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h frame@H2Frame]
+    [len: [length frame.payload]]
+    [write-bytes h
+      [concat
+        [bytes [/ [/ len 256] 256]]    # length byte 2 (high)
+        [bytes [mod [/ len 256] 256]]  # length byte 1
+        [bytes [mod len 256]]          # length byte 0 (low)
+        [bytes [h2-frame-type->int frame.type]]
+        [bytes frame.flags]
+        [bytes [/ [/ frame.stream-id 256] 65536]]
+        [bytes [mod [/ frame.stream-id 256] 256]]
+        [bytes [mod frame.stream-id 256]]
+        [bytes [mod frame.stream-id 1]]
+        frame.payload]]]
+
+  int->h2-frame-type: [fn [let n@Int]
+    [match n
+      0: [H2Data]  1: [H2Headers]  2: [H2Priority]  3: [H2RstStream]
+      4: [H2Settings]  5: [H2PushPromise]  6: [H2Ping]  7: [H2Goaway]
+      8: [H2WindowUpdate]  9: [H2Continuation]
+      _: [error [str "HTTP/2: unknown frame type: " n]]]]
+
+  h2-frame-type->int: [fn [let t@H2FrameType]
+    [match t
+      [H2Data]: 0  [H2Headers]: 1  [H2Priority]: 2  [H2RstStream]: 3
+      [H2Settings]: 4  [H2PushPromise]: 5  [H2Ping]: 6  [H2Goaway]: 7
+      [H2WindowUpdate]: 8  [H2Continuation]: 9]]
+
+  # ── HPACK ─────────────────────────────────────────────────────────────────────
+
+  hpack-decode: [fn [let table@HpackTable data@Bytes]
+    [error "TODO: hpack-decode — integer decoding (RFC 7541 §5.1), Huffman decoding (§5.2), indexed/literal header field representations (§6)"]]
+
+  hpack-encode: [fn [let table@HpackTable headers@[Map String String]]
+    [error "TODO: hpack-encode — literal header field without indexing for safety; add indexed representation for headers in static/dynamic table"]]
+
+  hpack-huffman-decode: [fn [let data@Bytes]
+    [error "TODO: hpack-huffman-decode — 30-bit Huffman code table (RFC 7541 Appendix B), bit accumulation, EOS detection"]]
+
+  hpack-add-to-table: [fn [let table@HpackTable name@String value@String]
+    # HPACK entry size = name length + value length + 32 (RFC 7541 §4.1).
+    [entry-size: [+ [+ [length [str-bytes name]] [length [str-bytes value]]] 32]]
+    [evict-until: table.max-size]
+    [error "TODO: hpack-add-to-table — evict oldest entries until size fits, prepend new entry"]]
+
+  # ── Connection Lifecycle ──────────────────────────────────────────────────────
+
+  h2-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [error "TODO: h2-accept — read client preface (PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n), exchange SETTINGS frames, return Http2Connection"]]
+
+  h2-connect: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [error "TODO: h2-connect — send client preface, exchange SETTINGS, return Http2Connection"]]
+
+  # ── Stream Access ─────────────────────────────────────────────────────────────
+
+  http-request: [fn [let conn@Http2Connection req@RawRequest]
+    [error "TODO: http-request — allocate stream ID, send HEADERS frame (HPACK-encoded), send DATA frames for body, return Task@RawResponse"]]
+
+  h2-open-stream: [fn [let conn@Http2Connection]
+    [error "TODO: h2-open-stream — allocate next odd stream ID, return Handle wrapping stream channels"]]
+
+  h2-incoming: [fn [let conn@Http2Connection]
+    [error "TODO: h2-incoming — recv next server-initiated stream (even ID)"]]
+
+  # ── Request Extraction (for serve.llt) ────────────────────────────────────────
+
+  http2-req-conn: [fn [let conn@Http2Connection out@[Channel RawRequest]]
+    [error "TODO: http2-req-conn — read HEADERS frames, decode via hpack-decode, emit RawRequest with respond fn that sends HEADERS+DATA response frames"]]
+
+  http2-client: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [h2-connect h]]
+
+  h2-stream-ch: [fn [let ch@[Channel Http2Connection]]
+    [channel-map [fn [let conn] [h2-open-stream conn]] ch]]
+
+  h2-push: [fn [let conn@Http2Connection stream-id@Int req@RawRequest resp@RawResponse]
+    [error "TODO: h2-push — send PUSH_PROMISE frame then HEADERS+DATA on new stream"]]
+
+]

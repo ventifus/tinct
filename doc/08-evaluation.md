@@ -1102,6 +1102,87 @@ This forces `w` via the equality check (which materializes both operands), then 
 
 ---
 
+## Cancellation and Evaluation Contexts
+
+### EvalContext and the `cancel` Field
+
+Every evaluation runs inside an `EvalContext` (`src/eval.rs`). `EvalContext` carries a `cancel: CancellationToken` field (from the `tokio-util` crate). This token represents the *cancellation scope* for all evaluations within that context.
+
+```rust
+pub struct EvalContext {
+    // ...
+    pub cancel: tokio_util::sync::CancellationToken,
+    // ...
+}
+```
+
+**Inheritance:** Child contexts created via `with_base_dir()` (used by `$include` for the included file's context) inherit the parent's cancellation token. This means cancelling the root context also cancels any in-progress `$include` evaluations.
+
+**Root context:** When `EvalContext::new()` creates a fresh context (e.g., at program startup), it creates a fresh `CancellationToken::new()` — a root token that is not yet cancelled.
+
+### Cancellation Primitives
+
+Six builtins expose cancellation context management to LLT programs:
+
+| Builtin | Signature | Description |
+|---------|-----------|-------------|
+| `context` | `→ Context` | Creates a fresh root cancellation context (independent of the runtime's own context) |
+| `with-cancel` | `Context → {child-ctx: Context, cancel: Context}` | Creates a child context; the `cancel` field is the same child token — call `[cancel-task cancel]` to fire it |
+| `with-timeout` | `Context → Int → Context` | Creates a child context that auto-cancels after `Int` milliseconds |
+| `with-deadline` | `Context → Int → Context` | Creates a child context that auto-cancels at an absolute Unix timestamp in milliseconds |
+| `cancelled?` | `Context → Bool` | Synchronous (non-blocking) check: `true` if the context has been cancelled |
+| `cancel-task` | `Context → Null` | Explicitly cancels the context and all its child contexts |
+
+**Implementation note (`with-cancel`):** The spec describes `cancel` as a zero-arg callable `Fn@[]@Null`. The current implementation returns a `Context` value instead, requiring `[cancel-task pair.cancel]` rather than `[pair.cancel]`. This deviation is documented in the memory palace and avoids the need to close over a Rust `CancellationToken` in a `Value::Function`. The functional semantics are equivalent.
+
+### Cancellation in Blocking Builtins
+
+**Contract:** Every builtin that blocks (suspends the current task while waiting) must race against the evaluation context's cancellation token. When cancelled, the builtin must return an error immediately rather than blocking indefinitely.
+
+**Implementation pattern:**
+
+```rust
+tokio::select! {
+    result = blocking_operation => result,
+    _ = ctx.cancel.cancelled() => {
+        Err(EvalError::user_error("operation: cancelled".to_string(), call_span).into())
+    }
+}
+```
+
+**Affected builtins:**
+
+| Builtin | Blocking operation | Cancellation behavior |
+|---------|-------------------|----------------------|
+| `send` | `channel.sender.send(value).await` (suspends if buffer full) | Returns error "send: cancelled" |
+| `recv` | `rx.recv().await` (suspends until value available) | Returns error "recv: cancelled" |
+| `await` | `handle.await` (suspends until task finishes) | Returns error "await: cancelled" |
+| `select-once` | `yield_now()` poll loop (busy-waits for first channel) | Checks `ctx.cancel.is_cancelled()` each iteration; returns error "select-once: cancelled" |
+| `par-map` / `par-filter` | `handle.await` (serial collection of `JoinHandle`s) | Not cancellable — awaits all spawned tasks to completion regardless of context state (known limitation; tracked as `runtime-v2-par-map-cancellation` in TODO.md) |
+
+**Design:** When a context is cancelled while `recv` is waiting, the blocking `.await` inside `tokio::select!` is dropped and the cancellation branch fires. The channel itself is not closed — other non-cancelled tasks can still send and receive from the same channel.
+
+### Scope Inheritance and `$include`
+
+`$include` evaluates included files in a child `EvalContext` created via `with_base_dir()`:
+
+```rust
+pub fn with_base_dir(&self, ...) -> Arc<EvalContext> {
+    Arc::new(EvalContext {
+        cancel: self.cancel.clone(), // inherits parent's token
+        // ...
+    })
+}
+```
+
+Cancelling the parent context propagates into included files: any blocking operation in an included file's evaluation will be interrupted by the parent's cancellation.
+
+### Event Sources and Long-Running Contexts
+
+Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn background `spawn_local` tasks that run indefinitely. These background tasks do not currently hold abort handles and are not cancelled when the channel is dropped. Cancellation of the evaluation context does not interrupt background event-source tasks in the current implementation. This is a known limitation tracked in TODO.md.
+
+---
+
 ## Deep Materialization — Implementation
 
 The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively materialize all thunks in a value tree. This is distinct from selective materialization (which materializes only what's needed for computation) — deep materialization materializes *everything*, producing a fully-evaluated value tree suitable for serialization or comparison.

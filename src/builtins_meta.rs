@@ -1282,7 +1282,7 @@ fn type_name(val: &Value) -> String {
         Value::Expression(_) => "Expression",
         Value::Task(_) => "Task",
         Value::Channel(_) => "Channel",
-        Value::Context => "Context",
+        Value::Context(_) => "Context",
     }
     .to_string()
 }

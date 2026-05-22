@@ -285,19 +285,27 @@ Client-side 1:1 layers (`*-layer`) are the dual of `channel-map` applied to a si
 # stdlib/net.llt — RFC 8305 Happy Eyeballs v2
 
 connect-host: [fn [let cap@NetCap host@String port@Int]
-  # Resolve both address families concurrently
-  [v6-task: [task [dns-resolve cap host AAAA]]
-   v4-task: [task [dns-resolve cap host A]]]
-  # Prefer IPv6: use it if it arrives within 50ms of A records
-  [v6-first: [match [timeout 50 v6-task]
-    [Ok addrs]: addrs
-    [Err _]:    []]]
-  [v4-addrs: [await v4-task]]
-  [v6-addrs: [if [= [] v6-first]
-    [match [try [await v6-task]] [Ok a]: a [Err _]: []]
-    v6-first]]
+  [config: %dns]
+  # RFC 8305 §5.1: if single-request is set (resolv.conf option), make A and AAAA
+  # queries sequentially — some broken appliances reject parallel queries to port 53.
+  # Both branches return [v6: ... v4: ...] so the rest of the function is uniform.
+  [resolved:
+    [if config.single-request
+      # Sequential — AAAA first, then A (RFC 8305 still prefers IPv6)
+      [v6: [match [try [dns-resolve cap host AAAA]] [Ok a]: a [Err _]: []]
+       v4: [match [try [dns-resolve cap host A]]    [Ok a]: a [Err _]: []]]
+      # Concurrent — both at once per RFC 8305 §5
+      [v6-task: [task [dns-resolve cap host AAAA]]
+       v4-task: [task [dns-resolve cap host A]]
+       v6-first: [match [timeout 50 v6-task]
+         [Ok addrs]: addrs
+         [Err _]:    []]
+       v4: [await v4-task]
+       v6: [if [= [] v6-first]
+         [match [try [await v6-task]] [Ok a]: a [Err _]: []]
+         v6-first]]]]
   # Interleave families (IPv6 preferred per RFC 6724), race with 250ms stagger
-  [happy-connect cap port [interleave v6-addrs v4-addrs]]]
+  [happy-connect cap port [interleave resolved.v6 resolved.v4]]]
 
 happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddress]]
   [result-ch:  [channel 1]
@@ -405,7 +413,7 @@ dns-resolve: [fn [let resolver name type]
 # Resolver factories — return Fn@[Task DnsResponse] [DnsQuery]
 # addr is a pre-resolved SocketAddress (resolver IPs come from system config, not DNS)
 dns-udp-resolver: [fn [let cap addr@SocketAddress]
-  [sock: [udp-socket cap 0]]   # ephemeral local port
+  [sock: [udp-ephemeral cap]]  # bind 0.0.0.0:0 — ephemeral port assigned by OS
   [fn [let q] [task
     [send-datagram sock addr [encode-dns-wire q]]
     [decode-dns-wire [recv-datagram sock].data]]]]
@@ -488,7 +496,7 @@ This grant lets the program bind on localhost:8080 and do nothing else with the 
 # Run with: tinct run --cap-net server@b=127.0.0.1:8080 server.llt
 [
   cap:      %server                     # Bindable on 127.0.0.1:8080 only
-  port:     @Port: 8080
+  port:     [@Port 8080]
   requests: [http-channel cap port]    # tcp-listen + http1-serve on localhost
 
   handler: [router
@@ -512,7 +520,7 @@ tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
 [
   cap:      %listen                              # Bindable on 0.0.0.0:443 only
   key-cap:  %certs                              # ./certs read-only
-  port:     @Port: 443
+  port:     [@Port 443]
   cert:     [slurp-secret key-cap "server.pem"]
   requests: [http-channel cap port cert]         # tcp-listen + tls-serve + http1-serve
 
@@ -638,7 +646,7 @@ tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes
 
 **SNI note:** `resolve-svcb` may follow one or more `AliasMode` redirections before returning a `ServiceMode` record. Throughout this chain, `http-connect` uses the original `host` argument as the TLS SNI value — never any alias target. This is correct per RFC 9460 §7.2: SNI must identify the service, not the CDN infrastructure that happens to serve it.
 
-**`make-serve-layer` and non-ByteStream connections:** `make-serve-layer` is fully polymorphic — it places no `ByteStream` constraint on the `accept-fn`. A function `my-proto-accept: [Fn [WebSocketConnection config] MyConnection]` composes with `make-serve-layer` just as `tls-accept` does. The serve layer model works for any connection type, not only `ByteStream` instances.
+**`channel-map` and non-ByteStream connections:** `channel-map` is fully polymorphic — it places no `ByteStream` constraint on the function `f` it applies. A function `my-proto-accept: [Fn [WebSocketConnection] MyConnection]` (or a closure closing over config) composes with `channel-map` just as `tls-accept` does. The serve layer model works for any connection type, not only `ByteStream` instances.
 
 ---
 
@@ -652,10 +660,10 @@ These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStrea
 
 | Primitive | Signature | Description | Why Rust |
 |-----------|-----------|-------------|----------|
-| `tcp-bind` | `[Fn [cap@NetCap addr@SocketAddress] TcpListener]` | Bind and listen on a TCP socket | `pool.bind_tcp_listener(addr)` where pool is the NetCap's backing `cap_std::net::Pool` — capability check, OS bind, and listen are one indivisible operation; produces `TcpListener` opaque handle |
+| `tcp-bind` | `[Fn [cap@NetCap target@BindTarget] TcpListener]` | Bind and listen on a TCP socket | **IpBind(SocketAddress)**: if address is `Ipv4` or `Ipv6` (no zone), `pool.bind_tcp_listener(addr)` — atomic check+bind. If address is `Ipv6Zone(bytes, zone)`, the zone name is looked up in `interface_entries` (Pool compares only IP bytes; zone ID must be validated against the cap separately); `if_nametoindex(zone)` converts interface name → kernel scope_id; `sockaddr_in6.sin6_scope_id` is set before bind. **InterfaceBind(name, port)**: `SO_BINDTODEVICE(name)` + scope prefix-check on the actual bind address; validates against `interface_entries` |
 | `tcp-accept` | `[Fn [h@TcpListener] Handle]` | Accept one incoming TCP connection (async) | OS accept() syscall on a `TcpListener` handle + tokio reactor registration; tinct cannot make socket syscalls |
 | `tcp-connect` | `[Fn [cap@NetCap addr@SocketAddress] Handle]` | Connect to a TCP endpoint | `pool.connect_tcp_stream(addr)` — capability check and socket syscall are one indivisible operation; no TOCTOU window |
-| `udp-socket` | `[Fn [cap@NetCap addr@SocketAddress] UdpSocket]` | Bind a UDP socket (`addr.port = 0` for ephemeral) | `pool.bind_udp_socket(addr)` — capability check and OS bind are one indivisible operation |
+| `udp-socket` | `[Fn [cap@NetCap target@BindTarget] UdpSocket]` | Bind a UDP socket; use `port = 0` for ephemeral | Same routing as `tcp-bind`: `pool.bind_udp_socket(addr)` for `IpBind` with non-zoned address; zone-aware path through `interface_entries` + `if_nametoindex()` for `Ipv6Zone`; `SO_BINDTODEVICE` + scope enforcement for `InterfaceBind` |
 | `udp-recv` | `[Fn [sock@UdpSocket] UdpDatagram]` | Receive one UDP datagram with source address (async) | Reads from `UdpSocket` opaque Rust state; tinct cannot access UdpSocket internals |
 | `udp-send` | `[Fn [sock@UdpSocket addr@SocketAddress data@Bytes] Null]` | Send a datagram to a specific address | Writes through `UdpSocket` opaque Rust state |
 | `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not yet implemented upstream; wraps the accept loop internally using `openat2(RESOLVE_BENEATH)` + raw `UnixListener`. When cap-std adds `UnixListener`, two new Rust primitives appear: `unix-bind: [Fn [DirCap String] UnixListener]` and `unix-accept: [Fn [UnixListener] Handle]`; one `[instance [Listener UnixListener] accept: unix-accept]` declaration is added; `unix-listen` becomes pure tinct using `listen-loop` |
@@ -664,7 +672,19 @@ These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStrea
 | `try-recv` | `[Fn [ch@[Channel t]] [Result t]]` | Non-blocking recv — `Err` if no item immediately available | Requires reading Channel's internal buffer occupancy without consuming an item; `select-once` + 0ms-timer is scheduler-dependent and not guaranteed non-blocking |
 | `channel-count` | `[Fn [ch@[Channel t]] Int]` | Current number of items in the channel buffer | Reads `Arc<ChannelInner>` buffer count without consuming; tinct cannot access Channel internals; used by `collect-channel` to snapshot size before draining |
 
-`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct. The `Listener` typeclass (same pattern as `ByteStream`, `Datagram`, `MessageStream`) provides `accept` as a polymorphic dispatch method. `TcpListener` and `UnixListener` are opaque Rust types with `Listener` instances that delegate to `tcp-accept`/`unix-accept`. `listen-loop` is parametric over any `Listener l`. Adding a new listener type requires one Rust primitive pair and one `[instance [Listener ...] ...]` declaration — no changes to `accept`, `listen-loop`, or any call site. `read-bytes` and `write-bytes` are the `Handle` instance methods for `ByteStream`; `udp-recv` and `udp-send` are the `UdpSocket` instance methods for `Datagram`. All are called through typeclass dispatch in tinct code.
+`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct. The `Listener` typeclass (same pattern as `ByteStream`, `Datagram`, `MessageStream`) provides `accept` as a polymorphic dispatch method.
+
+**Scope of `NetCap`:** everything here is IP-layer (layer 3 and above). Non-IP Ethernet protocols operate at layer 2 via `AF_PACKET` raw sockets with EtherType filtering and require a different capability type. The most immediately useful is **LLDP** (IEEE 802.1AB, EtherType `0x88CC`): tinct programs that discover network topology, map switch adjacency, or inspect LLDP neighbor advertisements are practical infrastructure tools. Following the same `name@flags=resource` pattern as `--cap-net` and `--cap-fs` (where `name` becomes `%name` in the program and `resource` identifies what is being accessed):
+
+```
+--cap-ethernet lldp@r=eth0:0x88CC    # %lldp: receive LLDP frames on eth0
+--cap-ethernet arp@rw=eth0:0x0806    # %arp: send+receive ARP on eth0
+--cap-ethernet net@r=eth0            # %net: receive all EtherTypes on eth0
+```
+
+The flag letters `@r` (receive) and `@w` (send/write) deliberately mirror DirCap's `@r` (read) and `@w` (write) — the analogy is: reading bytes from the wire ↔ reading bytes from a file; injecting frames ↔ writing bytes to a file. Both capabilities use the same semantic: `@r` = consume, `@w` = produce. This consistency is intentional, not a collision. A future EthernetCap spec should state this analogy explicitly to avoid confusion between "receive frame" and "read file".
+
+Other EtherType candidates: ARP (`0x0806`), PTP (`0x88F7`), IS-IS (`0x8847`), 802.1X (`0x888E`). `NetCap` is IP-only by design, not by accident, and `EthernetCap` sits cleanly alongside it without retrofitting. `TcpListener` and `UnixListener` are opaque Rust types with `Listener` instances that delegate to `tcp-accept`/`unix-accept`. `listen-loop` is parametric over any `Listener l`. Adding a new listener type requires one Rust primitive pair and one `[instance [Listener ...] ...]` declaration — no changes to `accept`, `listen-loop`, or any call site. `read-bytes` and `write-bytes` are the `Handle` instance methods for `ByteStream`; `udp-recv` and `udp-send` are the `UdpSocket` instance methods for `Datagram`. All are called through typeclass dispatch in tinct code.
 
 ### Crypto Primitives
 
@@ -711,11 +731,35 @@ stdlib/
   net.llt           — ByteStream typeclass + [instance [ByteStream Handle] ...]
                       Datagram typeclass + [instance [Datagram UdpSocket] ...]
                       MessageStream typeclass + [instance [MessageStream [Channel t] t] ...]
-                      ByteStream typeclass + [instance [ByteStream Handle] ...]
-                      Datagram typeclass + [instance [Datagram UdpSocket] ...]
-                      MessageStream typeclass + [instance [MessageStream [Channel t] t] ...]
-                      IpAddress ([union [Ipv4 [Bytes 4]] [Ipv6 [Bytes 16]]])
+                      IpAddress ([union [Ipv4 [Bytes 4]] [Ipv6 [Bytes 16]] [Ipv6Zone [Bytes 16] String]])
+                        — Ipv6Zone carries the zone ID for any scoped IPv6 address
+                          (link-local unicast fe80::/10 AND link-local multicast ff02::/16)
                       Port, SocketAddress, UdpDatagram types
+
+                      BindTarget: [union
+                        [IpBind        SocketAddress]      # specific IP+port (existing)
+                        [InterfaceBind String Port]]       # named interface + port
+                        — used by tcp-bind and udp-socket; stdlib convenience constructors:
+                          bind-ip:        [fn [let addr@SocketAddress] [IpBind addr]]
+                          bind-interface: [fn [let name@String port@Port] [InterfaceBind name port]]
+
+                      BindScope: [union [AnyScope] [LinkLocal] [GlobalScope] [Loopback]]
+                        — scope restriction for interface-bound caps; enforced at bind time
+                          by checking the requested bind address against a prefix:
+                          [LinkLocal]   permits only 169.254.0.0/16 (IPv4) or fe80::/10 (IPv6);
+                                        if 0.0.0.0 / :: is passed → rejected ("scope LinkLocal
+                                        requires a link-local address, not all-interfaces")
+                          [GlobalScope] permits only globally-routable addresses (not link-local,
+                                        not loopback, not private RFC1918/ULA)
+                          [Loopback]    permits only 127.0.0.0/8 and ::1
+
+                          Implementation note: SO_BINDTODEVICE alone does NOT enforce scope —
+                          the kernel accepts any source address from that interface regardless
+                          of prefix. Scope is enforced in `src/builtins.rs` inside the `tcp-bind`
+                          and `udp-socket` handlers, as a pre-bind prefix check on the requested
+                          address, before any Pool call or setsockopt. A caller requesting
+                          InterfaceBind with LinkLocal scope and a global address gets a Rust-level
+                          error before any syscall is made.
 
                       ByteLabel — the unified encode/decode typeclass for all labeled bytes.
                       TextCodec, ByteOrder, and CompressionCodec are all instances where
@@ -776,11 +820,17 @@ stdlib/
                       tcp-listen  (tcp-bind → TcpListener → listen-loop via Listener typeclass)
                       unix-listen (unix-bind → UnixListener → listen-loop, pending cap-std UnixListener)
                       udp-bind    (udp-socket + tinct recv loop, Channel@UdpDatagram)
+                      udp-ephemeral: [fn [let cap@NetCap] [udp-socket cap [bind-ip [addr: [Ipv4 [0 0 0 0]] port: 0]]]]
+                        — convenience for ephemeral UDP sockets (DNS resolvers, ICMP, etc.);
+                          binds 0.0.0.0:0 so the OS assigns an ephemeral port.
+                          Use [udp-socket cap target] directly when you need interface or port control.
                       quic-listen (udp-socket + quic.llt accept loop, Channel@QuicConnection)
                       tcp-connect (takes SocketAddress — pool.connect_tcp_stream, atomic)
-                      resolve-host  (tries each %dns.nameserver in order; returns [Seq IpAddress])
+                      resolve-host  (tries each %dns.nameserver in order; returns [Seq IpAddress];
+                        checks %dns.single-request — sequential A+AAAA when true)
                       dns-query-first, ns-to-resolver
-                      connect-host  (RFC 8305 Happy Eyeballs — resolve-host + happy-connect)
+                      connect-host  (RFC 8305 Happy Eyeballs — resolve-host + happy-connect;
+                        respects %dns.single-request for sequential A/AAAA resolution)
                       parse-url, url-encode/decode
   text.llt          — Character encoding for text protocols and file I/O.
                       String in tinct is always Unicode (UTF-8 internally). Encoding is a
@@ -943,6 +993,17 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
                       resolver factories: dns-udp-resolver, dns-tls-resolver,
                         dns-https-resolver (all take SocketAddress, not hostname)
                       dns-server-loop.
+                      dns-query-with-retry: [Fn [cap@NetCap nameservers@[Seq Nameserver]
+                                                 name@String type@Symbol attempts@Int rotate@Bool]
+                                               [Result [Seq IpAddress]]]
+                        — tries each nameserver in order (or rotated if rotate=true),
+                          retrying up to attempts times total across all servers;
+                          each individual query uses %dns.timeout via timer-channel.
+                      dns-framed-send: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                                         [let h@h q@DnsQuery] ...]
+                        — encodes query as DNS wire format with 2-byte length prefix (RFC 7766),
+                          writes to h, reads response with 2-byte length prefix, decodes.
+                          Used by dns-tls-resolver and dns-https-resolver.
                       Note: dns-try-names tries candidates in order; for each candidate it
                       tries all nameservers before moving to the next candidate. In
                       Kubernetes (ndots:5, 5 search domains), a slow nameserver adds
@@ -955,13 +1016,34 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
                         collect-channel:  drain immediately-available items; calls channel-count
                           to snapshot the buffer size at call time, then drains exactly that many
                           items via try-recv — prevents racing a concurrent producer
+                        seconds: [Fn [n@Int] Duration]   — n seconds as a Duration value
+                        millis:  [Fn [n@Int] Duration]   — n milliseconds as a Duration value
+                          (both are convenience constructors over the Duration type from
+                          stdlib/datetime.llt; timer-channel %clock takes a Duration)
   protocols/
     tls.llt         — TLS 1.3 record layer (read-bytes/write-bytes framing) + handshake
-                      state machine + certificate chain verification (via crypto.llt);
+                      state machine + certificate chain verification (via crypto.llt).
+
+                      TlsServerConfig: [type
+                        [certificate: Bytes        # X.509 DER chain, leaf first (PEM stripped)
+                         private-key: Bytes        # PKCS#8 DER
+                         alpn:        [Seq String] # e.g. ["h2" "http/1.1"]
+                         min-version: Symbol]]     # Tls13 (default) | Tls12
+
+                      TlsClientConfig: [type
+                        [sni:         String
+                         alpn:        [Seq String]
+                         ech:         Bytes        # ECH extension bytes; empty = disabled
+                         trust-roots: [or [Seq Bytes] Symbol]]]
+                                       # [Seq Bytes] = custom DER certs; SystemRoots = OS trust store
+
                       TlsConnection tinct record: [underlying: Handle  write-key/read-key: [Bytes 32]
                         cipher: Symbol  write-seq/read-seq: [Channel Int]];
                       [instance [ByteStream TlsConnection] ...];
-                      tls-accept, tls-connect: [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]] ...]
+                      tls-accept: [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]]
+                                    [let h@h cfg@TlsServerConfig] ...]
+                      tls-layer:  [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]]
+                                    [let h@h cfg@TlsClientConfig] ...]
     quic.llt        — QUIC built on udp-socket/recv/send + tls.llt:
                       connection ID parsing, packet number spaces, TLS integration,
                       stream multiplexing, flow control, loss detection, congestion control;
@@ -981,6 +1063,27 @@ The EBCDIC codec participates in `encode`/`decode`/`text-encode`/`text-decode` i
     http1.llt       — HTTP/1.1 framing in pure tinct on top of read-bytes/write-bytes:
                         parse-request, write-response, serve-conn (server)
                         build-request, send-request, parse-response (client)
+
+                      RawRequest: [type
+                        [method:  String
+                         path:    String
+                         query:   String              # raw query string; use parse-query to decode
+                         headers: [Map String String] # header names lowercased
+                         body:    Bytes
+                         respond: [Fn [RawResponse] Null]]]
+
+                      RawResponse: [type
+                        [status:  Int
+                         headers: [Map String String]
+                         body:    Bytes]]
+
+                      Convenience response constructors (in http.llt):
+                        ok: [Fn [body@String] RawResponse]            # 200 text/plain
+                        json-ok: [Fn [body@Bytes] RawResponse]        # 200 application/json
+                        redirect: [Fn [loc@String] RawResponse]       # 302
+                        not-found: RawResponse                        # 404
+                        server-error: [Fn [msg@String] RawResponse]   # 500
+
     http.llt        — http-channel: [Fn [cap@NetCap port@Port] [Channel RawRequest]]
                                    [Fn [cap@NetCap port@Port cert@TlsServerConfig] [Channel RawRequest]]
                         — convenience: binds on ALL interfaces (0.0.0.0/::) at the given port;
@@ -1097,10 +1200,20 @@ UInt32: [type Int@[is: [between 0 4294967295]  repr: u32]]
 
 # Fixed-size addresses using [Bytes N]
 IpAddress: [union
-  [Ipv4 [Bytes 4]]     # [Ipv4 @[Bytes 4]: [192 168 1 1]]
-  [Ipv6 [Bytes 16]]]   # [Ipv6 @[Bytes 16]: [32 1 13 184 0 0 0 0 0 0 0 0 0 0 0 1]]
+  [Ipv4     [Bytes 4]]               # any IPv4 address (incl. 169.254.x.x link-local,
+                                     # 0.0.0.0 all-interfaces, 127.x.x.x loopback)
+  [Ipv6     [Bytes 16]]              # any IPv6 address without zone ID (incl. ::1 loopback,
+                                     # :: all-interfaces, 2001:db8::, fc00::/7 ULA,
+                                     # ::ffff:x.x.x.x IPv4-mapped; fec0::/10 deprecated)
+  [Ipv6Zone [Bytes 16] zone@String]] # IPv6 with zone ID (RFC 4007): required for any scoped
+                                     # address on multi-interface nodes — link-local unicast
+                                     # fe80::/10 AND link-local multicast ff02::/16 (mDNS etc.)
+                                     # zone = interface name; maps to sin6_scope_id at bind time
+                                     # IPv4 169.254.x.x does NOT need a zone variant — each
+                                     # IPv4 link-local address is unique per link by protocol
 
-Port:      [type Int@[is: [between 1 65535]  repr: u16]]
+Port:      [type Int@[is: [between 0 65535]  repr: u16]]
+           # 0 = ephemeral (OS assigns); valid for udp-ephemeral and any ephemeral bind
 SocketAddress: [type [addr: IpAddress  port: Port]]
 
 # UDP datagram as received — respond sends back to the peer
@@ -1179,9 +1292,9 @@ All primitives in the New Rust Primitives table above, registered in `standard_b
 
 `stdlib/net.llt`, `stdlib/text.llt`, `stdlib/compress.llt`, `stdlib/crypto.llt`, `stdlib/serve.llt`, `stdlib/dns.llt`, extend `stdlib/async.llt`; `stdlib/protocols/` (tls, quic, h2, h3, http1, http, compress, wireguard, noise, websocket, icmp, socks5, grpc, mqtt).
 
-### Unified capability flag syntax — `+flags` for both DirCap and NetCap
+### Unified capability flag syntax — `name@flags=resource` for both DirCap and NetCap
 
-Both `--cap-fs` (DirCap) and `--cap-net` (NetCap) use the same `resource+flags` syntax. The `+` separator is unambiguous: it cannot appear in filesystem paths, IP addresses, ports, or hostnames, so everything before `+` is the resource and everything after is flags. This replaces the existing DirCap `:flags` suffix (which is not extended to NetCap because colons already appear in network addresses).
+Both `--cap-fs` (DirCap) and `--cap-net` (NetCap) use the same `name@flags=resource` syntax. The `@` mirrors tinct's type annotation syntax and is unambiguous: everything before `@` is the cap name (which becomes `%name` in the program), the letters between `@` and `=` are the flags, and everything after `=` is the resource. This replaces the existing DirCap `:flags` suffix (which is not extended to NetCap because colons already appear in network addresses).
 
 **NetCap flags** (same `@` syntax as tinct type annotations):
 
@@ -1193,48 +1306,99 @@ Both `--cap-fs` (DirCap) and `--cap-net` (NetCap) use the same `resource+flags` 
 
 DNS resolution is **implied** by any named hostname entry — if you grant `api@c=api.example.com:443`, you implicitly can resolve `api.example.com` to reach it. A separate `Resolvable` flag is unnecessary: a hostname in the NetCap serves no purpose unless the program can resolve it.
 
-NetCap entries use the same `name@flags=resource` pattern as DirCap. The `@` mirrors tinct's annotation syntax — the same character that annotates a type annotates a capability. The `name` becomes `%name` in the program. Because the resource (address or path) always follows `=`, any `@` or `+` inside the resource is unambiguous — it comes after the split point.
+**Two separate flags for two separate concerns:**
+- `--cap-net name@flags=resource` — IP address, hostname, or CIDR range
+- `--cap-net-interface name@flags=interface-name:port` — OS interface name (avoids ambiguity with hostnames; full interface name including `@` in veth names is safe after `=`)
 
-**Parsing rule:** find `=`, split the left side on `@` for name and flags. The resource is everything after `=`.
+**`--cap-net-interface` scope qualifiers** (appended to `b`):
+
+| Flag | Meaning |
+|---|---|
+| `b` | Bindable, any scope |
+| `bl` | Bindable, link-local only (`169.254.0.0/16`, `fe80::/10`) |
+| `bg` | Bindable, globally-routable only |
+| `bk` | Bindable, loopback only (`127.x.x.x`, `::1`) |
+
+**Parsing rule:** find `=`, split left on `@` for name and flags; resource is everything after `=`.
+
+**Resource parsing rules** (for `--cap-net`):
+
+The resource portion follows RFC 3986 §3.2.2 `host ":" port` grammar — the same grammar used for URI authority components. Accept any valid form; normalize IPv6 to RFC 5952 canonical (lowercase, maximum `::` compression) for storage.
 
 ```
-# Named network caps
+host = IP-literal / IPv4address / reg-name   (RFC 3986)
+
+IP-literal  = "[" IPv6address [ "%" ZoneID ] "]"   # zone ID: bare % in CLI, %25 in URIs
+IPv4address = dec-octet "." dec-octet "." dec-octet "." dec-octet
+reg-name    = hostname, e.g. localhost, api.example.com
+```
+
+| Pattern | Interpretation |
+|---|---|
+| starts with `[` | IP-literal (RFC 3986): extract content; `%` or `%25` suffix = zone ID (`Ipv6Zone`) |
+| matches IPv4 dotted-decimal (with optional `/prefix`) | IPv4 literal or CIDR |
+| everything else | `reg-name` — hostname; resolved at startup; IPs added to `listen_pool`/`connect_pool` |
+
+Note: `+` is a valid `sub-delim` in RFC 3986 `reg-name` (hostnames) without percent-encoding — this further confirms `@flags=resource` with `+` inside resource is unambiguous.
+
+**Only RFC 3986 `IPv4address` (strictly dotted-decimal) is accepted.** Decimal (`2130706433`), octal (`0177.0.0.1`), and hex (`0x7f000001`) encodings of IPv4 are rejected — they are not part of the RFC 3986 grammar and are a known SSRF bypass vector against allowlists that check only dotted-decimal. A non-dotted-decimal string that looks numeric is treated as a `reg-name` (hostname), DNS resolution is attempted, and if it fails the cap is rejected at startup with a clear error.
+
+**Hostname-bind:** `--cap-net server@b=localhost:8080` resolves `localhost` at process start (via `/etc/hosts` then DNS) and adds all resolved IPs to `listen_pool`. If `localhost` resolves to `127.0.0.1` and `::1`, both are added. The program binds to whichever its OS socket prefers.
+
+**Localhost non-loopback warning:** if any resolved IP for a `@b` hostname entry is outside `127.0.0.0/8` and is not `::1` (e.g., `localhost` resolves to a routable IP in a misconfigured container), tinct emits a startup warning: `"Warning: hostname 'localhost' resolved to <ip> which is not a loopback address; Bindable cap %name grants binding on this IP — the service may be reachable beyond loopback"`. This is a warning, not an error, because the resolution may be intentional (service mesh environments). The user can suppress it with `--cap-net server@b=127.0.0.1:8080` (explicit IP, no resolution).
+
+**IPv6 with zone ID:** CLI accepts bare `%` (non-URI context) or `%25` (URI-encoded). Shell quoting required when `%` appears: `--cap-net "v6ll@b=[fe80::48ca:a4ff:fef8:9dbb%eno1.601]:443"`. Link-local bindings are more naturally expressed via `--cap-net-interface`.
+
+```
+# --- --cap-net examples (IP/hostname/CIDR) ---
+
 tinct run --cap-net server@b=127.0.0.1:8080 server.llt
-  # %server: Bindable on localhost:8080; cannot connect to anything
+  # %server: Bindable on localhost:8080 only; cannot connect to anything
 
 tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
-  # %listen: Bindable all interfaces port 443; %certs: ./certs read-only
+  # %listen: Bindable all-interfaces:443; %certs: ./certs read-only
 
 tinct run --cap-net api@c=api.example.com:443 client.llt
-  # %api: Connectable to api.example.com:443 (implies DNS resolution)
+  # %api: Connectable to api.example.com (implies DNS resolution for that name)
 
-# Proxy — separate named caps for each network role
+tinct run --cap-net "v6ll@b=[::1]:8080" server.llt
+  # IPv6 loopback; brackets required (RFC 3986 IP-literal)
+
 tinct run --cap-net listen@b=127.0.0.1:8080 --cap-net upstream@c=10.0.0.0/8 proxy.llt
-  # %listen: Bindable; %upstream: Connectable to internal range
+  # proxy: listen-only cap + connect-to-internal cap, fully separated
 
-# Bracket form — exactly like tinct @[...] annotations, always unambiguous
-tinct run --cap-net "server@[Bindable]=127.0.0.1:8080" server.llt
+# --- --cap-net-interface examples (OS interface name + scope) ---
 
-# IPv6 — resource follows =, so brackets in address cause no ambiguity
-tinct run --cap-net "server@b=[::1]:8080" server.llt
+tinct run --cap-net-interface internal@b=eth0:8080 server.llt
+  # %internal: Bindable on eth0, any scope, port 8080
 
-# Paths with + are fine — + appears after = in the resource
-tinct run --cap-fs "code@r=./src/c++/lib" build.llt
+tinct run --cap-net-interface mdns4@bl=eth0:5353 mdns.llt
+  # %mdns4: Bindable on eth0, link-local IPv4 only (169.254.x.x)
+  # cannot bind to 10.0.1.5:5353 or any global address on eth0
 
-# Anonymous (no name) — goes into default %net-cap or %cap-fs
-tinct run --cap-net @b=127.0.0.1:8080 server.llt
+tinct run --cap-net-interface "mdns6@bl=eth0:5353" mdns.llt
+  # %mdns6: Bindable on eth0, link-local IPv6 only (fe80::/10 AND ff02::/16 multicast)
+  # cannot bind to global IPv6 on eth0 even if eth0 has a 2001:db8:: address
 
-# Backward compatible — existing name=resource form, default flags assumed
-tinct run --cap-net server=127.0.0.1:8080 server.llt
+tinct run --cap-net-interface "veth@b=veth26@if2:8080" test.llt
+  # interface name veth26@if2 contains @ — safe after = (RFC 3986 reg-name reserved)
+
+tinct run --cap-net-interface "lo@bk=lo:8080" server.llt
+  # %lo: Bindable on loopback interface, loopback scope only
+
+# Unbound-style DNS: UDP/TCP on all interfaces, link-local capable, separate caps
+tinct run --cap-net-interface dns-ll@bl=eth0:53 \
+          --cap-net dns-any@b=0.0.0.0:53 \
+          --cap-net dns-ctl@b=127.0.0.1:8953 unbound.llt
 ```
 
-**DirCap flags** (same `@flags` separator, replacing the old `:flags` suffix):
+**DirCap flags** — the old `:flags` suffix is replaced by the unified `@flags=` prefix. This is a **breaking change** to existing `--cap-fs` users; the old form is removed outright (no deprecation period — the syntax is pre-1.0 and the test corpus is the migration guide):
 
 ```
 --cap-fs data@rw=./data          # was: --cap-fs data=./data:rw
---cap-fs logs@a=./logs
---cap-fs config@r=./config
---cap-fs "code@[Readable]=./src/c++/lib"  # + in path: no problem, it's after =
+--cap-fs logs@a=./logs           # was: --cap-fs logs=./logs:a
+--cap-fs config@r=./config       # was: --cap-fs config=./config:r
+--cap-fs "code@r=./src/c++/lib"  # + in path: no problem, it's after =
 ```
 
 With named caps, each network operation receives the minimal capability it needs:
@@ -1248,19 +1412,11 @@ With named caps, each network operation receives the minimal capability it needs
 
 A compromised component holding `%upstream` can only connect to the internal range — it cannot bind on any port, cannot reach external hosts. The capability surface is explicit in both the command line and the code.
 
-**DirCap flags** (unchanged letters, updated separator):
-
-```
---cap-fs data=./data+rw      # was: --cap-fs data=./data:rw
---cap-fs logs=./logs+a       # append-only
---cap-fs config=./config+r   # read-only
-```
-
 ### Restructure `Value::NetCap` — action-split Pools
 
 `Value::NetCap` currently holds `Rc<Vec<NetCapEntry>>` with a single allowlist checked by `check_net_cap_allowlist`. This design conflates listening and connecting, and does not use cap-std's networking capability primitives.
 
-Replace with two cap-std Pools — one for each action — plus hostname entries for glob/wildcard support:
+Replace with two cap-std Pools plus interface entries for name-based and scope-restricted bindings:
 
 ```rust
 struct NetCapInner {
@@ -1268,15 +1424,28 @@ struct NetCapInner {
     // Resolution is always implied for any named entry.
     hostname_entries: Vec<NetCapEntry>,   // Hostname, HostPort, HostnameGlob, Any + action
 
-    // Bindable addresses: tcp-bind, udp-socket go through listen_pool.
+    // Bindable IP addresses: tcp-bind, udp-socket go through listen_pool.
     listen_pool:  cap_std::net::Pool,
 
-    // Connectable addresses: tcp-connect, udp-send go through connect_pool.
+    // Connectable IP addresses: tcp-connect, udp-send go through connect_pool.
     connect_pool: cap_std::net::Pool,
+
+    // Interface-name bindings: tcp-bind, udp-socket with InterfaceBind target.
+    // Supports scope restriction (link-local only, global only, etc.).
+    interface_entries: Vec<InterfaceEntry>,
+}
+
+struct InterfaceEntry {
+    name:  String,        // "eth0", "lo", "veth26@if2" (full Linux interface name)
+    port:  Option<u16>,   // None = any port
+    flags: NetCapFlags,   // Bindable and/or Connectable
+    scope: BindScope,     // AnyScope | LinkLocal | GlobalScope | Loopback
 }
 ```
 
 `--cap-net` parsing routes entries by flag: `@b` entries populate `listen_pool`; `@c` entries populate `connect_pool`; `@bc` or no-flag (default) populates both. Named hostname entries with `@c` also populate `hostname_entries` (for glob support) AND `connect_pool` (for IP-level enforcement after resolution).
+
+**`Ipv6Zone` addresses do NOT go into the Pool.** When parsing `[fe80::1%eth0]:8080`, tinct recognises the zone ID, converts the entry into an `InterfaceEntry { name: "eth0", port: Some(8080), scope: LinkLocal, flags: Bindable }`, and stores it in `interface_entries` — not in `listen_pool`. The reason: `cap_std::net::Pool` compares only IP bytes; two `Ipv6Zone` values with the same bytes but different interface names (e.g., `fe80::1%eth0` and `fe80::1%wlan0`) are indistinguishable at the Pool level. Zone-aware capability checking requires an exact interface-name match, which only `interface_entries` provides. At bind time, `if_nametoindex(zone)` converts the interface name to the kernel scope_id and sets `sockaddr_in6.sin6_scope_id` — the Pool is not involved for zoned addresses.
 
 **Flag parsing:** flags are parsed character-by-character from the `@flags` suffix; `@bc` means Bindable (`b`) + Connectable (`c`). The bracket form `@[Bindable Connectable]` accepts full names space-separated.
 
@@ -1301,6 +1470,8 @@ The Rust primitive `tcp-connect` takes a resolved `SocketAddress`. DNS resolutio
 `%dns` is a `DnsConfig` record injected at process start. The `%` prefix means it is injected from the system environment (like `%libdir`), not that it is a security capability. The security boundary for DNS is `%net-cap` — it gates the UDP/TCP packets sent to the nameserver. `%dns` is resolver configuration: where to send queries, how to expand short names, how long to wait. A program that has `%net-cap` but no `%dns` can still do `tcp-connect` with a pre-resolved `SocketAddress`; it just cannot do hostname resolution.
 
 Because tinct reads `/etc/resolv.conf` directly rather than delegating to glibc, it takes responsibility for implementing everything glibc would have handled automatically.
+
+**Bootstrap:** `/etc/resolv.conf` `nameserver` lines contain only numeric IP addresses per the POSIX format specification — hostnames are not valid in `nameserver` directives. Tinct rejects non-numeric nameserver entries at startup with `"invalid nameserver: expected IP address, got '<value>'"`. This means there is no circular dependency: nameserver IPs are known before DNS is operational. If `/etc/resolv.conf` is absent or empty, `%dns.nameservers` is `[]` and resolution fails immediately with a clear message directing the user to `--nameservers`.
 
 ```tinct
 # stdlib/net.llt

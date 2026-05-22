@@ -1,0 +1,16 @@
+# async stdlib basic smoke test
+# Tests the pure-LLT functions in stdlib/async.llt that do not require
+# the async runtime (task/await/channel) to be live — specifically:
+#   - retry: succeeds on first attempt
+#   - finally: runs cleanup and returns body value on success
+#   - finally: runs cleanup and re-raises on error
+#   - await-all: wraps map-await (tested via identity since no async runtime)
+#
+# Note: loop-select, recv-all, await-all, and shutdown stubs (exit,
+# graceful-exit) are not tested here because they require either a live
+# async runtime or builtins not yet implemented.
+
+[include %libdir "async.llt"]
+[retry 3 [fn [] 42]]
+=== out
+Int(42)

@@ -96,6 +96,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Composable Networking v2](completed/lib-net-v2.md) | **Accepted 2026-05-09.** Connector + Layer + Session model; transport-generic `connect`; Unix sockets; QUIC/HTTP/2/HTTP/3; `protocols/` subdirectory with SOCKS5, DNS, gRPC, WebSocket |
 | [Directory Capability Permissions](completed/dir-cap-permissions.md) | **Accepted 2026-05-11.** `--cap-fs name=path:r` permission flags on DirCap; `Readable`, `Statable`, `Listable`, `Writable`, `Appendable`, `Deletable`, `Renameable`; letter bundles (`r`=read+list+stat, `w`=write+append+delete+rename) + extended `:[Cap1 Cap2 ...]` syntax; row-polymorphic `[DirCap [Writable ...]]` type; `narrow` for in-script attenuation; extends `--cap-file` with same extended syntax; no mode = full access |
 | [SQL Data Sources](lib-sql.md) | `sql-open` returns lazy SQL source; `filter`/`map` push predicates to the DB |
+| [FFI and Native Module Extensions](ffi.md) | Three options: (1) `[extern "lib.so" ...]` external C FFI; (2) `[include [native-module "sql"]]` lazy builtin registry for in-tree feature builtins; (3) Cargo workspace split with static (3A) or dynamic plugin (3B) linking |
 | [Structured Logging](structured-logging.md) | `trace` builtin + `stdlib/log.llt`; output model (default to `=== out` vs `=== info`); redirect mechanism; literate/corpus integration |
 
 ## Syntax and Ergonomics
@@ -208,6 +209,7 @@ These proposals open new ground rather than closing existing work. All have acce
 | Proposal | Key Unlock |
 |----------|-----------|
 | [SQL Data Sources](lib-sql.md) | Lazy DB reads via `filter`/`map` predicate pushdown |
+| [FFI and Native Module Extensions](ffi.md) | External C FFI + lazy builtin registry + workspace split — three complementary extension approaches |
 | [Float Dict Keys](float-dict-keys.md) | `Key::Decimal` — Phase 1 (`Value::Decimal`) complete; Phase 2 (key extension) open |
 
 ---

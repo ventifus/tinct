@@ -1,0 +1,86 @@
+# stdlib/compress.llt — Compression codecs (CompressionCodec typeclass).
+# Part of: lib-net-v3
+# Depends on: net.llt (ByteLabel, ByteStream)
+# Rust backends: flate2 (gzip/deflate), brotli, zstd
+#
+# Streaming compression through the thunk system would be impractically slow for
+# multi-KB HTTP bodies — all instances are bulk (full Bytes in, full Bytes out).
+
+[include %libdir "net.llt"]
+
+# ── CompressionCodec Typeclass ───────────────────────────────────────────────────
+
+[class [CompressionCodec c]
+  encode: [Fn [c@c b@Bytes] Bytes]            # compress
+  decode: [Fn [c@c b@Bytes] [Result Bytes]]]  # decompress; Err if corrupt
+
+# ── Codec Types ───────────────────────────────────────────────────────────────────
+
+[type [Gzip]]      # RFC 1952 — HTTP Content-Encoding: gzip
+[type [Deflate]]   # RFC 1950 (zlib) — HTTP Content-Encoding: deflate
+[type [Brotli]]    # RFC 7932 — HTTP Content-Encoding: br
+[type [Zstd]]      # RFC 8878 — HTTP Content-Encoding: zstd
+[type [Identity]]  # No-op passthrough — Content-Encoding: identity
+
+[instance [CompressionCodec Gzip]
+  encode: [fn [let _ b@Bytes] [builtin-gzip-encode b]]
+  decode: [fn [let _ b@Bytes] [builtin-gzip-decode b]]]
+
+[instance [CompressionCodec Deflate]
+  encode: [fn [let _ b@Bytes] [builtin-deflate-encode b]]
+  decode: [fn [let _ b@Bytes] [builtin-deflate-decode b]]]
+
+[instance [CompressionCodec Brotli]
+  encode: [fn [let _ b@Bytes] [builtin-brotli-encode b]]
+  decode: [fn [let _ b@Bytes] [builtin-brotli-decode b]]]
+
+[instance [CompressionCodec Zstd]
+  encode: [fn [let _ b@Bytes] [builtin-zstd-encode b]]
+  decode: [fn [let _ b@Bytes] [builtin-zstd-decode b]]]
+
+[instance [CompressionCodec Identity]
+  encode: [fn [let _ b@Bytes] b]
+  decode: [fn [let _ b@Bytes] [Ok b]]]
+
+# ByteLabel instance so CompressionCodec participates in encode/decode dispatch.
+[instance [ByteLabel CompressionCodec Bytes Bytes]
+  encode: [fn [let c@CompressionCodec b@Bytes] [encode c b]]
+  decode: [fn [let c@CompressionCodec b@Bytes] [decode c b]]]
+
+# ── Labeled Bytes ─────────────────────────────────────────────────────────────────
+
+CompressedBytes: [type [data: Bytes  codec: CompressionCodec]]
+
+[
+  # Compile-time dispatch.
+  encode: [fn@[bind: [c]  return: Bytes  constraint: [c: CompressionCodec]] [let c@c b@Bytes]
+    [encode c b]]
+
+  decode: [fn@[bind: [c]  return: [Result Bytes]  constraint: [c: CompressionCodec]] [let c@c b@Bytes]
+    [decode c b]]
+
+  # Select a CompressionCodec from an HTTP Accept-Encoding / Content-Encoding string.
+  codec-for-encoding: [fn [let name@String]
+    [match [str-lower name]
+      "gzip":     [Some Gzip]
+      "deflate":  [Some Deflate]
+      "br":       [Some Brotli]
+      "brotli":   [Some Brotli]
+      "zstd":     [Some Zstd]
+      "identity": [Some Identity]
+      "*":        [Some Gzip]    # prefer gzip for wildcard
+      _:          [None]]]
+
+  # Pick the best codec from an Accept-Encoding header value.
+  # Returns the highest-q codec we support; Identity if nothing matches.
+  negotiate-encoding: [fn [let accept-encoding@String]
+    [parts: [str-split "," accept-encoding]]
+    [candidates: [filter-map [fn [let part]
+                   [name-q: [str-split ";" [str-trim part]]]
+                   [name: [str-trim [get name-q 0]]]
+                   [codec-for-encoding name]]
+                 parts]]
+    [if [empty? candidates]
+      Identity
+      [get candidates 0]]]
+]

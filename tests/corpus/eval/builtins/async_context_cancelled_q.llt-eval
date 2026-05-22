@@ -1,0 +1,5 @@
+# context creates a fresh uncancelled token; cancelled? returns false on it
+
+[cancelled? [context]]
+=== out
+Bool(false)

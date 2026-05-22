@@ -1,0 +1,186 @@
+# stdlib/protocols/quic.llt — QUIC (RFC 9000) + QUIC-TLS (RFC 9001) in tinct.
+# Part of: lib-net-v3
+# Depends on: net.llt (Datagram, UdpSocket, udp-ephemeral), tls.llt (TLS key schedule)
+# Rust primitives: crypto-random (for connection IDs and tokens)
+#
+# QUIC is built on UdpSocket (Datagram). Each QUIC connection demultiplexes
+# incoming datagrams by Destination Connection ID (DCID).
+# Connection migration (RFC 9000 §9) is NOT supported in the initial implementation.
+
+[include %libdir "net.llt"]
+[include %libdir "tls.llt"]
+
+# ── Packet Types ─────────────────────────────────────────────────────────────────
+
+QuicPacketType: [union
+  [Initial]       # long header; carries ClientHello/ServerHello in CRYPTO frames
+  [ZeroRTT]       # long header; early data
+  [Handshake]     # long header; encrypted handshake messages
+  [Retry]         # long header; server requests address validation
+  [OneRTT]]       # short header; application data (most packets)
+
+# ── Frame Types ──────────────────────────────────────────────────────────────────
+
+QuicFrame: [union
+  [Padding       length@Int]
+  [Ping]
+  [Ack           largest@Int  delay@Int  ranges@[Seq Int]]
+  [ResetStream   id@Int  error@Int  final-size@Int]
+  [StopSending   id@Int  error@Int]
+  [Crypto        offset@Int  data@Bytes]     # TLS handshake data
+  [NewToken      token@Bytes]
+  [Stream        id@Int  offset@Int  fin@Bool  data@Bytes]
+  [MaxData       max@Int]
+  [MaxStreamData id@Int  max@Int]
+  [MaxStreams    bidi@Bool  max@Int]
+  [DataBlocked   limit@Int]
+  [ConnectionClose  error@Int  frame-type@Int  reason@String]
+  [HandshakeDone]]
+
+# ── Connection State ─────────────────────────────────────────────────────────────
+
+QuicConnection: [type
+  [socket:           UdpSocket
+   peer-addr:        SocketAddress
+   scid:             Bytes              # source connection ID (our ID)
+   dcid:             Bytes              # destination connection ID (peer's ID)
+   # Streams: each stream is a Channel pair (send + recv).
+   streams:          [Channel QuicStream]  # incoming streams
+   # TLS integration: crypto data exchanged via CRYPTO frames.
+   tls-in:           [Channel Bytes]    # data received in CRYPTO frames → TLS layer
+   tls-out:          [Channel Bytes]    # data from TLS layer → CRYPTO frames
+   # Packet number spaces (Initial, Handshake, Application).
+   pn-initial:       [Channel Int]
+   pn-handshake:     [Channel Int]
+   pn-app:           [Channel Int]
+   # Keys per epoch (nil until derived).
+   initial-keys:     [or QuicKeys Null]
+   handshake-keys:   [or QuicKeys Null]
+   app-keys:         [or QuicKeys Null]
+   # Loss detection and flow control state.
+   loss-state:       QuicLossState
+   flow:             QuicFlowState]]
+
+QuicStream: [type
+  [id:       Int
+   readable: [Channel Bytes]
+   writable: [Channel Bytes]]]
+
+QuicKeys: [type
+  [send-key: [Bytes 32]  send-iv: [Bytes 12]
+   recv-key: [Bytes 32]  recv-iv: [Bytes 12]
+   hp-key:   [Bytes 32]]]   # header protection key
+
+QuicLossState: [type
+  [largest-acked:    Int
+   sent-packets:     [Map Int QuicSentPacket]
+   loss-time:        [or Duration Null]
+   pto-count:        Int]]
+
+QuicSentPacket: [type
+  [packet-number: Int
+   sent-time:     Duration
+   ack-eliciting: Bool
+   frames:        [Seq QuicFrame]]]
+
+QuicFlowState: [type
+  [send-window:     Int
+   recv-window:     Int
+   send-blocked-at: [or Int Null]]]
+
+[
+  # ── Connection Establishment ──────────────────────────────────────────────────
+
+  # Connect to a QUIC server. Returns QuicConnection with TLS handshake complete.
+  quic-connect: [fn [let cap@NetCap addr@SocketAddress cfg@TlsClientConfig]
+    [error "TODO: quic-connect — bind UDP, generate SCID, send Initial packet with ClientHello CRYPTO frame, process ServerHello+Handshake packets, complete TLS via tls13-key-schedule with QUIC-specific HKDF labels (RFC 9001 §5)"]]
+
+  quic-connect-addr: quic-connect
+
+  # Accept loop: bind UDP, demultiplex by DCID, hand connections to caller.
+  quic-listen: [fn [let cap@NetCap port@Port]
+    [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
+    [out: [channel 64]]
+    [task [quic-accept-loop sock out]]
+    out]
+
+  quic-accept-loop: [fn [let sock@UdpSocket out@[Channel QuicConnection]]
+    [# Demux table: DCID → per-connection channel of raw datagrams.
+     conns: [channel 1]]
+    [send conns []]   # initial empty map
+    [loop [fn []
+      [dg: [recv-datagram sock]]
+      [dcid: [quic-extract-dcid dg.data]]
+      [table: [recv conns]]
+      [if [get? table dcid]
+        # Existing connection — deliver datagram to its handler.
+        [send [get table dcid] dg]
+        # New connection — spawn handler, add to table.
+        [conn-ch: [channel 64]]
+        [send table-updated [assoc table dcid conn-ch]]
+        [task
+          [conn: [quic-new-conn sock dg.src dcid conn-ch]]
+          [send out conn]]]]]]
+
+  quic-extract-dcid: [fn [let pkt@Bytes]
+    # Long header: byte0 | version(4) | dcid-len(1) | dcid(dcid-len)
+    # Short header: byte0 | dcid (fixed length from connection state — 20 bytes default)
+    [byte0: [get pkt 0]]
+    [if [= [bit-and byte0 0x80] 0x80]
+      # Long header
+      [dcid-len: [get pkt 5]]
+      [slice pkt 6 dcid-len]
+      # Short header: assume 20-byte DCID (negotiated at handshake)
+      [slice pkt 1 20]]]
+
+  quic-new-conn: [fn [let sock@UdpSocket peer@SocketAddress dcid@Bytes in-ch@[Channel UdpDatagram]]
+    [error "TODO: quic-new-conn — process Initial packet, complete TLS handshake via CRYPTO frames, send Handshake+1-RTT keys"]]
+
+  # ── Stream Access ─────────────────────────────────────────────────────────────
+
+  # Open a new bidirectional stream. Blocks until QUIC flow control allows.
+  quic-open-stream: [fn [let conn@QuicConnection]
+    [error "TODO: quic-open-stream — allocate next client-initiated bidi stream ID, send STREAM frame, return Handle wrapping stream channels"]]
+
+  # Receive next incoming stream from the peer.
+  quic-incoming: [fn [let conn@QuicConnection]
+    [recv conn.streams]]
+
+  # ── Packet Number Encoding/Decoding (RFC 9000 §A) ─────────────────────────────
+
+  # Encode packet number with minimum bytes needed.
+  encode-pn: [fn [let pn@Int largest-acked@Int]
+    # Range: 1/2 of distance from largest acked to current.
+    # Use 1, 2, or 4 bytes.
+    [error "TODO: encode-pn per RFC 9000 §17.1"]]
+
+  # Decode truncated packet number (RFC 9000 §A.2).
+  decode-pn: [fn [let truncated@Int pn-bits@Int largest-acked@Int]
+    [expected: [+ largest-acked 1]]
+    [pn-win:   [bit-shift-left 1 pn-bits]]
+    [pn-hwin:  [/ pn-win 2]]
+    [pn-mask:  [- pn-win 1]]
+    [candidate: [bit-or [bit-and expected [bit-not pn-mask]] truncated]]
+    [if [and [<= candidate [- expected pn-hwin]] [< candidate [- [pow 2 62] pn-win]]]
+      [+ candidate pn-win]
+      [if [and [> candidate [+ expected pn-hwin]] [>= candidate pn-win]]
+        [- candidate pn-win]
+        candidate]]]
+
+  # ── Loss Detection (RFC 9002 §6) ──────────────────────────────────────────────
+
+  on-packet-acked: [fn [let state@QuicLossState pn@Int]
+    [error "TODO: on-packet-acked — remove from sent-packets, update largest-acked, update RTT estimate"]]
+
+  on-loss-detection-timeout: [fn [let state@QuicLossState]
+    [error "TODO: on-loss-detection-timeout — PTO: send ping or retransmit, increment pto-count"]]
+
+  detect-lost-packets: [fn [let state@QuicLossState now@Duration]
+    [error "TODO: detect-lost-packets — mark packets lost if pkt-number or time threshold exceeded"]]
+
+  # ── Header Protection (RFC 9001 §5.4) ─────────────────────────────────────────
+
+  # Apply header protection: XOR packet number bytes with sample from ciphertext.
+  apply-hp: [fn [let hp-key@[Bytes 32] header@Bytes sample@[Bytes 16]]
+    [error "TODO: apply-hp — AES-ECB(hp-key, sample) → mask; XOR first 5 bytes of header"]]
+]

@@ -469,9 +469,11 @@ pub enum Value {
     /// Uses tokio::sync::mpsc for async send/recv operations.
     Channel(Arc<ChannelInner>),
 
-    /// Cancellation context — created by `context` builtin, consumed by `with-cancel`.
-    /// Skeleton added in Part F; full implementation deferred.
-    Context,
+    /// Cancellation context — created by `context` builtin, consumed by `with-cancel`,
+    /// `with-timeout`, `with-deadline`, `cancelled?`, and `cancel-task`.
+    /// Backed by `tokio_util::sync::CancellationToken` which is `Clone` (cheap Arc internally).
+    /// A root context is created by `[context]`; child contexts from `[with-cancel ctx]` etc.
+    Context(tokio_util::sync::CancellationToken),
 }
 
 /// State of an async task spawned via `task` builtin.
@@ -586,7 +588,7 @@ impl Value {
             Value::Expression(_) => "Expression",
             Value::Task(_) => "Task",
             Value::Channel(_) => "Channel",
-            Value::Context => "Context",
+            Value::Context(_) => "Context",
         }
     }
 
@@ -675,7 +677,7 @@ impl fmt::Debug for Value {
             ),
             Value::Task(_) => write!(f, "Task"),
             Value::Channel(_) => write!(f, "Channel"),
-            Value::Context => write!(f, "Context"),
+            Value::Context(_) => write!(f, "Context"),
         }
     }
 }
@@ -766,7 +768,7 @@ impl fmt::Display for Value {
             ),
             Value::Task(_) => write!(f, "<task>"),
             Value::Channel(_) => write!(f, "<channel>"),
-            Value::Context => write!(f, "<context>"),
+            Value::Context(_) => write!(f, "<context>"),
         }
     }
 }

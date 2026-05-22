@@ -1,0 +1,5 @@
+# timer-channel returns a Channel value (type check via type-of)
+
+[type-of [timer-channel 1000]]
+=== out
+String("Channel")

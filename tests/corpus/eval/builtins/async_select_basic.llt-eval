@@ -1,0 +1,16 @@
+# Test select-once: wait for first channel to produce a value
+# Create two channels, send on one, select should pick it up
+# sources must be a Seq (cons-list), not a Dict literal
+
+[
+  ch1: [channel 5]
+  ch2: [channel 5]
+  _: [send ch1 42]
+  pair1: [seq ch1 [seq [fn [let x] [str "ch1:" x]] []]]
+  pair2: [seq ch2 [seq [fn [let x] [str "ch2:" x]] []]]
+  sources: [seq pair1 [seq pair2 []]]
+  result: [select-once sources]
+]
+.result
+=== out
+String("ch1:42")

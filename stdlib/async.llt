@@ -1,0 +1,252 @@
+# ============================================================================
+# LLT Async Utilities (stdlib/async.llt)
+# ============================================================================
+#
+# High-level async utilities built on the async builtins introduced in
+# runtime-v2 (Sprint 2, Part B and Part F).
+#
+# Prerequisites (Rust builtins — all in standard_builtins()):
+#   task, await, channel, send, recv, select-once, par, par-map, par-filter
+#   signal-channel, timer-channel, watch-channel
+#   context, with-cancel, with-timeout, with-deadline, cancelled?, cancel-task
+#
+# NOT YET AVAILABLE (pending runtime-v2 Sprint 3 shutdown primitives):
+#   cancel-root, drain, exit-now, non-cancellable, with-context
+#   These are tracked in TODO.md under runtime-v2-shutdown-primitives.
+#
+# Usage:
+#   [include %libdir "async.llt"]
+#
+# Naming conventions:
+#   Functions that drive async loops end in -loop (loop-select, retry-loop).
+#   Predicates end in ?.
+#   Internal helpers end in -impl.
+# ============================================================================
+
+# ============================================================================
+# Private helpers (not exported)
+# ============================================================================
+
+[
+
+# retry-impl: recursive countdown helper for retry.
+# Attempts thunk. On success returns value. On failure, if n > 0 retries.
+# Uses the Ok/Error variants produced by [try thunk].
+retry-impl: [fn [let n@Int thunk@Fn]
+    [match [try thunk]
+        [Ok v]:    v
+        [Error _]: [if [> n 0]
+                       [retry-impl [- n 1] thunk]
+                       [raise "retry limit exceeded"]]]]
+
+# loop-select-impl: recursive event-loop body.
+# Calls select-once on sources, passes result to handler, then loops.
+# Checks ctx cancellation before each iteration so callers can bound the loop.
+loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
+    [if [cancelled? ctx]
+        null
+        [do
+            [handler [select-once sources]]
+            [loop-select-impl ctx sources handler]]]]
+
+]
+
+# ============================================================================
+# Public API
+# ============================================================================
+
+[
+
+# ============================================================================
+# Task utilities
+# ============================================================================
+
+# await-all: wait for all tasks in parallel, return a Seq of results.
+# Each element of tasks must be a Task value produced by [task ...].
+# Results are returned in the same order as the input tasks.
+#
+# Type: ([Seq [Task T]] -> [Seq T])
+# Example: [await-all [[task [+ 1 2]] [task [* 3 4]]]] => [3 12]
+#
+# Note: Built on the Rust map builtin; map forces each Task thunk sequentially
+# by calling await on it. For true concurrency, tasks must be spawned before
+# await-all is called — which they are, since [task expr] spawns immediately
+# when the task thunk is materialized (i.e., when this map reaches each element).
+await-all@[doc: """
+Wait for all tasks and return a Seq of results in submission order.
+
+Example: [await-all [[task [+ 1 2]] [task [* 3 4]]]] => [3 12]
+
+Note: Each element must be a Task value. Results are in input order.
+The map drives evaluation; for parallel work, spawn tasks before calling await-all.
+"""]: [fn [let tasks]
+    [map await tasks]]
+
+# ============================================================================
+# Channel utilities
+# ============================================================================
+
+# recv-all: receive exactly n items from a channel, returning them as a Seq.
+# Blocks until all n items have been received.
+#
+# Type: ([Channel T] -> Int -> [Seq T])
+# Example: (assuming ch has at least 3 items sent to it)
+#   [recv-all ch 3] => Seq of 3 received values
+recv-all@[doc: """
+Receive exactly n items from a channel, returning them as a Seq.
+
+Example: [recv-all ch 3]
+
+Note: Blocks until all n items have been received. Uses reduce over [range 0 n]
+to collect results; the accumulator grows by one item per step.
+"""]: [fn [let ch@Channel n@Int]
+    [reduce [fn [let acc _] [append acc [recv ch]]] [] [range 0 n]]]
+
+# ============================================================================
+# Re-exports (async builtins surfaced under stdlib-canonical names)
+# ============================================================================
+
+# par-map and par-filter are Rust builtins; re-export for callers that
+# include async.llt as their async namespace.
+par-map@[doc: """
+Parallel map: submit all elements to the thread pool simultaneously.
+Returns results in input order.
+
+Example: [par-map [fn [x] [expensive x]] big-list]
+"""]: par-map
+
+par-filter@[doc: """
+Parallel filter: test all elements concurrently.
+Returns matching elements in input order.
+
+Example: [par-filter [fn [x] [> x 0]] items]
+"""]: par-filter
+
+# ============================================================================
+# Shutdown utilities
+# ============================================================================
+#
+# exit and graceful-exit require cancel-root / drain / exit-now builtins from
+# runtime-v2 Sprint 3 (shutdown primitives), which are not yet implemented.
+# They are stubbed here with raise so the file loads cleanly and callers get a
+# clear error at call-time rather than at load-time.
+#
+# TODO: replace stubs with real implementations once cancel-root / drain /
+# exit-now are registered in standard_builtins(). Tracked: TODO.md
+# runtime-v2-shutdown-primitives.
+
+# exit: graceful shutdown — cancel all tasks, wait for drain, then exit.
+# Calls cancel-root to signal all tasks, then drain to wait for them to finish,
+# then exit-now to terminate the process.
+#
+# Type: (Int -> Null)
+# Example: [on-signal SIGTERM [fn [_] [exit 0]]]
+exit@[doc: """
+Graceful shutdown: cancel all tasks, drain, then exit with code.
+
+Example: [exit 0]
+
+Note: Requires cancel-root / drain / exit-now (runtime-v2 Sprint 3).
+Currently raises an error until those builtins are available.
+"""]: [fn [let code@Int]
+    [raise "exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
+
+# graceful-exit: bounded graceful shutdown with an explicit drain timeout.
+# Cancels all tasks, waits up to drain-timeout for them to finish, then
+# force-exits regardless.
+#
+# Type: (Duration -> Int -> Null)
+# Example: [graceful-exit [seconds 10] 0]
+graceful-exit@[doc: """
+Bounded graceful shutdown: cancel tasks, wait up to drain-timeout, then exit.
+
+Example: [graceful-exit [seconds 10] 0]
+
+Note: Requires cancel-root / drain / exit-now (runtime-v2 Sprint 3).
+Currently raises an error until those builtins are available.
+"""]: [fn [let drain-timeout code@Int]
+    [raise "graceful-exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
+
+# ============================================================================
+# Event-loop utilities
+# ============================================================================
+
+# loop-select: repeatedly call select-once on sources until the context is
+# cancelled. On each iteration the handler is called with the received value.
+# Tail-recursive in structure; hits the LLT recursion depth limit at ~230
+# iterations. For long-running servers, use an explicit task-based loop instead
+# (see doc/whatif/async-eval.md worked examples).
+#
+# Type: (Context -> [Seq [Channel Fn]] -> Fn -> Null)
+# Example:
+#   [loop-select [context] [[sig-ch [fn [_] [exit 0]]]] identity]
+loop-select@[doc: """
+Repeatedly select from channels until the context is cancelled.
+
+Example:
+  [loop-select [context]
+    [[sig-ch  [fn [_] [exit 0]]]
+     [req-ch  [fn [req] [task [handle req]]]]]
+    identity]
+
+Note: Tail-recursive; hits ~230 iteration depth limit. For long-running
+servers, use an explicit [task [loop ...]] pattern instead.
+"""]: [fn [let ctx sources@Seq handler@Fn]
+    [loop-select-impl ctx sources handler]]
+
+# ============================================================================
+# Retry
+# ============================================================================
+
+# retry: run thunk; on error, retry up to n more times.
+# Returns the first successful value, or raises "retry limit exceeded" after
+# n+1 total attempts fail.
+#
+# Type: (Int -> [Fn -> T] -> T)
+# Example: [retry 3 [fn [] [flaky-operation]]]
+retry@[doc: """
+Retry a zero-arg function up to n times on error.
+
+Example: [retry 3 [fn [] [flaky-operation]]]
+
+Note: Makes up to n+1 total attempts (1 initial + n retries).
+Raises "retry limit exceeded" if all attempts fail.
+Inherently materializing: must force each attempt to catch errors.
+"""]: [fn [let n@Int thunk@Fn]
+    [retry-impl n thunk]]
+
+# ============================================================================
+# Cleanup / resource safety
+# ============================================================================
+
+# finally: run cleanup regardless of whether body succeeds or errors.
+# Returns the body's result on success, re-raises on error.
+# Cleanup receives no arguments and its return value is discarded.
+#
+# Note: The ideal implementation uses [non-cancellable] and [with-context]
+# so cleanup runs even when the surrounding context is cancelled. Those
+# builtins are not yet available (runtime-v2 Sprint 3). The current
+# implementation runs cleanup in the same context as body; if the context
+# is cancelled while cleanup is running, cleanup may be interrupted.
+# Tracked: TODO.md runtime-v2-shutdown-primitives.
+#
+# Type: ([Fn -> Null] -> [Fn -> T] -> T)
+# Example:
+#   [finally [fn [] [close-conn conn]] [fn [] [do-work]]]
+finally@[doc: """
+Run cleanup regardless of whether body succeeds or errors, then return/re-raise.
+
+Example:
+  [finally
+    [fn [] [close-conn conn]]
+    [fn [] [do-work-with conn]]]
+
+Note: cleanup runs in the caller's context (not a non-cancellable context)
+until with-context / non-cancellable are available (runtime-v2 Sprint 3).
+Cleanup return value is discarded. Rust-level EvalErrors bypass finally.
+"""]: [fn [let cleanup@Fn body@Fn]
+    [match [try body]
+        [Ok v]:    [do [cleanup] v]
+        [Error e]: [do [cleanup] [raise e]]]]
+
+]

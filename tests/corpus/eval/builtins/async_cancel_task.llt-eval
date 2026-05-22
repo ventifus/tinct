@@ -1,0 +1,10 @@
+# cancel-task cancels a context; cancelled? then returns true
+
+[
+  ctx: [context]
+  _: [cancel-task ctx]
+  result: [cancelled? ctx]
+]
+.result
+=== out
+Bool(true)

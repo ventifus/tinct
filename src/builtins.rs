@@ -612,9 +612,13 @@ pub(crate) use crate::builtins_datetime::{
     builtin_unix_to_timestamp,
 };
 
-// Async concurrency primitives: task, await, channel, send, recv
+// Async concurrency primitives: task, await, channel, send, recv, select-once, par, par-map,
+// par-filter, signal-channel, timer-channel, watch-channel, and cancellation context primitives.
 pub(crate) use crate::builtins_async::{
-    builtin_await, builtin_channel, builtin_recv, builtin_send, builtin_task,
+    builtin_await, builtin_cancel_task, builtin_cancelled_q, builtin_channel, builtin_context,
+    builtin_par, builtin_par_filter, builtin_par_map, builtin_recv, builtin_select_once,
+    builtin_send, builtin_signal_channel, builtin_task, builtin_timer_channel,
+    builtin_watch_channel, builtin_with_cancel, builtin_with_deadline, builtin_with_timeout,
 };
 
 /// `first`: Return the first element of a Dict, the first character of a String,
@@ -1848,12 +1852,35 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_macro_injects,
             [Strictness::Seq]
         ),
-        // Async concurrency primitives (runtime-v2 Sprint 2, Part B — skeleton implementations)
+        // Async concurrency primitives (runtime-v2 Sprint 2, Part B)
         builtin!("task", builtin_task),
         builtin!("await", builtin_await),
         builtin!("channel", builtin_channel),
         builtin!("send", builtin_send),
         builtin!("recv", builtin_recv),
+        builtin!("select-once", builtin_select_once),
+        builtin!("par", builtin_par),
+        builtin!("par-map", builtin_par_map),
+        builtin!("par-filter", builtin_par_filter),
+        // Event-source channels: signal, timer, watch
+        builtin!("signal-channel", builtin_signal_channel),
+        builtin!("timer-channel", builtin_timer_channel),
+        builtin!("watch-channel", builtin_watch_channel),
+        // Cancellation context primitives (runtime-v2 Sprint 2, Part F)
+        builtin!("context", builtin_context),
+        builtin!("with-cancel", builtin_with_cancel, [Strictness::Seq]),
+        builtin!(
+            "with-timeout",
+            builtin_with_timeout,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "with-deadline",
+            builtin_with_deadline,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!("cancelled?", builtin_cancelled_q, [Strictness::Seq]),
+        builtin!("cancel-task", builtin_cancel_task, [Strictness::Seq]),
     ]
 }
 
@@ -6613,8 +6640,11 @@ mod tests {
         // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
         // are now in standard_builtins.
         // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
+        // Added 4 async builtins: select-once, par, par-map, par-filter (233 → 237)
+        // Added 3 event-source channel builtins: signal-channel, timer-channel, watch-channel (237 → 240)
+        // Added 6 cancellation context builtins: context, with-cancel, with-timeout, with-deadline, cancelled?, cancel-task (240 → 246)
         assert_eq!(
-            count, 233,
+            count, 246,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6856,10 +6886,12 @@ mod tests {
             names.contains(&"include-cache-put"),
             "missing include-cache-put"
         );
+        // Added context primitives: context, with-cancel, with-timeout, with-deadline,
+        // cancelled?, cancel-task (+6 → 246 total from 240)
         assert_eq!(
             names.len(),
-            233,
-            "expected 233 builtins, got {} — update this assertion if adding/removing builtins",
+            246,
+            "expected 246 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

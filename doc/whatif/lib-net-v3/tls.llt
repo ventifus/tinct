@@ -1,0 +1,286 @@
+# stdlib/protocols/tls.llt — TLS 1.3 (RFC 8446) in tinct.
+# Part of: lib-net-v3
+# Depends on: net.llt (ByteStream, Handle, read-bytes, write-bytes)
+#             crypto.llt (parse-cert, verify-cert-chain, cert-public-key)
+# Rust primitives used: chacha20-poly1305-seal/open, aes-128/256-gcm-seal/open,
+#   x25519-keypair, x25519-dh, p256-keypair, p256-dh, hkdf-extract, hkdf-expand,
+#   hmac-sha256, sha256, ed25519-sign, ed25519-verify, p256-sign, p256-verify,
+#   rsa-pss-sign, rsa-pss-verify, crypto-random, bytes-xor
+
+[include %libdir "net.llt"]
+[include %libdir "crypto.llt"]
+
+# ── Config Types ─────────────────────────────────────────────────────────────────
+
+TlsServerConfig: [type
+  [certificate: Bytes        # X.509 DER chain, leaf first (PEM stripped at startup)
+   private-key: Bytes        # PKCS#8 DER
+   alpn:        [Seq String] # ["h2" "http/1.1"] etc.
+   min-version: Symbol]]     # Tls13 (default) | Tls12
+
+TlsClientConfig: [type
+  [sni:         String
+   alpn:        [Seq String]
+   ech:         Bytes         # ECH extension bytes; [] = disabled
+   trust-roots: [or [Seq Bytes] Symbol]]]  # [Seq Bytes] = custom DER, SystemRoots = OS store
+
+# ── TLS Connection State ─────────────────────────────────────────────────────────
+
+# Hash algorithm selector for HKDF calls. Matches the Rust primitive's hash@HkdfHash parameter.
+HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
+[type [Sha256]] [type [Sha384]] [type [Sha512]] [type [Blake2s]]
+
+CipherSuite: [union
+  [Aes128GcmSha256]        # 0x1301 — REQUIRED by RFC 8446
+  [Aes256GcmSha384]        # 0x1302
+  [Chacha20Poly1305Sha256]] # 0x1303
+
+TlsConnection: [type
+  [underlying:  Handle
+   write-key:   [Bytes 32]
+   read-key:    [Bytes 32]
+   write-iv:    [Bytes 12]
+   read-iv:     [Bytes 12]
+   cipher:      CipherSuite
+   # Channel holds exactly one value; recv+send is atomic read-modify-write.
+   write-seq:   [Channel Int]
+   read-seq:    [Channel Int]
+   sni:         [or String Null]]]
+
+[instance [ByteStream TlsConnection]
+  read-bytes:  tls-read-bytes
+  write-bytes: tls-write-bytes]
+
+# ── TLS Record Layer ─────────────────────────────────────────────────────────────
+
+ContentType: [union
+  [ChangeCipherSpec]  # 20 — sent for TLS 1.2 compat; ignored on receipt in TLS 1.3
+  [Alert]             # 21
+  [Handshake]         # 22
+  [ApplicationData]]  # 23 — carries both post-handshake data and encrypted handshake msgs
+
+TlsRecord: [type
+  [content-type: ContentType
+   payload:      Bytes]]
+
+[
+  read-tls-record: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [header: [read-bytes h 5]]
+    [ct:     [int->ct [get header 0]]]
+    [len:    [+ [* [get header 3] 256] [get header 4]]]
+    [if [> len 16384] [error [str "TLS: record too large: " len]] null]
+    [TlsRecord [content-type: ct  payload: [read-bytes h len]]]]
+
+  write-tls-record: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h r@TlsRecord]
+    [len: [length r.payload]]
+    [write-bytes h
+      [concat
+        [bytes [ct->int r.content-type]]
+        [0x03 0x03]   # version: TLS 1.2 legacy compat
+        [bytes [/ len 256]]
+        [bytes [mod len 256]]
+        r.payload]]]
+
+  int->ct: [fn [let n@Int]
+    [match n
+      20: [ChangeCipherSpec]  21: [Alert]  22: [Handshake]  23: [ApplicationData]
+      _:  [error [str "TLS: unknown content type: " n]]]]
+
+  ct->int: [fn [let ct@ContentType]
+    [match ct
+      [ChangeCipherSpec]: 20  [Alert]: 21  [Handshake]: 22  [ApplicationData]: 23]]
+
+  # ── Record Encryption/Decryption ─────────────────────────────────────────────
+
+  # Per-record nonce: IV XOR (0...0 || seq_be) per RFC 8446 §5.3.
+  tls-nonce: [fn [let iv@[Bytes 12] seq@Int]
+    [seq-bytes: [encode BigEndian [@UInt64 seq]]]   # 8 bytes big-endian
+    [padded: [concat [0x00 0x00 0x00 0x00] seq-bytes]]
+    [bytes-xor iv padded]]
+
+  tls-seal: [fn [let conn@TlsConnection plain@Bytes nonce@[Bytes 12]]
+    [match conn.cipher
+      [Chacha20Poly1305Sha256]: [chacha20-poly1305-seal conn.write-key nonce plain []]
+      [Aes128GcmSha256]:        [aes-128-gcm-seal       conn.write-key nonce plain []]
+      [Aes256GcmSha384]:        [aes-256-gcm-seal       conn.write-key nonce plain []]]]
+
+  tls-open: [fn [let conn@TlsConnection ct@Bytes nonce@[Bytes 12]]
+    [result:
+      [match conn.cipher
+        [Chacha20Poly1305Sha256]: [chacha20-poly1305-open conn.read-key nonce ct []]
+        [Aes128GcmSha256]:        [aes-128-gcm-open       conn.read-key nonce ct []]
+        [Aes256GcmSha384]:        [aes-256-gcm-open       conn.read-key nonce ct []]]]
+    [match result
+      [Ok p]:  p
+      [Err _]: [error "TLS: AEAD decryption failed"]]]
+
+  tls-write-record: [fn [let conn@TlsConnection ct@ContentType plain@Bytes]
+    [seq:   [recv conn.write-seq]]
+    [send conn.write-seq [+ seq 1]]
+    [nonce: [tls-nonce conn.write-iv seq]]
+    # Inner plaintext = data || content-type byte (RFC 8446 §5.2)
+    [inner:  [concat plain [bytes [ct->int ct]]]]
+    [ciphertext: [tls-seal conn inner nonce]]
+    [write-tls-record conn.underlying
+      [TlsRecord [content-type: [ApplicationData]  payload: ciphertext]]]]
+
+  tls-decrypt-record: [fn [let conn@TlsConnection record@TlsRecord]
+    [seq:   [recv conn.read-seq]]
+    [send conn.read-seq [+ seq 1]]
+    [nonce: [tls-nonce conn.read-iv seq]]
+    [plain: [tls-open conn record.payload nonce]]
+    # Strip trailing content type byte (last non-zero byte per RFC 8446 §5.2)
+    [strip-inner-ct plain]]
+
+  strip-inner-ct: [fn [let plain@Bytes]
+    # Walk backward from end to find last non-zero byte (the inner content type).
+    # Everything before it is the actual plaintext.
+    [n: [length plain]]
+    [find-last-nonzero plain [- n 1]]]
+
+  find-last-nonzero: [fn [let b@Bytes i@Int]
+    [if [< i 0]
+      [error "TLS: all-zero plaintext after decryption"]
+      [if [= [get b i] 0]
+        [find-last-nonzero b [- i 1]]
+        [slice b 0 i]]]]   # strip the content-type byte at position i
+
+  # ── ByteStream Implementation ─────────────────────────────────────────────────
+
+  tls-read-bytes: [fn [let conn@TlsConnection n@Int]
+    [tls-read-acc conn n []]]
+
+  tls-read-acc: [fn [let conn@TlsConnection remaining@Int acc@[Seq Bytes]]
+    [if [= remaining 0]
+      [bytes-concat acc]
+      [record: [read-tls-record conn.underlying]]
+      [plain:  [tls-decrypt-record conn record]]
+      [got:    [min remaining [length plain]]]
+      [tls-read-acc conn [- remaining got] [append acc [list [slice plain 0 got]]]]]]
+
+  tls-write-bytes: [fn [let conn@TlsConnection data@Bytes]
+    [chunk-size: 16384]
+    [if [<= [length data] chunk-size]
+      [tls-write-record conn [ApplicationData] data]
+      [tls-write-record conn [ApplicationData] [slice data 0 chunk-size]]
+      [tls-write-bytes conn [slice data chunk-size [- [length data] chunk-size]]]]]
+
+  # ── Key Schedule ─────────────────────────────────────────────────────────────
+  # RFC 8446 §7.1
+
+  hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Int]
+    [label-str: [str "tls13 " label]]
+    [info:
+      [concat
+        [encode BigEndian [@UInt16 len]]
+        [bytes [length [str-bytes label-str]]]
+        [str-bytes label-str]
+        [bytes [length context]]
+        context]]
+    [hkdf-expand [Sha256] secret info len]]
+
+  derive-secret: [fn [let secret@Bytes label@String transcript@Bytes]
+    [hkdf-expand-label secret label [sha256 transcript] 32]]
+
+  # Returns all keys needed for handshake and application data.
+  tls13-key-schedule: [fn [let dh-shared@[Bytes 32] ch-bytes@Bytes sh-bytes@Bytes]
+    [zero32: [bytes-repeat 0 32]]
+
+    [early-secret: [hkdf-extract [Sha256] zero32 zero32]]
+
+    [hs-secret: [hkdf-extract [Sha256]
+      [derive-secret early-secret "derived" []]
+      dh-shared]]
+
+    [transcript-sh: [concat ch-bytes sh-bytes]]
+
+    [c-hs-traffic: [derive-secret hs-secret "c hs traffic" transcript-sh]]
+    [s-hs-traffic: [derive-secret hs-secret "s hs traffic" transcript-sh]]
+
+    [master-secret: [hkdf-extract [Sha256]
+      [derive-secret hs-secret "derived" []]
+      zero32]]
+
+    [hs-client-key:   [hkdf-expand-label c-hs-traffic "key"      [] 32]]
+    [hs-client-iv:    [hkdf-expand-label c-hs-traffic "iv"       [] 12]]
+    [hs-server-key:   [hkdf-expand-label s-hs-traffic "key"      [] 32]]
+    [hs-server-iv:    [hkdf-expand-label s-hs-traffic "iv"       [] 12]]
+    [fin-client-key:  [hkdf-expand-label c-hs-traffic "finished" [] 32]]
+    [fin-server-key:  [hkdf-expand-label s-hs-traffic "finished" [] 32]]
+
+    # App traffic secrets computed over the full transcript; carried in state.
+    [c-ap-traffic: [derive-secret master-secret "c ap traffic" []]]
+    [s-ap-traffic: [derive-secret master-secret "s ap traffic" []]]
+
+    [app-client-key: [hkdf-expand-label c-ap-traffic "key" [] 32]]
+    [app-client-iv:  [hkdf-expand-label c-ap-traffic "iv"  [] 12]]
+    [app-server-key: [hkdf-expand-label s-ap-traffic "key" [] 32]]
+    [app-server-iv:  [hkdf-expand-label s-ap-traffic "iv"  [] 12]]
+
+    [hs-client-key:  hs-client-key   hs-client-iv:  hs-client-iv
+     hs-server-key:  hs-server-key   hs-server-iv:  hs-server-iv
+     fin-client-key: fin-client-key  fin-server-key: fin-server-key
+     app-client-key: app-client-key  app-client-iv:  app-client-iv
+     app-server-key: app-server-key  app-server-iv:  app-server-iv
+     master-secret:  master-secret]]
+
+  # ── Handshake ────────────────────────────────────────────────────────────────
+
+  # Handshake message wire frame: type(1) | length(3) | body.
+  encode-hs: [fn [let type@Int body@Bytes]
+    [len: [length body]]
+    [concat
+      [bytes type]
+      [bytes [/ [/ len 65536] 1]]      # length byte 0
+      [bytes [mod [/ len 256] 256]]     # length byte 1
+      [bytes [mod len 256]]             # length byte 2
+      body]]
+
+  new-conn: [fn [let h@Handle wk@[Bytes 32] rk@[Bytes 32] wi@[Bytes 12] ri@[Bytes 12] c@CipherSuite sni]
+    [TlsConnection
+      [underlying: h
+       write-key: wk  write-iv: wi
+       read-key:  rk  read-iv:  ri
+       cipher: c
+       write-seq: [init-seq-ch]
+       read-seq:  [init-seq-ch]
+       sni: sni]]]
+
+  init-seq-ch: [fn []
+    [ch: [channel 1]]
+    [send ch 0]
+    ch]
+
+  # Server handshake entry point.
+  tls-accept: [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]]
+                [let h@h cfg@TlsServerConfig]
+    [error "TODO: tls-accept — parse ClientHello, send ServerHello+EncryptedExtensions+Certificate+CertificateVerify+Finished, read client Finished, install app keys. Key schedule via tls13-key-schedule."]]
+
+  # Client handshake entry point.
+  tls-layer: [fn@[bind: [h]  return: TlsConnection  constraint: [h: ByteStream]]
+               [let h@h cfg@TlsClientConfig]
+    [error "TODO: tls-layer — send ClientHello, read ServerHello, derive keys, read encrypted handshake, verify cert chain (verify-cert-chain), read Finished, send Finished, install app keys."]]
+
+  # Handshake message parsing — full implementations needed for each message type.
+  parse-client-hello: [fn [let payload@Bytes] [error "TODO: parse-client-hello"]]
+  parse-server-hello: [fn [let payload@Bytes] [error "TODO: parse-server-hello"]]
+  parse-certificate:  [fn [let payload@Bytes] [error "TODO: parse-certificate — returns [Seq Bytes] (DER list)"]]
+  parse-finished:     [fn [let payload@Bytes]
+    # Handshake header is 4 bytes (type + 3-byte length); MAC follows.
+    [slice payload 4 32]]
+
+  encode-finished: [fn [let mac@[Bytes 32]]
+    [encode-hs 20 mac]]
+
+  # Sign transcript with private key. Dispatches on PKCS#8 OID.
+  sign-with-key: [fn [let private-key@Bytes input@Bytes]
+    [error "TODO: sign-with-key — detect key type from PKCS#8 OID prefix, dispatch to rsa-pss-sign / p256-sign / ed25519-sign"]]
+
+  verify-sig: [fn [let public-key@Bytes input@Bytes sig@Bytes] [error "TODO: verify-sig"]]
+
+  bytes-repeat: [fn [let val@Int n@Int]
+    [collect [map [fn [let _] val] [range 0 n]]]]
+
+  bytes-concat: [fn [let seqs@[Seq Bytes]]
+    [reduce [fn [let acc b] [concat acc b]] [] seqs]]
+]

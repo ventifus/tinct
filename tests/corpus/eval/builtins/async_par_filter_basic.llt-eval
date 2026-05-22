@@ -1,0 +1,11 @@
+# Test par-filter: filter a sequence in parallel
+# par-filter returns a Seq directly, not a Task, so no await needed
+
+[
+  gt-five: [fn [let x] [> x 5]]
+  nums: [range 1 11]
+  result: [par-filter gt-five nums]
+]
+.result
+=== out
+Seq(Int(6), ...)

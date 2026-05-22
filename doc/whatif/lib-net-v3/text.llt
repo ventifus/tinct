@@ -1,0 +1,127 @@
+# stdlib/text.llt — Text encoding/decoding (TextCodec typeclass + encoding_rs backend).
+# Part of: lib-net-v3
+# Depends on: net.llt (ByteLabel)
+# Rust backend: encoding_rs (~38 WHATWG encodings)
+
+[include %libdir "net.llt"]
+
+# ── TextCodec Typeclass ──────────────────────────────────────────────────────────
+
+[class [TextCodec c]
+  encode:       [Fn [c@c s@String] [Result Bytes]]
+  decode:       [Fn [c@c b@Bytes] [Result String]]
+  decode-lossy: [Fn [c@c b@Bytes] String]
+  codec-name:   [Fn [c@c] String]]
+
+# ── Built-in Codec Types ─────────────────────────────────────────────────────────
+
+[type [UTF8]]
+[type [UTF16LE]]
+[type [UTF16BE]]
+[type [Windows1252]]
+[type [Latin1]]
+[type [ShiftJIS]]
+[type [GBK]]
+[type [Big5]]
+[type [KOI8R]]
+[type [ISO2022JP]]
+# ... all ~38 WHATWG encodings backed by encoding_rs
+
+[instance [TextCodec UTF8]
+  encode:       [fn [let _ s@String] [Ok [builtin-utf8-encode s]]]
+  decode:       [fn [let _ b@Bytes]  [builtin-utf8-decode b]]
+  decode-lossy: [fn [let _ b@Bytes]  [builtin-utf8-decode-lossy b]]
+  codec-name:   [fn [let _] "utf-8"]]
+
+[instance [TextCodec UTF16LE]
+  encode:       [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
+  decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "utf-16le" b]]
+  decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "utf-16le" b]]
+  codec-name:   [fn [let _] "utf-16le"]]
+
+[instance [TextCodec Windows1252]
+  encode:       [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
+  decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "windows-1252" b]]
+  decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "windows-1252" b]]
+  codec-name:   [fn [let _] "windows-1252"]]
+
+# ── Runtime Codec Dictionary ──────────────────────────────────────────────────────
+
+# Codec: runtime representation of a TextCodec instance.
+# Used when codec is determined at runtime (e.g. from HTTP Content-Type header).
+Codec: [type
+  [name:         String
+   encode:       [Fn [String] [Result Bytes]]
+   decode:       [Fn [Bytes] [Result String]]
+   decode-lossy: [Fn [Bytes] String]]]
+
+TextBytes: [type
+  [data:  Bytes
+   codec: Codec]]
+
+[
+  # Convert a compile-time TextCodec instance to a runtime Codec dict.
+  to-codec: [fn@[bind: [t]  return: Codec  constraint: [t: TextCodec]] [let c@t]
+    [Codec
+      [name:         [codec-name c]
+       encode:       [fn [let s] [encode c s]]
+       decode:       [fn [let b] [decode c b]]
+       decode-lossy: [fn [let b] [decode-lossy c b]]]]]
+
+  # Dynamic lookup by IANA/WHATWG charset name.
+  # Returns [Result Codec]. Supports aliases ("utf8" → UTF-8, "x-sjis" → Shift_JIS, etc.)
+  codec-for-name: [fn [let name@String]
+    [match [builtin-encoding-for-name [str-lower name]]
+      [Some internal-name]:
+        [Ok [Codec
+          [name:         internal-name
+           encode:       [fn [let s] [builtin-encoding-encode internal-name s]]
+           decode:       [fn [let b] [builtin-encoding-decode internal-name b]]
+           decode-lossy: [fn [let b] [builtin-encoding-decode-lossy internal-name b]]]]]
+      [None]:
+        [Err [str "Unknown charset: " name]]]]
+
+  # Encode a String to TextBytes using a runtime Codec.
+  text-encode: [fn@[bind: [t]  return: TextBytes  constraint: [t: TextCodec]] [let c@t s@String]
+    [match [encode c s]
+      [Ok b]:  [TextBytes [data: b  codec: [to-codec c]]]
+      [Err e]: [error e]]]
+
+  # Decode TextBytes back to String.
+  text-decode: [fn [let tb@TextBytes]
+    [tb.codec.decode tb.data]]
+
+  # Compile-time dispatch for encode/decode (mirrors ByteLabel dispatch).
+  # encode: [Fn [codec@TextCodec s@String] [Result Bytes]]
+  # decode: [Fn [codec@TextCodec b@Bytes] [Result String]]
+  encode: [fn@[bind: [c]  return: [Result Bytes]  constraint: [c: TextCodec]] [let c@c s@String]
+    [encode c s]]
+
+  decode: [fn@[bind: [c]  return: [Result String]  constraint: [c: TextCodec]] [let c@c b@Bytes]
+    [decode c b]]
+
+  decode-lossy: [fn@[bind: [c]  return: String  constraint: [c: TextCodec]] [let c@c b@Bytes]
+    [decode-lossy c b]]
+
+  # Decode HTTP response body using charset from Content-Type header.
+  # Falls back to UTF-8 (HTML5 default) if charset absent or unknown.
+  decode-http-body: [fn [let body@Bytes content-type@String]
+    [codec: [match [extract-charset content-type]
+      [Some name]: [match [codec-for-name name]
+        [Ok c]:   c
+        [Err _]:  [to-codec UTF8]]
+      [None]: [to-codec UTF8]]]
+    [codec.decode-lossy body]]
+
+  extract-charset: [fn [let content-type@String]
+    # Parse "text/html; charset=windows-1252" → [Some "windows-1252"]
+    [parts: [str-split ";" content-type]]
+    [charset-parts: [filter [fn [let p] [str-contains? [str-lower p] "charset="]] parts]]
+    [match charset-parts
+      []: [None]
+      [let [first ...]]:
+        [kv: [str-split "=" first]]
+        [if [>= [length kv] 2]
+          [Some [str-trim [get kv 1]]]
+          [None]]]]
+]

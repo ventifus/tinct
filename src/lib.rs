@@ -744,7 +744,7 @@ pub fn visit_value<V: ValueVisitor>(
             "Channel".to_string(),
             ast::Span::origin(),
         ))),
-        value::Value::Context => Err(Box::new(error::EvalError::value_not_serializable(
+        value::Value::Context(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Context".to_string(),
             ast::Span::origin(),
         ))),

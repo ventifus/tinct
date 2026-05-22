@@ -1,0 +1,194 @@
+# stdlib/protocols/noise.llt — Generic Noise Protocol Framework (noiseprotocol.org).
+# Part of: lib-net-v3
+# Depends on: net.llt (ByteStream)
+# Rust primitives: x25519-keypair, x25519-dh, chacha20-poly1305-seal/open, sha256
+#
+# Supports patterns: XX, IK, NK, XK, KK, IX.
+# WireGuard uses Noise_IKpsk2 (see wireguard.llt) with BLAKE2s; this module
+# uses SHA-256 and is for general Noise applications (not WireGuard).
+
+[include %libdir "net.llt"]
+
+# ── Types ────────────────────────────────────────────────────────────────────────
+
+NoisePattern: [union
+  [XX]   # mutual auth, both keys transmitted
+  [IK]   # initiator knows responder's static key
+  [NK]   # no initiator static (anonymous)
+  [XK]   # initiator transmits static, knows responder's
+  [KK]   # both parties know each other's static keys
+  [IX]]  # initiator transmits static, responder transmits
+
+NoiseConfig: [type
+  [pattern:      NoisePattern
+   private-key:  [Bytes 32]
+   public-key:   [Bytes 32]
+   remote-key:   [or [Bytes 32] Null]  # null if unknown (NK, XX patterns)
+   prologue:     Bytes]]               # application-specific prologue data
+
+NoiseConnection: [type
+  [underlying: Handle
+   send-key:   [Bytes 32]
+   recv-key:   [Bytes 32]
+   send-n:     [Channel Int]    # nonce counter for outbound; single-writer invariant applies
+   recv-n:     [Channel Int]]]  # nonce counter for inbound
+
+[instance [ByteStream NoiseConnection]
+  read-bytes:  noise-read
+  write-bytes: noise-write]
+
+# ── Noise Handshake State ────────────────────────────────────────────────────────
+
+NoiseState: [type
+  [s:    [or [Bytes 32] Null]   # static private key
+   e:    [or [Bytes 32] Null]   # ephemeral private key
+   rs:   [or [Bytes 32] Null]   # remote static public key
+   re:   [or [Bytes 32] Null]   # remote ephemeral public key
+   ck:   [Bytes 32]             # chaining key
+   h:    [Bytes 32]             # handshake hash
+   k:    [or [Bytes 32] Null]   # current symmetric key (null before first MixKey)
+   n:    Int]]                  # nonce for symmetric operations
+
+[
+  noise-hash: [fn [let data@Bytes] [sha256 data]]
+
+  # ── Symmetric State Operations (Noise spec §5.2) ──────────────────────────────
+
+  # Initialize handshake hash from protocol name.
+  noise-init-h: [fn [let protocol-name@String]
+    [name-bytes: [str-bytes protocol-name]]
+    [if [<= [length name-bytes] 32]
+      [concat name-bytes [bytes-repeat 0 [- 32 [length name-bytes]]]]
+      [noise-hash name-bytes]]]
+
+  mix-hash: [fn [let h@[Bytes 32] data@Bytes]
+    [noise-hash [concat h data]]]
+
+  mix-key: [fn [let state@NoiseState input@[Bytes 32]]
+    [prk:    [hkdf-extract [Sha256] state.ck input]]
+    # Noise spec §5.2: first HKDF output = new ck, second = new k.
+    [new-ck: [hkdf-expand [Sha256] prk []         32]]
+    [new-k:  [hkdf-expand [Sha256] prk [bytes 1]  32]]
+    [NoiseState
+      [s:    state.s
+       e:    state.e
+       rs:   state.rs
+       re:   state.re
+       ck:   new-ck
+       h:    state.h
+       k:    new-k
+       n:    0]]]   # reset nonce on key change
+
+  encrypt-and-hash: [fn [let state@NoiseState plaintext@Bytes]
+    [if [null? state.k]
+      # No key yet — transmit plaintext, mix hash.
+      [ciphertext: plaintext
+       new-h: [mix-hash state.h plaintext]
+       [ciphertext new-h state.n]]
+      [nonce12: [noise-nonce state.n]]
+      [ciphertext: [chacha20-poly1305-seal state.k nonce12 plaintext state.h]]
+      [new-h: [mix-hash state.h ciphertext]]
+      [ciphertext new-h [+ state.n 1]]]]
+
+  decrypt-and-hash: [fn [let state@NoiseState ciphertext@Bytes]
+    [if [null? state.k]
+      [plaintext: ciphertext
+       new-h: [mix-hash state.h ciphertext]
+       [plaintext new-h state.n]]
+      [nonce12: [noise-nonce state.n]]
+      [match [chacha20-poly1305-open state.k nonce12 ciphertext state.h]
+        [Ok p]:
+          [new-h: [mix-hash state.h ciphertext]]
+          [p new-h [+ state.n 1]]
+        [Err _]: [error "Noise: decryption failed"]]]]
+
+  noise-nonce: [fn [let n@Int]
+    [concat
+      [0 0 0 0]   # 4-byte pad
+      [encode BigEndian [@UInt64 n]]]]
+
+  # Split into send/recv keys after handshake.
+  noise-split: [fn [let state@NoiseState initiator@Bool]
+    [k1: [hkdf-expand [Sha256] state.ck [] 32]]
+    [k2: [hkdf-expand [Sha256] state.ck [bytes 1] 32]]
+    [if initiator
+      [send-key: k1  recv-key: k2]
+      [send-key: k2  recv-key: k1]]]
+
+  # ── Pattern Handshakes ────────────────────────────────────────────────────────
+
+  noise-accept: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                  [let h@h cfg@NoiseConfig]
+    [match cfg.pattern
+      [XX]: [noise-xx-accept h cfg]
+      [IK]: [noise-ik-accept h cfg]
+      [NK]: [noise-nk-accept h cfg]
+      _:    [error "TODO: noise pattern not yet implemented"]]]
+
+  noise-layer: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                 [let h@h cfg@NoiseConfig]
+    [match cfg.pattern
+      [XX]: [noise-xx-connect h cfg]
+      [IK]: [noise-ik-connect h cfg]
+      [NK]: [noise-nk-connect h cfg]
+      _:    [error "TODO: noise pattern not yet implemented"]]]
+
+  # Noise_XX: <- e, ee, s, es -> e, ee, se (both parties learn each other's static key).
+  noise-xx-connect: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                      [let h@h cfg@NoiseConfig]
+    [error "TODO: noise-xx-connect"]]
+
+  noise-xx-accept: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                     [let h@h cfg@NoiseConfig]
+    [error "TODO: noise-xx-accept"]]
+
+  # Noise_IK: initiator knows responder's static key upfront.
+  noise-ik-connect: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                      [let h@h cfg@NoiseConfig]
+    [error "TODO: noise-ik-connect"]]
+
+  noise-ik-accept: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                     [let h@h cfg@NoiseConfig]
+    [error "TODO: noise-ik-accept"]]
+
+  # Noise_NK: no initiator static (anonymous connections to known responder).
+  noise-nk-connect: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                      [let h@h cfg@NoiseConfig]
+    [error "TODO: noise-nk-connect"]]
+
+  noise-nk-accept: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                     [let h@h cfg@NoiseConfig]
+    [error "TODO: noise-nk-accept"]]
+
+  # ── Transport Phase ───────────────────────────────────────────────────────────
+
+  # Noise transport message: 2-byte length | ciphertext (with 16-byte poly tag).
+  noise-write: [fn [let conn@NoiseConnection data@Bytes]
+    [n: [recv conn.send-n]]
+    [send conn.send-n [+ n 1]]
+    [nonce12: [noise-nonce n]]
+    [ct: [chacha20-poly1305-seal conn.send-key nonce12 data []]]
+    [write-bytes conn.underlying
+      [concat
+        [encode BigEndian [@UInt16 [length ct]]]
+        ct]]]
+
+  noise-read: [fn [let conn@NoiseConnection wanted@Int]
+    [len-bytes: [read-bytes conn.underlying 2]]
+    [len: [match [decode BigEndian [@[Bytes 2]: len-bytes]] [Ok n]: n [Err _]: [error "Noise: bad frame"]]]
+    [ct: [read-bytes conn.underlying len]]
+    [n: [recv conn.recv-n]]
+    [send conn.recv-n [+ n 1]]
+    [nonce12: [noise-nonce n]]
+    [match [chacha20-poly1305-open conn.recv-key nonce12 ct []]
+      [Ok plain]: [slice plain 0 [min wanted [length plain]]]
+      [Err _]:    [error "Noise: decryption failed"]]]
+
+  init-nonce-ch: [fn []
+    [ch: [channel 1]]
+    [send ch 0]
+    ch]
+
+  bytes-repeat: [fn [let val@Int n@Int]
+    [collect [map [fn [let _] val] [range 0 n]]]]
+]

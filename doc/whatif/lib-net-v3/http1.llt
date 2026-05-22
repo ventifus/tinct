@@ -1,0 +1,186 @@
+# stdlib/protocols/http1.llt — HTTP/1.1 framing (RFC 7230) in tinct.
+# Part of: lib-net-v3
+# Depends on: net.llt (ByteStream, read-bytes, write-bytes)
+
+[include %libdir "net.llt"]
+
+# ── Types ────────────────────────────────────────────────────────────────────────
+
+RawRequest: [type
+  [method:  String
+   path:    String
+   query:   String              # raw query string (without leading ?); "" if absent
+   version: String              # "HTTP/1.1" or "HTTP/1.0"
+   headers: [Map String String] # header names lowercased
+   body:    Bytes
+   respond: [Fn [RawResponse] Null]]]
+
+RawResponse: [type
+  [status:  Int
+   headers: [Map String String]
+   body:    Bytes]]
+
+[
+  # ── Response Constructors ───────────────────────────────────────────────────────
+
+  ok: [fn [let body@String]
+    [RawResponse [status: 200  headers: [map-from-pairs [["content-type" "text/plain; charset=utf-8"]]]  body: [str-bytes body]]]]
+
+  json-ok: [fn [let body@Bytes]
+    [RawResponse [status: 200  headers: [map-from-pairs [["content-type" "application/json"]]]  body: body]]]
+
+  redirect: [fn [let location@String]
+    [RawResponse [status: 302  headers: [map-from-pairs [["location" location]]]  body: []]]]
+
+  not-found: [RawResponse [status: 404  headers: []  body: [str-bytes "Not Found"]]]
+
+  server-error: [fn [let msg@String]
+    [RawResponse [status: 500  headers: []  body: [str-bytes msg]]]]
+
+  # ── Request Parsing ─────────────────────────────────────────────────────────────
+
+  # Parse one HTTP/1.1 request from a ByteStream. Blocks until full request read.
+  # Handles: request line, headers (folded lines collapsed), body (Content-Length only;
+  # chunked transfer-encoding is a TODO).
+  parse-request: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h respond@[Fn [RawResponse] Null]]
+    # Read until \r\n\r\n (header/body separator).
+    [header-bytes: [read-until-crlfcrlf h]]
+    [header-str:   [bytes-str header-bytes]]
+    [lines:        [str-split "\r\n" header-str]]
+    [match lines
+      []: [error "HTTP/1.1: empty request"]
+      [let [request-line ...header-lines]]:
+        [parts: [str-split " " request-line]]
+        [if [< [length parts] 3]
+          [error [str "HTTP/1.1: malformed request line: " request-line]]
+          [method:  [get parts 0]
+           target:  [get parts 1]
+           version: [get parts 2]
+           headers: [parse-header-lines header-lines]
+           # Split target into path and query.
+           path-parts: [str-split "?" target]
+           path:    [get path-parts 0]
+           query:   [if [> [length path-parts] 1] [get path-parts 1] ""]
+           # Read body if Content-Length present.
+           body-len: [match [get? headers "content-length"]
+             [Some n-str]: [to-int n-str]
+             [None]:       0]
+           body: [if [> body-len 0] [read-bytes h body-len] []]
+           [RawRequest
+             [method: method  path: path  query: query  version: version
+              headers: headers  body: body  respond: respond]]]]]]
+
+  # Read bytes until \r\n\r\n. Returns header bytes (excluding the separator).
+  read-until-crlfcrlf: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [read-until-sep h [] 0]]
+
+  read-until-sep: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                    [let h@h acc@[Seq Bytes] state@Int]
+    # state: 0=init 1=\r 2=\r\n 3=\r\n\r 4=\r\n\r\n (done)
+    [b: [read-bytes h 1]]
+    [byte: [get b 0]]
+    [next-state:
+      [match [state byte]
+        [0 13]: 1   # \r
+        [1 10]: 2   # \r\n
+        [2 13]: 3   # \r\n\r
+        [3 10]: 4   # \r\n\r\n — done
+        [_ 13]: 1   # new \r
+        [_ _]:  0]] # reset
+    [new-acc: [append acc [list b]]]
+    [if [= next-state 4]
+      # Drop the trailing \r\n\r\n from output.
+      [bytes-concat [slice new-acc 0 [- [length new-acc] 4]]]
+      [read-until-sep h new-acc next-state]]]
+
+  # Parse header lines "Name: value" into lowercased Map.
+  parse-header-lines: [fn [let lines@[Seq String]]
+    [reduce [fn [let acc line]
+      [colon: [str-index-of ":" line]]
+      [if [< colon 0]
+        acc   # skip malformed lines
+        [k: [str-lower [str-trim [str-slice line 0 colon]]]]
+         v: [str-trim [str-slice line [+ colon 1] [- [length line] [+ colon 1]]]]
+         [assoc acc k v]]]
+     []
+     lines]]
+
+  # ── Response Writing ─────────────────────────────────────────────────────────
+
+  write-response: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h resp@RawResponse]
+    [status-text: [status->text resp.status]]
+    [header-lines:
+      [concat-map [fn [let [k v]]
+        [str-bytes [str k ": " v "\r\n"]]]
+       [map-pairs resp.headers]]]
+    [write-bytes h
+      [concat
+        [str-bytes [str "HTTP/1.1 " resp.status " " status-text "\r\n"]]
+        [str-bytes [str "content-length: " [length resp.body] "\r\n"]]
+        [bytes-concat header-lines]
+        [str-bytes "\r\n"]
+        resp.body]]]
+
+  status->text: [fn [let n@Int]
+    [match n
+      200: "OK"  201: "Created"  204: "No Content"  206: "Partial Content"
+      301: "Moved Permanently"  302: "Found"  304: "Not Modified"
+      400: "Bad Request"  401: "Unauthorized"  403: "Forbidden"
+      404: "Not Found"  405: "Method Not Allowed"  408: "Request Timeout"
+      409: "Conflict"  410: "Gone"  413: "Payload Too Large"
+      422: "Unprocessable Entity"  429: "Too Many Requests"
+      500: "Internal Server Error"  502: "Bad Gateway"  503: "Service Unavailable"
+      _:   "Unknown"]]
+
+  # ── Connection Handler ────────────────────────────────────────────────────────
+
+  # Serve one HTTP/1.1 connection: parse requests, emit to out channel.
+  # Supports keep-alive (loops until close or error).
+  http1-conn: [fn [let h@Handle out@[Channel RawRequest]]
+    [loop [fn []
+      [match [try [parse-request h [fn [let resp] [write-response h resp]]]]
+        [Ok req]:
+          [send out req]
+          # Keep-alive: continue unless client said Connection: close
+          [if [= [get? req.headers "connection"] [Some "close"]]
+            [exit]
+            null]
+        [Err _]: [exit]]]]]   # EOF or parse error — close connection silently
+
+  # ── Client Side ──────────────────────────────────────────────────────────────
+
+  # Send one HTTP/1.1 request. Returns RawResponse.
+  http1-request: [fn@[bind: [h]  constraint: [h: ByteStream]]
+                   [let h@h method@String path@String
+                        headers@[Map String String] body@Bytes host@String]
+    [header-lines:
+      [concat-map [fn [let [k v]] [str-bytes [str k ": " v "\r\n"]]]
+       [map-pairs headers]]]
+    [write-bytes h
+      [concat
+        [str-bytes [str method " " path " HTTP/1.1\r\n"]]
+        [str-bytes [str "host: " host "\r\n"]]
+        [str-bytes [str "content-length: " [length body] "\r\n"]]
+        [str-bytes "connection: close\r\n"]
+        [bytes-concat header-lines]
+        [str-bytes "\r\n"]
+        body]]
+    [parse-http1-response h]]
+
+  parse-http1-response: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [header-bytes: [read-until-crlfcrlf h]]
+    [header-str:   [bytes-str header-bytes]]
+    [lines:        [str-split "\r\n" header-str]]
+    [match lines
+      []: [error "HTTP/1.1: empty response"]
+      [let [status-line ...header-lines]]:
+        [parts:   [str-split " " status-line]]
+        [status:  [to-int [get parts 1]]]
+        [headers: [parse-header-lines header-lines]]
+        [body-len: [match [get? headers "content-length"]
+          [Some n]: [to-int n]
+          [None]:   0]]
+        [body: [if [> body-len 0] [read-bytes h body-len] []]]
+        [RawResponse [status: status  headers: headers  body: body]]]]
+
+]

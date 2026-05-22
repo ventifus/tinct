@@ -311,6 +311,12 @@ pub struct EvalContext {
     /// opened (e.g., --no-libdir, bootstrap contexts, tests).
     /// Propagated through `with_base_dir` so nested includes see the same Dir.
     pub libdir_dir: Mutex<Option<Arc<cap_std::fs::Dir>>>,
+    /// Cancellation token for this evaluation scope. Blocking async builtins (`await`,
+    /// `recv`, `send`, `select-once`) select! against this token so they return early when
+    /// the context is cancelled. The root context holds a fresh root token; child contexts
+    /// created by `with-cancel`, `with-timeout`, and `with-deadline` hold child tokens.
+    /// Cheap to clone (Arc internally); `CancellationToken::child_token()` is also cheap.
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 impl EvalContext {
@@ -368,6 +374,7 @@ impl EvalContext {
             boundary_guards: RwLock::new(HashMap::new()),
             do_infer_resolutions: RwLock::new(HashMap::new()),
             libdir_dir: Mutex::new(None),
+            cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
 
@@ -409,6 +416,7 @@ impl EvalContext {
             boundary_guards: RwLock::new(HashMap::new()),
             do_infer_resolutions: RwLock::new(HashMap::new()),
             libdir_dir: Mutex::new(None),
+            cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
 
@@ -459,6 +467,7 @@ impl EvalContext {
             boundary_guards: RwLock::new(HashMap::new()),
             do_infer_resolutions: RwLock::new(HashMap::new()),
             libdir_dir: Mutex::new(None),
+            cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
 
@@ -493,6 +502,7 @@ impl EvalContext {
             boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
             do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
+            cancel: self.cancel.clone(),
         })
     }
 
@@ -505,6 +515,57 @@ impl EvalContext {
         _base_dir_path: Option<std::path::PathBuf>,
     ) -> Arc<Self> {
         self.with_base_dir(base_dir)
+    }
+
+    /// Create a child EvalContext with a new cancellation token derived from this context's token.
+    ///
+    /// The child token is automatically cancelled when the parent token is cancelled.
+    /// Cancelling the child token does NOT cancel the parent.
+    ///
+    /// Returns `(child_ctx, child_token)` where `child_token` is a clone of the child's token
+    /// that can be passed to `[cancel-task]` (via `Value::Context(child_token)`) or stored for
+    /// later manual cancellation.
+    pub fn with_cancel_token(self: &Arc<Self>) -> (Arc<Self>, tokio_util::sync::CancellationToken) {
+        let child_token = self.cancel.child_token();
+        let child_ctx = Arc::new(Self {
+            config: Arc::clone(&self.config),
+            state: Arc::clone(&self.state),
+            thunk_arena: Arc::clone(&self.thunk_arena),
+            env_arena: Arc::clone(&self.env_arena),
+            env_allowed: self.env_allowed.clone(),
+            blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
+            boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
+            do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
+            libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
+            cancel: child_token.clone(),
+        });
+        (child_ctx, child_token)
+    }
+
+    /// Create a child EvalContext with a timeout: automatically cancels after `ms` milliseconds.
+    ///
+    /// Spawns a background task (via spawn_local) that fires the cancellation after the delay.
+    /// Returns the child context; the cancel handle is internal (use `[with-cancel]` if you
+    /// need explicit control).
+    pub fn with_timeout_ms(self: &Arc<Self>, ms: u64) -> Arc<Self> {
+        let child_token = self.cancel.child_token();
+        let cancel_clone = child_token.clone();
+        crate::async_rt::spawn_local(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            cancel_clone.cancel();
+        });
+        Arc::new(Self {
+            config: Arc::clone(&self.config),
+            state: Arc::clone(&self.state),
+            thunk_arena: Arc::clone(&self.thunk_arena),
+            env_arena: Arc::clone(&self.env_arena),
+            env_allowed: self.env_allowed.clone(),
+            blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
+            boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
+            do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
+            libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
+            cancel: child_token,
+        })
     }
 
     /// Allocate a thunk in the arena and return its ID.

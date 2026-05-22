@@ -1,0 +1,221 @@
+# stdlib/protocols/http.llt — High-level HTTP: http-channel, fetch, router, middleware.
+# Part of: lib-net-v3
+# Depends on: net.llt, serve.llt, http1.llt, h2.llt, h3.llt, quic.llt, tls.llt, dns.llt
+
+[include %libdir "net.llt"]
+[include %libdir "serve.llt"]
+[include %libdir "http1.llt"]
+[include %libdir "h2.llt"]
+[include %libdir "h3.llt"]
+[include %libdir "tls.llt"]
+
+# ── SVCB/HTTPS Record Types (RFC 9460) ──────────────────────────────────────────
+
+SvcbRecord: [union
+  [AliasMode   target@String]
+  [ServiceMode
+    alpn@[Seq String]
+    ipv4@[Seq [Bytes 4]]
+    ipv6@[Seq [Bytes 16]]
+    ech@Bytes
+    port@[or Port Null]]]
+
+[
+  # ── http-channel: Convenience Server ──────────────────────────────────────────
+
+  # Bind on all interfaces at the given port and serve HTTP/1.1.
+  # Returns Channel@RawRequest. For interface-specific binding, use tcp-listen + http1-serve.
+  # The 2-arg overload (no cert) serves plain HTTP.
+  # The 3-arg overload (with cert) inserts TLS.
+  http-channel: [fn [let cap@NetCap port@Port]
+    [http1-serve [tcp-listen-port cap port]]]
+
+  http-channel-tls: [fn [let cap@NetCap port@Port cert@TlsServerConfig]
+    [http1-serve [tls-serve [tcp-listen-port cap port] cert]]]
+
+  # ── SVCB Resolution ───────────────────────────────────────────────────────────
+
+  # Follow SVCB alias chain (max depth 3 to prevent loops).
+  resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
+    [if [> depth 3]
+      null
+      [match [try [await [task [dns-resolve cap host HTTPS]]]]
+        [Ok records]:
+          [match records
+            []: null
+            [let [rec ...rest]]:
+              [match rec
+                [let [HttpsRecord 0 target _]]:   # AliasMode: priority=0, target is the alias
+                  [resolve-svcb cap target [+ depth 1]]
+                [let [HttpsRecord prio target params]]:  # ServiceMode
+                  [alpn:  [svcb-alpn params]
+                   ipv4h: [svcb-ipv4-hints params]
+                   ipv6h: [svcb-ipv6-hints params]
+                   ech:   [svcb-ech params]
+                   port:  [svcb-port params]
+                   [ServiceMode [alpn: alpn  ipv4: ipv4h  ipv6: ipv6h  ech: ech  port: port]]]]]
+        [Err _]: null]]]
+
+  svcb-alpn:       [fn [let p] [or [get? p "alpn"]   []]]
+  svcb-ipv4-hints: [fn [let p] [or [get? p "ipv4hint"] []]]
+  svcb-ipv6-hints: [fn [let p] [or [get? p "ipv6hint"] []]]
+  svcb-ech:        [fn [let p] [or [get? p "ech"]    []]]
+  svcb-port:       [fn [let p] [get? p "port"]]
+
+  # ── http-connect: SVCB-Aware Connection ────────────────────────────────────────
+
+  http-connect: [fn [let cap@NetCap host@String port@Int]
+    [svcb-task: [task [resolve-svcb cap host 0]]
+     v6-task:   [task [dns-resolve cap host AAAA]]
+     v4-task:   [task [dns-resolve cap host A]]]
+
+    [svcb: [match [timeout [millis 50] svcb-task] [Ok r]: r [Err _]: null]]
+
+    [match svcb
+      [let sm@ServiceMode]:
+        [v6: [if [empty? sm.ipv6]
+          [match [try [await v6-task]] [Ok a]: a [Err _]: []]
+          [map [fn [let b] [Ipv6 b]] sm.ipv6]]]
+        [v4: [if [empty? sm.ipv4]
+          [await v4-task]
+          [map [fn [let b] [Ipv4 b]] sm.ipv4]]]
+        [http-protocol-race cap host [or sm.port port] sm.alpn [interleave v6 v4] sm.ech]
+      null:
+        [addrs: [interleave
+          [match [try [await v6-task]] [Ok a]: a [Err _]: []]
+          [await v4-task]]]
+        [raw: [happy-connect cap port addrs]]
+        [tls-layer raw [sni: host  alpn: ["h2" "http/1.1"]  ech: []  trust-roots: SystemRoots]]]]
+
+  # Race h3/QUIC and h2/TCP with 250ms stagger.
+  http-protocol-race: [fn [let cap@NetCap host@String port@Int
+                            alpn@[Seq String] addrs@[Seq IpAddress] ech@Bytes]
+    [result-ch: [channel 1]
+     h3?: [any? [fn [let p] [= p "h3"]] alpn]
+     h2?: [any? [fn [let p] [= p "h2"]] alpn]]
+
+    [h3-tasks: [if h3?
+      [collect [map-indexed [fn [let i addr]
+        [task
+          [await [timer-channel %clock [millis (* i 250)]]]
+          [match [try [quic-h3-connect cap host addr port ech]]
+            [Ok h]:  [try [send result-ch h]]
+            [Err _]: null]]]
+       addrs]]
+      []]]
+
+    [h2-tasks: [if h2?
+      [collect [map-indexed [fn [let i addr]
+        [task
+          [await [timer-channel %clock [millis [+ [if h3? 250 0] (* i 250)]]]]
+          [match [try [tcp-h2-connect cap host addr port ech]]
+            [Ok h]:  [try [send result-ch h]]
+            [Err _]: null]]]
+       addrs]]
+      []]]
+
+    [result: [recv result-ch]]
+    [par-map [fn [let t] [cancel-task t]] [append h3-tasks h2-tasks]]
+    result]
+
+  quic-h3-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
+    [quic-connect-addr cap [addr: addr  port: [@Port port]]
+                       [sni: sni  alpn: ["h3"]  ech: ech  trust-roots: SystemRoots]]]
+
+  tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
+    [tls-layer [tcp-connect cap [addr: addr  port: [@Port port]]]
+               [sni: sni  alpn: ["h2"]  ech: ech  trust-roots: SystemRoots]]]
+
+  # ── fetch ─────────────────────────────────────────────────────────────────────
+
+  # Transparent h3/h2/h1 negotiation. Decompresses response body.
+  fetch: [fn [let cap@NetCap url@Url]
+    [port: [or url.port [scheme-default-port url.scheme]]]
+    [host: [or url.host [error "fetch: URL has no host"]]]
+    [conn: [http-connect cap host port]]
+    [resp: [await [http-request conn [method: "GET"  path: url.path  headers: []  body: []]]]]
+    [decompress-response resp]]
+
+  scheme-default-port: [fn [let scheme@String]
+    [match scheme "https": 443  "http": 80  "h3": 443  _: 443]]
+
+  decompress-response: [fn [let resp@RawResponse]
+    [match [get? resp.headers "content-encoding"]
+      [Some "gzip"]:    [RawResponse [resp with body: [match [decode Gzip resp.body] [Ok b]: b [Err _]: resp.body]]]
+      [Some "br"]:      [RawResponse [resp with body: [match [decode Brotli resp.body] [Ok b]: b [Err _]: resp.body]]]
+      [Some "zstd"]:    [RawResponse [resp with body: [match [decode Zstd resp.body] [Ok b]: b [Err _]: resp.body]]]
+      _: resp]]
+
+  fetch-h1: [fn [let cap@NetCap url@Url]
+    [host: [or url.host [error "fetch-h1: no host"]]]
+    [port: [or url.port 80]]
+    [raw:  [tcp-connect cap [addr: [Ipv4 [127 0 0 1]] port: port]]]  # TODO: resolve host
+    [http1-request raw "GET" url.path [] [] host]]
+
+  # ── Router ────────────────────────────────────────────────────────────────────
+
+  # Path dispatch. Routes are [path-prefix handler] pairs.
+  # Handler: [Fn [RawRequest] RawResponse]
+  router: [fn [let routes@[Seq [Seq t]]]
+    [fn [let req@RawRequest]
+      [match [find [fn [let route]
+                 [str-starts-with? req.path [get route 0]]]
+               routes]
+        [Some route]: [[get route 1] req]
+        [None]:       not-found]]]
+
+  headers-map: [fn [let req@RawRequest] req.headers]
+
+  # ── Middleware ─────────────────────────────────────────────────────────────────
+
+  # Each middleware: [Fn [handler] handler] where handler: [Fn [RawRequest] RawResponse].
+
+  with-compression: [fn [let handler@[Fn [RawRequest] RawResponse]]
+    [fn [let req@RawRequest]
+      [resp: [handler req]]
+      [match [get? req.headers "accept-encoding"]
+        [Some ae]:
+          [if [str-contains? ae "gzip"]
+            [RawResponse
+              [status:  resp.status
+               headers: [assoc resp.headers "content-encoding" "gzip"]
+               body:    [encode Gzip resp.body]]]
+            resp]
+        [None]: resp]]]
+
+  with-logging: [fn [let handler@[Fn [RawRequest] RawResponse]]
+    [fn [let req@RawRequest]
+      [t0:   [now %clock]]
+      [resp: [handler req]]
+      [dt:   [timestamp-diff [now %clock] t0]]
+      [log [str req.method " " req.path " → " resp.status " (" dt "ms)"]]
+      resp]]
+
+  with-timeout: [fn [let ms@Int handler@[Fn [RawRequest] RawResponse]]
+    [fn [let req@RawRequest]
+      [match [try [await [timeout [millis ms] [task [handler req]]]]]
+        [Ok resp]: resp
+        [Err _]:   [RawResponse [status: 503  headers: []  body: [str-bytes "Request timeout"]]]]]]
+
+  with-cors: [fn [let origins@[Seq String] handler@[Fn [RawRequest] RawResponse]]
+    [fn [let req@RawRequest]
+      [resp: [handler req]]
+      [origin: [or [get? req.headers "origin"] "*"]]
+      [allowed: [if [empty? origins] true [any? [fn [let o] [= o origin]] origins]]]
+      [if allowed
+        [RawResponse
+          [status:  resp.status
+           headers: [merge resp.headers
+             [map-from-pairs
+               [["access-control-allow-origin"  origin]
+                ["access-control-allow-methods" "GET, POST, PUT, DELETE, OPTIONS"]
+                ["access-control-allow-headers" "content-type, authorization"]]]]
+           body: resp.body]]
+        resp]]]
+
+  with-auth: [fn [let check@[Fn [RawRequest] Bool] handler@[Fn [RawRequest] RawResponse]]
+    [fn [let req@RawRequest]
+      [if [check req]
+        [handler req]
+        [RawResponse [status: 401  headers: []  body: [str-bytes "Unauthorized"]]]]]]
+]
