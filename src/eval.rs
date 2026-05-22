@@ -296,14 +296,14 @@ pub struct EvalContext {
     /// the type checker records the boundary. The evaluator checks if a thunk's
     /// span matches a guard and wraps it with a runtime Guarded thunk if so.
     /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
-    /// Populated by typecheck_file via set_boundary_guards(), consumed during eval().
+    /// Populated by the type checker via set_boundary_guards(), consumed during eval().
     pub boundary_guards: RwLock<HashMap<Span, Type>>,
     /// Monad resolutions for inferred [do] forms: %do-infer VarRef span → monad variable name.
     /// The type checker records the resolved monad name here (keyed by the span of the
     /// `%do-infer` VarRef in the desugared bind chain). At eval time, when `VarRef("%do-infer")`
     /// is evaluated, the evaluator looks up this map by span and returns the monad dict value.
     /// Parallel to boundary_guards: type-checker-to-evaluator communication via span-keyed side channel.
-    /// Populated by typecheck_file via set_do_infer_resolutions(), consumed during eval().
+    /// Populated by the type checker via set_do_infer_resolutions(), consumed during eval().
     pub do_infer_resolutions: RwLock<HashMap<String, String>>,
     /// Already-open libdir Dir, shared from the bootstrap boundary (main.rs or repl.rs).
     /// Used by `builtin_include` to inject `%libdir` into the included file's environment

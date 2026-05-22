@@ -1772,10 +1772,10 @@ fn run_eval(
             }
         };
 
-        // Open base_dir as a cap-std Dir before expand_macros so it can be passed in
+        // Open base_dir as a cap-std Dir before expand_surface_program so it can be passed in
         // without re-acquiring ambient authority inside the expansion step.
         // AMBIENT-OK: CLI bootstrap — operator chose this file; base_dir is then passed
-        // down to expand_macros and eval without further ambient opens.
+        // down to expand_surface_program and eval without further ambient opens.
         let base_dir =
             cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory: {e}"))?;
@@ -1789,10 +1789,9 @@ fn run_eval(
             .map_err(|e| format!("{e}"))?;
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
-        let ast = tinct::ast_convert::surface_program_to_file(&program);
-
         // Variable resolution pass (Phase 1 of arena allocation strategy).
-        tinct::resolve::resolve_file(&ast.node);
+        let _resolution_table = tinct::resolve::resolve_surface_program(&program);
+        let ast = tinct::ast_convert::surface_program_to_file(&program);
 
         // Type errors are advisory unless --strict is set.
         // Build type environment with prelude + includes (if file-based).
@@ -1800,7 +1799,7 @@ fn run_eval(
             PipelineStage::File(file_path) if file_path != "-" => {
                 // File-based: use build_type_env with base_dir for include resolution
                 let (env, _include_bindings) =
-                    tinct::build_type_env(&ast.node, Some(&file_base_dir_path));
+                    tinct::build_type_env(&program, Some(&file_base_dir_path));
                 env
             }
             _ => {
@@ -2021,8 +2020,9 @@ fn run_fmt(
             .map_err(|e| format!("{e}"))?;
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        let _resolution_table = tinct::resolve::resolve_surface_program(&program);
         let ast = tinct::ast_convert::surface_program_to_file(&program);
-        tinct::resolve::resolve_file(&ast.node);
 
         let env = tinct::build_prelude_env();
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
@@ -2141,8 +2141,9 @@ fn run_lint(
         .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
     let ast = tinct::ast_convert::surface_program_to_file(&program);
-    tinct::resolve::resolve_file(&ast.node);
 
     // Type check with prelude environment
     let env = tinct::build_prelude_env();
@@ -2420,9 +2421,10 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
     let ast = tinct::ast_convert::surface_program_to_file(&program);
-    tinct::resolve::resolve_file(&ast.node);
-    let (type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
+    let (type_errors, _table) = tinct::typecheck::typecheck_surface_program(&program);
 
     // In strict mode, type errors are fatal
     if strict && !type_errors.is_empty() {
@@ -2880,9 +2882,10 @@ fn run_literate_weave(
         }
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        let _resolution_table = tinct::resolve::resolve_surface_program(&program);
         let ast = tinct::ast_convert::surface_program_to_file(&program);
-        tinct::resolve::resolve_file(&ast.node);
-        let (type_errors, _diagnostics) = tinct::typecheck::typecheck_file(&ast.node);
+        let (type_errors, _table) = tinct::typecheck::typecheck_surface_program(&program);
 
         // Capture type warnings (always non-fatal in literate mode unless --strict)
         let type_warnings = if !strict && !type_errors.is_empty() {
@@ -3363,8 +3366,9 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
         .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
     let ast = tinct::ast_convert::surface_program_to_file(&program);
-    tinct::resolve::resolve_file(&ast.node);
 
     // Type check to get DocMap (for doc strings)
     let env = tinct::build_prelude_env();

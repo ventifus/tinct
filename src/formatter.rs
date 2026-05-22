@@ -49,7 +49,7 @@ pub fn format_source_tinct_with_dir(
     // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
     let compact = script_path.file_stem().and_then(|s| s.to_str()) == Some("compact");
 
-    // Open the base directory first (needed by both expand_macros and EvalContext).
+    // Open the base directory first (needed by both expand_surface_program and EvalContext).
     let base_dir = match base_dir {
         Some(dir) => dir,
         None => {
@@ -69,7 +69,7 @@ pub fn format_source_tinct_with_dir(
     let parse_output = parse(input).map_err(|e| format!("{e}"))?;
 
     // Load and expand the formatter script BEFORE creating env/ctx.
-    // expand_macros internally calls create_stdlib_env_with_arena(), updating STDLIB_ARENA_CACHE.
+    // expand_surface_program internally calls create_stdlib_env_with_arena(), updating STDLIB_ARENA_CACHE.
     // By expanding first, env+ctx are created from the final cache state, keeping them
     // in the same arena basis and avoiding the "undefined variable: try" regression.
     // AMBIENT-OK: formatter script loaded from stdlib path.
@@ -95,11 +95,12 @@ pub fn format_source_tinct_with_dir(
     .map_err(|e| format!("formatter expand error: {e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut formatter_program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _resolution_table = resolve::resolve_surface_program(&formatter_program);
     let formatter_file = crate::ast_convert::surface_program_to_file(&formatter_program);
 
-    // Resolve, typecheck the expanded and desugared formatter.
-    resolve::resolve_file(&formatter_file.node);
-    let _ = typecheck::typecheck_file(&formatter_file.node);
+    // Typecheck the expanded and desugared formatter.
+    let _ = typecheck::typecheck_surface_program(&formatter_program);
 
     // Create env+ctx AFTER expand_surface_program so STDLIB_ARENA_CACHE is stable.
     // Use new_sharing_arena (not new) so stdlib ThunkIds are valid in the eval ctx —

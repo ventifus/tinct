@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use lsp_types::Uri;
 
-use crate::ast::{File, Spanned};
+use crate::ast::{File, Spanned, SurfaceProgram};
 use crate::builtins::create_stdlib_env_with_arena;
 use crate::error::{EvalError, TypeDiagnostic};
 use crate::parser::{parse, ParseError};
@@ -20,6 +20,9 @@ pub struct DocumentState {
     pub text: String,
     /// Parsed AST (if parsing succeeded).
     pub ast: Result<Spanned<File>, ParseError>,
+    /// Surface program (if parsing and macro expansion succeeded).
+    /// Used by the imports API for include-path collection and type-env building.
+    pub surface: Option<SurfaceProgram>,
     /// Recovered parse errors from inside bracket forms (non-fatal; collected even when `ast` is Ok).
     /// These come from `ParseOutput.errors` and represent errors where the parser substituted
     /// an `Expr::Error` node and continued rather than stopping.
@@ -81,6 +84,11 @@ impl DocumentState {
         // Macros expand first (on SurfaceProgram), then $_ placeholders are desugared,
         // then the SurfaceProgram is lowered to File, then variable resolution runs,
         // then the type checker sees the fully elaborated AST.
+        //
+        // The expanded+desugared SurfaceProgram is captured in `surface` for use by the
+        // imports API (include-path collection, type-env building), which now operates
+        // directly on the Surface AST.
+        let mut surface: Option<SurfaceProgram> = None;
         let mut ast: Result<Spanned<File>, ParseError> = match surface_parse_result {
             Err(e) => Err(e),
             Ok(mut program) => {
@@ -100,6 +108,7 @@ impl DocumentState {
                                 message: format!("macro expansion error: {}", e),
                                 span: None,
                             }),
+                            surface: None,
                             parse_errors: vec![crate::parser::ParseError {
                                 message: format!("macro expansion error: {}", e),
                                 span: None,
@@ -118,15 +127,19 @@ impl DocumentState {
                 // Desugar $_ implicit lambdas on SurfaceProgram (after expansion).
                 crate::desugar::desugar_surface_program(&mut program);
 
+                // Variable resolution pass (Phase 1 of arena allocation strategy).
+                let _resolution_table = crate::resolve::resolve_surface_program(&program);
+
+                // Capture the expanded+desugared SurfaceProgram before lowering.
+                // The imports API now operates on SurfaceProgram directly.
+                surface = Some(program.clone());
+
                 // Lower SurfaceProgram to File for the remaining passes.
                 Ok(crate::ast_convert::surface_program_to_file(&program))
             }
         };
 
         if let Ok(file) = ast {
-            // Variable resolution pass (Phase 1 of arena allocation strategy).
-            crate::resolve::resolve_file(&file.node);
-
             // Run type checker (advisory), collecting the span-to-type map for hover.
             // Seed the type environment with prelude types and resolved includes via the
             // shared imports module to suppress false "undefined variable" errors.
@@ -144,19 +157,21 @@ impl DocumentState {
             } else {
                 Some(&eval_ctx.config.base_dir)
             };
-            let (seeded_env, include_bindings) =
-                crate::imports::build_type_env_with_cap(&file.node, type_base_dir, type_cap_dir);
-            let (errs, mut map, docs, smap, tc_diagnostics) =
-                typecheck_file_with_types_and_env(&file.node, seeded_env);
-            // Post-pass: inject precise Record types for [include %cap "path"] expressions.
-            crate::imports::apply_include_type_post_pass(&file.node, &include_bindings, &mut map);
-            type_errors = errs;
-            type_map = map;
-            doc_map = docs;
-            scheme_map = smap;
-            // Store type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …)
-            // so that diagnostics_for() can publish them as LSP diagnostics with correct severity.
-            type_diagnostics = tc_diagnostics;
+            if let Some(ref prog) = surface {
+                let (seeded_env, include_bindings) =
+                    crate::imports::build_type_env_with_cap(prog, type_base_dir, type_cap_dir);
+                let (errs, mut map, docs, smap, tc_diagnostics) =
+                    typecheck_file_with_types_and_env(&file.node, seeded_env);
+                // Post-pass: inject precise Record types for [include %cap "path"] expressions.
+                crate::imports::apply_include_type_post_pass(prog, &include_bindings, &mut map);
+                type_errors = errs;
+                type_map = map;
+                doc_map = docs;
+                scheme_map = smap;
+                // Store type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …)
+                // so that diagnostics_for() can publish them as LSP diagnostics with correct severity.
+                type_diagnostics = tc_diagnostics;
+            }
 
             // Build the LSP eval environment, mirroring what main.rs does at startup.
             // The type checker gets runtime percent-vars via build_type_env(); we inject
@@ -184,6 +199,7 @@ impl DocumentState {
         Self {
             text,
             ast,
+            surface,
             parse_errors,
             type_errors,
             type_diagnostics,
@@ -217,6 +233,7 @@ impl DocumentState {
                 message: "markdown file (no single AST)".to_string(),
                 span: None,
             }),
+            surface: None,
             parse_errors: vec![],
             type_errors: vec![],
             type_diagnostics: vec![],
@@ -320,9 +337,9 @@ pub fn index_file(
     // Create document state (base_dir for include resolution is the file's directory)
     let state = DocumentState::new(text, stdlib_env, eval_ctx, Some(parent_path));
 
-    // Collect include paths from this file using the shared imports module
-    let include_paths = if let Ok(ref file) = state.ast {
-        crate::imports::collect_include_paths(&file.node)
+    // Collect include paths from this document using the shared imports module
+    let include_paths = if let Some(ref prog) = state.surface {
+        crate::imports::collect_include_paths(prog)
     } else {
         vec![]
     };
@@ -551,9 +568,9 @@ impl DocumentStore {
             DocumentState::new(text, &self.stdlib_env, &eval_ctx, Some(&base_path))
         };
 
-        // Collect include paths from the new AST using the shared imports module
-        let new_includes = if let Ok(ref file) = state.ast {
-            crate::imports::collect_include_paths(&file.node)
+        // Collect include paths from the new surface program using the shared imports module
+        let new_includes = if let Some(ref prog) = state.surface {
+            crate::imports::collect_include_paths(prog)
                 .into_iter()
                 .filter_map(|(_span, _cap_name, path)| resolve_include_uri(&uri, &path))
                 .collect::<Vec<_>>()

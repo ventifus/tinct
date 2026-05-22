@@ -79,7 +79,7 @@ This distinction preserves the "everything is a dict" invariant for data while e
 A sequence is a cons cell: a head value and a tail that is itself a sequence (or empty dict `[]` for end-of-sequence).
 
 ```text
-Value::Seq(head: Rc<Thunk>, tail: Rc<Thunk>)
+Value::Seq { head: ThunkId, tail: ThunkId }
 ```
 
 The tail thunk evaluates to either another `Seq` or `[]` (done). Since thunks are memoized, traversing the same sequence twice reuses cached results -- unlike Python generators, which are single-pass.
@@ -170,7 +170,7 @@ ones: [seq 1 ones]
 # new Seq(1, <thunk>) without diverging.
 ```
 
-`$seq` is lazy — it does not materialize its arguments (`builtins.rs:builtin_seq` wraps `Rc::clone(&args[0])` and `Rc::clone(&args[1])` directly). This is critical: it means `$seq` acts as a guard in the coinductive sense, allowing corecursive definitions that would cycle under eager evaluation.
+`$seq` is lazy — it does not materialize its arguments (`builtin_seq` allocates each argument into the arena via `ctx.alloc_thunk(Arc::clone(&args[N]))` and stores the resulting `ThunkId` in `Value::Seq { head, tail }` without forcing either thunk). This is critical: it means `$seq` acts as a guard in the coinductive sense, allowing corecursive definitions that would cycle under eager evaluation.
 
 **User obligations for `$seq`:**
 
@@ -780,16 +780,16 @@ materialize(θ_func) ⇒ Function(params, body, env)    where |params| = 0
 eval(body, env) ⇒ θ_body
 materialize(θ_body) ⇒ v
 ───────────────────────────
-δ(try, [θ_func], cs) ⇒ Materialized(Dict({"ok"↦Materialized(v)}))
+δ(try, [θ_func], cs) ⇒ Materialized(Variant("Ok", Materialized(v)))
 
 materialize(θ_func) ⇒ Function(params, body, env)    where |params| = 0
 eval(body, env) ⇒ θ_body
 materialize(θ_body) ⇒ error(e)
 ───────────────────────────
-δ(try, [θ_func], cs) ⇒ Materialized(Dict({"err"↦Materialized(e.message)}))
+δ(try, [θ_func], cs) ⇒ Materialized(Variant("Error", Materialized(e.kind.to_string())))
 ```
 
-`$try` materializes the function argument and invokes it. On success, returns `[ok: value]`; on error, returns `[err: message]`. The error is caught — `$try` itself does not propagate errors (it is the catching boundary). Also handles Builtin callees (dispatches with zero args).
+`$try` materializes the function argument and invokes it. On success, returns `[Ok value]`; on error, returns `[Error message]`. The error is caught — `$try` catches all user errors but re-propagates system-level limits (`DepthExceeded`, `ResourceLimitExceeded`) to the caller. Also handles Builtin callees (dispatches with zero args).
 
 **[DELTA-MAP-DICT]**
 

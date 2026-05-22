@@ -132,7 +132,7 @@ pub(crate) fn builtin_raise(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
 }
 
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Ok value]`
-/// on success or `[Err message]` on failure.
+/// on success or `[Error message]` on failure.
 /// Inherently materializing: must materialize body to catch errors.
 pub(crate) fn builtin_try(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     let BuiltinArgs {
@@ -421,9 +421,6 @@ pub(crate) fn builtin_apply(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
     )))
 }
 
-/// `eval-ast`: takes 1 arg (Dict from quote), reconstructs AST, evaluates it.
-/// Inherently materializing: must materialize dict to extract AST structure,
-/// then evaluate the reconstructed expression.
 /// `gensym`: Generate a unique symbol name for macro hygiene.
 ///
 /// - Zero args: returns `":gensym:N"` where N is a global monotonic counter.
@@ -1387,19 +1384,12 @@ pub(crate) fn builtin_load(ctx_arg: BuiltinArgs) -> EvalResult<Arc<Thunk>> {
         })?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     crate::desugar::desugar_surface_program(&mut program);
-    let file = crate::ast_convert::surface_program_to_file(&program);
-
-    // Variable resolution (old path — keeps backward compat with eval_file_with_input)
-    crate::resolve::resolve_file(&file.node);
-
-    // runtime-v2 Part G: convert to SurfaceProgram and return as Value::Program.
-    // Also populate ResolutionTable for the Surface thunk path.
-    let surface_program = crate::ast_convert::file_to_surface_program(&file.node);
-    let res_table = crate::resolve::resolve_surface_program(&surface_program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let res_table = crate::resolve::resolve_surface_program(&program);
     // The TypeAnnotationTable is empty here because the load builtin does not run the typechecker;
     // typecheck is run separately on the expanded program before eval is called.
     let program_value = Value::Program {
-        program: std::sync::Arc::new(surface_program),
+        program: std::sync::Arc::new(program),
         resolutions: std::sync::Arc::new(res_table),
         types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
     };

@@ -1728,8 +1728,9 @@ fn load_stdlib_module(
     // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
     let mut program = parsed.program.clone();
     crate::desugar::desugar_surface_program(&mut program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _resolution_table = crate::resolve::resolve_surface_program(&program);
     let file = crate::ast_convert::surface_program_to_file(&program);
-    crate::resolve::resolve_file(&file.node);
 
     // Type errors are advisory and the result is discarded, so skip the type-check pass
     // during stdlib loading. This avoids a full type-check of the prelude (with all its
@@ -1879,7 +1880,7 @@ fn create_stdlib_env_inner(
 
     // User code now only sees what prelude exports — no direct access to Rust builtins.
 
-    // Load macros — exports tmpl-transformer and helpers used by expand_macros.
+    // Load macros — exports tmpl-transformer and helpers used by expand_surface_program.
     // Loaded after prelude so macro helpers can reference prelude functions.
     let macros_source = include_str!("../stdlib/macros.llt");
     load_stdlib_module(macros_source, "macros", &stdlib_env, &bootstrap_ctx)?;
@@ -1927,10 +1928,9 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
     let mut program = parsed.program.clone();
     crate::desugar::desugar_surface_program(&mut program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _resolution_table = crate::resolve::resolve_surface_program(&program);
     let file = crate::ast_convert::surface_program_to_file(&program);
-
-    // Resolve (desugar already done above)
-    crate::resolve::resolve_file(&file.node);
 
     // Create minimal bootstrap env with all builtins
     let bootstrap_env = create_root_env();
@@ -1990,7 +1990,6 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Expr, Param, Spanned};
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
     use crate::value::{string_val, Strictness};
@@ -2033,33 +2032,47 @@ mod tests {
         crate::eval::materialize(&result.unwrap(), None, &test_ctx()).unwrap()
     }
 
-    /// Helper: make a zero-arg function whose body is a single expression.
-    fn zero_arg_fn(body_expr: Expr) -> Value {
-        Value::Function {
-            params: Rc::new(vec![]),
-            body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
-            env: Arc::new(RwLock::new(Environment::new())),
-            annotation: None,
-        }
+    /// Parse and evaluate an LLT snippet, returning the result value.
+    ///
+    /// Uses the stdlib environment so that builtins are available in the body.
+    /// The snippet should be a complete expression (e.g. `"[fn [] 42]"`).
+    fn parse_eval(llt_src: &str, ctx: &Arc<crate::eval::EvalContext>) -> Value {
+        let parsed = crate::parser::parse(llt_src)
+            .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
+        let mut program = parsed.program;
+        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("parse_eval: failed to open base_dir");
+        crate::expand::expand_surface_program(&mut program, false, &base_dir)
+            .unwrap_or_else(|e| panic!("parse_eval: expand failed for {:?}: {}", llt_src, e));
+        crate::desugar::desugar_surface_program(&mut program);
+        let file = crate::ast_convert::surface_program_to_file(&program);
+        let env = Arc::clone(&ctx.config.stdlib_env);
+        let thunk = crate::eval::eval_file(&file.node, env, ctx)
+            .unwrap_or_else(|e| panic!("parse_eval: eval_file failed for {:?}: {}", llt_src, e));
+        crate::eval::materialize(&thunk, None, ctx)
+            .unwrap_or_else(|e| panic!("parse_eval: materialize failed for {:?}: {}", llt_src, e))
     }
 
-    /// Helper: make an n-arg function whose body is a given expression.
-    fn n_arg_fn(param_names: &[&str], body_expr: Expr) -> Value {
-        Value::Function {
-            params: Rc::new(
-                param_names
-                    .iter()
-                    .map(|name| Param {
-                        name: name.to_string(),
-                        annotation: None,
-                        variadic: false,
-                    })
-                    .collect(),
-            ),
-            body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
-            env: Arc::new(RwLock::new(Environment::new())),
-            annotation: None,
-        }
+    /// Create an unevaluated Surface thunk referencing a nonexistent variable.
+    ///
+    /// When forced, materializing this thunk will fail with an "undefined variable" error.
+    /// Used by laziness tests to prove that a thunk is not forced prematurely.
+    fn make_undef_thunk(ctx: &Arc<crate::eval::EvalContext>) -> Arc<Thunk> {
+        let node = Arc::new(crate::ast::SurfaceNode {
+            expr: crate::ast::SurfaceExpression::VarRef {
+                name: "__nonexistent__".to_string(),
+                escaped: false,
+            },
+            span: test_span(1, 1, 1, 10),
+        });
+        Arc::new(Thunk::new_surface(
+            node,
+            Arc::new(crate::ast::ResolutionTable::new()),
+            Arc::new(crate::ast::TypeAnnotationTable::new()),
+            Arc::new(RwLock::new(Environment::new())),
+            Arc::clone(ctx),
+            test_span(1, 1, 1, 10),
+        ))
     }
 
     /// Build a materialized dict thunk whose entries are allocated into `ctx`'s arena.
@@ -3315,13 +3328,17 @@ mod tests {
 
     #[test]
     fn deep_materialize_with_unevaluated_thunk() {
-        // Create an unevaluated thunk wrapping a literal -- deep-materialize should force it
+        // Create a Surface thunk wrapping a literal -- deep-materialize should force it
         let ctx = test_ctx();
-        let expr = Rc::new(Spanned::new(Expr::Int(99), test_span(1, 1, 1, 5)));
-        let env = Arc::new(RwLock::new(Environment::new()));
-        let unevaluated = Arc::new(Thunk::new_unevaluated(
-            expr,
-            env,
+        let node = Arc::new(crate::ast::SurfaceNode {
+            expr: crate::ast::SurfaceExpression::Int(99),
+            span: test_span(1, 1, 1, 5),
+        });
+        let unevaluated = Arc::new(Thunk::new_surface(
+            node,
+            Arc::new(crate::ast::ResolutionTable::new()),
+            Arc::new(crate::ast::TypeAnnotationTable::new()),
+            Arc::new(RwLock::new(Environment::new())),
             Arc::clone(&ctx),
             test_span(1, 1, 1, 5),
         ));
@@ -3431,7 +3448,7 @@ mod tests {
     fn try_success_returns_ok_variant() {
         // [fn [] 42]
         let ctx = test_ctx();
-        let func = zero_arg_fn(Expr::Int(42));
+        let func = parse_eval("[fn [] 42]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
@@ -3451,7 +3468,7 @@ mod tests {
     #[test]
     fn try_success_with_string_body() {
         let ctx = test_ctx();
-        let func = zero_arg_fn(Expr::Str("hello".into()));
+        let func = parse_eval("[fn [] \"hello\"]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
@@ -3472,7 +3489,7 @@ mod tests {
     fn try_failure_returns_err_variant() {
         // [fn [] $nonexistent] -- references an undefined variable
         let ctx = test_ctx();
-        let func = zero_arg_fn(Expr::var_ref("nonexistent".into()));
+        let func = parse_eval("[fn [] $nonexistent]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
@@ -3498,7 +3515,7 @@ mod tests {
                     _ => panic!("expected String error message"),
                 }
             }
-            _ => panic!("expected Variant(Err, ...), got: {:?}", result),
+            _ => panic!("expected Variant(Error, ...), got: {:?}", result),
         }
     }
 
@@ -3520,7 +3537,8 @@ mod tests {
 
     #[test]
     fn try_non_zero_arg_function_error() {
-        let func = n_arg_fn(&["x"], Expr::var_ref("x".into()));
+        let ctx = test_ctx();
+        let func = parse_eval("[fn [x] $x]", &ctx);
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
@@ -3675,7 +3693,7 @@ mod tests {
     fn apply_single_arg() {
         // [fn [x] $x] applied to [42]
         let ctx = test_ctx();
-        let func = n_arg_fn(&["x"], Expr::var_ref("x".into()));
+        let func = parse_eval("[fn [x] $x]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -3698,7 +3716,7 @@ mod tests {
     fn apply_multiple_args_returns_first() {
         // [fn [a b] $a] applied to [10, 20]
         let ctx = test_ctx();
-        let func = n_arg_fn(&["a", "b"], Expr::var_ref("a".into()));
+        let func = parse_eval("[fn [a b] $a]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -3722,7 +3740,7 @@ mod tests {
     fn apply_multiple_args_returns_second() {
         // [fn [a b] $b] applied to [10, 20]
         let ctx = test_ctx();
-        let func = n_arg_fn(&["a", "b"], Expr::var_ref("b".into()));
+        let func = parse_eval("[fn [a b] $b]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -3786,7 +3804,7 @@ mod tests {
     #[test]
     fn apply_arity_mismatch() {
         let ctx = test_ctx();
-        let func = n_arg_fn(&["x", "y"], Expr::var_ref("x".into()));
+        let func = parse_eval("[fn [x y] $x]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -3842,7 +3860,8 @@ mod tests {
 
     #[test]
     fn apply_non_dict_args_type_error() {
-        let func = n_arg_fn(&["x"], Expr::var_ref("x".into()));
+        let ctx = test_ctx();
+        let func = parse_eval("[fn [x] $x]", &ctx);
         let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(Value::Int(42))],
             named: no_named(),
@@ -3932,7 +3951,8 @@ mod tests {
 
     #[test]
     fn type_of_function() {
-        let func = zero_arg_fn(Expr::Int(0));
+        let ctx = test_ctx();
+        let func = parse_eval("[fn [] 0]", &ctx);
         let result = mat(builtin_type_of(BuiltinArgs {
             args: &[thunk(func)],
             named: no_named(),
@@ -6295,9 +6315,10 @@ mod tests {
 
     #[test]
     fn try_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let func = zero_arg_fn(Expr::Int(42));
+        let func = parse_eval("[fn [] 42]", &ctx);
         let err = builtin_try(BuiltinArgs {
             args: &[thunk(func)],
             named: Some(&named),
@@ -6314,9 +6335,10 @@ mod tests {
 
     #[test]
     fn apply_rejects_named_args() {
+        let ctx = test_ctx();
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let func = zero_arg_fn(Expr::Int(42));
+        let func = parse_eval("[fn [] 42]", &ctx);
         let thunk = builtin_apply(BuiltinArgs {
             args: &[thunk(func), thunk(Value::Dict(IndexMap::new()))],
             named: Some(&named),
@@ -7675,17 +7697,8 @@ mod tests {
 
     #[test]
     fn if_does_not_materialize_unchosen_else_branch() {
-        let error_expr = Rc::new(Spanned::new(
-            Expr::var_ref("nonexistent".to_string()),
-            test_span(1, 1, 1, 10),
-        ));
-        let env = Arc::new(RwLock::new(Environment::new()));
-        let error_thunk = Arc::new(Thunk::new_unevaluated(
-            error_expr,
-            env,
-            test_ctx(),
-            test_span(1, 1, 1, 10),
-        ));
+        let ctx = test_ctx();
+        let error_thunk = make_undef_thunk(&ctx);
 
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42)), error_thunk];
         let result = mat(builtin_if(BuiltinArgs {
@@ -7699,17 +7712,8 @@ mod tests {
 
     #[test]
     fn if_does_not_materialize_unchosen_then_branch() {
-        let error_expr = Rc::new(Spanned::new(
-            Expr::var_ref("nonexistent".to_string()),
-            test_span(1, 1, 1, 10),
-        ));
-        let env = Arc::new(RwLock::new(Environment::new()));
-        let error_thunk = Arc::new(Thunk::new_unevaluated(
-            error_expr,
-            env,
-            test_ctx(),
-            test_span(1, 1, 1, 10),
-        ));
+        let ctx = test_ctx();
+        let error_thunk = make_undef_thunk(&ctx);
 
         let args = vec![
             thunk(Value::Bool(false)),
@@ -8033,18 +8037,11 @@ mod tests {
 
     #[test]
     fn seq_lazy() {
-        // Head can be a thunk wrapping a VarRef to a nonexistent variable.
+        // Head can be a thunk referencing a nonexistent variable.
         // If we tried to materialize this thunk, it would error (undefined variable).
         // But seq construction should succeed because it doesn't materialize args.
-        let undef_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(Spanned::new(
-                Expr::var_ref("undefined_var".to_string()),
-                test_span(1, 1, 1, 5),
-            )),
-            Arc::new(RwLock::new(Environment::new())),
-            test_ctx(),
-            test_span(1, 1, 1, 5),
-        ));
+        let ctx = test_ctx();
+        let undef_thunk = make_undef_thunk(&ctx);
         let tail_val = thunk(Value::Int(2));
         // seq construction should succeed even though head would error if materialized
         let result = builtin_seq(BuiltinArgs {
@@ -8594,16 +8591,9 @@ mod tests {
 
     #[test]
     fn repeat_laziness() {
-        // Repeat an unevaluated thunk (would error if materialized)
-        let undef_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(Spanned::new(
-                Expr::var_ref("undefined_var".to_string()),
-                test_span(1, 1, 1, 5),
-            )),
-            Arc::new(RwLock::new(Environment::new())),
-            test_ctx(),
-            test_span(1, 1, 1, 5),
-        ));
+        // Repeat a thunk that would error if materialized
+        let ctx = test_ctx();
+        let undef_thunk = make_undef_thunk(&ctx);
         // repeat construction should succeed without materializing arg
         let result = builtin_repeat(BuiltinArgs {
             args: &[undef_thunk],
@@ -8768,24 +8758,9 @@ mod tests {
     #[test]
     fn iterate_laziness() {
         // iterate doesn't materialize its args
-        let undef_f = Arc::new(Thunk::new_unevaluated(
-            Rc::new(Spanned::new(
-                Expr::var_ref("undefined_f".to_string()),
-                test_span(1, 1, 1, 5),
-            )),
-            Arc::new(RwLock::new(Environment::new())),
-            test_ctx(),
-            test_span(1, 1, 1, 5),
-        ));
-        let undef_x = Arc::new(Thunk::new_unevaluated(
-            Rc::new(Spanned::new(
-                Expr::var_ref("undefined_x".to_string()),
-                test_span(1, 1, 1, 5),
-            )),
-            Arc::new(RwLock::new(Environment::new())),
-            test_ctx(),
-            test_span(1, 1, 1, 5),
-        ));
+        let ctx = test_ctx();
+        let undef_f = make_undef_thunk(&ctx);
+        let undef_x = make_undef_thunk(&ctx);
         let result = builtin_iterate(BuiltinArgs {
             args: &[undef_f, undef_x],
             named: no_named(),
@@ -9885,78 +9860,24 @@ mod tests {
         assert_eq!(result, string_val("a,b".into()));
     }
 
-    /// Helper: create a function whose closure env contains builtins (needed for
-    /// tests where the function body calls builtins).
-    fn n_arg_fn_with_builtins(param_names: &[&str], body_expr: Expr) -> Value {
-        let env = create_root_env();
-        Value::Function {
-            params: Rc::new(
-                param_names
-                    .iter()
-                    .map(|name| Param {
-                        name: name.to_string(),
-                        annotation: None,
-                        variadic: false,
-                    })
-                    .collect(),
-            ),
-            body: Rc::new(Spanned::new(body_expr, test_span(1, 1, 1, 10))),
-            env,
-            annotation: None,
-        }
-    }
-
     #[test]
     fn test_builtin_until_basic() {
         // Count from 0 to 10 using until
-        // pred: [fn [x] [call $builtin-eq $x 10]]
-        // f: [fn [x] [call $builtin-add $x 1]]
+        // pred: [fn [x] [= $x 10]]
+        // f: [fn [x] [+ $x 1]]
         // init: 0
         std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
-                let pred = n_arg_fn_with_builtins(
-                    &["x"],
-                    Expr::Call {
-                        func: Box::new(Spanned::new(
-                            Expr::var_ref("=".to_string()),
-                            test_span(1, 1, 1, 10),
-                        )),
-                        args: vec![
-                            Rc::new(Spanned::new(
-                                Expr::var_ref("x".to_string()),
-                                test_span(1, 1, 1, 2),
-                            )),
-                            Rc::new(Spanned::new(Expr::Int(10), test_span(1, 1, 1, 2))),
-                        ],
-                        named_args: vec![],
-                        implied: false,
-                    },
-                );
-                let f = n_arg_fn_with_builtins(
-                    &["x"],
-                    Expr::Call {
-                        func: Box::new(Spanned::new(
-                            Expr::var_ref("+".to_string()),
-                            test_span(1, 1, 1, 10),
-                        )),
-                        args: vec![
-                            Rc::new(Spanned::new(
-                                Expr::var_ref("x".to_string()),
-                                test_span(1, 1, 1, 2),
-                            )),
-                            Rc::new(Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2))),
-                        ],
-                        named_args: vec![],
-                        implied: false,
-                    },
-                );
+                let ctx = test_ctx();
+                let pred = parse_eval("[fn [x] [= $x 10]]", &ctx);
+                let f = parse_eval("[fn [x] [+ $x 1]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
                     args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Arc::clone(&ctx),
                 }));
 
                 assert_eq!(result, Value::Int(10));
@@ -9970,33 +9891,20 @@ mod tests {
     fn test_builtin_until_already_true() {
         // Predicate is true immediately, should return init unchanged
         // pred: [fn [x] true]
-        // f: [fn [x] [call $error "should not be called"]]
+        // f: [fn [x] [$error "should not be called"]]
         // init: 42
         std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
-                let pred = n_arg_fn(&["x"], Expr::Bool(true));
-                let f = n_arg_fn(
-                    &["x"],
-                    Expr::Call {
-                        func: Box::new(Spanned::new(
-                            Expr::var_ref("error".to_string()),
-                            test_span(1, 1, 1, 5),
-                        )),
-                        args: vec![Rc::new(Spanned::new(
-                            Expr::Str("should not be called".to_string()),
-                            test_span(1, 1, 1, 20),
-                        ))],
-                        named_args: vec![],
-                        implied: false,
-                    },
-                );
+                let ctx = test_ctx();
+                let pred = parse_eval("[fn [x] true]", &ctx);
+                let f = parse_eval("[fn [x] [$error \"should not be called\"]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
                     args: &[thunk(pred), thunk(f), thunk(Value::Int(42))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Arc::clone(&ctx),
                 }));
 
                 assert_eq!(result, Value::Int(42));
@@ -10013,48 +9921,15 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
-                let pred = n_arg_fn_with_builtins(
-                    &["x"],
-                    Expr::Call {
-                        func: Box::new(Spanned::new(
-                            Expr::var_ref("=".to_string()),
-                            test_span(1, 1, 1, 10),
-                        )),
-                        args: vec![
-                            Rc::new(Spanned::new(
-                                Expr::var_ref("x".to_string()),
-                                test_span(1, 1, 1, 2),
-                            )),
-                            Rc::new(Spanned::new(Expr::Int(300), test_span(1, 1, 1, 3))),
-                        ],
-                        named_args: vec![],
-                        implied: false,
-                    },
-                );
-                let f = n_arg_fn_with_builtins(
-                    &["x"],
-                    Expr::Call {
-                        func: Box::new(Spanned::new(
-                            Expr::var_ref("+".to_string()),
-                            test_span(1, 1, 1, 10),
-                        )),
-                        args: vec![
-                            Rc::new(Spanned::new(
-                                Expr::var_ref("x".to_string()),
-                                test_span(1, 1, 1, 2),
-                            )),
-                            Rc::new(Spanned::new(Expr::Int(1), test_span(1, 1, 1, 2))),
-                        ],
-                        named_args: vec![],
-                        implied: false,
-                    },
-                );
+                let ctx = test_ctx();
+                let pred = parse_eval("[fn [x] [= $x 300]]", &ctx);
+                let f = parse_eval("[fn [x] [+ $x 1]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
                     args: &[thunk(pred), thunk(f), thunk(Value::Int(0))],
                     named: no_named(),
                     call_span: call_span(),
-                    ctx: test_ctx(),
+                    ctx: Arc::clone(&ctx),
                 }));
 
                 assert_eq!(result, Value::Int(300));

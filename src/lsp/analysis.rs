@@ -48,10 +48,11 @@ pub fn hover_at(
         // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
         let mut program = block_parsed.program.clone();
         crate::desugar::desugar_surface_program(&mut program);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        let _resolution_table = crate::resolve::resolve_surface_program(&program);
         let block_file = crate::ast_convert::surface_program_to_file(&program);
         let block_file_mut = block_file.clone();
-        crate::resolve::resolve_file(&block_file_mut.node);
-        let (seeded_env, _) = crate::imports::build_type_env(&block_file_mut.node, None);
+        let (seeded_env, _) = crate::imports::build_type_env(&program, None);
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
             crate::typecheck::typecheck_file_with_types_and_env(&block_file_mut.node, seeded_env);
 
@@ -1355,11 +1356,12 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
                     // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
                     let mut program = output.program.clone();
                     crate::desugar::desugar_surface_program(&mut program);
+                    // Variable resolution pass (Phase 1 of arena allocation strategy).
+                    let _resolution_table = crate::resolve::resolve_surface_program(&program);
                     let file = crate::ast_convert::surface_program_to_file(&program);
-                    crate::resolve::resolve_file(&file.node);
 
                     // Type check
-                    let (seeded_env, _) = crate::imports::build_type_env(&file.node, None);
+                    let (seeded_env, _) = crate::imports::build_type_env(&program, None);
                     let (type_errors, _, _, _, _) =
                         crate::typecheck::typecheck_file_with_types_and_env(&file.node, seeded_env);
 

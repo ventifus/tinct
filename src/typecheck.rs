@@ -39,75 +39,6 @@ type MatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<Entry>>);
 /// Re-export SchemeMap from types for LSP consumers.
 pub use crate::types::SchemeMap;
 
-/// Type-check a parsed [`File`].
-///
-/// Returns `Ok(())` if no type errors are found, or `Err(errors)` with the list of
-/// [`TypeError`]s. Type checking is advisory — the evaluator proceeds regardless.
-///
-/// # Precondition
-///
-/// **`desugar::desugar_surface_program` must be called on the [`SurfaceProgram`] before
-/// converting to [`File`] and passing it here.**
-/// Without the desugar pass, `$_` expressions appear as bare `VarRef("_")` nodes,
-/// producing spurious `"undefined variable _"` type errors. All pipeline entry points
-/// already call `desugar_surface_program` first; see `eval_source_with_config` in `lib.rs`
-/// for the canonical call sequence.
-pub fn typecheck_file(file: &File) -> (Vec<TypeError>, Vec<crate::error::TypeDiagnostic>) {
-    // Reset elaboration state to allow re-typechecking cached ASTs
-    reset_elaboration(file);
-
-    let mut errors = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut env = crate::imports::build_prelude_env();
-    let mut state = InferState::new();
-    // Seed with prelude instances so constraint checking works for dynamically registered classes.
-    crate::imports::seed_infer_state_from_prelude_cache(&mut state);
-
-    let mut type_map = TypeMap::new();
-    let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
-        fields: HashMap::new(),
-    });
-
-    for doc in &file.documents {
-        // Skip type-stage documents — they are handled separately by create_type_stage_env()
-        // and should not be type-checked in the runtime pipeline.
-        if doc.node.stage == Some(crate::ast::Stage::Type) {
-            continue;
-        }
-
-        match typecheck_document(
-            doc,
-            &env,
-            &mut state,
-            &mut Some(&mut type_map),
-            &pipeline_type,
-            &named_types,
-        ) {
-            Ok((new_env, doc_output_type, mut advisory)) => {
-                env = new_env;
-                // Report advisory errors (expects:/output_type) without blocking propagation.
-                errors.append(&mut advisory);
-                // Store named section type if this document has a name
-                if let Some(ref name) = doc.node.name {
-                    named_types.insert(name.clone(), doc_output_type.clone());
-                }
-                // Update pipeline type for next document
-                pipeline_type = doc_output_type;
-            }
-            Err(mut doc_errors) => errors.append(&mut doc_errors),
-        }
-    }
-
-    // Scan for type quality issues (Unknown types, over-broad annotations)
-    scan_type_quality(&type_map, file, &mut diagnostics);
-
-    // Extract diagnostics accumulated during type inference (e.g., ambiguous constraints)
-    diagnostics.append(&mut state.diagnostics);
-
-    (errors, diagnostics)
-}
-
 /// Reset all elaboration state in the AST (TypeAssert.resolved_type fields).
 /// This allows re-typechecking a cached AST without triggering the write-once
 /// invariant assertion in resolve_type_assert.
@@ -296,7 +227,6 @@ fn reset_expr(expr: &Spanned<Expr>) {
 ///
 /// **`desugar::desugar_surface_program` must be called on the [`SurfaceProgram`] before
 /// converting to [`File`] and passing it here.**
-/// See [`typecheck_file`] for details.
 pub fn typecheck_file_with_types(
     file: &File,
 ) -> (
@@ -469,10 +399,6 @@ pub fn typecheck_file_with_types_and_env_and_source_returning_state(
 /// This is the runtime-v2 entry point for type checking. The SurfaceProgram is
 /// unchanged (immutable); all type annotations are captured in the returned table.
 ///
-/// This function runs in parallel with `typecheck_file()` during Part D (the bridge
-/// phase). Callers invoke both functions and discard the SurfaceProgram result until
-/// Part E switches over to using the TypeAnnotationTable exclusively.
-///
 /// # Algorithm
 ///
 /// 1. For each SurfaceDocument, walk items (expressions + declarations)
@@ -480,7 +406,7 @@ pub fn typecheck_file_with_types_and_env_and_source_returning_state(
 /// 3. Run existing type inference machinery (`infer_expr`, `typecheck_document` logic)
 /// 4. Capture inferred types in TypeAnnotationTable keyed by NodeId
 ///
-/// The type environment is threaded across documents exactly like `typecheck_file()`:
+/// The type environment is threaded across documents:
 /// % bindings, %name bindings, dict-scoped let-generalization.
 ///
 /// # Returns
@@ -685,50 +611,86 @@ fn typecheck_surface_document(
         }
     }
 
+    // Tracks schemes from the last dict expression so they can be threaded into result_env.
+    // Mirrors typecheck_document's `last_dict_schemes` / `last_record_type` logic.
+    let mut last_dict_schemes: Option<HashMap<String, TypeScheme>> = None;
+    // last_record_type: captures (type, enclosing_level) for the last non-dict Record result,
+    // so its fields can be generalized and threaded into result_env (cross-document scoping).
+    let mut last_record_type: Option<(Type, u32)> = None;
+    let mut last_expr: Option<Spanned<Expr>> = None;
+
     for (i, surface_node) in expr_items.iter().enumerate() {
         let is_last = i == expr_items.len() - 1;
 
         // Convert SurfaceNode back to Expr for type inference
         let expr = crate::ast_convert::surface_node_to_expr(surface_node);
 
-        // Infer type using existing machinery
-        match infer_expr(&expr, &env, state, &mut None) {
-            Ok(ty) => {
-                // Capture the inferred type in the table
-                table.insert(node_id(surface_node), ty.clone());
-
-                if is_last {
-                    result_type = ty;
-                } else {
-                    // For non-last expressions, update environment if it's a Dict
-                    // (This mirrors the dict-scoped let-generalization logic)
-                    if let Expr::Dict(entries) = &expr.node {
-                        match infer_dict(entries, &env, state, &mut None, expr.span) {
-                            Ok((dict_ty, schemes)) => {
-                                let mut new_env = TypeEnv::with_parent(&env);
-                                for (name, scheme) in &schemes {
-                                    new_env.insert_scheme(name.clone(), scheme.clone());
-                                }
-                                let mut alias_errs =
-                                    register_type_aliases(&expr, &mut new_env, &env, state);
-                                errors.append(&mut alias_errs);
-                                env = Rc::new(new_env);
-                                // Update table with dict type
-                                table.insert(node_id(surface_node), dict_ty);
-                            }
-                            Err(mut errs) => errors.append(&mut errs),
-                        }
+        if let Expr::Dict(entries) = &expr.node {
+            // Dict expression: use infer_dict to get per-entry schemes for cross-document scoping.
+            // This mirrors typecheck_document which calls infer_dict directly for dict exprs.
+            match infer_dict(entries, &env, state, &mut None, expr.span) {
+                Ok((dict_ty, schemes)) => {
+                    table.insert(node_id(surface_node), dict_ty.clone());
+                    if is_last {
+                        result_type = dict_ty;
+                        last_dict_schemes = Some(schemes);
+                        last_expr = Some(expr);
                     } else {
-                        // Non-dict: just thread the type through
                         let mut new_env = TypeEnv::with_parent(&env);
+                        for (name, scheme) in &schemes {
+                            new_env.insert_scheme(name.clone(), scheme.clone());
+                        }
                         let mut alias_errs =
                             register_type_aliases(&expr, &mut new_env, &env, state);
                         errors.append(&mut alias_errs);
                         env = Rc::new(new_env);
                     }
                 }
+                Err(mut errs) => errors.append(&mut errs),
             }
-            Err(mut errs) => errors.append(&mut errs),
+        } else {
+            // Non-dict expression: infer at incremented level so type variables can be
+            // properly generalized when threading Record fields as schemes into the env.
+            // Mirrors typecheck_document lines 1041-1112.
+            let enclosing_level = state.level;
+            state.level += 1;
+
+            match infer_expr(&expr, &env, state, &mut None) {
+                Ok(ty) => {
+                    state.level = enclosing_level;
+                    table.insert(node_id(surface_node), ty.clone());
+                    if is_last {
+                        result_type = ty.clone();
+                        last_expr = Some(expr);
+                        // Track last non-dict Record for cross-document field threading.
+                        if matches!(&ty, Type::Record(_)) {
+                            last_record_type = Some((ty, enclosing_level));
+                        }
+                    } else {
+                        // Intermediate expressions must be record types.
+                        // Mirrors typecheck_document line 1097.
+                        match &ty {
+                            Type::Record(Row { fields, .. }) => {
+                                let mut new_env = TypeEnv::with_parent(&env);
+                                for (name, field_ty) in fields {
+                                    let scheme = generalize(enclosing_level, field_ty, state);
+                                    new_env.insert_scheme(name.clone(), scheme);
+                                }
+                                let mut alias_errs =
+                                    register_type_aliases(&expr, &mut new_env, &env, state);
+                                errors.append(&mut alias_errs);
+                                env = Rc::new(new_env);
+                            }
+                            Type::Unknown => {}
+                            _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
+                        }
+                    }
+                }
+                Err(mut errs) => {
+                    state.level = enclosing_level;
+                    errors.append(&mut errs);
+                }
+            }
         }
     }
 
@@ -769,7 +731,25 @@ fn typecheck_surface_document(
         }
     }
 
+    // Build result_env: thread last-dict schemes or last-Record fields into cross-document scope.
+    // Mirrors typecheck_document lines 1116-1148.
     let mut result_env = TypeEnv::with_parent(&env);
+    if let Some(schemes) = last_dict_schemes {
+        for (name, scheme) in schemes {
+            result_env.insert_scheme(name, scheme);
+        }
+    }
+    // If the last expression was a non-dict Record, generalize and thread its fields.
+    // Mirrors typecheck_document lines 1137-1142.
+    if let Some((Type::Record(Row { fields, .. }), enclosing_level)) = last_record_type {
+        for (name, field_ty) in fields {
+            let scheme = generalize(enclosing_level, &field_ty, state);
+            result_env.insert_scheme(name, scheme);
+        }
+    }
+    if let Some(ref expr) = last_expr {
+        let _ = register_type_aliases(expr, &mut result_env, &env, state);
+    }
     result_env.insert("%".to_string(), result_type.clone());
 
     if errors.is_empty() {
@@ -5892,8 +5872,7 @@ mod tests {
     fn check(input: &str) -> Result<(), Vec<TypeError>> {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, _diagnostics) = typecheck_file(&file.node);
+        let (errors, _table) = typecheck_surface_program(&program);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -11257,9 +11236,8 @@ mod tests {
         "#;
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
-        let (errors, _diagnostics) = typecheck_file(&file.node);
+        let (errors, _table) = typecheck_surface_program(&program);
         assert!(
             errors.is_empty(),
             "% pipeline binding should work, got error: {:?}",
@@ -11275,8 +11253,7 @@ mod tests {
         let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, _diagnostics) = typecheck_file(&file.node);
+        let (errors, _table) = typecheck_surface_program(&program);
         assert!(
             errors.is_empty(),
             "% multi-field pipeline should type-check without errors; got: {:?}",
@@ -11297,9 +11274,8 @@ mod tests {
         "#;
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
-        let (errors, _diagnostics) = typecheck_file(&file.node);
+        let (errors, _table) = typecheck_surface_program(&program);
         assert!(
             errors.is_empty(),
             "named section binding should work, got error: {:?}",
@@ -11311,20 +11287,15 @@ mod tests {
 
     #[test]
     fn test_typecheck_returns_diagnostics() {
-        // Verify that typecheck_file returns a diagnostics vector (currently empty)
+        // Verify that typecheck_surface_program returns no errors for a simple dict
         let input = "[x: 42]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _table) = typecheck_surface_program(&program);
         assert!(
             errors.is_empty(),
             "simple dict should typecheck without errors"
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "no diagnostics emitted yet (infrastructure only)"
         );
     }
 
@@ -13692,7 +13663,8 @@ mod tests {
             .program;
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -13718,7 +13690,8 @@ mod tests {
             .program;
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
 
         // Should have no type errors or diagnostics
         assert!(
@@ -13741,7 +13714,8 @@ mod tests {
             .program;
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -13775,7 +13749,8 @@ mod tests {
         let mut program = crate::parse("[x: [@Unknown 42]]").unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -13811,7 +13786,8 @@ mod tests {
             .program;
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -13848,7 +13824,8 @@ mod tests {
             .program;
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
 
         // Should have no type errors or diagnostics
         assert!(
@@ -14023,7 +14000,8 @@ mod tests {
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
-        let (errors, diagnostics) = typecheck_file(&file.node);
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
 
         assert!(
             errors.is_empty(),
@@ -14063,7 +14041,9 @@ mod tests {
         crate::desugar::desugar_surface_program(&mut program);
         let file = crate::ast_convert::surface_program_to_file(&program);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
-        let (errors, diagnostics) = typecheck_file(&file.node);
+                                                     // Use TypeEnv::with_builtins() so `+` (a builtin) is in scope.
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::with_builtins()));
 
         assert!(
             errors.is_empty(),

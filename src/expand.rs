@@ -36,7 +36,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::ast::{Document, Entry, Expr, File, MatchArm, NamedArg, Param, Span, Spanned};
+use crate::ast::{Document, Entry, Expr, MatchArm, NamedArg, Param, Span, Spanned};
 use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
@@ -121,7 +121,7 @@ pub struct MacroEnv {
     /// Provenance side map: generated-node span -> expansion origin.
     pub provenance: ProvenanceMap,
     /// Macros discovered during expansion via `[defmacro ...]` declarations.
-    /// Accumulated during expansion, returned in ExpandResult.
+    /// Accumulated during expansion.
     pub discovered_macros: Vec<(String, Arc<Thunk>)>,
 }
 
@@ -244,20 +244,6 @@ impl MacroEnv {
     }
 }
 
-/// Result of macro expansion: the expanded AST plus provenance metadata.
-pub struct ExpandResult {
-    pub file: Spanned<File>,
-    pub provenance: ProvenanceMap,
-    /// Macros discovered during expansion via `[defmacro ...]` declarations.
-    /// Each entry is `(macro_name, transformer_thunk)`.
-    /// Used to propagate stdlib macros from macros.llt to user code expansion.
-    pub discovered_macros: Vec<(String, Arc<Thunk>)>,
-    /// Macro inject defaults: `macro_name -> inject_default_name`.
-    /// Populated from all macros with `inject:` declarations encountered during expansion.
-    /// Used by the `macro-injects` builtin for runtime introspection.
-    pub macro_injects_map: HashMap<String, String>,
-}
-
 /// Result of surface-program macro expansion.
 pub struct ExpandSurfaceResult {
     /// Provenance map: generated-node span → expansion origin (for dual-span error reporting).
@@ -272,8 +258,8 @@ pub struct ExpandSurfaceResult {
 ///
 /// Stdlib macros are defined in `stdlib/macros.llt` as regular function exports.
 /// They cannot use the normal `[macro ...]` / `[defmacro ...]` mechanism because:
-/// 1. create_stdlib_env() loads macros.llt BEFORE expand_macros runs on user code
-/// 2. The macro registration mechanism requires expand_macros to be running
+/// 1. create_stdlib_env() loads macros.llt BEFORE expand_surface_program runs on user code
+/// 2. The macro registration mechanism requires expand_surface_program to be running
 ///
 /// Instead, stdlib/macros.llt exports transformer functions as normal dict bindings,
 /// and we register them here by looking them up by name.
@@ -335,7 +321,7 @@ fn register_stdlib_macros_from_env(
     }
 }
 
-// Reentrance depth guard for expand_macros → create_stdlib_env calls.
+// Reentrance depth guard for expand_surface_program → create_stdlib_env calls.
 // When depth > 0, we're in a re-entrant call and must use create_root_env
 // to avoid infinite recursion through the stdlib loading path.
 std::thread_local! {
@@ -364,135 +350,15 @@ impl Drop for DepthGuard {
     }
 }
 
-/// Expand all macros in a File AST.
+/// Expand macros in a `SurfaceProgram`.
 ///
 /// This is the top-level entry point called from the pipeline.
-/// Takes a no_fs flag to match the pipeline configuration.
-/// `base_dir` is the already-open capability directory for the file being expanded;
-/// it is cloned (via `open_dir(".")`) so no new ambient authority is acquired here.
-/// Returns the expanded AST and the provenance side map for dual-span error reporting.
-/// Stdlib macros are loaded by expanding `stdlib/macros.llt` and collecting discovered macros.
-pub fn expand_macros(
-    file: Spanned<File>,
-    no_fs: bool,
-    base_dir: &cap_std::fs::Dir,
-) -> EvalResult<ExpandResult> {
-    // Detect infinite recursion
-    let em_depth = EXPAND_MACROS_DEPTH.get();
-    if em_depth > 10 {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "expand_macros: infinite recursion detected (depth={})",
-                em_depth
-            ),
-            file.span,
-        )
-        .into());
-    }
-
-    let mut env_macro = MacroEnv::new();
-
-    // Clone the caller's already-open Dir handle (open_dir(".") duplicates the fd
-    // without acquiring new ambient authority).
-    let base_dir = base_dir.open_dir(".").map_err(|e| {
-        EvalError::internal(
-            format!("cannot clone base directory for macro expansion: {e}"),
-            file.span,
-        )
-    })?;
-
-    // Create the stdlib env for macro expansion. Provides prelude functions for [defmacro]
-    // transformer bodies.
-    // The depth guard prevents infinite recursion when create_stdlib_env calls expand_macros:
-    //   expand_macros(user_code) → create_stdlib_env() → typecheck calls expand_macros(prelude.llt) →
-    //   use create_root_env to break the cycle
-    let depth = EXPAND_MACROS_DEPTH.get();
-    let (stdlib_env, ctx) = if depth == 0 {
-        // Only call create_stdlib_env at depth 0 (top-level user code).
-        // RAII guard increments depth and restores it on drop (even on panic).
-        let _guard = DepthGuard::new();
-        match builtins::create_stdlib_env_with_arena() {
-            Ok((env, arena)) => {
-                // Load stdlib macros from the fully-evaluated stdlib env.
-                // The stdlib defines macros via regular function exports that we
-                // register by looking them up by name after the stdlib is loaded.
-                register_stdlib_macros_from_env(&mut env_macro, &env, file.span);
-                // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
-                let type_stage_env =
-                    crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-                // Share the stdlib arena so ThunkIds from prelude dicts (e.g., `result.bind`)
-                // remain valid when transformer functions access them during expansion.
-                let ctx = EvalContext::new_sharing_arena(
-                    base_dir,
-                    Arc::clone(&env),
-                    type_stage_env,
-                    no_fs,
-                    arena,
-                    HashMap::new(), // No macros registered yet during initial expansion
-                );
-                (env, ctx)
-            }
-            Err(e) => {
-                return Err(EvalError::internal(
-                    format!("cannot create stdlib env for macro expansion: {e}"),
-                    file.span,
-                )
-                .into())
-            }
-        }
-    } else {
-        // Re-entrant call (depth > 0): use bare root env to break the cycle.
-        // This happens when create_stdlib_env → build_prelude_env → expand_macros(prelude.llt).
-        // The stdlib files don't use [defmacro], so not having stdlib macros registered is fine.
-        // Root env has no prelude dicts — no ThunkId cross-context accesses occur here.
-        // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're in the middle of building
-        // stdlib, so we need a fresh arena, not one seeded with potentially stale cache contents.
-        let env = builtins::create_root_env();
-        let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), no_fs);
-        (env, ctx)
-    };
-    let ctx = Rc::new(ctx);
-
-    // Pre-scan: collect MacroDecl and SyntaxClass nodes before main expansion
-    pre_scan_file(&file.node, &mut env_macro, &ctx, &stdlib_env)?;
-
-    // Process each document in the file
-    let expanded_documents = file
-        .node
-        .documents
-        .into_iter()
-        .map(|doc| {
-            let expanded_doc = expand_document(doc.node, &mut env_macro, &ctx, &stdlib_env)?;
-            Ok(Spanned::new(expanded_doc, doc.span))
-        })
-        .collect::<EvalResult<Vec<_>>>()?;
-
-    let macro_injects_map = env_macro.get_inject_map();
-    Ok(ExpandResult {
-        file: Spanned::new(
-            File {
-                documents: expanded_documents,
-            },
-            file.span,
-        ),
-        provenance: env_macro.provenance,
-        discovered_macros: env_macro.discovered_macros,
-        macro_injects_map,
-    })
-}
-
-/// Expand macros in a `SurfaceProgram` (parallel path to `expand_macros`).
-///
-/// This is the Surface AST equivalent of `expand_macros()`. It walks `SurfaceDocument.items`
-/// and performs the same macro expansion operations:
+/// Walks `SurfaceDocument.items` and performs macro expansion operations:
 /// - Register `DefMacro`/`MacroDecl`/`SyntaxClass` declarations
 /// - Flatten `Splice` declarations into expression items
 /// - Expand `Call` nodes whose function name is a registered macro
 ///
 /// The expansion body uses the bridge: `SurfaceNode` → `Expr` → expand → `Expr` → `SurfaceNode`.
-///
-/// This function is ADDITIVE — it does not modify the existing `expand_macros()` flow.
-/// The existing File-based path remains unchanged.
 pub fn expand_surface_program(
     program: &mut crate::ast::SurfaceProgram,
     no_fs: bool,
@@ -527,7 +393,7 @@ pub fn expand_surface_program(
     // Create the stdlib env for macro expansion
     let depth = EXPAND_MACROS_DEPTH.get();
     let (stdlib_env, ctx) = if depth == 0 {
-        let _guard = DepthGuard::new();
+        let _depth_guard = DepthGuard::new();
         match builtins::create_stdlib_env_with_arena() {
             Ok((env, arena)) => {
                 register_stdlib_macros_from_env(&mut env_macro, &env, crate::ast::Span::origin());
@@ -656,25 +522,6 @@ pub fn expand_surface_program(
         provenance: env_macro.provenance,
         macro_injects_map,
     })
-}
-
-/// Pre-scan a File AST to collect MacroDecl and SyntaxClass nodes.
-///
-/// This runs BEFORE the main expansion pass and registers all macro and syntax-class
-/// declarations so they're available during expansion. For bare string-literal includes,
-/// follows the include and scans the included file too. For computed-path includes
-/// (non-string-literal), skips them (macro declarations in computed includes would be
-/// an expansion error).
-fn pre_scan_file(
-    file: &File,
-    env: &mut MacroEnv,
-    ctx: &Arc<EvalContext>,
-    stdlib_env: &Arc<RwLock<Environment>>,
-) -> EvalResult<()> {
-    for doc in &file.documents {
-        pre_scan_document(&doc.node, env, ctx, stdlib_env)?;
-    }
-    Ok(())
 }
 
 /// Pre-scan a Document to collect MacroDecl and SyntaxClass nodes.
@@ -1183,72 +1030,6 @@ fn extract_inject_default(params: &Spanned<Expr>) -> Option<String> {
         }
         _ => None,
     }
-}
-
-/// Expand macros in a Document.
-///
-/// Splice handling: when a macro call returns `Expr::Splice(forms)`, each form is injected
-/// as a separate document expression. Any MacroDecl or SyntaxClass in splice output is
-/// registered immediately (enabling meta-macros) before processing subsequent forms.
-fn expand_document(
-    doc: Document,
-    env: &mut MacroEnv,
-    ctx: &Arc<EvalContext>,
-    stdlib_env: &Arc<RwLock<Environment>>,
-) -> EvalResult<Document> {
-    let mut expanded_exprs = Vec::new();
-
-    for expr in doc.expressions {
-        let expanded = expand_expr(expr.as_ref().clone(), env, ctx, stdlib_env)?;
-        // Filter out declaration nodes (they've been registered and must not appear post-expansion)
-        if matches!(
-            expanded.node,
-            Expr::DefMacro { .. } | Expr::MacroDecl { .. } | Expr::SyntaxClass { .. }
-        ) {
-            continue;
-        }
-
-        // Splice: inject each form as a separate expression.
-        // Register any MacroDecl/SyntaxClass in splice output immediately so subsequent
-        // forms in the same document can use the newly registered macros.
-        if let Expr::Splice(forms) = expanded.node {
-            for form in forms {
-                match &form.node {
-                    Expr::MacroDecl { .. } | Expr::SyntaxClass { .. } => {
-                        // Register the new macro/syntax-class immediately
-                        pre_scan_expr_spanned(&form, env, ctx, stdlib_env)?;
-                        // Do not emit the declaration into the output
-                    }
-                    Expr::DefMacro { .. } => {
-                        pre_scan_expr_spanned(&form, env, ctx, stdlib_env)?;
-                    }
-                    _ => {
-                        // Re-expand the spliced form (fixpoint)
-                        let re_expanded = expand_expr(form.clone(), env, ctx, stdlib_env)?;
-                        if !matches!(
-                            re_expanded.node,
-                            Expr::DefMacro { .. }
-                                | Expr::MacroDecl { .. }
-                                | Expr::SyntaxClass { .. }
-                        ) {
-                            expanded_exprs.push(Rc::new(re_expanded));
-                        }
-                    }
-                }
-            }
-        } else {
-            expanded_exprs.push(Rc::new(expanded));
-        }
-    }
-
-    Ok(Document {
-        expressions: expanded_exprs,
-        name: doc.name,
-        output_type: doc.output_type,
-        expects: doc.expects,
-        caps: doc.caps,
-        stage: doc.stage,
-    })
 }
 
 /// Expand macros in an expression (fixpoint loop).

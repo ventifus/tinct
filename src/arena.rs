@@ -424,7 +424,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Placeholder")]
     fn test_placeholder_force_panics() {
         use crate::eval::materialize;
         use crate::eval::EvalContext;
@@ -441,8 +440,15 @@ mod tests {
             .expect("failed to open test base_dir");
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
-        // Attempt to materialize the placeholder thunk - this should panic
-        let _result = materialize(&thunk, None, &ctx);
+        // After the runtime-v2 ThunkInner representation change, placeholder thunks
+        // (unevaluated=None, result=None) are indistinguishable from InProgress thunks
+        // at runtime. Forcing a placeholder now returns a circular_dependency Err instead
+        // of panicking. Both behaviors correctly prevent use of unfilled letrec slots.
+        let result = materialize(thunk, None, &ctx);
+        assert!(
+            result.is_err(),
+            "materializing an unfilled placeholder should fail, got Ok"
+        );
     }
 
     #[test]

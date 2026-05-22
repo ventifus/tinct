@@ -1,9 +1,8 @@
 //! Import resolution for the type checker.
 //!
 //! This module provides shared import resolution logic that seeds the type checker
-//! with prelude function type signatures. It ensures that `typecheck_source` and
-//! `typecheck_file` know about stdlib prelude functions, suppressing false
-//! "undefined variable" errors.
+//! with prelude function type signatures. It ensures that `typecheck_source`
+//! knows about stdlib prelude functions, suppressing false "undefined variable" errors.
 //!
 //! The prelude environment is built once per thread and cached using thread-local
 //! storage. Subsequent calls to `build_prelude_env()` return a cheap `Rc::clone`
@@ -15,7 +14,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
-use crate::ast::{Expr, File, Span, Spanned};
+use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
 use crate::expand;
 use crate::parser;
@@ -90,28 +89,28 @@ fn typecheck_and_merge_stdlib_module(
     _source_path: Option<&str>,
 ) -> Result<InferState, ()> {
     // Parse the module source
-    let file = {
+    let (program, file) = {
         let parsed = parser::parse(source).map_err(|_| ())?;
         let mut program = parsed.program.clone();
         // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
         desugar::desugar_surface_program(&mut program);
-        crate::ast_convert::surface_program_to_file(&program)
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        let _res_table = resolve::resolve_surface_program(&program);
+        let file = crate::ast_convert::surface_program_to_file(&program);
+        (program, file)
     };
 
     // Skip macro expansion for stdlib modules.
     //
     // Rationale: stdlib modules (prelude.llt, macros.llt) never use [defmacro ...],
-    // so expand_macros is a no-op for them — but at depth 0 it triggers a full
+    // so expand_surface_program is a no-op for them — but at depth 0 it triggers a full
     // create_stdlib_env() bootstrap (~20s in debug builds). Since build_prelude_env
     // is called once per test thread, this turns parallel test runs into a hang
     // when each of N threads pays the 20s bootstrap cost simultaneously under
     // memory pressure.
     //
-    // The previous code called expand::expand_macros(file, true) here, which
+    // The previous code called expand::expand_surface_program(file, true) here, which
     // recursively built the stdlib just to check for macros that don't exist.
-
-    // Resolve (desugar already done above)
-    resolve::resolve_file(&file.node);
 
     // Type-check with the parent environment (builtins + prelude), capturing InferState
     // and the final TypeEnv (which holds properly generalized TypeSchemes for all prelude
@@ -139,7 +138,7 @@ fn typecheck_and_merge_stdlib_module(
     // The TypeMap-based fallback only inserts a binding if it's not already in env (i.e., not
     // already inserted by merge_env_bindings_into), so there's no double-insertion.
     merge_env_bindings_into(&final_env, parent_env, env);
-    extract_bindings_from_file_with_fallback(&file.node, &_type_map, env);
+    extract_bindings_from_program_with_fallback(&program, &_type_map, env);
 
     Ok(state)
 }
@@ -174,25 +173,33 @@ fn merge_env_bindings_into(source_env: &TypeEnv, baseline_env: &TypeEnv, target:
 /// holds monotype bodies from a stale InferState, not generalized schemes.
 ///
 /// Skips any name already in `target` (already inserted by merge_env_bindings_into).
-fn extract_bindings_from_file_with_fallback(file: &File, type_map: &TypeMap, target: &mut TypeEnv) {
-    for doc in &file.documents {
-        for expr in &doc.node.expressions {
-            extract_bindings_fallback_from_expr(&expr.node, type_map, target);
+fn extract_bindings_from_program_with_fallback(
+    program: &SurfaceProgram,
+    type_map: &TypeMap,
+    target: &mut TypeEnv,
+) {
+    for doc in &program.documents {
+        for node in doc.node.expressions() {
+            extract_bindings_fallback_from_node(node, type_map, target);
         }
     }
 }
 
-/// Recursively extract bindings from an expression tree into `target`, skipping
+/// Recursively extract bindings from a surface node into `target`, skipping
 /// names already present in `target`.
-fn extract_bindings_fallback_from_expr(expr: &Expr, type_map: &TypeMap, target: &mut TypeEnv) {
-    match expr {
-        Expr::Dict(entries) => {
+fn extract_bindings_fallback_from_node(
+    node: &Arc<SurfaceNode>,
+    type_map: &TypeMap,
+    target: &mut TypeEnv,
+) {
+    match &node.expr {
+        SurfaceExpression::Dict(entries) => {
             for entry in entries {
-                if let Some(ref key_expr) = entry.node.key {
-                    let name = match &key_expr.node {
-                        Expr::Str(n) => Some(n.clone()),
-                        Expr::VarRef { name, .. } => Some(name.clone()),
-                        Expr::Annotated { name, .. } => Some(name.clone()),
+                if let Some(ref key_node) = entry.node.key {
+                    let name = match &key_node.expr {
+                        SurfaceExpression::Str(n) => Some(n.clone()),
+                        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                        SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
                         _ => None,
                     };
                     if let Some(name) = name {
@@ -212,9 +219,9 @@ fn extract_bindings_fallback_from_expr(expr: &Expr, type_map: &TypeMap, target: 
                 }
             }
         }
-        Expr::Sequential(exprs) => {
-            for expr in exprs {
-                extract_bindings_fallback_from_expr(&expr.node, type_map, target);
+        SurfaceExpression::Sequential(nodes) => {
+            for child in nodes {
+                extract_bindings_fallback_from_node(child, type_map, target);
             }
         }
         _ => {}
@@ -290,8 +297,8 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
 
 /// Seed a fresh [`InferState`] with the prelude's class and instance environments.
 ///
-/// Called at the start of every user-code type-checking session (in `typecheck_file`
-/// and `typecheck_file_with_types_and_env_and_source_returning_state`). This ensures
+/// Called at the start of every user-code type-checking session (in
+/// `typecheck_file_with_types_and_env_and_source_returning_state`). This ensures
 /// that class instances registered by `prelude.llt` (Equatable for Int/Float/Str/Bool,
 /// Comparable for Int/Float/Str, Showable for all, Mappable for Record/Seq, Appendable
 /// for Str/Record/Seq) are available to `check_constraints_on_var` without requiring
@@ -419,39 +426,39 @@ fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
     }
 }
 
-/// Extract top-level binding names and their types from a File's type map as a Vec.
+/// Extract top-level binding names and their types from a SurfaceProgram's type map as a Vec.
 ///
-/// Like `extract_bindings_from_file`, but returns a vector of (name, type) pairs
-/// instead of mutating a TypeEnv. This is used by `resolve_includes` to track
+/// Returns a vector of (name, type) pairs. Used by `resolve_includes` to track
 /// which bindings each include contributed.
-fn extract_bindings_from_file_as_vec(file: &File, type_map: &TypeMap) -> Vec<(String, Type)> {
+fn extract_bindings_from_program_as_vec(
+    program: &SurfaceProgram,
+    type_map: &TypeMap,
+) -> Vec<(String, Type)> {
     let mut bindings = Vec::new();
-    for doc in &file.documents {
-        for expr in &doc.node.expressions {
-            extract_bindings_from_expr_to_vec(&expr.node, type_map, &mut bindings);
+    for doc in &program.documents {
+        for node in doc.node.expressions() {
+            extract_bindings_from_node_to_vec(node, type_map, &mut bindings);
         }
     }
     bindings
 }
 
-/// Recursively extract bindings from an expression tree into a Vec.
-///
-/// Like `extract_bindings_from_expr`, but appends to a vector instead of mutating a TypeEnv.
-fn extract_bindings_from_expr_to_vec(
-    expr: &Expr,
+/// Recursively extract bindings from a surface node into a Vec.
+fn extract_bindings_from_node_to_vec(
+    node: &Arc<SurfaceNode>,
     type_map: &TypeMap,
     bindings: &mut Vec<(String, Type)>,
 ) {
-    match expr {
-        Expr::Dict(entries) => {
+    match &node.expr {
+        SurfaceExpression::Dict(entries) => {
             // Extract all top-level bindings from this dict
             for entry in entries {
                 // Only process entries with explicit string keys (VarRef or Annotated)
-                if let Some(ref key_expr) = entry.node.key {
-                    let name = match &key_expr.node {
-                        Expr::Str(n) => Some(n.clone()),
-                        Expr::VarRef { name, .. } => Some(name.clone()),
-                        Expr::Annotated { name, .. } => Some(name.clone()),
+                if let Some(ref key_node) = entry.node.key {
+                    let name = match &key_node.expr {
+                        SurfaceExpression::Str(n) => Some(n.clone()),
+                        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                        SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
                         _ => None,
                     };
                     if let Some(name) = name {
@@ -466,9 +473,9 @@ fn extract_bindings_from_expr_to_vec(
             }
         }
         // Sequential expressions: process ALL expressions in order.
-        Expr::Sequential(exprs) => {
-            for expr in exprs {
-                extract_bindings_from_expr_to_vec(&expr.node, type_map, bindings);
+        SurfaceExpression::Sequential(nodes) => {
+            for child in nodes {
+                extract_bindings_from_node_to_vec(child, type_map, bindings);
             }
         }
         _ => {
@@ -477,7 +484,7 @@ fn extract_bindings_from_expr_to_vec(
     }
 }
 
-/// Collect statically-known include paths from a File.
+/// Collect statically-known include paths from a SurfaceProgram.
 ///
 /// Walks the AST looking for `[include ...]` patterns and extracts
 /// the string literal paths. Returns a list of `(span, cap_name, path)` tuples
@@ -485,32 +492,35 @@ fn extract_bindings_from_expr_to_vec(
 /// or `None` for deprecated bare includes.
 ///
 /// Skips dynamic includes (computed paths).
-pub fn collect_include_paths(file: &File) -> Vec<(Span, Option<String>, String)> {
+pub fn collect_include_paths(program: &SurfaceProgram) -> Vec<(Span, Option<String>, String)> {
     let mut paths = Vec::new();
-    for doc in &file.documents {
-        for expr in &doc.node.expressions {
-            collect_include_paths_from_expr(&expr.node, &mut paths);
+    for doc in &program.documents {
+        for node in doc.node.expressions() {
+            collect_include_paths_from_node(node, &mut paths);
         }
     }
     paths
 }
 
-/// Recursively collect include paths from an expression tree.
-fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<String>, String)>) {
-    match expr {
-        Expr::Call {
+/// Recursively collect include paths from a surface node tree.
+fn collect_include_paths_from_node(
+    node: &Arc<SurfaceNode>,
+    paths: &mut Vec<(Span, Option<String>, String)>,
+) {
+    match &node.expr {
+        SurfaceExpression::Call {
             func,
             args,
             named_args: _,
             implied: _,
         } => {
             // Check if this is a call to `include`
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if name == "include" {
                     // Handle 2-arg cap-qualified form: [include %cap "path"]
                     if args.len() == 2 {
-                        if let Expr::VarRef { name: cap_name, .. } = &args[0].node {
-                            if let Expr::Str(path) = &args[1].node {
+                        if let SurfaceExpression::VarRef { name: cap_name, .. } = &args[0].expr {
+                            if let SurfaceExpression::Str(path) = &args[1].expr {
                                 paths.push((args[1].span, Some(cap_name.clone()), path.clone()));
                             }
                         }
@@ -520,102 +530,79 @@ fn collect_include_paths_from_expr(expr: &Expr, paths: &mut Vec<(Span, Option<St
                 }
             }
             // Recurse into function and arguments
-            collect_include_paths_from_expr(&func.node, paths);
+            collect_include_paths_from_node(func, paths);
             for arg in args {
-                collect_include_paths_from_expr(&arg.node, paths);
+                collect_include_paths_from_node(arg, paths);
             }
         }
-        Expr::Dict(entries) => {
+        SurfaceExpression::Dict(entries) => {
             for entry in entries {
                 if let Some(ref key) = entry.node.key {
-                    collect_include_paths_from_expr(&key.node, paths);
+                    collect_include_paths_from_node(key, paths);
                 }
-                collect_include_paths_from_expr(&entry.node.value.node, paths);
+                collect_include_paths_from_node(&entry.node.value, paths);
             }
         }
-        Expr::Fn { body, .. } => {
-            collect_include_paths_from_expr(&body.node, paths);
+        SurfaceExpression::Fn { body, .. } => {
+            collect_include_paths_from_node(body, paths);
         }
-        Expr::TypeAssert { expr: inner, .. } => {
-            collect_include_paths_from_expr(&inner.node, paths);
+        SurfaceExpression::TypeAssert { expr: inner, .. } => {
+            collect_include_paths_from_node(inner, paths);
         }
-        Expr::Pipe { lhs, rhs } => {
-            collect_include_paths_from_expr(&lhs.node, paths);
-            collect_include_paths_from_expr(&rhs.node, paths);
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            collect_include_paths_from_node(lhs, paths);
+            collect_include_paths_from_node(rhs, paths);
         }
-        Expr::Sequential(exprs) => {
-            for e in exprs {
-                collect_include_paths_from_expr(&e.node, paths);
+        SurfaceExpression::Sequential(nodes) => {
+            for child in nodes {
+                collect_include_paths_from_node(child, paths);
             }
         }
-        Expr::DotAccess { expr: target, .. } => {
-            collect_include_paths_from_expr(&target.node, paths);
+        SurfaceExpression::DotAccess { expr: target, .. } => {
+            collect_include_paths_from_node(target, paths);
         }
-        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
-            collect_include_paths_from_expr(&inner.node, paths);
+        SurfaceExpression::Quote(inner)
+        | SurfaceExpression::Unquote(inner)
+        | SurfaceExpression::UnquoteSplice(inner) => {
+            collect_include_paths_from_node(inner, paths);
         }
-        Expr::TypeAlias { body, .. } => {
-            collect_include_paths_from_expr(&body.node, paths);
-        }
-        Expr::DefMacro { body, .. } => {
-            collect_include_paths_from_expr(&body.node, paths);
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_include_paths_from_expr(&scrutinee.node, paths);
+        SurfaceExpression::Match { scrutinee, arms } => {
+            collect_include_paths_from_node(scrutinee, paths);
             for arm in arms {
                 if let Some(ref guard) = arm.guard {
-                    collect_include_paths_from_expr(&guard.node, paths);
+                    collect_include_paths_from_node(guard, paths);
                 }
-                collect_include_paths_from_expr(&arm.body.node, paths);
+                collect_include_paths_from_node(&arm.body, paths);
             }
         }
-        Expr::ClassDecl { methods, .. } => {
-            for method in methods {
-                if let Some(ref key) = method.node.key {
-                    collect_include_paths_from_expr(&key.node, paths);
-                }
-                collect_include_paths_from_expr(&method.node.value.node, paths);
-            }
-        }
-        Expr::InstanceDecl { arms, .. } => {
-            for (pattern_expr, methods) in arms {
-                collect_include_paths_from_expr(&pattern_expr.node, paths);
-                for method in methods {
-                    if let Some(ref key) = method.node.key {
-                        collect_include_paths_from_expr(&key.node, paths);
-                    }
-                    collect_include_paths_from_expr(&method.node.value.node, paths);
-                }
-            }
-        }
-        Expr::PatternDecl { bindings } => {
+        SurfaceExpression::PatternDecl { bindings } => {
             for binding in bindings {
-                collect_include_paths_from_expr(&binding.node, paths);
+                collect_include_paths_from_node(binding, paths);
             }
         }
-        Expr::LetDecl { bindings } => {
+        SurfaceExpression::LetDecl { bindings } => {
             for binding in bindings {
-                collect_include_paths_from_expr(&binding.node, paths);
+                collect_include_paths_from_node(binding, paths);
             }
         }
-        Expr::CaseArm { pattern, body } => {
-            collect_include_paths_from_expr(&pattern.node, paths);
-            collect_include_paths_from_expr(&body.node, paths);
+        SurfaceExpression::CaseArm { pattern, body } => {
+            collect_include_paths_from_node(pattern, paths);
+            collect_include_paths_from_node(body, paths);
         }
-        Expr::MacroDecl { .. } | Expr::Splice(_) | Expr::SyntaxClass { .. } => {
-            // Macro declarations are removed by expansion before include resolution
+        SurfaceExpression::TypeApp { func, arg } => {
+            collect_include_paths_from_node(func, paths);
+            collect_include_paths_from_node(arg, paths);
         }
         // Literals and other leaf nodes: no recursive traversal needed
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Str(_)
-        | Expr::VarRef { .. }
-        | Expr::Placeholder
-        | Expr::Rest(_)
-        | Expr::Annotated { .. }
-        | Expr::TypeApp { .. }
-        | Expr::Error(_) => {}
+        SurfaceExpression::Int(_)
+        | SurfaceExpression::Float(_)
+        | SurfaceExpression::Bool(_)
+        | SurfaceExpression::Str(_)
+        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::Placeholder
+        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Annotated { .. }
+        | SurfaceExpression::Error(_) => {}
     }
 }
 
@@ -803,18 +790,18 @@ fn resolve_includes(
         }
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         desugar::desugar_surface_program(&mut program);
+        // Variable resolution pass (Phase 1 of arena allocation strategy).
+        let _resolution_table = resolve::resolve_surface_program(&program);
+        // Lower to File for the type-checker (which still works on the Expr-based AST).
         let file = crate::ast_convert::surface_program_to_file(&program);
-
-        // Resolve after desugar
-        resolve::resolve_file(&file.node);
 
         // Type-check with the current accumulated environment
         let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
             typecheck_file_with_types_and_env(&file.node, Rc::clone(&env));
 
-        // Extract bindings from this file and track them
+        // Extract bindings from this program and track them
         let mut new_env = TypeEnv::with_parent(&env);
-        let bindings = extract_bindings_from_file_as_vec(&file.node, &type_map);
+        let bindings = extract_bindings_from_program_as_vec(&program, &type_map);
         for (name, ty) in &bindings {
             new_env.insert(name.clone(), ty.clone());
         }
@@ -823,10 +810,10 @@ fn resolve_includes(
         // Store the bindings for this include call's span
         include_bindings.insert(*span, bindings);
 
-        // Recursively resolve includes from this file.
+        // Recursively resolve includes from this program.
         // Open a new cap-std Dir for the nested file's parent directory to enforce
         // RESOLVE_BENEATH on nested includes (no std::fs fallback).
-        let nested_includes = collect_include_paths(&file.node);
+        let nested_includes = collect_include_paths(&program);
         let parent_dir = normalized.parent();
         // AMBIENT-OK: Nested include resolution opens parent dir to enforce RESOLVE_BENEATH
         #[allow(clippy::disallowed_methods)]
@@ -863,8 +850,7 @@ fn resolve_includes(
 ///
 /// # Algorithm
 ///
-/// Walks the AST as `Spanned<Expr>` nodes to capture call-site spans. For each
-/// `[include %cap "path"]` call:
+/// Walks the Surface AST to capture call-site spans. For each `[include %cap "path"]` call:
 ///
 /// 1. Looks up `args[1].span` (the path string's span) in `include_bindings`.
 /// 2. If found, constructs `Type::Record(Row { fields })` from the contributed bindings.
@@ -877,38 +863,38 @@ fn resolve_includes(
 /// # Span key: path argument, not call expression
 ///
 /// `resolve_includes` stores binding maps keyed by `args[1].span` (the path string literal).
-/// This post-pass re-walks the AST as `Spanned<Expr>` to recover the call expression's own
-/// span, using `args[1].span` as the lookup key.
+/// This post-pass re-walks the Surface AST to recover the call expression's own span,
+/// using `args[1].span` as the lookup key.
 pub fn apply_include_type_post_pass(
-    file: &File,
+    program: &SurfaceProgram,
     include_bindings: &HashMap<Span, Vec<(String, Type)>>,
     type_map: &mut TypeMap,
 ) {
-    for doc in &file.documents {
-        for expr in &doc.node.expressions {
-            apply_include_type_to_spanned(expr.as_ref(), include_bindings, type_map);
+    for doc in &program.documents {
+        for node in doc.node.expressions() {
+            apply_include_type_to_node(node, include_bindings, type_map);
         }
     }
 }
 
-/// Recursively walk `Spanned<Expr>` nodes and inject Record types for include calls.
-fn apply_include_type_to_spanned(
-    spanned: &Spanned<Expr>,
+/// Recursively walk surface nodes and inject Record types for include calls.
+fn apply_include_type_to_node(
+    node: &Arc<SurfaceNode>,
     include_bindings: &HashMap<Span, Vec<(String, Type)>>,
     type_map: &mut TypeMap,
 ) {
-    match &spanned.node {
-        Expr::Call {
+    match &node.expr {
+        SurfaceExpression::Call {
             func,
             args,
             named_args: _,
             implied: _,
         } => {
             // Check for a cap-qualified include call: [include %cap "path"]
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if name == "include" && args.len() == 2 {
-                    if let Expr::VarRef { .. } = &args[0].node {
-                        if let Expr::Str(_) = &args[1].node {
+                    if let SurfaceExpression::VarRef { .. } = &args[0].expr {
+                        if let SurfaceExpression::Str(_) = &args[1].expr {
                             // args[1].span is the lookup key used by resolve_includes
                             let path_span = args[1].span;
                             if let Some(bindings) = include_bindings.get(&path_span) {
@@ -919,7 +905,7 @@ fn apply_include_type_to_spanned(
                                     .collect();
                                 let record_ty = Type::Record(Row { fields });
                                 // Store at the call expression's span
-                                let key = (spanned.span.start.offset, spanned.span.end.offset);
+                                let key = (node.span.start.offset, node.span.end.offset);
                                 type_map.insert(key, record_ty);
                             }
                         }
@@ -927,114 +913,79 @@ fn apply_include_type_to_spanned(
                 }
             }
             // Recurse into function and arguments (handles nested includes)
-            apply_include_type_to_spanned(func, include_bindings, type_map);
+            apply_include_type_to_node(func, include_bindings, type_map);
             for arg in args {
-                apply_include_type_to_spanned(arg.as_ref(), include_bindings, type_map);
+                apply_include_type_to_node(arg, include_bindings, type_map);
             }
         }
-        Expr::Dict(entries) => {
+        SurfaceExpression::Dict(entries) => {
             for entry in entries {
                 if let Some(ref key) = entry.node.key {
-                    apply_include_type_to_spanned(key, include_bindings, type_map);
+                    apply_include_type_to_node(key, include_bindings, type_map);
                 }
-                apply_include_type_to_spanned(
-                    entry.node.value.as_ref(),
-                    include_bindings,
-                    type_map,
-                );
+                apply_include_type_to_node(&entry.node.value, include_bindings, type_map);
             }
         }
-        Expr::Fn { body, .. } => {
-            apply_include_type_to_spanned(body.as_ref(), include_bindings, type_map);
+        SurfaceExpression::Fn { body, .. } => {
+            apply_include_type_to_node(body, include_bindings, type_map);
         }
-        Expr::TypeAssert { expr: inner, .. } => {
-            apply_include_type_to_spanned(inner, include_bindings, type_map);
+        SurfaceExpression::TypeAssert { expr: inner, .. } => {
+            apply_include_type_to_node(inner, include_bindings, type_map);
         }
-        Expr::Pipe { lhs, rhs } => {
-            apply_include_type_to_spanned(lhs, include_bindings, type_map);
-            apply_include_type_to_spanned(rhs, include_bindings, type_map);
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            apply_include_type_to_node(lhs, include_bindings, type_map);
+            apply_include_type_to_node(rhs, include_bindings, type_map);
         }
-        Expr::Sequential(exprs) => {
-            for e in exprs {
-                apply_include_type_to_spanned(e.as_ref(), include_bindings, type_map);
+        SurfaceExpression::Sequential(nodes) => {
+            for child in nodes {
+                apply_include_type_to_node(child, include_bindings, type_map);
             }
         }
-        Expr::DotAccess { expr: target, .. } => {
-            apply_include_type_to_spanned(target, include_bindings, type_map);
+        SurfaceExpression::DotAccess { expr: target, .. } => {
+            apply_include_type_to_node(target, include_bindings, type_map);
         }
-        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
-            apply_include_type_to_spanned(inner, include_bindings, type_map);
+        SurfaceExpression::Quote(inner)
+        | SurfaceExpression::Unquote(inner)
+        | SurfaceExpression::UnquoteSplice(inner) => {
+            apply_include_type_to_node(inner, include_bindings, type_map);
         }
-        Expr::TypeAlias { body, .. } => {
-            apply_include_type_to_spanned(body, include_bindings, type_map);
-        }
-        Expr::DefMacro { body, .. } => {
-            apply_include_type_to_spanned(body.as_ref(), include_bindings, type_map);
-        }
-        Expr::Match { scrutinee, arms } => {
-            apply_include_type_to_spanned(scrutinee, include_bindings, type_map);
+        SurfaceExpression::Match { scrutinee, arms } => {
+            apply_include_type_to_node(scrutinee, include_bindings, type_map);
             for arm in arms {
                 if let Some(ref guard) = arm.guard {
-                    apply_include_type_to_spanned(guard, include_bindings, type_map);
+                    apply_include_type_to_node(guard, include_bindings, type_map);
                 }
-                apply_include_type_to_spanned(&arm.body, include_bindings, type_map);
+                apply_include_type_to_node(&arm.body, include_bindings, type_map);
             }
         }
-        Expr::ClassDecl { methods, .. } => {
-            for method in methods {
-                if let Some(ref key) = method.node.key {
-                    apply_include_type_to_spanned(key, include_bindings, type_map);
-                }
-                apply_include_type_to_spanned(
-                    method.node.value.as_ref(),
-                    include_bindings,
-                    type_map,
-                );
-            }
-        }
-        Expr::InstanceDecl { arms, .. } => {
-            for (pattern_expr, methods) in arms {
-                apply_include_type_to_spanned(pattern_expr, include_bindings, type_map);
-                for method in methods {
-                    if let Some(ref key) = method.node.key {
-                        apply_include_type_to_spanned(key, include_bindings, type_map);
-                    }
-                    apply_include_type_to_spanned(
-                        method.node.value.as_ref(),
-                        include_bindings,
-                        type_map,
-                    );
-                }
-            }
-        }
-        Expr::PatternDecl { bindings } => {
+        SurfaceExpression::PatternDecl { bindings } => {
             for binding in bindings {
-                apply_include_type_to_spanned(binding, include_bindings, type_map);
+                apply_include_type_to_node(binding, include_bindings, type_map);
             }
         }
-        Expr::LetDecl { bindings } => {
+        SurfaceExpression::LetDecl { bindings } => {
             for binding in bindings {
-                apply_include_type_to_spanned(binding, include_bindings, type_map);
+                apply_include_type_to_node(binding, include_bindings, type_map);
             }
         }
-        Expr::CaseArm { pattern, body } => {
-            apply_include_type_to_spanned(pattern, include_bindings, type_map);
-            apply_include_type_to_spanned(body, include_bindings, type_map);
+        SurfaceExpression::CaseArm { pattern, body } => {
+            apply_include_type_to_node(pattern, include_bindings, type_map);
+            apply_include_type_to_node(body, include_bindings, type_map);
         }
-        Expr::MacroDecl { .. } | Expr::Splice(_) | Expr::SyntaxClass { .. } => {
-            // Macro declarations are removed by expansion before type resolution
+        SurfaceExpression::TypeApp { func, arg } => {
+            apply_include_type_to_node(func, include_bindings, type_map);
+            apply_include_type_to_node(arg, include_bindings, type_map);
         }
         // Leaf nodes: no recursive traversal needed
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Str(_)
-        | Expr::VarRef { .. }
-        | Expr::Placeholder
-        | Expr::Rest(_)
-        | Expr::Annotated { .. }
-        | Expr::TypeApp { .. }
-        | Expr::Error(_) => {}
+        SurfaceExpression::Int(_)
+        | SurfaceExpression::Float(_)
+        | SurfaceExpression::Bool(_)
+        | SurfaceExpression::Str(_)
+        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::Placeholder
+        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Annotated { .. }
+        | SurfaceExpression::Error(_) => {}
     }
 }
 
@@ -1042,11 +993,11 @@ fn apply_include_type_to_spanned(
 /// types from statically-resolvable includes.
 ///
 /// This is the main entry point for the LSP and other tools that need a
-/// fully-populated type environment for a given file.
+/// fully-populated type environment for a given program.
 ///
 /// 1. Start with the prelude environment from `build_prelude_env()`
 /// 2. Seed the environment with always-available cap variables (`%pwd`, `%libdir`, `%stdin`)
-/// 3. If `base_dir` is provided, collect include paths from `file` and
+/// 3. If `base_dir` is provided, collect include paths from `program` and
 ///    resolve them recursively, extending the environment with each included
 ///    file's top-level bindings.
 ///
@@ -1055,8 +1006,11 @@ fn apply_include_type_to_spanned(
 /// - A mapping from each include call's `Span` to the bindings it contributed
 ///
 /// Best-effort: IO failures, parse errors, and type errors are silently ignored.
-pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> (Rc<TypeEnv>, IncludeBindings) {
-    build_type_env_with_cap(file, base_dir, None)
+pub fn build_type_env(
+    program: &SurfaceProgram,
+    base_dir: Option<&Path>,
+) -> (Rc<TypeEnv>, IncludeBindings) {
+    build_type_env_with_cap(program, base_dir, None)
 }
 
 /// Like `build_type_env`, but also accepts a `cap_std::fs::Dir` for `%pwd` I/O.
@@ -1065,7 +1019,7 @@ pub fn build_type_env(file: &File, base_dir: Option<&Path>) -> (Rc<TypeEnv>, Inc
 /// the cap-std Dir (RESOLVE_BENEATH semantics) instead of plain `std::fs` calls.
 /// This provides kernel-level path confinement rather than software-only path checks.
 pub fn build_type_env_with_cap(
-    file: &File,
+    program: &SurfaceProgram,
     base_dir: Option<&Path>,
     base_cap_dir: Option<&cap_std::fs::Dir>,
 ) -> (Rc<TypeEnv>, IncludeBindings) {
@@ -1081,7 +1035,7 @@ pub fn build_type_env_with_cap(
     let mut include_bindings = HashMap::new();
 
     if let Some(dir) = base_dir {
-        let include_paths = collect_include_paths(file);
+        let include_paths = collect_include_paths(program);
         let mut visited = HashSet::new();
         let libdir = crate::find_libdir_path();
         let (new_env, bindings) = resolve_includes(
@@ -1133,8 +1087,8 @@ mod tests {
 
     #[test]
     fn test_collect_include_paths_empty() {
-        let file = File { documents: vec![] };
-        let paths = collect_include_paths(&file);
+        let program = SurfaceProgram { documents: vec![] };
+        let paths = collect_include_paths(&program);
         assert!(paths.is_empty());
     }
 
@@ -1144,9 +1098,8 @@ mod tests {
             [include %pwd "foo.llt"]
             [include %libdir "bar.llt"]
         "#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
-        let paths = collect_include_paths(&file.node);
+        let program = parser::parse(source).unwrap().program;
+        let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].1, Some("%pwd".to_string()));
         assert_eq!(paths[0].2, "foo.llt");
@@ -1159,9 +1112,8 @@ mod tests {
         let source = r#"
             [include [str "foo" ".llt"]]
         "#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
-        let paths = collect_include_paths(&file.node);
+        let program = parser::parse(source).unwrap().program;
+        let paths = collect_include_paths(&program);
         // Dynamic include should be skipped
         assert_eq!(paths.len(), 0);
     }
@@ -1205,13 +1157,12 @@ mod tests {
     ///
     /// This exercises the explicit `call` form (`[call $include ...]`) as distinct
     /// from the implied-call form (`[include ...]`) tested in the existing test.
-    /// Both parse to the same `Expr::Call` AST node with `func = VarRef { name: "include" }`.
+    /// Both parse to the same `SurfaceExpression::Call` node with `func = VarRef { name: "include" }`.
     #[test]
     fn collect_include_paths_finds_explicit_call_form() {
         let source = r#"[call $include %pwd "foo.llt"]"#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
-        let paths = collect_include_paths(&file.node);
+        let program = parser::parse(source).unwrap().program;
+        let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 1, "expected exactly one include path");
         assert_eq!(paths[0].1, Some("%pwd".to_string()));
         assert_eq!(paths[0].2, "foo.llt");
@@ -1221,9 +1172,8 @@ mod tests {
     #[test]
     fn collect_include_paths_skips_bare_includes() {
         let source = r#"[include "foo.llt"]"#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
-        let paths = collect_include_paths(&file.node);
+        let program = parser::parse(source).unwrap().program;
+        let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 0, "bare includes should be skipped");
     }
 
@@ -1234,8 +1184,6 @@ mod tests {
     /// file is silently ignored and the original environment is returned unmodified.
     #[test]
     fn resolve_includes_missing_file_returns_base() {
-        use crate::ast::Span;
-
         let base_env = Rc::new(TypeEnv::with_builtins());
         let include_paths = vec![(
             Span::origin(),
@@ -1269,8 +1217,8 @@ mod tests {
     /// Verify that `build_type_env` seeds the environment with cap types.
     #[test]
     fn test_build_type_env_has_cap_types() {
-        let file = File { documents: vec![] };
-        let (env, _bindings) = build_type_env(&file, None);
+        let program = SurfaceProgram { documents: vec![] };
+        let (env, _bindings) = build_type_env(&program, None);
 
         // Check that cap variables are present with correct types
         assert!(env.get("%pwd").is_some(), "expected %pwd in type env");
@@ -1295,11 +1243,10 @@ mod tests {
         let source = r#"
             [x: 42]
         "#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
+        let program = parser::parse(source).unwrap().program;
 
         // Without any includes, the binding map should be empty
-        let (_env, bindings) = build_type_env(&file.node, None);
+        let (_env, bindings) = build_type_env(&program, None);
         assert!(
             bindings.is_empty(),
             "expected empty bindings when there are no includes"
@@ -1310,7 +1257,7 @@ mod tests {
 
     /// Verify that `apply_include_type_post_pass` injects a Record type for an include call.
     ///
-    /// This test constructs an artificial scenario: a file with an include call, and a
+    /// This test constructs an artificial scenario: a program with an include call, and a
     /// manually-built `include_bindings` map that maps the path-argument span to a set of
     /// bindings. The post-pass should inject a `Type::Record` with those bindings at the
     /// call expression's span in the TypeMap.
@@ -1324,12 +1271,11 @@ mod tests {
         // Parse a source with a cap-qualified include call.
         // We use %pwd (cap var) with a path literal "foo.llt".
         let source = r#"[include %pwd "foo.llt"]"#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
+        let program = parser::parse(source).unwrap().program;
 
         // Find the span of the path string argument ("foo.llt") by walking the AST.
         // We need this span as the key into include_bindings.
-        let include_paths = collect_include_paths(&file.node);
+        let include_paths = collect_include_paths(&program);
         assert_eq!(include_paths.len(), 1, "expected one include path");
         let path_span = include_paths[0].0;
 
@@ -1343,7 +1289,7 @@ mod tests {
 
         // Run the post-pass on an empty TypeMap.
         let mut type_map = TypeMap::new();
-        apply_include_type_post_pass(&file.node, &include_bindings, &mut type_map);
+        apply_include_type_post_pass(&program, &include_bindings, &mut type_map);
 
         // The post-pass should have injected a Record type at the call expression's span.
         // The call expression span is the full "[include %pwd "foo.llt"]" span.
@@ -1384,12 +1330,11 @@ mod tests {
         use std::collections::HashMap;
 
         let source = r#"[include %pwd "foo.llt"]"#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
+        let program = parser::parse(source).unwrap().program;
 
         let include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
         let mut type_map = TypeMap::new();
-        apply_include_type_post_pass(&file.node, &include_bindings, &mut type_map);
+        apply_include_type_post_pass(&program, &include_bindings, &mut type_map);
 
         // No bindings → TypeMap should remain empty.
         assert!(
@@ -1408,11 +1353,10 @@ mod tests {
 
         // The include call is nested inside a dict entry.
         let source = r#"[io: [include %pwd "io.llt"]]"#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&parser::parse(source).unwrap().program);
+        let program = parser::parse(source).unwrap().program;
 
         // Find the path-argument span.
-        let include_paths = collect_include_paths(&file.node);
+        let include_paths = collect_include_paths(&program);
         assert_eq!(include_paths.len(), 1, "expected one include path");
         let path_span = include_paths[0].0;
 
@@ -1421,7 +1365,7 @@ mod tests {
         include_bindings.insert(path_span, bindings);
 
         let mut type_map = TypeMap::new();
-        apply_include_type_post_pass(&file.node, &include_bindings, &mut type_map);
+        apply_include_type_post_pass(&program, &include_bindings, &mut type_map);
 
         // At least one entry should be in type_map (the include call's Record type).
         assert!(
@@ -1437,32 +1381,6 @@ mod tests {
             record_found,
             "expected a Record with 'read' field in type_map; got: {:?}",
             type_map
-        );
-    }
-
-    /// Verify that `identity` is present in the prelude environment as a Function.
-    ///
-    /// `identity` is `[fn@[return: a] [let x] x]`. With `%rust` seeded into the
-    /// type-checking environment, the prelude document returns `Ok` and identity
-    /// is extracted via `merge_env_bindings_into` (the env-based path), giving it
-    /// a `Function` body — `Fn@Unknown [Unknown]` because its parameter is unannotated.
-    #[test]
-    fn build_prelude_env_identity_current_behavior() {
-        use crate::types::Type;
-
-        let env = build_prelude_env();
-        let scheme = env
-            .get("identity")
-            .expect("expected 'identity' in prelude env");
-
-        // After the %rust fix, the prelude document type-checks successfully.
-        // identity comes from the env-based path (merge_env_bindings_into) as a Function.
-        // Its param is unannotated → Unknown, so the body is Fn@Unknown [Unknown].
-        assert!(
-            matches!(scheme.body, Type::Function { .. }),
-            "expected 'identity' body to be Function (env path active after %rust fix), \
-             got: {:?}",
-            scheme.body
         );
     }
 

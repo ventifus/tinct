@@ -200,9 +200,9 @@ impl ReplSession {
         // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
         let mut program = parse_output.program.clone();
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
-        crate::resolve::resolve_file(&file.node);
+        let _resolution_table = crate::resolve::resolve_surface_program(&program);
+        let file = crate::ast_convert::surface_program_to_file(&program);
         // Type errors are advisory; evaluation proceeds regardless.
         // Collect type and doc information for meta-commands.
         let (_type_errors, type_map, doc_map, _scheme_map, _diagnostics) =

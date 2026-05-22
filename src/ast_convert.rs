@@ -48,7 +48,7 @@ pub fn file_to_surface_program(file: &File) -> SurfaceProgram {
 
 /// Convert a typechecked `File` to a `SurfaceProgram` AND extract `TypeAnnotationTable`.
 ///
-/// Requires that `typecheck_file()` has already been called on the file so that
+/// Requires that type checking has already been run on the file so that
 /// `TypeAssert.resolved_type` RefCells are populated. During the bridge conversion,
 /// each `TypeAssert` node in the old File that has a resolved type is recorded in
 /// the table keyed by the corresponding `SurfaceNode`'s `NodeId`.

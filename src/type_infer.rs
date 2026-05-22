@@ -96,7 +96,7 @@ pub struct InferState {
     /// cleared when exiting. Used for inferred [do] macro to determine which monad to use.
     pub expected_return: Option<Type>,
     /// Accumulated type diagnostics (warnings, hints).
-    /// Populated during type inference and generalization, extracted by typecheck_file.
+    /// Populated during type inference and generalization, extracted by the type checker.
     pub diagnostics: Vec<crate::error::TypeDiagnostic>,
     /// Deferred equality constraints for stuck TypeStageApp applications.
     /// When a TypeStageApp has non-ground arguments or cannot be reduced, equality
