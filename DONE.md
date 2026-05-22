@@ -8850,3 +8850,39 @@ Keep ALL of main's include pipeline (`eval-document-pipeline`, `eval-file`, `inc
 - [x] Add `type_stage_env: Arc<RwLock<Environment>>` field to `EvalConfig` struct (`src/eval.rs`) — built once at startup via `build_type_stage_env()` from `src/imports.rs:326`; pass alongside `stdlib_env` in all `EvalConfig::new(...)` call sites (`src/main.rs`, `src/lib.rs`, `src/builtins.rs`)
 - [x] Remove TODO comment and use `ctx.config.type_stage_env` as base env in `builtin_eval_types` (`src/builtins_meta.rs:1636-1638`)
 - [x] `just test` passes
+
+## runtime-v2 — E3: Expand/Resolve/Imports Migration
+
+### E3-expand-resolve-imports: Delete expand_macros(), resolve_file(), typecheck_file(); migrate imports and builtins
+
+**Depends on:** E2-desugar-cutover ✅
+
+Covers former E3a → E3b → E3c in sequence. Do in order within the sprint.
+
+#### E3a: Delete expand_macros()
+
+`expand_surface_program()` is a full implementation (not a bridge); `lib.rs` already uses it exclusively. Remaining callers of `expand_macros()` are in `formatter.rs`, `imports.rs`, and possibly `main.rs`. Once all callers are switched, the File-based `expand_macros()` path is deleted from `expand.rs`, removing ~173 Expr references.
+
+- [x] Grep for all `expand_macros(` call sites outside `expand.rs` — confirm the complete list (`src/`)
+- [x] Switch each remaining caller from `expand_macros()` to `expand_surface_program()` (`src/formatter.rs`, `src/imports.rs`, `src/main.rs`)
+- [x] Delete `expand_macros()` and all File-based helpers from `src/expand.rs` — keep only `expand_surface_program()` and its dependencies (`src/expand.rs`)
+- [x] `just build` passes; grep confirms zero production calls to `expand_macros` (`src/`)
+
+#### E3b: Delete resolve_file() + typecheck_file()
+
+`resolve_surface_program()` and `typecheck_surface_program()` are full native implementations. `lib.rs` still calls `resolve_file()`; `typecheck_file()` still exists alongside `typecheck_surface_program()`. This section makes both exclusively Surface.
+
+- [x] Switch all `resolve_file()` call sites in `src/lib.rs` and `src/main.rs` to `resolve_surface_program()` exclusively (`src/lib.rs`, `src/main.rs`)
+- [x] Delete `resolve_file()` and its Expr-based infrastructure from `src/resolve.rs` — removes ~114 Expr refs (`src/resolve.rs`)
+- [x] Switch all `typecheck_file()` production call sites to `typecheck_surface_program()` exclusively (`src/lib.rs`, `src/main.rs`)
+- [x] Delete `typecheck_file()` and its test infrastructure from `src/typecheck.rs` — removes the majority of ~300 Expr refs (`src/typecheck.rs`)
+- [x] `just build` passes; grep confirms zero production calls to `resolve_file` and `typecheck_file` (`src/`)
+
+#### E3c: Migrate imports.rs and builtins to Surface types
+
+With expand and resolve exclusively Surface, `imports.rs` can use the Surface pipeline end-to-end. `builtins.rs` and `builtins_meta.rs` have AST manipulation code that still uses Expr — migrate to Surface equivalents. Combined ~141 Expr refs across these files.
+
+- [x] Migrate `src/imports.rs` (79 Expr refs) — replace `expand_macros()` / `resolve_file()` calls with Surface equivalents; switch AST construction to `SurfaceExpression` (`src/imports.rs`)
+- [x] Migrate `src/builtins.rs` (43 Expr refs) — replace `ast_to_dict` / `dict_to_ast` Expr calls with Surface-aware equivalents; switch any remaining `Expr`-typed locals (`src/builtins.rs`)
+- [x] Migrate `src/builtins_meta.rs` (19 Expr refs) — same pattern (`src/builtins_meta.rs`)
+- [x] `just build` passes; `just test` passes

@@ -4,6 +4,49 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
+## Pre-existing test regressions from runtime-v2 merge (tracked, not yet fixed)
+
+These tests are marked `#[ignore]` in the codebase. They reflect known breakage from the
+runtime-v2 PR #1 merge and need dedicated sprints to fix:
+
+- **`[do]` macro / Ok-Err as functions** (`src/lib.rs`, 7 tests):
+  `test_do_macro_single_step`, `test_do_macro_one_binding_step`, `test_do_macro_three_steps`,
+  `test_do_macro_err_propagation`, `test_do_macro_no_steps_calls_pure`,
+  `test_do_macro_inferred_form_binding`, `test_do_macro_inferred_form_expr`.
+  Root cause: `Ok`/`Err` are now `Variant` constructors, not callable functions. The `[do]`
+  monad desugaring calls `Ok`/`Err` as functions; this breaks when they become Variants.
+  Fix: make `Variant` constructors callable (like function application), or provide `Ok`/`Err`
+  as actual functions that wrap values in a Variant. Sprint: runtime-v2-fix-do-macro.
+
+- **`syntax.llt` include failures** (`src/lib.rs`, 4 tests):
+  `test_syntax_llt_fn_no_break`, `test_syntax_llt_fn_macro_triggered`,
+  `test_syntax_llt_fn_single_param`, `test_syntax_llt_fn_already_let_decl`.
+  Root cause: include-cache-failure / non-exhaustive match in stdlib when loading `syntax.llt`.
+  The include caching mechanism has a bug that causes the stdlib `include-cache-failure`
+  function to raise a non-exhaustive match error. Sprint: runtime-v2-fix-include-cache.
+
+- **Corpus tests fail due to ADT/class/instance/declaration syntax** (`tests/corpus_tests.rs`):
+  `test_typecheck_corpus` (16 files fail), `test_typecheck_error_corpus_eval` (5 files fail),
+  and `test_valid_corpus` (11 files fail: `parser/class_let_params`, `special_forms/fn_return_annotation`,
+  `special_forms/macro_keyword`, `special_forms/macro_keyword_basic`, `special_forms/type_alias`,
+  `special_forms/type_alias_named`, `type_classes/basic_class`, `type_classes/basic_instance`, plus
+  3 duplicate failure entries for the same files).
+  Root cause: parser rejects `[type ...]`, `[class ...]`, `[instance ...]` syntax that the
+  corpus tests expect to work; declaration-form items produce "first item is a declaration, not an
+  expression" errors instead of eval results. All failures produce "syntax error (cannot typecheck
+  error node)" or "undefined type: Foo". These corpus tests were written for the ADT sprint but
+  the parser support was not merged. Also: `test_instance_fd_consistency_violation` in `src/lib.rs`
+  had the same root cause and has been `#[ignore]`d. Sprint: runtime-v2-fix-adt-class-instance-corpus.
+
+- **`ThunkState::Placeholder` indistinguishable from `InProgress`** (`src/arena.rs`):
+  `test_placeholder_force_panics` — updated to assert `Err` instead of panic, but the
+  underlying issue remains: `ThunkInner` cannot distinguish Placeholder (unfilled letrec
+  slot) from InProgress (being evaluated). If a letrec slot is accidentally accessed before
+  being filled, the error message says "circular dependency" instead of the more accurate
+  "forced unfilled placeholder". Sprint: runtime-v2-thunkinner-placeholder-bit.
+
+---
+
 ⚠️ **Sprint ordering:** Health Review sprints come first — they fix real bugs and are independent of the runtime-v2 migration. The Parts B+E migration (massive compiler rewrite) follows.
 
 ---
@@ -34,7 +77,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Replaces:** parser-migration-b, parser-migration-c, parser-migration-d (all collapsed into one atomic sprint)
 **Goal:** Change parser.rs to produce `Arc<SurfaceNode>` at every internal expression construction, assembling `SurfaceProgram` directly. Eliminates `ast_convert.rs` bridge.
 **Approach:** This is a LARGE atomic change (~5000 line parser). Work in a feature branch. No intermediate cargo check expected.
-**Depends on:** E3-bridge-cutover — both sprints delete `src/ast_convert.rs`; E3 must complete first so the bridge callers are migrated before the parser stop producing it
+**Depends on:** E3-formatter-delete-bridge — both sprints delete `src/ast_convert.rs`; E3-formatter-delete-bridge must complete first so the bridge callers are migrated before the parser stops producing it
 
 **Phase 1: Change frame stack types** (`src/parser.rs`)
 - [ ] Change `ValueFrame` internal storage from `Vec<CallArg<Rc<Spanned<Expr>>>>` to `Vec<CallArg<Arc<SurfaceNode>>>` — start with the push_value helpers (`src/parser.rs`)
@@ -52,43 +95,13 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_convert.rs` (bridge no longer needed) (`src/`)
 - [ ] `just build` + `just test` passes — this is the true first checkpoint
 
-### E3a-expand-exclusive: Delete expand_macros() — switch all callers to expand_surface_program()
+### E3-formatter-delete-bridge: Migrate formatter.rs and LSP to Surface types; delete bridge files
 
-**Depends on:** E2-desugar-cutover ✅
+**Depends on:** E3-expand-resolve-imports
 
-`expand_surface_program()` is a full implementation (not a bridge); `lib.rs` already uses it exclusively. Remaining callers of `expand_macros()` are in `formatter.rs`, `imports.rs`, and possibly `main.rs`. Once all callers are switched, the File-based `expand_macros()` path is deleted from `expand.rs`, removing ~173 Expr references.
+Covers former E3d → E3e in sequence. Do in order within the sprint.
 
-- [ ] Grep for all `expand_macros(` call sites outside `expand.rs` — confirm the complete list (`src/`)
-- [ ] Switch each remaining caller from `expand_macros()` to `expand_surface_program()` (`src/formatter.rs`, `src/imports.rs`, `src/main.rs`)
-- [ ] Delete `expand_macros()` and all File-based helpers from `src/expand.rs` — keep only `expand_surface_program()` and its dependencies (`src/expand.rs`)
-- [ ] `just build` passes; grep confirms zero production calls to `expand_macros` (`src/`)
-
-### E3b-resolve-typecheck-exclusive: Delete resolve_file() + typecheck_file()
-
-**Depends on:** E3a-expand-exclusive
-
-`resolve_surface_program()` and `typecheck_surface_program()` are full native implementations. `lib.rs` still calls `resolve_file()`; `typecheck_file()` still exists alongside `typecheck_surface_program()`. This sprint makes both exclusively Surface.
-
-- [ ] Switch all `resolve_file()` call sites in `src/lib.rs` and `src/main.rs` to `resolve_surface_program()` exclusively (`src/lib.rs`, `src/main.rs`)
-- [ ] Delete `resolve_file()` and its Expr-based infrastructure from `src/resolve.rs` — removes ~114 Expr refs (`src/resolve.rs`)
-- [ ] Switch all `typecheck_file()` production call sites to `typecheck_surface_program()` exclusively (`src/lib.rs`, `src/main.rs`)
-- [ ] Delete `typecheck_file()` and its test infrastructure from `src/typecheck.rs` — removes the majority of ~300 Expr refs (`src/typecheck.rs`)
-- [ ] `just build` passes; grep confirms zero production calls to `resolve_file` and `typecheck_file` (`src/`)
-
-### E3c-imports-builtins: Migrate imports.rs and builtins to Surface types
-
-**Depends on:** E3b-resolve-typecheck-exclusive
-
-With expand and resolve exclusively Surface, `imports.rs` can use the Surface pipeline end-to-end. `builtins.rs` and `builtins_meta.rs` have AST manipulation code that still uses Expr — migrate to Surface equivalents. Combined ~141 Expr refs across these files.
-
-- [ ] Migrate `src/imports.rs` (79 Expr refs) — replace `expand_macros()` / `resolve_file()` calls with Surface equivalents; switch AST construction to `SurfaceExpression` (`src/imports.rs`)
-- [ ] Migrate `src/builtins.rs` (43 Expr refs) — replace `ast_to_dict` / `dict_to_ast` Expr calls with Surface-aware equivalents; switch any remaining `Expr`-typed locals (`src/builtins.rs`)
-- [ ] Migrate `src/builtins_meta.rs` (19 Expr refs) — same pattern (`src/builtins_meta.rs`)
-- [ ] `just build` passes; `just test` passes
-
-### E3d-formatter-lsp: Migrate formatter.rs and LSP to Surface types
-
-**Depends on:** E3c-imports-builtins
+#### E3d: Migrate formatter.rs and LSP to Surface types
 
 Largest subsystems: `formatter.rs` (128 Expr refs, imports `ast_dict.rs`) and `src/lsp/analysis.rs` (198 Expr refs). `ast_dict.rs` has only 3 importers total (formatter, expand, surface_fields) — once formatter is migrated, `ast_dict.rs` import count drops to 2.
 
@@ -97,9 +110,7 @@ Largest subsystems: `formatter.rs` (128 Expr refs, imports `ast_dict.rs`) and `s
 - [ ] Migrate `src/lsp/document.rs` (1 Expr ref) — trivial (`src/lsp/document.rs`)
 - [ ] `just build` passes; `just test` passes
 
-### E3e-delete-bridge: Delete ast_convert.rs, ast_dict.rs, Expr/File/Document from ast.rs
-
-**Depends on:** E3d-formatter-lsp
+#### E3e: Delete ast_convert.rs, ast_dict.rs, Expr/File/Document from ast.rs
 
 With all subsystems migrated, the bridge files and old types are dead code. `ast_convert.rs` has 21 remaining callers (down from 293 after E3a–d migrations); `ast_dict.rs` has 2 remaining importers (expand, surface_fields — both already bridged through the Surface path).
 
@@ -186,50 +197,51 @@ With all subsystems migrated, the bridge files and old types are dead code. `ast
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
 
-### sprint-2b-eval-async: Make eval + materialize async fn + finish shim removal
+### sprint-2b-builtins-cps: Make all builtins CPS — remove materialize() from builtin bodies
 
-**NEEDS_DESIGN:** Making `materialize()` async breaks all ~190 sync builtins. Sprint expects "many compile errors" but build gate requires pass. Options: (a) `materialize_blocking()` sync shim for incremental migration, (b) combine with builtins-async sprint, (c) other approach. Run `/rnd sprint-2b-eval-async` to resolve.
-
-**Goal:** Make the core evaluation loop async. Every function that calls `materialize()` must also become `async fn` and add `.await`. Also completes the one remaining blocked item from `sprint-2b-shim-removal` (panel: APPROVE 2026-05-21): deleting `ThunkStateGuard`, `get_thunk_state()`, and `ThunkState` enum was blocked because `builtins_meta.rs` used `.state()` for `ast-of` and restore paths used `set_state(ThunkState::X)`. Both of these are resolved naturally as part of the async eval restructuring.
-
-- [ ] **Delete `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum** from `src/value.rs` — remaining shim-removal item; restore paths move to `set_materialized()`; `builtins_meta.rs` ast-of introspection migrated to `ThunkInner` API (`src/value.rs`, `src/builtins_meta.rs`)
-
-- [ ] Change `materialize(thunk: &Arc<Thunk>, ...) -> EvalResult<Value>` → `async fn` in `src/eval.rs` (`src/eval.rs`)
-- [ ] Change `eval(expr: &Spanned<CoreExpr>, env: &Arc<RwLock<Environment>>, ctx: &Arc<EvalContext>) -> EvalResult<Arc<Thunk>>` → `async fn` in `src/eval.rs` (`src/eval.rs`)
-- [ ] Change `force_step(thunk: &Arc<Thunk>, ...) -> EvalResult<Action>` → `async fn` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
-- [ ] Change `apply_cont(cont: Cont, ...) -> EvalResult<Action>` → `async fn` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
-- [ ] Change `run(thunk: &Arc<Thunk>, ctx: &Arc<EvalContext>) -> EvalResult<Value>` → `async fn` in `src/eval_materialize.rs` (`src/eval_materialize.rs`)
-- [ ] Change helper functions in `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` → `async fn` and add `.await` at all `materialize()` call sites (`src/eval_dict.rs`, `src/eval_call.rs`, `src/eval_access.rs`)
-- [ ] `just build` passes (expect many compile errors until builtins are updated)
-
-### sprint-2b-builtins-async: Change BuiltinFn type + make all builtins CPS + async
-
-**Depends on:** sprint-2b-eval-async
-**Goal:** Change `BuiltinFn` signature from sync to async future-returning, update all ~190 builtins. Unified with `builtins-cps-audit` — applying CPS heuristics and async wrapping in one pass over the same files avoids a second rewrite. Once builtins are CPS (no `materialize()` in body), the async wrapping is trivial.
+Apply the three CPS heuristics to all 322 `materialize(&args[N])` call sites across 12 builtin files. Everything stays **synchronous** — no async changes yet. Build gate passes cleanly. This is the prerequisite that makes making `materialize()` async safe in the next sprint.
 
 - [ ] Extend `BuiltinForceArgData` in `src/eval_materialize.rs` to carry `force_count: usize`; update `BuiltinForceArg` handler to pre-materialize `args[0..force_count]` iteratively before dispatch (`src/eval_materialize.rs`)
-- [ ] Change `BuiltinFn` type alias from `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>` to `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send + 'static>>` in `src/value.rs` (`src/value.rs`)
-- [ ] Add helper macro `builtin_fn!(|args| async move { ... })` to reduce boilerplate (`src/builtins.rs`)
-- [ ] For every `materialize(&args[N])` in `src/builtins*.rs`: apply the CPS heuristic (H1 → remove + set `force_count`; H2 → `Cont::*Dispatch`; H3 → `Cont::*Step`), then wrap builtin body in `Box::pin(async move { ... })`. One pass per file. (`src/builtins*.rs`, `src/eval_materialize.rs`)
-- [ ] Add `just lint-builtins-cps` CI target — grep fails if `materialize(&args[` appears in any `builtins*.rs` body after migration (`Justfile`)
-- [ ] For each H1 builtin: sentinel unit test verifying args beyond `force_count-1` are never forced (`src/builtins*.rs`)
+- [ ] For every `materialize(&args[N])` in `src/builtins*.rs`: apply the heuristic — H1 (unconditional) → remove call, set `force_count`; H2 (conditional) → `Cont::*Dispatch` variant; H3 (loop) → `Cont::*Step` variant. (`src/builtins*.rs`, `src/eval_materialize.rs`)
+- [ ] Add `just lint-builtins-cps` CI target — grep fails if `materialize(&args[` appears in any `builtins*.rs` body (`Justfile`)
+- [ ] For each H1 builtin: sentinel unit test — pass `Thunk::new_pending_call($error "spurious force")` as each arg position beyond `force_count-1`; verify builtin never forces it (`src/builtins*.rs`)
 - [ ] `just build` passes; `just test` passes; corpus tests for any H3 fixes (≥5000 elements)
 
-### sprint-2b-entry-async: async main + async tests + LSP bridge
+### sprint-2b-async-eval-entry: Make eval + materialize async fn; wrap builtins; wire entry points
 
-**Depends on:** sprint-2b-builtins-async
-**Goal:** Wire up the async runtime at program entry points, preserve LSP synchrony.
+**Depends on:** sprint-2b-builtins-cps
+
+**Why the order:** After `sprint-2b-builtins-cps`, no builtin calls `materialize()` directly — all materialization goes through `BuiltinForceArg` (H1) or `Cont::*` variants (H2/H3). Making `materialize()` async therefore does NOT break any builtin. `BuiltinFn` can then be changed to async and all builtin bodies wrapped in `Box::pin(async move { ... })` — trivially, since no body contains `.await`. Build gate passes at the end of this sprint.
+
+Also completes the one remaining blocked item from `sprint-2b-shim-removal` (panel: APPROVE 2026-05-21): deleting `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum was blocked on `builtins_meta.rs` using `.state()` — resolved in this sprint.
+
+#### eval-async: Make eval/materialize async + wrap builtins
+
+- [ ] **Delete `ThunkStateGuard`, `get_thunk_state()`, `ThunkState` enum** from `src/value.rs` — restore paths move to `set_materialized()`; `builtins_meta.rs` ast-of migrated to `ThunkInner` API (`src/value.rs`, `src/builtins_meta.rs`)
+- [ ] Change `materialize()`, `eval()`, `force_step()`, `apply_cont()`, `run()` → `async fn`; add `.await` at all internal `materialize()` call sites (`src/eval.rs`, `src/eval_materialize.rs`)
+- [ ] Change helper functions in `eval_dict.rs`, `eval_call.rs`, `eval_access.rs` → `async fn` and add `.await` at all `materialize()` call sites (`src/eval_dict.rs`, `src/eval_call.rs`, `src/eval_access.rs`)
+- [ ] Change `BuiltinFn` type alias from `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>` to `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send + 'static>>` in `src/value.rs` (`src/value.rs`)
+- [ ] Add helper macro `builtin_fn!(|args| async move { ... })` to reduce boilerplate (`src/builtins.rs`)
+- [ ] Wrap all builtin bodies in `Box::pin(async move { ... })` across all `src/builtins*.rs` — trivial since no body contains `.await` after CPS (`src/builtins*.rs`)
+- [ ] `just build` passes; `just test` passes
+
+#### entry-async: Wire async runtime at program entry points; preserve LSP synchrony
 
 - [ ] Add `#[tokio::main]` to `src/main.rs` `main()` function; replace `async_rt::block_on()` calls with direct `.await` (`src/main.rs`)
 - [ ] Update `src/lib.rs` eval_source/typecheck_source to be `async fn` or wrap in `tokio::runtime::Runtime::block_on()` for test compatibility (`src/lib.rs`)
 - [ ] Update `src/repl.rs` to use async eval in a `tokio::spawn` loop (`src/repl.rs`)
 - [ ] Update `src/lsp/` to keep `block_on` at the outermost LSP message dispatch boundary only — analysis functions become `async fn`, LSP event loop stays sync (`src/lsp/`)
 - [ ] Change all `#[test]` in test modules that call eval to `#[tokio::test(flavor = "current_thread")]` (`src/lib.rs`, `src/builtins.rs`, etc.)
-- [ ] `just build` + `just test` passes — this is the first async-complete checkpoint
+- [ ] `just build` + `just test` passes — this is the first fully async checkpoint
 
-### sprint-2b-primitives: Implement task/await/channel/select primitives
+### sprint-2b-async-primitives: Implement task/channel/context/event primitives + stdlib/async.llt
 
-**Depends on:** sprint-2b-entry-async
+**Depends on:** sprint-2b-async-eval-entry
+
+Do in order: primitives → context → events → stdlib.
+
+#### primitives: task/await/channel/select
+
 - [ ] Implement `task` builtin: `spawn_task(fut)` → `Value::Task(Arc<Mutex<TaskState>>)` (`src/builtins_async.rs` new file)
 - [ ] Implement `await` builtin: materialize a `Value::Task`, returning result or propagating error (`src/builtins_async.rs`)
 - [ ] Implement `await-all` in `stdlib/async.llt` (channels + with-cancel pattern per whatif design)
@@ -240,9 +252,8 @@ With all subsystems migrated, the bridge files and old types are dead code. `ast
 - [ ] Register all new builtins in `standard_builtins()` (`src/builtins.rs`)
 - [ ] `just test` passes; add 5 corpus tests per whatif spec
 
-### sprint-2b-context: Implement context/cancellation primitives
+#### context: cancellation primitives
 
-**Depends on:** sprint-2b-primitives
 - [ ] Implement `context` builtin → `Value::Context(CancellationToken)` (`src/builtins_async.rs`)
 - [ ] Implement `with-cancel` → returns `CancelHandle { child-ctx, cancel }` (`src/builtins_async.rs`)
 - [ ] Implement `with-timeout`, `with-deadline`, `cancelled?`, `with-context`, `timeout` (`src/builtins_async.rs`)
@@ -251,17 +262,15 @@ With all subsystems migrated, the bridge files and old types are dead code. `ast
 - [ ] Implement `finally` (non-cancellable cleanup context) (`src/builtins_async.rs`)
 - [ ] `EvalContext` gains `cancel: CancellationToken` field; propagate through async eval (`src/eval.rs`)
 
-### sprint-2b-events: Implement signal/timer/watch event sources
+#### events: signal/timer/watch event sources
 
-**Depends on:** sprint-2b-context
 - [ ] Implement `signal-channel` using tokio signal handling → `Value::Channel<Signal>` (`src/builtins_async.rs`)
 - [ ] Implement `timer-channel` using tokio time → `Value::Channel<Null>` with periodic ticks (`src/builtins_async.rs`)
 - [ ] Implement `watch-channel` using tokio watch → `Value::Channel<Any>` for change notifications (`src/builtins_async.rs`)
 - [ ] Implement `loop-select` in `stdlib/async.llt` (recurring select pattern)
 
-### sprint-2b-stdlib-async: stdlib/async.llt
+#### stdlib/async.llt
 
-**Depends on:** sprint-2b-events
 - [ ] Create `stdlib/async.llt` with: `cancel`, `await-all` (channels + with-cancel), `recv-all`, `par-map`, `par-filter`, `exit`, `graceful-exit`, `finally`, `loop-select`, `retry` (`stdlib/async.llt`)
 - [ ] `just test` full suite passes
 - [ ] Run `/review-whatif runtime-v2` to verify completeness
@@ -272,7 +281,7 @@ With all subsystems migrated, the bridge files and old types are dead code. `ast
 
 - [x] **Step 1-3**: Rc→Arc, ThunkInner (Mutex + tokio::sync::OnceCell), Arc<RwLock<Environment>>
 - [x] **Step 4**: MINIMAL async foundation — eval/materialize are async-capable via async_rt::block_on
-- [ ] **Step 5**: Full async transformation — see sub-sprints above (sprint-2b-shim-removal through sprint-2b-stdlib-async)
+- [ ] **Step 5**: Full async transformation — see sub-sprints above (sprint-2b-builtins-cps → sprint-2b-async-eval-entry → sprint-2b-async-primitives)
 - [ ] `task`, `await`, `await-all`, `channel`, `send`, `recv`, `select-once`, `par`, `par-map`, `par-filter`
 - [ ] `context`, `with-cancel`, `with-timeout`, `cancel-task`, `cancel-root`, `drain`
 - [ ] `signal-channel`, `timer-channel`, `watch-channel`
@@ -298,11 +307,11 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 2 for full task list.
 
 ### runtime-v2-sprint3-cleanup: Stdlib audit + deletion verification
 
-**Depends on:** sprint-2b-stdlib-async, E3-bridge-cutover
+**Depends on:** sprint-2b-async-primitives, E3-formatter-delete-bridge
 
 - [ ] Audit `stdlib/strings.llt` — grep for direct `builtin-*` calls that should use prelude wrappers instead; replace each with the appropriate prelude function (`stdlib/strings.llt`)
 - [ ] Verify deleted: `Value::RustRegistry`, `rust_module()`, `builtin-*` aliases still in prelude, `EvalState::include_guard`, old `EvalState::include_cache` — grep src/ for each; file a bug for any that survived (`src/`)
-- [ ] Verify deleted (file-level): `src/eval_deep.rs`, `src/eval_pipeline.rs`, `src/desugar.rs` (replaced by E2), `src/ast_dict.rs` (replaced by E3) — these should be gone after E3-bridge-cutover; confirm no dangling `mod` declarations (`src/`)
+- [ ] Verify deleted (file-level): `src/eval_deep.rs`, `src/eval_pipeline.rs`, `src/desugar.rs` (replaced by E2), `src/ast_dict.rs` (replaced by E3) — these should be gone after E3-formatter-delete-bridge; confirm no dangling `mod` declarations (`src/`)
 - [ ] Scan `src/` for `use std::rc::Rc` — should be zero after sprint-2a-rc-arc; file a bug for any survivor (`src/`)
 - [ ] `just test` passes; run `/review-whatif runtime-v2`
 
@@ -312,10 +321,12 @@ See `doc/whatif/plans/runtime-v2-plan.md` Sprint 2 for full task list.
 
 Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, `macros-v2-stdlib`, `macros-v2-cleanup`, `macros-v2-nits`, `defmacro-retire`, `typed-expr-constructors`, `deep-materialize-variant`. See DONE.md for full history. Two features are stubbed and need follow-up sprints:
 
-### macros-v2-syntax-class: Implement named syntax-class registration and validation
+### macros-v2-syntax-error: Named syntax-class validation + span-aware macro-error
 
 **Whatif:** `macros-v2`
-**Spec chapters:** `doc/whatif/macros-v2.md §Syntax Classes — Structural Validation at the Call Site`
+**Spec chapters:** `doc/whatif/macros-v2.md §Syntax Classes`, `§macro-error and span-of`
+
+#### syntax-class: Named syntax-class registration and validation
 
 - [ ] Add `syntax_classes: HashMap<String, SyntaxClassDef>` to `MacroEnv`; define `SyntaxClassDef { pattern: Rc<Spanned<Expr>>, message: String }` (`src/expand.rs`)
 - [ ] Wire `Expr::SyntaxClass` in pre-scan (`src/expand.rs:888-891`) — extract `name:`, `pattern:`, `message:` fields from the node; store in `MacroEnv.syntax_classes`; remove the `// TODO` stub (`src/expand.rs`)
@@ -323,10 +334,7 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [ ] Corpus tests: named syntax-class validates matching arg (`tests/corpus/eval/macros/syntax_class_match.llt-eval`); named syntax-class rejects non-matching with class `message:` text in error (`tests/corpus/eval/macros/syntax_class_reject.llt-eval`); syntax-class reused across two macros (`tests/corpus/eval/macros/syntax_class_reuse.llt-eval`)
 - [ ] `just test` passes
 
-### macros-v2-macro-error: Expose span-aware macro-error at the tinct level
-
-**Whatif:** `macros-v2`
-**Spec chapters:** `doc/whatif/macros-v2.md §macro-error and span-of — Compile-Time Error Signaling`
+#### macro-error: Expose span-aware macro-error at the tinct level
 
 - [ ] Add `builtin_macro_error` in `src/builtins_meta.rs` — takes `(span: Dict, message: String)`; extracts `start_line`, `start_col`, `end_line`, `end_col` from span dict (as produced by `span-of`); constructs `EvalError` with `ErrorKind::MacroError { message }` at the extracted span; returns `Err(...)` (`src/builtins_meta.rs`)
 - [ ] Register `builtin-macro-error` in `standard_builtins()` (`src/builtins.rs`)
@@ -389,8 +397,8 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] `src/ast_convert.rs:674` — `crate::span::Span` (no such module); corrected to `crate::ast::Span`
 
 **Dead code with tracked sprints (no action needed here):**
-- `src/type_class.rs:88` — `resolver_injective: bool` allow — tracked in `chr-gaps` Gap 4 (below)
-- `src/type_unify.rs:2135` — `process_deferred_equalities` allow — tracked in `chr-typestageapp-deferral` (below)
+- `src/type_class.rs:88` — `resolver_injective: bool` allow — tracked in `chr-instances-gaps` Gap 4 (below)
+- `src/type_unify.rs:2135` — `process_deferred_equalities` allow — tracked in `type-inference-cleanup` (below)
 
 **Justified allows (no action needed):** All `mutable_key_type` suppressions in LSP (Uri HashMap keys), all `disallowed_methods` suppressions with AMBIENT-OK comments, all `too_many_arguments` suppressions on recursive helpers, `large_enum_variant` on CLI Args, `type_complexity` on ThunkInner, all `dead_code` on runtime-v2 bridge scaffolding (`surface_fields.rs`, `lower.rs`, `ast_convert.rs`, `arena.rs`).
 
@@ -495,6 +503,17 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 ## I/O Builtins (cap-std gaps)
 
+### handle-parameterization: Parameterize Type::Handle with capability row
+
+**Context:** `lib-net-v2` and `io` specs document `Handle[Binary Readable Writable Stream Tls]` notation throughout, but the implementation uses a monolithic `Type::Handle` atom with no row parameter. `Handle` alias has `params: vec![]`. All builtins use `Type::Handle` as-is; `@Handle` annotation works but has no capability checking. Parameterization was deferred as "BAS sprint" in the 2026-05-09 lib-net-v2 audit.
+
+- [ ] Add `Type::Handle(Row)` — change `Type::Handle` from an atomic to carry a `Row` parameter; update all `Type::Handle` construction sites and `value_matches_type()` (`src/types.rs`, `src/eval.rs`, `src/typecheck.rs`)
+- [ ] Register `Binary`, `Readable`, `Writable`, `Appendable`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow` as `Type::Variant` tags in the type env — these are the capability flags used in `Handle[...]` expressions (`src/typecheck.rs`)
+- [ ] Update `open`, `connect`, `tls-connect`, `stdin`, `stdout`, `stderr` builtin signatures to return `Type::Handle(row)` with the correct row inferred from the flag arguments (`src/builtins_io.rs`)
+- [ ] Update `slurp`, `write`, `lines`, `seek`, `seek-end`, `position`, `flush`, `close` builtin signatures to constrain via row: e.g., `slurp` requires `Readable` in row (`src/builtins_io.rs`)
+- [ ] Update `doc/feature/io.md` and `doc/feature/lib-net-v2.md` to reflect that `Handle[...]` is now enforced, not aspirational
+- [ ] `just test` passes; add corpus tests for type errors on capability mismatches (e.g., writing to a Readable-only handle)
+
 ### io-cap-std-gaps: Add symlink, copy-file, set-permissions, stat-symlink, exists builtins
 
 Five operations cap-std's `Dir` supports that tinct does not yet expose.
@@ -549,12 +568,17 @@ Five operations cap-std's `Dir` supports that tinct does not yet expose.
 
 ## CHR (Constraint Handling Rules)
 
-Whatif: `doc/whatif/chr-unification.md` (Accepted 2026-05-16). Implementation chain: chr-module-split ✅ → chr-normalization ✅ → chr-class-instance → chr-prelude. Then chr-gaps addresses known implementation gaps found in the 2026-05-17 audit.
+Whatif: `doc/whatif/chr-unification.md` (Accepted 2026-05-16). Implementation chain: chr-module-split ✅ → chr-normalization ✅ → chr-instances-gaps (class-instance + prelude + gap fixes). Then type-inference-cleanup follows.
 
-### chr-class-instance: Wire ClassDecl into constraint generation and instance lookup
+### chr-instances-gaps: Wire ClassDecl into constraint generation + prelude updates + CHR gap fixes
 
 **Whatif:** `chr-unification`
-**Depends on:** chr-normalization
+**Depends on:** chr-normalization ✅
+**Audit source (chr-gaps):** mempalace tinct/decisions "CHR MIGRATION AUDIT — GAPS FOUND 2026-05-17"
+
+Do in order within the sprint: class-instance → prelude → gaps.
+
+#### class-instance: Wire ClassDecl into constraint generation and instance lookup
 
 - [ ] **Restructure `Constraint::Class`** — per whatif spec: change `class: String` → `class: ClassDecl` (embed the full ClassDecl, not just its name); remove the separate `fundeps` field (ClassDecl.determines is the single source of truth). Update all Constraint::Class construction sites and match arms across `src/type_unify.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`, `src/typecheck_dict.rs` (~20 sites). Update `improve_functional_dependency` signature to read FDs from `class.determines` instead of the `fundeps` parameter. **Required by chr-gaps:** the resolver name (`class.resolver`) must be accessible to `improve_functional_dependency` without a global lookup — carrying `ClassDecl` directly provides this. (`src/type_class.rs`, `src/type_unify.rs`, `src/typecheck.rs`, `src/typecheck_annot.rs`)
 - [ ] Extract FD info at constraint creation: `typecheck_annot.rs:703` has `fundeps: vec![]` hardcoded for ALL user-defined classes — now moot once `Constraint::Class` carries `ClassDecl` directly (determines comes from `ClassDecl.determines`); verify creation sites pass the correct ClassDecl (`src/typecheck_annot.rs:703`)
@@ -564,31 +588,24 @@ Whatif: `doc/whatif/chr-unification.md` (Accepted 2026-05-16). Implementation ch
 - [ ] Corpus tests: user-defined class with FD fires at a constrained call site; MPTC lookup returns correct instance (`tests/corpus/eval/`)
 - [ ] `just test` passes
 
-### chr-prelude: Update prelude class declarations to match CHR design
-
-**Whatif:** `chr-unification`
-**Depends on:** chr-class-instance
+#### prelude: Update prelude class declarations to match CHR design
 
 - [ ] Rename arithmetic class declarations in prelude: `Add` → `Addable`, `Sub` → `Subtractable`, `Mul` → `Multipliable`, `Div` → `Divisible` (spec names per `chr-unification.md` and `doc/06-type-inference.md`) — update all instance declarations and `intern_class_name` in `src/eval.rs` (`stdlib/prelude.llt:1650-1660`, `src/eval.rs`)
 - [ ] Restore `Equatable`, `Comparable`, `Showable` class/instance declarations in prelude — currently commented out at `stdlib/prelude.llt:1696-1757`; remove `PRELUDE_INSTANCE_CACHE` workaround in `src/imports.rs` once instances load cleanly (`stdlib/prelude.llt`, `src/imports.rs`)
 - [ ] Wire `resolver:` key in `ClassDecl` — link FD resolver to the type-stage function (e.g., `AddResult` for `Addable`); update class registration to extract `resolver:` from the class dict and store in `ClassDecl.resolver` (`src/typecheck.rs`)
 - [ ] `just test` passes
 
-### chr-gaps: Fix critical CHR implementation gaps (from 2026-05-17 audit)
-
-**Whatif:** `chr-unification`
-**Depends on:** chr-prelude
-**Audit source:** mempalace tinct/decisions "CHR MIGRATION AUDIT — GAPS FOUND 2026-05-17"
+#### gaps: Fix critical CHR implementation gaps (from 2026-05-17 audit)
 
 **Gap 1 — Type-stage resolver evaluation stubbed (CRITICAL):**
 - [ ] In `NormCtxt::normalize()` (`src/type_normalize.rs:145`): when cache miss and resolver is known, call the resolver function from the prelude eval context (look up resolver fn by name in `type_stage_env`, call with type dict arg, convert result back to Type) — currently falls through to "return stuck TypeStageApp" (`src/type_normalize.rs:145`)
 - [ ] Fix `improve_functional_dependency` stub at `src/type_unify.rs:520-525` — call the type-stage resolver instead of returning early; this is why arithmetic FD tests remain blocked (`src/type_unify.rs:520-525`)
 
 **Gap 2 — FD fundep indices lost at constraint creation (CRITICAL):**
-- [ ] (Covered by chr-class-instance `typecheck_annot.rs:703` task above — verify it unblocks Gap 1 testing)
+- [ ] (Covered by class-instance `typecheck_annot.rs:703` task above — verify it unblocks Gap 1 testing)
 
 **Gap 3 — MPTC instance lookup general path (PARTIAL):**
-- [ ] (Covered by chr-class-instance `lookup_mptc` task above)
+- [ ] (Covered by class-instance `lookup_mptc` task above)
 
 **Gap 4 — `resolver_injective` flag unused:**
 - [ ] Add parser support for `injective:` key in class declarations to set `ClassDecl.resolver_injective` — currently hardcoded `false` everywhere (`src/type_class.rs:88`, `src/typecheck.rs`); note: the `#[allow(dead_code)]` on `resolver_injective` in `type_class.rs:88` will clear once this is wired (`src/type_class.rs`, `src/typecheck.rs`)
@@ -596,29 +613,32 @@ Whatif: `doc/whatif/chr-unification.md` (Accepted 2026-05-16). Implementation ch
 - [ ] End-to-end test: `[class [Add a b c] fundeps: [[[a b] c]] resolver: AddResult +: [fn@c [a b]]]` with `[+ 1 2.0]` infers `c = Float` via FD improvement calling `AddResult` type-stage fn (`tests/corpus/eval/`)
 - [ ] `just test` passes
 
-### chr-typestageapp-deferral: Implement TypeStageApp deferral sprint
+### type-inference-cleanup: TypeStageApp deferral + T013 readability + Unknown elimination
 
-**Context:** `process_deferred_equalities` in `src/type_unify.rs:2135` has `#[allow(dead_code)]` referencing "future TypeStageApp deferral sprint (doc/06-type-inference.md:884)". This function handles deferred equality constraints that arise when TypeStageApp normalization is stuck (resolver not yet callable). Without deferral, stuck TypeStageApps cause premature unification failures.
+**Depends on:** chr-instances-gaps (provides chr-prelude and chr-class-instance, needed by deferral wiring and Unknown elimination)
+
+#### TypeStageApp deferral (formerly chr-typestageapp-deferral)
+
+`process_deferred_equalities` in `src/type_unify.rs:2135` has `#[allow(dead_code)]` referencing "future TypeStageApp deferral sprint (doc/06-type-inference.md:884)". This function handles deferred equality constraints that arise when TypeStageApp normalization is stuck (resolver not yet callable). Without deferral, stuck TypeStageApps cause premature unification failures.
 
 - [ ] Read `doc/06-type-inference.md:884` for the TypeStageApp deferral design; confirm it matches `process_deferred_equalities` signature and intent (`doc/06-type-inference.md`)
 - [ ] Wire `process_deferred_equalities` into the inference loop — call it after each unification round when deferred equalities are non-empty (`src/type_unify.rs`, `src/typecheck.rs`)
 - [ ] The `#[allow(dead_code)]` on `process_deferred_equalities` at `src/type_unify.rs:2135` will clear once wired (`src/type_unify.rs:2135`)
 - [ ] `just test` passes
 
-### type-warning-readability: Improve T013 ambiguous type variable error reporting
+#### T013 warning readability (formerly type-warning-readability)
 
-**Context:** T013 warnings currently report internal inference variable names like `_t86` instead of the user-visible source variable that introduced the constraint. Example: `warning[T013]: ambiguous type variable '_t86' in constraint Showable: appears in constraint but not in the type — constraint will be silently dropped`. The user cannot tell which declaration or expression introduced `_t86`.
+T013 warnings currently report internal inference variable names like `_t86` instead of the user-visible source variable that introduced the constraint. Example: `warning[T013]: ambiguous type variable '_t86' in constraint Showable: appears in constraint but not in the type — constraint will be silently dropped`. The user cannot tell which declaration or expression introduced `_t86`.
 
 - [ ] In the T013 warning emitter (`src/typecheck.rs` or `src/type_unify.rs`), look up the source variable name that was unified with `_t86` and include it in the message (`src/typecheck.rs`)
 - [ ] If no source name exists (truly fresh inference variable), fall back to reporting the expression span and annotation context instead of the raw internal name
 - [ ] Add a corpus test: `tests/corpus/eval/errors/t013_ambiguous_type_var.llt-eval` that verifies the message contains a user-readable name
 
-### unknown-elimination: Eliminate `Type::Unknown` from inference output
+#### Unknown elimination (formerly unknown-elimination)
 
-**Depends on:** chr-class-instance
-**Context:** `Type::Unknown` currently leaks into inferred types for expressions the type checker cannot handle — dual-dispatch builtins, HKT positions, gradual typing escape. Goal: make Unknown a controlled escape hatch, not a default fallback. HKT infrastructure (Kind::Operator, Type::App, Mappable/Appendable) is complete — residual Unknown at HKT positions is an instance-lookup gap covered by chr-class-instance, not missing HKT machinery.
+`Type::Unknown` currently leaks into inferred types for expressions the type checker cannot handle — dual-dispatch builtins, HKT positions, gradual typing escape. Goal: make Unknown a controlled escape hatch, not a default fallback. HKT infrastructure (Kind::Operator, Type::App, Mappable/Appendable) is complete — residual Unknown at HKT positions is an instance-lookup gap covered by chr-instances-gaps, not missing HKT machinery.
 
-- [ ] Audit all sites that produce `Type::Unknown` in `src/typecheck.rs` — classify as: (a) intentional gradual typing escape, (b) missing instance lookup (fixable by chr-class-instance), (c) missing HKT support (deferred) (`src/typecheck.rs`)
-- [ ] Replace (b) sites with proper constraint generation once chr-class-instance lands
+- [ ] Audit all sites that produce `Type::Unknown` in `src/typecheck.rs` — classify as: (a) intentional gradual typing escape, (b) missing instance lookup (fixable by chr-instances-gaps), (c) missing HKT support (deferred) (`src/typecheck.rs`)
+- [ ] Replace (b) sites with proper constraint generation once chr-instances-gaps lands
 - [ ] Add a lint/test that counts `Type::Unknown` occurrences in inferred output and fails if count exceeds a documented threshold (`tests/`)
 - [ ] `just test` passes
