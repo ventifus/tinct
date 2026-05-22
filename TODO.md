@@ -25,18 +25,17 @@ runtime-v2 PR #1 merge and need dedicated sprints to fix:
   The include caching mechanism has a bug that causes the stdlib `include-cache-failure`
   function to raise a non-exhaustive match error. Sprint: runtime-v2-fix-include-cache.
 
-- **Corpus tests fail due to ADT/class/instance/declaration syntax** (`tests/corpus_tests.rs`):
+- **Corpus tests fail due to ADT/class/instance/declaration syntax nested in dict values** (`tests/corpus_tests.rs`):
   `test_typecheck_corpus` (16 files fail), `test_typecheck_error_corpus_eval` (5 files fail),
-  and `test_valid_corpus` (11 files fail: `parser/class_let_params`, `special_forms/fn_return_annotation`,
-  `special_forms/macro_keyword`, `special_forms/macro_keyword_basic`, `special_forms/type_alias`,
-  `special_forms/type_alias_named`, `type_classes/basic_class`, `type_classes/basic_instance`, plus
-  3 duplicate failure entries for the same files).
-  Root cause: parser rejects `[type ...]`, `[class ...]`, `[instance ...]` syntax that the
-  corpus tests expect to work; declaration-form items produce "first item is a declaration, not an
-  expression" errors instead of eval results. All failures produce "syntax error (cannot typecheck
-  error node)" or "undefined type: Foo". These corpus tests were written for the ADT sprint but
-  the parser support was not merged. Also: `test_instance_fd_consistency_violation` in `src/lib.rs`
-  had the same root cause and has been `#[ignore]`d. Sprint: runtime-v2-fix-adt-class-instance-corpus.
+  and `test_valid_corpus` (5 files fail: `parser/class_let_params`, `special_forms/fn_return_annotation`,
+  `special_forms/type_alias_named`).
+  Root cause: parser rejects `[type ...]`, `[class ...]`, `[instance ...]` *inside dict values*
+  (nested, not at document top level). Top-level declaration forms were fixed in sprint
+  `runtime-v2-fix-adt-class-instance-corpus` — 6 valid corpus tests now pass that previously failed.
+  Remaining failures are "syntax error (cannot typecheck error node)" for declaration forms appearing
+  as dict entry values (e.g., `[MyClass: [class [let MyClass a] ...]]`). Also:
+  `test_instance_fd_consistency_violation` in `src/lib.rs` has the same root cause and is `#[ignore]`d.
+  Sprint: runtime-v2-fix-class-instance-in-dict.
 
 - **`ThunkState::Placeholder` indistinguishable from `InProgress`** (`src/arena.rs`):
   `test_placeholder_force_panics` — updated to assert `Err` instead of panic, but the
@@ -75,21 +74,6 @@ runtime-v2 PR #1 merge and need dedicated sprints to fix:
   `Done(Result<Value, Arc<EvalError>>)` so errors can be cloned and re-propagated on
   every subsequent await.
   Sprint: runtime-v2-fix-task-error-reawait.
-
----
-
-### runtime-v2-fix-adt-class-instance-corpus: Parser + pipeline support for declaration forms
-
-**Root cause:** `[type ...]`, `[class ...]`, `[instance ...]`, `[union ...]` as top-level declaration forms are not parsed correctly — the parser produces "first item is a declaration, not an expression" errors. These forms were written for the ADT/typeclasses sprints but the declaration-form parser support was not merged with runtime-v2. 32 corpus tests fail as a result.
-
-**Impact:** The `ByteStream`, `Datagram`, `MessageStream`, `Listener`, and all other typeclasses in lib-net-v3 require `[class ...]` and `[instance ...]` to parse and be wired through the full pipeline. This sprint is a prerequisite for lib-net-v3 implementation.
-
-- [ ] Fix parser to accept `[type ...]`, `[union ...]`, `[class ...]`, `[instance ...]` as `SurfaceDeclaration` items in a document body — these are already defined in the Surface AST (`SurfaceDeclaration` variants) but the parser produces an error when they appear at the top level (`src/parser.rs`)
-- [ ] Wire `SurfaceDeclaration::TypeDecl`, `ClassDecl`, `InstanceDecl` through `expand_surface_program` → `resolve_surface_program` → `typecheck_surface_program` pipeline stages (`src/expand.rs`, `src/resolve.rs`, `src/typecheck.rs`)
-- [ ] Verify typecheck registers `ClassDecl` into the `ClassEnv` and `InstanceDecl` into `InstanceEnv` during the surface program typecheck pass (`src/typecheck.rs`)
-- [ ] Re-enable and update the 32 failing corpus tests: `type_classes/basic_class`, `type_classes/basic_instance`, plus 14 `test_typecheck_corpus` and 5 `test_typecheck_error_corpus_eval` failures (`tests/corpus/`)
-- [ ] Re-enable `test_instance_fd_consistency_violation` in `src/lib.rs`
-- [ ] `just test` passes
 
 ---
 
