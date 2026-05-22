@@ -8886,3 +8886,31 @@ With expand and resolve exclusively Surface, `imports.rs` can use the Surface pi
 - [x] Migrate `src/builtins.rs` (43 Expr refs) — replace `ast_to_dict` / `dict_to_ast` Expr calls with Surface-aware equivalents; switch any remaining `Expr`-typed locals (`src/builtins.rs`)
 - [x] Migrate `src/builtins_meta.rs` (19 Expr refs) — same pattern (`src/builtins_meta.rs`)
 - [x] `just build` passes; `just test` passes
+
+### E3-formatter-delete-bridge: Migrate formatter.rs and LSP to Surface types; delete bridge files
+
+**Depends on:** E3-expand-resolve-imports
+
+Covers former E3d → E3e in sequence. Do in order within the sprint.
+
+#### E3d: Migrate formatter.rs and LSP to Surface types
+
+Largest subsystems: `formatter.rs` (128 Expr refs, imports `ast_dict.rs`) and `src/lsp/analysis.rs` (198 Expr refs). `ast_dict.rs` has only 3 importers total (formatter, expand, surface_fields) — once formatter is migrated, `ast_dict.rs` import count drops to 2.
+
+- [x] Migrate `src/formatter.rs` (128 Expr refs) — switch all `Expr`-typed AST traversal to `SurfaceExpression`; remove `ast_dict.rs` import from formatter (`src/formatter.rs`)
+- [x] Migrate `src/lsp/analysis.rs` (198 Expr refs) — switch hover, goto-def, completion analysis to Surface types; most analysis already has parallel Surface paths from prior work (`src/lsp/analysis.rs`)
+- [x] Migrate `src/lsp/document.rs` (1 Expr ref) — trivial (`src/lsp/document.rs`)
+- [x] `just build` passes; `just test` passes
+
+#### E3e: Delete ast_convert.rs, ast_dict.rs, Expr/File/Document from ast.rs
+
+⚠️ **BLOCKED** — E3e deletion requires zero callers remaining; bridge callers still exist in parser internals (parser-migration-full sprint).
+
+With all subsystems migrated, the bridge files and old types are dead code. `ast_convert.rs` has 21 remaining callers (down from 293 after E3a–d migrations); `ast_dict.rs` has 2 remaining importers (expand, surface_fields — both already bridged through the Surface path).
+
+- [ ] **Delete `src/ast_convert.rs`** — verify zero callers remain before deleting (`src/`)
+- [ ] **Delete `src/ast_dict.rs`** — verify zero importers remain before deleting (`src/`)
+- [ ] **Delete `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell`** from `src/ast.rs` (~500 lines) (`src/ast.rs`)
+- [ ] Fix any remaining compilation errors from deleted types — update match arms, remove dead imports (`src/`)
+- [ ] **`cargo check` clean** — first true checkpoint: no Expr/File references compile (`src/`)
+- [ ] **`just test` passes** — full test suite green

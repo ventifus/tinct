@@ -95,32 +95,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_convert.rs` (bridge no longer needed) (`src/`)
 - [ ] `just build` + `just test` passes — this is the true first checkpoint
 
-### E3-formatter-delete-bridge: Migrate formatter.rs and LSP to Surface types; delete bridge files
-
-**Depends on:** E3-expand-resolve-imports
-
-Covers former E3d → E3e in sequence. Do in order within the sprint.
-
-#### E3d: Migrate formatter.rs and LSP to Surface types
-
-Largest subsystems: `formatter.rs` (128 Expr refs, imports `ast_dict.rs`) and `src/lsp/analysis.rs` (198 Expr refs). `ast_dict.rs` has only 3 importers total (formatter, expand, surface_fields) — once formatter is migrated, `ast_dict.rs` import count drops to 2.
-
-- [ ] Migrate `src/formatter.rs` (128 Expr refs) — switch all `Expr`-typed AST traversal to `SurfaceExpression`; remove `ast_dict.rs` import from formatter (`src/formatter.rs`)
-- [ ] Migrate `src/lsp/analysis.rs` (198 Expr refs) — switch hover, goto-def, completion analysis to Surface types; most analysis already has parallel Surface paths from prior work (`src/lsp/analysis.rs`)
-- [ ] Migrate `src/lsp/document.rs` (1 Expr ref) — trivial (`src/lsp/document.rs`)
-- [ ] `just build` passes; `just test` passes
-
-#### E3e: Delete ast_convert.rs, ast_dict.rs, Expr/File/Document from ast.rs
-
-With all subsystems migrated, the bridge files and old types are dead code. `ast_convert.rs` has 21 remaining callers (down from 293 after E3a–d migrations); `ast_dict.rs` has 2 remaining importers (expand, surface_fields — both already bridged through the Surface path).
-
-- [ ] **Delete `src/ast_convert.rs`** — verify zero callers remain before deleting (`src/`)
-- [ ] **Delete `src/ast_dict.rs`** — verify zero importers remain before deleting (`src/`)
-- [ ] **Delete `Expr`, `Document`, `File`, `VarRef.resolved: RefCell`, `TypeAssert.resolved_type: RefCell`** from `src/ast.rs` (~500 lines) (`src/ast.rs`)
-- [ ] Fix any remaining compilation errors from deleted types — update match arms, remove dead imports (`src/`)
-- [ ] **`cargo check` clean** — first true checkpoint: no Expr/File references compile (`src/`)
-- [ ] **`just test` passes** — full test suite green
-
 ### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC)
 
 **Parser** (`src/parser.rs`): Bridge method added — `ParseOutput::as_surface_program()` converts File → SurfaceProgram on demand. Full parser migration (constructing SurfaceNode directly) deferred to Part E.
