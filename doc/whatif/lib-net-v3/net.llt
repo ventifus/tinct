@@ -1,17 +1,14 @@
 # stdlib/net.llt — core networking types, typeclasses, and transport functions.
 # Part of: lib-net-v3
-# Depends on: dns.llt (for resolve-host → dns-try-names)
 #
-# Circular import note: net.llt → dns.llt → tls.llt → net.llt (for ByteStream).
-# Tinct's lazy evaluation resolves this: type/typeclass declarations are emitted
-# before the dns.llt import below, so tls.llt can access ByteStream when it loads.
+# Circular import: net.llt → dns.llt → tls.llt → net.llt (ByteStream).
+# All type/typeclass declarations appear before the dns.llt import so tls.llt
+# can access ByteStream when it loads. Tinct's lazy evaluation handles the cycle.
 
-[include %rust "net"]     # tcp-bind, tcp-accept, tcp-connect, udp-socket, udp-recv, udp-send
-                          # unix-accept, try-recv, channel-count
-[include %rust "io"]      # read-bytes, write-bytes, channel, task, send, recv, loop, loop-select
-[include %rust "async"]   # timer-channel, cancel-task, par-map, await, timeout
+[include %rust "net"]     # tcp-bind, tcp-accept, tcp-connect, udp-socket, udp-recv, udp-send, try-recv, channel-count
+[include %rust "io"]      # read-bytes, write-bytes, channel, task, send, recv, loop, exit
 
-# ── IO Typeclasses ───────────────────────────────────────────────────────────────
+# ── IO Typeclasses ────────────────────────────────────────────────────────────────────────────────
 
 [class [ByteStream h]
   read-bytes:  [Fn [h@h n@Int] Bytes]
@@ -34,7 +31,12 @@
   slice:  [Fn [s@s start@Int len@Int] s]
   length: [Fn [s@s] Int]]
 
-# ── Typeclass Instances ──────────────────────────────────────────────────────────
+[class [ByteLabel t a b]
+  FD: [(t b) → a]
+  encode: [Fn [t@t a] b]
+  decode: [Fn [t@t b] [Result a]]]
+
+# ── Typeclass Instances ───────────────────────────────────────────────────────────────────────────
 
 [instance [ByteStream Handle]
   read-bytes:  builtin-read-bytes
@@ -52,112 +54,112 @@
   accept: tcp-accept]
 
 [instance [Indexed Bytes UInt8]
-  get:    [fn [let b@Bytes i@Int]            builtin-bytes-get]
-  slice:  [fn [let b@Bytes start@Int n@Int]  builtin-bytes-slice]
-  length: [fn [let b@Bytes]                  builtin-bytes-length]]
+  get:    [fn [let b@Bytes i@Int]           builtin-bytes-get]
+  slice:  [fn [let b@Bytes s@Int n@Int]     builtin-bytes-slice]
+  length: [fn [let b@Bytes]                 builtin-bytes-length]]
 
 [instance [Indexed [Seq T] T]
-  get:    [fn [let s@[Seq T] i@Int]           builtin-seq-get]
-  slice:  [fn [let s@[Seq T] start@Int n@Int] builtin-seq-slice]
-  length: [fn [let s@[Seq T]]                 builtin-seq-length]]
-
-# ── Address Types ────────────────────────────────────────────────────────────────
-
-# Any IPv4 address including 169.254.x.x link-local, 0.0.0.0, 127.x.x.x.
-# Any IPv6 address. Ipv6Zone required for link-local unicast (fe80::/10) and
-# link-local multicast (ff02::/16) on multi-interface nodes — the zone identifies
-# which interface. IPv4 link-local needs no zone (unique per link per RFC 3927).
-# Ipv6Zone entries in --cap-net go to interface_entries, not cap-std Pool.
-IpAddress: [union
-  [Ipv4     [Bytes 4]]
-  [Ipv6     [Bytes 16]]
-  [Ipv6Zone [Bytes 16] zone@String]]
-
-# 0 = ephemeral (OS assigns). Valid for udp-ephemeral and any ephemeral bind.
-Port: [type Int@[is: [between 0 65535]  repr: u16]]
-
-SocketAddress: [type [addr: IpAddress  port: Port]]
-
-UdpDatagram: [type
-  [src:     SocketAddress
-   data:    Bytes
-   respond: [Fn [Bytes] Null]]]
-
-# ── Capability Types ─────────────────────────────────────────────────────────────
-
-# SocketAddress is NOT a subtype of BindTarget. Callers must wrap explicitly.
-BindTarget: [union
-  [IpBind        SocketAddress]
-  [InterfaceBind String Port]]
-
-# Scope enforced by pre-bind prefix check in src/builtins.rs (tcp-bind, udp-socket),
-# not by the kernel. SO_BINDTODEVICE alone does not restrict source address prefix.
-BindScope: [union
-  [AnyScope]
-  [LinkLocal]    # 169.254.0.0/16 (IPv4) or fe80::/10 + ff02::/16 (IPv6)
-  [GlobalScope]  # not loopback, link-local, RFC1918, or ULA
-  [Loopback]]    # 127.0.0.0/8 or ::1 only
-
-# ── Wire Encoding ────────────────────────────────────────────────────────────────
-
-[class [ByteLabel t a b]
-  FD: [(t b) → a]
-  encode: [Fn [t@t a] b]
-  decode: [Fn [t@t b] [Result a]]]
-
-ByteOrder: [union [BigEndian] [LittleEndian] [NativeEndian]]
-
-[type [BigEndian]]
-[type [LittleEndian]]
-[type [NativeEndian]]
-
-[instance [ByteLabel ByteOrder UInt8  [Bytes 1]]
-  encode: [fn [let _ v@UInt8]  builtin-encode-u8-be]
-  decode: [fn [let _ b@[Bytes 1]] builtin-decode-u8-be]]
+  get:    [fn [let s@[Seq T] i@Int]         builtin-seq-get]
+  slice:  [fn [let s@[Seq T] s2@Int n@Int]  builtin-seq-slice]
+  length: [fn [let s@[Seq T]]               builtin-seq-length]]
 
 [instance [ByteLabel ByteOrder UInt16 [Bytes 2]]
-  encode: [fn [let order@ByteOrder v@UInt16]  builtin-encode-u16 order v]
+  encode: [fn [let order@ByteOrder v@UInt16]   builtin-encode-u16 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 2]] builtin-decode-u16 order b]]
 
 [instance [ByteLabel ByteOrder UInt32 [Bytes 4]]
-  encode: [fn [let order@ByteOrder v@UInt32]  builtin-encode-u32 order v]
+  encode: [fn [let order@ByteOrder v@UInt32]   builtin-encode-u32 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 4]] builtin-decode-u32 order b]]
 
 [instance [ByteLabel ByteOrder UInt64 [Bytes 8]]
-  encode: [fn [let order@ByteOrder v@UInt64]  builtin-encode-u64 order v]
+  encode: [fn [let order@ByteOrder v@UInt64]   builtin-encode-u64 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 8]] builtin-decode-u64 order b]]
 
-OrderedBytes: [type [data: Bytes  order: ByteOrder]]
-
-# ── Network Function Implementations ─────────────────────────────────────────────
+# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
+  # Race connections to addrs with 250ms stagger. First success wins; rest cancelled.
+  happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddress]]
+    [result-ch:  [channel 1]
+     attempt-ms: 250]
+    [tasks: [collect [map-indexed [fn [let i addr]
+      [task
+        [await [timer-channel %clock [millis (* i attempt-ms)]]]
+        [match [try [tcp-connect cap [addr: addr  port: [@Port port]]]]
+          [Ok  h]: [try [send result-ch h]]
+          [Err _]: null]]]
+      addrs]]]
+    [result: [recv result-ch]]
+    [par-map [fn [let t] [cancel-task t]] tasks]
+    result]
+
+  ipv6-canonical: [fn [let b@[Bytes 16]] builtin-ipv6-canonical]
+
+  decode-u16-be: [fn [let b@Bytes offset@Int]
+    [+ [* [get b offset] 256] [get b [+ offset 1]]]]
+]
+
+# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+
+[
+  # Address types.
+  IpAddress: [union
+    [Ipv4     [Bytes 4]]
+    [Ipv6     [Bytes 16]]
+    [Ipv6Zone [Bytes 16] zone@String]]
+
+  Port: [type Int@[is: [between 0 65535]  repr: u16]]
+
+  SocketAddress: [type [addr: IpAddress  port: Port]]
+
+  UdpDatagram: [type
+    [src:     SocketAddress
+     data:    Bytes
+     respond: [Fn [Bytes] Null]]]
+
+  # Capability types.
+  BindTarget: [union
+    [IpBind        SocketAddress]
+    [InterfaceBind String Port]]
+
+  # Scope enforced by pre-bind prefix check in src/builtins.rs, not by kernel.
+  BindScope: [union
+    [AnyScope]
+    [LinkLocal]    # 169.254.0.0/16 or fe80::/10 + ff02::/16
+    [GlobalScope]
+    [Loopback]]    # 127.0.0.0/8 or ::1
+
+  # Wire encoding utilities.
+  ByteOrder: [union [BigEndian] [LittleEndian] [NativeEndian]]
+  [type [BigEndian]]
+  [type [LittleEndian]]
+  [type [NativeEndian]]
+
+  OrderedBytes: [type [data: Bytes  order: ByteOrder]]
+
+  # Convenience BindTarget constructors.
   bind-ip:        [fn [let addr@SocketAddress]    [IpBind addr]]
   bind-interface: [fn [let name@String port@Port] [InterfaceBind name port]]
 
-  # Parametric accept loop. Suspends when buffer full → backpressure to OS listen queue.
+  # Accept loop. Suspends when buffer full → backpressure to OS listen queue.
   listen-loop: [fn@[bind: [l]  constraint: [l: Listener]]
                  [let l@l  buffer-size@[type: Int  default: 100]]
                  [out: [channel buffer-size]]
                  [task [loop [fn [] [send out [accept l]]]]]
                  out]
 
-  # TCP listener: bind + accept loop → Channel@Handle.
   tcp-listen: [fn [let cap@NetCap target@BindTarget]
     [listen-loop [tcp-bind cap target]]]
 
-  # TCP listener on a port, all interfaces (0.0.0.0).
   tcp-listen-port: [fn [let cap@NetCap port@Port]
     [tcp-listen cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
 
-  # UDP receive loop → Channel@UdpDatagram.
   udp-bind: [fn [let cap@NetCap target@BindTarget]
     [sock: [udp-socket cap target]]
     [out:  [channel 256]]
     [task [loop [fn [] [send out [recv-datagram sock]]]]]
     out]
 
-  # Ephemeral UDP socket: 0.0.0.0:0, OS assigns port. For DNS, ICMP, etc.
   udp-ephemeral: [fn [let cap@NetCap]
     [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]]
 
@@ -177,46 +179,24 @@ OrderedBytes: [type [data: Bytes  order: ByteOrder]]
            v6-first]]]]
     [happy-connect cap port [interleave resolved.v6 resolved.v4]]]
 
-  # Staggered connection race. First success wins; all others cancelled.
-  happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddress]]
-    [result-ch:  [channel 1]
-     attempt-ms: 250]
-    [tasks: [collect [map-indexed [fn [let i addr]
-      [task
-        [await [timer-channel %clock [millis (* i attempt-ms)]]]
-        [match [try [tcp-connect cap [addr: addr  port: [@Port port]]]]
-          [Ok  h]: [try [send result-ch h]]
-          [Err _]: null]]]
-      addrs]]]
-    [result: [recv result-ch]]
-    [par-map [fn [let t] [cancel-task t]] tasks]
-    result]
-
-  # IP address formatting — RFC 5952 canonical for IPv6 (lowercase, max :: compression).
   ip->string: [fn [let addr@IpAddress]
     [match addr
-      [let [Ipv4 b]]:      [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]
-      [let [Ipv6 b]]:      [ipv6-canonical b]
+      [let [Ipv4 b]]:       [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]
+      [let [Ipv6 b]]:       [ipv6-canonical b]
       [let [Ipv6Zone b z]]: [str "[" [ipv6-canonical b] "%" z "]"]]]
-
-  ipv6-canonical: [fn [let b@[Bytes 16]] builtin-ipv6-canonical]
 
   ip-is-loopback?: [fn [let addr@IpAddress]
     [match addr
-      [let [Ipv4 b]]:  [= [get b 0] 127]
-      [let [Ipv6 b]]:  [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]
+      [let [Ipv4 b]]:       [= [get b 0] 127]
+      [let [Ipv6 b]]:       [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]
       [let [Ipv6Zone b _]]: [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]]]
 
   ip-is-link-local?: [fn [let addr@IpAddress]
     [match addr
-      [let [Ipv4 b]]:  [and [= [get b 0] 169] [= [get b 1] 254]]
-      [let [Ipv6 b]]:  [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]
+      [let [Ipv4 b]]:       [and [= [get b 0] 169] [= [get b 1] 254]]
+      [let [Ipv6 b]]:       [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]
       [let [Ipv6Zone b _]]: [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]]]
 
-  decode-u16-be: [fn [let b@Bytes offset@Int]
-    [+ [* [get b offset] 256] [get b [+ offset 1]]]]
-
-  # URL type and utilities
   Url: [type
     [scheme:   String
      host:     [or String Null]
@@ -235,10 +215,8 @@ OrderedBytes: [type [data: Bytes  order: ByteOrder]]
       [pairs: [str-split "&" q]]
       [reduce [fn [let acc pair]
         [kv: [str-split "=" pair]]
-        [k: [get kv 0]]
-        [v: [if [> [length kv] 1] [get kv 1] ""]]
-        [assoc acc k v]]
-      [] pairs]]]
+        [assoc acc [get kv 0] [if [> [length kv] 1] [get kv 1] ""]]]
+       [] pairs]]]
 
   url->string: [fn [let u@Url]
     [str u.scheme "://"
@@ -248,8 +226,7 @@ OrderedBytes: [type [data: Bytes  order: ByteOrder]]
       [if [null? u.query]    "" [str "?" u.query]]
       [if [null? u.fragment] "" [str "#" u.fragment]]]]
 
-  # resolve-host and dns-resolve come from dns.llt (imported below).
-  # Re-exported here so callers have a single import point.
+  # Re-exported from dns.llt so callers have one import point.
   resolve-host: dns-resolve-host
   dns-resolve:  dns-resolve-ip
 ]

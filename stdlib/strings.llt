@@ -7,15 +7,15 @@
 # This file is loaded via [include %libdir "strings.llt"]. The stdlib env
 # (prelude output) is available as the parent scope, providing access to:
 #   String:      str, str-slice (builtin, (string,start,end) semantics), str-length, replace, join
-#   Arithmetic:  +, -, builtin-add, builtin-sub
-#   Comparison:  <, =, >=, builtin-lt, builtin-eq
-#   Control:     if, builtin-if
+#   Arithmetic:  +, -, *, /
+#   Comparison:  <, =, >=
+#   Control:     if
 #   Sequences:   range, reduce
 #   Dict:        length, keys
 #
 # Do NOT add [include %rust "..."] here — strings.llt uses prelude wrappers
-# only. Prelude aliases (builtin-if, builtin-add, etc.) are available via
-# the scope chain without explicit Rust module imports.
+# only. The prelude exports operator wrappers ($+, $<, $if, etc.) wrapping
+# builtin-* primitives; use those instead of calling builtins directly.
 #
 # Naming conventions:
 #   str-*     String operations (e.g., str-at, str-length)
@@ -42,11 +42,11 @@
 # Uses builtin-str-slice (raw Rust primitive with (string, start, end) semantics).
 # Precondition: n is already a valid non-negative character index.
 str-at-impl: [fn@String [let s@String n@Int]
-    [builtin-str-slice s n [builtin-add n 1]]]
+    [builtin-str-slice s n [+ n 1]]]
 
 str-reverse-impl: [fn@String [let s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt i len]
-        [str-reverse-impl s [builtin-add i 1] len [str [builtin-str-slice s i [builtin-add i 1]] acc]]
+    [if [< i len]
+        [str-reverse-impl s [+ i 1] len [str [builtin-str-slice s i [+ i 1]] acc]]
         acc]]
 
 ]
