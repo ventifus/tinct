@@ -8990,3 +8990,13 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] Change all `#[test]` in test modules that call eval to `#[tokio::test(flavor = "current_thread")]` — **DEFERRED**: skipped; sync `#[test]` retained; tracked for future sprint
 - [x] Fix debug binary RLIMIT_AS OOM: add `#[cfg(not(debug_assertions))]` guard around the RLIMIT_AS call in `src/main.rs` — **DONE**: tracked as runtime-v2-fix-debug-rlimit
 - [x] `just build` + `just test` passes — **DONE**
+
+### runtime-v2-async-localset: Enable real concurrent task execution via LocalSet
+
+**Context:** Value is `!Send` (Rc in UnevaluatedState::Expr). Prevents `tokio::spawn` (requires Send). Solution: `tokio::task::LocalSet` + `spawn_local` enables !Send futures. The API surface (task/await/channel/send/recv) exists as skeletons from sprint-2b-async-primitives; this sprint makes them actually concurrent.
+
+- [x] Wrap top-level eval in `LocalSet::run_until()` in main.rs + lib.rs
+- [x] Replace skeleton in `builtin_task` with real `spawn_local` + JoinHandle
+- [x] Replace skeleton in `builtin_await` with real JoinHandle.await
+- [x] Replace skeletons in `builtin_channel/send/recv` with real tokio mpsc operations
+- [x] `just test` passes; corpus tests produce real concurrent results

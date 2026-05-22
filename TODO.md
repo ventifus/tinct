@@ -68,6 +68,29 @@ runtime-v2 PR #1 merge and need dedicated sprints to fix:
   `RLIMIT_AS` call in main.rs, or increase the debug limit, or disable during test builds.
   Sprint: runtime-v2-fix-debug-rlimit.
 
+- **Task error re-await returns `{}` instead of error** (`src/builtins_async.rs`):
+  When a `Task` completes with an error and is awaited a second time, the state is
+  `Done(Ok(Value::Dict(IndexMap::new())))` (the placeholder written during the first await),
+  so the error is lost and the second await returns `{}`. Fix: store
+  `Done(Result<Value, Arc<EvalError>>)` so errors can be cloned and re-propagated on
+  every subsequent await.
+  Sprint: runtime-v2-fix-task-error-reawait.
+
+---
+
+### runtime-v2-fix-adt-class-instance-corpus: Parser + pipeline support for declaration forms
+
+**Root cause:** `[type ...]`, `[class ...]`, `[instance ...]`, `[union ...]` as top-level declaration forms are not parsed correctly — the parser produces "first item is a declaration, not an expression" errors. These forms were written for the ADT/typeclasses sprints but the declaration-form parser support was not merged with runtime-v2. 32 corpus tests fail as a result.
+
+**Impact:** The `ByteStream`, `Datagram`, `MessageStream`, `Listener`, and all other typeclasses in lib-net-v3 require `[class ...]` and `[instance ...]` to parse and be wired through the full pipeline. This sprint is a prerequisite for lib-net-v3 implementation.
+
+- [ ] Fix parser to accept `[type ...]`, `[union ...]`, `[class ...]`, `[instance ...]` as `SurfaceDeclaration` items in a document body — these are already defined in the Surface AST (`SurfaceDeclaration` variants) but the parser produces an error when they appear at the top level (`src/parser.rs`)
+- [ ] Wire `SurfaceDeclaration::TypeDecl`, `ClassDecl`, `InstanceDecl` through `expand_surface_program` → `resolve_surface_program` → `typecheck_surface_program` pipeline stages (`src/expand.rs`, `src/resolve.rs`, `src/typecheck.rs`)
+- [ ] Verify typecheck registers `ClassDecl` into the `ClassEnv` and `InstanceDecl` into `InstanceEnv` during the surface program typecheck pass (`src/typecheck.rs`)
+- [ ] Re-enable and update the 32 failing corpus tests: `type_classes/basic_class`, `type_classes/basic_instance`, plus 14 `test_typecheck_corpus` and 5 `test_typecheck_error_corpus_eval` failures (`tests/corpus/`)
+- [ ] Re-enable `test_instance_fd_consistency_violation` in `src/lib.rs`
+- [ ] `just test` passes
+
 ---
 
 ⚠️ **Sprint ordering:** Health Review sprints come first — they fix real bugs and are independent of the runtime-v2 migration. The Parts B+E migration (massive compiler rewrite) follows.
@@ -193,16 +216,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Update `BuiltinFn` to use `Arc<Thunk>` — **DONE**
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
-
-### runtime-v2-async-localset: Enable real concurrent task execution via LocalSet
-
-**Context:** Value is `!Send` (Rc in UnevaluatedState::Expr). Prevents `tokio::spawn` (requires Send). Solution: `tokio::task::LocalSet` + `spawn_local` enables !Send futures. The API surface (task/await/channel/send/recv) exists as skeletons from sprint-2b-async-primitives; this sprint makes them actually concurrent.
-
-- [ ] Wrap top-level eval in `LocalSet::run_until()` in main.rs + lib.rs
-- [ ] Replace skeleton in `builtin_task` with real `spawn_local` + JoinHandle
-- [ ] Replace skeleton in `builtin_await` with real JoinHandle.await
-- [ ] Replace skeletons in `builtin_channel/send/recv` with real tokio mpsc operations
-- [ ] `just test` passes; corpus tests produce real concurrent results
 
 ### sprint-2b-async: Async evaluation + primitives
 
@@ -553,6 +566,14 @@ Do in order within the sprint: class-instance → prelude → gaps.
 
 **Gap 5 — `lookup_mptc` broken for HKT instance heads:**
 - [ ] `InstanceEnv::lookup_mptc` in `src/type_class.rs` builds keys via `type_to_string_key` → `to_string()` on freshened types. For HKT instance heads like `App(Operator("Channel"), TypeVar("t"))`, the freshened key `"[Channel _t42]"` does not match a ground query key `"[Channel Int]"`, so FD improvement silently fails for these instances. Practical impact is limited — `resolve_instance` (linear scan + unify) still resolves the instance correctly in most cases — but FD improvement doesn't fire, requiring more type annotations at call sites. Fix: replace string-key lookup with structural unification over the raw (pre-freshening) instance type list, making it consistent with `resolve_instance`. (`src/type_class.rs`)
+
+**Gap 6 — instance declaration ordering within and across modules:**
+
+- [ ] Verify that the type checker implements a two-pass approach for instance resolution: (1) collect all `[instance ...]` declarations from a module into `InstanceEnv` before (2) typechecking any expressions against it. Without this, a function on line 10 that uses `[instance [Listener TcpListener] ...]` declared on line 200 of the same module would fail. This is the standard semantics for typeclass systems. The `[class ...]` / `[instance ...]` parser support must be working first (currently failing corpus tests: `type_classes/basic_class`, `type_classes/basic_instance`). Also verify cross-module: instances from all imported modules are collected before resolving constraints in the importing module. (`src/typecheck.rs`, `src/imports.rs`, `tests/corpus/eval/`)
+
+**Gap 7 — constraint propagation through higher-order function arguments:**
+- [ ] Verify that constraints on closure types propagate correctly through higher-order function arguments. Specifically: when `[fn [let h] [tls-accept h cfg]]` (type `[Fn [t] TlsConnection constraint: [t: ByteStream]]`) is passed to `channel-map` as `f: [Fn [element] result]`, the `ByteStream` constraint on `element` must propagate to `in-ch: [Channel element]` at the `channel-map` call site — making `Channel@QuicConnection` a compile-time error rather than a runtime failure. This is standard HM + typeclass constraint propagation; verify the constraint collection path in `typecheck_annot.rs` / `type_unify.rs` handles this case correctly. Add a corpus test: `[channel-map [fn [let h@t constraint: [t: ByteStream]] [str h]] quic-channel]` should produce a type error at the call site, not inside the closure. (`src/typecheck_annot.rs`, `src/type_unify.rs`, `tests/corpus/eval/`)
+
 
 - [ ] End-to-end test: `[class [Add a b c] fundeps: [[[a b] c]] resolver: AddResult +: [fn@c [a b]]]` with `[+ 1 2.0]` infers `c = Float` via FD improvement calling `AddResult` type-stage fn (`tests/corpus/eval/`)
 - [ ] `just test` passes
