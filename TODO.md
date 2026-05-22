@@ -45,6 +45,17 @@ runtime-v2 PR #1 merge and need dedicated sprints to fix:
   being filled, the error message says "circular dependency" instead of the more accurate
   "forced unfilled placeholder". Sprint: runtime-v2-thunkinner-placeholder-bit.
 
+- **`-o llt` formatter tests fail** (`tests/cli_tests.rs`, 6 tests):
+  `eval_format_llt_scalar`, `eval_format_llt_dict`, `eval_format_llt_string`,
+  `eval_format_llt_bool`, `eval_format_llt_float`, `eval_flag_with_llt_format`.
+  Root cause: `stdlib/cli/out/llt.llt` calls `$llt-repr` which is a prelude wrapper around
+  `$builtin-llt-repr`. The `$builtin-llt-repr` Rust builtin was removed in the runtime-v2
+  merge and not restored. As a result, all `-o llt` invocations fail with
+  "undefined variable: builtin-llt-repr". The tests expect `Int(42)`, `Dict(...)`, etc.
+  Fix: restore `builtin-llt-repr` registration in `standard_builtins()` or rewrite
+  `stdlib/cli/out/llt.llt` to use an alternative value representation approach.
+  Sprint: runtime-v2-fix-llt-repr.
+
 ---
 
 ⚠️ **Sprint ordering:** Health Review sprints come first — they fix real bugs and are independent of the runtime-v2 migration. The Parts B+E migration (massive compiler rewrite) follows.
@@ -170,16 +181,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Update `BuiltinFn` to use `Arc<Thunk>` — **DONE**
 - [x] `cargo check` clean — **DONE (just build passes with -D warnings)**
 - [x] `just test` passes — **VERIFIED**: build passes with -D warnings, standard_builtins_count passes (226), formatter roundtrip 16/16 pass
-
-### sprint-2b-builtins-cps: Make all builtins CPS — remove materialize() from builtin bodies
-
-Apply the three CPS heuristics to all 322 `materialize(&args[N])` call sites across 12 builtin files. Everything stays **synchronous** — no async changes yet. Build gate passes cleanly. This is the prerequisite that makes making `materialize()` async safe in the next sprint.
-
-- [ ] Extend `BuiltinForceArgData` in `src/eval_materialize.rs` to carry `force_count: usize`; update `BuiltinForceArg` handler to pre-materialize `args[0..force_count]` iteratively before dispatch (`src/eval_materialize.rs`)
-- [ ] For every `materialize(&args[N])` in `src/builtins*.rs`: apply the heuristic — H1 (unconditional) → remove call, set `force_count`; H2 (conditional) → `Cont::*Dispatch` variant; H3 (loop) → `Cont::*Step` variant. (`src/builtins*.rs`, `src/eval_materialize.rs`)
-- [ ] Add `just lint-builtins-cps` CI target — grep fails if `materialize(&args[` appears in any `builtins*.rs` body (`Justfile`)
-- [ ] For each H1 builtin: sentinel unit test — pass `Thunk::new_pending_call($error "spurious force")` as each arg position beyond `force_count-1`; verify builtin never forces it (`src/builtins*.rs`)
-- [ ] `just build` passes; `just test` passes; corpus tests for any H3 fixes (≥5000 elements)
 
 ### sprint-2b-async-eval-entry: Make eval + materialize async fn; wrap builtins; wire entry points
 
@@ -325,6 +326,16 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] `src/builtins.rs:1869` — stale `create_type_stage_env()` doc comment referencing %rust "type-core"
 - [x] `src/builtins_meta.rs:1481` — `builtin_load` pipeline doc comment missing resolve step
 - [x] `stdlib/ast.llt:28-29` — `[Literal ... bare: Bool]` claims bare is always present but only emitted for kind:"str"
+
+### dispatch-cont-h2: Convert H2 conditional builtins to Cont::*Dispatch variants
+
+**Depends on:** sprint-2b-builtins-cps ✅
+**Context:** sprint-2b-builtins-cps annotated conditional `materialize(&args[N])` calls with `// H2:` markers. These need Cont::*Dispatch variants in `src/eval_materialize.rs` so builtins don't call materialize() conditionally. Affected: `builtin_connect` transport dispatch, `builtin_narrow` type dispatch, `builtin_sort` comparator, `builtin_gensym` optional prefix arg, `builtin_range` 2-arg vs N-arg.
+
+- [ ] Design Cont::*Dispatch variant pattern for H2 conditional builtins
+- [ ] Implement Cont variants and rewrite each `// H2:` annotated builtin
+
+Also fix: `builtins_datetime.rs` uses `materialize(&args.args[N])` (field-access syntax) which escapes `just lint-builtins-cps` (grep for index syntax). Update lint pattern and convert datetime calls.
 
 ### reduce-cont-step: Continuation-based reduce — unlimited-depth inputs, no stack cliffs
 

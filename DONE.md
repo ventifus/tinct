@@ -8914,3 +8914,13 @@ With all subsystems migrated, the bridge files and old types are dead code. `ast
 - [ ] Fix any remaining compilation errors from deleted types — update match arms, remove dead imports (`src/`)
 - [ ] **`cargo check` clean** — first true checkpoint: no Expr/File references compile (`src/`)
 - [ ] **`just test` passes** — full test suite green
+
+### sprint-2b-builtins-cps: Make all builtins CPS — remove materialize() from builtin bodies
+
+Apply the three CPS heuristics to all 322 `materialize(&args[N])` call sites across 12 builtin files. Everything stays **synchronous** — no async changes yet. Build gate passes cleanly. This is the prerequisite that makes making `materialize()` async safe in the next sprint.
+
+- [x] Extend `BuiltinForceArgData` in `src/eval_materialize.rs` to carry `force_count: usize`; update `BuiltinForceArg` handler to pre-materialize `args[0..force_count]` iteratively before dispatch (`src/eval_materialize.rs`)
+- [x] For every `materialize(&args[N])` in `src/builtins*.rs`: apply the heuristic — H1 (unconditional) → remove call, set `force_count`; H2 (conditional) → `Cont::*Dispatch` variant; H3 (loop) → `Cont::*Step` variant. (`src/builtins*.rs`, `src/eval_materialize.rs`)
+- [x] Add `just lint-builtins-cps` CI target — grep fails if `materialize(&args[` appears in any `builtins*.rs` body (`Justfile`)
+- [x] For each H1 builtin: sentinel unit test — pass `Thunk::new_pending_call($error "spurious force")` as each arg position beyond `force_count-1`; verify builtin never forces it (`src/builtins*.rs`)
+- [x] `just build` passes; `just test` passes; corpus tests for any H3 fixes (≥5000 elements)
