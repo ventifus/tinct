@@ -1035,16 +1035,9 @@ pub struct ParseOutput {
 impl ParseOutput {
     /// Get the parsed program as a `SurfaceProgram`.
     ///
-    /// This is a bridge method that allows callers to access the new Surface AST
-    /// representation without requiring the parser to change. The parser continues
-    /// to construct the old `File` AST, and this method returns the cached conversion.
-    ///
-    /// Returns a reference to the cached `SurfaceProgram` rather than computing it
-    /// on demand. The cache is populated once at parse time.
-    ///
-    /// This method will be removed in Part E when the parser is migrated to produce
-    /// `SurfaceProgram` directly (at which point `program` becomes the primary field
-    /// and this method becomes unnecessary).
+    /// The parser constructs `SurfaceProgram` natively; `program` is the primary
+    /// output field. This method is a convenience accessor that returns a reference
+    /// to it. Prefer accessing `ParseOutput::program` directly where possible.
     pub fn as_surface_program(&self) -> &crate::ast::SurfaceProgram {
         &self.program
     }

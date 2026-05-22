@@ -30,7 +30,118 @@ Transport     resource → Channel@A            resource → A
 1:N layer     Channel@A → Channel@B           A → RequestClient@B
 ```
 
-A "layer violation" — a protocol that skips or reorders traditional stack layers — is expressed through its input and output types. `quic-listen` (tinct, in `net.llt`) produces `Channel@QuicConn`; HTTP/3 expects `QuicConn`. They compose. `tls-serve` expects `Channel@Handle`; it does not compose with `Channel@QuicConn` (QUIC carries integrated TLS). No special cases: the type system is the rule.
+A "layer violation" — a protocol that skips or reorders traditional stack layers — is expressed through its input and output types. `quic-listen` (tinct, in `net.llt`) produces `Channel@QuicConn`; HTTP/3 expects `QuicConn`. They compose. `tls-serve` expects `Channel@[ByteStream h]`; it does not compose with `Channel@QuicConn` (QUIC carries integrated TLS). No special cases: the type system is the rule.
+
+---
+
+## Connection Interfaces: `ByteStream` and `Datagram`
+
+Two typeclasses cover all network IO. Every transport, tunnel, and framing layer is either a byte stream or a datagram socket — no other fundamental shapes exist.
+
+### `ByteStream`
+
+An ordered, reliable, connection-oriented byte pipe. Reading and writing are symmetric; addressing was resolved at connection time.
+
+```tinct
+[class [ByteStream h]
+  read-bytes:  [Fn [h@h n@Int] Bytes]
+  write-bytes: [Fn [h@h data@Bytes] Null]]
+```
+
+`Handle` (OS TCP connection from `tcp-accept`/`tcp-connect`) is the base instance, backed by the Rust `read-bytes`/`write-bytes` primitives. Every protocol layer that sits on top of a stream produces a new `ByteStream` instance — a tinct record wrapping the layer below:
+
+```tinct
+# stdlib/net.llt
+[instance [ByteStream Handle]
+  read-bytes:  builtin-read-bytes    # Rust: tokio AsyncRead
+  write-bytes: builtin-write-bytes]  # Rust: tokio AsyncWrite
+
+# stdlib/protocols/tls.llt
+TlsConn: [type {
+  underlying: Handle
+  write-key:  [Bytes 32]
+  read-key:   [Bytes 32]
+  cipher:     Symbol            # ChaCha20Poly1305 | Aes128Gcm | Aes256Gcm
+  write-seq:  [Channel Int]     # TLS sequence number XOR'd with implicit IV
+  read-seq:   [Channel Int]
+}]
+[instance [ByteStream TlsConn]
+  read-bytes:  tls-read-bytes    # reads one TLS record, decrypts
+  write-bytes: tls-write-bytes]  # encrypts, frames as TLS record
+
+# stdlib/protocols/wireguard.llt
+WgConn: [type {
+  underlying: Handle             # the byte stream below (TCP or any ByteStream)
+  tx-key:     [Bytes 32]
+  rx-key:     [Bytes 32]
+  tx-nonce:   [Channel Int]      # atomic counter via channel
+}]
+[instance [ByteStream WgConn]
+  read-bytes:  wg-read-bytes     # reads one WG frame, decrypts
+  write-bytes: wg-write-bytes]   # encrypts, stamps nonce, frames
+
+# stdlib/protocols/noise.llt
+NoiseConn: [type { underlying: Handle  send-key: [Bytes 32]  recv-key: [Bytes 32]
+                   send-n: [Channel Int] }]
+[instance [ByteStream NoiseConn] read-bytes: noise-read write-bytes: noise-write]
+
+# stdlib/protocols/websocket.llt
+WsConn: [type { underlying: Handle  server-side: Bool }]
+[instance [ByteStream WsConn]
+  read-bytes:  ws-read-bytes     # reads one WS frame, strips framing + mask
+  write-bytes: ws-write-bytes]   # encodes as WS frame, applies mask (client)
+```
+
+The `Channel Int` nonce pattern is the tinct-idiomatic atomic counter: the channel always holds exactly one value; `recv` then `send` is an indivisible read-modify-write without extra primitives.
+
+All `*-accept` and `*-layer` functions are parametric over `ByteStream`. This is what makes arbitrary layering possible — WireGuard carrying TLS carrying HTTP/2 carrying gRPC:
+
+```tinct
+h2-accept:  [fn@H2Conn  [let h cfg@H2ServerConfig   constraint: [h: ByteStream]] ...]
+tls-accept: [fn@TlsConn [let h cfg@TlsServerConfig  constraint: [h: ByteStream]] ...]
+wg-accept:  [fn@WgConn  [let h cfg@WgConfig         constraint: [h: ByteStream]] ...]
+```
+
+`wireguard-serve` produces `Channel@WgConn`; `tls-serve` accepts `Channel@[ByteStream h]` — so `[tls-serve [wireguard-serve raw-ch] cert]` type-checks without any collapse to `Handle`.
+
+### `Datagram`
+
+An unordered, unreliable packet socket. Each send and receive is a discrete unit with its own source/destination address. UDP, ICMP, the QUIC packet layer, and WireGuard's UDP transport are all `Datagram`.
+
+```tinct
+[class [Datagram d]
+  send-datagram: [Fn [d@d addr@SocketAddr data@Bytes] Null]
+  recv-datagram: [Fn [d@d] UdpDatagram]]
+```
+
+`UdpSocket` (from `udp-socket`) is the base instance:
+
+```tinct
+# stdlib/net.llt
+[instance [Datagram UdpSocket]
+  send-datagram: builtin-udp-send   # Rust: UdpSocket::send_to
+  recv-datagram: builtin-udp-recv]  # Rust: UdpSocket::recv_from
+```
+
+QUIC is built on `Datagram` — `quic-accept-loop` in `stdlib/protocols/quic.llt` receives datagrams from a `UdpSocket`, demultiplexes by connection ID, and hands each QUIC stream to the caller as a `ByteStream`. The same `quic-accept-loop` would work over any `Datagram d`, enabling QUIC over custom datagram transports.
+
+The two typeclasses interact at QUIC's boundary:
+
+```text
+Datagram (UdpSocket) → QuicConn (stream multiplexer)
+QuicConn → ByteStream (each individual QUIC stream)
+ByteStream → ByteStream (TLS, HTTP/2, application protocols)
+```
+
+`QuicConn` is neither `ByteStream` nor `Datagram` — it is a stream multiplexer, a third category with its own access pattern (`quic-open-stream`, `quic-incoming`).
+
+### What Changes in the Implementation
+
+- **New**: `ByteStream` and `Datagram` class declarations in `stdlib/net.llt`
+- **New**: `[instance [ByteStream Handle] ...]` and `[instance [Datagram UdpSocket] ...]` in `stdlib/net.llt`
+- **Removed**: `make-encrypted-handle` Rust primitive — superseded by tinct `ByteStream` instances
+- **Updated**: `read-bytes`, `write-bytes` Rust primitives become `Handle`'s `ByteStream` instance methods; `udp-send`, `udp-recv` become `UdpSocket`'s `Datagram` instance methods. They remain in the primitives table as the Rust backing but are exposed through typeclass dispatch.
+- **Updated**: All `*-accept` signatures use `constraint: [h: ByteStream]`; protocol layers are typed records rather than `Handle` aliases
 
 ---
 
@@ -68,20 +179,20 @@ Concrete serve layers:
 
 ```tinct
 # Connection-promotion: one connection in, one upgraded connection out
-tls-serve:       [make-serve-layer tls-accept]        # Handle   → TlsHandle
-wireguard-serve: [make-serve-layer wireguard-accept]  # Handle   → WgHandle
-noise-serve:     [make-serve-layer noise-accept]      # Handle   → NoiseHandle
-h2-serve:        [make-serve-layer h2-accept]         # TlsHandle → H2Conn (tinct record)
-h3-serve:        [make-serve-layer h3-accept]         # QuicConn → H3Conn (tinct record)
-ws-serve:        [make-serve-layer ws-accept]         # Handle   → WsConn (tinct record)
+tls-serve:       [make-serve-layer tls-accept]        # ByteStream → TlsConn
+wireguard-serve: [make-serve-layer wireguard-accept]  # ByteStream → WgConn
+noise-serve:     [make-serve-layer noise-accept]      # ByteStream → NoiseConn
+h2-serve:        [make-serve-layer h2-accept]         # ByteStream → H2Conn
+h3-serve:        [make-serve-layer h3-accept]         # QuicConn  → H3Conn
+ws-serve:        [make-serve-layer ws-accept]         # ByteStream → WsConn
 
 # Message-extraction: one connection in, many protocol messages out
-http1-serve:     [make-multiplex-serve http1-conn]    # Handle → RawRequest*
+http1-serve:     [make-multiplex-serve http1-conn]    # ByteStream → RawRequest*
 http2-requests:  [make-multiplex-serve http2-req-conn]# H2Conn → RawRequest*
 http3-requests:  [make-multiplex-serve http3-req-conn]# H3Conn → RawRequest*
 ```
 
-`wireguard-serve`, `noise-serve`, `ws-serve`, and `tls-serve` call tinct-implemented handshake functions in `stdlib/protocols/`. Each of those functions calls `make-encrypted-handle` at the end to produce a stacking-compatible `Handle`. `WgHandle`, `NoiseHandle`, and `TlsHandle` are type aliases for `Handle` defined in the respective protocol modules.
+`wireguard-serve`, `noise-serve`, `ws-serve`, and `tls-serve` call tinct-implemented handshake functions in `stdlib/protocols/`. Each returns a typed tinct record (`WgConn`, `NoiseConn`, `WsConn`, `TlsConn`) that implements `ByteStream`. Because all `*-serve` and `*-accept` functions are parametric over `ByteStream`, these records compose directly — `h2-serve` accepts `Channel@WgConn` as readily as `Channel@Handle`. WireGuard is a user-mode protocol: Noise_IKpsk2 handshake in tinct, data plane over `udp-socket`, no kernel TUN/TAP.
 
 `h2-serve` and `h3-serve` call tinct-implemented `h2-accept`/`h3-accept` from `stdlib/protocols/h2.llt` and `stdlib/protocols/h3.llt`. `H2Conn` and `H3Conn` are tinct records holding frame-parsing state, HPACK/QPACK tables, and stream channels — not opaque Rust types. The extraction layers (`http2-requests`, `http3-requests`) pull request streams from those records using tinct loops and channels.
 
@@ -137,7 +248,7 @@ happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddr]]
 raw:    [connect-host cap "host" 443]      # DNS + Happy Eyeballs + tcp-connect
 tls:    [tls-layer raw {sni: "host" ...}]
 wg:     [wireguard-layer tls wg-config]
-resp:   [http1-request tls [method: "GET" path: "/"]]
+resp:   [http1-request wg [method: "GET" path: "/"]]
 ```
 
 For 1:N multiplexing on the client — HTTP/2 and HTTP/3 — a **request client** manages stream multiplexing internally (in `stdlib/protocols/h2.llt` and `stdlib/protocols/h3.llt`):
@@ -227,8 +338,8 @@ dns-resolve: [fn [let resolver name type]
 dns-udp-resolver: [fn [let cap addr@SocketAddr]
   [sock: [udp-socket cap 0]]   # ephemeral local port
   [fn [let q] [task
-    [udp-send sock addr [encode-dns-wire q]]
-    [decode-dns-wire [udp-recv sock].data]]]]
+    [send-datagram sock addr [encode-dns-wire q]]
+    [decode-dns-wire [recv-datagram sock].data]]]]
 
 dns-tls-resolver: [fn [let cap addr@SocketAddr sni@String]
   [fn [let q] [task
@@ -422,16 +533,11 @@ These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStrea
 | `udp-recv` | `[Fn [sock@UdpSocket] UdpDatagram]` | Receive one UDP datagram with source address (async) | Reads from `UdpSocket` opaque Rust state; tinct cannot access UdpSocket internals |
 | `udp-send` | `[Fn [sock@UdpSocket addr@SocketAddr data@Bytes] Null]` | Send a datagram to a specific address | Writes through `UdpSocket` opaque Rust state |
 | `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not yet implemented upstream; produces `Channel` directly until cap-std support lands, at which point this decomposes into `unix-bind` + `unix-accept` |
-| `tcp-listen-on` | `[Fn [tun@WgTunnel port@Int] [Channel Handle]]` | TCP over WireGuard virtual network | Reads WgTunnel's Rust-internal virtual TCP stack; tinct cannot access `WgTunnel` fields |
-| `wireguard-bind` | `[Fn [cap@NetCap cfg@WgConfig] WgTunnel]` | Start a WireGuard VPN (UDP socket + kernel TUN/TAP interface) | Creates a kernel TUN/TAP virtual network interface requiring OS privilege (CAP_NET_ADMIN on Linux); manages session routing with Rust background tasks; tinct cannot create or interact with kernel network interfaces |
-| `wireguard-dial` | `[Fn [cap@NetCap cfg@WgConfig] WgTunnel]` | Connect to a WireGuard VPN peer | Same as `wireguard-bind` |
-| `tcp-connect-on` | `[Fn [tun@WgTunnel addr@SocketAddr] Handle]` | TCP through WireGuard tunnel | Dials through WgTunnel's Rust-internal virtual TCP stack |
 | `read-bytes` | `[Fn [h@Handle n@Int] Bytes]` | Read exactly n bytes from a Handle (async, suspends until available) | Handle is opaque Rust state backed by tokio `AsyncRead`; tinct cannot access Handle internals or call tokio I/O directly |
 | `write-bytes` | `[Fn [h@Handle b@Bytes] Null]` | Write bytes to a Handle (async) | Handle is opaque Rust state backed by tokio `AsyncWrite` |
-| `make-encrypted-handle` | `[Fn [h@Handle cipher@Symbol tx-key@Bytes rx-key@Bytes] Handle]` | Wrap a Handle with transparent symmetric encryption — writes encrypted, reads decrypted, nonce managed internally (cipher: `ChaCha20Poly1305` `Aes128Gcm` `Aes256Gcm`) | Handle is an opaque Rust type; creating a new Handle-compatible value that composes with `read-bytes`/`write-bytes` and layer stacking requires a Rust struct; tinct cannot create new Handle-satisfying types |
 | `try-recv` | `[Fn [ch@[Channel t]] [Result t]]` | Non-blocking recv — `Err` if no item immediately available | Requires reading Channel's internal buffer occupancy without consuming an item; `select-once` + 0ms-timer is scheduler-dependent and not guaranteed non-blocking |
 
-`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct, built on top of these primitives in `stdlib/net.llt` and `stdlib/protocols/`.
+`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct. `read-bytes` and `write-bytes` are the `Handle` instance methods for `ByteStream`; `udp-recv` and `udp-send` are the `UdpSocket` instance methods for `Datagram`. All are called through typeclass dispatch in tinct code.
 
 ### Crypto Primitives
 
@@ -475,14 +581,16 @@ All operate on `Bytes` and `[Bytes N]`. All are Rust for one reason: timing-sens
 
 ```text
 stdlib/
-  net.llt           — IpAddr ([union [Ipv4 [Bytes 4]] [Ipv6 [Bytes 16]]])
+  net.llt           — ByteStream typeclass + [instance [ByteStream Handle] ...]
+                      Datagram typeclass + [instance [Datagram UdpSocket] ...]
+                      IpAddr ([union [Ipv4 [Bytes 4]] [Ipv6 [Bytes 16]]])
                       Port, SocketAddr, UdpDatagram types
                       Nameserver ([union UdpNs DotNs DohNs DoqNs]); ns-to-resolver
                       tcp-listen  (tcp-bind + tinct accept loop)
                       udp-bind    (udp-socket + tinct recv loop, Channel@UdpDatagram)
                       quic-listen (udp-socket + quic.llt accept loop, Channel@QuicConn)
                       tcp-connect (takes SocketAddr — calls pool.connect atomically)
-                      resolve-host  (tries each %nameserver in order; returns [Seq IpAddr])
+                      resolve-host  (tries each %dns.nameserver in order; returns [Seq IpAddr])
                       dns-query-first, ns-to-resolver
                       connect-host  (RFC 8305 Happy Eyeballs — resolve-host + happy-connect)
                       parse-url, url-encode/decode
@@ -504,8 +612,10 @@ stdlib/
   protocols/
     tls.llt         — TLS 1.3 record layer (read-bytes/write-bytes framing) + handshake
                       state machine + certificate chain verification (via crypto.llt);
-                      tls-accept, tls-connect call make-encrypted-handle at end;
-                      TlsHandle type alias: TlsHandle = Handle
+                      TlsConn tinct record: { underlying: Handle  write-key/read-key: [Bytes 32]
+                        cipher: Symbol  write-seq/read-seq: [Channel Int] };
+                      [instance [ByteStream TlsConn] ...];
+                      tls-accept, tls-connect: [Fn [h cfg] TlsConn  constraint: [h: ByteStream]]
     quic.llt        — QUIC built on udp-socket/recv/send + tls.llt:
                       connection ID parsing, packet number spaces, TLS integration,
                       stream multiplexing, flow control, loss detection, congestion control;
@@ -531,13 +641,17 @@ stdlib/
                       router, headers-map, parse-query
                       ok, json-ok, redirect, not-found, server-error
                       with-logging, with-cors, with-auth, with-timeout (middleware)
-    wireguard.llt   — WireGuard stream layer (Noise_IKpsk2) using x25519-dh,
+    wireguard.llt   — WireGuard user-mode protocol (Noise_IKpsk2) using x25519-dh,
                       chacha20-poly1305, blake2s/blake2s-mac, hkdf-extract;
-                      wireguard-accept, wireguard-layer call make-encrypted-handle;
-                      WgHandle type alias: WgHandle = Handle
+                      WgConn tinct record: { underlying: Handle  tx-key/rx-key: [Bytes 32]
+                        tx-nonce: [Channel Int] };
+                      [instance [ByteStream WgConn] ...];
+                      wg-accept, wg-layer: [Fn [h cfg] WgConn  constraint: [h: ByteStream]]
     noise.llt       — Generic Noise pattern combinator (XX, IK, NK, …);
-                      noise-accept, noise-layer call make-encrypted-handle;
-                      NoiseHandle type alias: NoiseHandle = Handle
+                      NoiseConn tinct record: { underlying: Handle  send-key/recv-key: [Bytes 32]
+                        send-n: [Channel Int] };
+                      [instance [ByteStream NoiseConn] ...];
+                      noise-accept, noise-layer: [Fn [h cfg] NoiseConn  constraint: [h: ByteStream]]
     websocket.llt   — WebSocket upgrade (sha1), frame framing/deframing,
                       masking (crypto-random + bytes-xor);
                       WsConn tinct record: { handle: Handle server-side: Bool };
@@ -788,13 +902,13 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 - `blake2` — BLAKE2s (WireGuard)
 - `hmac`, `hkdf` — HMAC-SHA-256 and HKDF
 - `rsa` — RSA-PSS and PKCS#1 v1.5 sign/verify (`rsa-pss-sign`, `rsa-pss-verify`, `rsa-pkcs1-verify`)
-- `resolv-conf` — parse `/etc/resolv.conf` to populate default `%nameservers` at process start
+- `resolv-conf` — parse `/etc/resolv.conf` to populate default `%dns` at process start
 
 `num-bigint` is already in `Cargo.toml` from the `numeric-bigint` sprint and is not re-added here. `BigInt` is available in tinct for general use; it plays no role in this whatif because tinct-side arithmetic on secret key material cannot be constant-time regardless of `BigInt` availability.
 
 **Remove**:
-- `hyper` — HTTP/1.1 framing moves to `stdlib/http1.llt`
-- `reqwest` — HTTP client moves to `stdlib/http.llt`
+- `hyper` — HTTP/1.1 framing moves to `stdlib/protocols/http1.llt`
+- `reqwest` — HTTP client moves to `stdlib/protocols/http.llt`
 - `quinn` — QUIC moves to `stdlib/protocols/quic.llt` on top of cap-std UDP
 - `h3` — HTTP/3 framing moves to `stdlib/protocols/h3.llt`
 - `rustls` — TLS moves to `stdlib/protocols/tls.llt`
@@ -817,7 +931,7 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 - Syme, D., Petricek, T. & Lomov, D. (2011). "The F# Asynchronous Programming Model." *PADL '11*. — Async workflows as first-class values; request-client pattern.
 - Go language specification. "Select statements." — `select` over channels; `select-once` is the primitive, `loop-select` the recurring wrapper.
 - Leijen, D., Schulte, W. & Burckhardt, S. (2009). "The Design of a Task Parallel Library." *OOPSLA '09*. — `await-all`/`await-any` semantics.
-- Donenfeld, J. A. (2017). "WireGuard: Next Generation Kernel Network Tunnel." *NDSS '17*. — Protocol design for `stdlib/protocols/wireguard.llt`; `wireguard-bind`/`wireguard-dial` for the VPN-mode TUN variant.
+- Donenfeld, J. A. (2017). "WireGuard: Next Generation Kernel Network Tunnel." *NDSS '17*. — Protocol design (Noise_IKpsk2, ChaCha20-Poly1305, BLAKE2s) for `stdlib/protocols/wireguard.llt`; tinct implements the user-mode protocol, not the kernel TUN variant.
 - Perrin, T. (2018). "The Noise Protocol Framework." *noiseprotocol.org*. — `stdlib/protocols/noise.llt` generic pattern combinator; `wireguard.llt` uses Noise_IKpsk2.
 - Langley, A., et al. (2017). "The QUIC Transport Protocol: Design and Internet-Scale Deployment." *SIGCOMM '17*. — QUIC design rationale; `stdlib/protocols/quic.llt`.
 - Thomson, M. & Iyengar, J. (2021). RFC 9000 — QUIC: A UDP-Based Multiplexed and Secure Transport. — Wire format for `stdlib/protocols/quic.llt`.

@@ -53,7 +53,7 @@ The optional fields — `name`, `output_type`, `expects`, `caps`, `stage` — ar
 
 The `stage` field controls how the document is evaluated. `Stage::Type` documents are evaluated during type inference to populate the type-stage environment with type aliases and class declarations. `Stage::Runtime` documents (the default when `stage` is `None`) are evaluated in the main pipeline. The parser accepts `--- stage: type` as a section-header pragma; `type` is the only valid stage name. See `doc/09-documents.md` for section-header pragma syntax.
 
-The `parse()` function returns `Result<Spanned<File>, ParseError>`.
+The `parse()` function returns `Result<ParseOutput, ParseError>`.
 
 The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the first expression of the first document. Multi-expression inputs discard all but the first expression; multi-document inputs discard all but the first document (`---`-separated multi-doc input returns only the first document). No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
 
@@ -346,7 +346,7 @@ The older `[fn [x y] body]` syntax (bare parameter list without `let`) is still 
 
 ### Parser Output
 
-`parse()` returns `Result<ParseOutput, ParseError>`. `ParseOutput { file: Spanned<File>, source: String, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String> }` carries the AST plus comment side-tables for formatter support. The evaluator and type checker access `.file`; the formatter uses the comment maps directly.
+`parse()` returns `Result<ParseOutput, ParseError>`. `ParseOutput { program: SurfaceProgram, source: String, leading_comments: BTreeMap<usize, Vec<String>>, trailing_comments: BTreeMap<usize, String>, blank_before: BTreeMap<usize, bool>, errors: Vec<ParseError> }` carries the AST plus comment side-tables for formatter support. The evaluator and type checker access `.program`; the formatter uses the comment maps directly.
 
 ### Annotation Bracket Restriction
 

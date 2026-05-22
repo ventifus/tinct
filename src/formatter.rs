@@ -5,10 +5,12 @@
 // `impl Display for Expr` in `src/ast.rs` — that is the normative representation
 // for error output. This `Formatter` operates on the raw parse output (token spans)
 // to reconstruct well-formatted source, not to describe what an expression means.
-use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::ast::{Annotation, Document, Entry, Expr, NamedArg, Param, Spanned};
+use crate::ast::{
+    Annotation, Entry, Spanned, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceNamedArg,
+    SurfaceNode, SurfaceParam,
+};
 use crate::parser::{parse, ParseError, ParseOutput};
 
 pub fn format_source(input: &str) -> Result<String, ParseError> {
@@ -18,15 +20,6 @@ pub fn format_source(input: &str) -> Result<String, ParseError> {
     Ok(formatter.output)
 }
 
-/// Format source using the tinct-hosted formatter script at `script_path`.
-///
-/// The script receives the AST dict as `%` and must return `[Ok String]` on success
-/// or `[Err msg]` on failure (both formatters use `[try [fn [] [format-file %]]]`).
-///
-/// `script_path` is the path to a `.llt` formatter script (e.g. `stdlib/cli/fmt/pretty.llt`).
-/// Whether to pass source/comment information is inferred from the script name:
-/// scripts named `compact` receive a minimal AST (no source, no comments); all others
-/// receive the full AST (with source info and comments for comment preservation).
 /// Format source using the tinct-hosted formatter script, optionally receiving an already-open
 /// base directory to avoid re-acquiring ambient filesystem authority.
 ///
@@ -196,10 +189,18 @@ pub fn format_source_tinct_with_dir(
     }
 }
 
-/// Convenience wrapper: format without a pre-opened Dir (falls back to opening CWD ambiently).
+/// Format source using the tinct-hosted formatter script at `script_path`.
 ///
-/// Callers that already hold an open `cap_std::fs::Dir` should use
-/// [`format_source_tinct_with_dir`] instead to avoid re-acquiring ambient authority.
+/// The script receives the AST dict as `%` and must return `[Ok String]` on success
+/// or `[Err msg]` on failure (both formatters use `[try [fn [] [format-file %]]]`).
+///
+/// `script_path` is the path to a `.llt` formatter script (e.g. `stdlib/cli/fmt/pretty.llt`).
+/// Whether to pass source/comment information is inferred from the script name:
+/// scripts named `compact` receive a minimal AST (no source, no comments); all others
+/// receive the full AST (with source info and comments for comment preservation).
+///
+/// Convenience wrapper: opens CWD ambiently. Callers that already hold an open
+/// `cap_std::fs::Dir` should use [`format_source_tinct_with_dir`] instead.
 pub fn format_source_tinct(input: &str, script_path: &std::path::Path) -> Result<String, String> {
     format_source_tinct_with_dir(input, script_path, None)
 }
@@ -226,8 +227,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_file(&mut self) {
-        let file = crate::ast_convert::surface_program_to_file(&self.parse_output.program);
-        for (i, doc) in file.node.documents.iter().enumerate() {
+        for (i, doc) in self.parse_output.program.documents.iter().enumerate() {
             if i > 0 {
                 // Document separator
                 if self.oneline {
@@ -274,27 +274,29 @@ impl<'a> Formatter<'a> {
                 if self.oneline {
                     self.output.push(';');
                     // Push space before next document's first expression
-                    if !doc.node.expressions.is_empty() {
-                        self.push_space_before_expr(&doc.node.expressions[0]);
+                    let exprs: Vec<_> = doc.node.expressions().collect();
+                    if !exprs.is_empty() {
+                        self.push_space_before_expr(exprs[0]);
                     }
                 } else {
                     self.output.push('\n');
                     self.output.push('\n');
                 }
             }
-            self.format_document(&doc.node, doc.span.start.offset);
+            self.format_document(&doc.node);
         }
         self.ensure_trailing_newline();
     }
 
-    fn format_document(&mut self, document: &Document, _doc_offset: usize) {
-        if document.expressions.is_empty() {
+    fn format_document(&mut self, document: &SurfaceDocument) {
+        let expressions: Vec<_> = document.expressions().collect();
+        if expressions.is_empty() {
             return;
         }
 
         // In oneline mode, comments are always stripped and expressions are always on one line
         if self.oneline {
-            for (i, expr) in document.expressions.iter().enumerate() {
+            for (i, expr) in expressions.iter().enumerate() {
                 if i > 0 {
                     self.push_space_before_expr(expr);
                 }
@@ -306,31 +308,24 @@ impl<'a> Formatter<'a> {
         // Decide if all expressions should be on one line:
         // True if all expressions are simple (not complex Dict/Call/Fn/TypeAlias)
         // AND there are no comments (which would require multi-line formatting)
-        let all_simple = document.expressions.iter().all(|e| match &e.node {
-            Expr::Dict(entries) if self.is_simple_dict(entries) => true,
-            Expr::Dict(_)
-            | Expr::Call { .. }
-            | Expr::Fn { .. }
-            | Expr::TypeAlias { .. }
-            | Expr::Sequential(_)
-            | Expr::Quote(_)
-            | Expr::Unquote(_)
-            | Expr::UnquoteSplice(_)
-            | Expr::DefMacro { .. }
-            | Expr::MacroDecl { .. }
-            | Expr::Splice(..)
-            | Expr::SyntaxClass { .. }
-            | Expr::Match { .. }
-            | Expr::ClassDecl { .. }
-            | Expr::InstanceDecl { .. }
-            | Expr::TypeApp { .. }
-            | Expr::LetDecl { .. }
-            | Expr::CaseArm { .. }
-            | Expr::Error(_) => false,
+        let all_simple = expressions.iter().all(|e| match &e.expr {
+            SurfaceExpression::Dict(entries) if self.is_simple_dict(&entries) => true,
+            SurfaceExpression::Dict(_)
+            | SurfaceExpression::Call { .. }
+            | SurfaceExpression::Fn { .. }
+            | SurfaceExpression::Sequential(_)
+            | SurfaceExpression::Quote(_)
+            | SurfaceExpression::Unquote(_)
+            | SurfaceExpression::UnquoteSplice(_)
+            | SurfaceExpression::Match { .. }
+            | SurfaceExpression::TypeApp { .. }
+            | SurfaceExpression::LetDecl { .. }
+            | SurfaceExpression::CaseArm { .. }
+            | SurfaceExpression::Error(_) => false,
             _ => true,
         });
 
-        let has_comments = document.expressions.iter().any(|e| {
+        let has_comments = expressions.iter().any(|e| {
             self.parse_output
                 .leading_comments
                 .contains_key(&e.span.start.offset)
@@ -342,7 +337,7 @@ impl<'a> Formatter<'a> {
 
         if all_simple && !has_comments {
             // Format all on one line with spaces
-            for (i, expr) in document.expressions.iter().enumerate() {
+            for (i, expr) in expressions.iter().enumerate() {
                 if i > 0 {
                     self.push_space_before_expr(expr);
                 }
@@ -350,7 +345,7 @@ impl<'a> Formatter<'a> {
             }
         } else {
             // Format each expression on its own line
-            for (i, expr) in document.expressions.iter().enumerate() {
+            for (i, expr) in expressions.iter().enumerate() {
                 let has_leading_comment = self
                     .parse_output
                     .leading_comments
@@ -396,22 +391,22 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_expr_top_level(&mut self, expr: &Spanned<Expr>) {
+    fn format_expr_top_level(&mut self, expr: &Arc<SurfaceNode>) {
         self.format_expr(expr, false);
     }
 
-    fn format_expr(&mut self, expr: &Spanned<Expr>, _in_bracket: bool) {
-        match &expr.node {
-            Expr::Int(n) => self.output.push_str(&n.to_string()),
-            Expr::Float(f) => {
+    fn format_expr(&mut self, expr: &Arc<SurfaceNode>, _in_bracket: bool) {
+        match &expr.expr {
+            SurfaceExpression::Int(n) => self.output.push_str(&n.to_string()),
+            SurfaceExpression::Float(f) => {
                 let s = f.to_string();
                 self.output.push_str(&s);
                 if !s.contains('.') && !s.contains('e') && !s.contains('E') {
                     self.output.push_str(".0");
                 }
             }
-            Expr::Bool(b) => self.output.push_str(if *b { "true" } else { "false" }),
-            Expr::Str(s) => {
+            SurfaceExpression::Bool(b) => self.output.push_str(if *b { "true" } else { "false" }),
+            SurfaceExpression::Str(s) => {
                 // Source-sniff: check if the original token was a quoted string or a
                 // bare identifier (dict key). If the source character at the span start
                 // is `"`, emit with quotes; otherwise emit bare (e.g. `x` in `[x: 1]`).
@@ -438,7 +433,7 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(s);
                 }
             }
-            Expr::VarRef { name, escaped, .. } => {
+            SurfaceExpression::VarRef { name, escaped } => {
                 // Emit `$` prefix if this was written as an escaped ref (`$name`).
                 // Bare identifiers and `%`-prefixed refs do not get a `$` prepended —
                 // the `%` is already part of `name`.
@@ -447,7 +442,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push_str(name);
             }
-            Expr::DotAccess { expr, field } => {
+            SurfaceExpression::DotAccess { expr, field } => {
                 self.format_expr(expr, false);
                 self.output.push('.');
                 match field {
@@ -455,14 +450,14 @@ impl<'a> Formatter<'a> {
                     crate::ast::DotKey::Int(n) => self.output.push_str(&n.to_string()),
                 }
             }
-            Expr::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs } => {
                 self.format_expr(lhs, false);
                 self.push_space(Some('|'));
                 self.output.push('|');
                 self.push_space_before_expr(rhs);
                 self.format_expr(rhs, false);
             }
-            Expr::Sequential(exprs) => {
+            SurfaceExpression::Sequential(exprs) => {
                 // Format sequential expressions as a pseudo-list.
                 // This is a synthetic node created by let-binding, not user-written syntax.
                 // Display as (seq expr1 expr2 ...) for debugging.
@@ -473,35 +468,20 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push(')');
             }
-            Expr::Dict(entries) => self.format_dict(entries),
-            Expr::Call {
+            SurfaceExpression::Dict(entries) => self.format_dict(entries),
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 implied,
             } => self.format_call(func, args, named_args, *implied),
-            Expr::Fn {
+            SurfaceExpression::Fn {
                 return_ann,
                 params,
                 body,
                 desugared: _,
             } => self.format_fn(return_ann, params, body),
-            Expr::TypeAlias { params, body } => {
-                self.output.push('[');
-                self.output.push_str("type");
-                if !params.is_empty() {
-                    self.output.push_str(" [let");
-                    for param in params.iter() {
-                        self.output.push(' ');
-                        self.output.push_str(param);
-                    }
-                    self.output.push(']');
-                }
-                self.push_space_before_expr(body);
-                self.format_expr(body, true);
-                self.output.push(']');
-            }
-            Expr::TypeAssert {
+            SurfaceExpression::TypeAssert {
                 annotation, expr, ..
             } => {
                 self.output.push('[');
@@ -511,56 +491,36 @@ impl<'a> Formatter<'a> {
                 self.format_expr(expr, true);
                 self.output.push(']');
             }
-            Expr::Annotated { name, annotation } => {
+            SurfaceExpression::Annotated { name, annotation } => {
                 self.output.push_str(name);
                 self.output.push('@');
                 self.format_annotation(annotation);
             }
-            Expr::Quote(inner) => {
+            SurfaceExpression::Quote(inner) => {
                 self.output.push('[');
                 self.output.push_str("quote");
                 self.push_space_before_expr(inner);
                 self.format_expr(inner, true);
                 self.output.push(']');
             }
-            Expr::Unquote(inner) => {
+            SurfaceExpression::Unquote(inner) => {
                 self.output.push('[');
                 self.output.push_str("unquote");
                 self.push_space_before_expr(inner);
                 self.format_expr(inner, true);
                 self.output.push(']');
             }
-            Expr::UnquoteSplice(inner) => {
+            SurfaceExpression::UnquoteSplice(inner) => {
                 self.output.push('[');
                 self.output.push_str("unquote-splice");
                 self.push_space_before_expr(inner);
                 self.format_expr(inner, true);
                 self.output.push(']');
             }
-            Expr::DefMacro { name, params, body } => {
-                self.output.push('[');
-                self.output.push_str("defmacro ");
-                self.output.push_str(name);
-                self.output.push(' ');
-                // Format params (which is a [let ...] pattern)
-                self.format_expr(params, true);
-                // Format body expressions
-                if let Expr::Sequential(exprs) = &body.node {
-                    for expr in exprs {
-                        self.output.push(' ');
-                        self.format_expr(expr, true);
-                    }
-                } else {
-                    self.push_space_before_expr(body);
-                    self.format_expr(body, true);
-                }
-                self.output.push(']');
-            }
-            Expr::MacroDecl { .. } | Expr::Splice(..) | Expr::SyntaxClass { .. } => {
-                // MacroDecl, Splice, and SyntaxClass should be removed by expansion pass before formatting
-                // Skip them silently rather than error
-            }
-            Expr::Match { scrutinee, arms } => {
+            // DefMacro, MacroDecl, Splice, SyntaxClass, TypeAlias, ClassDecl, InstanceDecl
+            // are SurfaceDeclaration variants, not SurfaceExpression variants.
+            // They are filtered out by document.expressions() and never reach format_expr.
+            SurfaceExpression::Match { scrutinee, arms } => {
                 self.output.push('[');
                 self.output.push_str("match");
                 self.push_space_before_expr(scrutinee);
@@ -570,7 +530,7 @@ impl<'a> Formatter<'a> {
                     self.format_pattern(&arm.pattern);
                     self.output.push(':');
                     // Handle multi-body (Sequential) in arm bodies
-                    if let Expr::Sequential(body_exprs) = &arm.body.node {
+                    if let SurfaceExpression::Sequential(body_exprs) = &arm.body.expr {
                         for body_expr in body_exprs {
                             self.push_space_before_expr(body_expr);
                             self.format_expr(body_expr, true);
@@ -582,106 +542,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push(']');
             }
-            Expr::ClassDecl {
-                name,
-                params,
-                superclasses,
-                methods,
-                determines,
-                resolver,
-                resolver_injective,
-            } => {
-                self.output.push('[');
-                self.output.push_str("class");
-                self.output.push_str(" [let ");
-                self.output.push_str(name);
-                for param in params {
-                    self.output.push(' ');
-                    self.output.push_str(param);
-                }
-                self.output.push(']');
-
-                // Emit structural metadata bracket if determines/resolver/resolver_injective present
-                if !determines.is_empty() || resolver.is_some() || *resolver_injective {
-                    self.output.push_str(" [");
-                    let mut first = true;
-
-                    if !determines.is_empty() {
-                        if !first {
-                            self.output.push(' ');
-                        }
-                        first = false;
-                        self.output.push_str("determines: [");
-                        for (i, fd) in determines.iter().enumerate() {
-                            if i > 0 {
-                                self.output.push(' ');
-                            }
-                            self.format_expr(fd, false);
-                        }
-                        self.output.push(']');
-                    }
-
-                    if let Some(ref resolver_expr) = resolver {
-                        if !first {
-                            self.output.push(' ');
-                        }
-                        first = false;
-                        self.output.push_str("resolver: ");
-                        self.format_expr(resolver_expr, false);
-                    }
-
-                    if *resolver_injective {
-                        if !first {
-                            self.output.push(' ');
-                        }
-                        self.output.push_str("injective: true");
-                    }
-
-                    self.output.push(']');
-                }
-
-                // Emit extends clauses
-                for (super_class, super_param) in superclasses {
-                    self.output.push_str(" extends [");
-                    self.output.push_str(super_class);
-                    self.output.push(' ');
-                    self.output.push_str(super_param);
-                    self.output.push(']');
-                }
-                for method in methods {
-                    self.output.push(' ');
-                    if let Some(key) = &method.node.key {
-                        self.format_expr(key, false);
-                        self.output.push_str(": ");
-                    }
-                    self.format_expr(&method.node.value, true);
-                }
-                self.output.push(']');
-            }
-            Expr::InstanceDecl { class_name, arms } => {
-                self.output.push('[');
-                self.output.push_str("instance");
-                self.output.push(' ');
-                self.output.push_str(class_name);
-                for (pattern, methods) in arms {
-                    self.output.push(' ');
-                    self.format_expr(pattern, false);
-                    self.output.push_str(": [");
-                    for (i, method) in methods.iter().enumerate() {
-                        if i > 0 {
-                            self.output.push(' ');
-                        }
-                        if let Some(key) = &method.node.key {
-                            self.format_expr(key, false);
-                            self.output.push_str(": ");
-                        }
-                        self.format_expr(&method.node.value, true);
-                    }
-                    self.output.push(']');
-                }
-                self.output.push(']');
-            }
-            Expr::PatternDecl { bindings } => {
+            SurfaceExpression::PatternDecl { bindings } => {
                 self.output.push('[');
                 self.output.push_str("pattern");
                 self.output.push_str(" [");
@@ -693,7 +554,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push_str("]]");
             }
-            Expr::LetDecl { bindings } => {
+            SurfaceExpression::LetDecl { bindings } => {
                 self.output.push('[');
                 self.output.push_str("let");
                 for binding in bindings.iter() {
@@ -702,7 +563,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push(']');
             }
-            Expr::CaseArm { pattern, body } => {
+            SurfaceExpression::CaseArm { pattern, body } => {
                 self.output.push('[');
                 self.output.push_str("case");
                 self.output.push(' ');
@@ -711,16 +572,16 @@ impl<'a> Formatter<'a> {
                 self.format_expr(body, false);
                 self.output.push(']');
             }
-            Expr::Placeholder => {
+            SurfaceExpression::Placeholder => {
                 self.output.push_str("...");
             }
-            Expr::Rest(name) => {
+            SurfaceExpression::Rest(name) => {
                 self.output.push_str("...");
                 if let Some(n) = name {
                     self.output.push_str(n);
                 }
             }
-            Expr::TypeApp { func, arg } => {
+            SurfaceExpression::TypeApp { func, arg } => {
                 // Format as @[func arg]
                 self.output.push_str("@[");
                 self.format_expr(func, false);
@@ -728,7 +589,7 @@ impl<'a> Formatter<'a> {
                 self.format_expr(arg, false);
                 self.output.push(']');
             }
-            Expr::Error(span) => {
+            SurfaceExpression::Error(span) => {
                 // Emit original source text verbatim for error nodes
                 let text = &self.source[span.start.offset..span.end.offset];
                 self.output.push_str(text);
@@ -736,7 +597,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_dict(&mut self, entries: &[Spanned<Entry>]) {
+    fn format_dict(&mut self, entries: &[Spanned<SurfaceEntry>]) {
         if entries.is_empty() {
             self.output.push_str("[]");
             return;
@@ -765,7 +626,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn is_simple_dict(&self, entries: &[Spanned<Entry>]) -> bool {
+    fn is_simple_dict(&self, entries: &[Spanned<SurfaceEntry>]) -> bool {
         // A simple dict is one that would fit on a single line (4 or fewer entries, width <= 80).
         // Add indent_level * 2 here to account for the column at which this dict begins,
         // mirroring the same adjustment in format_dict. measure_dict_width itself does not
@@ -776,7 +637,7 @@ impl<'a> Formatter<'a> {
         !has_comments && entry_count <= 4 && single_line_width <= 80
     }
 
-    fn dict_has_comments(&self, entries: &[Spanned<Entry>]) -> bool {
+    fn dict_has_comments(&self, entries: &[Spanned<SurfaceEntry>]) -> bool {
         for entry in entries {
             // Check for leading comments at the entry start
             if self
@@ -798,7 +659,7 @@ impl<'a> Formatter<'a> {
         false
     }
 
-    fn measure_dict_width(&self, entries: &[Spanned<Entry>]) -> usize {
+    fn measure_dict_width(&self, entries: &[Spanned<SurfaceEntry>]) -> usize {
         let mut width = 2; // [ and ]
         for (i, entry) in entries.iter().enumerate() {
             if i > 0 {
@@ -808,21 +669,21 @@ impl<'a> Formatter<'a> {
                 width += self.measure_expr_width(key);
                 width += 2; // ": "
             }
-            width += self.measure_expr_width(entry.node.value.as_ref());
+            width += self.measure_expr_width(&entry.node.value);
         }
         width
     }
 
-    fn measure_expr_width(&self, expr: &Spanned<Expr>) -> usize {
-        match &expr.node {
-            Expr::Int(n) => {
+    fn measure_expr_width(&self, expr: &Arc<SurfaceNode>) -> usize {
+        match &expr.expr {
+            SurfaceExpression::Int(n) => {
                 if *n < 0 {
                     1 + (-n).to_string().len()
                 } else {
                     n.to_string().len()
                 }
             }
-            Expr::Float(f) => {
+            SurfaceExpression::Float(f) => {
                 let s = f.to_string();
                 if !s.contains('.') && !s.contains('e') && !s.contains('E') {
                     s.len() + 2 // appended ".0"
@@ -830,14 +691,14 @@ impl<'a> Formatter<'a> {
                     s.len()
                 }
             }
-            Expr::Bool(b) => {
+            SurfaceExpression::Bool(b) => {
                 if *b {
                     4
                 } else {
                     5
                 }
             }
-            Expr::Str(s) => {
+            SurfaceExpression::Str(s) => {
                 // Source-sniff: if originally a quoted string, add 2 for the quote characters.
                 // If originally a bare identifier key, width is just the content length.
                 let is_quoted = self
@@ -851,22 +712,22 @@ impl<'a> Formatter<'a> {
                     s.len()
                 }
             }
-            Expr::VarRef { name, escaped, .. } => {
+            SurfaceExpression::VarRef { name, escaped, .. } => {
                 // Add 1 for `$` if this was an escaped ref.
                 // `%`-prefixed refs already include `%` in the stored name.
                 name.len() + if *escaped { 1 } else { 0 }
             }
-            Expr::DotAccess { expr, field } => {
+            SurfaceExpression::DotAccess { expr, field } => {
                 let field_len = match field {
                     crate::ast::DotKey::Ident(s) => s.len(),
                     crate::ast::DotKey::Int(n) => n.to_string().len(),
                 };
                 self.measure_expr_width(expr) + 1 + field_len
             }
-            Expr::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs } => {
                 self.measure_expr_width(lhs) + 3 + self.measure_expr_width(rhs) // lhs | rhs
             }
-            Expr::Sequential(exprs) => {
+            SurfaceExpression::Sequential(exprs) => {
                 // Measure as (seq expr1 expr2 ...)
                 let mut width = 4; // "(seq"
                 for seq_expr in exprs {
@@ -874,8 +735,8 @@ impl<'a> Formatter<'a> {
                 }
                 width + 1 // closing ")"
             }
-            Expr::Dict(entries) => self.measure_dict_width(entries),
-            Expr::Call {
+            SurfaceExpression::Dict(entries) => self.measure_dict_width(entries),
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
@@ -889,9 +750,9 @@ impl<'a> Formatter<'a> {
                     // i" + content + "
                     let mut w = 3; // i""
                     for arg in args {
-                        match &arg.node {
-                            Expr::Str(s) => w += s.len(), // approximate (escaping may expand)
-                            Expr::VarRef { name, .. } => w += 1 + name.len(), // $name
+                        match &arg.expr {
+                            SurfaceExpression::Str(s) => w += s.len(), // approximate (escaping may expand)
+                            SurfaceExpression::VarRef { name, .. } => w += 1 + name.len(), // $name
                             _ => {}
                         }
                     }
@@ -909,11 +770,11 @@ impl<'a> Formatter<'a> {
                     w += 1
                         + named_arg.node.name.len()
                         + 2
-                        + self.measure_expr_width(named_arg.node.value.as_ref());
+                        + self.measure_expr_width(&named_arg.node.value);
                 }
                 w + 1 // ]
             }
-            Expr::Fn { params, body, .. } => {
+            SurfaceExpression::Fn { params, body, .. } => {
                 let mut w = 1 + 2 + 1; // [fn ]
                 w += 1 + 3; // [let
                 for param in params.iter() {
@@ -931,21 +792,7 @@ impl<'a> Formatter<'a> {
                 w += self.measure_expr_width(body);
                 w + 1 // ]
             }
-            Expr::TypeAlias { params, body } => {
-                let mut w = 1 + 4; // [type
-                if !params.is_empty() {
-                    w += 2 + 3; // " [let"
-                    for param in params.iter() {
-                        w += 1; // space
-                        w += param.len();
-                    }
-                    w += 1; // ]
-                }
-                w += 1; // space
-                w += self.measure_expr_width(body);
-                w + 1 // ]
-            }
-            Expr::TypeAssert {
+            SurfaceExpression::TypeAssert {
                 annotation, expr, ..
             } => {
                 1 + 1
@@ -954,35 +801,20 @@ impl<'a> Formatter<'a> {
                     + self.measure_expr_width(expr)
                     + 1
             }
-            Expr::Annotated { name, annotation } => {
+            SurfaceExpression::Annotated { name, annotation } => {
                 name.len() + 1 + self.measure_annotation_width(&annotation.node)
             }
-            Expr::Quote(inner) => 1 + 5 + 1 + self.measure_expr_width(inner) + 1, // [quote <expr>]
-            Expr::Unquote(inner) => 1 + 7 + 1 + self.measure_expr_width(inner) + 1, // [unquote <expr>]
-            Expr::UnquoteSplice(inner) => 1 + 14 + 1 + self.measure_expr_width(inner) + 1, // [unquote-splice <expr>]
-            Expr::DefMacro { name, params, body } => {
-                let mut w = 1 + 8 + 1 + name.len(); // [defmacro <name>
-                w += 1 + self.measure_expr_width(params); // params (LetDecl)
-                                                          // Measure body
-                if let Expr::Sequential(exprs) = &body.node {
-                    for expr in exprs {
-                        w += 1 + self.measure_expr_width(expr);
-                    }
-                } else {
-                    w += 1 + self.measure_expr_width(body);
-                }
-                w + 1 // ]
-            }
-            Expr::MacroDecl { .. } | Expr::Splice(..) | Expr::SyntaxClass { .. } => {
-                // Should be removed by expansion pass
-                0
-            }
-            Expr::Match { scrutinee, arms } => {
+            SurfaceExpression::Quote(inner) => 1 + 5 + 1 + self.measure_expr_width(inner) + 1, // [quote <expr>]
+            SurfaceExpression::Unquote(inner) => 1 + 7 + 1 + self.measure_expr_width(inner) + 1, // [unquote <expr>]
+            SurfaceExpression::UnquoteSplice(inner) => {
+                1 + 14 + 1 + self.measure_expr_width(inner) + 1
+            } // [unquote-splice <expr>]
+            SurfaceExpression::Match { scrutinee, arms } => {
                 let mut width = 1 + 5 + 1 + self.measure_expr_width(scrutinee); // [match <scrutinee>
                 for arm in arms {
                     width += 1 + self.measure_pattern_width(&arm.pattern.node) + 1; // <space><pattern>:
                                                                                     // Handle multi-body (Sequential) in arm bodies
-                    if let Expr::Sequential(body_exprs) = &arm.body.node {
+                    if let SurfaceExpression::Sequential(body_exprs) = &arm.body.expr {
                         for body_expr in body_exprs {
                             width += 1 + self.measure_expr_width(body_expr);
                         }
@@ -992,49 +824,7 @@ impl<'a> Formatter<'a> {
                 }
                 width + 1 // closing ]
             }
-            Expr::ClassDecl {
-                name,
-                params,
-                superclasses,
-                methods,
-                ..
-            } => {
-                let mut width = 1 + 5 + 2 + 4 + name.len(); // [class [let <name>
-                for param in params {
-                    width += 1 + param.len();
-                }
-                width += 1; // closing ]
-                            // Account for extends clauses
-                for (super_class, super_param) in superclasses {
-                    width += 1 + 7 + 2 + super_class.len() + 1 + super_param.len() + 1;
-                    // " extends [<super_class> <super_param>]"
-                }
-                for method in methods {
-                    width += 1;
-                    if let Some(key) = &method.node.key {
-                        width += self.measure_expr_width(key) + 2; // key:
-                    }
-                    width += self.measure_expr_width(&method.node.value);
-                }
-                width + 1 // closing ]
-            }
-            Expr::InstanceDecl { class_name, arms } => {
-                let mut width = 1 + 8 + 1 + class_name.len(); // [instance <name>
-                for (pattern, methods) in arms {
-                    width += 1 + self.measure_expr_width(pattern) + 2; // <space><pattern>:
-                    width += 1; // opening [
-                    for method in methods {
-                        width += 1;
-                        if let Some(key) = &method.node.key {
-                            width += self.measure_expr_width(key) + 2; // key:
-                        }
-                        width += self.measure_expr_width(&method.node.value);
-                    }
-                    width += 1; // closing ]
-                }
-                width + 1 // closing ]
-            }
-            Expr::PatternDecl { bindings } => {
+            SurfaceExpression::PatternDecl { bindings } => {
                 let mut width = 1 + 7 + 2; // [pattern [
                 for (i, binding) in bindings.iter().enumerate() {
                     if i > 0 {
@@ -1044,24 +834,24 @@ impl<'a> Formatter<'a> {
                 }
                 width + 2 // ]]
             }
-            Expr::LetDecl { bindings } => {
+            SurfaceExpression::LetDecl { bindings } => {
                 let mut width = 1 + 3; // [let
                 for binding in bindings.iter() {
                     width += 1 + self.measure_expr_width(binding);
                 }
                 width + 1 // ]
             }
-            Expr::CaseArm { pattern, body } => {
+            SurfaceExpression::CaseArm { pattern, body } => {
                 1 + 4 + 1 + self.measure_expr_width(pattern) + 1 + self.measure_expr_width(body) + 1
                 // [case <pattern> <body>]
             }
-            Expr::Placeholder => 3, // ...
-            Expr::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
-            Expr::TypeApp { func, arg } => {
+            SurfaceExpression::Placeholder => 3, // ...
+            SurfaceExpression::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
+            SurfaceExpression::TypeApp { func, arg } => {
                 // @[func arg]
                 2 + self.measure_expr_width(func) + 1 + self.measure_expr_width(arg) + 1
             }
-            Expr::Error(span) => {
+            SurfaceExpression::Error(span) => {
                 // Measure the width of the original source text
                 span.end.offset - span.start.offset
             }
@@ -1132,14 +922,70 @@ impl<'a> Formatter<'a> {
     fn measure_annotation_width(&self, annotation: &Annotation) -> usize {
         match annotation {
             Annotation::Simple(name) => name.len(),
-            Annotation::PropertyDict(entries) => self.measure_dict_width(entries),
+            Annotation::PropertyDict(entries) => self.measure_annotation_dict_width(entries),
             Annotation::Annotated(name, inner) => {
                 name.len() + 1 + self.measure_annotation_width(inner) // name + @ + inner
             }
         }
     }
 
-    fn format_dict_single_line(&mut self, entries: &[Spanned<Entry>]) {
+    /// Measure the formatted width of a `PropertyDict` annotation entry list.
+    /// Uses `Expr::Display` to render keys and values since annotations use the old `Entry` type.
+    fn measure_annotation_dict_width(&self, entries: &[Spanned<Entry>]) -> usize {
+        let mut width = 2; // [ and ]
+        for (i, entry) in entries.iter().enumerate() {
+            if i > 0 {
+                width += 1; // space
+            }
+            if let Some(key) = &entry.node.key {
+                width += format!("{}", key.node).len();
+                width += 2; // ": "
+            }
+            width += format!("{}", entry.node.value.node).len();
+        }
+        width
+    }
+
+    /// Format a `PropertyDict` annotation entry list as a bracketed dict.
+    /// Uses `Expr::Display` to render keys and values since annotations use the old `Entry` type.
+    fn format_annotation_dict(&mut self, entries: &[Spanned<Entry>]) {
+        if entries.is_empty() {
+            self.output.push_str("[]");
+            return;
+        }
+        let width = self.measure_annotation_dict_width(entries) + self.indent_level * 2;
+        let use_single_line = entries.len() <= 4 && width <= 80;
+        self.output.push('[');
+        if use_single_line {
+            for (i, entry) in entries.iter().enumerate() {
+                if i > 0 {
+                    self.output.push(' ');
+                }
+                if let Some(key) = &entry.node.key {
+                    self.output.push_str(&format!("{}", key.node));
+                    self.output.push_str(": ");
+                }
+                self.output.push_str(&format!("{}", entry.node.value.node));
+            }
+        } else {
+            self.indent_level += 1;
+            for entry in entries {
+                self.push_newline();
+                self.write_indent();
+                if let Some(key) = &entry.node.key {
+                    self.output.push_str(&format!("{}", key.node));
+                    self.output.push_str(": ");
+                }
+                self.output.push_str(&format!("{}", entry.node.value.node));
+            }
+            self.indent_level -= 1;
+            self.push_newline();
+            self.write_indent();
+        }
+        self.output.push(']');
+    }
+
+    fn format_dict_single_line(&mut self, entries: &[Spanned<SurfaceEntry>]) {
         self.output.push('[');
         for (i, entry) in entries.iter().enumerate() {
             if i > 0 {
@@ -1155,7 +1001,7 @@ impl<'a> Formatter<'a> {
         self.output.push(']');
     }
 
-    fn format_dict_multi_line(&mut self, entries: &[Spanned<Entry>]) {
+    fn format_dict_multi_line(&mut self, entries: &[Spanned<SurfaceEntry>]) {
         self.output.push('[');
         self.indent_level += 1;
 
@@ -1203,9 +1049,9 @@ impl<'a> Formatter<'a> {
 
     fn format_call(
         &mut self,
-        func: &Spanned<Expr>,
-        args: &[Rc<Spanned<Expr>>],
-        named_args: &[Spanned<NamedArg>],
+        func: &Arc<SurfaceNode>,
+        args: &[Arc<SurfaceNode>],
+        named_args: &[Spanned<SurfaceNamedArg>],
         implied: bool,
     ) {
         // If this looks like a desugared i"..." call (head is "str", no named args,
@@ -1243,11 +1089,11 @@ impl<'a> Formatter<'a> {
     /// (the raw template). Additional args[1..] are the expression args for ${N} slots.
     fn is_interpolated_string_call(
         &self,
-        func: &Spanned<Expr>,
-        args: &[Rc<Spanned<Expr>>],
+        func: &Arc<SurfaceNode>,
+        args: &[Arc<SurfaceNode>],
     ) -> bool {
         // Head must be exactly VarRef("tmpl")
-        let Expr::VarRef { name, .. } = &func.node else {
+        let SurfaceExpression::VarRef { name, .. } = &func.expr else {
             return false;
         };
         if name != "tmpl" {
@@ -1258,16 +1104,16 @@ impl<'a> Formatter<'a> {
             return false;
         }
         // args[0] must be a Str (the raw template)
-        matches!(&args[0].node, Expr::Str(_))
+        matches!(&args[0].expr, SurfaceExpression::Str(_))
     }
 
     /// Format a [tmpl "raw-template" expr0 ...] call as i"..." syntax.
     ///
     /// The raw template uses: `$$` for literal `$`, `$name` for variable refs,
     /// `${N}` for expression args (where N is 0-based index into args[1..]).
-    fn format_as_interpolated_string(&mut self, args: &[Rc<Spanned<Expr>>]) {
-        let raw = match &args[0].node {
-            Expr::Str(s) => s.clone(),
+    fn format_as_interpolated_string(&mut self, args: &[Arc<SurfaceNode>]) {
+        let raw = match &args[0].expr {
+            SurfaceExpression::Str(s) => s.clone(),
             _ => return, // Should never happen given is_interpolated_string_call guard
         };
         let expr_args = &args[1..];
@@ -1332,8 +1178,8 @@ impl<'a> Formatter<'a> {
     fn format_fn(
         &mut self,
         return_ann: &Option<Spanned<Annotation>>,
-        params: &[Spanned<Param>],
-        body: &Spanned<Expr>,
+        params: &[Spanned<SurfaceParam>],
+        body: &Arc<SurfaceNode>,
     ) {
         self.output.push('[');
         self.output.push_str("fn");
@@ -1373,8 +1219,8 @@ impl<'a> Formatter<'a> {
         match &annotation.node {
             Annotation::Simple(name) => self.output.push_str(name),
             Annotation::PropertyDict(entries) => {
-                // Format as a dict bracket
-                self.format_dict(entries);
+                // Format as a dict bracket using the old Entry type (annotations were not migrated)
+                self.format_annotation_dict(entries);
             }
             Annotation::Annotated(name, inner) => {
                 self.output.push_str(name);
@@ -1499,24 +1345,24 @@ impl<'a> Formatter<'a> {
     }
 
     /// Push a space before an expression, considering the nospaces mode.
-    fn push_space_before_expr(&mut self, expr: &Spanned<Expr>) {
+    fn push_space_before_expr(&mut self, expr: &Arc<SurfaceNode>) {
         let first_char = self.first_char_of_expr(expr);
         self.push_space(first_char);
     }
 
     /// Get the first character that will be emitted when formatting this expression.
-    fn first_char_of_expr(&self, expr: &Spanned<Expr>) -> Option<char> {
-        match &expr.node {
-            Expr::Int(n) => {
+    fn first_char_of_expr(&self, expr: &Arc<SurfaceNode>) -> Option<char> {
+        match &expr.expr {
+            SurfaceExpression::Int(n) => {
                 if *n < 0 {
                     Some('-')
                 } else {
                     n.to_string().chars().next()
                 }
             }
-            Expr::Float(_) => Some('0'), // approximate
-            Expr::Bool(b) => Some(if *b { 't' } else { 'f' }),
-            Expr::Str(_) => {
+            SurfaceExpression::Float(_) => Some('0'), // approximate
+            SurfaceExpression::Bool(b) => Some(if *b { 't' } else { 'f' }),
+            SurfaceExpression::Str(_) => {
                 // Check if quoted or bare
                 let is_quoted = self
                     .source
@@ -1530,37 +1376,31 @@ impl<'a> Formatter<'a> {
                     Some('a') // placeholder - bare identifiers start with alphanumeric
                 }
             }
-            Expr::VarRef { escaped, .. } => {
+            SurfaceExpression::VarRef { escaped, .. } => {
                 if *escaped {
                     Some('$')
                 } else {
                     Some('a') // placeholder
                 }
             }
-            Expr::DotAccess { .. } => Some('a'), // starts with whatever the base expr is
-            Expr::Pipe { .. } => Some('a'),      // starts with lhs
-            Expr::Sequential(_) => Some('('),    // starts with (seq
-            Expr::Dict(_) | Expr::Call { .. } | Expr::Fn { .. } | Expr::TypeAlias { .. } => {
-                Some('[')
-            }
-            Expr::TypeAssert { .. } => Some('['),
-            Expr::Quote(_)
-            | Expr::Unquote(_)
-            | Expr::UnquoteSplice(_)
-            | Expr::DefMacro { .. }
-            | Expr::MacroDecl { .. }
-            | Expr::Splice(..)
-            | Expr::SyntaxClass { .. }
-            | Expr::Match { .. }
-            | Expr::ClassDecl { .. }
-            | Expr::InstanceDecl { .. }
-            | Expr::PatternDecl { .. }
-            | Expr::LetDecl { .. }
-            | Expr::CaseArm { .. } => Some('['),
-            Expr::TypeApp { .. } => Some('@'), // starts with @[
-            Expr::Annotated { name, .. } => name.chars().next(),
-            Expr::Placeholder | Expr::Rest(_) => Some('.'),
-            Expr::Error(_) => None,
+            SurfaceExpression::DotAccess { .. } => Some('a'), // starts with whatever the base expr is
+            SurfaceExpression::Pipe { .. } => Some('a'),      // starts with lhs
+            SurfaceExpression::Sequential(_) => Some('('),    // starts with (seq
+            SurfaceExpression::Dict(_)
+            | SurfaceExpression::Call { .. }
+            | SurfaceExpression::Fn { .. } => Some('['),
+            SurfaceExpression::TypeAssert { .. } => Some('['),
+            SurfaceExpression::Quote(_)
+            | SurfaceExpression::Unquote(_)
+            | SurfaceExpression::UnquoteSplice(_)
+            | SurfaceExpression::Match { .. }
+            | SurfaceExpression::PatternDecl { .. }
+            | SurfaceExpression::LetDecl { .. }
+            | SurfaceExpression::CaseArm { .. } => Some('['),
+            SurfaceExpression::TypeApp { .. } => Some('@'), // starts with @[
+            SurfaceExpression::Annotated { name, .. } => name.chars().next(),
+            SurfaceExpression::Placeholder | SurfaceExpression::Rest(_) => Some('.'),
+            SurfaceExpression::Error(_) => None,
         }
     }
 }
@@ -2208,5 +2048,75 @@ mod tests {
     fn test_format_float_with_decimal() {
         let result = format_source("[x: 3.14]").unwrap();
         assert_eq!(result, "[x: 3.14]\n");
+    }
+
+    // --- Match / Pipe / TypeApp expression tests ---
+
+    #[test]
+    fn test_format_match_single_arm() {
+        // [match $x [ok: v] $v]
+        let input = "[match $x [ok: v] $v]";
+        let formatted = format_source(input).unwrap();
+        assert_eq!(formatted.trim(), "[match $x [ok: v] $v]");
+    }
+
+    #[test]
+    fn test_format_match_two_arms() {
+        let input = "[match $r [ok: body] $body [err: msg] $msg]";
+        let formatted = format_source(input).unwrap();
+        assert_eq!(
+            formatted.trim(),
+            "[match $r [ok: body] $body [err: msg] $msg]"
+        );
+    }
+
+    #[test]
+    fn test_format_match_idempotent() {
+        let input = "[match $r [ok: body] $body [err: msg] $msg]";
+        let once = format_source(input).unwrap();
+        let twice = format_source(&once).unwrap();
+        assert_eq!(
+            once, twice,
+            "match expression formatting must be idempotent"
+        );
+    }
+
+    #[test]
+    fn test_format_pipe_simple() {
+        // $x | $f — the pipe operator
+        let input = "$x | $f";
+        let formatted = format_source(input).unwrap();
+        assert_eq!(formatted.trim(), "$x | $f");
+    }
+
+    #[test]
+    fn test_format_pipe_chained() {
+        let input = "$x | $f | $g";
+        let formatted = format_source(input).unwrap();
+        assert_eq!(formatted.trim(), "$x | $f | $g");
+    }
+
+    #[test]
+    fn test_format_pipe_idempotent() {
+        let input = "$x | $f";
+        let once = format_source(input).unwrap();
+        let twice = format_source(&once).unwrap();
+        assert_eq!(once, twice, "pipe expression formatting must be idempotent");
+    }
+
+    #[test]
+    fn test_format_typeapp_simple() {
+        // @[func arg] — type application
+        let input = "@[Maybe Int]";
+        let formatted = format_source(input).unwrap();
+        assert_eq!(formatted.trim(), "@[Maybe Int]");
+    }
+
+    #[test]
+    fn test_format_typeapp_idempotent() {
+        let input = "@[Maybe Int]";
+        let once = format_source(input).unwrap();
+        let twice = format_source(&once).unwrap();
+        assert_eq!(once, twice, "TypeApp formatting must be idempotent");
     }
 }

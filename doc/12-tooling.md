@@ -4,7 +4,7 @@
 
 **Zero-configuration** code formatter for Tinct files.
 
-The current formatter (`src/formatter.rs`) is an AST-based formatter that walks the `Spanned<File>` AST from `ParseOutput`, using comment maps for placement. It applies the line-breaking, comment, and spacing rules described below. See `doc/feature/parser-rewrite.md` §AST-Based Formatter for the design.
+The current formatter (`src/formatter.rs`) is an AST-based formatter that walks the `SurfaceProgram` from `ParseOutput` (traversing `SurfaceExpression` via `Arc<SurfaceNode>`), using comment maps for placement. It applies the line-breaking, comment, and spacing rules described below. See `doc/feature/parser-rewrite.md` §AST-Based Formatter for the design.
 
 ### Line-Breaking: Width + Element Count
 
