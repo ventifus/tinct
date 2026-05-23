@@ -57,6 +57,35 @@ The `parse()` function returns `Result<ParseOutput, ParseError>`.
 
 The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the first expression of the first document. Multi-expression inputs discard all but the first expression; multi-document inputs discard all but the first document (`---`-separated multi-doc input returns only the first document). No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
 
+### Surface AST (runtime-v2 native output)
+
+The parser natively constructs a **Surface AST** composed of three key types:
+
+```rust
+/// Top-level container for a complete parsed file
+struct SurfaceProgram {
+    documents: Vec<Spanned<SurfaceDocument>>,
+}
+
+/// Wrapper node with source span (Arc for shared ownership)
+struct SurfaceNode {
+    expr: SurfaceExpression,
+    span: Span,
+}
+
+/// Expression enum — same variants as Expr (Int, Float, VarRef, Pipe, etc.)
+enum SurfaceExpression { /* ... */ }
+```
+
+The Surface AST is the parser's native output and the authoritative representation before lowering. Key characteristics:
+
+- **Arc-wrapped nodes:** `Arc<SurfaceNode>` enables shared ownership across multiple references without copying the AST.
+- **Side-table design:** Variable resolution (`ResolutionTable`) and type annotations (`TypeAnnotationTable`) are stored separately, keyed by `NodeId` (derived from `Arc` raw pointer). This replaces the old `RefCell<Option<...>>` in-node mutation pattern.
+- **Pipe is preserved:** `SurfaceExpression::Pipe` remains in the Surface AST. The **lowering pass** (`src/lower.rs`) eliminates Pipe by rewriting it to `Call` before evaluation (see §Pipe Desugaring below).
+- **ParseOutput returns SurfaceProgram:** `parse()` returns `ParseOutput { program: SurfaceProgram, ... }`. The `.program` field is the native Surface AST.
+
+The old `Expr` type (with `Rc<Spanned<Expr>>` and `RefCell` mutation) is deprecated. All new code should use the Surface AST types.
+
 ### Core Expression Type
 
 ```rust
@@ -203,7 +232,7 @@ enum Annotation {
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by the variable resolution pass |
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
-| `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the post-parse AST and eliminated by the desugar pass (`src/desugar.rs`) before type checking and evaluation. The evaluator and type checker never see `Expr::Pipe`.** See §Pipe Desugaring below for the three desugar rules (WRAP-PIPE, CALL-EXTEND, CALL-WRAP). |
+| `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the Surface AST and eliminated by the lowering pass (`src/lower.rs`) before evaluation. The evaluator never sees `Expr::Pipe`.** Lowering rewrites `Pipe { lhs, rhs }` to `Call { func: rhs, args: [lhs], implied: true }` (equivalent to `f(a)` for `a \| f`). The type checker operates on the Surface AST and handles Pipe directly. |
 | `Sequential(exprs)` | Multi-expression fn body | Sequential expressions with let\* semantics; each expression's result dict extends environment for subsequent expressions |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |

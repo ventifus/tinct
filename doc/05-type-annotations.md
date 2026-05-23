@@ -844,7 +844,19 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |          ^
 ```
 
-`DirCap`, `NetCap`, `Handle` are opaque base types — no parametric polymorphism. Subtyping is reflexive only (`DirCap <: DirCap`, all <: `Any`). `RevocableDirCap` matches `DirCap` at the type level (revocation is a runtime property).
+`DirCap` and `NetCap` are opaque base types — subtyping is reflexive only (`DirCap <: DirCap`, all <: `Any`). `RevocableDirCap` matches `DirCap` at the type level (revocation is a runtime property).
+
+`Handle` is parameterized with a capability row describing the handle's properties. The notation is `Handle[Readable Writable]` for a handle with both read and write capabilities. The inner type is a Row of capability tags:
+
+```tinct
+Handle[Readable Writable]           # File handle with read and write access
+Handle[Readable Stream]             # Stream handle with read access
+Handle[Writable Appendable Binary]  # Binary file handle, append mode
+```
+
+Capability tags registered in TypeEnv: `Readable`, `Writable`, `Appendable`, `Binary`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow`.
+
+Subtyping is covariant in the capability row: `Handle[Readable Writable] <: Handle[Readable]` (more capabilities satisfy fewer). `Type::Unknown` as the inner type represents unknown capabilities (gradual typing fallback).
 
 The `%pwd`, `%libdir`, and `%stdin` capability variables are injected into the TypeEnv automatically; they do not need `caps:` declarations.
 

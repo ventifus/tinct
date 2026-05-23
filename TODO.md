@@ -723,23 +723,35 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 **Sources:** type-theorist, stdlib-author, eval-engine, grammar-architect, security-expert (review #311)
 
-- [ ] Update `doc/05-type-annotations.md` §20 (around line 848) — Handle section says "opaque base type, no parametric polymorphism" but `Type::Handle(Box<Type>)` has been parameterized with capability row since `handle-parameterization` sprint; update to document `Handle[readable: () writable: ()]` notation (type-theorist) [Major]
-- [ ] Update `doc/11a-builtins.md:3,1064` — builtin count is 284, not 283 (stdlib-author) [Major]
-- [ ] Add `SurfaceNode`/`SurfaceExpression`/`SurfaceProgram` section to `doc/15-ast.md` — surface AST types added in runtime-v2 Part A are completely undocumented; only old `Expr`/`Document`/`File` types documented (grammar-architect) [Major]
-- [ ] Add clarification to `doc/08-evaluation.md` §Recursive Dict Scoping — ALL non-literal key expressions (not just effectful ones like `$include`) force eagerly at dict construction time because `IndexMap` requires concrete `Key` values before letrec scoping can proceed; literal keys use `Materialized` fast-path (eval-engine) [Minor]
-- [ ] Add TypeAssert default validation note to `doc/06-type-inference.md` after the `[ASSERT-DEFAULT]` rule — "The type checker validates `default_ty <: σ` at elaboration time, ensuring defaults are type-safe regardless of whether the expression reaches the default branch" (type-theorist) [Minor]
-- [ ] Verify `Span::origin()` frame filtering in `EvalError::Display` (`src/error.rs`) — confirm stdlib frames with `0:0-0:0` synthetic spans are filtered from user-facing error output; add regression corpus test if filtering is confirmed (integration-verifier) [Minor]
-- [ ] Fix Windows symlink fallback: replace `.unwrap_or(false)` with explicit error check at `src/builtins_io.rs:2981` — current code silently treats unreadable target as "not a directory", obscuring the real error (security-expert) [Minor]
-- [ ] Verify `Expr::Pipe` handling — `doc/15-ast.md:206` claims desugar.rs eliminates Pipe, but desugar.rs was deleted in compat-cleanup sprint. Confirm where Pipe desugaring now occurs (inline in parser? lowering pass?) and update doc/15-ast.md:206 accordingly; add TODO if broken (grammar-architect review #316) [Major]
-- [ ] Fix `doc/15-ast.md:342` stale `parse2()` reference — `parse()` now returns `Result<ParseOutput, ParseError>` directly; `parse2()` was deleted; update doc/15-ast.md:56 and :342 to document current API (grammar-architect review #316) [Major]
-- [ ] Update `doc/15-ast.md` ClassDecl/InstanceDecl/PatternDecl node table rows — ClassDecl missing `determines`, `resolver`, `resolver_injective` fields; InstanceDecl should show `{ class_name, arms }` multi-arm structure; add PatternDecl row (grammar-architect review #316) [Minor]
+- [x] Update `doc/05-type-annotations.md` §20 — Handle parameterized with capability row, `Handle[Readable Writable]` notation documented, 11 capability tags listed [Major]
+- [x] Update `doc/11a-builtins.md:3,1064` — builtin count 283→284 [Major]
+- [x] Add `SurfaceNode`/`SurfaceExpression`/`SurfaceProgram` section to `doc/15-ast.md` — surface AST types documented [Major]
+- [x] Add clarification to `doc/08-evaluation.md` §Recursive Dict Scoping — ALL non-literal keys force eagerly [Minor]
+- [x] Add TypeAssert default validation note to `doc/06-type-inference.md` — elaboration-time check documented [Minor]
+- [x] Fix `doc/15-ast.md:206` Pipe handling — updated from desugar.rs (deleted) to lower.rs [Major]
+- [x] Fix `doc/15-ast.md` parse2() references — already clean, no stale references found [Major]
+- [x] Update `doc/15-ast.md` ClassDecl/InstanceDecl/PatternDecl rows — verified correct, all fields match [Minor]
+
+### code-health-cycle316: Code fixes from health reviews #311 + #316
+
+**Sources:** integration-verifier, performance-expert, type-theorist, security-expert, eval-engine (reviews #311 + #316)
+
+**Integration (Major):**
 - [ ] Wire TypeAnnotationTable in `builtin_include` and `builtin_load` — these builtins bypass typechecking entirely; all included/loaded files use empty annotation tables; TypeAssert nodes always fall back to RuntimeTypeCheck. Add typecheck call after parse+desugar+resolve in each; IncludeCacheEntry already carries TypeAnnotationTable as third field (integration-verifier review #316) [Major]
 - [ ] Audit `boundary_guards` propagation — confirm no fresh EvalContext is created AFTER typechecking in main.rs, repl.rs, LSP paths; all typecheck→eval paths should use same context instance to preserve boundary guards (integration-verifier review #316) [Major]
-- [ ] Fix BuiltinArgs clone at `eval.rs:1918-1920, 2156-2159` — two construction sites still clone `args`/`named` Vec/IndexMap instead of using `mem::take()`; different from the eval_materialize.rs sites fixed in eval-hot-path-fixes sprint (performance-expert review #316) [Major]
 - [ ] Wire TypeAnnotationTable lookup in force_step TypeAssert handling — the table is threaded to the evaluator but TypeAssert still always uses RuntimeTypeCheck fallback; check `types.get(node_id)` in the TypeAssert force path and use resolved type if present (`src/eval_materialize.rs` TypeAssert handling, `src/eval.rs:659-661`) (type-theorist review #316) [Major]
+
+**Performance (Major):**
+- [ ] Fix BuiltinArgs clone at `eval.rs:1918-1920, 2156-2159` — two construction sites still clone `args`/`named` Vec/IndexMap instead of using `mem::take()`; different from the eval_materialize.rs sites fixed in eval-hot-path-fixes sprint (performance-expert review #316) [Major]
+
+**Type system (Major + Minor):**
 - [ ] Implement Handle capability row validation at runtime — `eval.rs:659-661` has TODO comment "check if handle's capabilities include those in cap_row" but always accepts any Handle; implement structural row subtyping check (type-theorist review #316) [Major]
 - [ ] Audit 18 `Type::Unknown` in builtin Handle signatures — most I/O builtins use `Type::Handle(Box::new(Type::Unknown))` instead of precise capability rows; `accept`, `connect-tcp`, `http-get` produce known capabilities and should use `cap_flag("readable")`; `open` legitimately Unknown (runtime mode flag) (`src/type_env.rs`) (type-theorist review #316) [Minor]
 - [ ] Fix `Type::Handle` PartialEq to use bidirectional subtyping — current structural equality breaks HashMap deduplication when capability rows contain TypeVars or normalized forms that unify but don't structurally match (`src/type_def.rs:243`) (type-theorist review #316) [Minor]
+
+**Misc (Minor):**
+- [ ] Verify `Span::origin()` frame filtering in `EvalError::Display` (`src/error.rs`) — confirm stdlib frames with `0:0-0:0` synthetic spans are filtered from user-facing error output; add regression corpus test if filtering is confirmed (integration-verifier review #311) [Minor]
+- [ ] Fix Windows symlink fallback: replace `.unwrap_or(false)` with explicit error check at `src/builtins_io.rs:2981` — current code silently treats unreadable target as "not a directory", obscuring the real error (security-expert review #311) [Minor]
 - [ ] Verify `CoreExpr::Annotated.name` invariant in `core_expr_is_static_key` — predicate includes all `Annotated` forms as static keys, but if Annotated can wrap computed keys (e.g., `[@Type [+ 1 2]: value]`), the predicate would be wrong; confirm parser/lowering ensures Annotated.name is always a bare-word string (`src/eval_dict.rs:57-59`, `src/eval.rs:1429-1431`) (eval-engine review #316) [Minor]
 
 ---

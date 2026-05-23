@@ -302,6 +302,8 @@ resolve(ann) = σ,  Γ ⊢ e ⇐ σ fails,  default ∈ ann
 
 Type assertions use checking mode: the inner expression is checked against the annotated type via [SUB]. When checking fails and a `default:` property is present, the assertion succeeds silently (no type error). The default value provides a fallback at runtime.
 
+**Default validation:** The type checker validates `default_ty <: σ` at elaboration time, ensuring defaults are type-safe regardless of whether the expression reaches the default branch. This prevents runtime type errors when the default is actually used.
+
 **Limitation:** When the annotation resolves to a bare type variable (e.g., `[@a $x]`), the static subtype check always fails because `is_subtype` only matches type variables reflexively. Such assertions require a `default:` clause or will produce a type error. To narrow to a polymorphic type, use unification-based checking within a function parameter or return annotation context.
 
 **Type alias:**

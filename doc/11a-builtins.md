@@ -1,6 +1,6 @@
 # Builtin Reference
 
-This chapter provides a complete reference for all 283 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
+This chapter provides a complete reference for all 284 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
 
 ## Notation
 
@@ -1061,7 +1061,7 @@ Capability-gated time access and timestamp manipulation.
 
 ## Summary
 
-**Total:** 283 Rust-native builtins registered in `standard_builtins()`.
+**Total:** 284 Rust-native builtins registered in `standard_builtins()`.
 
 Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation.
 

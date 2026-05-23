@@ -47,6 +47,8 @@ Everything is a thunk until materialized. Compute only what's needed, when it's 
 
 Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, depth)` (in `eval_dict` in `src/eval.rs`) before the shared `dict_env` is populated with value thunks. This sequencing is critical: all keys must be known before string-keyed entries can be inserted into `dict_env` as bindings (in the dict environment binding loop in `eval_dict`).
 
+**All non-literal key expressions force eagerly.** While literal keys (`Int`, `Float`, `Bool`, `Str`) use the `Materialized` fast-path without creating thunks, ALL non-literal key expressions (including pure computations like `[+ 1 2]` or effectful operations like `$include`) are forced to concrete `Key` values at dict construction time. This is necessary because `IndexMap<Key, ThunkId>` requires concrete keys before letrec scoping can proceed. The evaluator cannot defer key computation — it must produce a `Key::Int(n)` or `Key::String(s)` value immediately to insert the entry into the dict.
+
 **Effectful key expressions:** Computed keys may contain effectful operations (such as `$include`). These effects execute in the parent scope context, not the dict's letrec scope. For example, `[include "keys.llt"]` in a dict key position evaluates the included file with access to the parent environment's bindings, not the dict's own entries. This is consistent with the scoping rule but means included files used as keys cannot reference the dict's own bindings.
 
 **Circular dependencies** are detected at materialization-time and reported with a clear cycle trace.
