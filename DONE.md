@@ -9083,3 +9083,7 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] Enforce `[class [let ...]]` and `[type [let ...]]` — ClassDecl already enforced, TypeAlias now rejects lowercase-only old-form params via heuristic; 6 parser tests added
 - [x] Update tests/corpus/ and stdlib/ fn params to use `[let ...]` throughout (~200 files updated)
 - [x] `just test` passes — lib tests 1883/0 ✓ (commit 7e9ccd0)
+
+### linear-accumulators-review: Post-implementation review
+
+- [x] Run `/review-whatif linear-accumulators` — all spec requirements verified: 8 builder ops, 18 stdlib rewrites, doc/11-stdlib.md up to date, one-shot invariant enforced, O(n²)→O(n) complexity confirmed. builder-get-or bonus (not in spec) is a positive improvement. flat-map Dict path O(n²) known per spec §Scope Boundary.

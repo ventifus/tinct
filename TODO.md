@@ -137,13 +137,6 @@ Panel review (stdlib-author, eval-engine, performance-expert, computer-scientist
 - [ ] When `dist-eval` sprint implements `distributable?`: add `Value::Builder` to non-distributable set — **DEFERRED** (needs dist-eval sprint)
 - [x] Large-input corpus tests for build-dict functions — 7 tests (n=1000): from-entries, map-entries, remove, take-while, drop-while, slice, deep-merge
 
-### linear-accumulators-review: Post-implementation review
-
-**Whatif:** `linear-accumulators`
-**Depends on:** `linear-accumulators-fixes`
-
-- [ ] Run `/review-whatif linear-accumulators` — verify all sprints complete, implementation matches spec, main docs consistent
-
 ---
 
 ---
