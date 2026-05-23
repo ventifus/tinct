@@ -1850,8 +1850,6 @@ fn run_eval(
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-        let ast = tinct::ast_convert::surface_program_to_file(&program);
-
         // Type errors are advisory unless --strict is set.
         // Build type environment with prelude + includes (if file-based).
         let type_env = match stage {
@@ -1874,8 +1872,10 @@ fn run_eval(
             type_diagnostics,
             infer_state,
             _final_env,
-        ) = tinct::typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
-            &ast.node, type_env, false, // disable scheme_map (not needed for eval)
+        ) = tinct::typecheck::typecheck_surface_program_with_env(
+            &program,
+            type_env,
+            false, // disable scheme_map (not needed for eval)
             false, // not in prelude load
         );
         if !type_errors.is_empty() {
@@ -2084,11 +2084,9 @@ fn run_fmt(
         tinct::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let _resolution_table = tinct::resolve::resolve_surface_program(&program);
-        let ast = tinct::ast_convert::surface_program_to_file(&program);
-
         let env = tinct::build_prelude_env();
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
-            tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
+            tinct::typecheck::typecheck_surface_program(&program, env);
 
         if !type_errors.is_empty() {
             let error_msgs: Vec<String> = type_errors
@@ -2200,12 +2198,10 @@ fn run_lint(
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let _resolution_table = tinct::resolve::resolve_surface_program(&program);
-    let ast = tinct::ast_convert::surface_program_to_file(&program);
-
     // Type check with prelude environment
     let env = tinct::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
+        tinct::typecheck::typecheck_surface_program(&program, env);
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -3419,12 +3415,12 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let _resolution_table = tinct::resolve::resolve_surface_program(&program);
-    let ast = tinct::ast_convert::surface_program_to_file(&program);
-
     // Type check to get DocMap (for doc strings)
     let env = tinct::build_prelude_env();
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        tinct::typecheck::typecheck_file_with_types_and_env(&ast.node, env);
+        tinct::typecheck::typecheck_surface_program(&program, env);
+
+    let ast = tinct::ast_convert::surface_program_to_file(&program);
 
     // Collect contract information from each document section.
     let mut contracts: Vec<serde_json::Value> = Vec::new();

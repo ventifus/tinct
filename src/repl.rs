@@ -205,15 +205,18 @@ impl ReplSession {
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
-        let file = crate::ast_convert::surface_program_to_file(&program);
         // Type errors are advisory; evaluation proceeds regardless.
         // Collect type and doc information for meta-commands.
         let (_type_errors, type_map, doc_map, _scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_file_with_types(&file.node);
+            crate::typecheck::typecheck_surface_program(
+                &program,
+                crate::imports::build_prelude_env(),
+            );
         // Extend (not replace) the session's type and doc maps with the new information
         self.type_map.extend(type_map);
         self.doc_map.extend(doc_map);
 
+        let file = crate::ast_convert::surface_program_to_file(&program);
         if file.node.documents.is_empty() {
             return Err("empty input".to_string());
         }

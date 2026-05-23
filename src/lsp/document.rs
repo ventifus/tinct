@@ -9,7 +9,7 @@ use crate::ast::{File, Spanned, SurfaceProgram};
 use crate::builtins::create_stdlib_env_with_arena;
 use crate::error::{EvalError, TypeDiagnostic};
 use crate::parser::{parse, ParseError};
-use crate::typecheck::{typecheck_file_with_types_and_env, DocMap, SchemeMap, TypeMap};
+use crate::typecheck::{DocMap, SchemeMap, TypeMap};
 use crate::types::TypeError;
 use crate::value::Environment;
 
@@ -157,7 +157,7 @@ impl DocumentState {
                 let (seeded_env, include_bindings) =
                     crate::imports::build_type_env_with_cap(prog, type_base_dir, type_cap_dir);
                 let (errs, mut map, docs, smap, tc_diagnostics) =
-                    typecheck_file_with_types_and_env(&file.node, seeded_env);
+                    crate::typecheck::typecheck_surface_program(prog, seeded_env);
                 // Post-pass: inject precise Record types for [include %cap "path"] expressions.
                 crate::imports::apply_include_type_post_pass(prog, &include_bindings, &mut map);
                 type_errors = errs;
