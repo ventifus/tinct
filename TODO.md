@@ -637,20 +637,6 @@ After chr-instances-gaps, 6 typecheck + 5 type-error corpus tests still fail bec
 
 ## Evaluator Correctness + Performance (Health Review #311)
 
-### eval-hot-path-fixes: CoreExpr regression, EvalStackGuard, alloc hotspots, TypeAnnotationTable wire
-
-**Sources:** computer-scientist, performance-expert, integration-verifier (review #311)
-
-**Correctness (Critical/Major):**
-- [ ] Investigate and fix CoreExpr round-trip at `eval.rs:1412-1418`, `eval_call.rs:72` — `core_expr_to_expr` re-enters old `eval()` path, losing de Bruijn coordinates and partially undoing the CoreExpr migration (computer-scientist) [Major]
-- [ ] Implement `EvalStackGuard` RAII struct in `eval_materialize.rs` — comments describe the struct but ~18 manual push/pop sites have no structural balance guarantee; implement or replace with Drop-based guard (computer-scientist) [Major]
-- [ ] Wire TypeAnnotationTable from `typecheck_surface_program*` result into `eval_surface_file` — currently `eval_source_with_config` passes empty `TypeAnnotationTable::default()`, forcing all TypeAssert nodes to `RuntimeTypeCheck` fallback; annotate the threading path and pass the table (integration-verifier) [Major]
-
-**Performance (Critical/Major):**
-- [ ] Fix `BuiltinArgs` clone in `force_step` (`eval_materialize.rs:578-583`) — change `args.as_ref().expect(...).clone()` to `args.take().expect(...)` to avoid Vec/IndexMap clone on every builtin call (performance-expert) [Critical]
-- [x] Change `Environment.bindings` from `IndexMap` to `HashMap` — **NOT VIABLE**: `get_by_slot()` calls `bindings.get_index(slot)` (IndexMap positional access); slot system already makes IndexMap+slots faster than HashMap+name lookup. Removing would break slot fast-path entirely.
-- [ ] Fix stale comment at `value.rs:1775` — says "future slot-based O(1) lookup (Phase 2)" but slot lookup is already implemented and active (`eval.rs:1344` uses `env.get_by_slot(level, slot)`) [Minor]
-- [ ] Profile slot hit rate vs name-lookup fallback rate — if fallback is high, it indicates resolver coverage gaps (some variable types not getting slots assigned), not a data structure problem. Fix: improve resolver slot assignment, not data structure. Instrument `Environment::get()` with a counter to measure [Minor]
 
 ### resolver-slot-coverage: Extend slot assignment to all variable types
 
@@ -671,11 +657,10 @@ Type annotations using `@[constraint: [a: Foo]]` form use PropertyDict, which is
 **Gap 4 — Verify LetDecl/PatternDecl sequential injection**:
 The Sequential handler (lines 118-135) calls `surface_node_static_keys(e)` to decide whether to inject scope after each expression. Verify `LetDecl` and `PatternDecl` nodes are correctly identified by `surface_node_static_keys` so their bindings get slots in subsequent expressions.
 - [ ] Audit `surface_node_static_keys` to confirm it returns keys for all declaration types that introduce bindings (`src/resolve.rs`, helper function) [Minor]
-- [ ] Skip `dict_env` allocation for literal-only dicts in `eval_dict_core` (`eval_dict.rs:82-84`) — `Arc::new(RwLock::new(Environment::with_parent(...)))` allocated even when all values are Int/Float/Bool/Str (performance-expert) [Major]
+- [ ] Fix stale comment at `value.rs:1775` — says "future slot-based O(1) lookup (Phase 2)" but slot lookup is already active (`eval.rs:1344`; IndexMap+slots confirmed correct design) [Minor]
+- [ ] Profile slot hit rate vs name-lookup fallback rate — instrument `Environment::get()` with counter; high fallback indicates resolver coverage gaps (resolver improvements fix, not data structure change) [Minor]
+- [ ] Start W1 strictness scan at `arg_idx+1` in `BuiltinForceArg` continuation (`eval_materialize.rs:550-556`) — scan restarts from 0 on every resume; skipped from eval-hot-path-fixes [Minor]
 
-**Performance (Minor):**
-- [ ] Start W1 strictness scan at `arg_idx+1`, not 0, in `BuiltinForceArg` continuation (`eval_materialize.rs:550-556`) — linear scan restarts from 0 on every resume (performance-expert) [Minor]
-- [ ] `count_static_keys_core` double-pass: use `entries.len()` as capacity upper bound instead of counting-then-inserting (`eval_dict.rs:52-63`) (performance-expert) [Minor]
 
 ### resolver-slot-soundness: Fix computed-string key slot-shift and add get_by_slot name verification
 

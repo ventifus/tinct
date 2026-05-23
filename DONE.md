@@ -9084,6 +9084,18 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] Update tests/corpus/ and stdlib/ fn params to use `[let ...]` throughout (~200 files updated)
 - [x] `just test` passes — lib tests 1883/0 ✓ (commit 7e9ccd0)
 
+### eval-hot-path-fixes: EvalStackGuard, BuiltinArgs clone, TypeAnnotationTable wire, dict perf
+
+- [x] Implement EvalStackGuard RAII struct — push/disarm/inherited pattern replaces ~18 manual push/pop pairs; Drop ensures stack balance on error paths (`src/eval_materialize.rs`)
+- [x] Wire TypeAnnotationTable from typecheck_surface_program_annotation_table into eval_surface_file — TypeAssert nodes use statically-resolved types instead of RuntimeTypeCheck fallback (`src/lib.rs`)
+- [x] Fix BuiltinArgs clone — args.take() throughout eval_materialize.rs; eliminates Vec/IndexMap clone on every builtin call
+- [x] Skip dict_env allocation for literal-only dicts — has_non_literal check at eval_dict.rs:64-91; saves Arc+RwLock alloc
+- [x] count_static_keys_core: entries.len() directly as capacity upper bound (single-pass)
+- [x] IndexMap→HashMap NOT viable — get_by_slot() uses bindings.get_index(slot); slot system is faster
+- [x] Fix sprint SKILL.md — agents no longer run just test; prevents parallel OOM of toolbox MCP
+- [ ] KNOWN ISSUE: CoreExpr round-trip at eval.rs:1614, eval_call.rs:72 — intentional (documented in comments); tracked for future cleanup
+- [ ] W1 strictness scan optimization (arg_idx+1 start) — skipped, moved to resolver-slot-coverage
+
 ### corpus-taxonomy-fix: Move 12 warn-only tests from eval/errors/ to typecheck/warnings/
 
 - [x] Moved 12 tests with === out + === warn (no === error) to typecheck/warnings/: constraint_class_not_varref (+ [let] fix + warn substr), constraint_key_not_bareword, constraint_multi_class_keyed_entry (+ [let] fix + warn substr), constraint_not_dict, constraint_positional_entry, constraint_value_invalid, doc_not_string, fn_annotation_mixed_keys, help_suggestion_arity, help_suggestion_type_mismatch (+ [let] fix), proxy_named_arg, unknown_fn_annotation_key
