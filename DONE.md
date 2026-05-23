@@ -9107,6 +9107,16 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [ ] DEFERRED: type-stage named sections corrupting %name slot indices (Major — separate sprint)
 - [ ] DEFERRED: computed-key scope Sequential/doc corpus test, test relocation to eval/regressions/, flatten_overlay optimization (Minor fix-later)
 
+### resolver-slot-coverage: Extend slot assignment to all variable types
+
+- [x] Match arm pattern-bound variable slots: extract_pattern_bindings()/collect_pattern_bindings() helpers; enter_scope/exit_scope per arm; has_bindings guard; Or-pattern debug_assert invariant; Dict pattern comment clarified
+- [x] Audit surface_node_static_keys: confirmed correct (only Dict, LetDecl/PatternDecl are not scope creators)
+- [x] Slot profiling counters: SLOT_HIT_COUNT/SLOT_MISS_COUNT #[cfg(test)] + reset_slot_counters()
+- [x] W1 strictness scan: .skip(force_count) in initial PendingBuiltin dispatch
+- [ ] Gap 1 (PropertyDict annotation): BLOCKED on Annotation migration to Arc<SurfaceNode>
+- [ ] Gap 3 (constraint annotation variables): consequence of Gap 1
+- [ ] Dict/Seq multi-binding structural mismatch: runtime creates nested-env chain; resolver assigns flat-scope slots → fast-path dead for multi-binding (fix-later)
+
 ### corpus-taxonomy-fix: Move 12 warn-only tests from eval/errors/ to typecheck/warnings/
 
 - [x] Moved 12 tests with === out + === warn (no === error) to typecheck/warnings/: constraint_class_not_varref (+ [let] fix + warn substr), constraint_key_not_bareword, constraint_multi_class_keyed_entry (+ [let] fix + warn substr), constraint_not_dict, constraint_positional_entry, constraint_value_invalid, doc_not_string, fn_annotation_mixed_keys, help_suggestion_arity, help_suggestion_type_mismatch (+ [let] fix), proxy_named_arg, unknown_fn_annotation_key

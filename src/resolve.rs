@@ -13,7 +13,7 @@
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
 use crate::ast::{
-    node_id, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
+    node_id, Pattern, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
     SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
 };
 use std::sync::Arc;
@@ -172,10 +172,28 @@ impl SurfaceResolver {
             SurfaceExpression::Match { scrutinee, arms } => {
                 self.walk_surface_node(scrutinee);
                 for arm in arms {
+                    // Extract pattern-bound variables
+                    let bound_names = extract_pattern_bindings(&arm.pattern);
+
+                    // Only push a scope when the pattern actually binds variables.
+                    // Wildcard (`_`), literals, TypeTag, and Pin patterns bind nothing;
+                    // allocating an empty IndexMap and pushing/popping it is pure overhead.
+                    let has_bindings = !bound_names.is_empty();
+                    if has_bindings {
+                        self.enter_scope(&bound_names);
+                    }
+
+                    // Walk guard (if present) inside the pattern scope
                     if let Some(guard) = &arm.guard {
                         self.walk_surface_node(guard);
                     }
+
+                    // Walk body inside the pattern scope
                     self.walk_surface_node(&arm.body);
+
+                    if has_bindings {
+                        self.exit_scope();
+                    }
                 }
             }
 
@@ -374,6 +392,102 @@ fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
     }
 }
 
+/// Extract all variable names bound by a pattern.
+/// This is used to create scope bindings for match arm bodies.
+///
+/// Examples:
+/// - `_` (Wildcard) → []
+/// - `x` (Variable) → ["x"]
+/// - `[Some v]` (Constructor) → ["v"]
+/// - `[Dict {x, y: z}]` → ["x", "z"]
+/// - `[seq h t]` → ["h", "t"]
+/// - `x | y` (Or) → ["x", "y"] (both branches must bind same vars)
+fn extract_pattern_bindings(pattern: &Spanned<Pattern>) -> Vec<String> {
+    let mut bindings = Vec::new();
+    collect_pattern_bindings(&pattern.node, &mut bindings);
+    bindings
+}
+
+/// Recursively collect all variable bindings from a pattern.
+fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
+    match pattern {
+        Pattern::Wildcard => {
+            // Wildcard matches anything but binds no variables
+        }
+        Pattern::Variable(name) => {
+            out.push(name.clone());
+        }
+        Pattern::Literal(_) => {
+            // Literal patterns bind no variables
+        }
+        Pattern::TypeTag(_) => {
+            // Type tag patterns (e.g., `Int`, `Str`) bind no variables
+        }
+        Pattern::Pin(_) => {
+            // Pin patterns ($name) match against existing variable value, don't bind
+        }
+        Pattern::Dict { fields, .. } => {
+            // Dict pattern: each field has a key and an inner pattern. The
+            // bound name comes from the inner pattern (typically Variable(name)),
+            // not directly from the key string. `{x}` desugars to key="x" with
+            // inner pattern Variable("x"); `{x: y}` has key="x" with inner
+            // pattern Variable("y"). We recurse into each field's inner pattern.
+            for (_key, field_pattern) in fields {
+                collect_pattern_bindings(&field_pattern.node, out);
+            }
+        }
+        Pattern::Seq { head, tail } => {
+            // Seq pattern: both head and tail can bind variables
+            collect_pattern_bindings(&head.node, out);
+            collect_pattern_bindings(&tail.node, out);
+        }
+        Pattern::Constructor { binding, .. } => {
+            // Constructor pattern: optional payload binding
+            // `[Some v]` binds `v`, `None` binds nothing
+            if let Some(payload_pattern) = binding {
+                collect_pattern_bindings(&payload_pattern.node, out);
+            }
+        }
+        Pattern::Or(branches) => {
+            // Or-pattern invariant: every branch must bind the SAME variable names
+            // in the SAME ORDER. Slot indices are assigned from the first branch;
+            // the evaluator uses these same slot indices when binding any branch.
+            // A pattern like `(x, y) | (y, x)` would be rejected by the type-checker
+            // as a name-order mismatch, but we assert the invariant here in debug
+            // mode to catch bugs early (e.g., from desugar or macro expansion).
+            //
+            // Invariant enforcement: the semantic validator / type-checker is the
+            // primary enforcer. This debug_assert is a belt-and-suspenders check.
+            if let Some(first_branch) = branches.first() {
+                collect_pattern_bindings(&first_branch.node, out);
+
+                #[cfg(debug_assertions)]
+                {
+                    let first_names: Vec<String> = {
+                        let mut v = Vec::new();
+                        collect_pattern_bindings(&first_branch.node, &mut v);
+                        v
+                    };
+                    for other_branch in branches.iter().skip(1) {
+                        let mut other_names = Vec::new();
+                        collect_pattern_bindings(&other_branch.node, &mut other_names);
+                        debug_assert_eq!(
+                            first_names,
+                            other_names,
+                            "Or-pattern branches must bind the same variable names in the same \
+                             order. First branch binds {:?} but another branch binds {:?}. \
+                             This is a resolver invariant violation — check desugaring or \
+                             pattern validation.",
+                            first_names,
+                            other_names,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // All prior tests used resolve_file(), Expr, File, and ast_convert::surface_program_to_file()
@@ -461,6 +575,15 @@ mod tests {
             SurfaceExpression::Sequential(exprs) => {
                 for e in exprs {
                     collect_varrefs_in_node(e, name, out);
+                }
+            }
+            SurfaceExpression::Match { scrutinee, arms } => {
+                collect_varrefs_in_node(scrutinee, name, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_varrefs_in_node(guard, name, out);
+                    }
+                    collect_varrefs_in_node(&arm.body, name, out);
                 }
             }
             _ => {}
@@ -552,5 +675,90 @@ mod tests {
             coords.1, 0,
             "outer is the first key in the dict scope, slot 0"
         );
+    }
+
+    /// Match arm pattern bindings should be resolved in the arm body.
+    /// `[match x [Some n]: [+ n 1]]` — `$n` in the arm body should resolve to (level=0, slot=0).
+    #[test]
+    fn match_arm_pattern_binding() {
+        let (program, table) = parse_and_resolve("[match x [Some n]: [+ $n 1]]");
+        let refs = find_varref_nodes(&program, "n");
+        assert!(!refs.is_empty(), "expected VarRef for $n in arm body");
+        let (id, _) = &refs[0];
+        let coords = table
+            .get(id)
+            .expect("$n should be resolved (pattern binding in arm scope)");
+        assert_eq!(coords.0, 0, "pattern binding should be at level 0");
+        assert_eq!(coords.1, 0, "n is the first (and only) pattern binding");
+    }
+
+    /// Match arm guard expressions should see pattern bindings.
+    /// `[match x [Some n] if: [> $n 0]: $n]` — both `$n` should resolve.
+    #[test]
+    fn match_arm_guard_sees_pattern_bindings() {
+        let src = "[match x [Some n] if: [> $n 0]: $n]";
+        let (program, table) = parse_and_resolve(src);
+        let refs = find_varref_nodes(&program, "n");
+        // Should have exactly 2 VarRefs: one in guard, one in body
+        assert_eq!(refs.len(), 2, "expected exactly 2 VarRefs for $n (guard + body)");
+        for (id, _) in &refs {
+            let coords = table
+                .get(id)
+                .expect("$n should be resolved in both guard and body");
+            assert_eq!(coords.0, 0, "pattern binding at level 0");
+            assert_eq!(coords.1, 0, "n is slot 0");
+        }
+    }
+
+    /// Match with Dict pattern should bind all field variables.
+    /// `[match x [{a, b: c}]: [+ $a $c]]` — both `$a` and `$c` should resolve.
+    #[test]
+    fn match_dict_pattern_bindings() {
+        let src = "[match x [{a, b: c}]: [+ $a $c]]";
+        let (program, table) = parse_and_resolve(src);
+
+        // Check $a resolves
+        let a_refs = find_varref_nodes(&program, "a");
+        assert!(!a_refs.is_empty(), "expected VarRef for $a");
+        let (id, _) = &a_refs[0];
+        let coords = table
+            .get(id)
+            .expect("$a should be resolved (dict pattern field)");
+        assert_eq!(coords.0, 0, "$a at level 0");
+        assert_eq!(coords.1, 0, "$a is first binding, slot 0");
+
+        // Check $c resolves
+        let c_refs = find_varref_nodes(&program, "c");
+        assert!(!c_refs.is_empty(), "expected VarRef for $c");
+        let (id, _) = &c_refs[0];
+        let coords = table
+            .get(id)
+            .expect("$c should be resolved (dict pattern field)");
+        assert_eq!(coords.0, 0, "$c at level 0");
+        assert_eq!(coords.1, 1, "$c is second binding, slot 1");
+    }
+
+    /// Match with wildcard pattern should introduce no bindings.
+    /// A VarRef inside a wildcard arm body must NOT be slot-resolved — the
+    /// wildcard creates no scope entries, so `$x` stays a FreeVar.
+    #[test]
+    fn match_wildcard_pattern_no_bindings() {
+        // `$x` in the wildcard arm body refers to nothing bound by `_`.
+        // The resolver must not produce a table entry for this VarRef.
+        let (program, table) = parse_and_resolve("[match val _: $x]");
+        let refs = find_varref_nodes(&program, "x");
+        // There should be at least one VarRef for $x (in the arm body)
+        assert!(
+            !refs.is_empty(),
+            "expected at least one VarRef for $x in wildcard arm body"
+        );
+        // None of the $x VarRefs should be resolved — the wildcard binds
+        // nothing, so $x has no slot assignment (remains a FreeVar).
+        for (id, _) in &refs {
+            assert!(
+                table.get(id).is_none(),
+                "wildcard binds nothing; $x in wildcard arm body must not be slot-resolved"
+            );
+        }
     }
 }

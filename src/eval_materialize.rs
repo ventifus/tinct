@@ -366,13 +366,11 @@ const _: () = assert!(std::mem::size_of::<Cont>() <= 96);
 /// that receive pop responsibility from a prior push (e.g., `Cont::PendingCallDispatch`
 /// inherits from `force_step`'s PendingCall push). The inherited guard does not push
 /// but will pop on drop unless disarmed.
-#[allow(dead_code)] // TODO: implement RAII guard for eval_stack push/pop (see TODO.md eval-hot-path-fixes)
 struct EvalStackGuard {
     state: Arc<Mutex<crate::eval::EvalState>>,
     armed: bool,
 }
 
-#[allow(dead_code)] // TODO: implement RAII guard for eval_stack push/pop (see TODO.md eval-hot-path-fixes)
 impl EvalStackGuard {
     /// Push an entry onto the eval_stack and create a guard that will pop on drop.
     fn push(state: &Arc<Mutex<crate::eval::EvalState>>, entry: (String, Span)) -> Self {
@@ -598,14 +596,21 @@ pub(crate) async fn force_step(
         // W1 dispatch-time materialization: scan pos_strictness for first Seq/Spine position.
         // Pre-materialize strict args iteratively to prevent Rust stack growth and enable
         // the builtin to skip redundant materialize() calls (thunk memoization fast-path).
+        // Skip positions [0..force_count) that were already processed above.
         use crate::value::Strictness;
-        if let Some((arg_idx, _)) = def.pos_strictness.iter().enumerate().find(|(i, &s)| {
-            *i < args.as_ref().expect("args set above").len()
-                && (s == Strictness::Seq || s == Strictness::Spine)
-                && args.as_ref().expect("args set above")[*i]
-                    .try_get_materialized()
-                    .is_none()
-        }) {
+        if let Some((arg_idx, _)) = def
+            .pos_strictness
+            .iter()
+            .enumerate()
+            .skip(def.force_count)
+            .find(|(i, &s)| {
+                *i < args.as_ref().expect("args set above").len()
+                    && (s == Strictness::Seq || s == Strictness::Spine)
+                    && args.as_ref().expect("args set above")[*i]
+                        .try_get_materialized()
+                        .is_none()
+            })
+        {
             let arg_thunk = Arc::clone(&args.as_ref().expect("args set above")[arg_idx]);
             stack.push(Cont::BuiltinForceArg(Box::new(BuiltinForceArgData {
                 thunk: Arc::clone(thunk),

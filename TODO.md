@@ -648,7 +648,7 @@ After chr-instances-gaps, 6 typecheck + 5 type-error corpus tests still fail bec
 
 **Gap 2 — Match arm pattern-bound variables** (`src/resolve.rs:172-180`):
 `Match` arms walk scrutinee + body but never call `enter_scope()` for pattern-bound variables (e.g., `[match x  [Int n]: [+ n 1]]` — `n` has no slot, falls back to name lookup inside the arm body).
-- [ ] Extend `walk_surface_expr` for `SurfaceExpression::Match`: extract bound variable names from each arm's pattern (`CaseArm::pattern`), call `enter_scope(bound_names)` before walking `arm.body`, call `exit_scope()` after (`src/resolve.rs:172-180`) [Major]
+- [x] Extend `walk_surface_expr` for `SurfaceExpression::Match`: extract bound variable names from each arm's pattern via `extract_pattern_bindings()`/`collect_pattern_bindings()`; `enter_scope(bound_names)` before guard + body, `exit_scope()` after; guarded by `has_bindings` to skip empty-scope allocation for Wildcard/Literal/etc. (`src/resolve.rs:172-196`) [Major]
 
 **Gap 3 — Variables inside type annotations** (cross-cutting):
 Type annotations using `@[constraint: [a: Foo]]` form use PropertyDict, which is skipped. Until Gap 1 is fixed, all constraint-annotation variables fall back to name lookup.
@@ -656,10 +656,10 @@ Type annotations using `@[constraint: [a: Foo]]` form use PropertyDict, which is
 
 **Gap 4 — Verify LetDecl/PatternDecl sequential injection**:
 The Sequential handler (lines 118-135) calls `surface_node_static_keys(e)` to decide whether to inject scope after each expression. Verify `LetDecl` and `PatternDecl` nodes are correctly identified by `surface_node_static_keys` so their bindings get slots in subsequent expressions.
-- [ ] Audit `surface_node_static_keys` to confirm it returns keys for all declaration types that introduce bindings (`src/resolve.rs`, helper function) [Minor]
+- [x] Audit `surface_node_static_keys` — confirmed correct: only handles `SurfaceExpression::Dict`; LetDecl/PatternDecl are binding declarations (not scope creators) so no changes needed [Minor]
 - [x] Fix stale comment at `value.rs:1775` — says "future slot-based O(1) lookup (Phase 2)" but slot lookup is already active (`eval.rs:1344`; IndexMap+slots confirmed correct design) [Minor]
-- [ ] Profile slot hit rate vs name-lookup fallback rate — instrument `Environment::get()` with counter; high fallback indicates resolver coverage gaps (resolver improvements fix, not data structure change) [Minor]
-- [ ] Start W1 strictness scan at `arg_idx+1` in `BuiltinForceArg` continuation (`eval_materialize.rs:550-556`) — scan restarts from 0 on every resume; skipped from eval-hot-path-fixes [Minor]
+- [x] Profile slot hit rate — added `SLOT_HIT_COUNT`/`SLOT_MISS_COUNT` `#[cfg(test)]` counters to `get_by_slot()` + `reset_slot_counters()` in `value.rs` [Minor]
+- [x] Start W1 strictness scan at `force_count` via `.skip(force_count)` in initial PendingBuiltin dispatch (`eval_materialize.rs`) — avoids rescanning already-forced positions [Minor]
 
 
 ### resolver-slot-soundness: Fix computed-string key slot-shift and add get_by_slot name verification
@@ -787,7 +787,27 @@ Key questions:
 - Does `match_pattern` produce the correct bindings for nested destructuring (record fields, payload extraction)?
 - Is backtracking correct — can a partial match in a complex pattern leave bindings from the failed branch visible?
 
-- [ ] Dispatch eval-engine + computer-scientist to audit match evaluation and report findings → findings go to TODO.md
+- [x] Dispatch eval-engine + computer-scientist to audit match evaluation and report findings → findings go to TODO.md
+
+**Audit findings (2026-05-23). Formal model: Plotkin big-step natural semantics (Launchbury 1993 for the runtime, Peyton Jones 1987 ch.5 for pattern sequencing). Core algorithm sound; 2 UNSOUND + 8 GAP findings.**
+
+**UNSOUND:**
+- [ ] **PM1 UNSOUND — Guard `is:` function-predicate dispatch lost in E1-eval-cutover.** `src/eval.rs:1627`. Guard truthy check is `!matches!(guard_value, Value::Bool(true))`, but when the guard expression evaluates to a `Value::Function` or `Value::Builtin`, the function is never *called* — the arm is silently skipped. `doc/feature/pattern-matching.md:90-95` specifies that `is: positive?` (a named function) should invoke the predicate with the bound value. This was implemented in the old `eval_recursive` path but lost during the CoreExpr migration. Corpus tests `match_is_guard.llt-eval` and `match_is_guard_skip.llt-eval` use function predicates and are likely failing. Fix: if guard evaluates to `Function`/`Builtin`, invoke it with the scrutinee value and use the return value for the truthiness check. (`src/eval.rs:1627`)
+- [ ] **PM2 UNSOUND — `Value::Overlay` not matched by `Pattern::Dict`.** `src/eval.rs:2793`. `Value::Overlay`'s `type_name()` returns `"Dict"`, so `Pattern::TypeTag("Dict")` matches it. But `Pattern::Dict { fields, rest }` only matches `Value::Dict`, so `[a: x ...]:` on a merged dict fails and falls to wildcard. Counterexample: `[match [merge [a: 1] [b: 2]] [a: x ...]: x _: 0]` returns `0` instead of `1`. Fix: flatten `Value::Overlay` to `Value::Dict` before dict pattern matching, as `eval_materialize.rs` already does in the guard-wrapping path.
+
+**GAP (correctness gaps or missing invariants):**
+- [ ] **PM3 GAP — No pattern linearity check (duplicate variable names in one pattern).** `src/eval.rs:2800,2870`. `[a: x  b: x  ...]:` silently binds `x` to the `a` field, then re-binds it to `b`, so the body sees `x = b_value`. ML-family semantics (Peyton Jones 1987, ch.5) require each variable to appear at most once. Fix: in `expr_to_pattern_with_guard` or `match_pattern`, collect all bound names and reject duplicates. Infrastructure (`collect_pattern_variables`) already exists.
+- [ ] **PM4 GAP — Non-exhaustive match uses generic `EvalError::internal` / E099.** `src/eval.rs:1638`. Runtime match failure should have its own `ErrorKind` (e.g. `MatchExhaustion`) with dedicated error code and scrutinee info. Doc says "a MatchError is raised" but no such `ErrorKind` variant exists. Fix: add `ErrorKind::MatchExhaustion { scrutinee_type: String }` with a new error code; include scrutinee's `type_name()` in the message.
+- [ ] **PM5 GAP — Guard truthy check is Bool-only; doc/spec says otherwise.** `src/eval.rs:1627`. Only `Value::Bool(true)` passes; any other truthy value (Int, non-empty Dict, etc.) causes the arm to be skipped. Doc implies truthiness semantics consistent with `$if`. Decide and document the canonical guard truth semantics; update implementation to match.
+- [ ] **PM6 GAP — Closed dict pattern (`rest: false`) is unreachable from any parsed program.** `src/parser.rs:4996-5004`. `has_rest` is initialized to `true` and never set to `false`; no parser syntax produces `Pattern::Dict { rest: false }`. The closed-match code at `src/eval.rs:2835-2847` is dead. Fix: implement closed-pattern syntax (e.g. trailing `!` per doc), or add comment that `rest: false` is unimplemented. Rename corpus test `dict_closed_matching_fail.llt-eval` to reflect what it actually tests (open matching with extra keys succeeding).
+- [ ] **PM7 GAP — `Constructor { binding: None }` arm unreachable from parsed programs.** `src/eval.rs:2930-2932`. Nullary constructors always parse as `Pattern::TypeTag`, never `Pattern::Constructor { binding: None }`. Add comment noting this arm is dead, or consolidate the two paths.
+- [ ] **PM8 GAP — Dead `eval_case_arm` / `eval_let_pattern` stubs orphaned by E1-eval-cutover.** `src/eval.rs:3017-3120`. Both are `#[allow(dead_code)]` and unreachable. Delete them (or explicitly track for the `unified-bindings` sprint).
+- [ ] **PM9 GAP — Pin pattern equality skips Dict and Seq values.** `src/eval.rs:3142`. `values_equal` returns `false` for all `(Dict, Dict)` and falls through on `Seq`. Pin-matching `$dict_var:` against a dict scrutinee always fails. Decide semantics and document; add corpus tests.
+- [ ] **PM10 GAP — `n@Int:` runtime type check absent; doc is misleading.** `doc/feature/pattern-matching.md:37-41`. `n@Int:` provides compile-time narrowing only — no runtime `int?` check. For untyped/Any inputs the annotation is silent. Add explicit note: "`n@Int:` is a compile-time annotation; use `[is: int?]` for runtime type checking."
+- [ ] **PM11 GAP — Seq tail forced even for variable/wildcard tail patterns.** `src/eval.rs:2885-2886`. Tail thunk is always materialized before being bound, even when the tail pattern is `Variable(name)` (which never needs the value forced). Laziness violation: binding a variable should not force the value. Fix: defer tail materialization when tail pattern is `Pattern::Variable` or `Pattern::Wildcard`.
+- [ ] **PM12 DOC — `doc/feature/pattern-matching.md:173-174` references nonexistent functions.** `eval_match` → inline handler in `eval_core_expr` for `CoreExpr::Match`; `value_matches_pattern` → `match_pattern`. Update doc.
+
+**SOUND (verified):** arm ordering (source order, first-match-wins), binding scope (no cross-arm leakage), or-pattern left-to-right, guard sees pattern bindings, backtracking (failed arm env dropped), Constructor payload shape (all four None/Some combos handled), scrutinee forced before arms, determinism.
 
 ### review-typeassert-semantics: Audit TypeAssert static vs runtime mismatch
 
@@ -804,7 +824,25 @@ Key questions:
 - For `@Handle[Readable]`: is the capability type check at runtime correct?
 - Can a well-typed program (no typecheck warnings) produce a TypeAssert failure at runtime? If so, this is a soundness gap.
 
-- [ ] Dispatch type-theorist + computer-scientist + eval-engine to audit TypeAssert static/runtime correspondence and report divergences → findings go to TODO.md
+- [x] Dispatch type-theorist + computer-scientist + eval-engine to audit TypeAssert static/runtime correspondence and report divergences → findings go to TODO.md
+
+**Audit results (computer-scientist, 2026-05-23):**
+
+Answers to key questions:
+- **Which types diverge?** Fn (annotation "Fn" vs type_name "Function"/"Builtin"), Unknown/Any/Top (should accept all, nominal rejects), Null (resolves to Record({}) but "Null" != "Dict"), Handle (Type::Handle accepts WriteHandle, nominal "Handle" != "WriteHandle"). Only Number has a special case. All other primitive names match.
+- **Record-type assertions:** NO LONGER no-ops. `validate_and_wrap_record` (src/eval.rs:779-863) performs shape checking and guard wrapping via `Cont::GuardedValidate`. Structural contracts are implemented per Findler & Felleisen (2002) / Strickland et al. (2012).
+- **`@Unknown`:** UNSOUND in RuntimeTypeCheck fallback — raises E011. Already tracked at TODO line 719. Subsumed by the fix item below.
+- **`@Handle[Readable]`:** Cannot be written — parser treats `[Readable]` as subscript, not type parameter (tracked at TODO line 718).
+- **Can well-typed programs fail at runtime?** Only through `$include`/`$load` paths (TODO lines 736, 739) where TypeAnnotationTable is not wired, causing RuntimeTypeCheck fallback. A well-typed program evaluated directly cannot produce spurious E011 — the resolved_type path uses value_matches_type which is correct.
+
+- [ ] **TA1/TA2 UNSOUND — Fix RuntimeTypeCheck nominal fallback type name mismatches.** `src/eval_materialize.rs:2379-2383`. Five families diverge: `"Fn"` must match `"Function"`/`"Builtin"`, `"Unknown"`/`"Any"`/`"Top"` must accept all values (gradual pass-through), `"Null"` must match `"Dict"`, `"Handle"` must match both `"Handle"` and `"WriteHandle"`. Also: `$include`d files always hit RuntimeTypeCheck (TypeAnnotationTable not wired across include boundary — tracked separately at TODO lines 736/739), so these mismatches produce spurious E011 in included submodules. Subsumes TODO line 719 (`@Unknown` bug). Model: phase consistency (Milner 1978). [Major]
+- [ ] **TA3 GAP — `Decimal`/`BigInt` missing from `Type::Number` arm in `value_matches_type`.** `src/eval.rs:640`, `src/eval_materialize.rs:2379-2380`. If `is_subtype(Decimal, Number)` holds statically, `Value::Decimal` must also pass `[@Number $x]` at runtime. Verify static subtyping for numeric tower (Decimal/BigInt vs Number); update both the structural and nominal paths to match. [Minor]
+- [ ] **TA4 GAP (doc) — `doc/07-type-extensions.md:134` still shows closed-record cardinality check removed by BAS.** Formal rule `[VM-RECORD-PROXY]` shows `ρ = Closed ⟹ string_keys(entries) = dom(fields)`. BAS width subtyping removed this (`src/eval.rs:819-821`). Remove the cardinality condition from the doc rule. [Minor]
+- [ ] **TA5 GAP — `Handle` capability row not validated at runtime.** `src/eval.rs:654-662`. `value_matches_type` has a TODO and accepts any `Handle`/`WriteHandle` regardless of capability row. `[@[Handle Readable] $writeHandle]` incorrectly passes. Sprint item: implement capability-row structural validation distinguishing readable/writable handles. [Major]
+- [ ] **TA6 GAP — `is:` predicate silently ignored in TypeAssert runtime.** `src/eval_materialize.rs:2251`, `src/eval.rs:635`. `TypeAssertCheck` never invokes `get_property("is")`. A `[@[type: Int  is: positive?] $x]` assertion silently ignores the predicate. Spec (`doc/05-type-annotations.md:§18`) requires predicate to fire. Fix: after `value_matches_type` passes, evaluate `is:` predicate; fail assertion or use `default:` if falsy. [Major]
+- [ ] **TA7 GAP — Unknown annotation keys silently accepted; misspelled `[@[types: Int] $x]` becomes a structural record check.** `src/typecheck_annot.rs:1433-1435`. Static checker only recognizes `["type", "default", "repr"]`; `types:` (misspelled) is treated as a structural field, producing a shape check against `{types: Int}`. Add a diagnostic (warning or error) for unrecognized keys outside `["type", "default", "repr", "is", "doc"]` in TypeAssert `PropertyDict`. [Minor]
+
+**SOUND (verified):** `Int`/`Float`/`Bool`/`Str` primitives, `Number` (special-cased), `Seq[T]` tag-only (documented), `Fn@T [U]` tag-only (documented), `Variant` tag-comparison matches static, `Union` (`any(members)` mirrors static), `Intersection` (`all(members)` mirrors static), `default:` compile-time validated + runtime lookup correct, guarded thunk lifecycle (all 4 paths), nested TypeAssert (independent per level), blame attribution (inner_span = producer per Findler & Felleisen 2002). Record-type assertions are **NOT** no-ops — `validate_and_wrap_record` performs shape checking and guard-wrapping via `Cont::GuardedValidate`.
 
 ### review-macro-hygiene: Audit macro expansion and quasiquote hygiene
 

@@ -1779,6 +1779,24 @@ pub struct Environment {
     pub(crate) parent: Option<Arc<RwLock<Environment>>>,
 }
 
+/// Profiling counters for slot-based lookup hit rate measurement.
+/// Enabled only in test builds to avoid runtime overhead in production.
+#[cfg(test)]
+pub(crate) static SLOT_HIT_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static SLOT_MISS_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Reset profiling counters between tests to prevent cross-test accumulation.
+/// Call at the start of any test that asserts slot hit/miss ratios.
+#[cfg(test)]
+pub(crate) fn reset_slot_counters() {
+    use std::sync::atomic::Ordering;
+    SLOT_HIT_COUNT.store(0, Ordering::Relaxed);
+    SLOT_MISS_COUNT.store(0, Ordering::Relaxed);
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {
@@ -1853,13 +1871,19 @@ impl Environment {
             // Fast path: O(1) index into the current scope's bindings
             if let Some((key, thunk)) = self.bindings.get_index(slot as usize) {
                 if key == expected_name {
+                    #[cfg(test)]
+                    SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
                     return Some(Arc::clone(thunk));
                 } else {
                     // Slot-shift detected: key at slot doesn't match expected name.
                     // Fall back to name-based lookup (correct but slower).
+                    #[cfg(test)]
+                    SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
                     return self.bindings.get(expected_name).map(|t| Arc::clone(t));
                 }
             }
+            #[cfg(test)]
+            SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         // Walk `level` steps up the parent chain, then do slot lookup
@@ -1871,20 +1895,28 @@ impl Environment {
                 let env = env_rc.read().unwrap();
                 if let Some((key, thunk)) = env.bindings.get_index(slot as usize) {
                     if key == expected_name {
+                        #[cfg(test)]
+                        SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
                         return Some(Arc::clone(thunk));
                     } else {
                         // Slot-shift detected: single-env name lookup in this ancestor's own
                         // bindings only (not a chain walk). If the name is not in this ancestor,
                         // returns None, and the caller's env_lock.get(name) at eval.rs performs
                         // the full chain walk from the current scope as the outer fallback.
+                        #[cfg(test)]
+                        SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
                         return env.bindings.get(expected_name).map(|t| Arc::clone(t));
                     }
                 }
+                #[cfg(test)]
+                SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
             let next = env_rc.read().unwrap().parent.as_ref().map(Arc::clone);
             current = next;
         }
+        #[cfg(test)]
+        SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
         None
     }
 }
