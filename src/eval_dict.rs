@@ -236,7 +236,7 @@ pub(crate) async fn eval_key_core(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Tests currently use only items from parent module's glob re-exports
 
     /// Test that dict keys are evaluated in the parent scope, not the dict scope.
     /// Per letrec semantics: keys see parent bindings, values see sibling bindings.

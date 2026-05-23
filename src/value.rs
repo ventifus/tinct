@@ -1791,6 +1791,7 @@ pub(crate) static SLOT_MISS_COUNT: std::sync::atomic::AtomicUsize =
 /// Reset profiling counters between tests to prevent cross-test accumulation.
 /// Call at the start of any test that asserts slot hit/miss ratios.
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn reset_slot_counters() {
     use std::sync::atomic::Ordering;
     SLOT_HIT_COUNT.store(0, Ordering::Relaxed);
@@ -1879,7 +1880,7 @@ impl Environment {
                     // Fall back to name-based lookup (correct but slower).
                     #[cfg(test)]
                     SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                    return self.bindings.get(expected_name).map(|t| Arc::clone(t));
+                    return self.bindings.get(expected_name).map(Arc::clone);
                 }
             }
             #[cfg(test)]
@@ -1905,7 +1906,7 @@ impl Environment {
                         // the full chain walk from the current scope as the outer fallback.
                         #[cfg(test)]
                         SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                        return env.bindings.get(expected_name).map(|t| Arc::clone(t));
+                        return env.bindings.get(expected_name).map(Arc::clone);
                     }
                 }
                 #[cfg(test)]
