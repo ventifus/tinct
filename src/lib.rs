@@ -98,14 +98,16 @@ use std::sync::Arc;
 
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
+/// Surface AST types for the runtime-v2 pipeline.
+pub use ast::{ResolutionTable, SurfaceProgram, TypeAnnotationTable};
 /// Parser entry points and error type.
 pub use parser::{format_parse_error, parse, parse_expression, ParseError, ParseOutput};
 
 pub use eval::deep_materialize;
 /// Evaluation functions.
 pub use eval::{
-    eval_file, eval_file_with_input, materialize, materialize_sync, EvalConfig, EvalContext,
-    EvalState,
+    eval_file, eval_file_with_input, eval_surface_file, eval_surface_file_with_input, materialize,
+    materialize_sync, EvalConfig, EvalContext, EvalState,
 };
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.

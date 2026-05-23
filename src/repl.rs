@@ -20,7 +20,9 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{create_stdlib_env_with_arena, MAX_FILE_SIZE};
-use crate::eval::{deep_materialize, eval_file_with_input, materialize_sync as materialize};
+use crate::eval::{
+    deep_materialize, eval_surface_file_with_input, materialize_sync as materialize,
+};
 use crate::parser::parse;
 use crate::typecheck::{DocMap, TypeMap};
 use crate::value::{Environment, Key, Thunk, Value};
@@ -201,7 +203,8 @@ impl ReplSession {
         let mut program = parse_output.program.clone();
         crate::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _resolution_table = crate::resolve::resolve_surface_program(&program);
+        let resolution_table =
+            std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
         let file = crate::ast_convert::surface_program_to_file(&program);
         // Type errors are advisory; evaluation proceeds regardless.
         // Collect type and doc information for meta-commands.
@@ -216,10 +219,13 @@ impl ReplSession {
         }
 
         // Delegate to the same eval pipeline used by `llt eval`.
-        let result_thunk = crate::async_rt::block_on_anywhere(eval_file_with_input(
-            &file.node,
+        let type_annotation_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+        let result_thunk = crate::async_rt::block_on_anywhere(eval_surface_file_with_input(
+            &program,
             Arc::clone(&self.env),
             &self.ctx,
+            &resolution_table,
+            &type_annotation_table,
             Some(Arc::clone(&self.prev_result)),
         ))
         .map_err(|e| {

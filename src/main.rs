@@ -10,9 +10,8 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    create_stdlib_env, deep_materialize, eval_file_with_input, format_with_json_llt, json_to_value,
-    literate, materialize_sync as materialize, parse, value_to_json, EvalContext, Span, Thunk,
-    MAX_FILE_SIZE,
+    create_stdlib_env, deep_materialize, format_with_json_llt, json_to_value, literate,
+    materialize_sync as materialize, parse, value_to_json, EvalContext, Span, Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -1802,7 +1801,8 @@ fn run_eval(
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _resolution_table = tinct::resolve::resolve_surface_program(&program);
+        let resolution_table =
+            std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
         let ast = tinct::ast_convert::surface_program_to_file(&program);
 
         // Type errors are advisory unless --strict is set.
@@ -1897,10 +1897,13 @@ fn run_eval(
         eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
         // Evaluate file with pipeline input
-        let file_result = tinct::async_rt::block_on(eval_file_with_input(
-            &ast.node,
+        let type_annotation_table = std::sync::Arc::new(tinct::TypeAnnotationTable::new());
+        let file_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
+            &program,
             Arc::clone(&env),
             &eval_ctx,
+            &resolution_table,
+            &type_annotation_table,
             pipeline_input,
         ))
         .map_err(|e| {
@@ -2439,8 +2442,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
-    let ast = tinct::ast_convert::surface_program_to_file(&program);
+    let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
     let (type_errors, _table) = tinct::typecheck::typecheck_surface_program(&program);
 
     // In strict mode, type errors are fatal
@@ -2591,11 +2593,13 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         Some(std::collections::HashSet::new()),
     );
 
-    let thunk = tinct::async_rt::block_on(eval_file_with_input(
-        &ast.node,
+    let type_annotation_table = std::sync::Arc::new(tinct::TypeAnnotationTable::new());
+    let thunk = tinct::async_rt::block_on(tinct::eval_surface_file(
+        &program,
         Arc::clone(&env),
         &eval_ctx,
-        None,
+        &resolution_table,
+        &type_annotation_table,
     ))
     .map_err(|e| {
         let mut msg = format!("{e}");
@@ -2905,8 +2909,8 @@ fn run_literate_weave(
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _resolution_table = tinct::resolve::resolve_surface_program(&program);
-        let ast = tinct::ast_convert::surface_program_to_file(&program);
+        let resolution_table =
+            std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
         let (type_errors, _table) = tinct::typecheck::typecheck_surface_program(&program);
 
         // Capture type warnings (always non-fatal in literate mode unless --strict)
@@ -2945,10 +2949,13 @@ fn run_literate_weave(
 
         let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
 
-        let thunk_result = tinct::async_rt::block_on(eval_file_with_input(
-            &ast.node,
+        let type_annotation_table = std::sync::Arc::new(tinct::TypeAnnotationTable::new());
+        let thunk_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
+            &program,
             Arc::clone(&env),
             &eval_ctx,
+            &resolution_table,
+            &type_annotation_table,
             pipeline_input.clone(),
         ));
         let thunk = match thunk_result {
