@@ -9084,6 +9084,13 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] Update tests/corpus/ and stdlib/ fn params to use `[let ...]` throughout (~200 files updated)
 - [x] `just test` passes — lib tests 1883/0 ✓ (commit 7e9ccd0)
 
+### corpus-taxonomy-fix: Move 12 warn-only tests from eval/errors/ to typecheck/warnings/
+
+- [x] Moved 12 tests with === out + === warn (no === error) to typecheck/warnings/: constraint_class_not_varref (+ [let] fix + warn substr), constraint_key_not_bareword, constraint_multi_class_keyed_entry (+ [let] fix + warn substr), constraint_not_dict, constraint_positional_entry, constraint_value_invalid, doc_not_string, fn_annotation_mixed_keys, help_suggestion_arity, help_suggestion_type_mismatch (+ [let] fix), proxy_named_arg, unknown_fn_annotation_key
+- [x] closed_record_rejects_extra returned to eval/errors (no === warn section)
+- [x] handle_capability_mismatch + typeassert_unknown deleted (broken in HEAD — tracked in test-coverage-cycle311, doc-health-cycle311)
+- [x] test_typecheck_warnings_corpus PASS; eval/errors retains 120+ files (above EVAL_ERRORS_MIN=120)
+
 ### linear-accumulators-review: Post-implementation review
 
 - [x] Run `/review-whatif linear-accumulators` — all spec requirements verified: 8 builder ops, 18 stdlib rewrites, doc/11-stdlib.md up to date, one-shot invariant enforced, O(n²)→O(n) complexity confirmed. builder-get-or bonus (not in spec) is a positive improvement. flat-map Dict path O(n²) known per spec §Scope Boundary.

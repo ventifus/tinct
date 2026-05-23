@@ -633,28 +633,6 @@ After chr-instances-gaps, 6 typecheck + 5 type-error corpus tests still fail bec
 
 ---
 
-### corpus-taxonomy-fix: Move 13 warn-only tests from eval/errors/ to typecheck/warnings/
-
-13 files in `tests/corpus/eval/errors/` have `=== out` (eval succeeds) + `=== warn` (typecheck warning) but NO `=== error`. They are not eval error tests — they test that typecheck emits a warning while the program evaluates successfully. They belong in `tests/corpus/typecheck/warnings/`, which already exists and whose runner requires exactly this shape (`=== out` + `=== warn`).
-
-After the move, `EVAL_ERRORS_MIN=120` still passes (~143 files remain in eval/errors/).
-
-Files to move from `tests/corpus/eval/errors/` → `tests/corpus/typecheck/warnings/`:
-- [x] `constraint_class_not_varref.llt-eval` — moved + updated to `[let val@a]` + updated warning substring
-- [x] `constraint_key_not_bareword.llt-eval`
-- [x] `constraint_multi_class_keyed_entry.llt-eval` — moved + updated to `[let val@a]` + updated warning substring
-- [x] `constraint_not_dict.llt-eval`
-- [x] `constraint_positional_entry.llt-eval`
-- [x] `constraint_value_invalid.llt-eval`
-- [x] `doc_not_string.llt-eval`
-- [x] `fn_annotation_mixed_keys.llt-eval`
-- [x] `help_suggestion_arity.llt-eval`
-- [x] `help_suggestion_type_mismatch.llt-eval` — moved + updated to `[let x@String]`
-- [x] `unknown_fn_annotation_key.llt-eval`
-- [x] `closed_record_rejects_extra.llt-eval` — returned to eval/errors (no === warn section; not a warn-only test)
-- [x] `proxy_named_arg.llt-eval`
-- [ ] Note: `handle_capability_mismatch.llt-eval` and `typeassert_unknown.llt-eval` were deleted — both were broken in HEAD. handle_capability_mismatch needs parser support for `Handle[Type]` in `@annotation` position; typeassert_unknown needs TypeAssert @Unknown to be a gradual no-op (currently raises E011). Both tracked in test-coverage-cycle311 and doc-health-cycle311.
-
 ---
 
 ## Evaluator Correctness + Performance (Health Review #311)
