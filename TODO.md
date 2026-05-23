@@ -180,11 +180,12 @@ Panel review (stdlib-author, eval-engine, performance-expert, computer-scientist
 - [x] Fix `flat-map` O(n²) — Seq cons + collect + reverse + flatten approach
 - [x] Wire `make-builder capacity:` named arg — `IndexMap::with_capacity`
 - [x] 4 corpus tests for builder builtins: basic, has/get, frozen error, double-finish error
-- [ ] Fix `deep-merge` produces Overlay — **DEFERRED** (dist-eval sprint)
-- [ ] Add `AtomicBool frozen` fast-path — **DEFERRED** (optimization)
-- [ ] Consolidate `build-dict` Seq path, builder-get-or — **DEFERRED**
-- [ ] distributable? for Value::Builder — **DEFERRED** (dist-eval sprint)
-- [ ] Large-input tests for build-dict functions — **DEFERRED**
+- [ ] Fix `deep-merge` produces Overlay — `[merge a [build-dict ...]]` creates Overlay; for dist-eval must be flat; fix by building over union key set instead of wrapping with `merge` (`stdlib/prelude.llt:1178`)
+- [ ] Add `AtomicBool frozen` fast-path to Builder — current impl acquires mutex on every `has?`/`get`; `AtomicBool::load(Relaxed)` short-circuits before mutex for frozen check (`src/value.rs`)
+- [ ] Consolidate `build-dict` Seq path to single traversal — collect `Vec<(head, tail)>` in pass 1, eliminating pass 2 (`src/builtins_dict.rs`)
+- [ ] Add `builder-get-or` op — `builder-has?` + `builder-get` in `group-by` is 2 mutex acquires; a `get_or_default`-style op would halve it (`src/value.rs`, `src/builtins_dict.rs`)
+- [ ] When `dist-eval` sprint implements `distributable?`: add `Value::Builder` to non-distributable set — **DEFERRED** (needs dist-eval sprint)
+- [ ] Large-input tests for build-dict functions — `from-entries`, `map-entries`, `remove`, `take-while`, `drop-while`, `slice`, `walk`, `deep-merge` (n≥1000) (`tests/corpus/eval/stdlib/`)
 
 ### linear-accumulators-review: Post-implementation review
 
