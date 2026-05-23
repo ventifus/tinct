@@ -165,16 +165,17 @@ pub async fn eval_document(
 
 /// Wrap a thunk with nominal type validation for pipeline input contracts.
 ///
-/// This creates a synthetic TypeAssert expression that wraps a gensym'd variable reference.
-/// When evaluated, it will perform the same validation as a regular `[@Type expr]` assertion.
+/// Creates a synthetic `CoreExpr::RuntimeTypeCheck` wrapping a gensym'd `FreeVar` reference.
+/// When evaluated, it performs the same validation as a regular `[@Type expr]` assertion.
+/// `RuntimeTypeCheck` is used (rather than `CoreExpr::TypeAssert`) because the annotation
+/// is not statically resolved — `TypeAssert` requires a pre-resolved `Type`.
 fn wrap_with_nominal_validation(
     inner: Arc<Thunk>,
     annotation: &crate::ast::Spanned<crate::ast::Annotation>,
     validation_span: Span,
     ctx: &Arc<EvalContext>,
 ) -> Arc<Thunk> {
-    use crate::ast::Expr;
-    use std::cell::RefCell;
+    use crate::ast::CoreExpr;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Generate a unique variable name to avoid collisions with user code
@@ -182,21 +183,18 @@ fn wrap_with_nominal_validation(
     let gensym_id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
     let gensym_name = format!("__nominal_input_{}", gensym_id);
 
-    // Create a synthetic TypeAssert expression: [@Annotation __nominal_input_N]
-    let varref_expr = Box::new(crate::ast::Spanned::new(
-        Expr::VarRef {
-            name: gensym_name.clone(),
-            escaped: false,
-            resolved: RefCell::new(None),
-        },
-        validation_span,
-    ));
-
-    let type_assert_expr = Rc::new(crate::ast::Spanned::new(
-        Expr::TypeAssert {
+    // Create a synthetic RuntimeTypeCheck expression: [@Annotation __nominal_input_N]
+    // RuntimeTypeCheck is correct here because the type is not statically resolved —
+    // it uses Annotation directly, which RuntimeTypeCheck supports. CoreExpr::TypeAssert
+    // requires a pre-resolved Type which we don't have at pipeline input time.
+    let type_check_expr = Arc::new(crate::ast::Spanned::new(
+        CoreExpr::RuntimeTypeCheck {
             annotation: annotation.clone(),
-            expr: varref_expr,
-            resolved_type: RefCell::new(None),
+            expr: Arc::new(crate::ast::Spanned::new(
+                CoreExpr::FreeVar(gensym_name.clone()),
+                validation_span,
+            )),
+            default: None,
         },
         validation_span,
     ));
@@ -205,9 +203,9 @@ fn wrap_with_nominal_validation(
     let validation_env = Arc::new(RwLock::new(Environment::new()));
     validation_env.write().unwrap().insert(gensym_name, inner);
 
-    // Return an Unevaluated thunk wrapping the TypeAssert expression
-    Arc::new(Thunk::new_unevaluated(
-        type_assert_expr,
+    // Return an Unevaluated thunk wrapping the RuntimeTypeCheck expression
+    Arc::new(Thunk::new_unevaluated_core(
+        type_check_expr,
         validation_env,
         Arc::clone(ctx),
         validation_span,

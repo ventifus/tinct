@@ -116,7 +116,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: eval_materialize.rs, eval_dict.rs, eval_call.rs still use Expr types; must migrate those first
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted to new_unevaluated_core; force_step now handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; 1889 tests pass
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; updated all re-exports; file deleted ✓
-- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **PARTIALLY BLOCKED**: eval_pipeline.rs has 20+ active callers (eval_document, eval_file); ast_dict.rs→formatter/expand; desugar.rs→formatter/imports; ast_convert.rs→expand/surface_fields
+- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **PARTIALLY BLOCKED**: eval_pipeline.rs has 20+ active callers; remaining new_unevaluated (Expr) sites: eval.rs:1385 (CoreExpr::DotAccess fallback) + eval_materialize.rs:2694 (eval_step Expr::DotAccess) — both intentional for DotAccess CEK path
 - [x] Update `IncludeCacheEntry::Cached` — **DONE**
 - [x] Rc→Arc migration — **DONE (commit b0aa803)**: 34 files, 2450 ins, 2437 del
 - [ ] **`cargo check` clean after Part E** — first checkpoint per plan
