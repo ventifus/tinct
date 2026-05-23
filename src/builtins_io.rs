@@ -2978,7 +2978,16 @@ pub(crate) fn builtin_symlink(
         {
             // On Windows, we need to know if the target is a file or directory
             // Try to stat the target to determine type
-            let is_dir = dir.metadata(&target).map(|m| m.is_dir()).unwrap_or(false);
+            let is_dir = match dir.metadata(&target) {
+                Ok(m) => m.is_dir(),
+                Err(e) => {
+                    return Err(EvalError::user_error(
+                        format!("symlink: cannot stat target '{}': {}", target, e),
+                        call_span,
+                    )
+                    .into());
+                }
+            };
             if is_dir {
                 dir.symlink_dir(&target, &link_path)
             } else {

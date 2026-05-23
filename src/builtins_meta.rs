@@ -1719,12 +1719,14 @@ pub(crate) fn builtin_load(
         crate::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let res_table = crate::resolve::resolve_surface_program(&program);
-        // The TypeAnnotationTable is empty here because the load builtin does not run the typechecker;
-        // typecheck is run separately on the expanded program before eval is called.
+        // Typecheck to populate TypeAnnotationTable for static type resolution in TypeAssert nodes.
+        // This enables included files to use the resolved type path instead of RuntimeTypeCheck fallback.
+        let (_annotation_errors, type_annotation_table) =
+            crate::typecheck::typecheck_surface_program_annotation_table(&program);
         let program_value = Value::Program {
             program: std::sync::Arc::new(program),
             resolutions: std::sync::Arc::new(res_table),
-            types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+            types: std::sync::Arc::new(type_annotation_table),
         };
         let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
         Ok(thunk)
@@ -1780,12 +1782,18 @@ pub(crate) fn builtin_expand(
                 // Re-compute resolution table for the expanded and desugared program
                 let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
 
-                // Return as Value::Program with fresh resolution table
+                // Typecheck to populate TypeAnnotationTable for static type resolution in TypeAssert nodes.
+                let (_annotation_errors, type_annotation_table) =
+                    crate::typecheck::typecheck_surface_program_annotation_table(
+                        &new_surface_program,
+                    );
+
+                // Return as Value::Program with fresh resolution and type tables
                 ok_val(
                     Value::Program {
                         program: std::sync::Arc::new(new_surface_program),
                         resolutions: std::sync::Arc::new(new_resolutions),
-                        types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                        types: std::sync::Arc::new(type_annotation_table),
                     },
                     call_span,
                 )

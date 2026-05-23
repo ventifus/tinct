@@ -2013,6 +2013,10 @@ impl TypeEnv {
             "open".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+                // Legitimately Unknown: mode string (3rd param) determines capabilities at runtime.
+                // "r" → readable, "w" → writable, "rw" → both, "rb" → readable+binary, etc.
+                // No way to statically determine capability row from string literal analysis
+                // without dependent types or refinement types.
                 ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -2115,8 +2119,24 @@ impl TypeEnv {
                     (None, Type::Int), // port
                 ],
                 // Returns Handle (stream) or DatagramHandle (datagram) depending on transport.
+                // Stream handles (Tcp, UnixStream) are bidirectional → readable+writable.
                 ret: Box::new(Type::normalize_union(vec![
-                    Type::Handle(Box::new(Type::Unknown)),
+                    Type::Handle(Box::new({
+                        let mut fields = HashMap::new();
+                        fields.insert(
+                            "__cap_flag_readable".to_string(),
+                            Type::Record(Row {
+                                fields: HashMap::new(),
+                            }),
+                        );
+                        fields.insert(
+                            "__cap_flag_writable".to_string(),
+                            Type::Record(Row {
+                                fields: HashMap::new(),
+                            }),
+                        );
+                        Type::Record(Row { fields })
+                    })),
                     Type::DatagramHandle,
                 ])),
                 variadic: false,
@@ -2161,6 +2181,11 @@ impl TypeEnv {
                     // Use an open Record with RowVar tail once opts-dict pattern is established.
                     (None, Type::Top), // opts dict — any record or null
                 ],
+                // Legitimately Unknown: TLS layer wraps an existing handle and preserves its
+                // capabilities. Without dependent types (Handle[C1] → Handle[C1]), we cannot
+                // express "return type has same capabilities as input". Using Unknown allows
+                // any capability row, which is the closest approximation to parametric
+                // polymorphism over capability rows.
                 ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: false,
             },
@@ -2168,6 +2193,8 @@ impl TypeEnv {
         env.insert(
             "tls-peer-cert".to_string(),
             Type::Function {
+                // Accepts any handle (TLS-wrapped or not) — capability row is irrelevant
+                // for cert extraction (only TLS-layer metadata matters, not read/write caps).
                 params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::from([
@@ -2199,7 +2226,23 @@ impl TypeEnv {
             "quic-open-stream".to_string(),
             Type::Function {
                 params: vec![(None, Type::QuicSession)],
-                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns a bidirectional stream Handle
+                // QUIC streams are bidirectional by default → readable + writable
+                ret: Box::new(Type::Handle(Box::new({
+                    let mut fields = HashMap::new();
+                    fields.insert(
+                        "__cap_flag_readable".to_string(),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    );
+                    fields.insert(
+                        "__cap_flag_writable".to_string(),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    );
+                    Type::Record(Row { fields })
+                }))),
                 variadic: false,
             },
         );
@@ -2293,11 +2336,13 @@ impl TypeEnv {
             "cap-data".to_string(),
             Type::Function {
                 params: vec![
+                    // Accepts any handle — cap-data extracts metadata, not I/O operation
                     (None, Type::Handle(Box::new(Type::Unknown))),
                     (None, Type::Str),
                 ],
                 // Genuinely unknown: cap-data returns the value stored in the Handle's
                 // capability map, which can be any type (cap name is a dynamic string key).
+                // This is one of the few legitimate uses of Unknown in a return type.
                 ret: Box::new(Type::Unknown),
                 variadic: false,
             },
@@ -2317,15 +2362,19 @@ impl TypeEnv {
         env.insert(
             "flush".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // WriteHandle
-                ret: Box::new(Type::Handle(Box::new(Type::Unknown))),        // Returns WriteHandle
+                // Legitimately Unknown: flush preserves input handle's capabilities.
+                // Without dependent types (Handle[C] → Handle[C]), Unknown is the closest
+                // approximation (same rationale as tls-layer).
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "close".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // WriteHandle
+                // Accepts any handle regardless of capabilities (close is always valid)
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2337,7 +2386,8 @@ impl TypeEnv {
             "raw-create".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
-                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns WriteHandle
+                // raw-create always creates a write-only handle
+                ret: Box::new(Type::Handle(Box::new(cap_flag("writable")))),
                 variadic: false,
             },
         );
@@ -2348,7 +2398,10 @@ impl TypeEnv {
                     (None, Type::Handle(Box::new(Type::Unknown))),
                     (None, Type::Int),
                 ], // Handle, byte offset
-                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns Handle for chaining
+                // Legitimately Unknown: seek preserves input handle's capabilities.
+                // Without dependent types (Handle[C] → Handle[C]), Unknown is the closest
+                // approximation.
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
@@ -2356,15 +2409,19 @@ impl TypeEnv {
             "seek-end".to_string(),
             Type::Function {
                 params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // Handle
-                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns Handle for chaining
+                // Legitimately Unknown: seek-end preserves input handle's capabilities.
+                // Without dependent types (Handle[C] → Handle[C]), Unknown is the closest
+                // approximation.
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "position".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // Handle
-                ret: Box::new(Type::Int),                                    // Current byte offset
+                // Accepts any handle (position query doesn't require specific capabilities)
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
+                ret: Box::new(Type::Int), // Current byte offset
                 variadic: false,
             },
         );

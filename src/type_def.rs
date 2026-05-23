@@ -240,6 +240,23 @@ impl PartialEq for Type {
             (Type::Error, Type::Error) => true,
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
+            // TODO(handle-partialeq-limitation): Handle capability row comparison uses
+            // structural equality (cap1 == cap2), which can fail when capability rows
+            // contain TypeVars that should unify but have different names.
+            //
+            // Example: Handle(TypeVar("a", 0)) != Handle(TypeVar("b", 0)) even though
+            // the two types might be unifiable in the type checker's substitution context.
+            //
+            // A proper fix requires bidirectional subtyping (Handle[C1] <: Handle[C2] iff
+            // C1 <: C2), but PartialEq doesn't have access to the unification engine or
+            // substitution context. This limitation affects:
+            // - Type normalization (identical types may not be deduplicated)
+            // - HashMap/HashSet usage with Type keys (false negatives in lookups)
+            //
+            // Does NOT affect type checking soundness: unification (src/type_unify.rs)
+            // uses `unify()` which recursively unifies capability rows via substitution,
+            // not PartialEq. PartialEq is only used for fast-path equality checks and
+            // data structure operations, where false negatives are safe (conservative).
             (Type::Handle(cap1), Type::Handle(cap2)) => cap1 == cap2,
             (Type::Uri, Type::Uri) => true,
             (Type::Timestamp, Type::Timestamp) => true,

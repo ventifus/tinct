@@ -652,14 +652,35 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::DirCap => matches!(value, Value::DirCap { .. } | Value::RevocableDirCap { .. }),
         Type::NetCap => matches!(value, Value::NetCap(_)),
         Type::Handle(cap_row) => {
-            // If capability row is Unknown, accept any handle (gradual typing)
-            if matches!(**cap_row, Type::Unknown) {
-                matches!(value, Value::Handle { .. } | Value::WriteHandle { .. })
-            } else {
-                // TODO: check if the handle's capabilities include those in cap_row
-                // For now, conservatively accept any handle (precision can come later)
-                matches!(value, Value::Handle { .. } | Value::WriteHandle { .. })
-            }
+            // Runtime Handle capability validation strategy (gradual typing):
+            // - If cap_row is Unknown → accept any handle (gradual escape hatch)
+            // - If cap_row is concrete → STILL accept any handle for now
+            //
+            // Rationale for always accepting when concrete:
+            // The type checker already validated capabilities at compile time. Runtime
+            // validation in value_matches_type is only invoked for:
+            // 1. TypeAssert ([@Handle[R] expr]) — type checker already warned if mismatch
+            // 2. Proxy contract validation — deferred to future capability-aware proxies
+            //
+            // Rejecting at runtime what the type checker already allowed would break
+            // gradual typing semantics: static types are upper bounds, not runtime guards.
+            // A proper fix requires bidirectional subtyping with the handle value's actual
+            // runtime capabilities, which isn't available here (Handle values don't carry
+            // their type-level capability row at runtime — they carry a HashMap<String,Value>
+            // for cap-data, which is orthogonal to the type system's capability flags).
+            //
+            // Future work: When Handle values gain a type-level capability descriptor at
+            // runtime (e.g., Value::Handle { caps: Type, ... }), implement subtyping check:
+            //   Type::is_subtype(&handle.caps, cap_row)
+            // Until then, accept all handles when cap_row is non-Unknown (preserve gradual
+            // typing consistency).
+            // TODO(capability-runtime-validation): Implement structural row subtyping
+            // when Handle values carry runtime capability descriptors. Currently, BOTH
+            // Unknown and concrete cap_row cases accept any handle — see rationale above.
+            // The _ suppresses unused-variable warnings since cap_row drives only future
+            // validation, not current behavior.
+            let _ = cap_row;
+            matches!(value, Value::Handle { .. } | Value::WriteHandle { .. })
         }
         Type::Uri => matches!(value, Value::Uri { .. }),
         Type::Timestamp => matches!(value, Value::Timestamp(_)),
@@ -1916,11 +1937,18 @@ pub fn materialize<'a>(
             // `named` is None for internally-created thunks (common case); only $apply
             // passes named args through. Use an empty map ref for the None case.
             let builtin_args = crate::value::BuiltinArgs {
-                args: args.clone(),
-                named: named.clone(),
+                args,
+                named,
                 call_span,
                 ctx: Arc::clone(&thunk_ctx),
             };
+            // Clone args/named from BuiltinArgs for potential restoration after builtin call.
+            // Builtin functions take ownership of their args via BuiltinArgs, so we clone
+            // AFTER constructing BuiltinArgs (move-then-clone). This has the same clone count
+            // as clone-then-move, but keeps ownership clear: BuiltinArgs owns the live copy,
+            // *_for_restore are used only on error paths.
+            let args_for_restore = builtin_args.args.clone();
+            let named_for_restore = builtin_args.named.clone();
             match (def.func)(builtin_args).await.map_err(&decorate) {
                 Ok(result_thunk) => {
                     // Fast path: if the builtin already materialized its result, skip recursion.
@@ -1950,8 +1978,8 @@ pub fn materialize<'a>(
                                     thunk.restore_unevaluated(
                                         crate::value::UnevaluatedState::Builtin {
                                             def,
-                                            args,
-                                            named,
+                                            args: args_for_restore,
+                                            named: named_for_restore,
                                             call_span,
                                             ctx: thunk_ctx,
                                         },
@@ -1969,8 +1997,8 @@ pub fn materialize<'a>(
                     } else {
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                             def,
-                            args,
-                            named,
+                            args: args_for_restore,
+                            named: named_for_restore,
                             call_span,
                             ctx: thunk_ctx,
                         });
@@ -2154,11 +2182,15 @@ pub fn materialize<'a>(
                         }
                     }
                     let builtin_args = crate::value::BuiltinArgs {
-                        args: args.clone(),
-                        named: named.clone(),
+                        args,
+                        named,
                         call_span,
                         ctx: Arc::clone(&thunk_ctx),
                     };
+                    // Clone args/named from BuiltinArgs for error-path restoration.
+                    // BuiltinArgs owns the live copy; *_for_restore used only on error paths.
+                    let args_for_restore = builtin_args.args.clone();
+                    let named_for_restore = builtin_args.named.clone();
                     match (def.func)(builtin_args).await.map_err(&decorate) {
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
@@ -2186,8 +2218,8 @@ pub fn materialize<'a>(
                                             thunk.restore_unevaluated(
                                                 crate::value::UnevaluatedState::Call {
                                                     func: func_thunk.clone(),
-                                                    args: args.clone(),
-                                                    named: named.clone().map(Box::new),
+                                                    args: args_for_restore,
+                                                    named: named_for_restore.map(Box::new),
                                                     call_span,
                                                     caller_env: caller_env.clone(),
                                                     ctx: thunk_ctx.clone(),
@@ -2205,8 +2237,8 @@ pub fn materialize<'a>(
                             } else {
                                 thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                                     func: func_thunk.clone(),
-                                    args: args.clone(),
-                                    named: named.clone().map(Box::new),
+                                    args: args_for_restore,
+                                    named: named_for_restore.map(Box::new),
                                     call_span,
                                     caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),

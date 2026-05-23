@@ -472,14 +472,12 @@ fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
                         let mut other_names = Vec::new();
                         collect_pattern_bindings(&other_branch.node, &mut other_names);
                         debug_assert_eq!(
-                            first_names,
-                            other_names,
+                            first_names, other_names,
                             "Or-pattern branches must bind the same variable names in the same \
                              order. First branch binds {:?} but another branch binds {:?}. \
                              This is a resolver invariant violation — check desugaring or \
                              pattern validation.",
-                            first_names,
-                            other_names,
+                            first_names, other_names,
                         );
                     }
                 }
@@ -700,7 +698,11 @@ mod tests {
         let (program, table) = parse_and_resolve(src);
         let refs = find_varref_nodes(&program, "n");
         // Should have exactly 2 VarRefs: one in guard, one in body
-        assert_eq!(refs.len(), 2, "expected exactly 2 VarRefs for $n (guard + body)");
+        assert_eq!(
+            refs.len(),
+            2,
+            "expected exactly 2 VarRefs for $n (guard + body)"
+        );
         for (id, _) in &refs {
             let coords = table
                 .get(id)

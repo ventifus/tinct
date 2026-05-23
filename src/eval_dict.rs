@@ -51,6 +51,11 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
 /// (`CoreExpr::Annotated`). All other key forms (variable references, function calls, etc.)
 /// are computed at runtime and are excluded from letrec scope and slot assignment.
 ///
+/// **Invariant**: `CoreExpr::Annotated { name, .. }` always has a static `name: String` that is
+/// a bare identifier parsed from source (e.g., `Fn@Number` → name="Fn"). The parser creates
+/// `Annotated` only for `Token::Identifier` followed by `@` (parser.rs:3232-3254). Therefore,
+/// `CoreExpr::Annotated` keys are always static and suitable for letrec scope and slot assignment.
+///
 /// **Must stay in sync with `resolve.rs` `surface_dict_static_keys` / `surface_node_static_keys`.**
 /// Both the resolver and all three runtime insertion sites (eval_dict.rs, eval.rs Sequential,
 /// eval_pipeline.rs document) use this predicate so that the slot indices they assign and count
