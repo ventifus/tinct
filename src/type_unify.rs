@@ -95,6 +95,7 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
         // Hardcoded because prelude instance declarations for primitives are commented
         // out (primitives use Rust fallback dispatch). Without this, [= x 42] triggers
         // "type Int does not satisfy constraint Equatable" in narrowing tests.
+        // Variant added for Group E fix (transport_typed.llt-eval).
         "Equatable" => matches!(
             ty,
             Type::Int
@@ -104,6 +105,7 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
                 | Type::StringLiteral(_)
                 | Type::Bool
                 | Type::Number
+                | Type::NominalVariant { .. }
         ),
         // Showable: base class for string conversion. Hardcoded for primitives that
         // have built-in str conversion. Combined with structural propagation above,

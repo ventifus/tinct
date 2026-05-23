@@ -3166,6 +3166,21 @@ fn infer_expr(
                     )]);
                 }
 
+                // CHR wiring diagnostic: check for Unknown types in patterns which prevent overlap checking.
+                // Unknown types make patterns_overlap always return false (see line 2172), causing
+                // disjointness checks to pass incorrectly. This can happen when pattern bindings lack
+                // type annotations (e.g., bare identifiers) or when annotation resolution fails.
+                if pattern_types.iter().any(|ty| matches!(ty, Type::Unknown)) {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax)",
+                            class_name
+                        ),
+                        pattern_expr.span,
+                    )
+                    .with_code("T017")]);
+                }
+
                 arm_data.push((pattern_types, pattern_expr.span, methods));
             }
 
@@ -3192,6 +3207,11 @@ fn infer_expr(
             }
 
             // Coverage and consistency checks for FD classes (Tasks 7.3 & 7.4)
+            // CHR wiring: has_fds is derived from ClassDecl.determines at line 3139. If this is false
+            // but the class declaration included determines: [[[a b] c]], then either:
+            // (a) the determines field failed to parse (check parser FD extraction)
+            // (b) the ClassDecl was re-registered with an empty determines list
+            // (c) the wrong class was looked up (class_name mismatch)
             if has_fds {
                 for (determining_indices, determined_indices) in &fd_list {
                     // Coverage check (Task 7.3): all determined vars must appear in determining vars

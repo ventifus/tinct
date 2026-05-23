@@ -75,6 +75,45 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ### Part F ✅, Part G ✅, sprint-2a-rc-arc ✅ — All complete (see DONE.md)
 
+### rv2-migrate-ast-dict: Migrate `ast_dict.rs` to SurfaceProgram (unblocks formatter + builtins_meta)
+
+**Critical path first.** `ast_dict.rs` (`ast_to_dict`, `dict_to_ast`) still walks old `Expr` AST. It is the primary blocker for the formatter, `builtins_meta.rs`, and the `tinct describe` CLI path. All other migrations depend on this one.
+
+- [ ] Rewrite `ast_to_dict` to accept `SurfaceProgram`/`SurfaceNode` instead of `File`/`Expr` — produce the same AST-as-dict representation for macro transformers and `tinct describe` (`src/ast_dict.rs`)
+- [ ] Rewrite `dict_to_ast` to return `SurfaceNode` instead of `Expr` — needed by the macro expansion `dict_to_ast` call at `src/expand.rs:1802` (`src/ast_dict.rs`)
+- [ ] Update all callers: `src/formatter.rs`, `src/builtins_meta.rs`, `src/expand.rs:1802` to use the new Surface signatures
+- [ ] `just build` passes; `just test` passes
+
+### rv2-migrate-repl: Migrate REPL to Surface eval path (small, independent)
+
+- [ ] Replace `repl.rs` call to old `eval_file`/`eval_document` with `eval_surface_file_with_input` — API already exists in `eval_pipeline.rs` (`src/repl.rs`)
+- [ ] `just build` passes; REPL manual smoke test
+
+### rv2-migrate-lsp: Remove `File` from LSP DocumentState (small, independent)
+
+- [ ] `lsp/document.rs`: remove `File` from `DocumentState` — parser output is already stored as `SurfaceProgram`; `File` reference is incidental. Inline `parse(text)?.program` directly. (`src/lsp/document.rs`)
+- [ ] Verify `lsp/analysis.rs` hover/diagnostics still work — already walks SurfaceProgram
+- [ ] `just test-lsp` passes
+
+### rv2-migrate-typecheck-api: Delete old `typecheck_file_*` wrappers
+
+**Depends on:** rv2-migrate-ast-dict (formatter migration removes last `typecheck_file` call sites)
+
+- [ ] Verify all `typecheck_file` / `typecheck_file_errors_only` call sites are gone (all callers should already use `typecheck_surface_program*`)
+- [ ] Delete `typecheck_file`, `typecheck_file_errors_only`, `typecheck_file_quality` from `src/typecheck.rs`
+- [ ] `just build` passes
+
+### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
+
+**Depends on:** rv2-migrate-ast-dict, rv2-migrate-repl, rv2-migrate-lsp, rv2-migrate-typecheck-api
+
+- [ ] Delete `src/desugar.rs` — `desugar_surface_program` is the live path; old `desugar_file` no longer called
+- [ ] Delete `src/ast_convert.rs` — `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers all migrated
+- [ ] Delete old `eval_document`/`eval_file`/`eval_file_with_input` from `src/eval_pipeline.rs` (keep `eval_surface_*` variants)
+- [ ] Delete `src/ast_dict.rs` old Expr-based functions (replaced by rv2-migrate-ast-dict)
+- [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
+- [ ] `just build` passes; `just test` passes
+
 ---
 
 ## Linear Accumulators (`doc/whatif/linear-accumulators.md`)
@@ -423,6 +462,15 @@ Benefits:
 
 - [x] Add `test_caps()` with `OnceLock<TestCaps>` pattern — all test ambient opens replaced across 11 files
 - [x] All test `open_ambient_dir` calls → `test_caps().root` / `test_caps().stdlib`
+
+### lint-clippy-hotfix: Fix 4 new clippy errors from eval-hot-path-fixes (2026-05-23)
+
+`just lint-clippy` currently fails with 4 errors introduced by recent sprint work:
+
+- [ ] `src/eval_dict.rs:239` — `unused import: use super::*` in test module (remove import or use it)
+- [ ] `src/value.rs:1882` — redundant closure `|t| Arc::clone(t)` → replace with `Arc::clone` directly
+- [ ] `src/value.rs:1908` — same redundant closure pattern
+- [ ] `src/value.rs:1794` — `reset_slot_counters` is `#[cfg(test)]` but flagged as never used — add `#[allow(dead_code)]` or wire into a test
 
 ### ci-failures: Fix 4 failing tests identified by `just ci` (2026-05-22)
 

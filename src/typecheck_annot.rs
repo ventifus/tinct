@@ -2943,6 +2943,100 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
+    // Nominal variant constructor: [Constructor payload-type] or [Constructor field: Type ...]
+    // Matches either form:
+    // - Pure positional with uppercase first entry (e.g., [Ok a], [None]):
+    //   First entry is constructor tag, optional second entry is payload type
+    // - Mixed positional+keyed with uppercase first entry (e.g., [MyOk n: Int]):
+    //   First positional is constructor tag, keyed entries are named fields
+    //
+    // This must be checked BEFORE the multi-entry union path below so that individual
+    // constructor expressions like [Ok a] resolve to NominalVariant, not Union(Ok, a).
+    if !entries.is_empty() {
+        if let Some(first) = entries.first() {
+            // Check if first entry is positional (auto-indexed)
+            if first.node.key.is_none() {
+                if let Expr::VarRef { name: tag, .. } = &first.node.value.node {
+                    // Check if tag is uppercase (constructor name)
+                    if crate::eval::is_constructor_name(tag) {
+                        // Case 1: Pure positional — [Constructor] or [Constructor PayloadType]
+                        let all_remaining_positional =
+                            entries[1..].iter().all(|e| e.node.key.is_none());
+                        if all_remaining_positional {
+                            if entries.len() == 1 {
+                                // Unit constructor: [None]
+                                return Ok(Type::NominalVariant {
+                                    tag: tag.clone(),
+                                    fields: Row {
+                                        fields: HashMap::new(),
+                                    },
+                                });
+                            } else if entries.len() == 2 {
+                                // Single-payload constructor: [Ok a]
+                                let payload_ty = resolve_type_expr(
+                                    &entries[1].node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                // Unnamed payload: create record with single field "0"
+                                let mut fields = HashMap::new();
+                                fields.insert("0".to_string(), payload_ty);
+                                return Ok(Type::NominalVariant {
+                                    tag: tag.clone(),
+                                    fields: Row { fields },
+                                });
+                            } else {
+                                return Err(TypeError::new(
+                                    "nominal variant constructor with positional payload must have exactly 1 or 2 entries ([Constructor] or [Constructor PayloadType])",
+                                    span,
+                                ));
+                            }
+                        }
+                        // Case 2: Mixed positional+keyed — [Constructor field: Type ...]
+                        // First entry is tag, remaining are named fields
+                        let mut variant_fields = HashMap::new();
+                        for field_entry in &entries[1..] {
+                            match &field_entry.node.key {
+                                Some(k) => {
+                                    let field_name =
+                                        match &k.node {
+                                            Expr::Str(s) => s.clone(),
+                                            _ => return Err(TypeError::new(
+                                                "nominal variant field names must be bare words",
+                                                k.span,
+                                            )),
+                                        };
+                                    let field_ty = resolve_type_expr(
+                                        &field_entry.node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?;
+                                    variant_fields.insert(field_name, field_ty);
+                                }
+                                None => {
+                                    return Err(TypeError::new(
+                                        "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)",
+                                        field_entry.span,
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(Type::NominalVariant {
+                            tag: tag.clone(),
+                            fields: Row {
+                                fields: variant_fields,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     // Multi-entry union type from `[type T1 T2 ...]` declarations.
     // When ALL entries are auto-indexed (no keys) and there are 2+ entries,
     // this is a union of type expressions (not a record type).
