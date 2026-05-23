@@ -216,10 +216,8 @@ pub fn surface_node_get_field(
         }
 
         // --- Rest ---
-        (SurfaceExpression::Rest(name_opt), "name") => match name_opt {
-            Some(n) => string_val(n),
-            None => null(),
-        },
+        (SurfaceExpression::Rest(Some(n)), "name") => string_val(n),
+        (SurfaceExpression::Rest(None), "name") => null(),
 
         // --- Match ---
         (SurfaceExpression::Match { scrutinee, .. }, "scrutinee") => {
@@ -525,6 +523,7 @@ pub fn span_to_value(
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // test uses 3.14 as a Float literal test value, not PI
 mod tests {
     use super::*;
     use crate::ast::{Span, SurfaceNode};

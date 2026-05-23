@@ -35,6 +35,14 @@
 //! Uses `parse()` for stdlib syntax validation. Both approaches validate the
 //! analysis pipeline without spawning the LSP server as a subprocess.
 
+// Test infrastructure uses std::fs for corpus file reading — no cap_std available in test harness.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::useless_format,
+    clippy::approx_constant,
+    clippy::mutable_key_type
+)]
+
 mod test_helpers;
 
 use std::fs;

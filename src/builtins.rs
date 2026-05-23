@@ -99,6 +99,16 @@ pub(crate) const JSON_DEPTH_LIMIT: usize = 128;
 /// Prevents memory exhaustion from adversarial inputs or replacement patterns.
 pub(crate) const MAX_STRING_SIZE: usize = 64 * 1024 * 1024;
 
+/// Type alias for the stdlib-env-with-arena return type. Reduces type_complexity
+/// in `create_stdlib_env_with_arena` and `create_stdlib_env_inner`.
+type StdlibEnvWithArena = Result<
+    (
+        Arc<RwLock<Environment>>,
+        Arc<Mutex<crate::arena::ThunkArena>>,
+    ),
+    Box<crate::error::EvalError>,
+>;
+
 pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
     Ok(Arc::new(Thunk::new_materialized(v, span)))
 }
@@ -479,6 +489,7 @@ fn float_to_int_builtin(
 /// - Float input: applies `f64::floor()` then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
+///
 /// Inherently materializing: must inspect numeric value to convert/round.
 fn builtin_floor(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -498,6 +509,7 @@ fn builtin_floor(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
 /// - Float input: applies `f64::round()` (half-away-from-zero) then converts to `i64`.
 /// - NaN or Infinity: errors (cannot convert to Int).
 /// - Non-numeric input: type error.
+///
 /// Inherently materializing: must inspect numeric value to convert/round.
 fn builtin_round(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -640,6 +652,7 @@ pub(crate) use crate::builtins_async::{
 /// - Dict path: O(1) — returns the value at the first key (insertion order).
 /// - String path: O(1) — returns a single-char String slice of the first codepoint.
 /// - Bytes path: O(1) — returns the first byte as Value::Int.
+///
 /// Inherently materializing: must access the value to determine type and extract first element.
 fn builtin_first(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -711,6 +724,7 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
 /// - Dict path: O(n) — must iterate to the last entry (IndexMap doesn't have O(1) last).
 /// - String path: O(n) — must walk UTF-8 chars to find the last codepoint.
 /// - Bytes path: O(1) — returns the last byte as Value::Int.
+///
 /// Inherently materializing: must access the value to determine type and extract last element.
 fn builtin_last(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -783,6 +797,7 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
 /// - Dict path: O(n) — drops the first entry by insertion order, rebuilds with dense
 ///   integer keys starting at 0. Same asymptotic cost as the LLT implementation, but
 ///   avoids interpreter loop overhead.
+///
 /// Inherently materializing for Dict: must copy all remaining entries.
 /// Lazy for Seq: O(1) tail extraction.
 fn builtin_rest(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -831,6 +846,7 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
 /// - Dict path: O(n) — builds a new dict with the element at key 0, followed by
 ///   the existing entries reindexed as 1..n. Same asymptotic cost as the LLT
 ///   implementation, but avoids interpreter loop overhead.
+///
 /// Inherently materializing for Dict: must copy all existing entries.
 /// Lazy for Seq: O(1) prepend.
 fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -883,6 +899,7 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
 /// - Materializes the dict, collects entries in reverse insertion order,
 ///   builds a new dict with dense integer keys 0..n-1.
 /// - O(n) — avoids the recursive LLT accumulator pattern.
+///
 /// Inherently materializing: must know all entries to reverse order.
 fn builtin_reverse(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -970,6 +987,7 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
 /// - O(n log n) using Rust's `sort_by`.
 /// - Errors on mixed incompatible types when using natural ordering.
 /// - Errors on Seq input (callers must `$collect` first).
+///
 /// Inherently materializing: must inspect all values to determine sort order.
 fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -1048,12 +1066,12 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                         ..
                     } => {
                         match invoke_function(&CallContext {
-                            params: &*params,
-                            body: &body,
-                            closure_env: &closure_env,
+                            params,
+                            body,
+                            closure_env,
                             positional: &pos_args,
                             named: None,
-                            default_env: &closure_env,
+                            default_env: closure_env,
                             call_span,
                             origin: Some(Arc::from("sort")),
                             ctx: &ctx,
@@ -2164,7 +2182,7 @@ std::thread_local! {
     /// Cache of the stdlib arena so EvalContexts created after create_stdlib_env()
     /// can inherit the stdlib ThunkIds without the caller explicitly threading the arena.
     static STDLIB_ARENA_CACHE: std::cell::RefCell<Option<Arc<Mutex<crate::arena::ThunkArena>>>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Return a new ThunkArena pre-populated with the stdlib thunks (via Arc::clone),
@@ -2193,13 +2211,7 @@ pub fn create_stdlib_env() -> Result<Arc<RwLock<Environment>>, Box<crate::error:
 /// `EvalContext::new()` calls on this thread inherit the stdlib ThunkIds. This ensures cache
 /// consistency regardless of which entry point (`create_stdlib_env()` or
 /// `create_stdlib_env_with_arena()`) was used to build the stdlib.
-pub(crate) fn create_stdlib_env_with_arena() -> Result<
-    (
-        Arc<RwLock<Environment>>,
-        Arc<Mutex<crate::arena::ThunkArena>>,
-    ),
-    Box<crate::error::EvalError>,
-> {
+pub(crate) fn create_stdlib_env_with_arena() -> StdlibEnvWithArena {
     let d = STDLIB_ENV_DEPTH.get();
     if d > 5 {
         panic!(
@@ -2229,15 +2241,7 @@ pub(crate) fn create_stdlib_env_with_arena() -> Result<
     result
 }
 
-fn create_stdlib_env_inner(
-    bootstrap_base_dir: cap_std::fs::Dir,
-) -> Result<
-    (
-        Arc<RwLock<Environment>>,
-        Arc<Mutex<crate::arena::ThunkArena>>,
-    ),
-    Box<crate::error::EvalError>,
-> {
+fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWithArena {
     // Phase 2: Bootstrap env switch.
     // The bootstrap env contains all builtins registered directly.
     // After the prelude loads, its exported bindings become the standard library
@@ -2378,6 +2382,17 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
 }
 
 #[cfg(test)]
+// Test-code lint suppressions:
+// - useless_conversion: string_val("lit".into()) — `.into()` is a &str→&str no-op, idiomatic in test fixtures
+// - approx_constant: Value::Float(3.14) tests exact string→float parsing, not π
+// - to_string_in_format_args: legacy assert! patterns use `.to_string()` in conditions and format args;
+//   the condition `.to_string().contains(…)` is load-bearing, and format args already use `err.kind` in
+//   many cases — this suppresses any residual instances in complex multi-line assertions
+#[allow(
+    clippy::useless_conversion,
+    clippy::approx_constant,
+    clippy::to_string_in_format_args
+)]
 mod tests {
     use super::*;
     use crate::error::ErrorKind;
@@ -2653,11 +2668,7 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("NaN"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("NaN"), "got: {}", err.kind);
     }
 
     #[test]
@@ -2672,7 +2683,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2688,14 +2699,14 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
     #[test]
     fn floor_string_type_error() {
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(string_val("3.5".into()))],
+            args: vec![thunk(string_val("3.5"))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2704,7 +2715,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2720,7 +2731,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2736,7 +2747,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2752,7 +2763,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2768,7 +2779,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2786,7 +2797,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2802,7 +2813,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2818,7 +2829,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2956,11 +2967,7 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("NaN"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("NaN"), "got: {}", err.kind);
     }
 
     #[test]
@@ -2975,7 +2982,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -2991,14 +2998,14 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
     #[test]
     fn round_string_type_error() {
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(string_val("3.5".into()))],
+            args: vec![thunk(string_val("3.5"))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -3007,7 +3014,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3023,7 +3030,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Int or Float"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3039,7 +3046,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3055,7 +3062,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3071,7 +3078,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3087,7 +3094,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("out of range for Int"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3147,7 +3154,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3163,7 +3170,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3179,7 +3186,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3195,7 +3202,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3211,12 +3218,12 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("Int"),
             "should mention Int, got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3232,7 +3239,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3248,7 +3255,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3264,7 +3271,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3280,7 +3287,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3296,7 +3303,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3391,7 +3398,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3407,7 +3414,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3425,7 +3432,7 @@ mod tests {
                 .to_string()
                 .contains("parses to a non-finite value"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3443,7 +3450,7 @@ mod tests {
                 .to_string()
                 .contains("parses to a non-finite value"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3461,7 +3468,7 @@ mod tests {
                 .to_string()
                 .contains("parses to a non-finite value"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3479,7 +3486,7 @@ mod tests {
                 .to_string()
                 .contains("parses to a non-finite value"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3495,7 +3502,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3511,7 +3518,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3527,7 +3534,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3543,7 +3550,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3562,7 +3569,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3580,7 +3587,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3597,7 +3604,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("cannot parse"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3785,7 +3792,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3825,13 +3832,9 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
-        assert!(
-            err.kind.to_string().contains("String"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("String"), "got: {}", err.kind);
     }
 
     #[test]
@@ -3846,7 +3849,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3937,7 +3940,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Function"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3955,7 +3958,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("zero-argument function"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3971,7 +3974,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4071,7 +4074,7 @@ mod tests {
                 .to_string()
                 .contains("maximum evaluation depth exceeded"),
             "expected depth error to propagate, got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert_eq!(err.kind.code(), "E040");
     }
@@ -4108,7 +4111,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("exceeded resource limit"),
             "expected resource limit error to propagate, got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert_eq!(err.kind.code(), "E043");
     }
@@ -4257,7 +4260,7 @@ mod tests {
                 .to_string()
                 .contains("missing argument for required parameter"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4284,7 +4287,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Function"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4303,7 +4306,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4320,7 +4323,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4445,7 +4448,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4606,7 +4609,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("invalid JSON"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4622,7 +4625,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4638,7 +4641,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -4720,7 +4723,7 @@ mod tests {
                 .to_string()
                 .contains("maximum JSON nesting depth exceeded"),
             "expected depth error, got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5115,7 +5118,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5133,7 +5136,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5149,7 +5152,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5167,7 +5170,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5185,7 +5188,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5203,7 +5206,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5216,20 +5219,16 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("keys"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind);
         assert!(
             err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("got Int"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5242,15 +5241,11 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("keys"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind);
         assert!(
             err.kind.to_string().contains("got String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5263,15 +5258,11 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("keys"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("keys"), "got: {}", err.kind);
         assert!(
             err.kind.to_string().contains("got Bool"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5319,20 +5310,16 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("length"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("length"), "got: {}", err.kind);
         assert!(
             err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("got Bool"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5358,12 +5345,12 @@ mod tests {
                 assert!(
                     err.kind.to_string().contains("expected Dict"),
                     "got: {}",
-                    err.kind.to_string()
+                    err.kind
                 );
                 assert!(
                     err.kind.to_string().contains("got Int"),
                     "got: {}",
-                    err.kind.to_string()
+                    err.kind
                 );
             }
             other => panic!("expected Overlay, got {other:?}"),
@@ -5391,12 +5378,12 @@ mod tests {
                 assert!(
                     err.kind.to_string().contains("expected Dict"),
                     "got: {}",
-                    err.kind.to_string()
+                    err.kind
                 );
                 assert!(
                     err.kind.to_string().contains("got String"),
                     "got: {}",
-                    err.kind.to_string()
+                    err.kind
                 );
             }
             other => panic!("expected Overlay, got {other:?}"),
@@ -5549,11 +5536,7 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("2"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("2"), "got: {}", err.kind);
     }
 
     #[test]
@@ -5570,11 +5553,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("2"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("2"), "got: {}", err.kind);
     }
 
     #[test]
@@ -5586,15 +5565,11 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("append"),
-            "got: {}",
-            err.kind.to_string()
-        );
+        assert!(err.kind.to_string().contains("append"), "got: {}", err.kind);
         assert!(
             err.kind.to_string().contains("expected Dict"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -5614,7 +5589,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6151,12 +6126,12 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("expected 2"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6176,7 +6151,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6192,12 +6167,12 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("expected 3"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6213,7 +6188,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6229,17 +6204,17 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("got Int"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6255,12 +6230,12 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6280,12 +6255,12 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("got Int"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6305,12 +6280,12 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("got Bool"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6330,12 +6305,12 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("got Float"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6351,17 +6326,17 @@ mod tests {
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("expected String"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("got Float"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6379,7 +6354,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6397,7 +6372,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6415,7 +6390,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6433,7 +6408,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6451,7 +6426,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6469,7 +6444,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6490,7 +6465,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6512,7 +6487,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6530,7 +6505,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6548,7 +6523,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6566,7 +6541,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6584,7 +6559,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6602,7 +6577,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6620,7 +6595,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6642,7 +6617,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6669,7 +6644,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6688,7 +6663,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6709,7 +6684,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6727,7 +6702,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6745,7 +6720,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6765,7 +6740,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -6786,7 +6761,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7182,7 +7157,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("no instance") || e.kind.to_string().contains("Addable"),
             "expected NoInstance error for Int + String, got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7198,7 +7173,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7230,7 +7205,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7246,7 +7221,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7328,7 +7303,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7344,7 +7319,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7379,7 +7354,7 @@ mod tests {
             e.kind.to_string().contains("no instance")
                 || e.kind.to_string().contains("Subtractable"),
             "expected NoInstance error for Int - String, got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7472,7 +7447,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("integer overflow"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7488,7 +7463,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7508,7 +7483,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7524,7 +7499,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7547,7 +7522,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("is not a finite"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -7620,7 +7595,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("division by zero"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7637,7 +7612,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7654,7 +7629,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("is not a finite number"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -7867,7 +7842,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -8013,11 +7988,7 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("expected"),
-            "got: {}",
-            e.kind.to_string()
-        );
+        assert!(e.kind.to_string().contains("expected"), "got: {}", e.kind);
     }
 
     #[test]
@@ -8076,11 +8047,7 @@ mod tests {
             ctx: test_ctx(),
         }))
         .unwrap_err();
-        assert!(
-            e.kind.to_string().contains("expected"),
-            "got: {}",
-            e.kind.to_string()
-        );
+        assert!(e.kind.to_string().contains("expected"), "got: {}", e.kind);
     }
 
     #[test]
@@ -8095,7 +8062,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -8204,12 +8171,12 @@ mod tests {
         assert!(
             e.kind.to_string().contains("expected Bool"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
         assert!(
             e.kind.to_string().contains("Bool"),
             "expected Bool mentioned, got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -8230,7 +8197,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("expected Bool"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -8247,7 +8214,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -8269,7 +8236,7 @@ mod tests {
         assert!(
             e.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            e.kind.to_string()
+            e.kind
         );
     }
 
@@ -8576,7 +8543,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("on empty collection"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -8592,7 +8559,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("on empty collection"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -8806,7 +8773,7 @@ mod tests {
                 assert!(
                     is_depth_error || is_size_error,
                     "expected depth or size limit error, got: {}",
-                    err.kind.to_string()
+                    err.kind
                 );
             })
             .unwrap()
@@ -9695,7 +9662,7 @@ mod tests {
                 assert!(
                     is_depth_error || is_size_error,
                     "expected depth or size limit error, got: {}",
-                    err.kind.to_string()
+                    err.kind
                 );
             })
             .unwrap()
@@ -9940,17 +9907,17 @@ mod tests {
         assert!(
             err.kind.to_string().contains("concat"),
             "expected 'concat' in error, got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("Dict or Seq"),
             "expected 'Dict or Seq' in error, got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert!(
             err.kind.to_string().contains("Int"),
             "expected 'Int' in error (got type name), got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -10096,7 +10063,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
 
         // Two args
@@ -10110,7 +10077,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
 
         // Three args
@@ -10128,7 +10095,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("arity mismatch"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -10149,7 +10116,7 @@ mod tests {
                 .to_string()
                 .contains("does not accept named arguments"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -10187,7 +10154,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("drop") && err.kind.to_string().contains("expected Int"),
             "Expected message to contain 'drop' and 'expected Int', got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -10300,7 +10267,7 @@ mod tests {
         let add_builtin = standard_builtins()
             .into_iter()
             .find(|def| def.name == "+")
-            .map(|def| Value::Builtin(def))
+            .map(Value::Builtin)
             .unwrap();
 
         let result = mat(builtin_reduce(BuiltinArgs {

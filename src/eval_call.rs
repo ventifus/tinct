@@ -148,7 +148,15 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
     const VARIANT_TAG_MARKER: &str = "__variant_tag__";
 
     // Check if this is a variant constructor
-    if let Some(tag_thunk) = ctx.closure_env.read().unwrap().get(VARIANT_TAG_MARKER) {
+    // Clone the thunk before releasing the lock — holding a RwLockReadGuard across an await
+    // point is unsound when using tokio::task::LocalSet with its cooperative scheduling model.
+    let variant_tag_thunk = ctx
+        .closure_env
+        .read()
+        .unwrap()
+        .get(VARIANT_TAG_MARKER)
+        .map(|t| Arc::clone(&t));
+    if let Some(tag_thunk) = variant_tag_thunk {
         // Validate: variant constructors take exactly one positional argument, no named args
         if ctx.positional.len() != 1 {
             return Err(EvalError::arity_mismatch(1, ctx.positional.len(), ctx.call_span).into());

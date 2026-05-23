@@ -70,13 +70,14 @@ impl NormCtxt {
 ///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction:
 ///      a. Check `resolver_cache` (memoized results from previous LLT calls this run)
 ///      b. On cache miss, call `evaluate_resolver()` to invoke the type-stage function
-///         from the prelude (e.g. AddResult, DivResult) and cache the result
-///      c. If evaluation fails (fn not found, runtime error, unknown kind), return
-///         stuck TypeStageApp — caller can retry later via deferred_equalities
+///         from the prelude (e.g. `AddResult`, `DivResult`) and cache the result.
+///      c. If evaluation fails, return stuck TypeStageApp
+///         (caller can retry via deferred_equalities)
 ///    - If depth exceeded or cycle detected, return stuck TypeStageApp
 /// 3. Cache the result (only for ground types)
 ///
 /// Returns the normalized type.
+#[allow(clippy::doc_overindented_list_items)] // multi-level numbered sub-list requires deeper indentation
 pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
     // Step 1: Apply current substitution
     let ty_substituted = subst.apply(ty);
@@ -392,7 +393,7 @@ pub(crate) fn evaluate_resolver(
             ..
         } => {
             let call_ctx = crate::eval_call::CallContext {
-                params: &**params,
+                params,
                 body,
                 closure_env,
                 positional: &arg_thunks,

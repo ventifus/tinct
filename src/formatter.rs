@@ -313,7 +313,7 @@ impl<'a> Formatter<'a> {
         // True if all expressions are simple (not complex Dict/Call/Fn/TypeAlias)
         // AND there are no comments (which would require multi-line formatting)
         let all_simple = expressions.iter().all(|e| match &e.expr {
-            SurfaceExpression::Dict(entries) if self.is_simple_dict(&entries) => true,
+            SurfaceExpression::Dict(entries) if self.is_simple_dict(entries) => true,
             SurfaceExpression::Dict(_)
             | SurfaceExpression::Call { .. }
             | SurfaceExpression::Fn { .. }

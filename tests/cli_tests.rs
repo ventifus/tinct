@@ -5,6 +5,13 @@
 //! The binary requires the `cli` feature, so we gate the entire file.
 
 #![cfg(feature = "cli")]
+// Test infrastructure uses std::fs — no cap_std available in test harness.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::useless_format,
+    clippy::approx_constant,
+    clippy::expect_fun_call
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -4187,10 +4194,12 @@ fn libdir_path_override_flag_accepted() {
         stdout
     );
 
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&format!(
-        "expected valid JSON. stdout: '{}', stderr: '{}'",
-        stdout, stderr
-    ));
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|_| {
+        panic!(
+            "expected valid JSON. stdout: '{}', stderr: '{}'",
+            stdout, stderr
+        )
+    });
     assert_eq!(json, serde_json::json!({"x": 1}));
 }
 

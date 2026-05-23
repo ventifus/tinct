@@ -48,6 +48,7 @@ static TEST_CAPS: OnceLock<TestCaps> = OnceLock::new();
 pub fn test_caps() -> &'static TestCaps {
     TEST_CAPS.get_or_init(|| {
         // AMBIENT-OK: single initialization for entire test suite.
+        #[allow(clippy::disallowed_methods)]
         let root = cap_std::fs::Dir::open_ambient_dir(
             env!("CARGO_MANIFEST_DIR"),
             cap_std::ambient_authority(),

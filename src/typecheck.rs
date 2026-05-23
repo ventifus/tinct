@@ -579,7 +579,7 @@ fn typecheck_surface_document(
                                 .node
                                 .key
                                 .as_ref()
-                                .map(|k| crate::ast_convert::surface_node_to_expr(k));
+                                .map(crate::ast_convert::surface_node_to_expr);
                             let value = crate::ast_convert::surface_node_to_expr(&m.node.value);
                             Spanned::new(
                                 crate::ast::Entry {
@@ -592,7 +592,7 @@ fn typecheck_surface_document(
                         .collect();
                     let determines_exprs: Vec<Spanned<Expr>> = determines
                         .iter()
-                        .map(|d| crate::ast_convert::surface_node_to_expr(d))
+                        .map(crate::ast_convert::surface_node_to_expr)
                         .collect();
                     let resolver_expr = resolver
                         .as_ref()
@@ -628,7 +628,7 @@ fn typecheck_surface_document(
                                         .node
                                         .key
                                         .as_ref()
-                                        .map(|k| crate::ast_convert::surface_node_to_expr(k));
+                                        .map(crate::ast_convert::surface_node_to_expr);
                                     let value =
                                         crate::ast_convert::surface_node_to_expr(&m.node.value);
                                     Spanned::new(
@@ -8875,7 +8875,7 @@ mod tests {
                     } => {
                         // Params and return should involve type variables (from annotation @a)
                         assert!(
-                            matches!(params.get(0).map(|(_, t)| t), Some(Type::TypeVar(_, _))),
+                            matches!(params.first().map(|(_, t)| t), Some(Type::TypeVar(_, _))),
                             "id param should be TypeVar, got {:?}",
                             params
                         );
@@ -12343,8 +12343,8 @@ mod tests {
                 // Check that all members are StringLiterals
                 let tags: Vec<String> = members
                     .iter()
-                    .filter_map(|m| match m {
-                        Type::StringLiteral(s) => Some(s.clone()),
+                    .map(|m| match m {
+                        Type::StringLiteral(s) => s.clone(),
                         other => panic!("expected StringLiteral, got {other}"),
                     })
                     .collect();
@@ -14778,8 +14778,8 @@ mod tests {
             .map(|s| s.as_str())
             .unwrap_or_else(|_e| "ERR");
         let _warn1 = tc1.as_ref().err().map(|e| e.as_str()).unwrap_or("OK");
-        // Embed findings in an assertion message so they appear on failure
-        assert!(true, "case1: eval={:?} warn={:?}", result1, tc1);
+        // case1 state for debugging: eval={result1:?} warn={tc1:?}
+        let _ = (&result1, &tc1); // keep bindings live
 
         // Case 2: [Ok 1] first binding — Rule 2 fails (Variant type) → T_DO_INFER → E002
         let result2 = crate::eval_source("[do [x: [Ok 1]] x]");

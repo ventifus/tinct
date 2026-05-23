@@ -638,6 +638,8 @@ fn collect_include_paths_from_node(
 ///
 /// Returns `base_env` unchanged on any IO or parse failure (best-effort approach).
 /// Depth is capped at `MAX_INCLUDE_DEPTH` to prevent runaway recursion.
+// AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
+#[allow(clippy::disallowed_methods)]
 fn resolve_includes(
     include_paths: &[(Span, Option<String>, String)],
     base_dir: Option<&Path>,
@@ -1000,6 +1002,8 @@ fn apply_include_type_to_node(
 /// - A mapping from each include call's `Span` to the bindings it contributed
 ///
 /// Best-effort: IO failures, parse errors, and type errors are silently ignored.
+// AMBIENT-OK: type-checker API entry point — opens CWD once; propagated to all nested resolution
+#[allow(clippy::disallowed_methods)]
 pub fn build_type_env(
     program: &SurfaceProgram,
     base_dir: Option<&Path>,
@@ -1061,6 +1065,7 @@ pub fn build_type_env_with_cap(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // test helpers use ambient open_ambient_dir; test-only
 mod tests {
     use super::*;
 

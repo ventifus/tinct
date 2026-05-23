@@ -746,6 +746,7 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     })
 }
 
+#[allow(clippy::items_after_test_module)] // Intentional: builtin items after test module due to feature ordering
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,6 +767,8 @@ mod tests {
         let (env, arena) = test_env_and_arena();
         let type_stage_env =
             crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
+        // AMBIENT-OK: LSP test helper — no prior Dir available, test context only.
+        #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         crate::eval::EvalContext::new_sharing_arena(

@@ -2381,6 +2381,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 })
                             };
 
+                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
                             let decl = SurfaceDeclaration::DefMacro {
                                 name: name.unwrap(),
                                 params: params.unwrap(),
@@ -2426,6 +2427,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         } else {
+                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
                             let decl = SurfaceDeclaration::MacroDecl {
                                 name: name.unwrap(),
                                 params: params.unwrap(),
@@ -2472,6 +2474,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         } else {
+                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
                             let decl = SurfaceDeclaration::SyntaxClass {
                                 name: name.unwrap(),
                                 pattern: pattern.unwrap(),
@@ -2525,6 +2528,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span),
                             });
                         } else {
+                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
                             let spanned_match = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Match {
                                     scrutinee: scrutinee.unwrap(),
@@ -2783,6 +2787,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(dict_span(span_start)),
                             });
                         } else {
+                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
                             let spanned_case = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::CaseArm {
                                     pattern: pattern.unwrap(),
@@ -4849,6 +4854,7 @@ fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::Has
 }
 
 /// Extract guard expression from annotation if present
+#[allow(clippy::explicit_auto_deref)] // &entry.node.value: &Rc<T> auto-derefs to &T; clippy suggests omitting & but it's clearer explicit
 fn extract_guard(annotation: &Spanned<Annotation>) -> Option<Arc<SurfaceNode>> {
     match &annotation.node {
         Annotation::PropertyDict(props) => {
@@ -4857,12 +4863,12 @@ fn extract_guard(annotation: &Spanned<Annotation>) -> Option<Arc<SurfaceNode>> {
                     match &key_expr.node {
                         Expr::VarRef { name, .. } if name == "is" => {
                             return Some(crate::ast_convert::expr_to_surface_node(
-                                &*entry.node.value,
+                                &entry.node.value,
                             ));
                         }
                         Expr::Str(s) if s == "is" => {
                             return Some(crate::ast_convert::expr_to_surface_node(
-                                &*entry.node.value,
+                                &entry.node.value, // deref coercion: &Rc<T> → &T
                             ));
                         }
                         _ => {}
@@ -5173,8 +5179,7 @@ fn push_expr_to_parent(
                             // Find the last non-Placeholder binding and check it's variadic
                             let last_non_placeholder = bindings
                                 .iter()
-                                .filter(|b| !matches!(&b.expr, SurfaceExpression::Placeholder))
-                                .last();
+                                .rfind(|b| !matches!(&b.expr, SurfaceExpression::Placeholder));
                             if let Some(last) = last_non_placeholder {
                                 if !matches!(&last.expr, SurfaceExpression::Rest(Some(_))) {
                                     return Err(ParseError {
@@ -6226,7 +6231,7 @@ mod tests {
                 assert_eq!(params.len(), 0);
                 assert!(matches!(&body.node, Expr::Int(42)));
                 assert!(return_ann.is_none());
-                assert_eq!(*desugared, false);
+                assert!(!*desugared);
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -6285,10 +6290,12 @@ mod tests {
     #[test]
     fn test_depth_limit_well_below_maximum_succeeds() {
         const DEPTH: usize = 200;
-        assert!(
-            DEPTH < MAX_PARSE_DEPTH,
-            "test depth must be less than MAX_PARSE_DEPTH"
-        );
+        const {
+            assert!(
+                DEPTH < MAX_PARSE_DEPTH,
+                "test depth must be less than MAX_PARSE_DEPTH"
+            )
+        };
 
         let mut input = String::new();
         for _ in 0..DEPTH {

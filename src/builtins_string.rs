@@ -627,6 +627,8 @@ pub(crate) fn builtin_char_code(
     })
 }
 
+#[allow(clippy::items_after_test_module)]
+// Additional builtin functions (chr, str-bytes, etc.) come after test module; moving them before would disrupt module organization
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -750,7 +752,7 @@ mod tests {
         assert!(result.is_ok(), "builtin_str() with 0 args should succeed");
         let val = materialize(&result.unwrap(), None, &ctx).unwrap();
         assert!(
-            matches!(&val, Value::String { source, start, end } if &source[*start..*end] == ""),
+            matches!(&val, Value::String { source, start, end } if source[*start..*end].is_empty()),
             "expected empty string, got: {:?}",
             val
         );
@@ -1098,7 +1100,7 @@ pub(crate) fn builtin_str_map_chars(
                 } => {
                     let pos_args = vec![Arc::clone(&char_thunk)];
                     invoke_s(&CallContext {
-                        params: &**params,
+                        params,
                         body,
                         closure_env,
                         positional: &pos_args,

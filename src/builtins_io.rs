@@ -3070,7 +3070,7 @@ pub(crate) fn builtin_set_permissions(
         {
             use cap_std::fs::{Permissions, PermissionsExt};
 
-            if mode < 0 || mode > 0o7777 {
+            if !(0..=0o7777).contains(&mode) {
                 return Err(EvalError::user_error(
                     format!("set-permissions: mode {} out of range (0-0o7777)", mode),
                     call_span,
@@ -4739,6 +4739,8 @@ pub(crate) fn builtin_tls_peer_cert(
     })
 }
 
+#[allow(clippy::items_after_test_module)]
+// QUIC/HTTP structs and builtins come after test module; moving them before would break organization
 #[cfg(test)]
 mod tests {
     use super::*;

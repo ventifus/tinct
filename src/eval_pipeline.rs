@@ -264,7 +264,7 @@ pub async fn eval_file_with_input(
     initial_input: Option<Arc<Thunk>>,
 ) -> EvalResult<Arc<Thunk>> {
     // % starts as the provided input, or empty dict if none given
-    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Arc::clone(t)));
+    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(Arc::clone));
     // Named section accumulator: maps section name → result thunk
     let mut named: IndexMap<String, Arc<Thunk>> = IndexMap::new();
 
@@ -499,7 +499,7 @@ pub async fn eval_surface_file_with_input(
     types: &Arc<TypeAnnotationTable>,
     initial_input: Option<Arc<Thunk>>,
 ) -> EvalResult<Arc<Thunk>> {
-    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Arc::clone(t)));
+    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(Arc::clone));
     let mut named: IndexMap<String, Arc<Thunk>> = IndexMap::new();
 
     for surface_doc in &program.documents {

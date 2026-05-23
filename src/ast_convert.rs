@@ -17,6 +17,11 @@
 //!    - Deleted when eval_dict/eval_call/etc. are refactored to accept CoreExpr (E2/E3)
 //!
 //! All three bridges are TRANSITIONAL and will be deleted as migrations complete.
+// Transitional bridge code — closure patterns are verbose by design for readability during migration.
+// These will all be removed when the bridge functions are deleted post-E3.
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::approx_constant)] // test-only approximate constants in this bridge module
 
 use std::sync::Arc;
 
@@ -260,7 +265,7 @@ fn expr_to_surface_item(spanned: &Spanned<Expr>) -> SurfaceItem {
                     .iter()
                     .map(|e| Spanned::new(entry_to_surface(&e.node), e.span))
                     .collect(),
-                determines: determines.iter().map(|e| expr_to_surface_node(e)).collect(),
+                determines: determines.iter().map(expr_to_surface_node).collect(),
                 resolver: resolver.as_ref().map(|r| expr_to_surface_node(r)),
                 resolver_injective: *resolver_injective,
             };
@@ -312,8 +317,7 @@ fn expr_to_surface_item(spanned: &Spanned<Expr>) -> SurfaceItem {
             SurfaceItem::Decl(Spanned::new(decl, spanned.span))
         }
         Expr::Splice(forms) => {
-            let decl =
-                SurfaceDeclaration::Splice(forms.iter().map(|e| expr_to_surface_node(e)).collect());
+            let decl = SurfaceDeclaration::Splice(forms.iter().map(expr_to_surface_node).collect());
             SurfaceItem::Decl(Spanned::new(decl, spanned.span))
         }
 
@@ -375,7 +379,7 @@ fn surface_expr_to_expr(expr: &SurfaceExpression, _span: crate::ast::Span) -> Ex
                 .map(|se| {
                     Spanned::new(
                         crate::ast::Entry {
-                            key: se.node.key.as_ref().map(|k| surface_node_to_expr(k)),
+                            key: se.node.key.as_ref().map(surface_node_to_expr),
                             value: Rc::new(surface_node_to_expr(&se.node.value)),
                         },
                         se.span,
@@ -464,10 +468,10 @@ fn surface_expr_to_expr(expr: &SurfaceExpression, _span: crate::ast::Span) -> Ex
             Expr::UnquoteSplice(Box::new(surface_node_to_expr(inner)))
         }
         SurfaceExpression::PatternDecl { bindings } => Expr::PatternDecl {
-            bindings: bindings.iter().map(|b| surface_node_to_expr(b)).collect(),
+            bindings: bindings.iter().map(surface_node_to_expr).collect(),
         },
         SurfaceExpression::LetDecl { bindings } => Expr::LetDecl {
-            bindings: bindings.iter().map(|b| surface_node_to_expr(b)).collect(),
+            bindings: bindings.iter().map(surface_node_to_expr).collect(),
         },
         SurfaceExpression::CaseArm { pattern, body } => Expr::CaseArm {
             pattern: Box::new(surface_node_to_expr(pattern)),
@@ -634,11 +638,11 @@ fn core_expr_inner_to_expr(expr: &crate::ast::CoreExpr) -> Expr {
         CoreExpr::UnquoteSplice(inner) => Expr::UnquoteSplice(Box::new(core_expr_to_expr(inner))),
 
         CoreExpr::PatternDecl { bindings } => Expr::PatternDecl {
-            bindings: bindings.iter().map(|b| core_expr_to_expr(b)).collect(),
+            bindings: bindings.iter().map(core_expr_to_expr).collect(),
         },
 
         CoreExpr::LetDecl { bindings } => Expr::LetDecl {
-            bindings: bindings.iter().map(|b| core_expr_to_expr(b)).collect(),
+            bindings: bindings.iter().map(core_expr_to_expr).collect(),
         },
 
         CoreExpr::CaseArm { pattern, body } => Expr::CaseArm {
@@ -796,7 +800,7 @@ fn expr_inner_to_core_expr(expr: &Expr, span: crate::ast::Span) -> crate::ast::C
                 let default = annotation
                     .node
                     .get_property("default")
-                    .map(|e| Arc::new(expr_to_core_expr(&e)));
+                    .map(|e| Arc::new(expr_to_core_expr(e)));
                 CoreExpr::RuntimeTypeCheck {
                     annotation: annotation.clone(),
                     expr: Arc::new(expr_to_core_expr(inner)),
@@ -829,11 +833,11 @@ fn expr_inner_to_core_expr(expr: &Expr, span: crate::ast::Span) -> crate::ast::C
         Expr::UnquoteSplice(inner) => CoreExpr::UnquoteSplice(Arc::new(expr_to_core_expr(inner))),
 
         Expr::PatternDecl { bindings } => CoreExpr::PatternDecl {
-            bindings: bindings.iter().map(|b| expr_to_core_expr(b)).collect(),
+            bindings: bindings.iter().map(expr_to_core_expr).collect(),
         },
 
         Expr::LetDecl { bindings } => CoreExpr::LetDecl {
-            bindings: bindings.iter().map(|b| expr_to_core_expr(b)).collect(),
+            bindings: bindings.iter().map(expr_to_core_expr).collect(),
         },
 
         Expr::CaseArm { pattern, body } => CoreExpr::CaseArm {
@@ -959,7 +963,7 @@ fn expr_to_surface_expr(expr: &Expr) -> SurfaceExpression {
 
         Expr::Match { scrutinee, arms } => SurfaceExpression::Match {
             scrutinee: expr_to_surface_node(scrutinee),
-            arms: arms.iter().map(|arm| match_arm_to_surface(arm)).collect(),
+            arms: arms.iter().map(match_arm_to_surface).collect(),
         },
 
         Expr::Quote(inner) => SurfaceExpression::Quote(expr_to_surface_node(inner)),
@@ -967,11 +971,11 @@ fn expr_to_surface_expr(expr: &Expr) -> SurfaceExpression {
         Expr::UnquoteSplice(inner) => SurfaceExpression::UnquoteSplice(expr_to_surface_node(inner)),
 
         Expr::PatternDecl { bindings } => SurfaceExpression::PatternDecl {
-            bindings: bindings.iter().map(|b| expr_to_surface_node(b)).collect(),
+            bindings: bindings.iter().map(expr_to_surface_node).collect(),
         },
 
         Expr::LetDecl { bindings } => SurfaceExpression::LetDecl {
-            bindings: bindings.iter().map(|b| expr_to_surface_node(b)).collect(),
+            bindings: bindings.iter().map(expr_to_surface_node).collect(),
         },
 
         Expr::CaseArm { pattern, body } => SurfaceExpression::CaseArm {
@@ -1037,14 +1041,14 @@ pub fn surface_decl_to_expr(decl: &Spanned<SurfaceDeclaration>) -> Spanned<Expr>
                 .map(|se| {
                     Spanned::new(
                         Entry {
-                            key: se.node.key.as_ref().map(|k| surface_node_to_expr(k)),
+                            key: se.node.key.as_ref().map(surface_node_to_expr),
                             value: Rc::new(surface_node_to_expr(&se.node.value)),
                         },
                         se.span,
                     )
                 })
                 .collect(),
-            determines: determines.iter().map(|n| surface_node_to_expr(n)).collect(),
+            determines: determines.iter().map(surface_node_to_expr).collect(),
             resolver: resolver.as_ref().map(|r| Box::new(surface_node_to_expr(r))),
             resolver_injective: *resolver_injective,
         },
@@ -1059,7 +1063,7 @@ pub fn surface_decl_to_expr(decl: &Spanned<SurfaceDeclaration>) -> Spanned<Expr>
                         .map(|se| {
                             Spanned::new(
                                 Entry {
-                                    key: se.node.key.as_ref().map(|k| surface_node_to_expr(k)),
+                                    key: se.node.key.as_ref().map(surface_node_to_expr),
                                     value: Rc::new(surface_node_to_expr(&se.node.value)),
                                 },
                                 se.span,
@@ -1090,7 +1094,7 @@ pub fn surface_decl_to_expr(decl: &Spanned<SurfaceDeclaration>) -> Spanned<Expr>
             message: message.clone(),
         },
         SurfaceDeclaration::Splice(forms) => {
-            Expr::Splice(forms.iter().map(|n| surface_node_to_expr(n)).collect())
+            Expr::Splice(forms.iter().map(surface_node_to_expr).collect())
         }
     };
     Spanned::new(expr, decl.span)

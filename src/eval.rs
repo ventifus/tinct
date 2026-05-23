@@ -39,6 +39,15 @@ use crate::value::{string_val, Environment, Key, Thunk, Value};
 
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 
+/// Type alias for the optional default expression + environment pair used by guarded thunks.
+/// Reduces type_complexity in function signatures that carry this optional default.
+type GuardDefault = (Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Environment>>);
+
+/// Type alias for the return type of `match_pattern` — an async fn returning an optional env.
+type MatchPatternFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Environment>>>>> + 'a>,
+>;
+
 /// Check if a span matches a boundary guard and wrap the thunk if so.
 ///
 /// Called at the end of `eval()` to automatically insert runtime guards for
@@ -774,7 +783,7 @@ pub(crate) fn validate_and_wrap_record(
     guard_span: Span,
     data_span: Span,
     ctx: &Arc<EvalContext>,
-    default: Option<(Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Environment>>)>,
+    default: Option<GuardDefault>,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -1817,11 +1826,10 @@ pub fn materialize<'a>(
                 use crate::value::Strictness;
                 let mut premat_err: Option<Box<EvalError>> = None;
                 // H1: force_count range — unconditional pre-materialization
-                for i in 0..def.force_count.min(args.len()) {
-                    if args[i].try_get_materialized().is_none() {
-                        if let Err(e) = materialize(&args[i], None, &thunk_ctx)
-                            .await
-                            .map_err(&decorate)
+                let force_limit = def.force_count.min(args.len());
+                for arg in &args[..force_limit] {
+                    if arg.try_get_materialized().is_none() {
+                        if let Err(e) = materialize(arg, None, &thunk_ctx).await.map_err(&decorate)
                         {
                             premat_err = Some(e);
                             break;
@@ -1964,7 +1972,7 @@ pub fn materialize<'a>(
                 } => {
                     // Build CallContext and invoke the function
                     let call_ctx = CallContext {
-                        params: &*params,
+                        params: &params,
                         body: &body,
                         closure_env: &env,
                         positional: &args,
@@ -2056,11 +2064,11 @@ pub fn materialize<'a>(
                         use crate::value::Strictness;
                         let mut premat_err: Option<Box<EvalError>> = None;
                         // H1: force_count range — unconditional pre-materialization
-                        for i in 0..def.force_count.min(args.len()) {
-                            if args[i].try_get_materialized().is_none() {
-                                if let Err(e) = materialize(&args[i], None, &thunk_ctx)
-                                    .await
-                                    .map_err(&decorate)
+                        let force_limit = def.force_count.min(args.len());
+                        for arg in &args[..force_limit] {
+                            if arg.try_get_materialized().is_none() {
+                                if let Err(e) =
+                                    materialize(arg, None, &thunk_ctx).await.map_err(&decorate)
                                 {
                                     premat_err = Some(e);
                                     break;
@@ -2168,7 +2176,7 @@ pub fn materialize<'a>(
                 // arg and no named args, treat it as constructing Variant(tag, payload).
                 // This allows `Ok: [variant "Ok"]` in the prelude to be called as `[Ok 42]`.
                 Value::Variant { tag, payload: None }
-                    if args.len() == 1 && named.as_ref().map_or(true, |m| m.is_empty()) =>
+                    if args.len() == 1 && named.as_ref().is_none_or(|m| m.is_empty()) =>
                 {
                     let payload_thunk = args.into_iter().next().expect("1 arg checked above");
                     let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
@@ -2386,7 +2394,7 @@ pub fn materialize<'a>(
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                &value.type_name(),
+                                value.type_name(),
                                 inner_span,
                             );
                             // Add secondary span if inner value was produced at a different
@@ -2474,7 +2482,7 @@ pub fn materialize<'a>(
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                &value.type_name(),
+                                value.type_name(),
                                 inner_span,
                             );
                             // Add secondary span if inner value was produced at a different
@@ -2643,9 +2651,7 @@ fn match_pattern<'a>(
     env: &'a Arc<RwLock<Environment>>,
     value_span: &'a Span,
     ctx: &'a Arc<EvalContext>,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Environment>>>>> + 'a>,
-> {
+) -> MatchPatternFuture<'a> {
     Box::pin(async move {
         match pattern {
             Pattern::Wildcard => {
@@ -2908,7 +2914,7 @@ fn match_pattern<'a>(
                                 for field_name in field_names {
                                     let thunk_id =
                                         ctx.alloc_thunk(Arc::new(Thunk::new_ast_node_field(
-                                            std::sync::Arc::clone(&node),
+                                            Arc::clone(node),
                                             field_name,
                                             Arc::clone(ctx),
                                             *value_span,
@@ -3087,7 +3093,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 start: start2,
                 end: end2,
             },
-        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
+        ) => s1[*start1..*end1] == s2[*start2..*end2],
         (Value::Dict(_), Value::Dict(_)) => false, // Dict equality is complex, not supported for now
         // Nullary variants compare by tag equality
         (
@@ -3105,6 +3111,9 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::to_string_in_format_args)] // test diagnostics: .to_string() in format args is fine
+#[allow(clippy::useless_conversion)] // test helpers use .into() for clarity
+#[allow(clippy::approx_constant)] // test values intentionally use approximate constants
 mod tests {
     use super::*;
     use crate::ast::*;
@@ -3239,7 +3248,7 @@ mod tests {
         assert!(
             err.to_string().contains("undefined variable: missing"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -3437,7 +3446,7 @@ mod tests {
                 assert!(
                     err.to_string().contains("circular dependency"),
                     "got: {}",
-                    err.to_string()
+                    err
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -3468,7 +3477,7 @@ mod tests {
         assert!(
             err1.kind.to_string().contains("circular dependency"),
             "first error: got: {}",
-            err1.kind.to_string()
+            err1.kind
         );
 
         // Check that the thunk is now in Failed state, not stuck in InProgress
@@ -3478,7 +3487,7 @@ mod tests {
         assert!(
             cached_err.to_string().contains("circular dependency"),
             "cached error should mention circular dependency, got: {}",
-            cached_err.to_string()
+            cached_err
         );
 
         // Second materialization: should return the cached circular dependency error
@@ -3486,7 +3495,7 @@ mod tests {
         assert!(
             err2.kind.to_string().contains("circular dependency"),
             "second error: got: {}",
-            err2.kind.to_string()
+            err2.kind
         );
     }
 
@@ -3518,7 +3527,7 @@ mod tests {
                 .to_string()
                 .contains("undefined variable: missing"),
             "first attempt: got: {}",
-            err1.kind.to_string()
+            err1.kind
         );
 
         // Second attempt: should produce the SAME error, not "circular dependency"
@@ -3528,7 +3537,7 @@ mod tests {
                 .to_string()
                 .contains("undefined variable: missing"),
             "second attempt should not be poisoned, got: {}",
-            err2.kind.to_string()
+            err2.kind
         );
         assert!(
             !err2.kind.to_string().contains("circular dependency"),
@@ -3588,11 +3597,7 @@ mod tests {
         ];
         let expr = sp(Expr::Dict(entries));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
-        assert!(
-            err.to_string().contains("duplicate key: x"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("duplicate key: x"), "got: {}", err);
     }
 
     #[test]
@@ -3742,16 +3747,8 @@ mod tests {
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(
-            err.to_string().contains("type mismatch"),
-            "got: {}",
-            err.to_string()
-        );
-        assert!(
-            err.to_string().contains("Function"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("type mismatch"), "got: {}", err);
+        assert!(err.to_string().contains("Function"), "got: {}", err);
     }
 
     #[test]
@@ -3793,7 +3790,7 @@ mod tests {
             err.to_string()
                 .contains("missing argument for required parameter"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -3825,11 +3822,7 @@ mod tests {
         let thunk = eval(Rc::new(call_expr.clone()), env, &test_ctx())
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(
-            err.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("arity mismatch"), "got: {}", err);
     }
 
     #[test]
@@ -3952,7 +3945,7 @@ mod tests {
         assert!(
             err.to_string().contains("unexpected named argument: z"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4002,7 +3995,7 @@ mod tests {
             err.to_string()
                 .contains("received both positional and named argument"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4172,7 +4165,7 @@ mod tests {
             err.to_string()
                 .contains("rest marker (...) is only valid inside type expressions"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4184,7 +4177,7 @@ mod tests {
             err.to_string()
                 .contains("rest marker (...) is only valid inside type expressions"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4197,7 +4190,7 @@ mod tests {
         assert!(
             err.to_string().contains("undefined variable: _"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4470,7 +4463,7 @@ mod tests {
         assert!(
             err.to_string().contains("key not found: missing"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4491,16 +4484,8 @@ mod tests {
         });
         let thunk = eval(Rc::new(expr.clone()), env, &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
-        assert!(
-            err.to_string().contains("expected"),
-            "got: {}",
-            err.to_string()
-        );
-        assert!(
-            err.to_string().contains("expected Dict"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("expected"), "got: {}", err);
+        assert!(err.to_string().contains("expected Dict"), "got: {}", err);
     }
 
     // Bracket access and range access tests removed — syntax has been removed from the language.
@@ -4572,7 +4557,7 @@ mod tests {
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4590,7 +4575,7 @@ mod tests {
             err.to_string()
                 .contains("type assertion failed: expected String, got Int"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4642,7 +4627,7 @@ mod tests {
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4727,7 +4712,7 @@ mod tests {
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -4877,7 +4862,7 @@ mod tests {
         assert!(
             err.to_string().contains("undefined variable: missing"),
             "got: {}",
-            err.to_string()
+            err
         );
         assert_eq!(
             err.materialization_span,
@@ -4920,21 +4905,13 @@ mod tests {
         })];
         let expr = sp(Expr::Dict(entries));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
-        assert!(
-            err.to_string().contains("type mismatch"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("type mismatch"), "got: {}", err);
         assert!(
             err.to_string().contains("expected String or Int"),
             "got: {}",
-            err.to_string()
+            err
         );
-        assert!(
-            err.to_string().contains("got Bool"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("got Bool"), "got: {}", err);
     }
 
     #[test]
@@ -4946,21 +4923,13 @@ mod tests {
         })];
         let expr = sp(Expr::Dict(entries));
         let err = eval(Rc::new(expr.clone()), empty_env(), &test_ctx()).unwrap_err();
-        assert!(
-            err.to_string().contains("type mismatch"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("type mismatch"), "got: {}", err);
         assert!(
             err.to_string().contains("expected String or Int"),
             "got: {}",
-            err.to_string()
+            err
         );
-        assert!(
-            err.to_string().contains("got Float"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("got Float"), "got: {}", err);
     }
 
     #[test]
@@ -5095,13 +5064,9 @@ mod tests {
         assert!(
             err.to_string().contains("document pipeline"),
             "got: {}",
-            err.to_string()
+            err
         );
-        assert!(
-            err.to_string().contains("expected Dict"),
-            "got: {}",
-            err.to_string()
-        );
+        assert!(err.to_string().contains("expected Dict"), "got: {}", err);
     }
 
     #[test]
@@ -6035,7 +6000,7 @@ mod tests {
         assert!(
             err.to_string().contains("undefined variable: missing"),
             "got: {}",
-            err.to_string()
+            err
         );
         // The stack should contain a frame for "[f ...]"
         assert!(
@@ -6702,7 +6667,7 @@ mod tests {
             err.to_string()
                 .contains("expected Function or Builtin, got Int"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -6975,7 +6940,7 @@ mod tests {
                 .to_string()
                 .contains("undefined variable: undefined"),
             "first error: got: {}",
-            err1.kind.to_string()
+            err1.kind
         );
 
         // Check that the thunk is now in Failed state
@@ -6996,7 +6961,7 @@ mod tests {
                 .to_string()
                 .contains("undefined variable: undefined"),
             "second error: got: {}",
-            err2.kind.to_string()
+            err2.kind
         );
     }
 
@@ -7510,7 +7475,7 @@ mod tests {
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -7614,7 +7579,7 @@ mod tests {
         assert!(
             err.to_string().contains("record missing field \"id\""),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -7706,7 +7671,7 @@ mod tests {
         assert!(
             err.to_string().contains("type assertion failed"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 
@@ -7739,7 +7704,7 @@ mod tests {
             err.to_string()
                 .contains("type assertion failed: expected Int, got String"),
             "got: {}",
-            err.to_string()
+            err
         );
     }
 

@@ -338,6 +338,7 @@ fn desugar_surface_entry(entry: &mut SurfaceEntry, depth: usize) {
 }
 
 /// Desugar an annotation (if it's a PropertyDict with expression values).
+#[allow(clippy::only_used_in_recursion)] // depth is passed through recursive calls for future use
 fn desugar_surface_annotation(ann: &mut Annotation, depth: usize) {
     match ann {
         Annotation::Simple(_) => {}

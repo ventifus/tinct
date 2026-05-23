@@ -1261,7 +1261,11 @@ mod tests {
     fn test_numbers() {
         assert_eq!(tok("42"), vec![Token::Int(42)]);
         assert_eq!(tok("-1"), vec![Token::Int(-1)]);
-        assert_eq!(tok("3.14"), vec![Token::Float(3.14)]);
+        // 3.14 tests the lexer's float parsing — intentionally not PI.
+        #[allow(clippy::approx_constant)]
+        {
+            assert_eq!(tok("3.14"), vec![Token::Float(3.14)]);
+        }
         assert_eq!(tok("-2.5"), vec![Token::Float(-2.5)]);
     }
 

@@ -684,7 +684,7 @@ pub fn visit_value<V: ValueVisitor>(
             let head_out = visit_value(&head_val, ctx, depth + 1, visitor)?;
             visitor.visit_seq_head(head_out)
         }
-        value::Value::Function { params, .. } => visitor.visit_function(&**params),
+        value::Value::Function { params, .. } => visitor.visit_function(params),
         value::Value::Builtin(def) => visitor.visit_builtin(def.name),
         value::Value::Proxy { .. } => visitor.visit_proxy(),
         value::Value::DirCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
@@ -1188,7 +1188,7 @@ pub fn format_with_json_llt(
             ..
         } => {
             let call_ctx = CallContext {
-                params: &**params,
+                params,
                 body,
                 closure_env,
                 positional: &positional_args,
@@ -1230,6 +1230,8 @@ pub fn format_with_json_llt(
     }
 }
 
+#[allow(clippy::items_after_test_module)]
+// find_libdir_path and other public helpers come after tests module; moving them before would bury utility functions at the bottom of the prelude
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1280,8 +1282,13 @@ mod tests {
 
     #[test]
     fn test_json_float() {
+        // 3.14 tests float serialization, not π.
+        #[allow(clippy::approx_constant)]
         let result = value_to_json(&Value::Float(3.14), &test_ctx()).unwrap();
-        assert_eq!(result, serde_json::json!(3.14));
+        #[allow(clippy::approx_constant)]
+        {
+            assert_eq!(result, serde_json::json!(3.14));
+        }
     }
 
     #[test]
@@ -1482,7 +1489,7 @@ mod tests {
                 .to_string()
                 .contains("cannot serialize Function to JSON"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert_eq!(err.kind.code(), "E035");
     }
@@ -1510,13 +1517,14 @@ mod tests {
                 .to_string()
                 .contains("cannot serialize Seq to JSON"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert_eq!(err.kind.code(), "E035");
     }
 
     #[test]
     fn test_json_builtin_error() {
+        #[allow(clippy::type_complexity)] // Test-only dummy function — complex type is the required BuiltinFn signature
         fn dummy(
             _ctx: value::BuiltinArgs,
         ) -> std::pin::Pin<
@@ -1541,7 +1549,7 @@ mod tests {
                 .to_string()
                 .contains("cannot serialize Builtin (test) to JSON"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert_eq!(err.kind.code(), "E035");
     }
@@ -1559,7 +1567,7 @@ mod tests {
                 .to_string()
                 .contains("cannot serialize Proxy to JSON"),
             "got: {}",
-            err.kind.to_string()
+            err.kind
         );
         assert_eq!(err.kind.code(), "E035");
     }
@@ -1777,7 +1785,11 @@ mod tests {
     #[test]
     fn test_pipeline_float_output() {
         let result = eval_to_json("3.14");
-        assert_eq!(result, serde_json::json!(3.14));
+        // 3.14 tests float output, not π.
+        #[allow(clippy::approx_constant)]
+        {
+            assert_eq!(result, serde_json::json!(3.14));
+        }
     }
 
     // --- Integration tests: typecheck→eval interaction ---

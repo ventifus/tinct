@@ -422,10 +422,8 @@ mod tests {
         out: &mut Vec<(NodeId, Arc<SurfaceNode>)>,
     ) {
         match &arc.expr {
-            SurfaceExpression::VarRef { name: n, .. } => {
-                if n == name {
-                    out.push((node_id(arc), Arc::clone(arc)));
-                }
+            SurfaceExpression::VarRef { name: n, .. } if n == name => {
+                out.push((node_id(arc), Arc::clone(arc)));
             }
             SurfaceExpression::Dict(entries) => {
                 for entry in entries {

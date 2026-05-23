@@ -48,14 +48,12 @@ pub fn hover_at(
         // Expand macros on SurfaceProgram (before conversion to File), matching the
         // pipeline invariant (expand → desugar → surface_program_to_file).
         let mut program = block_parsed.program.clone();
-        if let Err(_) = crate::expand::expand_surface_program(
+        crate::expand::expand_surface_program(
             &mut program,
             eval_ctx.config.no_fs,
             &eval_ctx.config.base_dir,
-        ) {
-            // Macro expansion error — skip hover for this block
-            return None;
-        }
+        )
+        .ok()?;
         // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
         crate::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -1614,6 +1612,9 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &U
     }
 }
 
+// mutable_key_type: Uri has interior mutability but is safe as a HashMap key in LSP contexts.
+#[allow(clippy::items_after_test_module)]
+// Public functions after test module are intentional — they depend on types defined in the module body
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1630,6 +1631,8 @@ mod tests {
 
     /// Helper: create an EvalContext for tests.
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
+        // AMBIENT-OK: LSP test helper — no prior Dir available, test context only.
+        #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
         let env = test_env();
@@ -1637,6 +1640,7 @@ mod tests {
     }
 
     /// Helper: create an empty include graph for tests.
+    #[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys in LSP contexts
     fn test_include_graph() -> crate::lsp::document::IncludeGraph {
         std::collections::HashMap::new()
     }
@@ -2416,7 +2420,7 @@ mod tests {
         let edits = edits.unwrap();
         // Should rename the VarRef "$x" and the definition key "x"
         assert!(
-            edits.len() >= 1,
+            !edits.is_empty(),
             "should have at least one edit; got {:?}",
             edits
         );

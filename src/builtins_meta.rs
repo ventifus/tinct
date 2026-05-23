@@ -536,7 +536,7 @@ pub(crate) fn builtin_apply_impl(
                 ..
             } => {
                 invoke_function(&CallContext {
-                    params: &*params,
+                    params: &params,
                     body: &body,
                     closure_env: &closure_env,
                     positional: &positional,
@@ -562,9 +562,10 @@ pub(crate) fn builtin_apply_impl(
                 //
                 // Ordering: force_count range first (matches force_step dispatch order), then
                 // pos_strictness Seq/Spine. Both loops skip args that are already materialized.
-                for i in 0..def.force_count.min(positional.len()) {
-                    if positional[i].try_get_materialized().is_none() {
-                        materialize(&positional[i], Some(&call_span), &ctx).await?;
+                let force_limit = def.force_count.min(positional.len());
+                for arg in &positional[..force_limit] {
+                    if arg.try_get_materialized().is_none() {
+                        materialize(arg, Some(&call_span), &ctx).await?;
                     }
                 }
                 for (i, &s) in def.pos_strictness.iter().enumerate() {
@@ -1104,9 +1105,8 @@ pub(crate) fn builtin_llt_repr(
         // Deep-materialize the value first (value_to_display_string requires it)
         let deep_val = crate::eval_materialize::deep_materialize(&val, &ctx, Some(&call_span))?;
         // Convert to display string
-        let display_str = crate::value_to_display_string(&deep_val, &ctx).map_err(|e| {
-            EvalError::internal(format!("llt-repr: {}", e.kind.to_string()), call_span)
-        })?;
+        let display_str = crate::value_to_display_string(&deep_val, &ctx)
+            .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span))?;
         ok_val(string_val(&display_str), call_span)
     })
 }
@@ -1839,9 +1839,9 @@ pub(crate) fn builtin_eval(
                 }
             }
 
-            let env_dict = named_map.get("env").map(|t| Arc::clone(t));
-            let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
-            let program_opt = named_map.get("program").map(|t| Arc::clone(t));
+            let env_dict = named_map.get("env").map(Arc::clone);
+            let pipeline_input = named_map.get("%").map(Arc::clone);
+            let program_opt = named_map.get("program").map(Arc::clone);
             (env_dict, pipeline_input, program_opt)
         } else {
             (None, None, None)
@@ -2036,8 +2036,8 @@ pub(crate) fn builtin_eval_types(
                 }
             }
 
-            let env_dict = named_map.get("env").map(|t| Arc::clone(t));
-            let pipeline_input = named_map.get("%").map(|t| Arc::clone(t));
+            let env_dict = named_map.get("env").map(Arc::clone);
+            let pipeline_input = named_map.get("%").map(Arc::clone);
             (env_dict, pipeline_input)
         } else {
             (None, None)
@@ -2443,7 +2443,7 @@ fn validate_value(
     // Check `type` constraint
     if let Some(&type_thunk_id) = schema.get(&StrKey("type")) {
         let type_thunk = ctx.get_thunk(type_thunk_id);
-        let type_val = materialize_sync(&type_thunk, Some(&span), &ctx)?;
+        let type_val = materialize_sync(&type_thunk, Some(&span), ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -2464,27 +2464,19 @@ fn validate_value(
     // Check numeric range constraints (min, max)
     if let Some(&min_thunk_id) = schema.get(&StrKey("min")) {
         let min_thunk = ctx.get_thunk(min_thunk_id);
-        let min_val = materialize_sync(&min_thunk, Some(&span), &ctx)?;
+        let min_val = materialize_sync(&min_thunk, Some(&span), ctx)?;
         match (data, &min_val) {
-            (Value::Int(n), Value::Int(min)) => {
-                if n < min {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Int(n), Value::Int(min)) if n < min => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
-            (Value::Float(n), Value::Float(min)) => {
-                if n < min {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Float(n), Value::Float(min)) if n < min => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
-            (Value::Int(n), Value::Float(min)) => {
-                if (*n as f64) < *min {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Int(n), Value::Float(min)) if (*n as f64) < *min => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
-            (Value::Float(n), Value::Int(min)) => {
-                if *n < (*min as f64) {
-                    violations.push((path.to_string(), format!("must be >= {}", min)));
-                }
+            (Value::Float(n), Value::Int(min)) if *n < (*min as f64) => {
+                violations.push((path.to_string(), format!("must be >= {}", min)));
             }
             _ => {}
         }
@@ -2492,27 +2484,19 @@ fn validate_value(
 
     if let Some(&max_thunk_id) = schema.get(&StrKey("max")) {
         let max_thunk = ctx.get_thunk(max_thunk_id);
-        let max_val = materialize_sync(&max_thunk, Some(&span), &ctx)?;
+        let max_val = materialize_sync(&max_thunk, Some(&span), ctx)?;
         match (data, &max_val) {
-            (Value::Int(n), Value::Int(max)) => {
-                if n > max {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Int(n), Value::Int(max)) if n > max => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
-            (Value::Float(n), Value::Float(max)) => {
-                if n > max {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Float(n), Value::Float(max)) if n > max => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
-            (Value::Int(n), Value::Float(max)) => {
-                if (*n as f64) > *max {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Int(n), Value::Float(max)) if (*n as f64) > *max => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
-            (Value::Float(n), Value::Int(max)) => {
-                if *n > (*max as f64) {
-                    violations.push((path.to_string(), format!("must be <= {}", max)));
-                }
+            (Value::Float(n), Value::Int(max)) if *n > (*max as f64) => {
+                violations.push((path.to_string(), format!("must be <= {}", max)));
             }
             _ => {}
         }
@@ -2521,7 +2505,7 @@ fn validate_value(
     // Check string/sequence length constraints
     if let Some(&min_len_thunk_id) = schema.get(&StrKey("min-length")) {
         let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
-        let min_len_val = materialize_sync(&min_len_thunk, Some(&span), &ctx)?;
+        let min_len_val = materialize_sync(&min_len_thunk, Some(&span), ctx)?;
         if let Value::Int(min_len) = min_len_val {
             let actual_len = match data {
                 Value::String {
@@ -2547,7 +2531,7 @@ fn validate_value(
 
     if let Some(&max_len_thunk_id) = schema.get(&StrKey("max-length")) {
         let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
-        let max_len_val = materialize_sync(&max_len_thunk, Some(&span), &ctx)?;
+        let max_len_val = materialize_sync(&max_len_thunk, Some(&span), ctx)?;
         if let Value::Int(max_len) = max_len_val {
             let actual_len = match data {
                 Value::String {
@@ -2570,7 +2554,7 @@ fn validate_value(
     // Check pattern constraint (for strings)
     if let Some(&pattern_thunk_id) = schema.get(&StrKey("pattern")) {
         let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
-        let pattern_val = materialize_sync(&pattern_thunk, Some(&span), &ctx)?;
+        let pattern_val = materialize_sync(&pattern_thunk, Some(&span), ctx)?;
         if let Value::String {
             ref source,
             start,
@@ -2602,7 +2586,7 @@ fn validate_value(
     // Check enum constraint
     if let Some(&enum_thunk_id) = schema.get(&StrKey("enum")) {
         let enum_thunk = ctx.get_thunk(enum_thunk_id);
-        let enum_val = materialize_sync(&enum_thunk, Some(&span), &ctx)?;
+        let enum_val = materialize_sync(&enum_thunk, Some(&span), ctx)?;
         if let Value::Dict(ref enum_dict) = enum_val {
             // Pre-materialize all enum values once, then check membership.
             // This avoids re-materializing on early-exit scenarios.
@@ -2610,7 +2594,7 @@ fn validate_value(
                 .iter()
                 .map(|(_key, &val_thunk_id)| {
                     let val_thunk = ctx.get_thunk(val_thunk_id);
-                    materialize_sync(&val_thunk, Some(&span), &ctx)
+                    materialize_sync(&val_thunk, Some(&span), ctx)
                 })
                 .collect::<EvalResult<Vec<Value>>>()?;
 
@@ -2624,14 +2608,13 @@ fn validate_value(
     // Check fields constraint (for dicts)
     if let Some(&fields_thunk_id) = schema.get(&StrKey("fields")) {
         let fields_thunk = ctx.get_thunk(fields_thunk_id);
-        let fields_val = materialize_sync(&fields_thunk, Some(&span), &ctx)?;
+        let fields_val = materialize_sync(&fields_thunk, Some(&span), ctx)?;
         if let Value::Dict(ref fields_schema) = fields_val {
             if let Value::Dict(ref data_dict) = data {
                 // Validate each field in the schema
                 for (field_key, &field_schema_thunk_id) in fields_schema {
                     let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
-                    let field_schema_val =
-                        materialize_sync(&field_schema_thunk, Some(&span), &ctx)?;
+                    let field_schema_val = materialize_sync(&field_schema_thunk, Some(&span), ctx)?;
                     if let Value::Dict(ref field_schema) = field_schema_val {
                         let field_name = match field_key {
                             Key::String(s) => s.clone(),
@@ -2648,7 +2631,7 @@ fn validate_value(
                         let is_required =
                             if let Some(&req_thunk_id) = field_schema.get(&StrKey("required")) {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
-                                let req_val = materialize_sync(&req_thunk, Some(&span), &ctx)?;
+                                let req_val = materialize_sync(&req_thunk, Some(&span), ctx)?;
                                 matches!(req_val, Value::Bool(true))
                             } else {
                                 false
@@ -2657,7 +2640,7 @@ fn validate_value(
                         if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
                             let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
                             let field_value =
-                                materialize_sync(&field_value_thunk, Some(&span), &ctx)?;
+                                materialize_sync(&field_value_thunk, Some(&span), ctx)?;
                             validate_value(
                                 field_schema,
                                 &field_value,
@@ -2678,13 +2661,13 @@ fn validate_value(
     // Check items constraint (for sequences/dicts with uniform element schema)
     if let Some(&items_thunk_id) = schema.get(&StrKey("items")) {
         let items_thunk = ctx.get_thunk(items_thunk_id);
-        let items_val = materialize_sync(&items_thunk, Some(&span), &ctx)?;
+        let items_val = materialize_sync(&items_thunk, Some(&span), ctx)?;
         if let Value::Dict(ref items_schema) = items_val {
             match data {
                 Value::Dict(ref data_dict) => {
                     for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
-                        let val = materialize_sync(&val_thunk, Some(&span), &ctx)?;
+                        let val = materialize_sync(&val_thunk, Some(&span), ctx)?;
                         let item_path = if path.is_empty() {
                             format!("[{}]", idx)
                         } else {
@@ -2708,7 +2691,7 @@ fn validate_value(
                         match seq_val {
                             Value::Seq { head, tail } => {
                                 let head_thunk = ctx.get_thunk(*head);
-                                let head_val = materialize_sync(&head_thunk, Some(&span), &ctx)?;
+                                let head_val = materialize_sync(&head_thunk, Some(&span), ctx)?;
                                 let item_path = if path.is_empty() {
                                     format!("[{}]", idx)
                                 } else {
@@ -2724,7 +2707,7 @@ fn validate_value(
                                 )?;
 
                                 let tail_thunk = ctx.get_thunk(*tail);
-                                let tail_val = materialize_sync(&tail_thunk, Some(&span), &ctx)?;
+                                let tail_val = materialize_sync(&tail_thunk, Some(&span), ctx)?;
                                 validate_seq_items(
                                     &tail_val,
                                     items_schema,
@@ -2771,7 +2754,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 start: start2,
                 end: end2,
             },
-        ) => &s1[*start1..*end1] == &s2[*start2..*end2],
+        ) => s1[*start1..*end1] == s2[*start2..*end2],
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Dict(x), Value::Dict(y)) => x.is_empty() && y.is_empty(), // Null check
         _ => false,

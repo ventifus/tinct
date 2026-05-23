@@ -276,7 +276,7 @@ fully thread-safe.
 - [x] `Rc<Environment>` → `Arc<RwLock<Environment>>` done (commit b0aa803)
 - [x] `Rc<Spanned<Expr>>` in Guarded.default → `Arc<Spanned<CoreExpr>>` done (commit dadf943)
 - [x] `ThunkState` uses `OnceCell` + `Mutex<Option<UnevaluatedState>>` (sprint-2b-async-eval-entry)
-- [ ] Verify `just lint-clippy` passes — agent fixing `arc_with_non_send_sync` (add allow directive, intentional by design)
+- [x] Verify `just lint-clippy` passes — fixed: arc_with_non_send_sync suppressed in lib.rs; all other pre-existing warnings fixed across src/ and tests/
 - [x] `just test-lib` passes — 1889/0 ✓
 
 ### lint-builtins-cps: 10 unannotated H1 materialize() calls in builtins ✅ FIXED
@@ -439,7 +439,7 @@ nested resolution always has a cap dir.
 - [x] Make `base_cap_dir` non-optional in `resolve_includes` — updated all callers (build_type_env, LSP)
 - [x] Replace nested ambient open with `cap_dir.open_dir(relative_path)` in imports.rs
 - [x] `%stdin` type → `Handle[Readable Text]` (concrete capability row instead of Unknown)
-- [ ] Verify `just lint-clippy` passes
+- [x] Verify `just lint-clippy` passes
 - [x] `just test-lib` passes
 
 ### test-caps-fixture: Centralise ambient DirCap allocation in test suite

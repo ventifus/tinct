@@ -1,3 +1,14 @@
+// Test infrastructure uses std::fs for corpus file reading — no cap_std available in test harness.
+// Clippy lint suppression: disallowed_methods, useless_format, manual_ok_err are benign in test code.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::useless_format,
+    clippy::manual_ok_err,
+    clippy::to_string_in_format_args,
+    clippy::approx_constant,
+    clippy::useless_conversion
+)]
+
 mod test_helpers;
 
 use std::fs;
@@ -40,10 +51,7 @@ fn test_valid_corpus() {
                         };
 
                         // Run typecheck to get warnings (errors only, not quality diagnostics)
-                        let warnings = match typecheck_source_errors_only(&test.input) {
-                            Ok(()) => None,
-                            Err(type_errors) => Some(type_errors),
-                        };
+                        let warnings = typecheck_source_errors_only(&test.input).err();
 
                         CorpusOutcome {
                             output,
@@ -73,6 +81,8 @@ fn test_valid_corpus() {
 }
 
 #[test]
+// CORPUS-OK: test infrastructure reads corpus files via std::fs — no cap_std available here
+#[allow(clippy::disallowed_methods)]
 fn test_invalid_corpus() {
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/invalid");
     // type_errors/ files are expected to fail typecheck (not parse);

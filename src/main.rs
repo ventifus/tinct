@@ -1,6 +1,9 @@
 //! LLT command-line tool: parses and evaluates `.llt` files, outputs JSON or LLT display format.
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
+// Arc<Thunk> and related types are !Send because Thunk contains Rc<...>. LLT uses
+// tokio::task::LocalSet with a current_thread runtime — values never cross threads.
+#![allow(clippy::arc_with_non_send_sync)]
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, IsTerminal, Read};
@@ -459,6 +462,7 @@ fn main() {
 /// Falls back to "." if the path has no parent or is "-" (stdin).
 ///
 /// AMBIENT-OK: Helper for CLI bootstrap — operator specified file paths.
+#[allow(clippy::disallowed_methods)]
 fn open_file_base_dir(file_path: &str, context: &str) -> Result<cap_std::fs::Dir, String> {
     let dir_path = if file_path == "-" {
         std::path::Path::new(".")
@@ -475,6 +479,8 @@ fn open_file_base_dir(file_path: &str, context: &str) -> Result<cap_std::fs::Dir
 /// Open cap_std::fs::Dir entries for the given --cap-fs list.
 /// Skips injection when no_fs is true.
 /// Returns Vec<(name, Arc<cap_std::fs::Dir>, perms)>.
+// AMBIENT-OK: CLI bootstrap — operator-specified --cap-fs paths
+#[allow(clippy::disallowed_methods)]
 fn open_cap_fs_entries(
     cap_fs: &[String],
     no_fs: bool,
@@ -1114,7 +1120,10 @@ fn parse_cap_fs_entries(
     Ok(result)
 }
 
-#[allow(clippy::too_many_arguments)] // CLI entrypoint with all flags
+#[allow(clippy::too_many_arguments)]
+// CLI entrypoint with all flags
+// AMBIENT-OK: CLI bootstrap — operator-specified file paths and capability directories
+#[allow(clippy::disallowed_methods)]
 fn run_eval(
     file_paths: &[String],
     force_eval: bool,
@@ -1790,10 +1799,10 @@ fn run_eval(
         })?;
         // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
         let _resolution_table =
-            tinct::resolve::resolve_surface_program(&output.as_surface_program());
+            tinct::resolve::resolve_surface_program(output.as_surface_program());
         // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
         let (_type_errors, _type_annotation_table) =
-            tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
+            tinct::typecheck::typecheck_surface_program(output.as_surface_program());
 
         // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
         let file_base_dir_path = match stage {
@@ -1916,7 +1925,7 @@ fn run_eval(
             // Share the already-open libdir Dir with the evaluator so that builtin_include
             // can inject %libdir into nested includes without re-acquiring ambient authority.
             if let Some(ref libdir_rc) = libdir_rc_for_ctx {
-                ctx.set_libdir_dir(Arc::clone(&libdir_rc));
+                ctx.set_libdir_dir(Arc::clone(libdir_rc));
             }
             // Convert stdin JSON using this context so ThunkIds go into the shared arena.
             if let Some(ref json) = stdin_json {
@@ -2036,6 +2045,8 @@ fn run_eval(
     Ok(())
 }
 
+// AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking
+#[allow(clippy::disallowed_methods)]
 fn run_fmt(
     file_path: &str,
     check: bool,
@@ -2053,10 +2064,10 @@ fn run_fmt(
             parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
         // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
         let _resolution_table =
-            tinct::resolve::resolve_surface_program(&output.as_surface_program());
+            tinct::resolve::resolve_surface_program(output.as_surface_program());
         // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
         let (_type_errors, _type_annotation_table) =
-            tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
+            tinct::typecheck::typecheck_surface_program(output.as_surface_program());
 
         // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -2143,6 +2154,8 @@ fn run_fmt(
 
 /// Type-check a file without evaluating.
 /// Exit 0 on clean, exit 1 on any warnings or errors.
+// AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking
+#[allow(clippy::disallowed_methods)]
 fn run_lint(
     file_path: &str,
     _no_fs: bool,
@@ -2158,10 +2171,10 @@ fn run_lint(
     // Parse the file
     let output = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
-        tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
+        tinct::typecheck::typecheck_surface_program(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -2375,6 +2388,8 @@ struct LiterateConfig<'a> {
 /// - **`eval`** — join the blocks, evaluate the resulting pipeline, print JSON.
 /// - **`weave`** — evaluate each block in pipeline order; output the original
 ///   Markdown with the JSON result appended as a comment after each tinct block.
+// AMBIENT-OK: CLI bootstrap — opens file parent dir for evaluation
+#[allow(clippy::disallowed_methods)]
 fn run_literate(config: &LiterateConfig) -> Result<(), String> {
     let file_path = config.file_path;
     let markdown = read_source(file_path)?;
@@ -2438,10 +2453,10 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         }
     })?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
-        tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
+        tinct::typecheck::typecheck_surface_program(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -2835,7 +2850,7 @@ fn run_literate_weave(
     // Split blocks into code + expectations
     let blocks_with_exp: Vec<_> = blocks
         .iter()
-        .map(|b| literate::split_block_sections(b))
+        .map(|s| literate::split_block_sections(s))
         .collect();
 
     let mut block_outputs: Vec<BlockOutput> = Vec::with_capacity(blocks_with_exp.len());
@@ -2848,10 +2863,10 @@ fn run_literate_weave(
             Ok(o) => {
                 // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
                 let _resolution_table =
-                    tinct::resolve::resolve_surface_program(&o.as_surface_program());
+                    tinct::resolve::resolve_surface_program(o.as_surface_program());
                 // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
                 let (_type_errors, _type_annotation_table) =
-                    tinct::typecheck::typecheck_surface_program(&o.as_surface_program());
+                    tinct::typecheck::typecheck_surface_program(o.as_surface_program());
                 o
             }
             Err(e) => {
@@ -3365,14 +3380,16 @@ fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+// AMBIENT-OK: CLI describe — opens file parent dir for type-checking
+#[allow(clippy::disallowed_methods)]
 fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let source = read_source(file_path)?;
     let output = parse(&source).map_err(|e| format!("{e}"))?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = tinct::resolve::resolve_surface_program(&output.as_surface_program());
+    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
     let (_type_errors, _type_annotation_table) =
-        tinct::typecheck::typecheck_surface_program(&output.as_surface_program());
+        tinct::typecheck::typecheck_surface_program(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -4182,7 +4199,7 @@ mod tests {
 
     #[test]
     fn parse_duration_minutes() {
-        assert_eq!(parse_duration("1m"), Ok(1 * 60));
+        assert_eq!(parse_duration("1m"), Ok(60));
         assert_eq!(parse_duration("2m"), Ok(2 * 60));
     }
 

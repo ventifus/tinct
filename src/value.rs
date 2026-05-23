@@ -19,6 +19,10 @@ use crate::types::Type;
 // Re-export ThunkId for use in other modules
 pub use crate::arena::ThunkId;
 
+/// Type alias for the optional default expression + environment pair in guarded thunks.
+/// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
+type GuardDefault = (Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>);
+
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
 #[derive(Clone, Debug)]
@@ -469,7 +473,7 @@ impl Builder {
         guard
             .as_ref()
             .ok_or_else(|| "builder is frozen".to_string())
-            .map(|map| map.clone())
+            .cloned()
     }
 }
 
@@ -1029,7 +1033,7 @@ impl PartialEq for Value {
                     start: start_b,
                     end: end_b,
                 },
-            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
+            ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
@@ -1044,7 +1048,7 @@ impl PartialEq for Value {
                     start: start_b,
                     end: end_b,
                 },
-            ) => &src_a[*start_a..*end_a] == &src_b[*start_b..*end_b],
+            ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
             (
                 Value::Uri {
                     scheme: scheme_a,
@@ -1139,7 +1143,7 @@ pub enum UnevaluatedState {
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Environment>>)>,
+        default: Option<GuardDefault>,
     },
 }
 
@@ -1339,6 +1343,7 @@ impl Thunk {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // PendingCall requires all 8 fields for full call semantics
     pub fn new_pending_call(
         func: Arc<Thunk>,
         args: Vec<Arc<Thunk>>,
@@ -1396,10 +1401,7 @@ impl Thunk {
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(
-            Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-            Arc<RwLock<Environment>>,
-        )>,
+        default: Option<GuardDefault>,
     ) -> Self {
         Self {
             inner: ThunkInner {
@@ -1666,7 +1668,7 @@ impl Thunk {
     pub fn peek_builtin_def(&self) -> Option<BuiltinDef> {
         let guard = self.inner.unevaluated.lock().unwrap();
         match &*guard {
-            Some(UnevaluatedState::Builtin { def, .. }) => Some(def.clone()),
+            Some(UnevaluatedState::Builtin { def, .. }) => Some(*def),
             _ => None,
         }
     }
@@ -1872,6 +1874,7 @@ impl Default for Environment {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // test values like 3.14 are intentional, not PI approximations
 mod tests {
     use super::*;
     use crate::test_util::test_span;
@@ -1908,7 +1911,11 @@ mod tests {
     fn test_value_partial_eq_primitives() {
         assert_eq!(Value::Int(1), Value::Int(1));
         assert_ne!(Value::Int(1), Value::Int(2));
-        assert_eq!(Value::Float(3.14), Value::Float(3.14));
+        // 3.14 tests float equality — intentionally not PI.
+        #[allow(clippy::approx_constant)]
+        {
+            assert_eq!(Value::Float(3.14), Value::Float(3.14));
+        }
         assert_eq!(string_val("a"), string_val("a"));
         assert_ne!(string_val("a"), string_val("b"));
         assert_eq!(Value::Bool(true), Value::Bool(true));

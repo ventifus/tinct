@@ -26,6 +26,13 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::types::Type;
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
+/// Type alias for the optional default expression + environment pair carried by guarded thunks.
+/// Reduces type_complexity in RestoreState and GuardedValidateData.
+type GuardDefault = (
+    Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+    Arc<RwLock<Environment>>,
+);
+
 /// Maximum continuation stack depth. Prevents resource exhaustion from deeply
 /// nested evaluation chains that would otherwise exhaust heap memory.
 ///
@@ -95,10 +102,7 @@ pub(crate) enum RestoreState {
         field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(
-            Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-            Arc<RwLock<Environment>>,
-        )>,
+        default: Option<GuardDefault>,
     },
     /// Restore a Surface thunk for non-cacheable errors (e.g., DepthExceeded).
     /// Holds the raw SurfaceNode so the thunk can be re-lowered on retry.
@@ -244,10 +248,7 @@ pub(crate) struct GuardedValidateData {
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
     /// Default expression and environment from TypeAssert `default:` annotation.
-    pub(crate) default: Option<(
-        Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        Arc<RwLock<crate::value::Environment>>,
-    )>,
+    pub(crate) default: Option<GuardDefault>,
     /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
     /// Wrapped in Option to enable .take() when passing to default-fallback Memoize continuations.
     pub(crate) restore: Option<RestoreState>,
@@ -1260,7 +1261,7 @@ pub(crate) async fn apply_cont(
                         // allows args.take()/named.take() in the match arms below.
                         let invoke_result = {
                             let call_ctx = CallContext {
-                                params: &*params,
+                                params: &params,
                                 body: &body,
                                 closure_env: &env,
                                 positional: args.as_deref().expect("args set above"),
@@ -1443,10 +1444,10 @@ pub(crate) async fn apply_cont(
                     // arg and no named args, treat it as constructing Variant(tag, payload).
                     // This allows `Ok: [variant "Ok"]` in the prelude to be called as `[Ok 42]`.
                     Value::Variant { tag, payload: None }
-                        if args.as_ref().map_or(0, |v| v.len()) == 1
+                        if args.as_ref().is_some_and(|v| v.len() == 1)
                             && named
                                 .as_ref()
-                                .map_or(true, |m| m.as_ref().map_or(true, |b| b.is_empty())) =>
+                                .is_none_or(|m| m.as_ref().is_none_or(|b| b.is_empty())) =>
                     {
                         // Allocate the single positional arg as a ThunkId for the payload.
                         // The arg is already an Arc<Thunk> (unevaluated), so this is lazy.
@@ -1638,7 +1639,7 @@ pub(crate) async fn apply_cont(
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                &value.type_name(),
+                                value.type_name(),
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
@@ -1698,7 +1699,7 @@ pub(crate) async fn apply_cont(
                                     field_path_prefix,
                                     format_type_for_assert(&expected)
                                 ),
-                                &value.type_name(),
+                                value.type_name(),
                                 inner_span,
                             )
                             .with_materialization_span(guard_span);
@@ -2269,7 +2270,7 @@ pub(crate) async fn apply_cont(
                                     // The result will flow to the next continuation on the stack.
                                     Action::EvalCore {
                                         expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            &default_expr,
+                                            default_expr,
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2277,7 +2278,7 @@ pub(crate) async fn apply_cont(
                                 } else {
                                     Action::Continue(Err(EvalError::type_assert_failed(
                                         &format_type_for_assert(&expected),
-                                        &value.type_name(),
+                                        value.type_name(),
                                         thunk_span,
                                     )
                                     .with_materialization_span(expr_span)
@@ -2292,16 +2293,14 @@ pub(crate) async fn apply_cont(
                             // Evaluate default expression iteratively.
                             // The result will flow to the next continuation on the stack.
                             Action::EvalCore {
-                                expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                    &default_expr,
-                                )),
+                                expr: Arc::new(crate::ast_convert::expr_to_core_expr(default_expr)),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
                         } else {
                             Action::Continue(Err(EvalError::type_assert_failed(
                                 &format_type_for_assert(&expected),
-                                &value.type_name(),
+                                value.type_name(),
                                 thunk_span,
                             )
                             .with_materialization_span(expr_span)
@@ -2342,7 +2341,7 @@ pub(crate) async fn apply_cont(
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
                                         expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            &default_expr,
+                                            default_expr,
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2369,7 +2368,7 @@ pub(crate) async fn apply_cont(
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
                                         expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            &default_expr,
+                                            default_expr,
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2930,7 +2929,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("undefined_var"),
             "Expected undefined variable error, got: {}",
-            err.kind.to_string()
+            err.kind
         );
 
         // Verify the thunk transitioned to Failed state
@@ -2961,7 +2960,7 @@ mod tests {
         assert!(
             err2.kind.to_string().contains("undefined_var"),
             "Cached error should be returned, got: {}",
-            err2.kind.to_string()
+            err2.kind
         );
     }
 
@@ -3026,7 +3025,7 @@ mod tests {
         assert!(
             err.kind.to_string().contains("undefined_var"),
             "Expected undefined variable error, got: {}",
-            err.kind.to_string()
+            err.kind
         );
     }
 
@@ -3169,7 +3168,7 @@ mod tests {
         assert!(
             err1.kind.to_string().contains("type assertion failed"),
             "error should report 'type assertion failed', got: {}",
-            err1.kind.to_string()
+            err1.kind
         );
 
         // After failure, thunk must be in Failed state (cacheable error).
@@ -4035,7 +4034,7 @@ mod deep_tests {
         assert!(
             err.kind.to_string().contains("undefined"),
             "Expected undefined variable error, got: {}",
-            err.kind.to_string()
+            err.kind
         );
 
         // Verify the error_thunk is in Failed state (cacheable error was cached)
@@ -4054,7 +4053,7 @@ mod deep_tests {
         assert!(
             err2.kind.to_string().contains("undefined"),
             "Expected cached error on retry, got: {}",
-            err2.kind.to_string()
+            err2.kind
         );
     }
 }

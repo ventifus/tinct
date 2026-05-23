@@ -4,7 +4,15 @@
 //! - `split_test_file()` — parse test files with labeled sections (`=== out`, `=== warn`, `=== error`)
 //! - `run_corpus_dir()` — unified corpus test runner with channel validation and error code checks
 
-#![allow(dead_code)] // Functions used by different test crates
+#![allow(dead_code)]
+// Functions used by different test crates
+// Test infrastructure uses std::fs for corpus file reading — no cap_std available in test harness.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::useless_format,
+    clippy::approx_constant,
+    clippy::doc_lazy_continuation
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -252,6 +260,8 @@ pub struct Failure {
 }
 
 /// Recursively find all .llt-eval files in a directory
+// CORPUS-OK: test infrastructure reads corpus dir via std::fs — no cap_std available here
+#[allow(clippy::disallowed_methods)]
 pub fn find_test_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
 
@@ -277,6 +287,7 @@ pub fn find_test_files(dir: &Path) -> Vec<PathBuf> {
 /// LLT error codes use the 3-digit format:
 /// - E001-E999 for eval/runtime errors
 /// - T000-T999 for type checker errors
+///
 /// If the error code format changes, update this function.
 fn has_error_code_prefix(error_msg: &str) -> bool {
     // Look for pattern [EXXX] or [TXXX] where XXX are exactly three digits
@@ -308,6 +319,8 @@ fn has_error_code_prefix(error_msg: &str) -> bool {
 /// - `outcome.output` vs `expectations.out` — exact match (trimmed)
 /// - `outcome.warnings` vs `expectations.warn` — substring match
 /// - `outcome.error` vs `expectations.error` — substring match + error code check
+// CORPUS-OK: test infrastructure reads corpus files via std::fs — no cap_std available here
+#[allow(clippy::disallowed_methods)]
 pub fn run_corpus_dir(
     dir: &Path,
     excludes: &[&Path],

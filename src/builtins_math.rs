@@ -136,7 +136,7 @@ async fn try_dispatch_method(
             env: closure_env,
             ..
         } => invoke_function(&CallContext {
-            params: &**params,
+            params,
             body,
             closure_env,
             positional: &arg_thunks,
@@ -149,7 +149,7 @@ async fn try_dispatch_method(
             ctx: &ctx,
         })?,
         Value::Builtin(def) => {
-            let dispatch_args: Vec<Arc<Thunk>> = arg_thunks.iter().cloned().collect();
+            let dispatch_args: Vec<Arc<Thunk>> = arg_thunks.to_vec();
             (def.func)(BuiltinArgs {
                 args: dispatch_args,
                 named: None,
@@ -458,7 +458,7 @@ pub(crate) fn builtin_eq(
                         start: start_b,
                         end: end_b,
                     },
-                ) => Ok(&source_a[*start_a..*end_a] == &source_b[*start_b..*end_b]),
+                ) => Ok(source_a[*start_a..*end_a] == source_b[*start_b..*end_b]),
                 (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
                 // Cross-type: Int/Float promotion
                 (Value::Int(a), Value::Float(b)) => {
@@ -575,7 +575,7 @@ pub(crate) fn builtin_eq(
                     start: start_b,
                     end: end_b,
                 },
-            ) => &source_a[*start_a..*end_a] == &source_b[*start_b..*end_b],
+            ) => source_a[*start_a..*end_a] == source_b[*start_b..*end_b],
             (Value::Bool(a), Value::Bool(b)) => a == b,
             // Cross-type: Int/Float promotion via `as f64` cast.
             // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
@@ -717,7 +717,7 @@ pub(crate) fn builtin_lt(
                     start: start_b,
                     end: end_b,
                 },
-            ) => &source_a[*start_a..*end_a] < &source_b[*start_b..*end_b],
+            ) => source_a[*start_a..*end_a] < source_b[*start_b..*end_b],
             (Value::Bool(a), Value::Bool(b)) => !a && *b, // false < true
             // Cross-type: Int/Float promotion via `as f64` cast.
             // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
@@ -1346,6 +1346,7 @@ pub(crate) fn builtin_shr(
 /// - Int → Float: cast via `as f64` (user explicitly opted into potential precision loss)
 /// - Float → Float: no-op
 /// - Other types → error
+///
 /// Inherently materializing: must inspect value to determine type and perform conversion.
 pub(crate) fn builtin_float(
     ctx_arg: BuiltinArgs,

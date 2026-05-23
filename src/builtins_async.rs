@@ -45,7 +45,7 @@ fn take_one_thunk(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
 ) -> EvalResult<Arc<Thunk>> {
-    if !named.as_ref().map_or(true, |n| n.is_empty()) {
+    if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
             format!("{name} does not accept named arguments"),
             call_span,
@@ -71,7 +71,7 @@ fn take_two_thunks(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
 ) -> EvalResult<(Arc<Thunk>, Arc<Thunk>)> {
-    if !named.as_ref().map_or(true, |n| n.is_empty()) {
+    if !named.as_ref().is_none_or(|n| n.is_empty()) {
         return Err(EvalError::user_error(
             format!("{name} does not accept named arguments"),
             call_span,
@@ -221,7 +221,7 @@ pub(crate) fn builtin_task(
                         crate::value::Environment::with_parent(env),
                     ));
                     // Evaluate the body
-                    let thunk = eval_core_expr_pub(&*body, &call_env, &ctx_clone).await?;
+                    let thunk = eval_core_expr_pub(&body, &call_env, &ctx_clone).await?;
                     // Materialize the result
                     materialize(&thunk, None, &ctx_clone).await
                 }
@@ -636,7 +636,7 @@ pub(crate) fn builtin_select_once(
 
                                 // Evaluate and return the body.
                                 let result_thunk =
-                                    eval_core_expr_pub(&*body, &call_env, &ctx).await?;
+                                    eval_core_expr_pub(&body, &call_env, &ctx).await?;
                                 let v = materialize(&result_thunk, None, &ctx).await?;
                                 return ok_val(v, call_span);
                             }
@@ -781,8 +781,7 @@ pub(crate) fn builtin_par_map(
                         );
 
                         // Evaluate the body
-                        let result_thunk =
-                            eval_core_expr_pub(&*body, &call_env, &ctx_clone).await?;
+                        let result_thunk = eval_core_expr_pub(&body, &call_env, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await
                     }
                     Value::Builtin(def) => {
@@ -897,8 +896,7 @@ pub(crate) fn builtin_par_filter(
                         );
 
                         // Evaluate the body
-                        let result_thunk =
-                            eval_core_expr_pub(&*body, &call_env, &ctx_clone).await?;
+                        let result_thunk = eval_core_expr_pub(&body, &call_env, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await?
                     }
                     Value::Builtin(def) => {
@@ -1260,7 +1258,7 @@ pub(crate) fn builtin_context(
             )
             .into());
         }
-        if !named.as_ref().map_or(true, |n| n.is_empty()) {
+        if !named.as_ref().is_none_or(|n| n.is_empty()) {
             return Err(EvalError::user_error(
                 "context does not accept named arguments".to_string(),
                 call_span,
