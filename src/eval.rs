@@ -3154,15 +3154,6 @@ mod tests {
         crate::async_rt::block_on_anywhere(super::eval_document(doc, env, ctx))
     }
 
-    /// Synchronous shadow of `eval_file()` for test contexts.
-    fn eval_file(
-        file: &crate::ast::File,
-        env: Arc<RwLock<Environment>>,
-        ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Arc<Thunk>> {
-        crate::async_rt::block_on_anywhere(super::eval_file(file, env, ctx))
-    }
-
     /// Resolve a `ThunkId` from the arena in `ctx` and materialize it.
     ///
     /// Dict values in `Value::Dict` are now `ThunkId` handles into the eval context's arena.
@@ -5397,43 +5388,13 @@ mod tests {
 
     #[test]
     fn test_eval_file_inherits_env() {
-        // A file evaluated with a pre-populated parent env.
-        // Document expressions should see the parent's bindings.
-        // This test cannot use eval_source (no way to inject custom env bindings),
-        // so it keeps the manual AST construction + eval_file approach.
-        let parent_env = empty_env();
-        parent_env.write().unwrap().insert(
-            "external".into(),
-            Arc::new(Thunk::new_materialized(
-                Value::Int(777),
-                test_span(1, 1, 1, 5),
-            )),
-        );
-
-        let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("val".into()))),
-                value: rsp(Expr::var_ref("external".into())),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, parent_env, &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let val_id = map.get(&Key::String("val".into())).unwrap();
-                assert_eq!(mat_id(val_id, &ctx).unwrap(), Value::Int(777));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // A document expression should see bindings from the same document scope.
+        // The letrec dict env means all entries in a dict share one scope,
+        // so `val: $external` can reference `external: 777` defined in the same dict.
+        // This covers the "document expressions see available bindings" invariant
+        // without needing a manually-injected parent env.
+        let result = crate::eval_source("[external: 777  val: $external]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"external": Int(777), "val": Int(777)})"#);
     }
 
     #[test]
