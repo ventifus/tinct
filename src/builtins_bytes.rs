@@ -49,7 +49,7 @@ pub(crate) fn builtin_bytes(
         let mut result = Vec::new();
 
         for arg_thunk in &args {
-            let val = materialize(arg_thunk, Some(&call_span), &ctx).await?;
+            let val = materialize(arg_thunk, Some(&call_span), &ctx).await?; // H3: loop materialize (iterating bytes args)
             match val.as_bytes() {
                 Some(bytes) => {
                     result.extend_from_slice(bytes);

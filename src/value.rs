@@ -406,7 +406,7 @@ impl Builder {
             return false;
         }
         let guard = self.inner.lock().unwrap();
-        guard.as_ref().map_or(false, |map| map.contains_key(key))
+        guard.as_ref().is_some_and(|map| map.contains_key(key))
     }
 
     /// Get a value by key. Returns None if key doesn't exist or builder is frozen.
@@ -417,6 +417,32 @@ impl Builder {
         }
         let guard = self.inner.lock().unwrap();
         guard.as_ref().and_then(|map| map.get(key).copied())
+    }
+
+    /// Atomically get-or-insert: if `key` exists, return its ThunkId; otherwise
+    /// insert `default_id` at `key` and return `default_id`.
+    /// Returns error if the builder is frozen.
+    ///
+    /// This eliminates the `builder-has?` + `builder-get` + `builder-set` triple
+    /// that `group-by` previously used, reducing locking overhead and avoiding the
+    /// race window between the has? check and the set.
+    pub fn get_or(&self, key: Key, default_id: ThunkId) -> Result<ThunkId, String> {
+        // Fast-path: frozen builder cannot be mutated.
+        if self.frozen.load(Ordering::Relaxed) {
+            return Err("builder is frozen (already finished)".to_string());
+        }
+        let mut guard = self.inner.lock().unwrap();
+        match guard.as_mut() {
+            Some(map) => {
+                if let Some(&existing) = map.get(&key) {
+                    Ok(existing)
+                } else {
+                    map.insert(key, default_id);
+                    Ok(default_id)
+                }
+            }
+            None => Err("builder is frozen (already finished)".to_string()),
+        }
     }
 
     /// Take the inner map, freezing the builder. Returns error if already frozen.
@@ -1092,7 +1118,7 @@ pub enum UnevaluatedState {
     /// Deferred builtin call (was PendingBuiltin).
     Builtin {
         def: BuiltinDef,
-        args: Box<Vec<Arc<Thunk>>>,
+        args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
         ctx: Arc<crate::eval::EvalContext>,
@@ -1100,7 +1126,7 @@ pub enum UnevaluatedState {
     /// Deferred function call (was PendingCall).
     Call {
         func: Arc<Thunk>,
-        args: Box<Vec<Arc<Thunk>>>,
+        args: Vec<Arc<Thunk>>,
         named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
         call_span: Span,
         caller_env: Arc<RwLock<Environment>>,
@@ -1110,7 +1136,7 @@ pub enum UnevaluatedState {
     Guarded {
         inner: Arc<Thunk>,
         expected: Type,
-        field_path: Box<Vec<String>>,
+        field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<(Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Environment>>)>,
@@ -1301,7 +1327,7 @@ impl Thunk {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Builtin {
                     def,
-                    args: Box::new(args),
+                    args,
                     named,
                     call_span: span,
                     ctx,
@@ -1332,7 +1358,7 @@ impl Thunk {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Call {
                     func,
-                    args: Box::new(args),
+                    args,
                     named: named_opt,
                     call_span,
                     caller_env,
@@ -1380,7 +1406,7 @@ impl Thunk {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Guarded {
                     inner,
                     expected,
-                    field_path: Box::new(field_path),
+                    field_path,
                     guard_span,
                     blame_label,
                     default,
@@ -1413,7 +1439,7 @@ impl Thunk {
 
     /// Check if the thunk is materialized without cloning the value.
     pub fn is_materialized(&self) -> bool {
-        self.inner.result.get().map_or(false, |r| r.is_ok())
+        self.inner.result.get().is_some_and(|r| r.is_ok())
     }
 
     /// Set the thunk to materialized state with the given value.
@@ -1453,7 +1479,7 @@ impl Thunk {
                 ctx,
             }) => {
                 // State is now InProgress
-                Some((def, *args, named, call_span, ctx))
+                Some((def, args, named, call_span, ctx))
             }
             other => {
                 // Restore the state
@@ -1477,7 +1503,7 @@ impl Thunk {
                 // State is now InProgress
                 // Convert Option<Box<IndexMap>> to Option<IndexMap>
                 let named = named.map(|b| *b);
-                Some((func, *args, named, call_span, caller_env, ctx))
+                Some((func, args, named, call_span, caller_env, ctx))
             }
             other => {
                 // Restore the state
@@ -1510,7 +1536,7 @@ impl Thunk {
                 Some((
                     inner,
                     expected,
-                    *field_path,
+                    field_path,
                     guard_span,
                     blame_label,
                     default,

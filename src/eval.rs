@@ -633,7 +633,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Bool => matches!(value, Value::Bool(_)),
         Type::Bytes => matches!(value, Value::Bytes { .. }),
         Type::IntLiteral(n) => matches!(value, Value::Int(v) if v == n),
-        Type::StringLiteral(s) => value.as_str().map_or(false, |v| v == s),
+        Type::StringLiteral(s) => value.as_str().is_some_and(|v| v == s),
         Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin(_)),
         Type::Seq(_) => matches!(value, Value::Seq { .. }),
         Type::Map(_, _) => matches!(value, Value::Dict(_) | Value::Overlay(..)), // Map matches any Dict for now
@@ -903,7 +903,7 @@ fn intern_class_name(name: &str) -> &'static str {
 
 /// Check if an identifier starts with an uppercase letter.
 pub(crate) fn is_constructor_name(name: &str) -> bool {
-    name.chars().next().map_or(false, |c| c.is_uppercase())
+    name.chars().next().is_some_and(|c| c.is_uppercase())
 }
 
 /// Evaluate a [quote ...] expression, walking the quoted AST and evaluating
@@ -1851,7 +1851,7 @@ pub fn materialize<'a>(
                     } else {
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                             def,
-                            args: Box::new(args),
+                            args,
                             named,
                             call_span,
                             ctx: thunk_ctx,
@@ -1897,7 +1897,7 @@ pub fn materialize<'a>(
                                     thunk.restore_unevaluated(
                                         crate::value::UnevaluatedState::Builtin {
                                             def,
-                                            args: Box::new(args),
+                                            args,
                                             named,
                                             call_span,
                                             ctx: thunk_ctx,
@@ -1916,7 +1916,7 @@ pub fn materialize<'a>(
                     } else {
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                             def,
-                            args: Box::new(args),
+                            args,
                             named,
                             call_span,
                             ctx: thunk_ctx,
@@ -1947,7 +1947,7 @@ pub fn materialize<'a>(
                     } else {
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                             func: func_thunk.clone(),
-                            args: Box::new(args.clone()),
+                            args: args.clone(),
                             named: named.clone().map(Box::new),
                             call_span,
                             caller_env: caller_env.clone(),
@@ -2006,7 +2006,7 @@ pub fn materialize<'a>(
                                         thunk.restore_unevaluated(
                                             crate::value::UnevaluatedState::Call {
                                                 func: func_thunk.clone(),
-                                                args: Box::new(args.clone()),
+                                                args: args.clone(),
                                                 named: named.clone().map(Box::new),
                                                 call_span,
                                                 caller_env: caller_env.clone(),
@@ -2031,7 +2031,7 @@ pub fn materialize<'a>(
                             } else {
                                 thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                                     func: func_thunk.clone(),
-                                    args: Box::new(args.clone()),
+                                    args: args.clone(),
                                     named: named.clone().map(Box::new),
                                     call_span,
                                     caller_env: caller_env.clone(),
@@ -2090,7 +2090,7 @@ pub fn materialize<'a>(
                             } else {
                                 thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                                     func: func_thunk.clone(),
-                                    args: Box::new(args.clone()),
+                                    args: args.clone(),
                                     named: named.clone().map(Box::new),
                                     call_span,
                                     caller_env: caller_env.clone(),
@@ -2133,7 +2133,7 @@ pub fn materialize<'a>(
                                             thunk.restore_unevaluated(
                                                 crate::value::UnevaluatedState::Call {
                                                     func: func_thunk.clone(),
-                                                    args: Box::new(args.clone()),
+                                                    args: args.clone(),
                                                     named: named.clone().map(Box::new),
                                                     call_span,
                                                     caller_env: caller_env.clone(),
@@ -2152,7 +2152,7 @@ pub fn materialize<'a>(
                             } else {
                                 thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                                     func: func_thunk.clone(),
-                                    args: Box::new(args.clone()),
+                                    args: args.clone(),
                                     named: named.clone().map(Box::new),
                                     call_span,
                                     caller_env: caller_env.clone(),
@@ -2191,7 +2191,7 @@ pub fn materialize<'a>(
                     } else {
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
                             func: func_thunk,
-                            args: Box::new(args),
+                            args,
                             named: named.map(Box::new),
                             call_span,
                             caller_env,
@@ -2262,7 +2262,7 @@ pub fn materialize<'a>(
                                                         crate::value::UnevaluatedState::Guarded {
                                                             inner,
                                                             expected,
-                                                            field_path: Box::new(field_path),
+                                                            field_path,
                                                             guard_span,
                                                             blame_label,
                                                             default: Some((
@@ -2294,7 +2294,7 @@ pub fn materialize<'a>(
                                                         crate::value::UnevaluatedState::Guarded {
                                                             inner,
                                                             expected,
-                                                            field_path: Box::new(field_path),
+                                                            field_path,
                                                             guard_span,
                                                             blame_label,
                                                             default: Some((
@@ -2334,7 +2334,7 @@ pub fn materialize<'a>(
                                                 crate::value::UnevaluatedState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path: Box::new(field_path),
+                                                    field_path,
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2362,7 +2362,7 @@ pub fn materialize<'a>(
                                                 crate::value::UnevaluatedState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path: Box::new(field_path),
+                                                    field_path,
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2422,7 +2422,7 @@ pub fn materialize<'a>(
                                                 crate::value::UnevaluatedState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path: Box::new(field_path),
+                                                    field_path,
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2450,7 +2450,7 @@ pub fn materialize<'a>(
                                                 crate::value::UnevaluatedState::Guarded {
                                                     inner,
                                                     expected,
-                                                    field_path: Box::new(field_path),
+                                                    field_path,
                                                     guard_span,
                                                     blame_label,
                                                     default: Some((default_expr, default_env)),
@@ -2499,7 +2499,7 @@ pub fn materialize<'a>(
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Guarded {
                             inner,
                             expected,
-                            field_path: Box::new(field_path),
+                            field_path,
                             guard_span,
                             blame_label,
                             default,

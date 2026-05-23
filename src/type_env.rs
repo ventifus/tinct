@@ -2906,6 +2906,36 @@ impl TypeEnv {
             );
         }
 
+        // Handle mode flags: singleton unit types for I/O handle capability markers.
+        // Used in intersection types to express fine-grained Handle capabilities:
+        // e.g., Intersection([Handle, Binary, Seekable]) for a seekable binary Handle.
+        // Follows the same singleton-record pattern as DirCap flags above.
+        for flag_name in [
+            "Binary",
+            "Seekable",
+            "Stream",
+            "Tls",
+            "Text",
+            "Exclusive",
+            "Sync",
+            "NoFollow",
+        ] {
+            let mut fields = HashMap::new();
+            fields.insert(
+                format!("__cap_flag_{}", flag_name.to_lowercase()),
+                Type::Record(Row {
+                    fields: HashMap::new(),
+                }),
+            );
+            env.insert_type_alias(
+                flag_name.to_string(),
+                TypeAlias {
+                    params: vec![],
+                    body: Type::Record(Row { fields }),
+                },
+            );
+        }
+
         // builtin-get: registered directly. 'get' is a prelude wrapper (not a Rust builtin
         // type), so it is absent from this env when the alias loop below runs. Registering
         // builtin-get here gives the type checker enough information to avoid false

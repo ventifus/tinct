@@ -180,12 +180,12 @@ Panel review (stdlib-author, eval-engine, performance-expert, computer-scientist
 - [x] Fix `flat-map` O(n²) — Seq cons + collect + reverse + flatten approach
 - [x] Wire `make-builder capacity:` named arg — `IndexMap::with_capacity`
 - [x] 4 corpus tests for builder builtins: basic, has/get, frozen error, double-finish error
-- [ ] Fix `deep-merge` produces Overlay — `[merge a [build-dict ...]]` creates Overlay; for dist-eval must be flat; fix by building over union key set instead of wrapping with `merge` (`stdlib/prelude.llt:1178`)
-- [ ] Add `AtomicBool frozen` fast-path to Builder — current impl acquires mutex on every `has?`/`get`; `AtomicBool::load(Relaxed)` short-circuits before mutex for frozen check (`src/value.rs`)
-- [ ] Consolidate `build-dict` Seq path to single traversal — collect `Vec<(head, tail)>` in pass 1, eliminating pass 2 (`src/builtins_dict.rs`)
-- [ ] Add `builder-get-or` op — `builder-has?` + `builder-get` in `group-by` is 2 mutex acquires; a `get_or_default`-style op would halve it (`src/value.rs`, `src/builtins_dict.rs`)
+- [x] Fix `deep-merge` produces Overlay — now builds flat Dict using build-dict + each-kv union (commit 01f3fcf)
+- [x] Add `AtomicBool frozen` fast-path to Builder — all ops short-circuit on frozen.load(Relaxed) before acquiring mutex (commit 01f3fcf)
+- [x] Consolidate `build-dict` Seq path to single traversal — single-pass IndexMap construction (commit 01f3fcf+)
+- [x] Add `builder-get-or` op — atomic get-or-insert; group-by rewritten to use it; 283→284 builtins
 - [ ] When `dist-eval` sprint implements `distributable?`: add `Value::Builder` to non-distributable set — **DEFERRED** (needs dist-eval sprint)
-- [ ] Large-input tests for build-dict functions — `from-entries`, `map-entries`, `remove`, `take-while`, `drop-while`, `slice`, `walk`, `deep-merge` (n≥1000) (`tests/corpus/eval/stdlib/`)
+- [x] Large-input corpus tests for build-dict functions — 7 tests (n=1000): from-entries, map-entries, remove, take-while, drop-while, slice, deep-merge
 
 ### linear-accumulators-review: Post-implementation review
 
@@ -234,7 +234,7 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 - [x] Survey all 9 H2 sites — 1 real fix (sort: updated registration to `[Spine, Spine]`, replaced materialize with try_get_materialized), 8 documented as safe conditionals (args.len() check or pre-materialized discriminant dispatch)
 - [x] All `// H2:` markers removed — replaced with safe-conditional documentation
-- [ ] `builtins_datetime.rs` field-access materialize — update `just lint-builtins-cps` grep pattern to also catch `args.args[N]` field-access syntax; then audit datetime builtins (`src/builtins_datetime.rs`)
+- [x] `builtins_datetime.rs` materialize audit — updated lint-builtins-cps to catch field-access syntax; all datetime builtins annotated H1/H2/H3 (all necessary, no unconditional forces to fix)
 - [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### reduce-cont-step: Continuation-based reduce — unlimited-depth inputs, no stack cliffs
@@ -354,6 +354,81 @@ are separate from the Rc→Arc migration.
 
 Run `cargo clippy --fix` for the style lints after fixing the critical ones manually.
 
+### ambient-open-helpers: Centralise repeated `open_ambient_dir` patterns in main.rs
+
+Six or more subcommands (`run`, `fmt`, `lint`, `describe`, `literate-eval`, `literate-weave`)
+each contain an identical snippet to open the parent directory of an input file, and three
+of them duplicate the `--cap-fs` entry parsing loop. Each copy carries its own
+`// AMBIENT-OK` comment and `#[allow]` annotation.
+
+Extract two private helpers in `src/main.rs` — one `// AMBIENT-OK` justification each:
+
+```rust
+// AMBIENT-OK: CLI bootstrap — operator-specified file path; opens its parent dir once.
+fn open_file_base_dir(file_path: &str, context: &str) -> Result<cap_std::fs::Dir, String> {
+    let dir = std::path::Path::new(file_path)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
+        .map_err(|e| format!("cannot open base directory for {context}: {e}"))
+}
+
+// AMBIENT-OK: CLI bootstrap — operator-specified --cap-fs paths.
+fn open_cap_fs_entries(
+    entries: &[(String, String, DirPerms)],
+    no_fs: bool,
+) -> Result<Vec<(String, cap_std::fs::Dir, DirPerms)>, String> { ... }
+```
+
+Leave `imports.rs:783` (lib-API-boundary fallback) and `imports.rs:827` (nested include
+parent) unchanged — they are context-specific and not part of the CLI pattern.
+
+- [ ] Extract `open_file_base_dir(file_path, context)` in `src/main.rs`; replace all 6+ copies
+- [ ] Extract `open_cap_fs_entries(entries, no_fs)` in `src/main.rs`; replace 3 copies (run_eval, run_literate_eval, run_literate_weave)
+- [ ] Verify `just lint-clippy` still passes — net reduction in `#[allow]` and `// AMBIENT-OK` annotations
+
+### test-caps-fixture: Centralise ambient DirCap allocation in test suite
+
+Currently each test that needs filesystem access calls `open_ambient_dir` directly, scattering
+`#[allow(clippy::disallowed_methods)]` suppressions across many test files. With `--tests`
+now added to `lint-clippy`, these will all surface as violations.
+
+Replace all per-test ambient opens with a single shared `OnceLock<TestCaps>` in `src/test_util.rs`:
+
+```rust
+use cap_std::fs::Dir;
+use std::sync::{Arc, OnceLock};
+
+pub struct TestCaps {
+    pub root:   Arc<Dir>,   // CARGO_MANIFEST_DIR
+    pub stdlib: Arc<Dir>,   // stdlib/ — opened via root, no extra ambient call
+}
+
+static TEST_CAPS: OnceLock<TestCaps> = OnceLock::new();
+
+pub fn test_caps() -> &'static TestCaps {
+    TEST_CAPS.get_or_init(|| {
+        // AMBIENT-OK: single initialisation for entire test suite.
+        let root = unsafe { Dir::open_ambient_dir(env!("CARGO_MANIFEST_DIR"), cap_std::ambient_authority()) }
+            .expect("cannot open project root for tests");
+        let stdlib = root.open_dir("stdlib").expect("cannot open stdlib/");
+        TestCaps { root: Arc::new(root), stdlib: Arc::new(stdlib) }
+    })
+}
+```
+
+Benefits:
+- One `// AMBIENT-OK` suppression instead of one per test file
+- `OnceLock` guarantees single initialisation even under parallel test execution
+- `Arc<Dir>` is `Send + Sync` (cap-std's Dir wraps OwnedFd; fd ops on a dir are stateless reads)
+- `try_clone()` available for tests that need exclusive fd ownership
+
+- [ ] Add `test_caps()` to `src/test_util.rs` with the `OnceLock<TestCaps>` pattern above
+- [ ] Grep test code for `open_ambient_dir` calls — replace each with `test_caps().root` or `test_caps().stdlib` as appropriate
+- [ ] Remove per-test `#[allow(clippy::disallowed_methods)]` suppressions that were covering those calls
+- [ ] Verify `just lint-clippy` (with `--tests`) passes with only the single `// AMBIENT-OK` in `test_util.rs`
+
 ### ci-failures: Fix 4 failing tests identified by `just ci` (2026-05-22)
 
 `just test` result: 1874 passed, 8 failed, 76 ignored. The 4 `test_syntax_llt_fn_*` failures
@@ -409,7 +484,7 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 - [x] Change `Type::Handle` → `Type::Handle(Box<Type>)` with capability row; updated all 25+ construction/match sites across type_def.rs, type_normalize.rs, type_unify.rs, type_env.rs, imports.rs, eval.rs
 - [x] All existing signatures use `Type::Handle(Box::new(Type::Unknown))` for gradual typing backward compat
 - [x] Updated `doc/feature/io.md` and `doc/feature/lib-net-v2.md`
-- [ ] Register capability tags (`Binary`, `Readable`, `Writable`, `Appendable`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow`) as type-level symbols in TypeEnv — specified in `doc/whatif/completed/lib-tls.md` (Accepted 2026-05-07) and `doc/whatif/completed/lib-net-v2.md` (`src/typecheck.rs`)
+- [x] Register capability tags (`Binary`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow`) as type-level symbols in TypeEnv — `src/type_env.rs` (Readable/Writable/Appendable already existed)
 - [ ] Precise builtin signatures: `open` → `Handle[Readable]`/`Handle[Writable]` by mode flag; `slurp`/`write`/`lines`/`seek`/`close` constrained via row (`src/type_env.rs`) — **depends on capability tag registration**
 - [ ] Corpus tests for capability mismatches (writing to Readable-only handle → type error) — **depends on precise signatures**
 - [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)

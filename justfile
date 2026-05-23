@@ -126,10 +126,19 @@ lint-expect-attrs:
     @fgrep -B1 -A1 -rn '#[expect' src/ || true
 
 # Verify no builtins call materialize() directly on args (all forced args must use force_count).
-# H2/H3/TEST annotated lines are intentional exceptions (conditional materialize, loop materialize,
-# or test-only code). Runs without container — it's a grep, not a build.
+# Annotation conventions for intentional exceptions:
+#   // H1: <reason>  — unconditional force, needs force_count migration (known debt)
+#   // H2: <reason>  — conditional materialize, safe pattern (e.g., only one branch)
+#   // H3: <reason>  — loop materialize, safe pattern (e.g., iterating seq elements)
+#   // TEST:         — test-only code
+# Runs without container — it's a grep, not a build.
+# Patterns caught:
+#   materialize(&args[N]     — positional index via slice index
+#   materialize(&args.args[N — field-access via BuiltinArgs.args[N]
+#   materialize(X_thunk,     — variable extracted from args.args.as_slice() destructuring
 lint-builtins-cps:
-    @! grep -Ern 'materialize\(&args(\.args)?\[' src/builtins*.rs | grep -v '// H2:\|// H3:\|// TEST:' || (echo "ERROR: builtins still call materialize directly (unannotated H1 call)" && exit 1)
+    @! grep -Ern 'materialize\(&args(\.args)?\[' src/builtins*.rs | grep -v '// H1:\|// H2:\|// H3:\|// TEST:' || (echo "ERROR: builtins still call materialize directly (unannotated call)" && exit 1)
+    @! grep -Ern 'materialize\(\w+_thunk,' src/builtins*.rs | grep -v '// H1:\|// H2:\|// H3:\|// TEST:' || (echo "ERROR: builtins still call materialize directly on extracted thunk (unannotated call)" && exit 1)
     @echo "OK: No unannotated builtins call materialize() directly"
 
 # Run tinct lint --strict on every .llt file in stdlib/

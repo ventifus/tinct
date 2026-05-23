@@ -73,18 +73,17 @@ pub(crate) fn attach_materialization_context(
 /// State restoration data for non-cacheable errors in iterative materialization.
 /// Snapshot of a thunk's pre-materialization state, used to restore the thunk
 /// when a non-cacheable error occurs.
-///
 pub(crate) enum RestoreState {
     PendingBuiltin {
         def: crate::value::BuiltinDef,
-        args: Box<Vec<Arc<Thunk>>>,
+        args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
         ctx: Arc<EvalContext>,
     },
     PendingCall {
         func: Arc<Thunk>,
-        args: Box<Vec<Arc<Thunk>>>,
+        args: Vec<Arc<Thunk>>,
         named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
         call_span: Span,
         caller_env: Arc<RwLock<Environment>>,
@@ -93,7 +92,7 @@ pub(crate) enum RestoreState {
     Guarded {
         inner: Arc<Thunk>,
         expected: Type,
-        field_path: Box<Vec<String>>,
+        field_path: Vec<String>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<(
@@ -220,7 +219,7 @@ pub(crate) struct MemoizeData {
 pub(crate) struct PendingCallDispatchData {
     pub(crate) thunk: Arc<Thunk>,
     pub(crate) func_thunk: Arc<Thunk>,
-    pub(crate) args: Box<Vec<Arc<Thunk>>>,
+    pub(crate) args: Vec<Arc<Thunk>>,
     pub(crate) named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
     pub(crate) call_span: Span,
     pub(crate) caller_env: Arc<RwLock<Environment>>,
@@ -234,7 +233,7 @@ pub(crate) struct PendingCallDispatchData {
 pub(crate) struct GuardedValidateData {
     pub(crate) thunk: Arc<Thunk>,
     pub(crate) expected: Type,
-    pub(crate) field_path: Box<Vec<String>>,
+    pub(crate) field_path: Vec<String>,
     pub(crate) guard_span: Span,
     pub(crate) inner_span: Span,
     pub(crate) origin: Option<Arc<str>>,
@@ -596,7 +595,7 @@ pub(crate) async fn force_step(
                     // Move args/named into RestoreState — clone was taken above for BuiltinArgs.
                     let restore = RestoreState::PendingBuiltin {
                         def,
-                        args: Box::new(args.take().expect("args set above")),
+                        args: args.take().expect("args set above"),
                         named: named.take().expect("named set above"),
                         call_span,
                         ctx: Arc::clone(&thunk_ctx),
@@ -630,7 +629,7 @@ pub(crate) async fn force_step(
                     // Move args/named into PendingBuiltin — no clone needed.
                     thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                         def,
-                        args: Box::new(args.take().expect("args set above")),
+                        args: args.take().expect("args set above"),
                         named: named.take().expect("named set above"),
                         call_span,
                         ctx: thunk_ctx,
@@ -654,7 +653,7 @@ pub(crate) async fn force_step(
             PendingCallDispatchData {
                 thunk: Arc::clone(thunk),
                 func_thunk: Arc::clone(&func_thunk),
-                args: Box::new(args),
+                args,
                 named: named.map(Box::new),
                 call_span,
                 caller_env,
@@ -685,7 +684,7 @@ pub(crate) async fn force_step(
         let restore = RestoreState::Guarded {
             inner: Arc::clone(&inner),
             expected: expected.clone(),
-            field_path: Box::new(field_path.clone()),
+            field_path: field_path.clone(),
             guard_span,
             blame_label: blame_label.clone(),
             default: default_opt.clone(),
@@ -693,7 +692,7 @@ pub(crate) async fn force_step(
         stack.push(Cont::GuardedValidate(Box::new(GuardedValidateData {
             thunk: Arc::clone(thunk),
             expected: expected.clone(),
-            field_path: Box::new(field_path),
+            field_path,
             guard_span,
             inner_span,
             origin,
@@ -1558,7 +1557,7 @@ pub(crate) async fn apply_cont(
                             match validate_and_wrap_record(
                                 entries,
                                 row.as_ref(),
-                                &mut *field_path,
+                                &mut field_path,
                                 guard_span,
                                 inner_span,
                                 &guard_ctx,
@@ -1854,7 +1853,7 @@ pub(crate) async fn apply_cont(
                                 // Move args/named into RestoreState — no clone needed.
                                 let restore = RestoreState::PendingBuiltin {
                                     def,
-                                    args: Box::new(args.take().expect("args set above")),
+                                    args: args.take().expect("args set above"),
                                     named: named.take().expect("named set above"),
                                     call_span,
                                     ctx: Arc::clone(&thunk_ctx),
@@ -1883,7 +1882,7 @@ pub(crate) async fn apply_cont(
                                 thunk.restore_unevaluated(
                                     crate::value::UnevaluatedState::Builtin {
                                         def,
-                                        args: Box::new(args.take().expect("args set above")),
+                                        args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
                                         call_span,
                                         ctx: thunk_ctx,
@@ -1904,7 +1903,7 @@ pub(crate) async fn apply_cont(
                         // Move args/named into PendingBuiltin — no clone needed.
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                             def,
-                            args: Box::new(args.take().expect("args set above")),
+                            args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
                             call_span,
                             ctx: thunk_ctx,
@@ -2556,7 +2555,7 @@ mod tests {
         // Create RestoreState and restore
         let restore = RestoreState::PendingBuiltin {
             def: dummy_def,
-            args: Box::new(args),
+            args,
             named: None,
             call_span: span,
             ctx: ctx.clone(),
@@ -2608,7 +2607,7 @@ mod tests {
         // Create RestoreState and restore
         let restore = RestoreState::PendingCall {
             func: Arc::clone(&func_thunk),
-            args: Box::new(args),
+            args,
             named: if named.is_empty() {
                 None
             } else {
@@ -2674,7 +2673,7 @@ mod tests {
         // Restore
         let restore = RestoreState::PendingCall {
             func: Arc::clone(&func_thunk),
-            args: Box::new(args.clone()),
+            args: args.clone(),
             named: if named.is_empty() {
                 None
             } else {

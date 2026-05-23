@@ -154,7 +154,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
             return Err(EvalError::arity_mismatch(1, ctx.positional.len(), ctx.call_span).into());
         }
 
-        if ctx.named.map_or(false, |n| !n.is_empty()) {
+        if ctx.named.is_some_and(|n| !n.is_empty()) {
             return Err(EvalError::named_arg_rejected(
                 "variant constructor".to_string(),
                 ctx.call_span,

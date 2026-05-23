@@ -375,9 +375,9 @@ pub(crate) use crate::builtins_math::{
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_dict::{
     builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
-    builtin_builder_get, builtin_builder_has, builtin_builder_set, builtin_builder_snapshot,
-    builtin_each, builtin_each_key, builtin_each_kv, builtin_get, builtin_get_optional,
-    builtin_keys, builtin_length, builtin_make_builder, builtin_merge,
+    builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
+    builtin_builder_snapshot, builtin_each, builtin_each_key, builtin_each_kv, builtin_get,
+    builtin_get_optional, builtin_keys, builtin_length, builtin_make_builder, builtin_merge,
 };
 
 // I/O builtins: open, slurp, write, connect, lines, emit, env, list-dir, stat, etc.
@@ -1321,6 +1321,12 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             "builder-get",
             builtin_builder_get,
             [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builder-get-or",
+            builtin_builder_get_or,
+            [Strictness::Seq, Strictness::Seq, Strictness::Id],
             2
         ),
         // Strings
@@ -6832,10 +6838,12 @@ mod tests {
         // Added builtin-macro-error for span-aware macro errors (265 → 266)
         // Added build-dict for efficient dict construction from entries (266 → 267)
         // Added 7 transient builder builtins: make-builder, builder-set, builder-delete, builder-finish, builder-snapshot, builder-has?, builder-get (267 → 274)
+        // Added builder-get-or: atomic get-or-insert for builder (274 → 275, then renumbered)
         // Added 5 I/O builtins: exists, stat-symlink, copy-file, symlink, set-permissions (274 → 279)
         // Added 4 xattr builtins: get-xattr, set-xattr, remove-xattr, list-xattrs (279 → 283)
+        // Added builder-get-or: atomic get-or-insert for builder (283 → 284)
         assert_eq!(
-            count, 283,
+            count, 284,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -7089,8 +7097,8 @@ mod tests {
         // cancelled?, cancel-task (+6 → 246 total from 240)
         assert_eq!(
             names.len(),
-            283,
-            "expected 283 builtins, got {} — update this assertion if adding/removing builtins",
+            284,
+            "expected 284 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

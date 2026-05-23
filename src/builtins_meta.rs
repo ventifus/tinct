@@ -1161,7 +1161,7 @@ pub(crate) fn builtin_variant(
             1 => {
                 // Unit variant: [variant "Tag"]
                 let tag_thunk = &args[0];
-                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?;
+                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?; // H1: inherently strict (needs String tag)
                 match tag_val {
                     Value::String {
                         ref source,
@@ -1188,7 +1188,7 @@ pub(crate) fn builtin_variant(
                 // Variant with payload: [variant "Tag" payload]
                 let tag_thunk = &args[0];
                 let payload_thunk = &args[1];
-                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?;
+                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?; // H1: inherently strict (needs String tag)
                 match tag_val {
                     Value::String {
                         ref source,
@@ -1652,14 +1652,14 @@ pub(crate) fn builtin_load(
                 }
             }
             let name_hint = if let Some(name_thunk) = named_map.get("name") {
-                let name_val = materialize(name_thunk, Some(&call_span), &ctx).await?;
+                let name_val = materialize(name_thunk, Some(&call_span), &ctx).await?; // H2: conditional (only when name: named arg present)
                 let name_str = require_string("load", name_val, name_thunk.span)?;
                 Some(name_str)
             } else {
                 None
             };
             let expected_hash = if let Some(hash_thunk) = named_map.get("hash") {
-                let hash_val = materialize(hash_thunk, Some(&call_span), &ctx).await?;
+                let hash_val = materialize(hash_thunk, Some(&call_span), &ctx).await?; // H2: conditional (only when hash: named arg present)
                 let hash_str = require_string("load", hash_val, hash_thunk.span)?;
                 Some(hash_str)
             } else {

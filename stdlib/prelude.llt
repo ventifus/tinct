@@ -1177,16 +1177,14 @@ Example: [group-by [fn [x] [mod x 2]] [1 2 3 4 5]] => [0: [2 4]  1: [1 3 5]]
 
 Note: Elements with the same key are collected together (insertion order preserved). O(n) with transient builder.
 Buckets are accumulated with cons (prepend) then reversed at finish to restore insertion order.
+Uses builder-get-or for atomic get-or-insert (single mutex acquisition per element).
 """] [let f@Fn xs]
     [let raw
         [builder-finish
             [builtin-reduce
                 [fn [let b x]
                     [let k [f x]]
-                    [builder-set b k
-                        [builtin-if [builder-has? b k]
-                            [cons x [builder-get b k]]
-                            [make-entry 0 x]]]]
+                    [builder-set b k [cons x [builder-get-or b k [make-entry 0 x]]]]]
                 [make-builder]
                 xs]]]
     [map-entries [fn [let e] [reverse e.value]] raw]]

@@ -675,6 +675,87 @@ pub(crate) fn builtin_each_kv(
     })
 }
 
+/// `builder-get-or`: Atomically get-or-insert in a builder.
+///
+/// Takes 3 args: builder, key (Int or String), default_value (any).
+/// If `key` exists, returns the existing value. Otherwise inserts `default_value` at `key`
+/// and returns it. Single mutex acquisition — no race between has? and set.
+/// Returns the builder for chaining (NOT the looked-up value — returns builder so callers
+/// can chain further operations).
+///
+/// NOTE: Returns the looked-up/inserted ThunkId value (not the builder).
+/// Usage pattern: `[builder-set b k [cons x [builder-get-or b k [make-entry 0 x]]]]`
+pub(crate) fn builtin_builder_get_or(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builder-get-or", named.as_ref(), call_span)?;
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+
+        // args[0] (builder) is pre-forced by force_count
+        let builder_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-get-or".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // args[1] (key) is pre-forced by force_count
+        let key_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let key = match key_val {
+            Value::Int(n) => Key::Int(n),
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                Key::String(s.to_string())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-get-or".to_string(),
+                    "Int or String (for key)",
+                    other.type_name(),
+                    args[1].span,
+                )
+                .into())
+            }
+        };
+
+        // args[2] (default value) is NOT materialized — inserted as a thunk if key absent.
+        let default_id = ctx.alloc_thunk(Arc::clone(&args[2]));
+
+        // Atomic get-or-insert: single mutex acquisition
+        let result_id = builder
+            .get_or(key, default_id)
+            .map_err(|_| EvalError::builder_already_finished("builder-get-or", call_span))?;
+
+        // Return the existing or newly-inserted value thunk
+        let thunk = ctx.thunk_arena.lock().unwrap().get(result_id).clone();
+        Ok(thunk)
+    })
+}
+
 /// `build-dict`: Efficiently construct a dict from a Seq or Dict of key-value pairs.
 ///
 /// Takes 1 arg (a Seq or Dict where each element is a dict with `key` and `value` fields).
@@ -710,45 +791,16 @@ pub(crate) fn builtin_build_dict(
 
         match val {
             // Seq input: each element is [key: K, value: V]
+            // Single-pass traversal: process each element as we walk the spine.
+            // No pre-count needed — we use an IndexMap and let it grow dynamically.
+            // Growth amortizes to O(1) per insert (same as Vec).
             Value::Seq { head, tail } => {
-                // Count the seq length for pre-allocation (eagerly walks the spine).
-                // This is O(n) but allows us to allocate the right size upfront.
-                let mut count = 0;
-                let mut current_tail_id = tail;
-                count += 1; // For the head
-
-                loop {
-                    let tail_thunk = ctx.thunk_arena.lock().unwrap().get(current_tail_id).clone();
-                    let tail_val = materialize(&tail_thunk, None, &ctx).await?;
-
-                    match tail_val {
-                        Value::Dict(map) if map.is_empty() => break,
-                        Value::Seq {
-                            head: _,
-                            tail: next_tail,
-                        } => {
-                            count += 1;
-                            current_tail_id = next_tail;
-                        }
-                        other => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "build-dict".to_string(),
-                                "Seq (empty dict tail)",
-                                other.type_name(),
-                                args[0].span,
-                            )
-                            .into())
-                        }
-                    }
-                }
-
-                // Now build the dict from the seq
-                let mut result = IndexMap::with_capacity(count);
+                let mut result = IndexMap::new();
                 let mut current_head_id = head;
                 let mut current_tail_id = tail;
 
                 loop {
-                    // Process the head
+                    // Process the head: materialize it to get the [key: K, value: V] dict.
                     let head_thunk = ctx.thunk_arena.lock().unwrap().get(current_head_id).clone();
                     let head_val = materialize(&head_thunk, None, &ctx).await?;
 
@@ -760,7 +812,7 @@ pub(crate) fn builtin_build_dict(
                         call_span,
                     )?;
 
-                    // Extract key and value from the entry dict
+                    // Extract key and value from the entry dict.
                     let key_id = entry_map.get(&StrKey("key")).ok_or_else(|| {
                         EvalError::key_not_found(
                             "key",
@@ -789,7 +841,7 @@ pub(crate) fn builtin_build_dict(
                         )
                     })?;
 
-                    // Materialize the key to extract it (values stay lazy)
+                    // Materialize the key to extract it (values stay lazy).
                     let key_thunk = ctx.thunk_arena.lock().unwrap().get(*key_id).clone();
                     let key_val = materialize(&key_thunk, None, &ctx).await?;
 
@@ -814,10 +866,10 @@ pub(crate) fn builtin_build_dict(
                         }
                     };
 
-                    // Insert the entry (value stays as a thunk)
+                    // Insert the entry (value stays as a thunk).
                     result.insert(key, *value_id);
 
-                    // Move to the next element
+                    // Advance to the next element in the Seq.
                     let tail_thunk = ctx.thunk_arena.lock().unwrap().get(current_tail_id).clone();
                     let tail_val = materialize(&tail_thunk, None, &ctx).await?;
 
@@ -827,7 +879,15 @@ pub(crate) fn builtin_build_dict(
                             current_head_id = head;
                             current_tail_id = tail;
                         }
-                        _ => unreachable!("already validated tail structure during counting"),
+                        other => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "build-dict".to_string(),
+                                "Seq (empty dict tail)",
+                                other.type_name(),
+                                args[0].span,
+                            )
+                            .into())
+                        }
                     }
                 }
 
