@@ -232,6 +232,8 @@ pub struct RuntimeClassDecl {
 /// `[let ...]` syntax). The prelude uses `[let a@Int b@Int c]` for arithmetic
 /// instances, where the third bare binding (the determined param) is skipped by
 /// `filter_map` and only the first `num_determining` annotated positions are kept.
+// TODO(chr-instances-gaps): wire up instance registration so this function is called
+// when [instance ...] declarations are processed at runtime.
 #[allow(dead_code)]
 fn extract_instance_type_tags(pattern_expr: &Spanned<Expr>, num_determining: usize) -> Vec<String> {
     let extract_tags = |bindings: &[Spanned<Expr>]| {
@@ -886,6 +888,7 @@ pub(crate) async fn eval_recursive(
 /// Known typeclass names return a compile-time literal (zero allocation).
 /// Unknown names are leaked — bounded by the number of distinct class declarations
 /// in user code, which is small in practice.
+// TODO(chr-instances-gaps): wire up instance_registry insertion so this function is called.
 #[allow(dead_code)]
 fn intern_class_name(name: &str) -> &'static str {
     match name {
@@ -3061,6 +3064,7 @@ fn match_pattern<'a>(
 /// Not yet implemented:
 /// - Structural tests (`[let v: Ok]`)
 /// - Multi-element destructuring
+// TODO(unified-bindings): wire up when [match ...] expression evaluation is implemented.
 #[allow(dead_code)]
 async fn eval_case_arm(
     pattern: &Spanned<Expr>,
@@ -3107,6 +3111,7 @@ async fn eval_case_arm(
 /// Not yet implemented:
 /// - Structural tests (need parser support for Entry-based patterns)
 /// - Nested LetDecl patterns
+// TODO(unified-bindings): called by eval_case_arm once [match ...] expression evaluation is wired.
 #[allow(dead_code)]
 fn eval_let_pattern(
     bindings: &[Spanned<Expr>],

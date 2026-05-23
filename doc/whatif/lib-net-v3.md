@@ -491,7 +491,7 @@ dns-server-loop [dns-https-server [http3-requests [h3-serve [quic-listen net-cap
 
 The NetCap is not a binary "can access the network" flag — it is a specific grant of address and port. A development server that only needs to listen on localhost gets a minimal, precise capability:
 
-```
+```sh
 tinct run --cap-net 127.0.0.1:8080 server.llt
 ```
 
@@ -517,7 +517,7 @@ This grant lets the program bind on localhost:8080 and do nothing else with the 
 
 Extending to a public HTTPS server requires a wider cap and a certificate:
 
-```
+```sh
 tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
 ```
 
@@ -681,7 +681,7 @@ These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStrea
 
 **Scope of `NetCap`:** everything here is IP-layer (layer 3 and above). Non-IP Ethernet protocols operate at layer 2 via `AF_PACKET` raw sockets with EtherType filtering and require a different capability type. The most immediately useful is **LLDP** (IEEE 802.1AB, EtherType `0x88CC`): tinct programs that discover network topology, map switch adjacency, or inspect LLDP neighbor advertisements are practical infrastructure tools. Following the same `name@flags=resource` pattern as `--cap-net` and `--cap-fs` (where `name` becomes `%name` in the program and `resource` identifies what is being accessed):
 
-```
+```sh
 --cap-ethernet lldp@r=eth0:0x88CC    # %lldp: receive LLDP frames on eth0
 --cap-ethernet arp@rw=eth0:0x0806    # %arp: send+receive ARP on eth0
 --cap-ethernet net@r=eth0            # %net: receive all EtherTypes on eth0
@@ -921,6 +921,7 @@ Both `--cap-fs` (DirCap) and `--cap-net` (NetCap) use the same `name@flags=resou
 DNS resolution is **implied** by any named hostname entry — if you grant `api@c=api.example.com:443`, you implicitly can resolve `api.example.com` to reach it. A separate `Resolvable` flag is unnecessary: a hostname in the NetCap serves no purpose unless the program can resolve it.
 
 **Two separate flags for two separate concerns:**
+
 - `--cap-net name@flags=resource` — IP address, hostname, or CIDR range
 - `--cap-net-interface name@flags=interface-name:port` — OS interface name (avoids ambiguity with hostnames; full interface name including `@` in veth names is safe after `=`)
 
@@ -939,7 +940,7 @@ DNS resolution is **implied** by any named hostname entry — if you grant `api@
 
 The resource portion follows RFC 3986 §3.2.2 `host ":" port` grammar — the same grammar used for URI authority components. Accept any valid form; normalize IPv6 to RFC 5952 canonical (lowercase, maximum `::` compression) for storage.
 
-```
+```text
 host = IP-literal / IPv4address / reg-name   (RFC 3986)
 
 IP-literal  = "[" IPv6address [ "%" ZoneID ] "]"   # zone ID: bare % in CLI, %25 in URIs
@@ -963,7 +964,7 @@ Note: `+` is a valid `sub-delim` in RFC 3986 `reg-name` (hostnames) without perc
 
 **IPv6 with zone ID:** CLI accepts bare `%` (non-URI context) or `%25` (URI-encoded). Shell quoting required when `%` appears: `--cap-net "v6ll@b=[fe80::48ca:a4ff:fef8:9dbb%eno1.601]:443"`. Link-local bindings are more naturally expressed via `--cap-net-interface`.
 
-```
+```sh
 # --- --cap-net examples (IP/hostname/CIDR) ---
 
 tinct run --cap-net server@b=127.0.0.1:8080 server.llt
@@ -1008,7 +1009,7 @@ tinct run --cap-net-interface dns-ll@bl=eth0:53 \
 
 **DirCap flags** — the old `:flags` suffix is replaced by the unified `@flags=` prefix. This is a **breaking change** to existing `--cap-fs` users; the old form is removed outright (no deprecation period — the syntax is pre-1.0 and the test corpus is the migration guide):
 
-```
+```sh
 --cap-fs data@rw=./data          # was: --cap-fs data=./data:rw
 --cap-fs logs@a=./logs           # was: --cap-fs logs=./logs:a
 --cap-fs config@r=./config       # was: --cap-fs config=./config:r
@@ -1068,6 +1069,7 @@ struct InterfaceEntry {
 `tcp-bind` calls `listen_pool.bind_tcp_listener(addr)` — atomic capability check + OS bind + listen. `tcp-connect` calls `connect_pool.connect_tcp_stream(addr)` — atomic capability check + OS connect. `udp-socket` calls `listen_pool.bind_udp_socket(addr)`. All are indivisible Pool operations with no TOCTOU window.
 
 **Capability error messages:** when a Bindable-only cap is used where Connectable is needed, tinct produces a clear structured error — not an opaque pool failure:
+
 - `tcp-connect %server some-addr` with `%server@b=...` → `"cap %server has no Connectable grant (@c) — cannot tcp-connect"`
 - `resolve-host %server "api.example.com"` with `%server@b=...` → `"cap %server has no Connectable grant — resolve-host requires @c to send DNS queries"`
 
@@ -1116,7 +1118,8 @@ DnsConfig: [type
 All `Nameserver` variants take a pre-resolved `SocketAddress` — no DNS needed to reach the nameserver itself. `/etc/resolv.conf` has no protocol-selection syntax (only `options use-vc` for TCP/53, not TLS), so parsing always produces `UdpNameserver` entries. On modern Linux with systemd-resolved, `/etc/resolv.conf` typically lists `127.0.0.53` — the local stub. DoT/DoH configuration in `/etc/systemd/resolved.conf` affects the stub invisibly; tinct sees `UdpNameserver { addr: 127.0.0.53:53 }` and the stub handles upstream protocol. Users who want tinct itself to speak DoT/DoH to a remote resolver set `--nameservers` explicitly.
 
 **CLI:**
-```
+
+```sh
 --nameservers udp:1.1.1.1                               # UDP/53
 --nameservers dot:1.1.1.1:853@one.one.one.one           # DoT with SNI
 --nameservers doh:1.1.1.1:443@cloudflare-dns.com/dns-query  # DoH
@@ -1177,6 +1180,7 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 ### Change `Cargo.toml`
 
 **Add** (RustCrypto — all pure Rust, no C dependencies):
+
 - `chacha20poly1305` — ChaCha20-Poly1305 AEAD
 - `aes-gcm` — AES-128-GCM and AES-256-GCM
 - `x25519-dalek` — X25519 Diffie-Hellman (Curve25519)
@@ -1196,6 +1200,7 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 `num-bigint` is already in `Cargo.toml` from the `numeric-bigint` sprint and is not re-added here. `BigInt` is available in tinct for general use; it plays no role in this whatif because tinct-side arithmetic on secret key material cannot be constant-time regardless of `BigInt` availability.
 
 **Remove**:
+
 - `hyper` — HTTP/1.1 framing moves to `stdlib/protocols/http1.llt`
 - `reqwest` — HTTP client moves to `stdlib/protocols/http.llt`
 - `quinn` — QUIC moves to `stdlib/protocols/quic.llt` on top of cap-std UDP

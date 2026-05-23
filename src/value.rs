@@ -1041,6 +1041,7 @@ pub enum UnevaluatedState {
     Expr {
         expr: Rc<Spanned<Expr>>,
         env: Arc<RwLock<Environment>>,
+        // TODO(parts-e): env_id is stored but never read; will be removed with the Expr variant.
         #[allow(dead_code)]
         env_id: Option<crate::arena::EnvId>,
         ctx: Arc<crate::eval::EvalContext>,
@@ -1121,6 +1122,25 @@ pub struct Thunk {
     /// Used for stack trace construction when materialization fails.
     pub(crate) origin: Option<Arc<str>>,
 }
+
+/// Return type of `Thunk::take_pending_builtin`.
+pub type PendingBuiltinParts = (
+    BuiltinDef,
+    Vec<Arc<Thunk>>,
+    Option<IndexMap<String, Arc<Thunk>>>,
+    Span,
+    Arc<crate::eval::EvalContext>,
+);
+
+/// Return type of `Thunk::take_pending_call`.
+pub type PendingCallParts = (
+    Arc<Thunk>,
+    Vec<Arc<Thunk>>,
+    Option<IndexMap<String, Arc<Thunk>>>,
+    Span,
+    Arc<RwLock<Environment>>,
+    Arc<crate::eval::EvalContext>,
+);
 
 impl Thunk {
     /// Create a placeholder thunk for letrec pre-allocation. Must be filled via
@@ -1452,18 +1472,7 @@ impl Thunk {
         }
     }
 
-    // Return type is a one-shot destructured tuple only used in materialize();
-    // a type alias would add indirection without clarity.
-    #[allow(clippy::type_complexity)]
-    pub fn take_pending_builtin(
-        &self,
-    ) -> Option<(
-        BuiltinDef,
-        Vec<Arc<Thunk>>,
-        Option<IndexMap<String, Arc<Thunk>>>,
-        Span,
-        Arc<crate::eval::EvalContext>,
-    )> {
+    pub fn take_pending_builtin(&self) -> Option<PendingBuiltinParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
             Some(UnevaluatedState::Builtin {
@@ -1484,17 +1493,7 @@ impl Thunk {
         }
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn take_pending_call(
-        &self,
-    ) -> Option<(
-        Arc<Thunk>,
-        Vec<Arc<Thunk>>,
-        Option<IndexMap<String, Arc<Thunk>>>,
-        Span,
-        Arc<RwLock<Environment>>,
-        Arc<crate::eval::EvalContext>,
-    )> {
+    pub fn take_pending_call(&self) -> Option<PendingCallParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
             Some(UnevaluatedState::Call {

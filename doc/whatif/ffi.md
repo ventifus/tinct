@@ -8,7 +8,7 @@ This whatif covers three related but distinct approaches to the same underlying 
 
 | Approach | Scope | Mechanism | Binary impact |
 |---|---|---|---|
-| [Option 1: External C/Rust FFI](#option-1-external-crush-ffi-extern-block) | Call any C ABI library | `extern` block + `libloading` | None — loaded at runtime |
+| [Option 1: External C/Rust FFI](#option-1-external-crust-ffi-extern-block) | Call any C ABI library | `extern` block + `libloading` | None — loaded at runtime |
 | [Option 2: In-Tree Native Modules](#option-2-in-tree-native-modules-builtin-registry) | Lazy activation of compiled-in builtins | `native-module` builtin + registry | Code already in binary |
 | [Option 3: Cargo Workspace Split](#option-3-cargo-workspace-split) | Separate Rust crates per feature | Workspace crates, static or dynamic link | Structurally separate |
 
@@ -275,7 +275,7 @@ This option addresses source organization and binary composition: feature code t
 
 ### Workspace Structure
 
-```
+```text
 tinct/
   Cargo.toml            # [workspace] members = ["crates/*", "."]
   Cargo.lock
@@ -335,7 +335,7 @@ fn main() {
 
 ### Static vs Dynamic Linking
 
-**Option 3A: Static linking (recommended first step)**
+#### Option 3A: Static linking (recommended first step)
 
 All feature crates are statically linked into the `tinct` binary at compile time. A minimal binary (`tinct-minimal`) can be built by simply not linking the feature crates. No runtime changes — the `native-module` registry from Option 2 provides the lazy scoping.
 
@@ -350,7 +350,7 @@ sql      = ["dep:tinct-sql"]
 datetime = ["dep:tinct-datetime"]
 ```
 
-**Option 3B: Dynamic linking (plugin model)**
+#### Option 3B: Dynamic linking (plugin model)
 
 Feature crates compile as `cdylib`. The binary `dlopen`s them at runtime when a `native-module` call is first made for that module name. Each crate exports a C ABI registration function:
 
@@ -501,6 +501,7 @@ Parser, evaluator, type checker, and core builtins extracted from `src/` into a 
 #### `crates/tinct-{feature}/` — Feature crates
 
 Each feature crate:
+
 - `[dependencies]` on `tinct-core` only (no circular deps)
 - Exposes `pub fn {feature}_builtins() -> Vec<tinct_core::BuiltinDef>`
 - Paired with `stdlib/{feature}.llt`
@@ -520,19 +521,23 @@ Each feature crate:
 ## Prerequisites
 
 ### Option 1 (External FFI)
+
 - No blocking prerequisites — independent of type system, async, stdlib expansion.
 - Capability model: FFI library loading should be gated like filesystem access. Not blocking for initial implementation.
 - Effect system: if tinct gains formal effects, FFI calls should be tagged effectful. Not blocking.
 
 ### Option 2 (Native Modules)
+
 - No blocking prerequisites — purely additive restructuring of existing code.
 - Naturally adopted alongside or before Option 3A.
 
 ### Option 3A (Workspace, Static)
+
 - Option 2 is not required but should be implemented first so that the module registration protocol exists before the crates are split.
 - No external prerequisites.
 
 ### Option 3B (Workspace, Dynamic)
+
 - Option 3A complete — dynamic is a progression of static, not a replacement.
 - Concrete use case: a reason to distribute feature crates independently from the tinct binary. Without this, the complexity is not justified.
 

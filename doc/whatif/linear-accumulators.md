@@ -183,6 +183,7 @@ Two functions sit at the boundary of this proposal:
 ### `src/builtins_dict.rs` — `build-dict`
 
 `builtin_build_dict`:
+
 - One positional argument: `Value::Seq` or integer-keyed `Value::Dict` of `[key: K value: V]` entry dicts
 - Seq path: collect spine to determine count, pre-allocate `IndexMap::with_capacity(n)`, iterate inserting (key forced, value as ThunkId)
 - Dict path: read `dict.len()` directly, iterate in key order

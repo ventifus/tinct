@@ -119,6 +119,9 @@ pub(crate) enum RestoreState {
         ctx: Arc<EvalContext>,
     },
     /// Restore an AstNodeField thunk for non-cacheable errors.
+    /// Not yet constructed: AstNodeField evaluation is synchronous and infallible,
+    /// so DepthExceeded cannot occur on that path. Retained for structural completeness
+    /// and in case AstNodeField evaluation gains async/recursive work in the future.
     #[allow(dead_code)]
     AstNodeField {
         node: std::sync::Arc<crate::ast::SurfaceNode>,

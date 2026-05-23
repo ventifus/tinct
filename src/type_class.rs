@@ -103,7 +103,7 @@ pub struct ClassDecl {
     pub(crate) resolver: Option<String>,
     /// Whether the resolver is injective (one-to-one mapping).
     /// If true, the type checker can use the resolver result to refine the determining types.
-    /// Wired up when chr-gaps Gap 1 (resolver evaluation) is implemented.
+    // TODO(chr-instances-gaps): wire up when Gap 1 (resolver evaluation) is implemented.
     #[allow(dead_code)]
     pub(crate) resolver_injective: bool,
 }
