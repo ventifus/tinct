@@ -14,7 +14,7 @@ Per unified-bindings.md: `[fn [x y] body]` without `let` should be a **parse err
 - [x] Updated ~30 test inputs in src/ to use `[let ...]` form
 - [x] Updated stdlib/syntax.llt comment to clarify macro purpose
 - [ ] Enforce `[class [let ...]]` and `[type [let ...]]` — type/class params not yet enforced
-- [ ] Update tests/corpus/ and stdlib/ to use `[let ...]` throughout
+- [x] Update tests/corpus/ and stdlib/ fn params to use `[let ...]` throughout (~200 files updated)
 - [ ] `just test` passes — lib tests 1881/0 ✓
 
 ---
@@ -170,11 +170,11 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 Panel review (stdlib-author, eval-engine, performance-expert, computer-scientist) returned REQUEST_CHANGES. All fix-now items required before this sprint cluster can be approved.
 
 **Fix-now — correctness:**
-- [ ] Fix `group-by` O(n²) regression — uses `append` on per-key buckets (O(n) clone per step); fix: `[cons x bucket]` + `[reverse [collect e.value]]` per bucket after `builder-finish`, matching the whatif spec (`stdlib/prelude.llt:1144-1153`)
-- [ ] Add `EvalError::builder_already_finished` variant — all seven builder ops use `EvalError::internal` when frozen (user programming error ≠ internal bug) (`src/error.rs`, `src/builtins_dict.rs:969,1039,1084,1128,1194,1265`)
-- [ ] Fix `builder-has?` silent `false` on frozen builder — `Builder::has` returns `map_or(false, ...)` when frozen; must return `Err(builder_already_finished)` (`src/value.rs:381-384`, `src/builtins_dict.rs:builtin_builder_has`)
-- [ ] Fix `builder-get` conflates "frozen" and "key absent" — `Builder::get` returns `None` for both; distinguish: frozen → `builder_already_finished`; absent → `key_not_found` (`src/value.rs:Builder::get`, `src/builtins_dict.rs:builtin_builder_get`)
-- [ ] Fix `Key::String("key".to_string())` allocated per entry in `build-dict` Seq path — use zero-copy borrow for IndexMap lookup (`src/builtins_dict.rs:766,782`)
+- [x] Fix `group-by` O(n²) regression — now uses `cons` + final `reverse` per bucket
+- [x] Add `EvalError::builder_already_finished` (E082) — all 7 builder ops now use it when frozen
+- [x] Fix `builder-has?` silent `false` on frozen — returns E082 error
+- [x] Fix `builder-get` frozen vs absent — frozen→E082, absent→key_not_found
+- [x] Fix `Key::String` allocation in `build-dict` Seq path — uses StrKey zero-copy lookup
 - [ ] Move private helpers to private dict — `flatten-seq-impl`, `flatten-seq-step`, `reverse-seq`, `reverse-seq-impl`, `uniq-seq-impl`, `uniq-seq-step`, `contains-seq?` visible in public dict; must move to private first dict (`stdlib/prelude.llt`)
 - [ ] Deduplicate `values-seq-impl` / `reindex-seq-impl` — identical bodies (`stdlib/prelude.llt:225-257`)
 - [ ] Fix `src/value.rs:336` broken doc comment — single `/` instead of `///` (`src/value.rs:336`)

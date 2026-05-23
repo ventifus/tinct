@@ -40,7 +40,7 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, Key, StrKey, Strictness, Thunk, Value};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -761,38 +761,33 @@ pub(crate) fn builtin_build_dict(
                     )?;
 
                     // Extract key and value from the entry dict
-                    let key_id =
-                        entry_map
-                            .get(&Key::String("key".to_string()))
-                            .ok_or_else(|| {
-                                EvalError::key_not_found(
-                                    "key",
-                                    entry_map
-                                        .keys()
-                                        .map(|k| match k {
-                                            Key::Int(n) => n.to_string(),
-                                            Key::String(s) => s.clone(),
-                                        })
-                                        .collect(),
-                                    call_span,
-                                )
-                            })?;
+                    let key_id = entry_map.get(&StrKey("key")).ok_or_else(|| {
+                        EvalError::key_not_found(
+                            "key",
+                            entry_map
+                                .keys()
+                                .map(|k| match k {
+                                    Key::Int(n) => n.to_string(),
+                                    Key::String(s) => s.clone(),
+                                })
+                                .collect(),
+                            call_span,
+                        )
+                    })?;
 
-                    let value_id = entry_map
-                        .get(&Key::String("value".to_string()))
-                        .ok_or_else(|| {
-                            EvalError::key_not_found(
-                                "value",
-                                entry_map
-                                    .keys()
-                                    .map(|k| match k {
-                                        Key::Int(n) => n.to_string(),
-                                        Key::String(s) => s.clone(),
-                                    })
-                                    .collect(),
-                                call_span,
-                            )
-                        })?;
+                    let value_id = entry_map.get(&StrKey("value")).ok_or_else(|| {
+                        EvalError::key_not_found(
+                            "value",
+                            entry_map
+                                .keys()
+                                .map(|k| match k {
+                                    Key::Int(n) => n.to_string(),
+                                    Key::String(s) => s.clone(),
+                                })
+                                .collect(),
+                            call_span,
+                        )
+                    })?;
 
                     // Materialize the key to extract it (values stay lazy)
                     let key_thunk = ctx.thunk_arena.lock().unwrap().get(*key_id).clone();
@@ -966,7 +961,7 @@ pub(crate) fn builtin_builder_set(
         // Set the key-value pair
         builder
             .set(key, value_id)
-            .map_err(|e| EvalError::internal(format!("builder-set: {}", e), call_span))?;
+            .map_err(|_| EvalError::builder_already_finished("builder-set", call_span))?;
 
         // Return the builder for chaining
         Ok(Arc::clone(&args[0]))
@@ -1036,7 +1031,7 @@ pub(crate) fn builtin_builder_delete(
         // Delete the key
         builder
             .delete(&key)
-            .map_err(|e| EvalError::internal(format!("builder-delete: {}", e), call_span))?;
+            .map_err(|_| EvalError::builder_already_finished("builder-delete", call_span))?;
 
         // Return the builder for chaining
         Ok(Arc::clone(&args[0]))
@@ -1081,7 +1076,7 @@ pub(crate) fn builtin_builder_finish(
         // Take the inner dict, freezing the builder
         let dict = builder
             .finish()
-            .map_err(|e| EvalError::internal(format!("builder-finish: {}", e), call_span))?;
+            .map_err(|_| EvalError::builder_already_finished("builder-finish", call_span))?;
 
         ok_val(Value::Dict(dict), call_span)
     })
@@ -1125,7 +1120,7 @@ pub(crate) fn builtin_builder_snapshot(
         // Clone the inner dict
         let dict = builder
             .snapshot()
-            .map_err(|e| EvalError::internal(format!("builder-snapshot: {}", e), call_span))?;
+            .map_err(|_| EvalError::builder_already_finished("builder-snapshot", call_span))?;
 
         ok_val(Value::Dict(dict), call_span)
     })
@@ -1189,6 +1184,11 @@ pub(crate) fn builtin_builder_has(
                 .into())
             }
         };
+
+        // Frozen builder: has? is an error, not a silent false
+        if builder.is_frozen() {
+            return Err(EvalError::builder_already_finished("builder-has?", call_span).into());
+        }
 
         // Check if the key exists
         let has = builder.has(&key);
@@ -1255,6 +1255,11 @@ pub(crate) fn builtin_builder_get(
             }
         };
 
+        // Frozen builder: get is an error distinct from key-not-found
+        if builder.is_frozen() {
+            return Err(EvalError::builder_already_finished("builder-get", call_span).into());
+        }
+
         // Get the value
         match builder.get(&key) {
             Some(thunk_id) => {
@@ -1266,11 +1271,7 @@ pub(crate) fn builtin_builder_get(
                     Key::Int(n) => n.to_string(),
                     Key::String(s) => s.to_string(),
                 };
-                Err(EvalError::internal(
-                    format!("builder-get: key '{}' not found", key_str),
-                    call_span,
-                )
-                .into())
+                Err(EvalError::key_not_found(&key_str, vec![], call_span).into())
             }
         }
     })

@@ -262,6 +262,12 @@ pub enum ErrorKind {
     Unimplemented {
         message: String,
     },
+    /// Operation attempted on a builder that has already been finished (frozen).
+    /// Raised when user code calls builder-set/delete/get/has?/snapshot after
+    /// builder-finish has been called.
+    BuilderFinished {
+        op: String,
+    },
 
     /// Schema validation (E090-E094)
     SchemaViolation {
@@ -494,6 +500,7 @@ impl PartialEq for ErrorKind {
             ) => n1 == n2 && c1 == c2,
             (Self::UserError { message: m1 }, Self::UserError { message: m2 }) => m1 == m2,
             (Self::Unimplemented { message: m1 }, Self::Unimplemented { message: m2 }) => m1 == m2,
+            (Self::BuilderFinished { op: o1 }, Self::BuilderFinished { op: o2 }) => o1 == o2,
             (
                 Self::SchemaViolation { violations: v1 },
                 Self::SchemaViolation { violations: v2 },
@@ -557,6 +564,7 @@ impl ErrorKind {
             Self::CircularDependency { .. } => "E070",
             Self::UserError { .. } => "E080",
             Self::Unimplemented { .. } => "E081",
+            Self::BuilderFinished { .. } => "E082",
             Self::SchemaViolation { .. } => "E090",
             Self::KindMismatch { .. } => "E091",
             Self::Internal { .. } => "E099",
@@ -884,6 +892,9 @@ impl fmt::Display for ErrorKind {
             }
             Self::UserError { message } => write!(f, "{message}"),
             Self::Unimplemented { message } => write!(f, "{message}"),
+            Self::BuilderFinished { op } => {
+                write!(f, "{op}: builder has already been finished")
+            }
             Self::SchemaViolation { violations } => {
                 writeln!(
                     f,
@@ -940,6 +951,21 @@ impl EvalError {
     pub fn internal(message: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::Internal { message },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
+    /// Create a BuilderFinished error for a specific operation.
+    /// Used when a builder operation is attempted after builder-finish.
+    pub fn builder_already_finished(op: impl Into<String>, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::BuilderFinished { op: op.into() },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -4442,6 +4468,7 @@ mod tests {
                 ErrorKind::CircularDependency { .. } => "E070",
                 ErrorKind::UserError { .. } => "E080",
                 ErrorKind::Unimplemented { .. } => "E081",
+                ErrorKind::BuilderFinished { .. } => "E082",
                 ErrorKind::SchemaViolation { .. } => "E090",
                 ErrorKind::KindMismatch { .. } => "E091",
                 ErrorKind::Internal { .. } => "E099",
