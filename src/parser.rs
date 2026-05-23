@@ -5281,6 +5281,50 @@ fn push_expr_to_parent(
                             }
                             return Ok(());
                         }
+                    } else {
+                        // Not a LetDecl. Check if it looks like old-form type params:
+                        // [type [a b c] Body] — a Call with all-lowercase VarRef func and args.
+                        // This pattern is no longer valid; require [type [let a b c] Body].
+                        //
+                        // We only flag this when the first expression is an implied Call
+                        // whose func AND all positional args are lowercase VarRefs (no named args).
+                        // Type expressions like [or Int Null] have uppercase args and are not flagged.
+                        let looks_like_old_form_params = if let SurfaceExpression::Call {
+                            func,
+                            args,
+                            named_args,
+                            implied: true,
+                        } = &node.expr
+                        {
+                            // func must be a lowercase VarRef
+                            let func_is_lowercase = matches!(
+                                &func.expr,
+                                SurfaceExpression::VarRef { name, .. }
+                                    if name.chars().all(|c| c.is_lowercase() || c == '_')
+                            );
+                            // all positional args must be lowercase VarRefs
+                            let args_are_lowercase = args.iter().all(|arg| {
+                                matches!(
+                                    &arg.expr,
+                                    SurfaceExpression::VarRef { name, .. }
+                                        if name.chars().all(|c| c.is_lowercase() || c == '_')
+                                )
+                            });
+                            // no named args (named args indicate a real type expression)
+                            func_is_lowercase && args_are_lowercase && named_args.is_empty()
+                        } else {
+                            false
+                        };
+
+                        if looks_like_old_form_params {
+                            return Err(ParseError {
+                                message: "type alias parameter list must use [let ...] form \
+                                    (e.g. [type [let a b] Body]); \
+                                    [type [a b] Body] without `let` is no longer valid"
+                                    .to_string(),
+                                span: Some(node.span),
+                            });
+                        }
                     }
                 }
 
@@ -6546,6 +6590,106 @@ mod tests {
                             panic!("expected Dict body for multi-entry type alias, got {other:?}")
                         }
                     }
+                }
+                other => panic!("expected TypeAlias declaration, got {other:?}"),
+            },
+            other => panic!("expected Decl item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_type_alias_old_form_params_rejected() {
+        // [type [a b] Body] — old-form params (no `let`) must be rejected
+        let output = parse("[type [a b] Int]").expect("recovery should succeed");
+        assert!(
+            !output.errors.is_empty(),
+            "expected error for old-form type params [type [a b] Int], got no errors"
+        );
+        assert!(
+            output.errors[0].message.contains("[let ...] form"),
+            "expected error about [let ...] form, got: {}",
+            output.errors[0].message
+        );
+    }
+
+    #[test]
+    fn test_type_alias_old_form_single_param_rejected() {
+        // [type [a] Body] — old-form single param (no `let`) must be rejected
+        let output = parse("[type [a] Int]").expect("recovery should succeed");
+        assert!(
+            !output.errors.is_empty(),
+            "expected error for old-form type params [type [a] Int], got no errors"
+        );
+        assert!(
+            output.errors[0].message.contains("[let ...] form"),
+            "expected error about [let ...] form, got: {}",
+            output.errors[0].message
+        );
+    }
+
+    #[test]
+    fn test_type_alias_let_params_accepted() {
+        // [type [let a b] Body] — new form with `let` must be accepted
+        let output = parse("[type [let a b] Int]").expect("parse failed");
+        assert!(
+            output.errors.is_empty(),
+            "[type [let a b] Body] should parse without errors, got: {:?}",
+            output.errors
+        );
+        let items = &output.program.documents[0].node.items;
+        assert_eq!(items.len(), 1, "expected one item");
+        match &items[0] {
+            SurfaceItem::Decl(decl) => match &decl.node {
+                SurfaceDeclaration::TypeAlias { params, .. } => {
+                    assert_eq!(params.len(), 2, "expected 2 params");
+                    assert_eq!(params[0], "a");
+                    assert_eq!(params[1], "b");
+                }
+                other => panic!("expected TypeAlias declaration, got {other:?}"),
+            },
+            other => panic!("expected Decl item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_type_alias_let_zero_params_accepted() {
+        // [type [let] Body] — zero-param alias with explicit let bracket
+        let output = parse("[type [let] Int]").expect("parse failed");
+        assert!(
+            output.errors.is_empty(),
+            "[type [let] Body] should parse without errors, got: {:?}",
+            output.errors
+        );
+        let items = &output.program.documents[0].node.items;
+        match &items[0] {
+            SurfaceItem::Decl(decl) => match &decl.node {
+                SurfaceDeclaration::TypeAlias { params, .. } => {
+                    assert!(params.is_empty(), "expected 0 params, got {:?}", params);
+                }
+                other => panic!("expected TypeAlias declaration, got {other:?}"),
+            },
+            other => panic!("expected Decl item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_type_alias_uppercase_type_expr_not_flagged() {
+        // [type [or Int Null]] — type expression with uppercase names is NOT flagged as old-form params
+        let output = parse("[type [or Int Null]]").expect("parse failed");
+        assert!(
+            output.errors.is_empty(),
+            "[type [or Int Null]] should parse without errors, got: {:?}",
+            output.errors
+        );
+        let items = &output.program.documents[0].node.items;
+        match &items[0] {
+            SurfaceItem::Decl(decl) => match &decl.node {
+                SurfaceDeclaration::TypeAlias { params, .. } => {
+                    assert!(
+                        params.is_empty(),
+                        "expected 0 params (type expr, not param list), got {:?}",
+                        params
+                    );
                 }
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
@@ -8401,6 +8545,24 @@ mod tests {
             },
             other => panic!("expected Decl item, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_class_old_form_params_rejected() {
+        // [class [a b c] methods] — old-form class params (no `let`) must be rejected.
+        // ClassDecl requires [let ClassName params...] as the header.
+        let output = parse("[class [a b c] eq: Int]").expect("recovery should succeed");
+        assert!(
+            !output.errors.is_empty(),
+            "expected error for old-form class params [class [a b c] ...], got no errors"
+        );
+        assert!(
+            output.errors[0]
+                .message
+                .contains("[let ClassName ...] form"),
+            "expected error about [let ClassName ...] form, got: {}",
+            output.errors[0].message
+        );
     }
 
     #[test]

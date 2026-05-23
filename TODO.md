@@ -13,9 +13,9 @@ Per unified-bindings.md: `[fn [x y] body]` without `let` should be a **parse err
 - [x] Parser rejects `[fn [x y] body]` (non-`let` non-empty params) — `[fn [let x y] body]` required; `[fn [] body]` still allowed as zero-arg shorthand (`src/parser.rs`)
 - [x] Updated ~30 test inputs in src/ to use `[let ...]` form
 - [x] Updated stdlib/syntax.llt comment to clarify macro purpose
-- [ ] Enforce `[class [let ...]]` and `[type [let ...]]` — type/class params not yet enforced
+- [x] Enforce `[class [let ...]]` and `[type [let ...]]` — ClassDecl already enforced, TypeAlias now rejects lowercase-only old-form params via heuristic; 6 parser tests added
 - [x] Update tests/corpus/ and stdlib/ fn params to use `[let ...]` throughout (~200 files updated)
-- [ ] `just test` passes — lib tests 1881/0 ✓
+- [x] `just test` passes — lib tests 1883/0 ✓ (commit 7e9ccd0)
 
 ---
 
@@ -32,7 +32,7 @@ Tests marked `#[ignore]` in the codebase from the runtime-v2 PR #1 merge.
 - [x] Fix task-error-reawait — clone result into guard BEFORE `?` extraction in builtins_async.rs
 - [x] Add test for task error re-await behavior (`src/builtins_async.rs`)
 - [x] Un-ignore all fixed tests
-- [ ] `just test` passes — **PARTIAL**: do-macro 8/8 ✓, syntax.llt 4/4 ✓, standard_builtins_count ✓; full suite not yet run
+- [x] `just test-lib` passes — 1883/0 ✓ (commit 7e9ccd0)
 
 ### runtime-v2-fix-adt-class-instance-corpus: Un-ignore LSP class/instance hover tests
 
