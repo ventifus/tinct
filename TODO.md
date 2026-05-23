@@ -4,56 +4,6 @@ See DONE.md for the full history of completed sprints.
 
 ---
 
-## Unified Bindings (doc/whatif/unified-bindings.md — Accepted 2026-05-17)
-
-### unified-bindings-parser-enforcement: Enforce [let ...] required in fn/class/type params
-
-Per unified-bindings.md: `[fn [x y] body]` without `let` should be a **parse error**. The invariant: any bracket not starting with `let` is always an expression. Currently the parser accepts both forms — this is a bug.
-
-- [x] Parser rejects `[fn [x y] body]` (non-`let` non-empty params) — `[fn [let x y] body]` required; `[fn [] body]` still allowed as zero-arg shorthand (`src/parser.rs`)
-- [x] Updated ~30 test inputs in src/ to use `[let ...]` form
-- [x] Updated stdlib/syntax.llt comment to clarify macro purpose
-- [x] Enforce `[class [let ...]]` and `[type [let ...]]` — ClassDecl already enforced, TypeAlias now rejects lowercase-only old-form params via heuristic; 6 parser tests added
-- [x] Update tests/corpus/ and stdlib/ fn params to use `[let ...]` throughout (~200 files updated)
-- [x] `just test` passes — lib tests 1883/0 ✓ (commit 7e9ccd0)
-
----
-
-## Runtime-v2 Regression Fixes
-
-Tests marked `#[ignore]` in the codebase from the runtime-v2 PR #1 merge.
-
-### runtime-v2-fix-regressions: Fix do-macro, include-cache, placeholder, and task-reawait
-
-- [x] Verify Variant constructors are callable — already implemented (eval.rs:2264-2274), 7 do-macro tests un-ignored
-- [x] Fix include-cache — 3 root causes identified and fixed: (1) doc.stage field handler in eval_materialize.rs, (2) Overlay flattening in builtin_eval env: arg, (3) builtin_eval returning Seq of thunks instead of last evaluated value, (4) doc.expressions returning Dict instead of Seq linked list
-- [x] Fix syntax.llt tests — all 4 now pass (un-ignored)
-- [x] Placeholder test — already fixed, expects Err for circular dependency
-- [x] Fix task-error-reawait — clone result into guard BEFORE `?` extraction in builtins_async.rs
-- [x] Add test for task error re-await behavior (`src/builtins_async.rs`)
-- [x] Un-ignore all fixed tests
-- [x] `just test-lib` passes — 1883/0 ✓ (commit 7e9ccd0)
-
-### runtime-v2-fix-adt-class-instance-corpus: Un-ignore LSP class/instance hover tests
-
-The parser supports `[class ...]` and `[instance ...]` syntax (confirmed by corpus tests
-`tests/corpus/valid/type_classes/basic_class.llt-eval` and `basic_instance.llt-eval`).
-Two LSP hover tests remain `#[ignore]`'d with a now-stale reason.
-
-- [x] Un-ignore `test_hover_at_declaration_class_decl` — updated to use `[class [let Equatable a] eq: [fn [let x@a y@a] Bool]]` syntax; passes
-- [x] Un-ignore `test_hover_at_declaration_instance_decl` — updated to use `[instance Equatable [pattern [a@Int]]: eq: ...]` syntax; passes
-- [x] Moved 14 private prelude helper fns to private first dict (flatten-seq-*, reverse-seq*, uniq-seq*, etc.)
-
----
-
-### runtime-v2-fix-class-instance-in-dict: Support declaration forms inside dict values
-
-- [x] Extend parser to allow ClassDecl/InstanceDecl/TypeDecl as SurfaceExpression variants inside dict values — modified 6 CloseBracket handlers (TypeAlias, DefMacro, MacroDecl, SyntaxClass, ClassDecl, InstanceDecl) to use surface_decl_to_expr bridge instead of erroring (`src/parser.rs`)
-- [x] Un-ignore `test_instance_fd_consistency_violation` (`src/lib.rs`)
-- [ ] Verify corpus tests — 6 typecheck + 5 typecheck-error pre-existing failures from CHR not fully wired (unknown constraint class, undefined type, no instance for constraint). CHR gaps tracked in chr-instances-gaps sprint.
-
----
-
 ## runtime-v2 — Sprint 1 (continued): Parts B–G
 
 **PR #1 merged** (2026-05-20, commit 7e34f1cc). Parts A/B(bridge)/D/F/G now on main. Remaining work: Part E (evaluator cutover, delete old Expr/File types, Rc→Arc) and Parts F+G full API cutover.
@@ -657,4 +607,57 @@ T013 warnings currently report internal inference variable names like `_t86` ins
 
 - [x] Audited all 124 `Type::Unknown` in typecheck.rs — 56 gradual (justified), 0 replaceable, 4 HKT deferred. All sites annotated with inline `// Gradual:` or `// HKT:` comments.
 - [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+
+### chr-corpus-fixes: Fix 11 pre-existing CHR corpus test failures
+
+**Whatif:** `chr-unification`
+**Depends on:** chr-instances-gaps ✅, type-inference-cleanup ✅
+
+After chr-instances-gaps, 6 typecheck + 5 type-error corpus tests still fail because these CHR features are not yet wired. Each group below identifies the root cause.
+
+**Group A — User-defined class constraint lookup (2 typecheck failures):**
+- [ ] Fix `class_decl_after_use.llt-eval` — "unknown constraint class 'MyClass'": constraint annotation lookup at typecheck time does not find locally-defined class declarations (`src/typecheck_annot.rs` or `src/type_infer.rs`)
+- [ ] Fix `constraint_annotation_basic.llt-eval` — same root cause
+
+**Group B — ADT type registration (2 typecheck failures):**
+- [ ] Fix `constructor_payload_type_precision.llt-eval` — "undefined type: Result2": user-defined `[type [Result2 v] ...]` not registered in the type environment during typecheck
+- [ ] Fix `exhaustiveness_bare_nominal.llt-eval` — "undefined type: Tag": same root cause — user-defined `[type [Tag] ...]` not found at match exhaustiveness check
+
+**Group C — Exhaustiveness checking for ADT constructors (2 type-error failures):**
+- [ ] Fix `exhaustiveness_bare_nominal_variant.llt-eval` — expected "non-exhaustive match: missing coverage for [MyTag _]" but got "undefined type: MyTag" — fix ADT type registration (Group B fix may suffice)
+- [ ] Fix `exhaustiveness_multi_field_nominal.llt-eval` — same: "undefined type: Shape" instead of non-exhaustive error
+
+**Group D — Instance check violations not triggered (3 type-error failures):**
+- [ ] Fix `instance_consistency_error.llt-eval` — expected "consistency violation" but got "inferred type is Unknown" — instance consistency check not running for user-defined classes
+- [ ] Fix `instance_coverage_error.llt-eval` — expected "coverage violation" — instance coverage check not running
+- [ ] Fix `instance_disjointness_error.llt-eval` — expected "overlapping instance patterns" — instance disjointness check not running
+
+**Group E — Equatable for Variant types (1 typecheck failure):**
+- [ ] Fix `transport_typed.llt-eval` — "type Variant does not satisfy constraint Equatable" — `=` on Variant values gives a typecheck warning; register Equatable instance for Variant in TypeEnv or adjust constraint check to permit Variant (Equatable is checked at runtime via tag equality)
+
+**Group F — Nominal variant match + instance Multipliable (1 typecheck failure):**
+- [ ] Fix `nominal_variant_exhaustive_match.llt-eval` — "undefined variable: Circle" + "no instance for Multipliable [] []" — requires ADT constructor registration (Group B fix) + Multipliable instance propagation
+
+---
+
+### corpus-taxonomy-fix: Move 13 warn-only tests from eval/errors/ to typecheck/warnings/
+
+13 files in `tests/corpus/eval/errors/` have `=== out` (eval succeeds) + `=== warn` (typecheck warning) but NO `=== error`. They are not eval error tests — they test that typecheck emits a warning while the program evaluates successfully. They belong in `tests/corpus/typecheck/warnings/`, which already exists and whose runner requires exactly this shape (`=== out` + `=== warn`).
+
+After the move, `EVAL_ERRORS_MIN=120` still passes (~143 files remain in eval/errors/).
+
+Files to move from `tests/corpus/eval/errors/` → `tests/corpus/typecheck/warnings/`:
+- [ ] `constraint_class_not_varref.llt-eval`
+- [ ] `constraint_key_not_bareword.llt-eval`
+- [ ] `constraint_multi_class_keyed_entry.llt-eval`
+- [ ] `constraint_not_dict.llt-eval`
+- [ ] `constraint_positional_entry.llt-eval`
+- [ ] `constraint_value_invalid.llt-eval`
+- [ ] `doc_not_string.llt-eval`
+- [ ] `fn_annotation_mixed_keys.llt-eval`
+- [ ] `help_suggestion_arity.llt-eval`
+- [ ] `help_suggestion_type_mismatch.llt-eval`
+- [ ] `unknown_fn_annotation_key.llt-eval`
+- [ ] `closed_record_rejects_extra.llt-eval`
+- [ ] `proxy_named_arg.llt-eval`
 

@@ -1873,9 +1873,7 @@ fn run_eval(
             infer_state,
             _final_env,
         ) = tinct::typecheck::typecheck_surface_program_with_env(
-            &program,
-            type_env,
-            false, // disable scheme_map (not needed for eval)
+            &program, type_env, false, // disable scheme_map (not needed for eval)
             false, // not in prelude load
         );
         if !type_errors.is_empty() {

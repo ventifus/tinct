@@ -3,4 +3,4 @@
 
 [call $slurp "not a handle"]
 === out
-cannot unify Handle with
+cannot unify Handle[

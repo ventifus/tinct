@@ -9071,3 +9071,15 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 
 - [x] Extend parser to allow ClassDecl/InstanceDecl/TypeDecl in nested positions — modified 6 CloseBracket handlers (TypeAlias, DefMacro, MacroDecl, SyntaxClass, ClassDecl, InstanceDecl) to use surface_decl_to_expr → expr_to_surface_node → push_value bridge instead of erroring (`src/parser.rs`)
 - [x] Un-ignore `test_instance_fd_consistency_violation` (`src/lib.rs`)
+- [x] Verify corpus tests — 6 typecheck + 5 typecheck-error pre-existing CHR failures confirmed; fixed 1 handle-parameterization regression in `string_not_handle.llt-eval` (updated expected substring to match `Handle[` format). CHR corpus failures tracked in `chr-corpus-fixes` sprint.
+
+## Unified Bindings
+
+### unified-bindings-parser-enforcement: Enforce [let ...] required in fn/class/type params
+
+- [x] Parser rejects `[fn [x y] body]` (non-`let` non-empty params) — `[fn [let x y] body]` required; `[fn [] body]` still allowed as zero-arg shorthand (`src/parser.rs`)
+- [x] Updated ~30 test inputs in src/ to use `[let ...]` form
+- [x] Updated stdlib/syntax.llt comment to clarify macro purpose
+- [x] Enforce `[class [let ...]]` and `[type [let ...]]` — ClassDecl already enforced, TypeAlias now rejects lowercase-only old-form params via heuristic; 6 parser tests added
+- [x] Update tests/corpus/ and stdlib/ fn params to use `[let ...]` throughout (~200 files updated)
+- [x] `just test` passes — lib tests 1883/0 ✓ (commit 7e9ccd0)
