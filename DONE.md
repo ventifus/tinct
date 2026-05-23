@@ -9096,6 +9096,17 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [ ] KNOWN ISSUE: CoreExpr round-trip at eval.rs:1614, eval_call.rs:72 — intentional (documented in comments); tracked for future cleanup
 - [ ] W1 strictness scan optimization (arg_idx+1 start) — skipped, moved to resolver-slot-coverage
 
+### resolver-slot-soundness: Fix computed-string key slot-shift silent wrong-value bug
+
+- [x] Add name verification to get_by_slot(level, slot, expected_name) — key-match verification; falls back to name-based lookup on slot-shift detection (src/value.rs)
+- [x] Fix dict slot-shift: guard dict_env.insert() with is_static_key; extract core_expr_is_static_key() helper shared by eval_dict.rs + eval.rs (src/eval_dict.rs)
+- [x] Fix Sequential/document slot-shift: static_keys set extracted pre-eval; child env only gets static-key entries (src/eval.rs, src/eval_pipeline.rs)
+- [x] Add corpus test: computed_key_slot_correctness.llt-eval, named_arg_default_slot.llt-eval
+- [x] Update doc/09-documents.md SEQ-SCOPE rule: conditional scope creation, static_keys(e) definition
+- [x] Extract core_expr_is_static_key() helper to prevent predicate divergence
+- [ ] DEFERRED: type-stage named sections corrupting %name slot indices (Major — separate sprint)
+- [ ] DEFERRED: computed-key scope Sequential/doc corpus test, test relocation to eval/regressions/, flatten_overlay optimization (Minor fix-later)
+
 ### corpus-taxonomy-fix: Move 12 warn-only tests from eval/errors/ to typecheck/warnings/
 
 - [x] Moved 12 tests with === out + === warn (no === error) to typecheck/warnings/: constraint_class_not_varref (+ [let] fix + warn substr), constraint_key_not_bareword, constraint_multi_class_keyed_entry (+ [let] fix + warn substr), constraint_not_dict, constraint_positional_entry, constraint_value_invalid, doc_not_string, fn_annotation_mixed_keys, help_suggestion_arity, help_suggestion_type_mismatch (+ [let] fix), proxy_named_arg, unknown_fn_annotation_key
