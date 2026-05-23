@@ -220,34 +220,25 @@ has?-impl: [fn@Bool [let try-result]
         [Ok _]: true
         [Error _]: false]]
 
-remove-impl: [fn@Dict [let xs@Dict ks exclude i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [remove-step xs ks exclude i acc [builtin-get i ks]]]]
+# values-seq-impl: Build a lazy Seq of values (O(1) per element).
+# Recursion naturally produces correct order: recurse first, then cons.
+values-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
+    [builtin-if [gte-impl i len]
+        []
+        [builtin-seq
+            [builtin-get [builtin-get i ks] xs]
+            [values-seq-impl xs ks [builtin-add i 1] len]]]]
 
-remove-step: [fn@Dict [let xs@Dict ks exclude i@Int acc@Dict current-key]
-    [builtin-if [builtin-eq current-key exclude]
-        [remove-impl xs ks exclude [builtin-add i 1] acc]
-        [remove-impl xs ks exclude [builtin-add i 1]
-            [merge acc [make-entry current-key [builtin-get current-key xs]]]]]]
+# entries-seq-impl: Build a lazy Seq of entry dicts (O(1) per element).
+entries-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
+    [builtin-if [gte-impl i len]
+        []
+        [entries-seq-step xs ks i len [builtin-get i ks]]]]
 
-values-impl: [fn@Dict [let xs@Dict ks i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [values-step xs ks i acc [builtin-get i ks]]]]
-
-values-step: [fn@Dict [let xs@Dict ks i@Int acc@Dict current-key]
-    [values-impl xs ks [builtin-add i 1]
-        [append acc [builtin-get current-key xs]]]]
-
-entries-impl: [fn@Dict [let xs@Dict ks i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [entries-step xs ks i acc [builtin-get i ks]]]]
-
-entries-step: [fn@Dict [let xs@Dict ks i@Int acc@Dict current-key]
-    [entries-impl xs ks [builtin-add i 1]
-        [append acc [key: current-key value: [builtin-get current-key xs]]]]]
+entries-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
+    [builtin-seq
+        [key: k  value: [builtin-get k xs]]
+        [entries-seq-impl xs ks [builtin-add i 1] len]]]
 
 # ============================================================================
 # List helpers (only depend on builtins + siblings)
@@ -256,56 +247,18 @@ entries-step: [fn@Dict [let xs@Dict ks i@Int acc@Dict current-key]
 nth-impl: [fn [let xs@Dict ks n@Int len@Int]
     [builtin-get [builtin-get [builtin-if [builtin-lt n 0] [builtin-add len n] n] ks] xs]]
 
-reindex-impl: [fn@Dict [let xs@Dict ks i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [reindex-step xs ks i acc [builtin-get i ks]]]]
-
-reindex-step: [fn@Dict [let xs@Dict ks i@Int acc@Dict current-key]
-    [reindex-impl xs ks [builtin-add i 1]
-        [append acc [builtin-get current-key xs]]]]
+# reindex-seq-impl: Build a lazy Seq of values (O(1) per element).
+# Identical to values-seq-impl — reindex just extracts values and collect renumbers.
+reindex-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
+    [builtin-if [gte-impl i len]
+        []
+        [builtin-seq
+            [builtin-get [builtin-get i ks] xs]
+            [reindex-seq-impl xs ks [builtin-add i 1] len]]]]
 
 # ============================================================================
 # Universal collection helpers (only depend on builtins + siblings)
 # ============================================================================
-
-take-while-impl: [fn@Dict [let pred@Fn xs@Dict ks i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [take-while-check pred xs ks i acc [builtin-get i ks]]]]
-
-take-while-check: [fn@Dict [let pred@Fn xs@Dict ks i@Int acc@Dict current-key]
-    [builtin-if [pred [builtin-get current-key xs]]
-        [take-while-impl pred xs ks [builtin-add i 1]
-            [merge acc [make-entry current-key [builtin-get current-key xs]]]]
-        acc]]
-
-drop-while-impl: [fn@Dict [let pred@Fn xs@Dict ks i@Int acc@Dict dropping@Bool]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [drop-while-check pred xs ks i acc dropping [builtin-get i ks]]]]
-
-drop-while-check: [fn@Dict [let pred@Fn xs@Dict ks i@Int acc@Dict dropping@Bool current-key]
-    [builtin-if dropping
-        [builtin-if [pred [builtin-get current-key xs]]
-            [drop-while-impl pred xs ks [builtin-add i 1] acc true]
-            [drop-while-impl pred xs ks [builtin-add i 1]
-                [merge acc [make-entry current-key [builtin-get current-key xs]]]
-                false]]
-        [drop-while-impl pred xs ks [builtin-add i 1]
-            [merge acc [make-entry current-key [builtin-get current-key xs]]]
-            false]]]
-
-map-entries-impl: [fn@Dict [let f@Fn xs@Dict ks i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [map-entries-step f xs ks i acc [builtin-get i ks]]]]
-
-map-entries-step: [fn@Dict [let f@Fn xs@Dict ks i@Int acc@Dict current-key]
-    [map-entries-impl f xs ks [builtin-add i 1]
-        [merge acc
-            [make-entry current-key
-                [f [key: current-key value: [builtin-get current-key xs]]]]]]]
 
 # zip-seq-impl: uses builtin-if chain instead of and
 zip-seq-impl: [fn@Any [let xs ys]
@@ -316,46 +269,47 @@ zip-seq-impl: [fn@Any [let xs ys]
             []]
         []]]
 
-# zip-dict-impl/zip-impl/zip-step: use builtin-if chain instead of or,
-# and builtin-get instead of get wrapper
+# zip-dict-impl: Build lazy Seq of pairs, then collect. O(n) via cons pattern.
 zip-dict-impl: [fn@Dict [let xs@Dict ys@Dict]
-    [zip-impl xs ys [keys xs] [keys ys] 0 []]]
+    [builtin-collect [zip-dict-seq-impl xs ys [keys xs] [keys ys] 0 [length [keys xs]] [length [keys ys]]]]]
 
-zip-impl: [fn@Dict [let xs@Dict ys@Dict xks yks i@Int acc@Dict]
-    [builtin-if [gte-impl i [length xks]]
-        acc
-        [builtin-if [gte-impl i [length yks]]
-            acc
-            [zip-step xs ys xks yks i acc [builtin-get i xks] [builtin-get i yks]]]]]
+zip-dict-seq-impl: [fn [let xs@Dict ys@Dict xks yks i@Int xlen@Int ylen@Int]
+    [builtin-if [gte-impl i xlen]
+        []
+        [builtin-if [gte-impl i ylen]
+            []
+            [zip-dict-seq-step xs ys xks yks i xlen ylen [builtin-get i xks] [builtin-get i yks]]]]]
 
-zip-step: [fn@Dict [let xs@Dict ys@Dict xks yks i@Int acc@Dict xk yk]
-    [zip-impl xs ys xks yks [builtin-add i 1]
-        [append acc [[builtin-get xk xs] [builtin-get yk ys]]]]]
+zip-dict-seq-step: [fn [let xs@Dict ys@Dict xks yks i@Int xlen@Int ylen@Int xk yk]
+    [builtin-seq
+        [[builtin-get xk xs] [builtin-get yk ys]]
+        [zip-dict-seq-impl xs ys xks yks [builtin-add i 1] xlen ylen]]]
 
 # ============================================================================
 # Higher-order helpers (only depend on builtins + siblings)
 # ============================================================================
 
-partition-step: [fn@Dict [let acc@Dict e passes@Bool]
+# partition-step rewritten to cons onto Seqs (O(1)) instead of append to Dicts (O(n)).
+# acc is now a dict with pass/fail keys, each holding a Seq (reversed order).
+partition-step: [fn@Dict [let acc e passes@Bool]
     [builtin-if passes
-        [pass: [append acc.pass e]
-         fail: acc.fail]
-        [pass: acc.pass
-         fail: [append acc.fail e]]]]
+        [pass: [builtin-seq e [builtin-get "pass" acc]]
+         fail: [builtin-get "fail" acc]]
+        [pass: [builtin-get "pass" acc]
+         fail: [builtin-seq e [builtin-get "fail" acc]]]]]
 
 # ============================================================================
 # Aggregate helpers (only depend on builtins + siblings)
 # ============================================================================
 
-# transpose-impl uses make-entry, merge, builtin-map — no public functions
+# transpose-impl uses build-dict, builtin-map — no public functions
 transpose-impl: [fn@Dict [let rows@Dict col-keys]
-    [builtin-reduce
-        [fn [let acc col-key]
-            [merge acc
-                [make-entry col-key
-                    [builtin-map [fn [let row] [builtin-get col-key row]] rows]]]]
-        []
-        col-keys]]
+    [build-dict
+        [builtin-map
+            [fn [let col-key]
+                [key: col-key
+                 value: [builtin-map [fn [let row] [builtin-get col-key row]] rows]]]
+            col-keys]]]
 
 # ============================================================================
 # Error handling helpers (only depend on builtins + siblings)
@@ -845,8 +799,9 @@ Remove a key from a dict.
 
 Example: [remove [a: 1  b: 2  c: 3] "b"] => [a: 1  c: 3]
 
-Note: Preserves remaining keys in insertion order. Returns dict unchanged if key is not present.
-"""] [let xs@Dict k] [remove-impl xs [keys xs] k 0 []]]
+Note: Preserves remaining keys in insertion order. Returns dict unchanged if key is not present. O(n) via build-dict.
+"""] [let xs@Dict k]
+  [build-dict [filter [fn [let e] [not [builtin-eq e.key k]]] [each-kv xs]]]]
 
 # Update a key by applying a function to its current value.
 # assert: [update [x: 5] "x" [fn [v] [+ v 1]]] => [x: 6]
@@ -858,24 +813,26 @@ Get all values from a dict as an integer-indexed list.
 
 Example: [values [a: 10  b: 20]] => [10 20]
 
-Note: Preserves dict insertion order: values are returned in the same order as keys.
-"""] [let xs@Dict] [values-impl xs [keys xs] 0 []]]
+Note: Preserves dict insertion order: values are returned in the same order as keys. O(n) via lazy Seq construction + collect.
+"""] [let xs@Dict]
+    [builtin-collect [values-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
 
 entries: [fn@[return: Dict  doc: """
 Get all entries as a list of [key: k  value: v] dicts.
 
 Example: [entries [a: 10  b: 20]] => [[key: "a"  value: 10]  [key: "b"  value: 20]]
 
-Note: Preserves dict insertion order: entries appear in the same order as the source dict.
-"""] [let xs@Dict] [entries-impl xs [keys xs] 0 []]]
+Note: Preserves dict insertion order: entries appear in the same order as the source dict. O(n) via lazy Seq construction + collect.
+"""] [let xs@Dict]
+    [builtin-collect [entries-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
 
 from-entries: [fn@[return: Dict  doc: """
 Reconstruct a dict from a list of [key: k value: v] pairs.
 
 Example: [from-entries [[key: "a"  value: 10]  [key: "b"  value: 20]]] => [a: 10  b: 20]
 
-Note: Inverse of entries. O(n²) due to repeated merge on accumulator.
-"""] [let pairs] [builtin-reduce [fn [let acc pair] [merge acc [make-entry pair.key pair.value]]] [] pairs]]
+Note: Inverse of entries. O(n) via build-dict builtin.
+"""] [let pairs] [build-dict pairs]]
 
 # ============================================================================
 # List Operations (integer keys, dense 0..n output)
@@ -915,8 +872,9 @@ Rebuild a collection with dense 0..n integer keys.
 
 Example: [reindex [a: 1 b: 2 c: 3]] => [0: 1 1: 2 2: 3]
 
-Note: Preserves values and insertion order. Useful after drop or sparse slicing to normalize key numbering. Inherently materializing: must traverse all entries.
-"""] [let xs@Dict] [reindex-impl xs [keys xs] 0 []]]
+Note: Preserves values and insertion order. Useful after drop or sparse slicing to normalize key numbering. O(n) via lazy Seq construction + collect.
+"""] [let xs@Dict]
+    [builtin-collect [reindex-seq-impl xs [keys xs] 0 [length [keys xs]]]]]
 
 # ============================================================================
 # Sorting (Mergesort)
@@ -962,22 +920,42 @@ Take elements from the beginning while predicate holds.
 
 Example: [take-while [fn [x] [< x 3]] [1 2 3 4]] => [0: 1  1: 2]
 
-Note: Returns the longest prefix of xs where all elements satisfy pred. Inherently materializing: must check elements until predicate fails.
+Note: Returns the longest prefix of xs where all elements satisfy pred. Inherently materializing: must check elements until predicate fails. O(n) via build-dict.
 """] [let pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
-        [take-while-impl pred xs [keys xs] 0 []]]]
+        [build-dict [take-while-seq pred [each-kv xs]]]]]
+
+# take-while-seq: Build a lazy Seq of entries while predicate holds (private helper)
+take-while-seq: [fn [let pred@Fn entries]
+    [builtin-if [seq? entries]
+        [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+            [builtin-seq
+                [builtin-head entries]
+                [take-while-seq pred [builtin-tail entries]]]
+            []]
+        []]]
 
 drop-while: [fn@[return: Dict  doc: """
 Drop elements from the beginning while predicate holds.
 
 Example: [drop-while [fn [x] [< x 3]] [1 2 3 4]] => [2: 3  3: 4]
 
-Note: Returns the remaining suffix starting from the first element that fails pred. Inherently materializing: must check elements until predicate fails.
+Note: Returns the remaining suffix starting from the first element that fails pred. Inherently materializing: must check elements until predicate fails. O(n) via build-dict.
 """] [let pred@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
-        [drop-while-impl pred xs [keys xs] 0 [] true]]]
+        [build-dict [drop-while-seq pred [each-kv xs] true]]]]
+
+# drop-while-seq: Build a lazy Seq of entries after dropping while predicate holds (private helper)
+drop-while-seq: [fn [let pred@Fn entries dropping@Bool]
+    [builtin-if [seq? entries]
+        [builtin-if dropping
+            [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+                [drop-while-seq pred [builtin-tail entries] true]
+                [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+            [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+        []]]
 
 map-entries: [fn@[return: Dict  doc: """
 Apply a function to every [key: k value: v] entry, returning new values under same keys.
@@ -985,8 +963,9 @@ Apply a function to every [key: k value: v] entry, returning new values under sa
 Example: [map-entries [fn [e] [* e.value 2]] [a: 1 b: 2]] => [a: 2 b: 4]
 Example: [map-entries [fn [e] e.key] [x: 10 y: 20]] => [x: "x" y: "y"]
 
-Note: The function f receives the entry dict and must return the NEW VALUE (not a new entry dict). Keys are preserved unchanged.
-"""] [let f@Fn xs@Dict] [map-entries-impl f xs [keys xs] 0 []]]
+Note: The function f receives the entry dict and must return the NEW VALUE (not a new entry dict). Keys are preserved unchanged. O(n) via build-dict.
+"""] [let f@Fn xs@Dict]
+  [build-dict [builtin-map [fn [let e] [key: e.key  value: [f e]]] [each-kv xs]]]]
 
 # Left fold: alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
 # Type: ((b -> a -> b) -> b -> Dict a -> b)
@@ -998,28 +977,14 @@ Note: The function f receives the entry dict and must return the NEW VALUE (not 
 # signature, but parameterized function types are not yet expressible.
 fold@[doc: "Left fold (alias for reduce)"]: [fn@a [let f@Fn init@a xs] [builtin-reduce f init xs]]
 
-# Take a slice by position (start inclusive, end exclusive). Preserves original keys.
-# Type: (Dict a -> Int -> Int -> Dict a)
-# Example: [slice [a: 1 b: 2 c: 3 d: 4] 1 3] => [b: 2 c: 3]
-# slice-impl and slice-step depend on and (public) — live in the public dict.
-slice-impl@[doc: "Slice implementation (internal helper)"]: [fn@Dict [let xs@Dict ks start@Int end@Int i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [builtin-if [and [gte-impl i start] [builtin-lt i end]]
-            [slice-step xs ks start end i acc [get i ks]]
-            [slice-impl xs ks start end [builtin-add i 1] acc]]]]
-
-slice-step@[doc: "Slice step (internal helper)"]: [fn@Dict [let xs@Dict ks start@Int end@Int i@Int acc@Dict current-key]
-    [slice-impl xs ks start end [builtin-add i 1]
-        [merge acc [make-entry current-key [get current-key xs]]]]]
-
 slice: [fn@[return: Dict  doc: """
 Take a slice by position (start inclusive, end exclusive).
 
 Example: [slice [a: 1 b: 2 c: 3 d: 4] 1 3] => [b: 2 c: 3]
 
-Note: Preserves original keys.
-"""] [let xs@Dict start@Int end@Int] [slice-impl xs [keys xs] start end 0 []]]
+Note: Preserves original keys. O(n) via build-dict.
+"""] [let xs@Dict start@Int end@Int]
+  [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
 
 zip: [fn@[return: Unknown  doc: """
 Pair entries from two collections by position.
@@ -1034,31 +999,50 @@ Note: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: collect Seqs to D
             [builtin-if [seq? xs] [builtin-collect xs] xs]
             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
 
-# Flatten nested lists one level deep.
-# flatten-impl/flatten-step depend on reindex (public) — live in public dict.
-# Inherently materializing: must inspect each value to check if it is a list.
-flatten-impl@[doc: "Flatten implementation (internal helper)"]: [fn@Dict [let xs@Dict ks i@Int acc@Dict]
-    [builtin-if [gte-impl i [length ks]]
-        acc
-        [flatten-step xs ks i acc [get i ks]]]]
+# Flatten nested lists one level deep via Seq cons pattern. O(n) total.
+# flatten-seq-impl: recursively builds a Seq by appending sublists or single elements.
+# For dict elements: convert to Seq (via values-seq-impl), then append that Seq.
+# For non-dict elements: cons the element onto the result.
+flatten-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
+    [builtin-if [gte-impl i len]
+        []
+        [flatten-seq-step xs ks i len [builtin-get i ks]]]]
 
-flatten-step@[doc: "Flatten step (internal helper)"]: [fn@Dict [let xs@Dict ks i@Int acc@Dict current-key]
-    [builtin-if [dict? [get current-key xs]]
-        [flatten-impl xs ks [builtin-add i 1]
-            [builtin-concat acc [reindex [get current-key xs]]]]
-        [flatten-impl xs ks [builtin-add i 1]
-            [append acc [get current-key xs]]]]]
+flatten-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
+    [builtin-if [dict? [builtin-get k xs]]
+        # Dict element: prepend all its values as a Seq, then continue with rest
+        [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]
+        # Non-dict element: cons it onto the rest
+        [builtin-seq [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]]]
+
+# flatten-seq-append-dict: Convert dict to Seq of values, then append rest.
+# This uses values-seq-impl to build a Seq of the dict's values.
+flatten-seq-append-dict: [fn [let d@Dict rest]
+    [let ks [keys d]]
+    [flatten-seq-concat-values d ks 0 [length ks] rest]]
+
+# flatten-seq-concat-values: Recursively cons all values from dict onto rest.
+flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
+    [builtin-if [gte-impl i len]
+        rest
+        [builtin-seq
+            [builtin-get [builtin-get i ks] d]
+            [flatten-seq-concat-values d ks [builtin-add i 1] len rest]]]]
 
 flatten: [fn@[return: Dict  doc: """
 Flatten nested lists one level deep.
 
 Example: [flatten [[1 2] [3 4] 5]] => [1 2 3 4 5]
 
-Note: O(n²) due to repeated concat on accumulator.
+Note: O(n) via lazy Seq construction + collect.
 """] [let xs@Dict]
     [builtin-if [seq? xs]
         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
-        [flatten-impl xs [keys xs] 0 []]]]
+        [flatten-impl-dict xs]]]
+
+flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Dict [let xs@Dict]
+    [let ks [keys xs]]
+    [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
 
 # Recursively search for a key in nested dicts.
 # find-deep helpers depend on find-deep and get (public) — live in public dict.
@@ -1111,13 +1095,16 @@ Split a collection into two groups: elements satisfying pred and those that do n
 
 Example: [partition [fn [x] [> x 0]] [1 -2 3 -4]] => [pass: [1 3]  fail: [-2 -4]]
 
-Note: Returns a dict with keys `pass` (matching) and `fail` (non-matching). Both groups are integer-keyed dicts (eager, not Seqs) for predictable downstream use.
+Note: Returns a dict with keys `pass` (matching) and `fail` (non-matching). Both groups are integer-keyed dicts (eager, not Seqs). O(n) via Seq cons + reverse + collect for each partition.
 """] [let pred@Fn xs]
-    [builtin-reduce
+    [let result [builtin-reduce
         [fn [let acc e]
             [partition-step acc e [pred e]]]
         [pass: []  fail: []]
         xs]]
+    # Reverse each Seq (cons reversed order), then collect to Dict
+    [pass: [builtin-collect [reverse-seq [builtin-get "pass" result]]]
+     fail: [builtin-collect [reverse-seq [builtin-get "fail" result]]]]]
 
 flat-map: [fn@[return: Dict  doc: """
 Map a function over a collection and flatten (concatenate) the results.
@@ -1139,53 +1126,49 @@ find-first-or@[doc: "Find first matching element or return default"]: [fn@a [let
 # Group elements of xs into a dict of lists, keyed by the result of applying f.
 # Elements with the same key are collected together (insertion order preserved).
 # Inherently materializing: must inspect all elements.
-# group-by-step depends on get-or (public) — lives in public dict.
-group-by-step@[doc: "Group-by step (internal helper)"]: [fn@Dict [let acc@Dict x k]
-    [merge acc
-        [make-entry k
-            [append [get-or acc k []] x]]]]
-
+# Uses transient builder for O(n) construction (was O(n²) with merge accumulation).
 group-by: [fn@[return: Dict  doc: """
 Group elements of xs into a dict of lists, keyed by the result of applying f.
 
 Example: [group-by [fn [x] [mod x 2]] [1 2 3 4 5]] => [0: [2 4]  1: [1 3 5]]
 
-Note: Elements with the same key are collected together (insertion order preserved). O(n²) due to repeated merge and append on accumulator.
+Note: Elements with the same key are collected together (insertion order preserved). O(n) with transient builder.
 """] [let f@Fn xs]
-    [builtin-reduce
-        [fn [let acc x]
-            [group-by-step acc x [f x]]]
-        []
-        xs]]
+    [builder-finish
+        [builtin-reduce
+            [fn [let b x]
+                [let k [f x]]
+                [builder-set b k
+                    [builtin-if [builder-has? b k]
+                        [append [builder-get b k] x]
+                        [make-entry 0 x]]]]
+            [make-builder]
+            xs]]]
 
 # Merge two dicts recursively. Sub-dicts are merged depth-first;
 # all other values from b override a (right-biased at each level).
 # Inherently materializing: must inspect values to determine if they are dicts.
 # deep-merge-step depends on has?/get/deep-merge (public) — lives in public dict.
-deep-merge-step@[doc: "Deep-merge step (internal helper)"]: [fn@Dict [let acc@Dict a@Dict b@Dict k]
-    [merge acc
-        [make-entry k
-            [builtin-if
+deep-merge-step@[doc: "Deep-merge step (internal helper)"]: [fn@Dict [let a@Dict b@Dict e]
+    [key: e.key
+     value:
+        [builtin-if
+            [and
+                [has? a e.key]
                 [and
-                    [has? a k]
-                    [and
-                        [dict? [get k a]]
-                        [dict? [get k b]]]]
-                [deep-merge [get k a] [get k b]]
-                [get k b]]]]]
+                    [dict? [get e.key a]]
+                    [dict? e.value]]]
+            [deep-merge [get e.key a] e.value]
+            e.value]]]
 
 deep-merge: [fn@[return: Dict  doc: """
 Merge two dicts recursively.
 
 Example: [deep-merge [a: [x: 1] b: 2] [a: [y: 3] c: 4]] => [a: [x: 1 y: 3] b: 2 c: 4]
 
-Note: Sub-dicts are merged depth-first; all other values from b override a (right-biased at each level). O(n²) due to repeated merge on accumulator at each level.
+Note: Sub-dicts are merged depth-first; all other values from b override a (right-biased at each level). O(n) via build-dict.
 """] [let a@Dict b@Dict]
-    [builtin-reduce
-        [fn [let acc k]
-            [deep-merge-step acc a b k]]
-        a
-        [keys b]]]
+    [merge a [build-dict [builtin-map [fn [let e] [deep-merge-step a b e]] [each-kv b]]]]]
 
 # Apply a function bottom-up to every node in a nested dict structure.
 # For dicts: recursively transform all values first, then apply f to the resulting dict.
@@ -1193,18 +1176,14 @@ Note: Sub-dicts are merged depth-first; all other values from b override a (righ
 # Inherently materializing: must traverse entire structure.
 # walk-dict depends on walk (public) — lives in public dict.
 walk-dict@[doc: "Walk nested dict structure (internal helper)"]: [fn@Dict [let f@Fn xs@Dict]
-    [builtin-reduce
-        [fn [let acc k]
-            [merge acc [make-entry k [walk f [get k xs]]]]]
-        []
-        [keys xs]]]
+    [build-dict [builtin-map [fn [let e] [key: e.key  value: [walk f e.value]]] [each-kv xs]]]]
 
 walk: [fn@[return: Any  doc: """
 Apply a function bottom-up to every node in a nested dict structure.
 
 Example: [walk [fn [x] [if [dict? x] [length x] x]] [a: 1 b: [c: 2 d: 3]]] => [a: 1 b: 2]
 
-Note: For dicts: recursively transform all values first, then apply f to the resulting dict. For non-dicts: apply f directly to the value. O(n²) due to repeated merge in walk-dict.
+Note: For dicts: recursively transform all values first, then apply f to the resulting dict. For non-dicts: apply f directly to the value. O(n) via build-dict.
 """] [let f@Fn xs]
     [builtin-if [dict? xs]
         [f [walk-dict f xs]]
@@ -1225,7 +1204,7 @@ Transpose a 2D dict structure (flip rows and columns).
 
 Example: [transpose [[0: [a: 1 b: 2]] [1: [a: 3 b: 4]]]] => [a: [0: 1  1: 3]  b: [0: 2  1: 4]]
 
-Note: Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]]. All inner dicts must have the same keys. O(n²) due to repeated merge in transpose-impl.
+Note: Takes a dict of dicts [[0: [0: a 1: b] 1: [0: c 1: d]]] and returns [[0: [0: a 1: c] 1: [0: b 1: d]]]. All inner dicts must have the same keys. O(n) via build-dict.
 """] [let rows@Dict]
     [builtin-if [empty? rows]
         []
@@ -1308,20 +1287,49 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [let xs val]
                 [any? [fn [let e] [builtin-eq e val]] xs]]]]]
 
 # Remove duplicate elements, keeping the first occurrence of each.
-# Inherently materializing: O(n²) due to sequential contains? checks.
-# uniq-impl/uniq-step depend on contains? (public) — live in public dict.
-uniq-impl@[doc: "Uniq implementation (internal helper)"]: [fn@Dict [let ks xs@Dict acc@Dict seen@Dict i@Int]
-    [builtin-if [gte-impl i [length ks]]
+# O(n) per element * O(n) contains? check = still O(n²), but with O(1) cons instead of O(n) append.
+# Uses Seq cons for both result accumulator and seen set, then reverses result at end.
+# uniq-seq-impl/uniq-seq-step depend on contains-seq? (internal helper below).
+uniq-seq-impl: [fn [let ks xs@Dict acc seen i@Int len@Int]
+    [builtin-if [gte-impl i len]
+        # Reverse acc Seq to restore original order, then collect
         acc
-        [uniq-step ks xs acc seen i [builtin-get [builtin-get i ks] xs]]]]
+        [uniq-seq-step ks xs acc seen i len [builtin-get [builtin-get i ks] xs]]]]
 
-uniq-step@[doc: "Uniq step (internal helper)"]: [fn@Dict [let ks xs@Dict acc@Dict seen@Dict i@Int v]
-    [builtin-if [contains? seen v]
-        [uniq-impl ks xs acc seen [builtin-add i 1]]
-        [uniq-impl ks xs [append acc v] [append seen v] [builtin-add i 1]]]]
+uniq-seq-step: [fn [let ks xs@Dict acc seen i@Int len@Int v]
+    [builtin-if [contains-seq? seen v]
+        # Already seen: skip this element
+        [uniq-seq-impl ks xs acc seen [builtin-add i 1] len]
+        # New element: cons onto both acc and seen (prepends, so reverses order)
+        [uniq-seq-impl ks xs
+            [builtin-seq v acc]
+            [builtin-seq v seen]
+            [builtin-add i 1]
+            len]]]
 
-uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to repeated O(n) contains? check per element."]: [fn@Dict [let xs@Dict]
-    [uniq-impl [keys xs] xs [] [] 0]]
+# contains-seq?: Check if a Seq contains val (O(n) linear scan).
+contains-seq?: [fn@Bool [let seq val]
+    [builtin-if [seq? seq]
+        [builtin-if [builtin-eq [builtin-head seq] val]
+            true
+            [contains-seq? [builtin-tail seq] val]]
+        false]]  # Empty Seq (terminal []) — not found
+
+uniq@[doc: "Remove duplicates (keep first occurrence). Still O(n²) due to O(n) contains-seq? per element, but uses O(1) cons instead of O(n) append."]: [fn@Dict [let xs@Dict]
+    [let ks [keys xs]]
+    # Build reversed Seq, then reverse back and collect
+    [let reversed-seq [uniq-seq-impl ks xs [] [] 0 [length ks]]]
+    [builtin-collect [reverse-seq reversed-seq]]]
+
+# reverse-seq: Reverse a Seq by building a new Seq with reversed order.
+# Iterates through input Seq, cons-ing each element onto accumulator (which reverses).
+reverse-seq: [fn [let seq]
+    [reverse-seq-impl seq []]]
+
+reverse-seq-impl: [fn [let seq acc]
+    [builtin-if [seq? seq]
+        [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
+        acc]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
@@ -2016,7 +2024,7 @@ Note: For Seq values, prefer [count identity xs] (length forces a Seq to a Dict 
 # Takes a Seq of [key: K, value: V] dicts (as produced by each-kv).
 # Returns a Dict with those key-value mappings.
 # assert: [collect-kv [[key: "a" value: 1] [key: "b" value: 2]]] => [a: 1 b: 2]
-collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [let xs] [builtin-reduce [fn [let acc kv] [merge acc [make-entry kv.key kv.value]]] [] xs]]
+collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [let xs] [build-dict xs]]
 
 # Repeat a string n times.
 # String search helpers (build on str-index-of primitive)
@@ -2405,17 +2413,18 @@ Note: Works with both Dict and Seq. For Dict, returns first value by insertion o
       [first xs]]]
 
 macro-error: [fn@[return: Never  doc: """
-Signal a compile-time macro expansion error.
+Signal a compile-time macro expansion error with precise span information.
 
-Terminates macro expansion with an error, reporting the message to the user.
-The span argument is accepted for API consistency (used by macro bodies for
-precise error location), but currently the runtime error does not attach span
-position information. A future builtin-macro-error will use it.
+Terminates macro expansion with an error, reporting the message to the user
+at the source location specified by the span argument.
+
+The span argument should be a span dict as produced by span-of, containing
+start and end position information (line, col, offset).
 
 Example:
   [macro-error [span-of bad-arg] "expected a literal value"]
 """] [let span message@String]
-  [error message]]
+  [builtin-macro-error span message]]
 
 # ============================================================================
 # Self-Hosted Eval Pipeline
@@ -2496,11 +2505,11 @@ eval-document-pipeline: [fn@[return: Any  doc: """
 Evaluate all documents in a file, threading % and named sections through each.
 
 initial: initial % value ([] for included files, caller % for CLI pipeline)
-docs: Seq of Document values from Program.documents
+docs: Dict (integer-keyed) of Document values from Program.documents
 include-dir: DirCap — injected as %include-dir so sub-includes work
 
 Skips [Type] stage documents. Returns the final document's result.
-"""] [let initial docs@[Seq Document] include-dir]
+"""] [let initial docs include-dir]
   [get "prev"
     [reduce
       [fn@[return: Dict] [let state doc@Document]

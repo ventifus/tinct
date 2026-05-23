@@ -2225,12 +2225,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                close_bracket_recover!(ParseError {
-                                    message:
-                                        "type-alias declaration cannot appear inside an expression"
-                                            .to_string(),
-                                    span: Some(dict_span(span_start)),
-                                });
+                                // Declaration appears inside an expression (e.g., dict value)
+                                // Convert to expression form using the bridge
+                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
+                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                if let Err(push_err) =
+                                    push_value(&mut stack, &mut current_document_items, node)
+                                {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
                     }
@@ -2386,12 +2389,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                close_bracket_recover!(ParseError {
-                                    message:
-                                        "defmacro declaration cannot appear inside an expression"
-                                            .to_string(),
-                                    span: Some(dict_span(span_start)),
-                                });
+                                // Declaration appears inside an expression (e.g., dict value)
+                                // Convert to expression form using the bridge
+                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
+                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                if let Err(push_err) =
+                                    push_value(&mut stack, &mut current_document_items, node)
+                                {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
                     }
@@ -2428,11 +2434,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                close_bracket_recover!(ParseError {
-                                    message: "macro declaration cannot appear inside an expression"
-                                        .to_string(),
-                                    span: Some(dict_span(span_start)),
-                                });
+                                // Declaration appears inside an expression (e.g., dict value)
+                                // Convert to expression form using the bridge
+                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
+                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                if let Err(push_err) =
+                                    push_value(&mut stack, &mut current_document_items, node)
+                                {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
                     }
@@ -2470,12 +2480,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                close_bracket_recover!(ParseError {
-                                    message:
-                                        "syntax-class declaration cannot appear inside an expression"
-                                            .to_string(),
-                                    span: Some(dict_span(span_start)),
-                                });
+                                // Declaration appears inside an expression (e.g., dict value)
+                                // Convert to expression form using the bridge
+                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
+                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                if let Err(push_err) =
+                                    push_value(&mut stack, &mut current_document_items, node)
+                                {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
                     }
@@ -2623,11 +2636,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                close_bracket_recover!(ParseError {
-                                    message: "class declaration cannot appear inside an expression"
-                                        .to_string(),
-                                    span: Some(dict_span(span_start)),
-                                });
+                                // Declaration appears inside an expression (e.g., dict value)
+                                // Convert to expression form using the bridge
+                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
+                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                if let Err(push_err) =
+                                    push_value(&mut stack, &mut current_document_items, node)
+                                {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
                     }
@@ -2696,12 +2713,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                close_bracket_recover!(ParseError {
-                                    message:
-                                        "instance declaration cannot appear inside an expression"
-                                            .to_string(),
-                                    span: Some(dict_span(span_start)),
-                                });
+                                // Declaration appears inside an expression (e.g., dict value)
+                                // Convert to expression form using the bridge
+                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
+                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                if let Err(push_err) =
+                                    push_value(&mut stack, &mut current_document_items, node)
+                                {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
                     }

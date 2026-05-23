@@ -392,7 +392,7 @@ pub(crate) fn evaluate_resolver(
             ..
         } => {
             let call_ctx = crate::eval_call::CallContext {
-                params,
+                params: &**params,
                 body,
                 closure_env,
                 positional: &arg_thunks,
@@ -510,7 +510,13 @@ impl fmt::Display for Type {
             }
             Type::DirCap => write!(f, "DirCap"),
             Type::NetCap => write!(f, "NetCap"),
-            Type::Handle => write!(f, "Handle"),
+            Type::Handle(cap) => {
+                if matches!(**cap, Type::Unknown) {
+                    write!(f, "Handle")
+                } else {
+                    write!(f, "Handle[{}]", cap)
+                }
+            }
             Type::Uri => write!(f, "Uri"),
             Type::Timestamp => write!(f, "Timestamp"),
             Type::Duration => write!(f, "Duration"),

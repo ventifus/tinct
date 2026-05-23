@@ -1,0 +1,33 @@
+# Instance declaration ordering: function defined before its class and instance.
+# Pass 0c in typecheck_dict.rs pre-registers all class/instance declarations
+# before the SCC loop runs, so classes and instances are visible to all
+# function bodies in the same dict regardless of source order.
+#
+# This test places the constrained function at the top of the dict (simulating
+# "line 10") and the class/instance declarations near the bottom ("line 20+"),
+# mirroring a real-world config where utilities precede their type infrastructure.
+[
+  # ---- Early in the dict: function using Describable constraint ----
+  #
+  # to-description is defined before Describable and DescribableInt exist.
+  # Pass 0c ensures they will be visible by the time typecheck resolves this
+  # function's constraint annotation.
+  to-description: [fn@[return: String  constraint: [a: Describable]] [x@a] [str x]]
+
+  # ---- (many lines later in a real file) ----
+  #
+  # Class declaration: Describable is a single-param type class.
+  Describable: [class [let Describable a]]
+
+  # Instance declaration: Int satisfies Describable.
+  DescribableInt: [instance Describable [pattern [Int]]:]
+
+  # Call the constrained function with an Int — resolved through the instance.
+  result: [to-description 42]
+]
+
+---
+
+%.result
+=== out
+String("42")

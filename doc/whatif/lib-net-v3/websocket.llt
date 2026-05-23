@@ -5,7 +5,7 @@
 [include %libdir "net.llt"]
 [include %include-dir "http1.llt"]
 
-[instance [MessageStream WebSocketConnection WsFrame]
+[instance MessageStream [pattern [s@WebSocketConnection t@WsFrame]]:
   send-message: ws-send-frame
   recv-message: ws-recv-frame]
 

@@ -5,7 +5,7 @@
 [include %libdir "async.llt"]
 [include %libdir "net.llt"]
 
-[instance [ByteStream [NoiseConnection h]]
+[instance ByteStream [pattern [h@[NoiseConnection h]]]:
   read-bytes:  noise-read
   write-bytes: noise-write]
 
@@ -71,6 +71,23 @@
   noise-nk-accept:  [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
     [error "TODO: noise-nk-accept"]]
 
+  # Accumulation loop for noise-read — reads whole Noise transport frames until
+  # `remaining` bytes are collected. Noise frames may be shorter than `wanted`.
+  noise-read-acc: [fn [let conn@NoiseConnection remaining@Int acc@[Seq Bytes]]
+    [if [= remaining 0]
+      [reduce concat [] acc]
+      [len: [match [decode BigEndian [@[Bytes 2] [read-bytes conn.underlying 2]]]
+        [Ok n]:  n
+        [Err _]: [error "Noise: bad frame length"]]]
+      [ct: [read-bytes conn.underlying len]]
+      [n:  [recv conn.recv-n]]
+      [send conn.recv-n [+ n 1]]
+      [plain: [match [chacha20-poly1305-open conn.recv-key [noise-nonce n] ct []]
+        [Ok p]:  p
+        [Err _]: [error "Noise: decryption failed"]]]
+      [got: [min remaining [length plain]]]
+      [noise-read-acc conn [- remaining got] [append acc [list [slice plain 0 got]]]]]]
+
   init-nonce-ch: [fn []
     [ch: [channel 1]]
     [send ch 0]
@@ -105,7 +122,7 @@
   # NoiseConnection is parametric over its underlying ByteStream h so Noise
   # can be stacked over any stream (Handle, TlsConnection, etc.).
   # send-n and recv-n are separate counters — one writer per direction.
-  NoiseConnection: [type [h@ByteStream]
+  NoiseConnection: [type [h]   # h must satisfy ByteStream; enforced at instance sites
     [underlying: h
      send-key:   [Bytes 32]
      recv-key:   [Bytes 32]
@@ -140,13 +157,5 @@
     [write-bytes conn.underlying [concat [encode BigEndian [@UInt16 [length ct]]] ct]]]
 
   noise-read: [fn [let conn@NoiseConnection wanted@Int]
-    [len: [match [decode BigEndian [@[Bytes 2] [read-bytes conn.underlying 2]]]
-      [Ok n]:  n
-      [Err _]: [error "Noise: bad frame length"]]]
-    [ct: [read-bytes conn.underlying len]]
-    [n:  [recv conn.recv-n]]
-    [send conn.recv-n [+ n 1]]
-    [match [chacha20-poly1305-open conn.recv-key [noise-nonce n] ct []]
-      [Ok plain]: [slice plain 0 [min wanted [length plain]]]
-      [Err _]:    [error "Noise: decryption failed"]]]
+    [noise-read-acc conn wanted []]]
 ]

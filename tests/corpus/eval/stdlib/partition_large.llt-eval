@@ -1,0 +1,6 @@
+# partition: large input (n=1000) to verify O(n) performance
+[let test-dict [collect [range 0 1000]]]
+[let result [partition [fn [x] [= [mod x 2] 0]] test-dict]]
+[+ [length result.pass] [length result.fail]]
+=== out
+Int(1000)

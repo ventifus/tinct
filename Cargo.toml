@@ -71,3 +71,4 @@ serde = { version = "1.0", features = ["derive"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"  # Kernel-level filesystem ACL enforcement (Linux 5.13+)
 seccompiler = "0.5"  # seccomp-bpf network and process sandbox
+xattr = "1"  # Extended attributes API for Linux

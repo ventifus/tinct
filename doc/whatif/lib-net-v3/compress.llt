@@ -3,49 +3,58 @@
 # Rust backends: flate2 (gzip/deflate), brotli, zstd
 # Bulk only — no streaming. Streaming through the thunk system is impractically slow for HTTP bodies.
 #
-# Extensibility: define [type [MyCodec]] + [instance [CompressionCodec MyCodec] ...],
+# Extensibility: define [type [MyCodec]] + [instance CompressionCodec [pattern [c@MyCodec]]: ...],
 # then pass [assoc [] "mycodec" [to-compressed-codec MyCodec]] as the registry argument
 # to codec-for-encoding and negotiate-encoding.
 
 [include %libdir "net.llt"]
 
-[class [CompressionCodec c]
-  encode:     [Fn [c@c b@Bytes] Bytes]            # compress; always succeeds
-  decode:     [Fn [c@c b@Bytes] [Result Bytes]]   # decompress; Err if corrupt
-  codec-name: [Fn [c@c] String]]                  # IANA/HTTP content-encoding name
+[class [let CompressionCodec c]
+  encode:     [Fn@Bytes          [c Bytes]]          # compress; always succeeds
+  decode:     [Fn@[Result Bytes] [c Bytes Int]]      # decompress; Err if corrupt or exceeds max
+  codec-name: [Fn@String         [c]]]               # IANA/HTTP content-encoding name
 
 [type [Gzip]]    [type [Deflate]]  [type [Brotli]]
 [type [Zstd]]    [type [Identity]]
 
-[instance [CompressionCodec Gzip]
+[instance CompressionCodec [pattern [c@Gzip]]:
   encode:     [fn [let _ b@Bytes] [builtin-gzip-encode b]]
-  decode:     [fn [let _ b@Bytes] [builtin-gzip-decode b]]
+  decode:     [fn [let _ b@Bytes max@Int] [builtin-gzip-decode b max]]
   codec-name: [fn [let _] "gzip"]]
 
-[instance [CompressionCodec Deflate]
+[instance CompressionCodec [pattern [c@Deflate]]:
   encode:     [fn [let _ b@Bytes] [builtin-deflate-encode b]]
-  decode:     [fn [let _ b@Bytes] [builtin-deflate-decode b]]
+  decode:     [fn [let _ b@Bytes max@Int] [builtin-deflate-decode b max]]
   codec-name: [fn [let _] "deflate"]]
 
-[instance [CompressionCodec Brotli]
+[instance CompressionCodec [pattern [c@Brotli]]:
   encode:     [fn [let _ b@Bytes] [builtin-brotli-encode b]]
-  decode:     [fn [let _ b@Bytes] [builtin-brotli-decode b]]
+  decode:     [fn [let _ b@Bytes max@Int] [builtin-brotli-decode b max]]
   codec-name: [fn [let _] "br"]]
 
-[instance [CompressionCodec Zstd]
+[instance CompressionCodec [pattern [c@Zstd]]:
   encode:     [fn [let _ b@Bytes] [builtin-zstd-encode b]]
-  decode:     [fn [let _ b@Bytes] [builtin-zstd-decode b]]
+  decode:     [fn [let _ b@Bytes max@Int] [builtin-zstd-decode b max]]
   codec-name: [fn [let _] "zstd"]]
 
-[instance [CompressionCodec Identity]
+[instance CompressionCodec [pattern [c@Identity]]:
   encode:     [fn [let _ b@Bytes] b]
-  decode:     [fn [let _ b@Bytes] [Ok b]]
+  decode:     [fn [let _ b@Bytes _max@Int] [Ok b]]
   codec-name: [fn [let _] "identity"]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # Built-in codec lookup — returns CompressedCodec or null (not [Some ...]/[None]).
+  # to-compressed-codec lives here (private) so builtin-codec-for-name can call it.
+  # The public dict re-exports it by name.
+  to-compressed-codec: [fn@[bind: [c]  return: CompressedCodec  constraint: [c: CompressionCodec]]
+                          [let c@c]
+    [CompressedCodec
+      [name:   [codec-name c]
+       encode: [fn [let b] [encode c b]]
+       decode: [fn [let b] [decode c b 268435456]]]]]
+
+  # Returns CompressedCodec or null (bare value, not [Some ...]/[None]).
   builtin-codec-for-name: [fn [let lower@String]
     [match lower
       "gzip":     [to-compressed-codec Gzip]
@@ -54,54 +63,38 @@
       "brotli":   [to-compressed-codec Brotli]
       "zstd":     [to-compressed-codec Zstd]
       "identity": [to-compressed-codec Identity]
-      "*":        [to-compressed-codec Gzip]    # wildcard prefers gzip
+      "*":        [to-compressed-codec Gzip]
       _:          null]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  # CompressedBytes: labeled bytes with their codec stored at runtime.
   CompressedBytes: [type [data: Bytes  codec: CompressedCodec]]
 
-  # CompressedCodec: runtime record for dynamic dispatch (analogous to Codec in text.llt).
-  # Needed when the codec is determined at runtime (e.g. from HTTP Content-Encoding header).
   CompressedCodec: [type
     [name:   String
-     encode: [Fn [Bytes] Bytes]
-     decode: [Fn [Bytes] [Result Bytes]]]]
+     encode: [Fn@Bytes          [Bytes]]
+     decode: [Fn@[Result Bytes] [Bytes]]]]
 
-  # Convert any CompressionCodec typeclass instance to a runtime CompressedCodec record.
-  # Use this to register custom codecs:
-  #   my-lz4: [to-compressed-codec Lz4]
-  #   registry: [assoc [] "lz4" my-lz4]
-  to-compressed-codec: [fn@[bind: [c]  return: CompressedCodec  constraint: [c: CompressionCodec]]
-                          [let c@c]
-    [CompressedCodec
-      [name:   [codec-name c]
-       encode: [fn [let b] [encode c b]]
-       decode: [fn [let b] [decode c b]]]]]
+  # Re-exported from private dict. CompressedCodec.decode uses 256 MB default max-decompressed.
+  to-compressed-codec: to-compressed-codec
 
-  # Compile-time dispatch: encode/decode via typeclass.
+  # Compile-time dispatch. encode/decode are shared with text.llt (TextCodec) and net.llt
+  # (ByteLabel) — dispatch is unambiguous: CompressionCodec, TextCodec, ByteLabel instances
+  # are disjoint. [encode Gzip b] → CompressionCodec; [encode UTF8 s] → TextCodec.
   encode: [fn@[bind: [c]  return: Bytes         constraint: [c: CompressionCodec]] [let c@c b@Bytes] [encode c b]]
-  decode: [fn@[bind: [c]  return: [Result Bytes] constraint: [c: CompressionCodec]] [let c@c b@Bytes] [decode c b]]
+  decode: [fn@[bind: [c]  return: [Result Bytes] constraint: [c: CompressionCodec]]
+           [let c@c b@Bytes  max@[type: Int  default: 268435456]]
+    [decode c b max]]
 
-  # Runtime dispatch via CompressedCodec record.
   encode-compressed: [fn [let c@CompressedCodec b@Bytes] [c.encode b]]
   decode-compressed: [fn [let c@CompressedCodec b@Bytes] [c.decode b]]
 
-  # Look up a codec by its HTTP Content-Encoding name.
-  # registry: user-supplied [Map String CompressedCodec]; checked before built-ins.
-  # Returns CompressedCodec or null (bare value, same as get? — not [Some ...]/[None]).
   codec-for-encoding: [fn [let name@String  registry@[type: [Map String CompressedCodec]  default: []]]
     [lower: [str-lower name]]
-    # get? returns bare value or null; builtin-codec-for-name also returns bare value or null.
-    # [or a b]: returns a if truthy (non-null CompressedCodec), else b.
     [or [get? registry lower] [builtin-codec-for-name lower]]]
 
-  # Pick the best codec from an Accept-Encoding header value.
-  # registry: same as codec-for-encoding — pass your custom codecs here.
-  # Returns a CompressedCodec (defaults to Identity if nothing in header matches).
   negotiate-encoding: [fn [let accept-encoding@String  registry@[type: [Map String CompressedCodec]  default: []]]
     [candidates: [filter-map [fn [let part]
                    [codec-for-encoding [str-trim [get [str-split ";" part] 0]] registry]]

@@ -139,14 +139,16 @@ fn handle_request(
             // load it from disk and analyze it on the fly.
             let hover = if let Some(doc) = store.get(&uri) {
                 // Document is open in editor: use cached state
-                lsp_position_to_offset(&pos, &doc.text)
-                    .and_then(|offset| hover_at(doc, &uri, offset, &store.include_graph))
+                lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
+                    hover_at(doc, &uri, offset, &store.include_graph, store.eval_ctx())
+                })
             } else {
                 // Document is not open: load from URI and analyze
                 use crate::lsp::document::load_doc_from_uri;
                 load_doc_from_uri(&uri).and_then(|doc| {
-                    lsp_position_to_offset(&pos, &doc.text)
-                        .and_then(|offset| hover_at(&doc, &uri, offset, &store.include_graph))
+                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
+                        hover_at(&doc, &uri, offset, &store.include_graph, store.eval_ctx())
+                    })
                 })
             }
             .map(|text| lsp_types::Hover {
@@ -769,7 +771,7 @@ fn publish_diagnostics(
 ) -> Result<(), Box<dyn Error>> {
     let diagnostics = store
         .get(uri)
-        .map(|doc| diagnostics_for(doc, uri))
+        .map(|doc| diagnostics_for(doc, uri, store.eval_ctx()))
         .unwrap_or_default();
 
     let params = PublishDiagnosticsParams {
@@ -876,7 +878,7 @@ mod tests {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let hover = hover_at(doc, &uri, 4, &store.include_graph); // on '42'
+        let hover = hover_at(doc, &uri, 4, &store.include_graph, store.eval_ctx()); // on '42'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Int"));
     }
@@ -895,7 +897,7 @@ mod tests {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
-        let diags = diagnostics_for(doc, &uri);
+        let diags = diagnostics_for(doc, &uri, store.eval_ctx());
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
     }
@@ -906,7 +908,7 @@ mod tests {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let diags = diagnostics_for(doc, &uri);
+        let diags = diagnostics_for(doc, &uri, store.eval_ctx());
         assert!(diags.is_empty());
     }
 

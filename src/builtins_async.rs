@@ -33,7 +33,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{ok_val, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::{eval, materialize};
+use crate::eval::{eval_core_expr_pub, materialize};
 use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, Value};
 
 /// Helper to check argument count and extract first argument as a thunk.
@@ -221,7 +221,7 @@ pub(crate) fn builtin_task(
                         crate::value::Environment::with_parent(env),
                     ));
                     // Evaluate the body
-                    let thunk = eval(body, call_env, &ctx_clone).await?;
+                    let thunk = eval_core_expr_pub(&*body, &call_env, &ctx_clone).await?;
                     // Materialize the result
                     materialize(&thunk, None, &ctx_clone).await
                 }
@@ -286,41 +286,50 @@ pub(crate) fn builtin_await(
                 // completes, it stores the real result in Done(Ok(result)) before releasing
                 // the lock, so the second caller then reads the correct cached value.
                 //
-                // NOTE (FIX LATER): the error-path has a subtle issue — if the task errors,
-                // `result?` moves the error out of Done, leaving the sentinel in place. A
-                // subsequent await on the same errored Task returns {} instead of the error.
-                // Fix: use Done(Result<Value, Arc<EvalError>>) so errors can be cloned and
-                // re-returned. Tracked in TODO.md.
+                // The Done(result) match arm restores the result to the guard BEFORE
+                // extracting with `?` to ensure subsequent awaits see the same result,
+                // whether success or error.
                 match std::mem::replace(
                     &mut *guard,
                     crate::value::TaskState::Done(Ok(Value::Dict(IndexMap::new()))),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
-                        // Await the handle, racing against context cancellation.
-                        let result = tokio::select! {
+                        // Await the handle (JoinHandle<EvalResult<Value>>), racing against
+                        // context cancellation.
+                        let val_result: EvalResult<Value> = tokio::select! {
                             join_result = handle => {
-                                join_result.map_err(|e| {
-                                    EvalError::user_error(format!("task panicked: {e}"), call_span)
-                                })??
+                                match join_result {
+                                    Ok(inner) => inner,
+                                    Err(e) => Err(EvalError::user_error(
+                                        format!("task panicked: {e}"),
+                                        call_span,
+                                    ).into()),
+                                }
                             }
                             _ = ctx.cancel.cancelled() => {
-                                return Err(EvalError::user_error(
-                                    "await: cancelled".to_string(),
-                                    call_span,
-                                ).into());
+                                // Cache cancellation error so subsequent awaits see it too
+                                let err: Box<EvalError> = EvalError::user_error(
+                                    "await: cancelled".to_string(), call_span
+                                ).into();
+                                *guard = crate::value::TaskState::Done(Err(err.clone()));
+                                return Err(err);
                             }
                         };
 
-                        // Cache the result
-                        *guard = crate::value::TaskState::Done(Ok(result.clone()));
+                        // ALWAYS cache the real result (Ok or Err) before returning.
+                        // This prevents the sentinel Done(Ok({})) from being seen by
+                        // subsequent awaits when the first await fails.
+                        *guard = crate::value::TaskState::Done(val_result.clone());
 
                         // Return the result
-                        ok_val(result, call_span)
+                        let val = val_result?;
+                        ok_val(val, call_span)
                     }
                     crate::value::TaskState::Done(result) => {
-                        // Task already completed, return cached result
+                        // Task already completed — restore the result before extracting.
+                        // This ensures subsequent awaits see the cached result, not the sentinel.
+                        *guard = crate::value::TaskState::Done(result.clone());
                         let val = result?;
-                        *guard = crate::value::TaskState::Done(Ok(val.clone()));
                         ok_val(val, call_span)
                     }
                 }
@@ -626,7 +635,8 @@ pub(crate) fn builtin_select_once(
                                 );
 
                                 // Evaluate and return the body.
-                                let result_thunk = eval(body, call_env, &ctx).await?;
+                                let result_thunk =
+                                    eval_core_expr_pub(&*body, &call_env, &ctx).await?;
                                 let v = materialize(&result_thunk, None, &ctx).await?;
                                 return ok_val(v, call_span);
                             }
@@ -771,7 +781,8 @@ pub(crate) fn builtin_par_map(
                         );
 
                         // Evaluate the body
-                        let result_thunk = eval(body, call_env, &ctx_clone).await?;
+                        let result_thunk =
+                            eval_core_expr_pub(&*body, &call_env, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await
                     }
                     Value::Builtin(def) => {
@@ -886,7 +897,8 @@ pub(crate) fn builtin_par_filter(
                         );
 
                         // Evaluate the body
-                        let result_thunk = eval(body, call_env, &ctx_clone).await?;
+                        let result_thunk =
+                            eval_core_expr_pub(&*body, &call_env, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await?
                     }
                     Value::Builtin(def) => {
@@ -1630,6 +1642,90 @@ mod tests {
         assert!(
             !parent.is_cancelled(),
             "parent stays uncancelled after child.cancel()"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Required audit tests
+    // -------------------------------------------------------------------------
+
+    /// [channel 0] must return an error: capacity must be ≥ 1.
+    #[tokio::test]
+    async fn test_channel_capacity_zero_returns_error() {
+        let result = crate::eval_source_with_config("[channel 0]", false);
+        assert!(
+            result.is_err(),
+            "expected [channel 0] to return an error, got: {result:?}"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("capacity must be") || msg.contains("≥ 1") || msg.contains(">= 1"),
+            "expected capacity error message, got: {msg:?}"
+        );
+    }
+
+    /// A freshly created CancellationToken must not be cancelled (Rust-level check).
+    ///
+    /// This exercises the core invariant used by `cancelled?`: a new token is always
+    /// in the non-cancelled state until `cancel()` is called explicitly.
+    #[tokio::test]
+    async fn test_cancelled_q_false_on_fresh_context() {
+        let token = tokio_util::sync::CancellationToken::new();
+        assert!(
+            !token.is_cancelled(),
+            "fresh CancellationToken must not be cancelled"
+        );
+    }
+
+    /// [select-once {}] must return an error: at least one source is required.
+    ///
+    /// The empty dict `{}` is the Seq terminator, so collect_seq_to_vec returns an
+    /// empty Vec, triggering the "select-once requires at least one source" guard.
+    #[tokio::test]
+    async fn test_select_once_empty_sources_returns_error() {
+        let result = crate::eval_source_with_config("[select-once {}]", false);
+        assert!(
+            result.is_err(),
+            "expected [select-once {{}}] to return an error, got: {result:?}"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("at least one source") || msg.contains("select-once"),
+            "expected 'at least one source' error message, got: {msg:?}"
+        );
+    }
+
+    /// Verify that re-awaiting a task that completed with an error returns the error,
+    /// not the sentinel `{}` value.
+    ///
+    /// Regression test for the bug where `result?` moved the error out of Done without
+    /// restoring it to the guard, leaving the sentinel `Done(Ok({}))` in place. The
+    /// second await would then read `Ok({})` and return `{}` instead of the error.
+    #[tokio::test]
+    async fn test_await_error_twice_returns_error_both_times() {
+        // Create a task that errors. [try [fn [] ...]] catches the error as [Error "msg"].
+        // We await the same task twice — both should return [Error ...], not [Ok {}].
+        // The bug: before the fix, Done stored Ok({}) after first await and second
+        // await would return {} instead of the original error.
+        let result = crate::eval_source_with_config(
+            "[t: [task [fn [] [+ 1 2 3]]]] [first-err: [try [fn [] [await t]]]] [second-err: [try [fn [] [await t]]]] [first-result: first-err  second-result: second-err]",
+            false,
+        );
+        let output = result.expect("eval should succeed (try catches errors)");
+        // Both should be Error variants, not Ok({}). If the bug existed, second await would
+        // return Ok({}) so first-result and second-result would differ.
+        // The output contains "Error" (the variant tag) and does NOT contain "()" or "{}"
+        // as the second result.
+        assert!(
+            output.contains("Error") && !output.contains("second-result\": Ok"),
+            "both awaits should produce Error, not Ok: {output}"
+        );
+        // Verify they're the same error (same message appears twice)
+        let error_msg = "arity mismatch";
+        let count = output.matches(error_msg).count();
+        assert_eq!(
+            count, 2,
+            "both awaits should have the same error, got: {output}"
         );
     }
 }

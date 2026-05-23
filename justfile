@@ -64,21 +64,33 @@ test-corpus:
 test-lsp:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
 
-# Run clippy (linter) + manual review prompts for #[allow] suppressions and open_ambient_dir
+# Run all lint checks. Always runs every check regardless of failures; exits non-zero if any failed.
 lint:
-    @just lint-clippy
-    @echo ""
-    @just lint-clippy-allows
-    @echo ""
-    @just lint-stdlib
-    @echo ""
-    @just lint-md
-    @echo ""
-    @just lint-builtins-cps
+    #!/usr/bin/env bash
+    failed=0
+    step() {
+        echo ""
+        just "$1" || { echo "❌ $1 FAILED"; failed=1; }
+    }
+    just lint-clippy || { echo "❌ lint-clippy FAILED"; failed=1; }
+    step lint-clippy-allows
+    step lint-inner-allows
+    step lint-cfg-attr-allow
+    step lint-expect-attrs
+    step lint-stdlib
+    step lint-md
+    step lint-builtins-cps
+    echo ""
+    if [ "$failed" -ne 0 ]; then
+        echo "❌ One or more lint checks failed — see output above"
+        exit 1
+    fi
+    echo "✅ All lint checks passed!"
 
 lint-clippy:
     {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy -- -D warnings"
 
+# Outer attributes: #[allow(...)]. The ! in #![allow is NOT matched here — see lint-inner-allows.
 lint-clippy-allows:
     @echo "=== MANUAL REVIEW: #[allow] suppressions ==="
     @echo "Evaluate each item below. Any #allows must be used very sparingly, make sure each one is justified:"
@@ -87,6 +99,31 @@ lint-clippy-allows:
     @echo "  - If it's pending-feature scaffolding, track it in TODO.md and delete until needed."
     @echo "  - Allowing disallowed methods must be done very carefully, this is a security boundary. Verify this usage can't possibly leverage an existing cap"
     @fgrep -B1 -A1 -rn '#[allow' src/ || true
+
+# Inner/file-level attributes: #![allow(...)]. These suppress warnings for the entire file.
+# Not caught by lint-clippy-allows because fgrep '#[allow' doesn't match '#![allow'.
+lint-inner-allows:
+    @echo "=== MANUAL REVIEW: #![allow] file-level suppressions ==="
+    @echo "File-level allows suppress a warning class for the entire file. Each must be justified:"
+    @echo "  - Prefer targeted #[allow] on the specific item over a blanket file-level allow."
+    @echo "  - If the warning is a false positive across the whole file, document why."
+    @fgrep -B1 -A1 -rn '#![allow' src/ || true
+
+# Conditional allows: #[cfg_attr(*, allow(*))]. Suppress only under specific configurations.
+# More subtle than direct allows — the suppression may only be visible in some build profiles.
+lint-cfg-attr-allow:
+    @echo "=== MANUAL REVIEW: #[cfg_attr(*, allow(*))] conditional suppressions ==="
+    @echo "These suppress warnings only under specific cfg conditions (e.g. test, feature gates)."
+    @echo "Verify the allow is still needed and that the condition is as narrow as possible."
+    @grep -B1 -A1 -rn 'cfg_attr.*allow' src/ || true
+
+# Expect attributes: #[expect(clippy::*)]. Rust 1.81+ form — errors if the lint does NOT fire.
+# Safer than #[allow] (fails if suppression becomes stale) but still needs justification.
+lint-expect-attrs:
+    @echo "=== MANUAL REVIEW: #[expect] suppressions ==="
+    @echo "#[expect] is safer than #[allow] (errors if lint stops firing) but still needs review."
+    @echo "Verify the suppressed lint is a genuine false positive, not a real issue."
+    @fgrep -B1 -A1 -rn '#[expect' src/ || true
 
 # Verify no builtins call materialize() directly on args (all forced args must use force_count).
 # H2/H3/TEST annotated lines are intentional exceptions (conditional materialize, loop materialize,
@@ -152,7 +189,7 @@ tree:
 
 # Lint a single tinct source file
 lint-file FILE: build-release
-    {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --strict {{FILE}}
 
 # Run full CI pipeline (check, test, lint, fmt-check, audit)
 ci:

@@ -593,6 +593,9 @@ pub(crate) fn builtin_narrow(
                 appendable: false,
                 deletable: false,
                 renameable: false,
+                symlinkable: false,
+                posix_permissions: false,
+                extended_attributes: false,
             };
 
             for flag_arg in &args[1..] {
@@ -607,10 +610,13 @@ pub(crate) fn builtin_narrow(
                         "Appendable" => requested.appendable = true,
                         "Deletable" => requested.deletable = true,
                         "Renameable" => requested.renameable = true,
+                        "Symlinkable" => requested.symlinkable = true,
+                        "PosixPermissions" => requested.posix_permissions = true,
+                        "ExtendedAttributes" => requested.extended_attributes = true,
                         other => {
                             return Err(EvalError::user_error(
                             format!(
-                                "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable)",
+                                "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable, Symlinkable, PosixPermissions, ExtendedAttributes)",
                                 other
                             ),
                             call_span,
@@ -639,6 +645,9 @@ pub(crate) fn builtin_narrow(
                 appendable: requested.appendable && perms.appendable,
                 deletable: requested.deletable && perms.deletable,
                 renameable: requested.renameable && perms.renameable,
+                symlinkable: requested.symlinkable && perms.symlinkable,
+                posix_permissions: requested.posix_permissions && perms.posix_permissions,
+                extended_attributes: requested.extended_attributes && perms.extended_attributes,
             };
 
             // Runtime error if a requested flag is not held in the source
@@ -687,6 +696,27 @@ pub(crate) fn builtin_narrow(
             if requested.renameable && !perms.renameable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Renameable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.symlinkable && !perms.symlinkable {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have Symlinkable permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.posix_permissions && !perms.posix_permissions {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have PosixPermissions permission".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+            if requested.extended_attributes && !perms.extended_attributes {
+                return Err(EvalError::user_error(
+                    "narrow: source DirCap does not have ExtendedAttributes permission".to_string(),
                     call_span,
                 )
                 .into());
@@ -937,8 +967,10 @@ pub(crate) fn builtin_connect(
         match transport_tag.as_str() {
             "Tcp" => {
                 // TCP path
-                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
-                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+                // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
+                // arity validated above (structural check, no forcing)
+                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
+                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
 
                 // Extract NetCap
                 let entries = match cap_val {
@@ -1041,7 +1073,9 @@ pub(crate) fn builtin_connect(
                 // Unix stream socket path
                 #[cfg(target_os = "linux")]
                 {
-                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+                    // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
+                    // arity validated above (structural check, no forcing)
+                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
 
                     // Extract DirCap for path validation (Unix socket)
                     let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
@@ -1131,8 +1165,10 @@ pub(crate) fn builtin_connect(
             }
             "Udp" => {
                 // UDP datagram socket path
-                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
-                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+                // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
+                // arity validated above (structural check, no forcing)
+                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
+                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
 
                 // Extract NetCap
                 let entries = match cap_val {
@@ -1207,7 +1243,9 @@ pub(crate) fn builtin_connect(
                 // Unix-domain datagram socket — uses DirCap for path-based capability enforcement.
                 #[cfg(unix)]
                 {
-                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: transport-specific arg — deferred to dispatch-cont sprint
+                    // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
+                    // arity validated above (structural check, no forcing)
+                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
 
                     // Extract DirCap for path validation (Unix socket)
                     let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
@@ -2657,6 +2695,813 @@ pub(crate) fn builtin_stat(
         );
 
         ok_val(Value::Dict(dict), call_span)
+    })
+}
+
+/// `exists`: Check if a path exists within a DirCap.
+/// Returns Bool (true if exists, false if not).
+/// Cheaper than try+stat for existence checks.
+pub(crate) fn builtin_exists(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect 2 args: DirCap, String path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("exists", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "exists", args[0].span)?;
+        check_perm(perms, "Statable", perms.statable, "exists", call_span)?;
+
+        let path = require_string("exists", path_val, args[1].span)?;
+
+        // Check existence
+        let exists = dir.try_exists(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("exists: failed to check path '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        ok_val(Value::Bool(exists), call_span)
+    })
+}
+
+/// `stat-symlink`: Get metadata for a path without following symlinks (lstat equivalent).
+/// Returns a dict with the same schema as `stat`.
+pub(crate) fn builtin_stat_symlink(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        // Expect 2 args: DirCap, String path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("stat-symlink", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "stat-symlink", args[0].span)?;
+        check_perm(perms, "Statable", perms.statable, "stat-symlink", call_span)?;
+
+        let path = require_string("stat-symlink", path_val, args[1].span)?;
+
+        // Get metadata without following symlinks
+        let metadata = dir.symlink_metadata(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("stat-symlink: failed to get metadata for '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        // Determine file type
+        let file_type = if metadata.is_dir() {
+            "dir"
+        } else if metadata.is_symlink() {
+            "symlink"
+        } else if metadata.is_file() {
+            "file"
+        } else {
+            "other"
+        };
+
+        // Get mtime as unix timestamp
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| {
+                use std::time::UNIX_EPOCH;
+                t.into_std().duration_since(UNIX_EPOCH).ok()
+            })
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // Get permissions (Unix-specific)
+        #[cfg(unix)]
+        let mode = {
+            use cap_std::fs::PermissionsExt;
+            metadata.permissions().mode() as i64
+        };
+        #[cfg(not(unix))]
+        let mode = 0i64;
+
+        // Build metadata dict
+        use crate::value::Key;
+        let mut dict = IndexMap::new();
+        dict.insert(
+            Key::String("name".to_string()),
+            ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
+        );
+        dict.insert(
+            Key::String("type".to_string()),
+            ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
+        );
+        dict.insert(
+            Key::String("size".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
+        );
+        dict.insert(
+            Key::String("mtime".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
+        );
+        dict.insert(
+            Key::String("mode".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
+        );
+        dict.insert(
+            Key::String("is-dir".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
+        );
+        dict.insert(
+            Key::String("is-file".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
+        );
+        dict.insert(
+            Key::String("is-symlink".to_string()),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
+        );
+
+        ok_val(Value::Dict(dict), call_span)
+    })
+}
+
+/// `copy-file`: Copy a file from one DirCap to another.
+/// Takes 4 args: src DirCap, src path String, dst DirCap, dst path String.
+/// Returns empty dict on success.
+pub(crate) fn builtin_copy_file(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect 4 args: src DirCap, src path, dst DirCap, dst path
+        if args.len() != 4 {
+            return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
+        }
+        reject_named("copy-file", named.as_ref(), call_span)?;
+
+        let src_dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let src_path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let dst_dir_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let dst_path_val = args[3]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract src DirCap and check permissions
+        let (src_dir, src_perms) = extract_dir_cap(&src_dir_val, "copy-file", args[0].span)?;
+        check_perm(
+            src_perms,
+            "Readable",
+            src_perms.readable,
+            "copy-file",
+            call_span,
+        )?;
+
+        // Extract dst DirCap and check permissions
+        let (dst_dir, dst_perms) = extract_dir_cap(&dst_dir_val, "copy-file", args[2].span)?;
+        check_perm(
+            dst_perms,
+            "Writable",
+            dst_perms.writable,
+            "copy-file",
+            call_span,
+        )?;
+
+        let src_path = require_string("copy-file", src_path_val, args[1].span)?;
+        let dst_path = require_string("copy-file", dst_path_val, args[3].span)?;
+
+        // Copy file using cap-std's efficient kernel-level copy
+        src_dir.copy(&src_path, dst_dir, &dst_path).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "copy-file: failed to copy '{}' to '{}': {}",
+                    src_path, dst_path, e
+                ),
+                call_span,
+            )
+        })?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `symlink`: Create a symbolic link.
+/// Takes 3 args: DirCap, target String, link path String.
+/// Returns empty dict on success.
+pub(crate) fn builtin_symlink(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect 3 args: DirCap, target, link path
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("symlink", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let target_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let link_path_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "symlink", args[0].span)?;
+        check_perm(perms, "Writable", perms.writable, "symlink", call_span)?;
+
+        let target = require_string("symlink", target_val, args[1].span)?;
+        let link_path = require_string("symlink", link_path_val, args[2].span)?;
+
+        // Create symlink (platform-specific)
+        #[cfg(unix)]
+        dir.symlink(&target, &link_path).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "symlink: failed to create symlink '{}' -> '{}': {}",
+                    link_path, target, e
+                ),
+                call_span,
+            )
+        })?;
+
+        #[cfg(windows)]
+        {
+            // On Windows, we need to know if the target is a file or directory
+            // Try to stat the target to determine type
+            let is_dir = dir.metadata(&target).map(|m| m.is_dir()).unwrap_or(false);
+            if is_dir {
+                dir.symlink_dir(&target, &link_path)
+            } else {
+                dir.symlink_file(&target, &link_path)
+            }
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "symlink: failed to create symlink '{}' -> '{}': {}",
+                        link_path, target, e
+                    ),
+                    call_span,
+                )
+            })?;
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            return Err(EvalError::user_error(
+                "symlink: not supported on this platform".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `set-permissions`: Set file permissions (Unix mode).
+/// Takes 3 args: DirCap, path String, mode Int (e.g., 0o755).
+/// Returns empty dict on success.
+/// Only works on Unix-like systems.
+pub(crate) fn builtin_set_permissions(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect 3 args: DirCap, path, mode
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("set-permissions", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let mode_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "set-permissions", args[0].span)?;
+        check_perm(
+            perms,
+            "Writable",
+            perms.writable,
+            "set-permissions",
+            call_span,
+        )?;
+
+        let path = require_string("set-permissions", path_val, args[1].span)?;
+
+        // Extract mode as Int
+        let mode = match mode_val {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "set-permissions".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[2].span,
+                )
+                .into());
+            }
+        };
+
+        // Set permissions (Unix only)
+        #[cfg(unix)]
+        {
+            use cap_std::fs::{Permissions, PermissionsExt};
+
+            if mode < 0 || mode > 0o7777 {
+                return Err(EvalError::user_error(
+                    format!("set-permissions: mode {} out of range (0-0o7777)", mode),
+                    call_span,
+                )
+                .into());
+            }
+
+            let permissions = Permissions::from_mode(mode as u32);
+            dir.set_permissions(&path, permissions).map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "set-permissions: failed to set permissions on '{}': {}",
+                        path, e
+                    ),
+                    call_span,
+                )
+            })?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            return Err(EvalError::user_error(
+                "set-permissions: only supported on Unix-like systems".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `get-xattr`: Get an extended attribute value from a file (Linux only).
+/// Takes a DirCap, path String, and attribute name String.
+/// Returns Bytes value or [] if attribute not found.
+/// Requires ExtendedAttributes permission.
+#[cfg(target_os = "linux")]
+pub(crate) fn builtin_get_xattr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect 3 args: DirCap, path, attribute name
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("get-xattr", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let name_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "get-xattr", args[0].span)?;
+        check_perm(
+            perms,
+            "ExtendedAttributes",
+            perms.extended_attributes,
+            "get-xattr",
+            call_span,
+        )?;
+
+        let path = require_string("get-xattr", path_val, args[1].span)?;
+        let attr_name = require_string("get-xattr", name_val, args[2].span)?;
+
+        // Get the file via DirCap
+        let file = dir.open(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("get-xattr: failed to open file '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        // Get the extended attribute using the /proc/self/fd/{fd} path.
+        // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
+        // via /proc/self/fd/ which preserves the capability-opened file semantics.
+        use std::os::unix::io::AsRawFd;
+        let raw_fd = file.as_raw_fd();
+        let proc_path = format!("/proc/self/fd/{}", raw_fd);
+        match xattr::get(&proc_path, &attr_name) {
+            Ok(Some(value)) => {
+                let len = value.len();
+                ok_val(
+                    Value::Bytes {
+                        source: Rc::from(value.as_slice()),
+                        start: 0,
+                        end: len,
+                    },
+                    call_span,
+                )
+            }
+            Ok(None) => {
+                // Attribute not found — return []
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            Err(e) => Err(EvalError::user_error(
+                format!(
+                    "get-xattr: failed to get attribute '{}' on '{}': {}",
+                    attr_name, path, e
+                ),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn builtin_get_xattr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs { call_span, .. } = ctx_arg;
+        Err(EvalError::user_error(
+            "get-xattr: extended attributes are only supported on Linux".to_string(),
+            call_span,
+        )
+        .into())
+    })
+}
+
+/// `set-xattr`: Set an extended attribute on a file (Linux only).
+/// Takes a DirCap, path String, attribute name String, and value Bytes.
+/// Returns [] on success.
+/// Requires ExtendedAttributes and Writable permissions.
+#[cfg(target_os = "linux")]
+pub(crate) fn builtin_set_xattr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect 4 args: DirCap, path, attribute name, value
+        if args.len() != 4 {
+            return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
+        }
+        reject_named("set-xattr", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let name_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let value_val = args[3]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "set-xattr", args[0].span)?;
+        check_perm(
+            perms,
+            "ExtendedAttributes",
+            perms.extended_attributes,
+            "set-xattr",
+            call_span,
+        )?;
+        check_perm(perms, "Writable", perms.writable, "set-xattr", call_span)?;
+
+        let path = require_string("set-xattr", path_val, args[1].span)?;
+        let attr_name = require_string("set-xattr", name_val, args[2].span)?;
+
+        // Extract value as Bytes
+        let value_bytes = match value_val {
+            Value::Bytes { source, start, end } => source[start..end].to_vec(),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "set-xattr".to_string(),
+                    "Bytes",
+                    other.type_name(),
+                    args[3].span,
+                )
+                .into())
+            }
+        };
+
+        // Get the file via DirCap
+        let file = dir.open(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("set-xattr: failed to open file '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        // Set the extended attribute using the /proc/self/fd/{fd} path.
+        // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
+        // via /proc/self/fd/ which preserves the capability-opened file semantics.
+        use std::os::unix::io::AsRawFd;
+        let raw_fd = file.as_raw_fd();
+        let proc_path = format!("/proc/self/fd/{}", raw_fd);
+        xattr::set(&proc_path, &attr_name, &value_bytes).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "set-xattr: failed to set attribute '{}' on '{}': {}",
+                    attr_name, path, e
+                ),
+                call_span,
+            )
+        })?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn builtin_set_xattr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs { call_span, .. } = ctx_arg;
+        Err(EvalError::user_error(
+            "set-xattr: extended attributes are only supported on Linux".to_string(),
+            call_span,
+        )
+        .into())
+    })
+}
+
+/// `remove-xattr`: Remove an extended attribute from a file (Linux only).
+/// Takes a DirCap, path String, and attribute name String.
+/// Returns [] on success. No-ops gracefully if attribute doesn't exist.
+/// Requires ExtendedAttributes and Writable permissions.
+#[cfg(target_os = "linux")]
+pub(crate) fn builtin_remove_xattr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect 3 args: DirCap, path, attribute name
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("remove-xattr", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let name_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "remove-xattr", args[0].span)?;
+        check_perm(
+            perms,
+            "ExtendedAttributes",
+            perms.extended_attributes,
+            "remove-xattr",
+            call_span,
+        )?;
+        check_perm(perms, "Writable", perms.writable, "remove-xattr", call_span)?;
+
+        let path = require_string("remove-xattr", path_val, args[1].span)?;
+        let attr_name = require_string("remove-xattr", name_val, args[2].span)?;
+
+        // Get the file via DirCap
+        let file = dir.open(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("remove-xattr: failed to open file '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        // Remove the extended attribute using the /proc/self/fd/{fd} path.
+        // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
+        // via /proc/self/fd/ which preserves the capability-opened file semantics.
+        use std::os::unix::io::AsRawFd;
+        let raw_fd = file.as_raw_fd();
+        let proc_path = format!("/proc/self/fd/{}", raw_fd);
+        match xattr::remove(&proc_path, &attr_name) {
+            Ok(()) => ok_val(Value::Dict(IndexMap::new()), call_span),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // ENODATA — attribute doesn't exist, no-op gracefully
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            Err(e) => Err(EvalError::user_error(
+                format!(
+                    "remove-xattr: failed to remove attribute '{}' on '{}': {}",
+                    attr_name, path, e
+                ),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn builtin_remove_xattr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs { call_span, .. } = ctx_arg;
+        Err(EvalError::user_error(
+            "remove-xattr: extended attributes are only supported on Linux".to_string(),
+            call_span,
+        )
+        .into())
+    })
+}
+
+/// `list-xattrs`: List all extended attribute names on a file (Linux only).
+/// Takes a DirCap and path String.
+/// Returns a Seq of attribute name Strings.
+/// Requires ExtendedAttributes permission.
+#[cfg(target_os = "linux")]
+pub(crate) fn builtin_list_xattrs(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        // Expect 2 args: DirCap, path
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("list-xattrs", named.as_ref(), call_span)?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract DirCap and check permissions
+        let (dir, perms) = extract_dir_cap(&dir_val, "list-xattrs", args[0].span)?;
+        check_perm(
+            perms,
+            "ExtendedAttributes",
+            perms.extended_attributes,
+            "list-xattrs",
+            call_span,
+        )?;
+
+        let path = require_string("list-xattrs", path_val, args[1].span)?;
+
+        // Get the file via DirCap
+        let file = dir.open(&path).map_err(|e| {
+            EvalError::user_error(
+                format!("list-xattrs: failed to open file '{}': {}", path, e),
+                call_span,
+            )
+        })?;
+
+        // List extended attributes using the /proc/self/fd/{fd} path.
+        // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
+        // via /proc/self/fd/ which preserves the capability-opened file semantics.
+        use std::os::unix::io::AsRawFd;
+        let raw_fd = file.as_raw_fd();
+        let proc_path = format!("/proc/self/fd/{}", raw_fd);
+        let names = xattr::list(&proc_path).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "list-xattrs: failed to list attributes on '{}': {}",
+                    path, e
+                ),
+                call_span,
+            )
+        })?;
+
+        // Convert names to a Seq of Strings
+        use crate::value::string_val;
+        let name_values: Vec<_> = names
+            .into_iter()
+            .map(|name| {
+                let name_str = name.to_string_lossy().to_string();
+                string_val(&name_str)
+            })
+            .collect();
+
+        // Build a Seq from the list
+        let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
+        for name_val in name_values.into_iter().rev() {
+            let head_id = ctx.alloc_thunk(ok_val(name_val, call_span)?);
+            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span)?);
+            seq = Value::Seq {
+                head: head_id,
+                tail: tail_id,
+            };
+        }
+
+        ok_val(seq, call_span)
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn builtin_list_xattrs(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs { call_span, .. } = ctx_arg;
+        Err(EvalError::user_error(
+            "list-xattrs: extended attributes are only supported on Linux".to_string(),
+            call_span,
+        )
+        .into())
     })
 }
 

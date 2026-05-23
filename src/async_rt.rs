@@ -104,6 +104,26 @@ where
 /// `spawn_local` tasks queued during evaluation are driven concurrently on
 /// each spin iteration. This handles futures that spawn concurrent tasks via
 /// `LOCAL_SET`; the spin loop gives those tasks opportunities to progress.
+///
+/// # INVARIANT: No genuine I/O suspension
+///
+/// This executor is correct ONLY because tinct's async eval functions —
+/// `eval()`, `materialize()`, and `force_step()` — use `async fn` as syntax
+/// sugar for cooperative task switching between `spawn_local` subtasks. They
+/// contain NO genuine I/O suspension points (no `tokio::fs`, no `tokio::net`,
+/// no `tokio::time::sleep`, no channel awaits on external data).
+///
+/// Any future that returns `Poll::Pending` without an I/O-backed waker
+/// registration will cause this function to busy-spin at 100% CPU until the
+/// future eventually makes progress on the next poll. For tinct's eval
+/// futures, `Pending` is transient — the `LocalSet::run_until` wrapper
+/// drives spawned subtasks forward on each iteration, and evaluation
+/// terminates because ASTs are finite and evaluation is productive.
+///
+/// CONTRACT: futures passed to `poll_future_sync` MUST NOT perform real
+/// network or file I/O in their hot path. If tinct gains genuine async I/O
+/// (e.g., via `NetCap` builtins), those callers must use a real tokio
+/// executor, not this function.
 fn poll_future_sync<F: Future>(fut: F) -> F::Output {
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};

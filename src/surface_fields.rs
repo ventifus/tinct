@@ -6,7 +6,6 @@
 //!   and dot-access on `Value::Expression`
 //! - `surface_doc_match_view()`, `surface_program_match_view()` — match payload views
 //!   for `Value::Document` and `Value::Program`
-//! - `surface_node_from_value()` — convert macro output back to `Arc<SurfaceNode>`
 //!
 //! The field extraction functions return `Value` variants. The new `Value::Expression`,
 //! `Value::Document`, `Value::Program` variants are added in Sprint 1, Part F.
@@ -124,71 +123,6 @@ pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static 
         SurfaceExpression::TypeApp { .. } => &["fn", "arg", "span"],
         SurfaceExpression::Placeholder => &["span"],
         SurfaceExpression::Error(_) => &["span"],
-    }
-}
-
-// ============================================================================
-// Macro output reconstruction
-// ============================================================================
-
-/// Error returned when converting a macro output value back to a SurfaceNode fails.
-#[allow(dead_code)] // Used in Part E when macro expansion uses SurfaceNode directly
-#[derive(Debug)]
-pub struct MacroConversionError {
-    pub message: String,
-}
-
-impl std::fmt::Display for MacroConversionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "macro output conversion error: {}", self.message)
-    }
-}
-
-impl std::error::Error for MacroConversionError {}
-
-/// Convert a macro output `Value` back to a `SurfaceNode`.
-///
-/// This is the inverse of quoting: used when a macro returns a `Value` that needs
-/// to be inserted into the AST. The macro expander calls this to convert the
-/// transformer's output back to `Arc<SurfaceNode>`.
-///
-/// Supported conversions:
-/// - `Value::Expression(node)` → return the node directly
-/// - `Value::Dict` or `Value::Variant` → use `dict_to_ast()` then `expr_to_surface_node()`
-///
-/// Returns `Err` if the value is not a valid AST representation (e.g., primitive values,
-/// non-AST dicts).
-#[allow(dead_code)] // Used in Part E when macro expansion uses SurfaceNode directly
-pub fn surface_node_from_value(
-    v: &Value,
-    ctx: &std::sync::Arc<crate::eval::EvalContext>,
-) -> Result<Arc<SurfaceNode>, crate::error::EvalError> {
-    use crate::ast_convert::expr_to_surface_node;
-    use crate::ast_dict::dict_to_ast;
-
-    match v {
-        // Fast path: already a SurfaceNode
-        Value::Expression(node) => Ok(Arc::clone(node)),
-
-        // Slow path: Dict or Variant → dict_to_ast → expr_to_surface_node
-        Value::Dict(_) | Value::Variant { .. } => {
-            let expr = dict_to_ast(v, ctx).map_err(|ast_err| {
-                crate::error::EvalError::macro_error(
-                    format!("macro output is not a valid AST: {}", ast_err),
-                    crate::ast::Span::origin(),
-                )
-            })?;
-            Ok(expr_to_surface_node(&expr))
-        }
-
-        // Non-AST values
-        _ => Err(crate::error::EvalError::macro_error(
-            format!(
-                "macro output must be an Expression, Dict, or Variant; got {}",
-                v.type_name()
-            ),
-            crate::ast::Span::origin(),
-        )),
     }
 }
 

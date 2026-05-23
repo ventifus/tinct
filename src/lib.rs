@@ -170,7 +170,7 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
 pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck -> eval.
+    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
     // Use expand_surface_program (not expand_macros) so that SurfaceItem::Decl macro
     // registrations ([macro ...], [defmacro ...]) are seen before expansion.
     // expand_macros operates on File which drops Decl nodes via surface_program_to_file.
@@ -332,7 +332,7 @@ pub fn eval_source_with_cap_net(
 
     // Use the standard config path, then inject caps after env creation
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck -> eval.
+    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
     // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
@@ -748,6 +748,10 @@ pub fn visit_value<V: ValueVisitor>(
             "Context".to_string(),
             ast::Span::origin(),
         ))),
+        value::Value::Builder(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "Builder".to_string(),
+            ast::Span::origin(),
+        ))),
     }
 }
 
@@ -1150,7 +1154,7 @@ pub fn format_with_json_llt(
             ..
         } => {
             let call_ctx = CallContext {
-                params,
+                params: &**params,
                 body,
                 closure_env,
                 positional: &positional_args,
@@ -1195,6 +1199,7 @@ pub fn format_with_json_llt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::CoreExpr;
     use indexmap::IndexMap;
     use std::sync::RwLock;
     use test_util::test_span;
@@ -1434,7 +1439,7 @@ mod tests {
     fn test_json_function_error() {
         let f = Value::Function {
             params: Rc::new(vec![]),
-            body: Rc::new(ast::Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
+            body: Arc::new(ast::Spanned::new(CoreExpr::Int(0), test_span(1, 1, 1, 1))),
             env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
@@ -2019,7 +2024,6 @@ mod tests {
     /// Desugars to just `[Ok 42]` (the final step is returned as-is when there
     /// are no preceding binding steps).
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: Ok/Err are Variant constructors, not callable functions; do macro requires Ok/Err to be functions"]
     fn test_do_macro_single_step() {
         let result = eval_source("[do result [Ok 42]]");
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
@@ -2036,7 +2040,6 @@ mod tests {
     /// = `[and-then [Ok 1] [fn [x] [Ok [+ x 1]]]]`
     /// = `[Ok 2]`
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: Ok/Err are Variant constructors, not callable functions; do macro requires Ok/Err to be functions"]
     fn test_do_macro_one_binding_step() {
         let result = eval_source("[do result [x: [Ok 1]] [Ok [+ x 1]]]");
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
@@ -2049,7 +2052,6 @@ mod tests {
 
     /// Three binding steps: `[do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]` → Ok(3).
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: Ok/Err are Variant constructors, not callable functions; do macro requires Ok/Err to be functions"]
     fn test_do_macro_three_steps() {
         let result = eval_source("[do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]");
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
@@ -2062,7 +2064,6 @@ mod tests {
 
     /// Error short-circuits: `[Err "fail"]` in a binding step propagates.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: Ok/Err are Variant constructors, not callable functions; do macro requires Ok/Err to be functions"]
     fn test_do_macro_err_propagation() {
         // Prelude uses Error (not Err) for the Result error constructor.
         let result = eval_source("[do result [x: [Ok 1]] [y: [Error \"fail\"]] [Ok [+ x y]]]");
@@ -2085,7 +2086,6 @@ mod tests {
 
     /// `[do result]` — no steps, calls `result.pure []` → `Ok([])`.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: Ok/Err are Variant constructors, not callable functions; do macro requires Ok/Err to be functions"]
     fn test_do_macro_no_steps_calls_pure() {
         let result = eval_source("[do result]");
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
@@ -2117,7 +2117,6 @@ mod tests {
     /// Desugars to: `[result.bind [Ok 1] [fn [x] [Ok x]]]`
     /// Output: `[Ok 1]` (Variant)
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: Ok/Err are Variant constructors, not callable functions; do macro requires Ok/Err to be functions"]
     fn test_do_macro_inferred_form_binding() {
         let result = eval_source("[do [x: [Ok 1]] [Ok x]]");
         assert!(
@@ -2139,7 +2138,6 @@ mod tests {
     /// Single-step inferred form evaluates the expression directly without needing
     /// monad inference (no bind chain to resolve).
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: Ok/Err are Variant constructors, not callable functions; do macro requires Ok/Err to be functions"]
     fn test_do_macro_inferred_form_expr() {
         // [do [Ok 1]] → inferred form, 1 step → do-fold returns [Ok 1] directly
         let result = eval_source("[do [Ok 1]]");
@@ -2159,7 +2157,7 @@ mod tests {
     /// Two arms with same determining positions (Int, Int) but different determined types
     /// (Int vs Float) must produce a "consistency violation" type error.
     #[test]
-    #[ignore = "class/instance inside dict values not yet supported — needs parser extension"]
+    #[ignore = "class/instance inside dict values still not fully working — FD consistency check not firing"]
     fn test_instance_fd_consistency_violation() {
         let input = r#"[
   TestAdd: [class [let TestAdd a b c] [determines: [[[a b] c]]]
@@ -2254,7 +2252,6 @@ mod tests {
     /// contexts (when another macro produces Call(VarRef("fn"), ...)). Normal
     /// parser-level [fn [let x y] body] produces Expr::Fn directly and is unaffected.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: include-cache-failure / non-exhaustive match in stdlib when loading syntax.llt"]
     fn test_syntax_llt_fn_no_break() {
         let result = eval_source(
             r#"[include %libdir "syntax.llt"]
@@ -2269,7 +2266,6 @@ mod tests {
     /// syntax.llt fn macro: triggered when another macro produces Call(fn, ...) with
     /// non-LetDecl params. The fn macro normalizes Call(x, [y]) → proper Fn params.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: include-cache-failure / non-exhaustive match in stdlib when loading syntax.llt"]
     fn test_syntax_llt_fn_macro_triggered() {
         // wrap-fn macro emits a legacy-dict Call to "fn"; the fn macro from syntax.llt
         // intercepts it and normalizes the Call-form params to a proper Fn node.
@@ -2290,7 +2286,6 @@ mod tests {
     /// syntax.llt fn macro: single-param case — VarRef params form.
     /// wrap-fn passes a single VarRef node as params; fn macro wraps it in a singleton list.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: include-cache-failure / non-exhaustive match in stdlib when loading syntax.llt"]
     fn test_syntax_llt_fn_single_param() {
         let result = eval_source(
             r#"[include %libdir "syntax.llt"]
@@ -2308,7 +2303,6 @@ mod tests {
     /// syntax.llt fn macro: idempotent when params is already a LetDecl.
     /// wrap-fn passes a LetDecl node as params; fn macro extracts bindings and converts correctly.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: include-cache-failure / non-exhaustive match in stdlib when loading syntax.llt"]
     fn test_syntax_llt_fn_already_let_decl() {
         let result = eval_source(
             r#"[include %libdir "syntax.llt"]

@@ -6,6 +6,7 @@
 //! **Evaluation control:**
 //! - `deep-materialize`: Deep-materialize a value recursively
 //! - `error`: Raise a user error with a custom message
+//! - `builtin-macro-error`: Raise a macro error with precise span information
 //! - `try`: Catch errors from a zero-arg function
 //! - `apply`: Spread dict values as function args
 //! - `until`: Iterative loop until predicate holds
@@ -162,6 +163,133 @@ pub(crate) fn builtin_raise(
     })
 }
 
+/// `builtin-macro-error`: takes 2 args (span dict, message string).
+/// Creates a macro error with a precise source span from the span dict.
+/// Inherently materializing: must materialize both arguments.
+pub(crate) fn builtin_macro_error(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        // Reject named arguments
+        crate::builtins::reject_named("builtin-macro-error", named.as_ref(), call_span)?;
+
+        // Expect exactly 2 arguments
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // Extract span dict (first argument)
+        let span_val = materialize(&args[0], Some(&call_span), &ctx).await?; // H2: arity-guarded (args.len()==2 check above), force_count=2 registered
+        let span_dict = match span_val {
+            Value::Dict(ref map) => map,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-macro-error".to_string(),
+                    "Dict (span)",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into());
+            }
+        };
+
+        // Extract message (second argument)
+        let msg_val = materialize(&args[1], Some(&call_span), &ctx).await?; // H2: arity-guarded (args.len()==2 check above), force_count=2 registered
+        let message = require_string("builtin-macro-error", msg_val, args[1].span)?;
+
+        // Helper to extract a dict field and materialize it
+        let get_dict =
+            |parent: &IndexMap<Key, ThunkId>, field: &str| -> EvalResult<IndexMap<Key, ThunkId>> {
+                let field_id = parent.get(&Key::String(field.into())).ok_or_else(|| {
+                    EvalError::user_error(
+                        format!("builtin-macro-error: span dict missing '{}' field", field),
+                        args[0].span,
+                    )
+                })?;
+                let field_thunk = ctx.get_thunk(*field_id);
+                let field_val = materialize_sync(&field_thunk, Some(&call_span), &ctx)?;
+                match field_val {
+                    Value::Dict(map) => Ok(map),
+                    other => Err(EvalError::type_mismatch_ctx(
+                        format!("builtin-macro-error (span.{})", field),
+                        "Dict",
+                        other.type_name(),
+                        field_thunk.span,
+                    )
+                    .into()),
+                }
+            };
+
+        // Helper to extract an integer field from a dict
+        let get_int =
+            |parent: &IndexMap<Key, ThunkId>, field: &str, context: &str| -> EvalResult<usize> {
+                let field_id = parent.get(&Key::String(field.into())).ok_or_else(|| {
+                    EvalError::user_error(
+                        format!("builtin-macro-error: {} missing '{}' field", context, field),
+                        args[0].span,
+                    )
+                })?;
+                let field_thunk = ctx.get_thunk(*field_id);
+                let field_val = materialize_sync(&field_thunk, Some(&call_span), &ctx)?;
+                match field_val {
+                    Value::Int(n) if n >= 0 => Ok(n as usize),
+                    Value::Int(n) => Err(EvalError::user_error(
+                        format!(
+                            "builtin-macro-error: {}.{} must be non-negative, got {}",
+                            context, field, n
+                        ),
+                        field_thunk.span,
+                    )
+                    .into()),
+                    other => Err(EvalError::type_mismatch_ctx(
+                        format!("builtin-macro-error ({}.{})", context, field),
+                        "Int",
+                        other.type_name(),
+                        field_thunk.span,
+                    )
+                    .into()),
+                }
+            };
+
+        // Extract start and end dicts
+        let start_dict = get_dict(span_dict, "start")?;
+        let end_dict = get_dict(span_dict, "end")?;
+
+        // Extract position fields
+        let start_line = get_int(&start_dict, "line", "span.start")?;
+        let start_col = get_int(&start_dict, "col", "span.start")?;
+        let start_offset = get_int(&start_dict, "offset", "span.start")?;
+
+        let end_line = get_int(&end_dict, "line", "span.end")?;
+        let end_col = get_int(&end_dict, "col", "span.end")?;
+        let end_offset = get_int(&end_dict, "offset", "span.end")?;
+
+        // Construct Span
+        let span = crate::ast::Span::new(
+            crate::ast::Position {
+                offset: start_offset,
+                line: start_line,
+                column: start_col,
+            },
+            crate::ast::Position {
+                offset: end_offset,
+                line: end_line,
+                column: end_col,
+            },
+        );
+
+        // Create macro error with the extracted span
+        Err(EvalError::macro_error(message, span).into())
+    })
+}
+
 /// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Ok value]`
 /// on success or `[Error message]` on failure.
 /// Inherently materializing: must materialize body to catch errors.
@@ -211,8 +339,8 @@ pub(crate) fn builtin_try(
                 let call_env = std::sync::Arc::new(std::sync::RwLock::new(
                     crate::value::Environment::with_parent(Arc::clone(&closure_env)),
                 ));
-                let body_thunk = Arc::new(Thunk::new_unevaluated(
-                    Rc::clone(&body),
+                let body_thunk = Arc::new(Thunk::new_unevaluated_core(
+                    Arc::clone(&body),
                     call_env,
                     Arc::clone(&ctx),
                     body.span,
@@ -408,7 +536,7 @@ pub(crate) fn builtin_apply_impl(
                 ..
             } => {
                 invoke_function(&CallContext {
-                    params: &params,
+                    params: &*params,
                     body: &body,
                     closure_env: &closure_env,
                     positional: &positional,
@@ -535,7 +663,8 @@ pub(crate) fn builtin_gensym(
         let prefix = if args.is_empty() {
             "gensym".to_string()
         } else if args.len() == 1 {
-            let prefix_val = materialize(&args[0], Some(&call_span), &ctx).await?; // H2: conditional optional prefix arg — deferred to dispatch-cont sprint
+            // Safe conditional: args.len() check doesn't force thunks
+            let prefix_val = materialize(&args[0], Some(&call_span), &ctx).await?; // H2: conditioned on args.len()==1 check
             match prefix_val {
                 Value::String { source, start, end } => source[start..end].to_string(),
                 _ => {
@@ -1283,6 +1412,7 @@ fn type_name(val: &Value) -> String {
         Value::Task(_) => "Task",
         Value::Channel(_) => "Channel",
         Value::Context(_) => "Context",
+        Value::Builder(_) => "Builder",
     }
     .to_string()
 }
@@ -1733,6 +1863,13 @@ pub(crate) fn builtin_eval(
         // Add env: dict bindings if provided
         let env_with_bindings = if let Some(env_thunk) = env_dict {
             let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
+            // Flatten Overlay to Dict before processing env bindings
+            let env_val = match env_val {
+                Value::Overlay(l, r) => Value::Dict(crate::builtins::flatten_overlay(
+                    &l, &r, "eval", &ctx, call_span,
+                )?),
+                other => other,
+            };
             match env_val {
                 Value::Dict(entries) => {
                     // Create child environment with dict entries as bindings
@@ -1847,10 +1984,17 @@ pub(crate) fn builtin_eval(
             )
         };
 
-        // Create Surface thunks for each expression
-        let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
-        for node in expression_nodes.into_iter().rev() {
-            // Create Surface thunk
+        // Create Surface thunks and force each one in sequence, returning the last value.
+        // eval-document-runtime expects the LAST expression's evaluated value, not a Seq of thunks.
+        if expression_nodes.is_empty() {
+            return ok_val(Value::Dict(IndexMap::new()), call_span);
+        }
+
+        let mut last_thunk = Arc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            call_span,
+        ));
+        for node in expression_nodes.into_iter() {
             let surface_thunk = Arc::new(Thunk::new_surface(
                 node,
                 Arc::clone(&res_table),
@@ -1859,17 +2003,17 @@ pub(crate) fn builtin_eval(
                 Arc::clone(&ctx),
                 call_span,
             ));
-            let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
-
-            // Build cons cell (Seq)
-            let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
-            result_seq = Value::Seq {
-                head: surface_thunk_id,
-                tail: tail_thunk_id,
-            };
+            // Force the Surface thunk to get the evaluated value
+            let val = crate::eval::materialize(&surface_thunk, Some(&call_span), &ctx).await?;
+            last_thunk = Arc::new(Thunk::new_materialized(val, call_span));
         }
 
-        ok_val(result_seq, call_span)
+        ok_val(
+            last_thunk
+                .try_get_materialized()
+                .expect("just materialized"),
+            call_span,
+        )
     })
 }
 

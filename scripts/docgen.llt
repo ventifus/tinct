@@ -10,11 +10,6 @@
 --- caps: [%docdir: @[[all DirCap Writable]]]
 
 [
-  strings: [include %libdir "strings.llt"]
-  path:    [include %libdir "path.llt"]
-]
-
-[
 
 # ── File Discovery ────────────────────────────────────────────────────────────
 

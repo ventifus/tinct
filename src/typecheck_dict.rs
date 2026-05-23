@@ -547,6 +547,13 @@ pub(crate) fn infer_dict(
             }
         }
 
+        // Process deferred equality constraints after this SCC's substitution merge.
+        // This attempts to resolve TypeStageApp and Union-vs-Union constraints that may
+        // have become ground after unification in this SCC. See doc/06-type-inference.md:884.
+        if !state.deferred_equalities.is_empty() {
+            crate::types::process_deferred_equalities(state, &mut subst, span);
+        }
+
         // Apply substitution to this SCC's field types
         for &idx in &scc.indices {
             let (ref key_name, _) = key_entries[idx];

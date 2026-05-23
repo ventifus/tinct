@@ -16,7 +16,7 @@
   # 1:1 — apply f concurrently to each incoming element.
   # Inner tasks run to completion even after the outer loop exits (clean shutdown via drain/exit).
   # The ByteStream constraint on f's argument propagates to in-ch@[Channel element] at the call site.
-  channel-map: [fn@[bind: [element result]] [let f@[Fn [element] result]]
+  channel-map: [fn@[bind: [element result]] [let f]
     [fn@[return: [Channel result]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 64]]
       [out: [channel buffer-size]]
       [task [loop [fn []
@@ -25,7 +25,7 @@
       out]]
 
   # 1:N — apply f to each element; f emits multiple items to the shared output channel.
-  channel-flat-map: [fn@[bind: [element item]] [let f@[Fn [element [Channel item]] Null]]
+  channel-flat-map: [fn@[bind: [element item]] [let f]
     [fn@[return: [Channel item]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 256]]
       [out: [channel buffer-size]]
       [task [loop [fn []

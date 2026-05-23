@@ -3,11 +3,11 @@
 
 [include %libdir "net.llt"]
 
-[class [TextCodec c]
-  encode:       [Fn [c@c s@String] [Result Bytes]]
-  decode:       [Fn [c@c b@Bytes] [Result String]]
-  decode-lossy: [Fn [c@c b@Bytes] String]
-  codec-name:   [Fn [c@c] String]]
+[class [let TextCodec c]
+  encode:       [Fn@[Result Bytes] [c String]]
+  decode:       [Fn@[Result String] [c Bytes]]
+  decode-lossy: [Fn@String [c Bytes]]
+  codec-name:   [Fn@String [c]]]
 
 [type [UTF8]]       [type [UTF16LE]]   [type [UTF16BE]]
 [type [Windows1252]] [type [Latin1]]  [type [ShiftJIS]]
@@ -15,19 +15,19 @@
 [type [ISO2022JP]]
 # ... all ~38 WHATWG encodings backed by encoding_rs
 
-[instance [TextCodec UTF8]
+[instance TextCodec [pattern [c@UTF8]]:
   encode:       [fn [let _ s@String] [Ok [builtin-utf8-encode s]]]
   decode:       [fn [let _ b@Bytes]  [builtin-utf8-decode b]]
   decode-lossy: [fn [let _ b@Bytes]  [builtin-utf8-decode-lossy b]]
   codec-name:   [fn [let _] "utf-8"]]
 
-[instance [TextCodec UTF16LE]
+[instance TextCodec [pattern [c@UTF16LE]]:
   encode:       [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
   decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "utf-16le" b]]
   decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "utf-16le" b]]
   codec-name:   [fn [let _] "utf-16le"]]
 
-[instance [TextCodec Windows1252]
+[instance TextCodec [pattern [c@Windows1252]]:
   encode:       [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
   decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "windows-1252" b]]
   decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "windows-1252" b]]
@@ -42,7 +42,7 @@
                      [str-split ";" content-type]]]
     [match charset-parts
       []: null
-      [let [first ...]]:
+      [let [first ...rest]]:
         [kv: [str-split "=" first]]
         [if [>= [length kv] 2] [str-trim [get kv 1]] null]]]
 ]
@@ -93,8 +93,9 @@
     [decode-lossy c b]]
 
   decode-http-body: [fn [let body@Bytes content-type@String]
-    [codec: [match [extract-charset content-type]
-      [Some name]: [match [codec-for-name name] [Ok c]: c [Err _]: [to-codec UTF8]]
-      [None]:      [to-codec UTF8]]]
+    [cs: [extract-charset content-type]]   # bare String or null
+    [codec: [if [null? cs]
+      [to-codec UTF8]
+      [match [codec-for-name cs] [Ok c]: c [Err _]: [to-codec UTF8]]]]
     [codec.decode-lossy body]]
 ]

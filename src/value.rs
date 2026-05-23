@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::{Equivalent, IndexMap};
 
-use crate::ast::{Expr, Param, Span, Spanned, SurfaceDocument, SurfaceNode, SurfaceProgram};
+use crate::ast::{
+    CoreExpr, Expr, Param, Span, Spanned, SurfaceDocument, SurfaceNode, SurfaceProgram,
+};
 use crate::error::{EvalError, EvalResult};
 use crate::types::Type;
 
@@ -196,6 +198,9 @@ pub struct DirPerms {
     pub appendable: bool,
     pub deletable: bool,
     pub renameable: bool,
+    pub symlinkable: bool,
+    pub posix_permissions: bool,
+    pub extended_attributes: bool,
 }
 
 impl DirPerms {
@@ -209,6 +214,9 @@ impl DirPerms {
             appendable: true,
             deletable: true,
             renameable: true,
+            symlinkable: true,
+            posix_permissions: true,
+            extended_attributes: true,
         }
     }
 
@@ -222,10 +230,13 @@ impl DirPerms {
             appendable: false,
             deletable: false,
             renameable: false,
+            symlinkable: false,
+            posix_permissions: false,
+            extended_attributes: false,
         }
     }
 
-    /// Parse a single letter mode (r/w/a/s/l) and return the corresponding permissions.
+    /// Parse a single letter mode (r/w/a/s/l/y) and return the corresponding permissions.
     pub fn from_letter(c: char) -> Option<Self> {
         match c {
             'r' => Some(Self {
@@ -236,6 +247,9 @@ impl DirPerms {
                 appendable: false,
                 deletable: false,
                 renameable: false,
+                symlinkable: false,
+                posix_permissions: false,
+                extended_attributes: false,
             }),
             'w' => Some(Self {
                 readable: false,
@@ -245,6 +259,9 @@ impl DirPerms {
                 appendable: true,
                 deletable: true,
                 renameable: true,
+                symlinkable: false,
+                posix_permissions: false,
+                extended_attributes: false,
             }),
             'a' => Some(Self {
                 readable: false,
@@ -254,6 +271,9 @@ impl DirPerms {
                 appendable: true,
                 deletable: false,
                 renameable: false,
+                symlinkable: false,
+                posix_permissions: false,
+                extended_attributes: false,
             }),
             's' => Some(Self {
                 readable: false,
@@ -263,6 +283,9 @@ impl DirPerms {
                 appendable: false,
                 deletable: false,
                 renameable: false,
+                symlinkable: false,
+                posix_permissions: false,
+                extended_attributes: false,
             }),
             'l' => Some(Self {
                 readable: false,
@@ -272,6 +295,21 @@ impl DirPerms {
                 appendable: false,
                 deletable: false,
                 renameable: false,
+                symlinkable: false,
+                posix_permissions: false,
+                extended_attributes: false,
+            }),
+            'y' => Some(Self {
+                readable: false,
+                statable: false,
+                listable: false,
+                writable: false,
+                appendable: false,
+                deletable: false,
+                renameable: false,
+                symlinkable: true,
+                posix_permissions: false,
+                extended_attributes: false,
             }),
             _ => None,
         }
@@ -287,6 +325,93 @@ impl DirPerms {
             appendable: self.appendable || other.appendable,
             deletable: self.deletable || other.deletable,
             renameable: self.renameable || other.renameable,
+            symlinkable: self.symlinkable || other.symlinkable,
+            posix_permissions: self.posix_permissions || other.posix_permissions,
+            extended_attributes: self.extended_attributes || other.extended_attributes,
+        }
+    }
+}
+
+/// Transient mutable builder for efficient dict construction.
+/// Provides O(1) insert/delete with a one-shot invariant: once frozen (via builder-finish),
+/// all subsequent mutations return errors. The Option enables the frozen pattern: finish takes
+/// the inner map, leaving None behind.
+pub struct Builder {
+    inner: Mutex<Option<IndexMap<Key, ThunkId>>>,
+}
+
+impl Builder {
+    /// Create a new empty builder.
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(Some(IndexMap::new())),
+        }
+    }
+
+    /// Check if the builder is frozen (inner has been taken).
+    pub fn is_frozen(&self) -> bool {
+        self.inner.lock().unwrap().is_none()
+    }
+
+    /// Set a key-value pair. Returns error if frozen.
+    pub fn set(&self, key: Key, value: ThunkId) -> Result<(), String> {
+        let mut guard = self.inner.lock().unwrap();
+        match guard.as_mut() {
+            Some(map) => {
+                map.insert(key, value);
+                Ok(())
+            }
+            None => Err("builder is frozen (already finished)".to_string()),
+        }
+    }
+
+    /// Delete a key. Returns error if frozen.
+    pub fn delete(&self, key: &Key) -> Result<(), String> {
+        let mut guard = self.inner.lock().unwrap();
+        match guard.as_mut() {
+            Some(map) => {
+                map.shift_remove(key);
+                Ok(())
+            }
+            None => Err("builder is frozen (already finished)".to_string()),
+        }
+    }
+
+    /// Check if a key exists.
+    pub fn has(&self, key: &Key) -> bool {
+        let guard = self.inner.lock().unwrap();
+        guard.as_ref().map_or(false, |map| map.contains_key(key))
+    }
+
+    /// Get a value by key. Returns None if key doesn't exist or builder is frozen.
+    pub fn get(&self, key: &Key) -> Option<ThunkId> {
+        let guard = self.inner.lock().unwrap();
+        guard.as_ref().and_then(|map| map.get(key).copied())
+    }
+
+    /// Take the inner map, freezing the builder. Returns error if already frozen.
+    pub fn finish(&self) -> Result<IndexMap<Key, ThunkId>, String> {
+        let mut guard = self.inner.lock().unwrap();
+        guard
+            .take()
+            .ok_or_else(|| "builder is already frozen".to_string())
+    }
+
+    /// Clone the inner map without freezing. Returns error if frozen.
+    pub fn snapshot(&self) -> Result<IndexMap<Key, ThunkId>, String> {
+        let guard = self.inner.lock().unwrap();
+        guard
+            .as_ref()
+            .ok_or_else(|| "builder is frozen".to_string())
+            .map(|map| map.clone())
+    }
+}
+
+impl Clone for Builder {
+    fn clone(&self) -> Self {
+        let guard = self.inner.lock().unwrap();
+        Self {
+            inner: Mutex::new(guard.clone()),
         }
     }
 }
@@ -310,10 +435,15 @@ pub enum Value {
     Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
     Dict(IndexMap<Key, ThunkId>),
-    /// User-defined function (closure capturing its defining environment)
+    /// Transient builder for efficient mutable dict construction.
+    /// One-shot invariant: once frozen (via builder-finish), all mutations error.
+    /// Sequential-use: not safe for concurrent modification (Mutex protects state, not semantics).
+    Builder(Arc<Builder>),
+    /// User-defined function (closure capturing its defining environment).
+    /// `body` is stored as `Arc<Spanned<CoreExpr>>` (Parts-E migration: no Expr round-trip).
     Function {
         params: Rc<Vec<Param>>,
-        body: Rc<Spanned<Expr>>,
+        body: Arc<Spanned<CoreExpr>>,
         env: Arc<RwLock<Environment>>,
         annotation: Option<Box<FnAnnotation>>,
     },
@@ -559,6 +689,7 @@ impl Value {
             Value::String { .. } => "String",
             Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
+            Value::Builder(_) => "Builder",
             Value::Function { .. } => "Function",
             Value::Builtin(_) => "Builtin",
             Value::Seq { .. } => "Seq",
@@ -622,6 +753,13 @@ impl fmt::Debug for Value {
             Value::Dict(map) => {
                 let keys: Vec<&Key> = map.keys().collect();
                 f.debug_tuple("Dict").field(&keys).finish()
+            }
+            Value::Builder(builder) => {
+                if builder.is_frozen() {
+                    write!(f, "Builder(frozen)")
+                } else {
+                    write!(f, "Builder")
+                }
             }
             Value::Function { params, .. } => {
                 let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
@@ -701,6 +839,13 @@ impl fmt::Display for Value {
                     write!(f, "{key}: <thunk>")?;
                 }
                 write!(f, "]")
+            }
+            Value::Builder(builder) => {
+                if builder.is_frozen() {
+                    write!(f, "<Builder (frozen)>")
+                } else {
+                    write!(f, "<Builder>")
+                }
             }
             Value::Function { params, .. } => {
                 write!(f, "[fn [")?;
@@ -886,7 +1031,9 @@ const _: () = {
 /// Stores the data needed to evaluate a thunk when it's first accessed.
 #[derive(Debug)]
 pub enum UnevaluatedState {
-    /// AST expression from the old runtime (CoreExpr will replace this in full runtime-v2).
+    /// AST expression from the old Expr-based runtime path.
+    /// New code should prefer UnevaluatedState::CoreExpr to avoid the Expr round-trip.
+    /// TODO(parts-e): retire this variant once all Expr-based thunk creation sites are migrated.
     Expr {
         expr: Rc<Spanned<Expr>>,
         env: Arc<RwLock<Environment>>,
@@ -906,6 +1053,13 @@ pub enum UnevaluatedState {
     AstNodeField {
         node: Arc<SurfaceNode>,
         field: &'static str,
+        ctx: Arc<crate::eval::EvalContext>,
+    },
+    /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
+    /// Avoids the CoreExpr→Expr round-trip that UnevaluatedState::Expr required.
+    CoreExpr {
+        expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+        env: Arc<RwLock<Environment>>,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred builtin call (was PendingBuiltin).
@@ -1019,6 +1173,26 @@ impl Thunk {
                     env_id: Some(env_id),
                     ctx,
                 })),
+                result: tokio::sync::OnceCell::new(),
+            },
+            span,
+            origin: None,
+        }
+    }
+
+    /// Create an unevaluated thunk from a CoreExpr body (no Expr round-trip).
+    ///
+    /// Used by `invoke_function` when `Value::Function.body` is `Arc<Spanned<CoreExpr>>`.
+    /// On first force, `eval_core_expr_pub` is called directly — no conversion to Expr needed.
+    pub fn new_unevaluated_core(
+        expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<crate::eval::EvalContext>,
+        span: Span,
+    ) -> Self {
+        Self {
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(UnevaluatedState::CoreExpr { expr, env, ctx })),
                 result: tokio::sync::OnceCell::new(),
             },
             span,
@@ -1249,6 +1423,31 @@ impl Thunk {
         }
     }
 
+    /// Atomically take the CoreExpr state (if present), transitioning to InProgress.
+    ///
+    /// Returns `Some((expr, env, ctx))` if the thunk was in CoreExpr state.
+    /// Returns `None` if the thunk was in any other state (state is restored).
+    pub fn take_core_expr(
+        &self,
+    ) -> Option<(
+        Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+        Arc<RwLock<Environment>>,
+        Arc<crate::eval::EvalContext>,
+    )> {
+        let mut guard = self.inner.unevaluated.lock().unwrap();
+        match guard.take() {
+            Some(UnevaluatedState::CoreExpr { expr, env, ctx }) => {
+                // State is now InProgress
+                Some((expr, env, ctx))
+            }
+            other => {
+                // Restore the state
+                *guard = other;
+                None
+            }
+        }
+    }
+
     // Return type is a one-shot destructured tuple only used in materialize();
     // a type alias would add indirection without clarity.
     #[allow(clippy::type_complexity)]
@@ -1459,9 +1658,14 @@ impl Thunk {
     /// Cache a failed evaluation by transitioning to the Failed state.
     /// Used to memoize errors so failed thunks don't re-evaluate on subsequent access.
     ///
+    /// One-shot: uses `OnceCell::set` internally, so a second call on an already-Failed
+    /// thunk is a no-op (the cell is already set). Callers need not guard against
+    /// double-caching, but the first call wins — subsequent calls with different errors
+    /// are silently dropped.
+    ///
     /// Skips the clone and state write if the thunk is already in the Failed state
     /// (e.g., when a shared thunk is encountered a second time during error propagation).
-    pub fn cache_failure(&self, err: &EvalError) {
+    pub fn cache_failure_once(&self, err: &EvalError) {
         // Fast path: if already Failed, no work needed — avoid the clone.
         if let Some(result) = self.inner.result.get() {
             if result.is_err() {
@@ -1767,7 +1971,7 @@ mod tests {
         // Function values are intentionally non-comparable
         let f = Value::Function {
             params: Rc::new(vec![]),
-            body: Rc::new(Spanned::new(Expr::Int(0), test_span(1, 1, 1, 1))),
+            body: Arc::new(Spanned::new(CoreExpr::Int(0), test_span(1, 1, 1, 1))),
             env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
@@ -2049,7 +2253,7 @@ mod tests {
                 variadic: false,
             },
         ]);
-        let body = Rc::new(Spanned::new(Expr::Int(0), span));
+        let body = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
         let func = Value::Function {
             params,
@@ -2138,7 +2342,7 @@ mod tests {
                 variadic: false,
             },
         ]);
-        let body = Rc::new(Spanned::new(Expr::Int(0), span));
+        let body = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
         let func = Value::Function {
             params,
@@ -2283,8 +2487,8 @@ mod tests {
         let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
                 params: Rc::new(vec![]),
-                body: Rc::new(Spanned::new(
-                    crate::ast::Expr::Int(0),
+                body: Arc::new(Spanned::new(
+                    crate::ast::CoreExpr::Int(0),
                     test_span(1, 1, 1, 1),
                 )),
                 env: Arc::new(RwLock::new(Environment::new())),
@@ -2599,7 +2803,7 @@ mod tests {
 
         // Transition to Failed
         let err = EvalError::internal("test error".into(), span);
-        thunk.cache_failure(&err);
+        thunk.cache_failure_once(&err);
 
         // Verify final state is Failed
         let cached = thunk.get_cached_error();
@@ -2648,14 +2852,14 @@ mod tests {
 
     #[test]
     fn test_get_cached_error_failed_returns_some() {
-        // Failed thunk: cache_failure() sets the error; get_cached_error() must return Some.
+        // Failed thunk: cache_failure_once() sets the error; get_cached_error() must return Some.
         // Start from Unevaluated so the OnceCell result is unset, then transition to Failed.
         let span = test_span(1, 1, 1, 5);
         let expr = Rc::new(Spanned::new(Expr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
         let err = crate::error::EvalError::internal("sentinel error".into(), span);
-        thunk.cache_failure(&err);
+        thunk.cache_failure_once(&err);
 
         let result = thunk.get_cached_error();
         assert!(
@@ -2753,7 +2957,7 @@ mod tests {
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
         let err = crate::error::EvalError::internal("test".into(), span);
-        thunk.cache_failure(&err);
+        thunk.cache_failure_once(&err);
         assert!(
             !thunk.is_in_progress(),
             "is_in_progress() must return false for Failed thunk"

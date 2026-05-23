@@ -31,7 +31,7 @@ pub(crate) async fn invoke_proxy_handler(
             ..
         } => {
             invoke_function(&CallContext {
-                params: &params,
+                params: &*params,
                 body: &body,
                 closure_env: &closure_env,
                 positional: &[key_arg],

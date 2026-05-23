@@ -27,8 +27,14 @@
     [raw: [slice b len-result.value-offset len-result.len]]
     [value:
       [if constructed
-        [children: [der-parse-seq raw 0 []]]
-        [match tag-num 16: [AsnSeq children] 17: [AsnSet children] _: [AsnSeq children]]
+        # Then: sequence/set — bind children via immediately-invoked lambda (single if-arg).
+        [[fn [let children]
+           [match tag-num
+             16: [AsnSeq children]
+             17: [AsnSet children]
+             _:  [AsnSeq children]]]   # context-constructed treated as sequence
+         [der-parse-seq raw 0 []]]
+        # Else: primitive tag dispatch.
         [match tag-num
           1:  [AsnBool [not [= [get raw 0] 0]]]
           2:  [AsnInt raw]
@@ -47,8 +53,10 @@
   der-parse-seq: [fn [let b@Bytes offset@Int acc@[Seq AsnValue]]
     [if [>= offset [length b]]
       acc
-      [result: [der-parse-one b offset]]
-      [der-parse-seq b result.next [append acc [list result.value]]]]]
+      # Else: parse one node, recurse — immediately-invoked lambda binds result.
+      [[fn [let result]
+         [der-parse-seq b result.next [append acc [list result.value]]]]
+       [der-parse-one b offset]]]]
 
   decode-oid: [fn [let b@Bytes]
     [if [= [length b] 0] [error "DER: empty OID"] null]

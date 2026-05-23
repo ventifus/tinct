@@ -167,6 +167,13 @@ Foundational papers grounding tinct's design decisions. Each citation identifies
 
 - Oppen, D. (1980). "Prettyprinting." *ACM TOPLAS*, 2(4), 465–483. — Foundational algorithm for line-breaking decisions in pretty-printing. Scan tokens left-to-right, decide whether a group fits on the current line or must break. Tinct's `fits-inline?` binary decision directly applies Oppen's model. [formatter, `doc/whatif/tinct-hosted-formatter.md`]
 
+**Linear accumulators and transient construction:**
+
+- Okasaki, C. (1998). *Purely Functional Data Structures.* Cambridge University Press. §6.1 — Amortized functional queues via two-list representation. Direct antecedent of the `cons`+`reverse` accumulator pattern. [linear accumulators, `doc/whatif/linear-accumulators.md`]
+- Hickey, R. (2009). "Are we there yet?" JVM Language Summit keynote. — Clojure's value/identity distinction and transient-then-persistent as idiom for bulk construction in value-oriented languages. Direct model for `Value::Builder` / `builder-finish`. [transient values, `doc/whatif/linear-accumulators.md`]
+- Bagwell, P. (2001). "Ideal hash trees." EPFL Technical Report. — HAMT persistent data structure. Background for why transients (O(1) amortized in-place) outperform persistent tries (O(log₃₂ n)) for purely-constructive single-use accumulation. [linear accumulators, `doc/whatif/linear-accumulators.md`]
+- Launchbury, J. & Peyton Jones, S.L. (1994). "Lazy functional state threads." In *PLDI '94*, pp. 24–35. ACM. doi:10.1145/178243.178246 — The ST monad: `runST` safely encapsulates a mutable region that freezes to a pure value via rank-2 polymorphism (`forall s. ST s a`). Formal model for `Value::Builder`: `make-builder` = `newSTRef`; `builder-set`/`builder-get` = `writeSTRef`/`readSTRef`; `builder-finish` = `runST`. Tinct enforces the use-once invariant dynamically (frozen flag) where Haskell enforces it statically (rank-2 type). [transient values, `doc/whatif/linear-accumulators.md`]
+
 ## Resources
 
 - [Crafting Interpreters](https://craftinginterpreters.com/) — evaluator implementation

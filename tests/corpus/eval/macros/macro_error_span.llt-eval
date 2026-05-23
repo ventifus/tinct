@@ -1,0 +1,16 @@
+# Test: macro-error with span-of for precise error location
+#
+# This test verifies that macro-error correctly uses the span from span-of
+# to report errors at the exact source location of the problematic argument.
+
+# Define a macro that validates its argument and errors with span if invalid
+[macro expect-int [let arg]
+  [if [builtin-int? arg]
+    arg
+    [macro-error [span-of arg] "expected an integer literal"]]]
+
+# Call the macro with an invalid argument (a string instead of int)
+# The error should point to the "hello" argument location
+[expect-int "hello"]
+=== error
+[E012] macro expansion error: expected an integer literal

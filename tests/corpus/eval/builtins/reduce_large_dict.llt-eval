@@ -1,0 +1,11 @@
+// Test: reduce over a large dict (converted from range) should not cause stack overflow
+// Create a dict with 1000 entries by collecting a range into a dict
+// (range produces a Seq, collect converts it to a Dict with integer keys)
+let {
+  large_dict: [collect [range 0 1000]]
+  sum: [reduce [_ acc v: [+ acc v]] 0 large_dict]
+}
+[sum]
+---
+// Expected: sum of 0..999 = (999 * 1000) / 2 = 499500
+499500

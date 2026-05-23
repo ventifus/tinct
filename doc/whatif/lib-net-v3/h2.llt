@@ -42,10 +42,10 @@
         [bytes [mod len 256]]
         [bytes [h2-frame-type->int frame.type]]
         [bytes frame.flags]
-        [bytes [/ [/ frame.stream-id 65536] 256]]
-        [bytes [mod [/ frame.stream-id 65536] 1]]
-        [bytes [/ [mod frame.stream-id 65536] 256]]
-        [bytes [mod frame.stream-id 256]]
+        [bytes [/ frame.stream-id 16777216]]           # byte 0: sid >> 24
+        [bytes [mod [/ frame.stream-id 65536] 256]]    # byte 1: (sid >> 16) & 0xFF
+        [bytes [mod [/ frame.stream-id 256]   256]]    # byte 2: (sid >> 8)  & 0xFF
+        [bytes [mod frame.stream-id 256]]              # byte 3:  sid        & 0xFF
         frame.payload]]]
 
   # HPACK static table (RFC 7541 Appendix A) — 61 entries, indexed 1–61.

@@ -130,7 +130,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
 | `get-in`, `get-in-or` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. `get-in-or` returns a default on missing keys instead of erroring. |
 | `set`, `remove` | Structural — add/remove entries |
-| `merge` | **Materializing** — eagerly materializes both dicts, builds new IndexMap (O(n)); values remain as thunk Rc-clones. |
+| `merge` | **Lazy** — returns `Value::Overlay(left, right)` in O(1). Neither operand is materialized. Flattening to IndexMap is deferred to access time. Values remain as thunk Arc-clones. |
 | `keys` | Structural — keys are always evaluated, not thunks |
 | `values`, `entries` | Structural — returns thunks in dict insertion order |
 | `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
@@ -1550,6 +1550,63 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 | `values` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` — integer-indexed list of values |
 | `entries` | `(Dict a -> Dict [key: b  value: a])` | `fn@Dict [xs@Dict]` |
 | `from-entries` | `(Dict [key: a  value: b] -> Dict b)` | `fn@Dict [pairs]` — return annotation `@Dict`; parameter unannotated (accepts any collection with `.key`/`.value` entries) |
+| `build-dict` | `(Seq [key: a  value: b] -> Dict b)` | Rust builtin — efficiently constructs dict from key-value pairs; O(n) replacement for O(n²) merge-accumulation |
+
+#### Transient Builders
+
+**One-shot/sequential-use invariant:** Builders are mutable containers for efficient dict construction. Once `builder-finish` is called, the builder becomes **frozen** — all subsequent mutations return errors. Builders are not safe for concurrent modification (the `Mutex` protects internal state consistency, not semantic correctness). Use builders for local accumulation patterns, then immediately finish to get the final dict.
+
+**Pattern:** Replace O(n²) merge-accumulation with O(n) builder operations:
+
+```tinct
+# OLD: O(n²) merge-accumulation
+[builtin-reduce
+    [fn [acc x]
+        [merge acc [make-entry [f x] x]]]
+    []
+    xs]
+
+# NEW: O(n) with builder
+[builder-finish
+    [builtin-reduce
+        [fn [b x]
+            [builder-set b [f x] x]]
+        [make-builder]
+        xs]]
+```
+
+**Builtins:**
+
+| Function | Type | Notes |
+|----------|------|-------|
+| `make-builder` | `(-> Builder)` | Create empty mutable builder |
+| `builder-set` | `(Builder -> Key -> a -> Builder)` | Set key-value pair; returns builder for chaining; errors if frozen |
+| `builder-delete` | `(Builder -> Key -> Builder)` | Remove key; returns builder for chaining; errors if frozen |
+| `builder-finish` | `(Builder -> Dict a)` | Take inner dict, freeze builder permanently; errors if already frozen |
+| `builder-snapshot` | `(Builder -> Dict a)` | Clone inner dict without freezing; errors if frozen |
+| `builder-has?` | `(Builder -> Key -> Bool)` | Check if key exists; errors if frozen |
+| `builder-get` | `(Builder -> Key -> a)` | Get value by key; errors if key not found or frozen |
+
+**Example — `group-by` (O(n) with builder):**
+
+```tinct
+group-by: [fn [let f xs]
+    [b: [make-builder]]
+    [builtin-reduce
+        [fn [let b x]
+            [k:      [f x]]
+            [bucket: [if [builder-has? b k] [builder-get b k] []]]
+            [builder-set b k [cons x bucket]]]
+        b
+        xs]
+    [build-dict
+        [map [fn [let e] [key: e.key  value: [reverse [collect e.value]]]]
+             [entries [builder-finish b]]]]]
+```
+
+Each bucket accumulates elements via `cons` (O(1) prepend onto a lazy Seq). After `builder-finish`, each bucket is reversed and collected into a Dict in one O(n) pass. Total: O(n).
+
+**Frozen invariant:** Once `builder-finish` is called, the builder's inner map is `take()`n (set to `None`). All subsequent mutations (`builder-set`, `builder-delete`) and reads (`builder-snapshot`, `builder-get`) return errors identifying the frozen state. This prevents accidental reuse after finishing.
 
 ### List Operations
 

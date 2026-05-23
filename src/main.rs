@@ -1005,6 +1005,9 @@ fn parse_cap_fs_entries(
                     appendable: false,
                     deletable: false,
                     renameable: false,
+                    symlinkable: false,
+                    posix_permissions: false,
+                    extended_attributes: false,
                 };
                 for cap_name in caps_str.split_whitespace() {
                     match cap_name {
@@ -1015,6 +1018,9 @@ fn parse_cap_fs_entries(
                         "Appendable" => perms.appendable = true,
                         "Deletable" => perms.deletable = true,
                         "Renameable" => perms.renameable = true,
+                        "Symlinkable" => perms.symlinkable = true,
+                        "PosixPermissions" => perms.posix_permissions = true,
+                        "ExtendedAttributes" => perms.extended_attributes = true,
                         _ => {
                             return Err(format!(
                                 "--cap-fs: unknown capability {:?} in extended mode",
@@ -1025,7 +1031,7 @@ fn parse_cap_fs_entries(
                 }
                 perms
             } else {
-                // Letter mode: r/w/a/s/l
+                // Letter mode: r/w/a/s/l/y
                 let mut perms = DirPerms {
                     readable: false,
                     statable: false,
@@ -1034,13 +1040,16 @@ fn parse_cap_fs_entries(
                     appendable: false,
                     deletable: false,
                     renameable: false,
+                    symlinkable: false,
+                    posix_permissions: false,
+                    extended_attributes: false,
                 };
                 for c in mode.chars() {
                     if let Some(letter_perms) = DirPerms::from_letter(c) {
                         perms = perms.union(&letter_perms);
                     } else {
                         return Err(format!(
-                            "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l)",
+                            "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l/y)",
                             c
                         ));
                     }
@@ -1783,7 +1792,7 @@ fn run_eval(
             cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory: {e}"))?;
 
-        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck -> eval.
+        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         // See also: src/lib.rs (eval_source_with_config pipeline), src/expand.rs module comment.

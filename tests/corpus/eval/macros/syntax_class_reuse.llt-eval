@@ -1,0 +1,22 @@
+---
+# Test: syntax-class reused across multiple macros
+# One syntax class definition is used by two different macros.
+
+[syntax-class literal-value
+  pattern: [let _ : Literal]
+  message: "literal value (e.g., 42, true, \"text\")"]
+
+[macro const-val [let name@VarRef value@literal-value]
+  [quote [let [[[unquote name]: [unquote value]]]]]]
+
+[macro assert-lit [let val@literal-value]
+  [quote [if [unquote val] [] [error "assertion failed"]]]]
+
+# Use both macros
+x: [const-val x 42]
+[assert-lit true]
+[str x]
+
+=== out
+
+"42"

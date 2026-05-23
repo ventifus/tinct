@@ -34,7 +34,7 @@ pub struct Row {
 
 /// Kind for higher-kinded types (Jones 1993)
 /// Kinds classify types: * for proper types, Operator for type constructors (* → *)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// * — kind of proper types (Int, Str, [name: Str], etc.)
     Type,
@@ -128,7 +128,9 @@ pub enum Type {
     NetCap,
     /// File/stream handle — wraps Box<dyn BufRead>. Created by `open` or `connect`.
     /// Represents authority to read/write a specific open resource.
-    Handle,
+    /// The inner type is a Row describing capabilities (e.g., Handle[Readable Writable]).
+    /// Type::Unknown as the inner type means "unknown capabilities" (gradual typing).
+    Handle(Box<Type>),
     /// URI — uniform resource identifier with scheme. Represents capability-tagged URLs.
     Uri,
     /// UTC timestamp (nanoseconds since Unix epoch) — created by `parse-timestamp` or `now`.
@@ -238,7 +240,7 @@ impl PartialEq for Type {
             (Type::Error, Type::Error) => true,
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
-            (Type::Handle, Type::Handle) => true,
+            (Type::Handle(cap1), Type::Handle(cap2)) => cap1 == cap2,
             (Type::Uri, Type::Uri) => true,
             (Type::Timestamp, Type::Timestamp) => true,
             (Type::Duration, Type::Duration) => true,
@@ -299,7 +301,6 @@ impl std::hash::Hash for Type {
             | Type::Error
             | Type::DirCap
             | Type::NetCap
-            | Type::Handle
             | Type::Uri
             | Type::Timestamp
             | Type::Duration
@@ -313,6 +314,7 @@ impl std::hash::Hash for Type {
             | Type::Never => {}
             Type::IntLiteral(v) => v.hash(state),
             Type::StringLiteral(s) => s.hash(state),
+            Type::Handle(cap) => cap.hash(state),
             Type::Record(row) => {
                 // Hash fields in sorted order for deterministic hashing
                 let mut fields: Vec<_> = row.fields.iter().collect();
@@ -442,6 +444,9 @@ impl Type {
             // conservative syntactic disjointness check that catches obvious cases like
             // Int <: ~String (true) and Int <: ~Int (false).
             (sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a),
+            // Handle: covariant in capability row
+            // Handle[Readable Writable] <: Handle[Readable] because more capabilities satisfy fewer
+            (Type::Handle(sub_cap), Type::Handle(sup_cap)) => Type::is_subtype(sub_cap, sup_cap),
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
@@ -779,6 +784,8 @@ impl Type {
                         .all(|((_n1, ty1), (_n2, ty2))| Type::is_consistent(ty1, ty2))
                     && Type::is_consistent(r1, r2)
             }
+            // Handle: consistent if capability rows are consistent
+            (Type::Handle(cap1), Type::Handle(cap2)) => Type::is_consistent(cap1, cap2),
             (Type::Record(row1), Type::Record(row2)) => {
                 // Shared fields must be consistent
                 for (k, ty1) in &row1.fields {
@@ -1010,6 +1017,7 @@ impl Type {
                     ty.collect_type_vars(vars);
                 }
             }
+            Type::Handle(cap) => cap.collect_type_vars(vars),
             _ => {}
         }
     }
@@ -1041,6 +1049,7 @@ impl Type {
             Type::NominalVariant { tag: _, fields } => {
                 fields.fields.values().any(|ty| ty.has_inference_vars())
             }
+            Type::Handle(cap) => cap.has_inference_vars(),
             Type::Proxy => false,
             _ => false,
         }
@@ -1069,6 +1078,7 @@ impl Type {
             Type::NominalVariant { tag: _, fields } => {
                 fields.fields.values().any(|ty| ty.has_type_stage_app())
             }
+            Type::Handle(cap) => cap.has_type_stage_app(),
             _ => false,
         }
     }
@@ -1131,6 +1141,7 @@ impl Type {
                     ty.collect_all_vars(type_vars);
                 }
             }
+            Type::Handle(cap) => cap.collect_all_vars(type_vars),
             _ => {}
         }
     }
@@ -1219,6 +1230,7 @@ impl Type {
                 }
                 found
             }
+            Type::Handle(cap) => cap.collect_all_vars_check_occurs(occurs_name, type_vars),
             _ => false,
         }
     }
@@ -1283,6 +1295,7 @@ impl Type {
                     ty.collect_all_vars_vec(type_vars);
                 }
             }
+            Type::Handle(cap) => cap.collect_all_vars_vec(type_vars),
             _ => {}
         }
     }
@@ -1336,6 +1349,7 @@ impl Type {
                     ty.collect_operator_names(operator_names);
                 }
             }
+            Type::Handle(cap) => cap.collect_operator_names(operator_names),
             _ => {}
         }
     }
@@ -1691,6 +1705,7 @@ impl Type {
                     },
                 }
             }
+            Type::Handle(cap) => Type::Handle(Box::new(Type::simplify_type(*cap))),
             _ => ty,
         }
     }
@@ -1718,7 +1733,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::Error => 16,
         Type::DirCap => 17,
         Type::NetCap => 18,
-        Type::Handle => 19,
+        Type::Handle(_) => 19,
         Type::Uri => 20,
         Type::Timestamp => 21,
         Type::Duration => 22,
@@ -1777,13 +1792,14 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
                 other => other,
             }
         }
-        // For complex types (Record, Function, Seq, Map, App), use Display representation
+        // For complex types (Record, Function, Seq, Map, App, Handle), use Display representation
         // This is not ideal but ensures stability
         (Type::Record(_), Type::Record(_))
         | (Type::Function { .. }, Type::Function { .. })
         | (Type::Seq(_), Type::Seq(_))
         | (Type::Map(_, _), Type::Map(_, _))
-        | (Type::App(_, _), Type::App(_, _)) => a.to_string().cmp(&b.to_string()),
+        | (Type::App(_, _), Type::App(_, _))
+        | (Type::Handle(_), Type::Handle(_)) => a.to_string().cmp(&b.to_string()),
         _ => Ordering::Equal,
     }
 }
@@ -1866,6 +1882,7 @@ pub fn check_kind_wellformed(
             }
             Ok(())
         }
+        Type::Handle(cap) => check_kind_wellformed(cap, kind_env, span),
         // All other types (Int, Str, Bool, literals, capabilities, etc.) are always well-kinded
         _ => Ok(()),
     }

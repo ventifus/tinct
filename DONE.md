@@ -9054,3 +9054,20 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] Verify deleted (file-level): `src/eval_deep.rs`, `src/eval_pipeline.rs`, `src/desugar.rs` (replaced by E2), `src/ast_dict.rs` (replaced by E3) — these should be gone after E3-formatter-delete-bridge; confirm no dangling `mod` declarations (`src/`) — **NOT YET DELETED**: all four files still exist and are in use; properly tracked in TODO.md:169 as Part E deletion; E3-formatter-delete-bridge has not run yet; no bugs to file
 - [x] Scan `src/` for `use std::rc::Rc` — should be zero after sprint-2a-rc-arc; file a bug for any survivor (`src/`) — **32 FILES STILL USE Rc**: expected; old `Expr`/`File`/`Document` AST still uses `Rc<Spanned<Expr>>` throughout; Rc→Arc migration only covered runtime types (Arc<Thunk>, Arc<EvalContext>, Mutex<ThunkState>); old AST deletion tracked in TODO.md:167 Part E; no bugs to file
 - [x] `just build` passes; run `/review-whatif runtime-v2` — **BUILD PASSES**; `/review-whatif runtime-v2` deferred (requires dedicated review session)
+
+## Runtime-v2 Regression Fixes
+
+### runtime-v2-fix-regressions: Fix do-macro, include-cache, placeholder, and task-reawait
+
+- [x] Verify Variant constructors are callable — already implemented (eval.rs:2264-2274), 7 do-macro tests un-ignored
+- [x] Fix include-cache non-exhaustive match — added "stage" field handler to eval_materialize.rs Value::Document access (doc.stage returned {} instead of Runtime/Type variant)
+- [x] Un-ignore 4 syntax.llt tests (`src/lib.rs`)
+- [x] Placeholder test — already fixed, expects Err for circular dependency
+- [x] Fix task-error-reawait — clone result into guard BEFORE `?` extraction in builtins_async.rs
+- [x] Add test for task error re-await behavior (`src/builtins_async.rs`)
+- [x] Un-ignore all fixed tests
+
+### runtime-v2-fix-class-instance-in-dict: Support declaration forms inside dict values
+
+- [x] Extend parser to allow ClassDecl/InstanceDecl/TypeDecl in nested positions — modified 6 CloseBracket handlers (TypeAlias, DefMacro, MacroDecl, SyntaxClass, ClassDecl, InstanceDecl) to use surface_decl_to_expr → expr_to_surface_node → push_value bridge instead of erroring (`src/parser.rs`)
+- [x] Un-ignore `test_instance_fd_consistency_violation` (`src/lib.rs`)

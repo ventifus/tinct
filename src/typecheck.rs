@@ -793,7 +793,7 @@ fn typecheck_surface_document(
                                 errors.append(&mut alias_errs);
                                 env = Rc::new(new_env);
                             }
-                            Type::Unknown => {}
+                            Type::Unknown => {} // Gradual: dict type inference failed, skip type alias registration
                             _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
                         }
                     }
@@ -1258,7 +1258,7 @@ fn typecheck_document(
                                 errors.append(&mut alias_errs);
                                 env = Rc::new(new_env);
                             }
-                            Type::Unknown => {}
+                            Type::Unknown => {} // Gradual: dict type inference failed (second occurrence)
                             _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
                         }
                     }
@@ -1385,6 +1385,7 @@ fn register_type_aliases(
                     if let Expr::TypeAlias { params, body } = &entry.node.value.node {
                         alias_entries.push((name.clone(), params.clone(), body.clone()));
                         // Pre-register with placeholder body
+                        // Gradual: Pre-register with placeholder during forward-reference resolution
                         target_env.insert_type_alias(
                             name.clone(),
                             TypeAlias {
@@ -1559,9 +1560,10 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                     }
                     "fn?" if args.len() == 1 => {
                         if let Expr::VarRef { name: var_name, .. } = &args[0].node {
-                            // fn? narrows to Function{params:[], ret:Unknown, variadic:true},
+                            // HKT: fn? narrows to Function{params:[], ret:Unknown, variadic:true},
                             // the "any function" type. Zero-param variadic now unifies with any
                             // concrete function signature (fn-narrowing-variadic sprint).
+                            // Unknown ret type deferred until higher-kinded return type inference.
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Function {
@@ -1585,6 +1587,8 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                     }
                     "seq?" if args.len() == 1 => {
                         if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                            // HKT: seq? narrows to Seq(Unknown) — element type deferred until
+                            // higher-kinded type parameterization (Seq: * → *)
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Seq(Box::new(Type::Unknown)),
@@ -1659,6 +1663,7 @@ fn try_type_of(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowing>
                                 "Dict" => Some(Type::Record(Row {
                                     fields: HashMap::new(),
                                 })),
+                                // HKT: bare Seq type tag narrows to Seq(Unknown) — element type deferred
                                 "Seq" => Some(Type::Seq(Box::new(Type::Unknown))),
                                 "Number" => Some(Type::Number),
                                 _ => None,
@@ -1835,6 +1840,7 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
             for (key, sub_pat) in fields {
                 // Narrow the sub-pattern's scrutinee type using the record field type.
                 let field_ty = match scrutinee_ty {
+                    // Gradual: field not in known set — Unknown for missing field in pattern
                     Type::Record(row) => row.fields.get(key).cloned().unwrap_or(Type::Unknown),
                     // Union: if all members that are Records agree on the field type, use it.
                     Type::Union(members) => {
@@ -1854,9 +1860,11 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                             if field_types.iter().all(|ty| ty == first_ty) {
                                 first_ty.clone()
                             } else {
+                                // Gradual: Union members disagree on field type
                                 Type::Unknown
                             }
                         } else {
+                            // Gradual: no Record member has this field
                             Type::Unknown
                         }
                     }
@@ -1869,6 +1877,7 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
             // Head is the element type; tail is the remaining Seq.
             let elem_ty = match scrutinee_ty {
                 Type::Seq(elem) => (**elem).clone(),
+                // Gradual: scrutinee is not a Seq — element type unknown
                 _ => Type::Unknown,
             };
             collect_pattern_bindings(&head.node, &elem_ty, out);
@@ -1903,6 +1912,7 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                                 }
                             }
                         }
+                        // Gradual: constructor tag not found in Union — payload type unknown
                         matching_fields.map(Type::Record).unwrap_or(Type::Unknown)
                     }
                     Type::Intersection(members) => {
@@ -1910,6 +1920,7 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                         // Intersection([Union([Ok_ty, Err_ty]), NominalVariant("Ok", {})]).
                         // Search members for a Union containing the tag (tried first, type_order=30)
                         // or a bare NominalVariant (type_order=37, reached only if no Union matches).
+                        // Gradual: default payload Unknown if tag not found
                         let mut payload = Type::Unknown;
                         // Scan members for the matching constructor's field type.
                         // Intersection([Union([Ok, Err]), NominalVariant("Ok", {})]) from I-Case3:
@@ -2016,8 +2027,8 @@ fn extract_binding_types(
             }
         }
         // Implied call [Int] or [Result String] — treat as a type reference
-        // For now, just treat the whole call as Unknown to avoid infinite recursion
-        // Full implementation would resolve constructor types from the call
+        // Gradual: implied call [Int] or [Result String] — treat as Unknown to avoid
+        // infinite recursion. Full implementation would resolve constructor types from the call.
         Expr::Call { .. } => {
             types.push(Type::Unknown);
         }
@@ -2034,11 +2045,11 @@ fn extract_binding_types(
             .map_err(|e| vec![e])?;
             types.push(ty);
         }
-        // Bare identifier (treated as Unknown for now)
+        // Gradual: bare identifier in pattern binding (no annotation)
         Expr::VarRef { .. } => {
             types.push(Type::Unknown);
         }
-        // Wildcard placeholder
+        // Gradual: wildcard placeholder
         Expr::Placeholder => {
             types.push(Type::Unknown);
         }
@@ -2080,7 +2091,7 @@ fn patterns_overlap(
     // Use a temporary substitution so state.subst is also unaffected.
     let mut temp_subst = state.subst.clone();
     let overlaps = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
-        // Unknown is the gradual-typing wildcard for unannotated pattern bindings.
+        // Gradual: Unknown is the gradual-typing wildcard for unannotated pattern bindings.
         // Treat Unknown as distinct from any concrete type: a position with Unknown
         // cannot be used to establish overlap (it carries no type information).
         if matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown) {
@@ -2853,7 +2864,7 @@ fn infer_expr(
             }
 
             // Union all arm result types and simplify (RDNF step 1a).
-            // If arms is empty (malformed match), fall back to Unknown.
+            // Gradual: if arms is empty (malformed match), fall back to Unknown
             // Deduplication and simplification collapse Union([Int, Int]) → Int, etc.
             let match_ty = if arm_result_types.is_empty() {
                 Type::Unknown
@@ -3306,16 +3317,13 @@ fn infer_expr(
         }
 
         Expr::CaseArm { pattern, body } => {
-            // CaseArm can be type-checked standalone, though typically it appears inside match.
-            // For now: infer pattern type, infer body type, return body type.
-            // The scrutinee type is Unknown when CaseArm is checked standalone.
+            // Gradual: CaseArm checked standalone (no match context) — scrutinee type unknown
             typecheck_case_arm(pattern, body, &Type::Unknown, env, state, type_map)
         }
 
         Expr::Placeholder => {
-            // Placeholder has type Unknown — satisfies any constraint.
-            // This is the gradual typing escape hatch: ... can be used anywhere a value is needed,
-            // deferring type checking to runtime (where it raises UnimplementedError when forced).
+            // Gradual: placeholder (`...`) is the explicit gradual typing escape hatch.
+            // Satisfies any constraint, defers type checking to runtime (raises UnimplementedError when forced).
             Ok(Type::Unknown)
         }
 
@@ -3335,6 +3343,7 @@ fn infer_expr(
                     return Ok(resolved_ty.clone());
                 }
             }
+            // Gradual: TypeApp outside annotation context
             Ok(Type::Unknown)
         }
 
@@ -3762,6 +3771,7 @@ fn check_get(
                 // split returns Seq[Str], so [get N [split sep s]] → Str.
                 match &key_ty {
                     Type::Int | Type::IntLiteral(_) => make_nullable(*elem_ty.clone()),
+                    // Gradual: non-integer key on Seq — type unknown
                     _ => Type::Unknown,
                 }
             }
@@ -3772,7 +3782,7 @@ fn check_get(
                         match row.fields.get(field) {
                             Some(field_ty) => make_nullable(field_ty.clone()),
                             None => {
-                                // Field not in the known set. For closed records this is an error
+                                // Gradual: field not in the known set. For closed records this is an error
                                 // at runtime, but we return Unknown here to allow gradual typing.
                                 // check_dot_access returns an error for closed records; get/get?
                                 // are more permissive since they take dynamic keys.
@@ -3794,15 +3804,16 @@ fn check_get(
                                 0,
                             ) {
                                 Ok(field_ty) => make_nullable(field_ty),
+                                // Gradual: label TypeVar not yet bound
                                 Err(_) => Type::Unknown,
                             }
                         } else {
-                            // Non-label TypeVar key against a Record: we can't narrow statically.
+                            // Gradual: non-label TypeVar key against a Record — can't narrow statically
                             Type::Unknown
                         }
                     }
                     _ => {
-                        // Non-literal key against a Record: we can't narrow statically.
+                        // Gradual: non-literal key against a Record — can't narrow statically
                         Type::Unknown
                     }
                 }
@@ -3844,12 +3855,12 @@ fn check_get(
 
                             make_nullable(field_var)
                         } else {
-                            // Non-label TypeVar key: fall back to Unknown
+                            // Gradual: non-label TypeVar key — fall back to Unknown
                             Type::Unknown
                         }
                     }
                     _ => {
-                        // Non-literal, non-label-TypeVar key: fall back to Unknown
+                        // Gradual: non-literal, non-label-TypeVar key — fall back to Unknown
                         Type::Unknown
                     }
                 }
@@ -3866,6 +3877,7 @@ fn check_get(
                             0,
                         ) {
                             Ok(field_ty) => make_nullable(field_ty),
+                            // Gradual: resolve_has_field failed on Union/Intersection/Top
                             Err(_) => Type::Unknown,
                         }
                     }
@@ -3880,17 +3892,20 @@ fn check_get(
                                 0,
                             ) {
                                 Ok(field_ty) => make_nullable(field_ty),
+                                // Gradual: label TypeVar not yet bound in Union/Intersection/Top
                                 Err(_) => Type::Unknown,
                             }
                         } else {
+                            // Gradual: non-label TypeVar key on Union/Intersection/Top
                             Type::Unknown
                         }
                     }
+                    // Gradual: non-literal key on Union/Intersection/Top
                     _ => Type::Unknown,
                 }
             }
             _ => {
-                // Unknown, or other: fall back to Unknown.
+                // Gradual: Unknown or other non-indexable type — fall back to Unknown
                 Type::Unknown
             }
         };
@@ -3952,7 +3967,7 @@ fn check_get_in(
                 };
 
                 if !is_auto_indexed {
-                    // Non-auto-indexed entry: fall back to Unknown
+                    // Gradual: non-auto-indexed entry in path — fall back to Unknown
                     return Ok(Type::Unknown);
                 }
 
@@ -3960,7 +3975,7 @@ fn check_get_in(
                 match &entry.node.value.node {
                     Expr::Str(s) => keys.push(s.clone()),
                     _ => {
-                        // Non-literal path element: fall back to Unknown
+                        // Gradual: non-literal path element — fall back to Unknown
                         return Ok(Type::Unknown);
                     }
                 }
@@ -3982,7 +3997,7 @@ fn check_get_in(
                         if let Some(field_ty) = row.fields.get(&key) {
                             current_ty = field_ty.clone();
                         } else {
-                            // Field not found: fall back to Unknown
+                            // Gradual: field not found in get-in path
                             return Ok(Type::Unknown);
                         }
                     }
@@ -3991,12 +4006,14 @@ fn check_get_in(
                         match resolve_has_field(&Label::Concrete(key), &current_ty, state, span, 0)
                         {
                             Ok(field_ty) => current_ty = field_ty,
+                            // Gradual: resolve_has_field failed in get-in path
                             Err(_) => return Ok(Type::Unknown),
                         }
                     }
+                    // Gradual: Unknown propagates through get-in chain
                     Type::Unknown => return Ok(Type::Unknown),
                     _ => {
-                        // Not a record or union: fall back to Unknown
+                        // Gradual: not a record or union in get-in path
                         return Ok(Type::Unknown);
                     }
                 }
@@ -4005,7 +4022,7 @@ fn check_get_in(
             Ok(current_ty)
         }
         _ => {
-            // Path is not a literal sequence: fall back to Unknown
+            // Gradual: path is not a literal sequence
             Ok(Type::Unknown)
         }
     }
@@ -4068,9 +4085,11 @@ fn check_do_infer(
                 if let Some(ret_ty) = state.expected_return.clone() {
                     state.subst.apply(&ret_ty)
                 } else {
+                    // Gradual: no expected_return context — bind? return type unknown
                     Type::Unknown
                 }
             }
+            // Gradual: non-Result monad type — bind? return type unknown
             _ => Type::Unknown,
         };
         return Ok(ret);
@@ -4297,8 +4316,8 @@ fn check_dot_access(
     match target_ty {
         Type::Record(Row { ref fields, .. }) => match fields.get(field_str) {
             Some(ty) => Ok(ty.clone()),
-            // BAS: field not found in known fields — return Unknown (width subtyping:
-            // the field may be present in the concrete value via extra fields).
+            // Gradual: BAS width subtyping — field not found in known fields, return Unknown
+            // (the field may be present in the concrete value via extra fields)
             None => Ok(Type::Unknown),
         },
         // TypeVar α: generate constraint α = Record({field: β}).
@@ -4321,7 +4340,9 @@ fn check_dot_access(
 
             Ok(beta)
         }
+        // Gradual: Unknown dict — field type Unknown
         Type::Unknown => Ok(Type::Unknown),
+        // Gradual: Proxy dict — field type Unknown (Proxy is opaque handle)
         Type::Proxy => Ok(Type::Unknown),
         // Intersection type: search each member for the field.
         // An intersection value satisfies all members, so any member that has the field
@@ -4337,10 +4358,10 @@ fn check_dot_access(
                     }
                 }
             }
-            // No member had the field statically.
+            // Gradual: no Intersection member had the field statically
             Ok(Type::Unknown)
         }
-        // Negation type: ~A narrows inhabitance, not field structure.
+        // Gradual: Negation type ~A narrows inhabitance, not field structure.
         // We cannot extract field types from a negation, so fall back to Unknown.
         Type::Negation(_) => Ok(Type::Unknown),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
@@ -4366,8 +4387,8 @@ fn check_dot_access_int(
             if let Some(ty) = fields.get(field_name.as_str()) {
                 return Ok(ty.clone());
             }
-            // BAS: field not found in known fields — return Unknown
-            // (width subtyping: the field may be present in the concrete value)
+            // Gradual: BAS width subtyping — field not found in known fields
+            // (the field may be present in the concrete value via extra fields)
             Ok(Type::Unknown)
         }
         Type::TypeVar(ref alpha, alpha_level) => {
@@ -4384,7 +4405,9 @@ fn check_dot_access_int(
             result.map_err(|e| vec![e])?;
             Ok(beta)
         }
+        // Gradual: Unknown dict — integer field type Unknown
         Type::Unknown => Ok(Type::Unknown),
+        // Gradual: Proxy dict — integer field type Unknown (Proxy is opaque handle)
         Type::Proxy => Ok(Type::Unknown),
         // Intersection type: search each member for the numeric field.
         Type::Intersection(ref members) => {
@@ -4395,9 +4418,10 @@ fn check_dot_access_int(
                     }
                 }
             }
+            // Gradual: no Intersection member had the numeric field
             Ok(Type::Unknown)
         }
-        // Negation type: fall back to Unknown for integer field access.
+        // Gradual: Negation type — fall back to Unknown for integer field access
         Type::Negation(_) => Ok(Type::Unknown),
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
@@ -4697,9 +4721,10 @@ fn check_call_with_scheme(
                 }
             }
         }
+        // Gradual: callee type is Unknown — infer args for LSP hover, return Unknown
         Type::Unknown => {
-            // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
-            // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
+            // Infer positional args for type map population (needed for LSP hover on Unknown-typed functions).
+            // This loop runs only for Unknown-typed callees — for Type::Function arms, positional args are
             // already inferred exactly once in CALL-POLY (infer_expr at line 934).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
@@ -5189,9 +5214,10 @@ fn check_call(
             }
             Ok(Type::Unknown)
         }
+        // Gradual: callee type is Unknown — infer args for LSP hover, return Unknown (check_call path)
         Type::Unknown => {
-            // Infer positional args for type map population (needed for LSP hover on Any-typed functions).
-            // This loop runs only for Any-typed callees — for Type::Function arms, positional args are
+            // Infer positional args for type map population (needed for LSP hover on Unknown-typed functions).
+            // This loop runs only for Unknown-typed callees — for Type::Function arms, positional args are
             // already inferred exactly once in CALL-MONO (check_expr at line 1011) or CALL-POLY (infer_expr).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
@@ -5285,6 +5311,7 @@ fn typecheck_case_arm(
                         for nested in nested_bindings {
                             match &nested.node {
                                 Expr::VarRef { name, .. } if name != "_" => {
+                                    // Gradual: unannotated constructor field binding
                                     arm_env.insert(name.clone(), Type::Unknown);
                                 }
                                 Expr::Annotated { name, annotation } => {
@@ -5407,9 +5434,9 @@ fn infer_fn(
                 //
                 // FUTURE WORK: To enable TypeVars here, fix the merge loop to be O(N) instead
                 // of O(N²) — e.g., by not calling subst.apply() for each entry, or by using
-                // union-find substitution (see doc/whatif/union-find-substitution.md).
-                // When that is done, restore: None => Ok(state.fresh_type_var())
-                // and update test_fn_unannotated to expect TypeVar instead of Unknown.
+                // Gradual: unannotated parameter gets Unknown type.
+                // TODO: once union-find substitution lands (doc/whatif/union-find-substitution.md),
+                // restore: None => Ok(state.fresh_type_var()) and update test_fn_unannotated.
                 None => Ok(Type::Unknown),
             }?;
             Ok((Some(p.node.name.clone()), ty))
@@ -5812,6 +5839,7 @@ fn check_overbroad_annotations(
                 "Str" => Some(Type::Str),
                 "Bool" => Some(Type::Bool),
                 "Top" => Some(Type::Top),
+                // Gradual: explicit @Unknown annotation
                 "Unknown" => Some(Type::Unknown),
                 _ => None, // Type variables, named types, etc.
             },
@@ -6811,6 +6839,7 @@ mod tests {
                 // during prelude type-checking and must wait for a proper fix.
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].0, Some("x".to_string()));
+                // Gradual: unannotated param gets Unknown type
                 assert_eq!(
                     params[0].1,
                     Type::Unknown,
@@ -8144,6 +8173,7 @@ mod tests {
         // (the @Fn annotation must resolve to Any, not a pseudo-Function type).
         match ty {
             Type::Function { params, .. } => {
+                // HKT: bare @Fn annotation resolves to Unknown (deferred until higher-kinded types)
                 assert_eq!(
                     params,
                     vec![(Some("f".to_string()), Type::Unknown)],
@@ -9005,6 +9035,7 @@ mod tests {
         match &id_scheme.body {
             Type::Function { params, ret, .. } => {
                 assert_eq!(params.len(), 1);
+                // Gradual: unannotated params and return get Unknown
                 assert_eq!(
                     params[0].1,
                     Type::Unknown,
@@ -9524,7 +9555,7 @@ mod tests {
         // This was fixed in the bidirectional-typing-b sprint.
         //
         // Practically, zero-arity polymorphic functions in LLT are rare:
-        //   - Unannotated params get Type::Unknown (monomorphic path, no type vars).
+        // Gradual: unannotated params get Type::Unknown (monomorphic path, no type vars).
         //   - Annotated type-var params require at least one param (by definition).
         //   - [fn@a [] body] fails to type-check because body type ≮ TypeVar a.
         //
@@ -14063,10 +14094,12 @@ mod tests {
         state.levels.insert(beta.clone(), 1);
 
         // Seed alpha with a Numeric class constraint.
+        // The Numeric class is already registered in InferState::new(),
+        // so we can retrieve it from class_env.
+        let numeric_class = state.class_env.get("Numeric").unwrap();
         state.constraints.push(Constraint::Class {
-            class: "Numeric".to_string(),
+            class: std::sync::Arc::new(numeric_class.clone()),
             vars: vec![alpha.clone()],
-            fundeps: vec![],
         });
 
         let a = Type::TypeVar(alpha.clone(), 1);
@@ -14079,8 +14112,8 @@ mod tests {
 
         // After unification, beta must have the Numeric constraint.
         let beta_has_numeric = state.constraints.iter().any(|c| match c {
-            Constraint::Class { class, vars, .. } => {
-                class == "Numeric" && vars.len() == 1 && vars[0] == beta
+            Constraint::Class { class, vars } => {
+                class.name == "Numeric" && vars.len() == 1 && vars[0] == beta
             }
             _ => false,
         });

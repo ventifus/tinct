@@ -1,0 +1,25 @@
+# User-defined class with FD that fires at a constrained call site
+# Verifies that functional dependencies trigger improvement when constraint resolution occurs.
+[
+  # Define a two-param class with FD: a determines b
+  NumConvert: [class [let NumConvert a b] [determines: [[[a] b]]  resolver: NumConvertResolver]
+    convert: [Fn@b [a]]]
+
+  # Instance: Int converts to Float
+  NumConvertIntFloat: [instance [let NumConvert Int Float]
+    convert: to-float]
+
+  # Constrained function that uses NumConvert
+  # When called with Int, FD should improve b to Float
+  double-convert: [fn [x@Int]
+    [convert x]]
+
+  # Call the function — FD should fire and infer result type as Float
+  result: [double-convert 42]
+]
+
+---
+
+%.result
+=== out
+Float(42.0)

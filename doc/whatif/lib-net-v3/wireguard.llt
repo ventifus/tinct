@@ -6,7 +6,7 @@
 [include %libdir "async.llt"]
 [include %include-dir "tls.llt"]   # for HkdfHash ([Blake2s] etc.) — sibling in protocols/
 
-[instance [ByteStream [WireguardConnection h]]
+[instance ByteStream [pattern [h@[WireguardConnection h]]]:
   read-bytes:  wg-read-bytes
   write-bytes: wg-write-bytes]
 
@@ -91,7 +91,7 @@
   # can be stacked over any stream (Handle, TlsConnection, etc.).
   # Single-writer invariant on tx-nonce: two concurrent writers cause nonce reuse
   # → ChaCha20-Poly1305 keystream reuse → full confidentiality loss.
-  WireguardConnection: [type [h@ByteStream]
+  WireguardConnection: [type [h]   # h must satisfy ByteStream; enforced at instance sites
     [underlying: h
      tx-key:     [Bytes 32]
      rx-key:     [Bytes 32]

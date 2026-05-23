@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
-use crate::desugar;
+use crate::desugar; // TODO(parts-e): remove when desugar.rs is deleted (blocked on evaluator CoreExpr migration)
 use crate::expand;
 use crate::parser;
 use crate::resolve;
@@ -243,7 +243,10 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // so the type checker needs to know about them to avoid false "undefined variable" errors.
     env.insert("%pwd".to_string(), crate::types::Type::DirCap);
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    env.insert("%stdin".to_string(), crate::types::Type::Handle);
+    env.insert(
+        "%stdin".to_string(),
+        crate::types::Type::Handle(Box::new(Type::Unknown)),
+    );
 
     // Only prelude.llt is loaded at startup.
     // strings.llt, math.llt, and encoding.llt require explicit [include libdir "module.llt"].
@@ -254,7 +257,10 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Inject capability types into builtins_env for prelude type-checking
     builtins_env.insert("%pwd".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    builtins_env.insert("%stdin".to_string(), crate::types::Type::Handle);
+    builtins_env.insert(
+        "%stdin".to_string(),
+        crate::types::Type::Handle(Box::new(Type::Unknown)),
+    );
     // %rust injection: previously needed for [include %rust "..."] calls in prelude.llt.
     // include-decomp-prelude removed those calls; this entry is now a no-op but harmless.
     // Kept here to avoid type errors if any external code still references %rust.
@@ -1029,7 +1035,10 @@ pub fn build_type_env_with_cap(
     let mut env = TypeEnv::with_parent(&prelude_env);
     env.insert("%pwd".to_string(), crate::types::Type::DirCap);
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    env.insert("%stdin".to_string(), crate::types::Type::Handle);
+    env.insert(
+        "%stdin".to_string(),
+        crate::types::Type::Handle(Box::new(Type::Unknown)),
+    );
     let mut env = Rc::new(env);
 
     let mut include_bindings = HashMap::new();
@@ -1229,7 +1238,10 @@ mod tests {
         use crate::types::Type;
         assert_eq!(env.get("%pwd").unwrap().body, Type::DirCap);
         assert_eq!(env.get("%libdir").unwrap().body, Type::DirCap);
-        assert_eq!(env.get("%stdin").unwrap().body, Type::Handle);
+        assert_eq!(
+            env.get("%stdin").unwrap().body,
+            Type::Handle(Box::new(Type::Unknown))
+        );
     }
 
     /// Verify that `build_type_env` returns binding maps for includes.

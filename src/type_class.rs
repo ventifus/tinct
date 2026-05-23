@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::ast::Span;
 use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
@@ -14,14 +15,14 @@ use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
 pub enum Constraint {
     /// Type class constraint: `class vars` (e.g., `Numeric a` or `Add a b c`)
     ///
+    /// `class`: The type class declaration (provides name, functional dependencies, resolver, etc.)
     /// `vars`: Type variable names in the constraint (e.g., ["a"] for single-param, ["a", "b", "c"] for MPTC)
-    /// `fundeps`: Functional dependencies as (determining positions, determined positions) pairs.
-    ///            Each pair is (Vec<usize>, Vec<usize>) indexing into `vars`.
-    ///            For `Add a b c` with FD `(a,b) → c`: fundeps = vec![(vec![0,1], vec![2])]
+    ///
+    /// Functional dependencies are accessed via `class.determines`.
+    /// For `Add a b c` with FD `(a,b) → c`: `class.determines = vec![(vec![0,1], vec![2])]`
     Class {
-        class: String,
+        class: Arc<ClassDecl>,
         vars: Vec<String>,
-        fundeps: Vec<(Vec<usize>, Vec<usize>)>,
     },
     /// HasField constraint: `HasField label dict_var field_var`
     /// Asserts that dict_var has a field at label with type field_var.
@@ -35,11 +36,29 @@ pub enum Constraint {
 
 impl Constraint {
     /// Create a single-parameter Class constraint (backward compatibility helper)
-    pub fn new(class: impl Into<String>, var: impl Into<String>) -> Self {
+    pub fn new(class: Arc<ClassDecl>, var: impl Into<String>) -> Self {
         Self::Class {
-            class: class.into(),
+            class,
             vars: vec![var.into()],
-            fundeps: vec![],
+        }
+    }
+
+    /// Create a single-parameter Class constraint from a class name string.
+    /// Constructs a minimal `ClassDecl` with just the name (no params, superclasses, or FDs).
+    /// Used in built-in environment construction where the full `ClassDecl` is not yet available.
+    pub fn new_by_name(name: impl Into<String>, var: impl Into<String>) -> Self {
+        let name = name.into();
+        let class = Arc::new(ClassDecl {
+            name,
+            params: vec![],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+        });
+        Self::Class {
+            class,
+            vars: vec![var.into()],
         }
     }
 }
@@ -47,8 +66,8 @@ impl Constraint {
 impl fmt::Display for Constraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Constraint::Class { class, vars, .. } => {
-                write!(f, "{}", class)?;
+            Constraint::Class { class, vars } => {
+                write!(f, "{}", class.name)?;
                 for var in vars {
                     write!(f, " {}", var)?;
                 }
@@ -65,7 +84,7 @@ impl fmt::Display for Constraint {
 
 /// Type class declaration (Wadler & Blott 1989)
 /// Example: `[class [Equatable a] eq: [Fn@Bool [a a]]]`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClassDecl {
     /// Class name (e.g., "Equatable")
     pub name: String,
@@ -87,6 +106,12 @@ pub struct ClassDecl {
     /// Wired up when chr-gaps Gap 1 (resolver evaluation) is implemented.
     #[allow(dead_code)]
     pub(crate) resolver_injective: bool,
+}
+
+impl fmt::Display for ClassDecl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
 }
 
 /// Type class instance declaration
@@ -152,13 +177,15 @@ impl Default for ClassEnv {
 
 /// Instance environment: global registry of type class instances.
 ///
-/// Key is `(class_name, determining_type_strings)` where `determining_type_strings` is the
-/// vec of string-formatted types at the class's determining (LHS of functional dependency)
-/// positions.  For single-parameter classes with no functional dependencies the key vec has
-/// one element: the string representation of the sole instance type.
+/// Instances are stored with a key of `(class_name, determining_type_strings)` for fast
+/// exact-match lookup, where `determining_type_strings` is the vec of string-formatted types
+/// at the class's determining (LHS of functional dependency) positions. For single-parameter
+/// classes with no functional dependencies the key vec has one element: the string
+/// representation of the sole instance type.
 ///
 /// This representation supports both single-parameter and multi-parameter type class (MPTC)
-/// instances with functional dependencies.  See `lookup_mptc` for the query API.
+/// instances with functional dependencies. The `lookup_mptc` query API uses structural
+/// unification to match instances, correctly handling HKT instance heads with type variables.
 #[derive(Debug, Clone)]
 pub struct InstanceEnv {
     instances: HashMap<(String, Vec<String>), InstanceDecl>,
@@ -226,24 +253,84 @@ impl InstanceEnv {
 
     /// Look up an MPTC instance by class name and the ground determining types.
     ///
-    /// Builds a key from `determining_types` by normalizing each type to a canonical string via
-    /// `type_to_string_key` (promotes `IntLiteral` to `"Int"`, etc.), then delegates to the
-    /// internal `instances` map.  Traverses the parent chain so scoped instances are visible.
+    /// Uses structural unification to match instances rather than string-key lookup.
+    /// This correctly handles HKT instance heads like `[Channel t]` where the type
+    /// variable `t` needs to unify with concrete query types like `Int`.
     ///
-    /// Returns `Some(&InstanceDecl)` if an exact key match is found, `None` otherwise.
+    /// Returns `Some(InstanceDecl)` (owned, with freshened types) if a matching instance
+    /// is found, `None` otherwise.
     ///
     /// This is the query API for MPTC functional-dependency resolution: the caller supplies the
     /// ground types at the determining positions of the class's FD, and this method returns the
-    /// registered instance whose key matches.
-    pub fn lookup_mptc(&self, class: &str, determining_types: &[Type]) -> Option<&InstanceDecl> {
-        let key = (
-            class.to_string(),
-            determining_types
-                .iter()
-                .map(type_to_string_key)
-                .collect::<Vec<String>>(),
-        );
-        self.instances.get(&key)
+    /// registered instance whose determining positions unify with the query types.
+    ///
+    /// Note: This method performs unification checks but does not modify the global substitution.
+    /// It uses a temporary substitution for matching purposes only. Returns a cloned instance
+    /// to avoid borrow checker issues when state is also needed by the caller.
+    pub fn lookup_mptc(
+        &self,
+        class: &str,
+        determining_types: &[Type],
+        state: &mut InferState,
+    ) -> Option<InstanceDecl> {
+        // Collect candidate instances for this class
+        for ((cname, _), inst) in &self.instances {
+            if cname != class {
+                continue;
+            }
+
+            // Extract the determining types from the instance pattern.
+            // For multi-param instances, instance_type is a Record with numbered fields.
+            let instance_det_types: Vec<Type> = if inst.det_positions.is_empty() {
+                // Single-parameter class: the entire instance_type is the determining type
+                vec![inst.instance_type.clone()]
+            } else {
+                // Multi-parameter class: extract types at determining positions
+                match &inst.instance_type {
+                    Type::Record(row) => inst
+                        .det_positions
+                        .iter()
+                        .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
+                        .collect(),
+                    _ => continue, // Malformed instance, skip
+                }
+            };
+
+            // Check arity
+            if instance_det_types.len() != determining_types.len() {
+                continue;
+            }
+
+            // Attempt unification of all determining positions.
+            // Use a temporary substitution to avoid polluting the global state.
+            let mut temp_subst = state.subst.clone();
+            let mut all_match = true;
+
+            for (inst_ty, query_ty) in instance_det_types.iter().zip(determining_types.iter()) {
+                // Freshen the instance type to get fresh type variables
+                let freshened_inst_ty = instantiate_at_level(inst_ty, state);
+
+                if unify(
+                    &freshened_inst_ty,
+                    query_ty,
+                    &mut temp_subst,
+                    state,
+                    Span::origin(),
+                )
+                .is_err()
+                {
+                    all_match = false;
+                    break;
+                }
+            }
+
+            if all_match {
+                // Found a matching instance - return a clone
+                return Some(inst.clone());
+            }
+        }
+
+        None
     }
 
     /// Iterate over all locally registered instance declarations (does not traverse parent chain).

@@ -1,0 +1,6 @@
+# values: large input (n=1000) to verify O(n) performance (no timeout/stack overflow)
+# Build a 1000-element dict, then extract values
+[let test-dict [collect [range 0 1000]]]
+[length [values test-dict]]
+=== out
+Int(1000)

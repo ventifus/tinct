@@ -68,7 +68,12 @@ pairs, and IPv4/IPv6 CIDR ranges. See §NetCap Allowlist Specification.
 **`Value::Handle`** — authority to read from and write to one specific open
 resource (a file or socket). Created by `open`, `connect`, or `tls`; received
 from the runtime as `stdin`. A `Handle` is itself a capability — more narrowly
-scoped than a `DirCap` (one file vs. a whole directory tree).
+scoped than a `DirCap` (one file vs. a whole directory tree). In the type system,
+`Handle` is parameterized by a capability row: `Type::Handle(Box<Type>)` where
+the inner type describes capabilities like `Readable`, `Writable`, `Binary`, etc.
+`Handle[Readable]` means a read-only handle, `Handle[Writable]` means write-only.
+The gradual type `Handle` (no parameters shown) is syntactic sugar for
+`Handle[Unknown]` — unknown capabilities at compile time.
 
 **`Value::RevocableDirCap`** — a `DirCap` wrapper that can be invalidated after
 the fact. See §Handle Revocation.

@@ -28,27 +28,27 @@ json-escape: [fn [s@String]
     s]]]]]]
 
 json-string: [fn [s@String]
-  [str "\"" [json-escape s] "\""]]
+  [builtin-str "\"" [json-escape s] "\""]]
 
 json-variant: [fn [tag@String fields]
-  [str "{" [json-string tag] ":" [to-json fields] "}"]]
+  [builtin-str "{" [json-string tag] ":" [to-json fields] "}"]]
 
 json-span: [fn [s@Span]
-  [str "{\"file\":"        [json-string s.file]
-       ",\"start-line\":"  [str s.start-line]
-       ",\"start-col\":"   [str s.start-col]
-       ",\"end-line\":"    [str s.end-line]
-       ",\"end-col\":"     [str s.end-col] "}"]]
+  [builtin-str "{\"file\":"        [json-string s.file]
+       ",\"start-line\":"  [builtin-str s.start-line]
+       ",\"start-col\":"   [builtin-str s.start-col]
+       ",\"end-line\":"    [builtin-str s.end-line]
+       ",\"end-col\":"     [builtin-str s.end-col] "}"]]
 
 to-json-dict: [fn [d@Dict]
-  [str "{"
+  [builtin-str "{"
     [join ","
-      [map [fn [pair] [str [json-string pair[0]] ":" [to-json pair[1]]]]
+      [map [fn [pair] [builtin-str [json-string pair[0]] ":" [to-json pair[1]]]]
            [entries d]]]
     "}"]]
 
 to-json-seq: [fn [s]
-  [str "[" [join "," [map to-json [collect s]]] "]"]]
+  [builtin-str "[" [join "," [map to-json [collect s]]] "]"]]
 
 json-annotation: [fn [a@Annotation] [to-json a]]
 
@@ -164,11 +164,11 @@ json-program: [fn [p@Program]
 
 to-json-primitive: [fn [v]
   [cond
-    [[= v []]     "null"]
-    [[bool? v]    [if v "true" "false"]]
-    [[int?  v]    [str v]]
-    [[float? v]   [str v]]
-    [[str?   v]   [json-string v]]
+    [[builtin-eqv []]     "null"]
+    [[bool? v]    [builtin-ifv "true" "false"]]
+    [[int?  v]    [builtin-str v]]
+    [[float? v]   [builtin-str v]]
+    [[builtin-str?   v]   [json-string v]]
     [[seq?   v]   [to-json-seq v]]
     [[dict?  v]   [to-json-dict v]]
     # Variant values (Program/Document/Expression) are handled by the match dispatch in
@@ -182,10 +182,10 @@ to-json-primitive: [fn [v]
 # Each json-parse-* function takes remaining input and returns [value: v  rest: r].
 
 json-ws?: [fn [c@String]
-  [or [= c " "] [or [= c "\t"] [or [= c "\n"] [= c "\r"]]]]]
+  [or [builtin-eq c " "] [or [builtin-eq c "\t"] [or [builtin-eq c "\n"] [builtin-eq c "\r"]]]]]
 
 json-skip-ws: [fn [s@String]
-  [if [or [= [str-length s] 0] [not [json-ws? [str-at 0 s]]]]
+  [builtin-if [or [builtin-eq [str-length s] 0] [not [json-ws? [str-at 0 s]]]]
     s
     [json-skip-ws [builtin-str-slice s 1 [str-length s]]]]]
 
@@ -196,37 +196,37 @@ json-rest: [fn [s@String n@Int]
   [builtin-str-slice s n [str-length s]]]
 
 json-starts-with: [fn [prefix@String s@String]
-  [if [< [str-length s] [str-length prefix]]
+  [builtin-if [builtin-lt [str-length s] [str-length prefix]]
     false
-    [= [builtin-str-slice s 0 [str-length prefix]] prefix]]]
+    [builtin-eq [builtin-str-slice s 0 [str-length prefix]] prefix]]]
 
 json-parse-null: [fn [s@String]
-  [if [json-starts-with "null" s]
+  [builtin-if [json-starts-with "null" s]
     [json-parsed [] [json-rest s 4]]
-    [raise "JSON: expected 'null'"]]]
+    [builtin-raise "JSON: expected 'null'"]]]
 
 json-parse-true: [fn [s@String]
-  [if [json-starts-with "true" s]
+  [builtin-if [json-starts-with "true" s]
     [json-parsed true [json-rest s 4]]
-    [raise "JSON: expected 'true'"]]]
+    [builtin-raise "JSON: expected 'true'"]]]
 
 json-parse-false: [fn [s@String]
-  [if [json-starts-with "false" s]
+  [builtin-if [json-starts-with "false" s]
     [json-parsed false [json-rest s 5]]
-    [raise "JSON: expected 'false'"]]]
+    [builtin-raise "JSON: expected 'false'"]]]
 
 json-digit?: [fn [c@String]
   [and [>= c "0"] [<= c "9"]]]
 
 json-num-char?: [fn [c@String]
   [or [json-digit? c]
-      [or [= c "."] [or [= c "e"] [or [= c "E"]
-      [or [= c "-"] [= c "+"]]]]]]]
+      [or [builtin-eq c "."] [or [builtin-eq c "e"] [or [builtin-eq c "E"]
+      [or [builtin-eq c "-"] [builtin-eq c "+"]]]]]]]
 
 json-scan-num: [fn [s@String i@Int]
-  [if [or [>= i [str-length s]] [not [json-num-char? [str-at i s]]]]
+  [builtin-if [or [>=i [str-length s]] [not [json-num-char? [str-at i s]]]]
     i
-    [json-scan-num s [+ i 1]]]]
+    [json-scan-num s [builtin-add i 1]]]]
 
 json-parse-number: [fn [s@String]
   [len:     [json-scan-num s 0]]
@@ -236,36 +236,36 @@ json-parse-number: [fn [s@String]
                 [or [str-contains? "e" num-str]
                     [str-contains? "E" num-str]]]]
   [json-parsed
-    [if float? [to-float num-str] [to-int num-str]]
+    [builtin-if float? [to-float num-str] [to-int num-str]]
     rest]]
 
 json-unescape: [fn [c@String]
   [cond
-    [[= c "\""] "\""]
-    [[= c "\\"] "\\"]
-    [[= c "/"]  "/"]
-    [[= c "n"]  "\n"]
-    [[= c "r"]  "\r"]
-    [[= c "t"]  "\t"]
-    [[= c "b"]  [chr 8]]
-    [[= c "f"]  [chr 12]]
-    [true [raise [str "JSON: unknown escape \\" c]]]]]
+    [[builtin-eq c "\""] "\""]
+    [[builtin-eq c "\\"] "\\"]
+    [[builtin-eq c "/"]  "/"]
+    [[builtin-eq c "n"]  "\n"]
+    [[builtin-eq c "r"]  "\r"]
+    [[builtin-eq c "t"]  "\t"]
+    [[builtin-eq c "b"]  [chr 8]]
+    [[builtin-eq c "f"]  [chr 12]]
+    [true [builtin-raise[builtin-str "JSON: unknown escape \\" c]]]]]
 
 json-parse-string-body: [fn [s@String acc@String]
-  [if [= [str-length s] 0]
-    [raise "JSON: unterminated string"]
+  [builtin-if [builtin-eq [str-length s] 0]
+    [builtin-raise "JSON: unterminated builtin-string"]
     [c: [str-at 0 s]]
     [cond
-      [[= c "\""]
+      [[builtin-eq c "\""]
        [json-parsed acc [json-rest s 1]]]
-      [[= c "\\"]
-       [if [< [str-length s] 2]
-         [raise "JSON: incomplete escape"]
+      [[builtin-eq c "\\"]
+       [builtin-if [builtin-lt [str-length s] 2]
+         [builtin-raise "JSON: incomplete escape"]
          [json-parse-string-body
            [json-rest s 2]
-           [str acc [json-unescape [str-at 1 s]]]]]]
+           [builtin-str acc [json-unescape [str-at 1 s]]]]]]
       [true
-       [json-parse-string-body [json-rest s 1] [str acc c]]]]]]
+       [json-parse-string-body [json-rest s 1] [builtin-str acc c]]]]]]
 
 json-parse-string: [fn [s@String]
   # s starts with "
@@ -277,61 +277,61 @@ json-parse-array-items: [fn [s@String i@Int acc@Dict]
   [s:     [json-skip-ws item.rest]]
   [c:     [str-at 0 s]]
   [cond
-    [[= c "]"] [json-parsed acc [json-rest s 1]]]
-    [[= c ","] [json-parse-array-items [json-skip-ws [json-rest s 1]] [+ i 1] acc]]
-    [true [raise "JSON: expected ',' or ']' in array"]]]]
+    [[builtin-eq c "]"] [json-parsed acc [json-rest s 1]]]
+    [[builtin-eq c ","] [json-parse-array-items [json-skip-ws [json-rest s 1]] [builtin-add i 1] acc]]
+    [true [builtin-raise "JSON: expected ',' or ']' in array"]]]]
 
 json-parse-array: [fn [s@String]
   # s starts with [
   [s: [json-skip-ws [json-rest s 1]]]
-  [if [= [str-at 0 s] "]"]
+  [builtin-if [builtin-eq [str-at 0 s] "]"]
     [json-parsed [] [json-rest s 1]]
     [json-parse-array-items s 0 []]]]
 
 json-parse-object-pairs: [fn [s@String acc@Dict]
-  [if [not [= [str-at 0 s] "\""]]
-    [raise "JSON: expected string key in object"]
+  [builtin-if [not[builtin-eq [str-at 0 s] "\""]]
+    [builtin-raise "JSON: expected builtin-string key in object"]
     [k:    [json-parse-string s]]
     [s:    [json-skip-ws k.rest]]
-    [if [not [= [str-at 0 s] ":"]]
-      [raise "JSON: expected ':' after object key"]
+    [builtin-if [not[builtin-eq [str-at 0 s] ":"]]
+      [builtin-raise "JSON: expected ':' after object key"]
       [v:   [json-parse-value [json-skip-ws [json-rest s 1]]]]
       [acc: [merge acc [[k.value]: v.value]]]
       [s:   [json-skip-ws v.rest]]
       [c:   [str-at 0 s]]
       [cond
-        [[= c "}"] [json-parsed acc [json-rest s 1]]]
-        [[= c ","] [json-parse-object-pairs [json-skip-ws [json-rest s 1]] acc]]
-        [true [raise "JSON: expected ',' or '}' in object"]]]]]]
+        [[builtin-eq c "}"] [json-parsed acc [json-rest s 1]]]
+        [[builtin-eq c ","] [json-parse-object-pairs [json-skip-ws [json-rest s 1]] acc]]
+        [true [builtin-raise "JSON: expected ',' or '}' in object"]]]]]]
 
 json-parse-object: [fn [s@String]
   # s starts with {
   [s: [json-skip-ws [json-rest s 1]]]
-  [if [= [str-at 0 s] "}"]
+  [builtin-if [builtin-eq [str-at 0 s] "}"]
     [json-parsed [] [json-rest s 1]]
     [json-parse-object-pairs s []]]]
 
 json-parse-value: [fn [s@String]
   [s: [json-skip-ws s]]
-  [if [= [str-length s] 0]
-    [raise "JSON: unexpected end of input"]
+  [builtin-if [builtin-eq [str-length s] 0]
+    [builtin-raise "JSON: unexpected end of input"]
     [c: [str-at 0 s]]
     [cond
-      [[= c "n"]  [json-parse-null s]]
-      [[= c "t"]  [json-parse-true s]]
-      [[= c "f"]  [json-parse-false s]]
-      [[= c "\""] [json-parse-string s]]
-      [[= c "["]  [json-parse-array s]]
-      [[= c "{"]  [json-parse-object s]]
-      [[or [= c "-"] [json-digit? c]] [json-parse-number s]]
-      [true [raise [str "JSON: unexpected character: " c]]]]]]
+      [[builtin-eq c "n"]  [json-parse-null s]]
+      [[builtin-eq c "t"]  [json-parse-true s]]
+      [[builtin-eq c "f"]  [json-parse-false s]]
+      [[builtin-eq c "\""] [json-parse-string s]]
+      [[builtin-eq c "["]  [json-parse-array s]]
+      [[builtin-eq c "{"]  [json-parse-object s]]
+      [[or [builtin-eq c "-"] [json-digit? c]] [json-parse-number s]]
+      [true [builtin-raise[builtin-str "JSON: unexpected character: " c]]]]]]
 
 ]
 
 # ---- Public API ----
 [
 
-to-json@[doc: "Serialize any tinct value to a compact JSON string.
+to-json@[doc: "Serialize any tinct value to a compact JSON builtin-string.
 Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
 Primitive types serialize directly. Not every tinct type is serializable to JSON —
 Fn, Handle, Task, Channel etc. produce null."]:
@@ -343,12 +343,12 @@ Fn, Handle, Task, Channel etc. produce null."]:
       _:              [to-json-primitive v]]]
 
 # from-json: Pure-tinct JSON parser implementation.
-# Takes a JSON string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
-# The parser uses str-at/str-length from strings.llt and builtin-str-slice from prelude.
-from-json@[doc: "Parse a JSON string into a tinct value.
+# Takes a JSON builtin-string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
+# The parser uses str-at/str-length from builtin-strings.llt and builtin-str-slice from prelude.
+from-json@[doc: "Parse a JSON builtin-string into a tinct value.
 
 Parameters:
-  s@String — JSON string to parse
+  s@String — JSON builtin-string to parse
 
 Returns:
   Any — Parsed value (Dict, Seq, String, Int, Float, Bool, or [] for null)

@@ -136,7 +136,7 @@ async fn try_dispatch_method(
             env: closure_env,
             ..
         } => invoke_function(&CallContext {
-            params,
+            params: &**params,
             body,
             closure_env,
             positional: &arg_thunks,

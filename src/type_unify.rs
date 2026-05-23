@@ -3,13 +3,11 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::ast::Span;
 
 use super::*;
-
-/// Type alias for class constraint data: (class_name, vars, fundeps)
-type ClassConstraintData = (String, Vec<String>, Vec<(Vec<usize>, Vec<usize>)>);
 
 /// Maximum recursion depth for constraint satisfaction checking.
 /// Prevents infinite loops when checking constraints on recursive types.
@@ -170,16 +168,15 @@ pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint
     if let Constraint::Class {
         class: target_class,
         vars: target_vars,
-        ..
     } = target
     {
         if target_vars.len() == 1 {
             let target_var = &target_vars[0];
             for constraint in context {
-                if let Constraint::Class { class, vars, .. } = constraint {
+                if let Constraint::Class { class, vars } = constraint {
                     if vars.len() == 1
                         && vars[0] == *target_var
-                        && is_superclass_of(class_env, class, target_class)
+                        && is_superclass_of(class_env, &class.name, &target_class.name)
                     {
                         return true;
                     }
@@ -312,20 +309,18 @@ fn check_constraints_on_var(
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == var_name => {
+            Constraint::Class { class, vars } if vars.len() == 1 && vars[0] == var_name => {
                 Some(ApplicableConstraint::SingleParam {
-                    class: class.clone(),
+                    class: class.name.clone(),
                 })
             }
-            Constraint::Class {
-                class,
-                vars,
-                fundeps,
-            } if vars.len() > 1 && vars.iter().any(|v| v == var_name) => {
+            Constraint::Class { class, vars }
+                if vars.len() > 1 && vars.iter().any(|v| v == var_name) =>
+            {
                 Some(ApplicableConstraint::MultiParam {
-                    class: class.clone(),
+                    class: class.name.clone(),
                     vars: vars.clone(),
-                    fundeps: fundeps.clone(),
+                    fundeps: class.determines.clone(),
                 })
             }
             _ => None,
@@ -550,14 +545,66 @@ fn improve_functional_dependency_inner(
                 }
                 resolved
             } else {
-                // No hardcoded instance and no resolver — this is an error
-                return Err(TypeError::new(
-                    format!(
-                        "no instance for {} (class not supported by MPTC lookup)",
-                        class
-                    ),
-                    span,
-                ));
+                // No resolver — fall back to general MPTC instance lookup via InstanceEnv
+                let det_arg_types: Vec<Type> =
+                    det_types.iter().map(|(_, _, ty)| ty.clone()).collect();
+
+                // Clone instance_env to avoid borrow checker conflict
+                let instance_env = state.instance_env.clone();
+                match instance_env.lookup_mptc(class, &det_arg_types, state) {
+                    Some(inst) => {
+                        // Extract the determined type from the instance.
+                        // For a multi-param MPTC instance, instance_type is a Record with
+                        // numbered fields (0, 1, 2, …). Determined positions are those NOT in det_positions.
+                        let det_position_set: std::collections::HashSet<usize> =
+                            inst.det_positions.iter().copied().collect();
+
+                        match &inst.instance_type {
+                            Type::Record(row) => {
+                                // Find the first field index not in the determining set
+                                let total_params = row.fields.len();
+                                let determined_pos =
+                                    (0..total_params).find(|i| !det_position_set.contains(i));
+                                match determined_pos {
+                                    Some(pos) => row
+                                        .fields
+                                        .get(&pos.to_string())
+                                        .cloned()
+                                        .ok_or_else(|| {
+                                            TypeError::new(
+                                                format!(
+                                                    "no instance for {} (determined field {} missing)",
+                                                    class, pos
+                                                ),
+                                                span,
+                                            )
+                                        })?,
+                                    None => {
+                                        return Err(TypeError::new(
+                                            format!(
+                                                "no instance for {} (no determined position found)",
+                                                class
+                                            ),
+                                            span,
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Err(TypeError::new(
+                                    format!(
+                                        "no instance for {} (unexpected instance_type shape)",
+                                        class
+                                    ),
+                                    span,
+                                ));
+                            }
+                        }
+                    }
+                    None => {
+                        return Err(TypeError::new(format!("no instance for {}", class), span));
+                    }
+                }
             }
         } else {
             // Class not found in class_env — should not happen
@@ -595,16 +642,16 @@ fn improve_functional_dependency_inner(
 ///    for the common arithmetic case.
 ///
 /// 2. GENERAL PATH — for any MPTC class not in the hardcoded list, delegates to
-///    `state.instance_env.lookup_mptc(class, det_types)`.  `InstanceEnv` now stores instances
-///    under a `(class_name, Vec<String>)` key built from the determining positions of each FD,
-///    so user-defined MPTC instances registered via `[instance ...]` are reachable here.
+///    `instance_env.lookup_mptc(class, det_types, state)`. `lookup_mptc` uses structural
+///    unification to match instances, which correctly handles HKT instance heads with type
+///    variables (e.g., `[Channel t]` can match query types like `[Channel Int]`).
 ///    On a successful lookup the determined type is extracted from the numbered-field Record
-///    that encodes the multi-param instance head.  On a miss a `no instance for …` error is
+///    that encodes the multi-param instance head. On a miss a `no instance for …` error is
 ///    returned.
 fn lookup_arithmetic_instance(
     class: &str,
     det_types: &[Type],
-    state: &InferState,
+    state: &mut InferState,
     span: Span,
 ) -> Result<Type, TypeError> {
     if det_types.len() != 2 {
@@ -656,9 +703,11 @@ fn lookup_arithmetic_instance(
         },
         _ => {
             // GENERAL PATH: query InstanceEnv for user-defined MPTC classes.
-            // `lookup_mptc` matches on the ground determining types via the key built
-            // during instance registration.
-            match state.instance_env.lookup_mptc(class, det_types) {
+            // `lookup_mptc` now uses structural unification instead of string-key lookup,
+            // which correctly handles HKT instance heads with type variables.
+            // Clone instance_env to avoid borrow checker conflict
+            let instance_env = state.instance_env.clone();
+            match instance_env.lookup_mptc(class, det_types, state) {
                 Some(inst) => {
                     // Extract the determined type from the instance.
                     // For a multi-param MPTC instance, instance_type is a Record with
@@ -756,8 +805,8 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
     ];
 
     let has_promotable_constraint = state.constraints.iter().any(|c| match c {
-        Constraint::Class { class, vars, .. } => {
-            vars.iter().any(|v| v == var_name) && PROMOTABLE_CLASSES.contains(&class.as_str())
+        Constraint::Class { class, vars } => {
+            vars.iter().any(|v| v == var_name) && PROMOTABLE_CLASSES.contains(&class.name.as_str())
         }
         _ => false,
     });
@@ -942,7 +991,6 @@ impl Substitution {
             | Type::Error
             | Type::DirCap
             | Type::NetCap
-            | Type::Handle
             | Type::Uri
             | Type::Timestamp
             | Type::Duration
@@ -1110,6 +1158,9 @@ impl Substitution {
                     fields: applied_fields,
                 })
             }
+            Type::Handle(cap) => Cow::Owned(Type::Handle(Box::new(
+                self.apply_type(cap, depth + 1, visited_types).into_owned(),
+            ))),
             Type::Operator(name) => {
                 // Look up Operator variable in substitution map
                 if visited_types.contains(name) {
@@ -1355,7 +1406,6 @@ fn lower_levels_check_occurs(
         | Type::Error
         | Type::DirCap
         | Type::NetCap
-        | Type::Handle
         | Type::Uri
         | Type::Timestamp
         | Type::Duration
@@ -1381,6 +1431,7 @@ fn lower_levels_check_occurs(
             }
             found
         }
+        Type::Handle(cap) => lower_levels_check_occurs(cap, occurs_name, cap_level, state),
     }
 }
 
@@ -1395,16 +1446,12 @@ fn lower_levels_check_occurs(
 fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
     // Collect all Class constraints on α. Early-exit if there are none.
     // For single-param constraints only (MPTC transfer is more complex and deferred)
-    let alpha_constraints: Vec<ClassConstraintData> = state
+    let alpha_constraints: Vec<(Arc<ClassDecl>, Vec<String>)> = state
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class {
-                class,
-                vars,
-                fundeps,
-            } if vars.len() == 1 && vars[0] == alpha => {
-                Some((class.clone(), vars.clone(), fundeps.clone()))
+            Constraint::Class { class, vars } if vars.len() == 1 && vars[0] == alpha => {
+                Some((Arc::clone(class), vars.clone()))
             }
             _ => None,
         })
@@ -1420,18 +1467,17 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == beta => {
-                Some(class.clone())
+            Constraint::Class { class, vars } if vars.len() == 1 && vars[0] == beta => {
+                Some(class.name.clone())
             }
             _ => None,
         })
         .collect();
-    for (class, _vars, fundeps) in alpha_constraints {
-        if !beta_existing.contains(&class) {
+    for (class, _vars) in alpha_constraints {
+        if !beta_existing.contains(&class.name) {
             state.constraints.push(Constraint::Class {
                 class,
                 vars: vec![beta.to_string()],
-                fundeps,
             });
         }
     }
@@ -1848,9 +1894,10 @@ pub fn unify(
         // Capability types: reflexive unification only
         (Type::DirCap, Type::DirCap) => Ok(()),
         (Type::NetCap, Type::NetCap) => Ok(()),
-        (Type::Handle, Type::Handle) => Ok(()),
         (Type::DatagramHandle, Type::DatagramHandle) => Ok(()),
         (Type::QuicDatagramHandle, Type::QuicDatagramHandle) => Ok(()),
+        // Handle: unify capability rows
+        (Type::Handle(cap_a), Type::Handle(cap_b)) => unify(cap_a, cap_b, subst, state, span),
 
         // UNIFY-OPERATOR: bind type constructor variable m to a type T.
         // Occurs check prevents infinite kinds (m ∉ ftv(T)).
@@ -2125,14 +2172,9 @@ pub fn unify(
 /// This preserves the fixed-point invariant — a single failure mid-iteration must not
 /// abort processing of remaining equalities that might still make progress.
 ///
-/// # Why `#[allow(dead_code)]`
-///
-/// This function is implemented and correct but not yet called. Enabling it requires a stable
-/// call site after dict-level inference completes — the right hook is the end of the
-/// `infer_dict` five-pass loop, after all TypeVars in the dict are bound. Union-vs-Union
-/// deferred equalities (from the arm above) also land here. Tracked in TODO.md under the
-/// future TypeStageApp deferral sprint (doc/06-type-inference.md:884).
-#[allow(dead_code)]
+/// Called after each SCC's substitution merge in `infer_dict` (typecheck_dict.rs).
+/// Union-vs-Union deferred equalities (from the arm above) also land here.
+/// See doc/06-type-inference.md:884.
 pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitution, span: Span) {
     let max_iterations = 100;
     let mut iteration = 0;

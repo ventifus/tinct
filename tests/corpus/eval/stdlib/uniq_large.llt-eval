@@ -1,0 +1,6 @@
+# uniq: large input (n=1000) with some duplicates to verify O(n²) behavior is acceptable
+# Build a list with every number repeated twice
+[let test-dict [collect [concat [range 0 500] [range 0 500]]]]
+[length [uniq test-dict]]
+=== out
+Int(500)

@@ -370,26 +370,30 @@ pub(crate) use crate::builtins_math::{
     builtin_shr, builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
 };
 
-// Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
+// Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv, build-dict.
 // Implementations live in builtins_dict.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_dict::{
-    builtin_append, builtin_each, builtin_each_key, builtin_each_kv, builtin_get,
-    builtin_get_optional, builtin_keys, builtin_length, builtin_merge,
+    builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
+    builtin_builder_get, builtin_builder_has, builtin_builder_set, builtin_builder_snapshot,
+    builtin_each, builtin_each_key, builtin_each_kv, builtin_get, builtin_get_optional,
+    builtin_keys, builtin_length, builtin_make_builder, builtin_merge,
 };
 
 // I/O builtins: open, slurp, write, connect, lines, emit, env, list-dir, stat, etc.
 // Implementations live in builtins_io.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
-    builtin_cap_data, builtin_close, builtin_connect, builtin_emit, builtin_env, builtin_flush,
-    builtin_http2_session, builtin_http3_session, builtin_http_request, builtin_icmp_ping,
-    builtin_lines, builtin_link, builtin_list_dir, builtin_make_dir, builtin_narrow, builtin_open,
-    builtin_position, builtin_quic_open_datagram, builtin_quic_open_stream, builtin_quic_session,
-    builtin_raw_create, builtin_read_link, builtin_recv_datagram, builtin_remove, builtin_rename,
+    builtin_cap_data, builtin_close, builtin_connect, builtin_copy_file, builtin_emit, builtin_env,
+    builtin_exists, builtin_flush, builtin_get_xattr, builtin_http2_session, builtin_http3_session,
+    builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link, builtin_list_dir,
+    builtin_list_xattrs, builtin_make_dir, builtin_narrow, builtin_open, builtin_position,
+    builtin_quic_open_datagram, builtin_quic_open_stream, builtin_quic_session, builtin_raw_create,
+    builtin_read_link, builtin_recv_datagram, builtin_remove, builtin_remove_xattr, builtin_rename,
     builtin_revocable, builtin_revoke_cap, builtin_seek, builtin_seek_end, builtin_send_datagram,
-    builtin_slurp, builtin_stat, builtin_tls_layer, builtin_tls_peer_cert, builtin_write,
-    builtin_write_atomic, builtin_write_handle,
+    builtin_set_permissions, builtin_set_xattr, builtin_slurp, builtin_stat, builtin_stat_symlink,
+    builtin_symlink, builtin_tls_layer, builtin_tls_peer_cert, builtin_write, builtin_write_atomic,
+    builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, deep-materialize, include, error, try, apply, validate.
@@ -402,9 +406,9 @@ pub(crate) use crate::builtins_meta::{
     builtin_dict_check, builtin_eval, builtin_eval_types, builtin_expand, builtin_float_check,
     builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include_cache_get,
     builtin_include_cache_put, builtin_int_check, builtin_llt_repr, builtin_load,
-    builtin_macro_injects, builtin_null_check, builtin_raise, builtin_str_check, builtin_tag_of,
-    builtin_to_json, builtin_try, builtin_type_of, builtin_until, builtin_validate,
-    builtin_variant,
+    builtin_macro_error, builtin_macro_injects, builtin_null_check, builtin_raise,
+    builtin_str_check, builtin_tag_of, builtin_to_json, builtin_try, builtin_type_of,
+    builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -520,9 +524,7 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResul
         ctx,
     } = ctx_arg;
     if args.is_empty() {
-        return Box::pin(async move {
-            Err(EvalError::arity_mismatch(1, 0, call_span).into())
-        });
+        return Box::pin(async move { Err(EvalError::arity_mismatch(1, 0, call_span).into()) });
     }
     Box::pin(async move {
         let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span)?;
@@ -553,9 +555,7 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         ctx,
     } = ctx_arg;
     if args.is_empty() {
-        return Box::pin(async move {
-            Err(EvalError::arity_mismatch(1, 0, call_span).into())
-        });
+        return Box::pin(async move { Err(EvalError::arity_mismatch(1, 0, call_span).into()) });
     }
     Box::pin(async move {
         let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span)?;
@@ -607,7 +607,9 @@ pub(crate) use crate::builtins_seq_xform::builtin_drop_seq_step;
 // Sequence reduction builtins: reduce, join, concat.
 // Implementations live in builtins_seq_reduce.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
-pub(crate) use crate::builtins_seq_reduce::{builtin_concat, builtin_join, builtin_reduce};
+pub(crate) use crate::builtins_seq_reduce::{
+    builtin_concat, builtin_join, builtin_reduce, builtin_reduce_dict_step, builtin_reduce_seq_step,
+};
 
 // Date-time builtins: timestamps, durations, clock capabilities, timezones
 pub(crate) use crate::builtins_datetime::{
@@ -1009,7 +1011,9 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         };
 
         let dict_span = args[dict_arg_idx].span;
-        let val = materialize(&args[dict_arg_idx], Some(&call_span), &ctx)?; // H2: dict_arg_idx=1 in 2-arg form not covered by pos_strictness — deferred to dispatch-cont sprint
+        let val = args[dict_arg_idx]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[dict_arg_idx]=Spine");
         let map = require_dict("sort", val, dict_span, &ctx, call_span)?;
 
         // Materialize all values so we can compare them.
@@ -1044,12 +1048,12 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                         ..
                     } => {
                         match invoke_function(&CallContext {
-                            params,
-                            body,
-                            closure_env,
+                            params: &*params,
+                            body: &body,
+                            closure_env: &closure_env,
                             positional: &pos_args,
                             named: None,
-                            default_env: closure_env,
+                            default_env: &closure_env,
                             call_span,
                             origin: Some(Arc::from("sort")),
                             ctx: &ctx,
@@ -1280,6 +1284,45 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_each_kv,
             [Strictness::Spine, Strictness::Spine]
         ),
+        builtin!("build-dict", builtin_build_dict, [Strictness::Spine], 1),
+        // Transient builders
+        builtin!("make-builder", builtin_make_builder),
+        builtin!(
+            "builder-set",
+            builtin_builder_set,
+            [Strictness::Seq, Strictness::Seq, Strictness::Id],
+            2
+        ),
+        builtin!(
+            "builder-delete",
+            builtin_builder_delete,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builder-finish",
+            builtin_builder_finish,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "builder-snapshot",
+            builtin_builder_snapshot,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "builder-has?",
+            builtin_builder_has,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builder-get",
+            builtin_builder_get,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         // Strings
         builtin!("str", builtin_str, [Strictness::Seq]), // variadic - can't use force_count
         builtin!("builtin-str", builtin_str, [Strictness::Seq]), // Stable alias
@@ -1424,6 +1467,12 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("raise", builtin_raise, [Strictness::Seq]),
         builtin!("builtin-raise", builtin_raise, [Strictness::Seq]), // Stable alias
+        builtin!(
+            "builtin-macro-error",
+            builtin_macro_error,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         builtin!("try", builtin_try, [Strictness::Id], 1),
         builtin!(
             "apply",
@@ -1528,6 +1577,70 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         builtin!("stat", builtin_stat, [Strictness::Seq, Strictness::Seq], 2),
+        builtin!(
+            "exists",
+            builtin_exists,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "stat-symlink",
+            builtin_stat_symlink,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "copy-file",
+            builtin_copy_file,
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ],
+            4
+        ),
+        builtin!(
+            "symlink",
+            builtin_symlink,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
+        ),
+        builtin!(
+            "set-permissions",
+            builtin_set_permissions,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
+        ),
+        builtin!(
+            "get-xattr",
+            builtin_get_xattr,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
+        ),
+        builtin!(
+            "set-xattr",
+            builtin_set_xattr,
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ],
+            4
+        ),
+        builtin!(
+            "remove-xattr",
+            builtin_remove_xattr,
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            3
+        ),
+        builtin!(
+            "list-xattrs",
+            builtin_list_xattrs,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         builtin!(
             "make-dir",
             builtin_make_dir,
@@ -1668,6 +1781,22 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Spine, Strictness::Seq],
             1
         ),
+        // Helper builtins for continuation-based reduce (internal, not exposed to users)
+        builtin!(
+            "reduce_dict_step",
+            builtin_reduce_dict_step,
+            [
+                Strictness::Id,
+                Strictness::Id,
+                Strictness::Spine,
+                Strictness::Seq
+            ]
+        ),
+        builtin!(
+            "reduce_seq_step",
+            builtin_reduce_seq_step,
+            [Strictness::Id, Strictness::Id, Strictness::Spine]
+        ),
         // List operations (registered under builtin-NAME; prelude exports the unwrapped names)
         builtin!("builtin-first", builtin_first, [Strictness::Spine]),
         builtin!("builtin-last", builtin_last, [Strictness::Spine]),
@@ -1678,7 +1807,45 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Id, Strictness::Spine]
         ),
         builtin!("builtin-reverse", builtin_reverse, [Strictness::Spine]),
-        builtin!("builtin-sort", builtin_sort, [Strictness::Spine]),
+        builtin!(
+            "builtin-sort",
+            builtin_sort,
+            [Strictness::Spine, Strictness::Spine]
+        ),
+        // Stable aliases for async primitives (used internally by stdlib/async.llt to allow shadowing)
+        builtin!("builtin-task", builtin_task),
+        builtin!("builtin-await", builtin_await),
+        builtin!("builtin-channel", builtin_channel),
+        builtin!("builtin-send", builtin_send),
+        builtin!("builtin-recv", builtin_recv),
+        builtin!("builtin-select-once", builtin_select_once),
+        builtin!("builtin-par", builtin_par),
+        builtin!("builtin-par-map", builtin_par_map),
+        builtin!("builtin-par-filter", builtin_par_filter),
+        builtin!("builtin-signal-channel", builtin_signal_channel),
+        builtin!("builtin-timer-channel", builtin_timer_channel),
+        builtin!("builtin-watch-channel", builtin_watch_channel),
+        builtin!("builtin-context", builtin_context),
+        builtin!(
+            "builtin-with-cancel",
+            builtin_with_cancel,
+            [Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-with-timeout",
+            builtin_with_timeout,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-cancelled-q",
+            builtin_cancelled_q,
+            [Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-cancel-task",
+            builtin_cancel_task,
+            [Strictness::Seq]
+        ),
         // Date-time: timestamps and durations
         builtin!(
             "parse-timestamp",
@@ -6653,8 +6820,15 @@ mod tests {
         // Added 4 async builtins: select-once, par, par-map, par-filter (233 → 237)
         // Added 3 event-source channel builtins: signal-channel, timer-channel, watch-channel (237 → 240)
         // Added 6 cancellation context builtins: context, with-cancel, with-timeout, with-deadline, cancelled?, cancel-task (240 → 246)
+        // Added 17 builtin-* stable aliases for async primitives to allow shadowing in stdlib/async.llt (246 → 263)
+        // Added 2 internal reduce helper builtins: reduce_dict_step, reduce_seq_step (263 → 265)
+        // Added builtin-macro-error for span-aware macro errors (265 → 266)
+        // Added build-dict for efficient dict construction from entries (266 → 267)
+        // Added 7 transient builder builtins: make-builder, builder-set, builder-delete, builder-finish, builder-snapshot, builder-has?, builder-get (267 → 274)
+        // Added 5 I/O builtins: exists, stat-symlink, copy-file, symlink, set-permissions (274 → 279)
+        // Added 4 xattr builtins: get-xattr, set-xattr, remove-xattr, list-xattrs (279 → 283)
         assert_eq!(
-            count, 246,
+            count, 283,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6752,6 +6926,14 @@ mod tests {
         assert!(names.contains(&"raw-create"), "missing raw-create");
         assert!(names.contains(&"list-dir"), "missing list-dir");
         assert!(names.contains(&"stat"), "missing stat");
+        assert!(names.contains(&"exists"), "missing exists");
+        assert!(names.contains(&"stat-symlink"), "missing stat-symlink");
+        assert!(names.contains(&"copy-file"), "missing copy-file");
+        assert!(names.contains(&"symlink"), "missing symlink");
+        assert!(
+            names.contains(&"set-permissions"),
+            "missing set-permissions"
+        );
         assert!(names.contains(&"make-dir"), "missing make-dir");
         assert!(names.contains(&"builtin-remove"), "missing builtin-remove");
         assert!(names.contains(&"rename"), "missing rename");
@@ -6900,8 +7082,8 @@ mod tests {
         // cancelled?, cancel-task (+6 → 246 total from 240)
         assert_eq!(
             names.len(),
-            246,
-            "expected 246 builtins, got {} — update this assertion if adding/removing builtins",
+            283,
+            "expected 283 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

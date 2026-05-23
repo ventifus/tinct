@@ -110,10 +110,11 @@ fn test_promote_literal_restricted_to_promotable_classes() {
     let mut state = InferState::new();
 
     // Add a Numeric constraint (promotable)
+    // Numeric class is already registered in InferState::new()
+    let numeric_class = state.class_env.get("Numeric").unwrap();
     state.constraints.push(Constraint::Class {
-        class: "Numeric".to_string(),
+        class: std::sync::Arc::new(numeric_class.clone()),
         vars: vec!["t0".to_string()],
-        fundeps: vec![],
     });
 
     let promoted = promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &state);
@@ -130,10 +131,19 @@ fn test_promote_literal_not_promoted_for_non_promotable_class() {
     let mut state = InferState::new();
 
     // Add a non-promotable constraint (e.g., custom class "MyClass")
+    // Create a dummy ClassDecl for testing
+    use crate::types::{ClassDecl, Kind};
+    let my_class = std::sync::Arc::new(ClassDecl {
+        name: "MyClass".to_string(),
+        params: vec![("a".to_string(), Kind::Type)],
+        superclasses: vec![],
+        determines: vec![],
+        resolver: None,
+        resolver_injective: false,
+    });
     state.constraints.push(Constraint::Class {
-        class: "MyClass".to_string(),
+        class: my_class,
         vars: vec!["t0".to_string()],
-        fundeps: vec![],
     });
 
     let result = promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &state);
@@ -149,11 +159,11 @@ fn test_promote_literal_not_promoted_for_non_promotable_class() {
 fn test_promote_string_literal_restricted() {
     let mut state = InferState::new();
 
-    // Comparable is promotable
+    // Comparable is promotable and already registered in InferState::new()
+    let comparable_class = state.class_env.get("Comparable").unwrap();
     state.constraints.push(Constraint::Class {
-        class: "Comparable".to_string(),
+        class: std::sync::Arc::new(comparable_class.clone()),
         vars: vec!["t0".to_string()],
-        fundeps: vec![],
     });
 
     let promoted =
@@ -170,11 +180,11 @@ fn test_promote_string_literal_restricted() {
 fn test_promote_literal_label_kind_never_promotes() {
     let mut state = InferState::new();
 
-    // Add Numeric constraint
+    // Add Numeric constraint (already registered in InferState::new())
+    let numeric_class = state.class_env.get("Numeric").unwrap();
     state.constraints.push(Constraint::Class {
-        class: "Numeric".to_string(),
+        class: std::sync::Arc::new(numeric_class.clone()),
         vars: vec!["t0".to_string()],
-        fundeps: vec![],
     });
 
     // Mark as Label kind

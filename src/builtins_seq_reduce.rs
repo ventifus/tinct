@@ -29,9 +29,10 @@ use crate::value::{string_val, BuiltinArgs, Key, Thunk, Value};
 
 /// `reduce`: Fold a function over a Dict or Seq.
 ///
-/// - For Dict: build a chain of PendingCall thunks (acc stays as thunk, not materialized per step).
-///   The final accumulator is returned as a thunk; the caller forces it on demand.
-/// - For Seq: eagerly materialized per step (avoids O(N) Rust stack depth from lazy chain forcing).
+/// Uses PendingBuiltin step chains to avoid O(N) Rust stack depth for large inputs.
+/// Both Dict and Seq paths delegate to helper builtins that process one element
+/// at a time, creating lazy PendingBuiltin chains that are forced iteratively
+/// by the CEK machine.
 ///
 /// Args: (f, init, xs)
 pub(crate) fn builtin_reduce(
@@ -69,69 +70,193 @@ pub(crate) fn builtin_reduce(
         };
         match xs {
             Value::Dict(ref map) => {
-                // Eagerly iterate the dict, but pass each step thunk directly as the next
-                // accumulator without materializing it. The caller decides when to force
-                // the final accumulator. Individual step thunks are PendingCall and will be
-                // forced lazily by the materializer when the result is actually needed.
-                let mut acc = init_thunk;
-                for (_key, value_thunk_id) in map.iter() {
-                    let value_thunk = ctx.get_thunk(*value_thunk_id);
-                    let step_thunk = Arc::new(Thunk::new_pending_call(
-                        Arc::clone(&f_thunk),
-                        vec![Arc::clone(&acc), Arc::clone(&value_thunk)],
-                        IndexMap::new(),
-                        call_span,
-                        Arc::clone(&ctx.config.stdlib_env),
-                        value_thunk.span,
-                        Some(Arc::from("reduce")),
-                        Arc::clone(&ctx),
-                    ));
-                    acc = step_thunk;
+                if map.is_empty() {
+                    // Empty dict: return init directly
+                    return Ok(init_thunk);
                 }
-                Ok(acc)
+
+                // Create a Dict value to pass to the step builtin
+                // The step builtin will iterate through it
+                let xs_thunk = Arc::new(Thunk::new_materialized(xs.clone(), call_span));
+
+                // Create a PendingBuiltin thunk for the first step
+                // Args: (f, init, xs_dict, idx_int)
+                let idx_thunk = Arc::new(Thunk::new_materialized(Value::Int(0), call_span));
+                let step_thunk = Arc::new(Thunk::new_pending_builtin(
+                    builtin!("reduce_dict_step", builtin_reduce_dict_step),
+                    vec![f_thunk, init_thunk, xs_thunk, idx_thunk],
+                    None,
+                    call_span,
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
+                ));
+
+                Ok(step_thunk)
+            }
+            Value::Seq {
+                head: _head,
+                tail: _tail,
+            } => {
+                // Seq path: delegate to step builtin
+                // Args: (f, init, seq)
+                let seq_thunk = Arc::new(Thunk::new_materialized(xs.clone(), call_span));
+                let step_thunk = Arc::new(Thunk::new_pending_builtin(
+                    builtin!("reduce_seq_step", builtin_reduce_seq_step),
+                    vec![f_thunk, init_thunk, seq_thunk],
+                    None,
+                    call_span,
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
+                ));
+
+                Ok(step_thunk)
+            }
+            other => Err(EvalError::type_mismatch_ctx(
+                "reduce".to_string(),
+                "Dict or Seq",
+                other.type_name(),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// Helper for reduce on Dict: processes entries by index.
+///
+/// Args: (f, acc, xs_dict, idx)
+pub(crate) fn builtin_reduce_dict_step(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+
+        let f_thunk = Arc::clone(&args[0]);
+        let acc_thunk = Arc::clone(&args[1]);
+        let xs = args[2]
+            .try_get_materialized()
+            .expect("xs should be materialized");
+        let idx_val = args[3]
+            .try_get_materialized()
+            .expect("idx should be materialized");
+
+        let idx = match idx_val {
+            Value::Int(i) => i as usize,
+            _ => {
+                return Err(EvalError::internal(
+                    "reduce_dict_step: idx must be Int".to_string(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        match xs {
+            Value::Dict(ref map) => {
+                if idx >= map.len() {
+                    // All entries processed — return accumulator
+                    return Ok(acc_thunk);
+                }
+
+                // Get the current entry
+                let (_, value_thunk_id) = map.iter().nth(idx).expect("idx in bounds");
+                let value_thunk = ctx.get_thunk(*value_thunk_id);
+
+                // Call f(acc, value) to get new accumulator
+                let new_acc_thunk = Arc::new(Thunk::new_pending_call(
+                    Arc::clone(&f_thunk),
+                    vec![Arc::clone(&acc_thunk), Arc::clone(&value_thunk)],
+                    IndexMap::new(),
+                    call_span,
+                    Arc::clone(&ctx.config.stdlib_env),
+                    value_thunk.span,
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
+                ));
+
+                // Create the next step: reduce_dict_step(f, new_acc, xs, idx+1)
+                let next_idx_thunk = Arc::new(Thunk::new_materialized(
+                    Value::Int((idx + 1) as i64),
+                    call_span,
+                ));
+                let xs_thunk = Arc::clone(&args[2]);
+                let next_step_thunk = Arc::new(Thunk::new_pending_builtin(
+                    builtin!("reduce_dict_step", builtin_reduce_dict_step),
+                    vec![f_thunk, new_acc_thunk, xs_thunk, next_idx_thunk],
+                    None,
+                    call_span,
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
+                ));
+
+                Ok(next_step_thunk)
+            }
+            _ => Err(EvalError::internal(
+                "reduce_dict_step: xs must be Dict".to_string(),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// Helper for reduce on Seq: processes head/tail chain.
+///
+/// Args: (f, acc, seq)
+pub(crate) fn builtin_reduce_seq_step(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+
+        let f_thunk = Arc::clone(&args[0]);
+        let acc_thunk = Arc::clone(&args[1]);
+        let seq_val = args[2]
+            .try_get_materialized()
+            .expect("seq should be materialized");
+
+        match seq_val {
+            Value::Dict(_) => {
+                // End of sequence — return accumulator
+                Ok(acc_thunk)
             }
             Value::Seq { head, tail } => {
-                // Eagerly iterate the Seq head/tail chain, materializing each step.
-                // Same rationale as Dict: lazy accumulator thunks recurse O(N) deep.
-                let mut acc = init_thunk;
-                let mut current_head = ctx.get_thunk(head);
-                let mut current_tail = ctx.get_thunk(tail);
-                loop {
-                    let step_thunk = Arc::new(Thunk::new_pending_call(
-                        Arc::clone(&f_thunk),
-                        vec![Arc::clone(&acc), Arc::clone(&current_head)],
-                        IndexMap::new(),
-                        call_span,
-                        Arc::clone(&ctx.config.stdlib_env),
-                        current_head.span,
-                        Some(Arc::from("reduce")),
-                        Arc::clone(&ctx),
-                    ));
-                    let step_val = materialize(&step_thunk, Some(&call_span), &ctx).await?;
-                    acc = Arc::new(Thunk::new_materialized(step_val, call_span));
+                let head_thunk = ctx.get_thunk(head);
+                let tail_thunk = ctx.get_thunk(tail);
 
-                    let tail_val = materialize(&current_tail, Some(&call_span), &ctx).await?;
-                    match tail_val {
-                        Value::Dict(_) => break, // empty dict = end of Seq
-                        Value::Seq {
-                            head: next_head,
-                            tail: next_tail,
-                        } => {
-                            current_head = ctx.get_thunk(next_head);
-                            current_tail = ctx.get_thunk(next_tail);
-                        }
-                        other => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "reduce".to_string(),
-                                "Dict or Seq",
-                                other.type_name(),
-                                call_span,
-                            )
-                            .into());
-                        }
-                    }
-                }
-                Ok(acc)
+                // Call f(acc, head) to get new accumulator
+                let new_acc_thunk = Arc::new(Thunk::new_pending_call(
+                    Arc::clone(&f_thunk),
+                    vec![Arc::clone(&acc_thunk), Arc::clone(&head_thunk)],
+                    IndexMap::new(),
+                    call_span,
+                    Arc::clone(&ctx.config.stdlib_env),
+                    head_thunk.span,
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
+                ));
+
+                // Create the next step: reduce_seq_step(f, new_acc, tail)
+                let next_step_thunk = Arc::new(Thunk::new_pending_builtin(
+                    builtin!("reduce_seq_step", builtin_reduce_seq_step),
+                    vec![f_thunk, new_acc_thunk, tail_thunk],
+                    None,
+                    call_span,
+                    Some(Arc::from("reduce")),
+                    Arc::clone(&ctx),
+                ));
+
+                Ok(next_step_thunk)
             }
             other => Err(EvalError::type_mismatch_ctx(
                 "reduce".to_string(),

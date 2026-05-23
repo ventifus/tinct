@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Document, Entry, Expr, MatchArm, NamedArg, Param, Span, Spanned};
-use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts};
+use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts}; // TODO(parts-e): remove when macro expander is rewritten on SurfaceExpression (blocked on E3e expander cutover)
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
@@ -106,11 +106,22 @@ struct MacroMetadata {
     inject_default: Option<String>,
 }
 
+/// Metadata for a registered syntax class — the pattern and error message.
+#[derive(Debug, Clone)]
+struct SyntaxClassDef {
+    /// The pattern to match (typically a [let ...] binding pattern).
+    pattern: Rc<Spanned<Expr>>,
+    /// User-facing error message describing what the syntax class expects.
+    message: String,
+}
+
 /// Macro expansion context — tracks registered macros and prevents infinite expansion.
 #[derive(Debug, Clone)]
 pub struct MacroEnv {
     /// Map from macro name to its metadata (transformer, params, inject default).
     macros: HashMap<String, MacroMetadata>,
+    /// Map from syntax class name to its definition (pattern, message).
+    syntax_classes: HashMap<String, SyntaxClassDef>,
     /// Expansion depth counter — prevents deeply nested expansions.
     depth: usize,
     /// Total node count expanded — prevents runaway macro generation.
@@ -144,6 +155,7 @@ impl MacroEnv {
     pub fn new() -> Self {
         Self {
             macros: HashMap::new(),
+            syntax_classes: HashMap::new(),
             depth: 0,
             node_count: 0,
             in_progress: HashSet::new(),
@@ -743,8 +755,21 @@ fn pre_scan_expr(
             Ok(())
         }
 
-        Expr::SyntaxClass { .. } => {
-            // TODO: register syntax class when macros-v2 syntax class validation is implemented
+        Expr::SyntaxClass {
+            name,
+            pattern,
+            message,
+        } => {
+            // Register the syntax class for validation during macro argument binding
+            env.syntax_classes.insert(
+                name.clone(),
+                SyntaxClassDef {
+                    pattern: Rc::new(pattern.as_ref().clone()),
+                    message: message
+                        .clone()
+                        .unwrap_or_else(|| format!("argument must match syntax class '{}'", name)),
+                },
+            );
             Ok(())
         }
 
@@ -938,7 +963,7 @@ fn pre_scan_expr(
             let fn_expr = Expr::Fn {
                 return_ann: None,
                 params: param_vec,
-                body: Rc::clone(body),
+                body: Rc::new(body.as_ref().clone()),
                 desugared: false,
             };
             let fn_spanned = Spanned::new(fn_expr, expr.span);
@@ -1606,6 +1631,8 @@ fn expand_macro_call(
                         param_name,
                         macro_name,
                         call_span,
+                        env,
+                        ctx,
                     )?;
                 }
                 arg_idx += 1;
@@ -1805,14 +1832,16 @@ fn expand_macro_call(
 
 /// Validate an argument against a syntax-class annotation.
 ///
-/// For now, only supports @VariantName syntax (e.g., @VarRef, @Literal).
-/// Full named syntax-class support is TODO.
+/// Supports both built-in variant names (e.g., @VarRef, @Literal) and named syntax
+/// classes registered via `[syntax-class ...]` declarations.
 fn validate_syntax_class(
     arg: &Rc<Spanned<Expr>>,
     annotation: &crate::ast::Annotation,
     param_name: &str,
     macro_name: &str,
     call_span: Span,
+    env: &MacroEnv,
+    ctx: &Arc<EvalContext>,
 ) -> EvalResult<()> {
     use crate::ast::Annotation;
 
@@ -1837,6 +1866,20 @@ fn validate_syntax_class(
     match annotation {
         Annotation::Simple(name) => {
             let expected_variant = name.as_str();
+
+            // Check if this is a registered syntax class
+            if let Some(syntax_class) = env.syntax_classes.get(expected_variant) {
+                // Named syntax class: match the argument against the pattern
+                return validate_against_pattern(
+                    arg,
+                    &syntax_class.pattern,
+                    &syntax_class.message,
+                    param_name,
+                    macro_name,
+                    call_span,
+                    ctx,
+                );
+            }
 
             // Only validate if the annotation names a known single-variant AST node type.
             // Composite type aliases like "Expr" are used for documentation and accept
@@ -1877,6 +1920,70 @@ fn validate_syntax_class(
             Ok(())
         }
     }
+}
+
+/// Validate an argument against a syntax-class pattern.
+///
+/// The pattern is typically a `[let ...]` binding with a type constraint, e.g.,
+/// `[let _ : VarRef]`. We extract the expected variant name from the pattern and
+/// check if the argument matches. If the match fails, we report the syntax class's
+/// custom error message.
+fn validate_against_pattern(
+    arg: &Rc<Spanned<Expr>>,
+    pattern: &Rc<Spanned<Expr>>,
+    message: &str,
+    param_name: &str,
+    macro_name: &str,
+    call_span: Span,
+    _ctx: &Arc<EvalContext>,
+) -> EvalResult<()> {
+    // For the initial implementation, we support only simple type-tag patterns
+    // like `[let _ : VarRef]`. Extract the expected variant name from the pattern.
+
+    // The pattern should be a LetDecl with one binding that has a type annotation
+    match &pattern.node {
+        Expr::LetDecl { bindings } if bindings.len() == 1 => {
+            let binding = &bindings[0];
+
+            // Check if the binding is annotated (e.g., `_ : VarRef` or `x : VarRef`)
+            if let Expr::Annotated { annotation, .. } = &binding.node {
+                if let crate::ast::Annotation::Simple(expected_variant) = &annotation.node {
+                    // Get the actual variant of the argument
+                    let got_variant = match &arg.node {
+                        Expr::VarRef { .. } => "VarRef",
+                        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) => "Literal",
+                        Expr::Call { .. } => "Call",
+                        Expr::Dict(_) => "Dict",
+                        Expr::LetDecl { .. } => "Let",
+                        Expr::Fn { .. } => "Fn",
+                        Expr::Sequential(_) => "Seq",
+                        Expr::Annotated { .. } => "Annotated",
+                        Expr::Quote(_) => "Quote",
+                        Expr::Unquote(_) => "Unquote",
+                        Expr::UnquoteSplice(_) => "UnquoteSplice",
+                        _ => "other",
+                    };
+
+                    if expected_variant.as_str() != got_variant {
+                        return Err(EvalError::macro_error(
+                            format!(
+                                "macro '{}': argument '{}' — {}, got {}",
+                                macro_name, param_name, message, got_variant
+                            ),
+                            call_span,
+                        )
+                        .into());
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // Fallback: if we can't extract a simple type constraint, accept any argument
+    // (more complex pattern matching can be added in future versions)
+    Ok(())
 }
 
 /// Look up provenance for a span and format an "in expansion of" note.

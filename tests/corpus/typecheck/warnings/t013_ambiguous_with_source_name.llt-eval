@@ -1,0 +1,13 @@
+# T013 warning: ambiguous type variable with source name display.
+# When a function parameter has a constraint but the parameter's type variable
+# doesn't appear in the return type, T013 should report both the user-visible
+# parameter name and the internal TypeVar name for better diagnostics.
+#
+# This test verifies that when parameter 'x' has inferred TypeVar '_tN' with
+# constraint [x: Comparable], the warning message includes both 'x' (user-visible)
+# and the internal name for debugging.
+[fn@[constraint: [x: Comparable] return: Int] [x] 42]
+=== out
+Function(x)
+=== warn
+ambiguous type variable

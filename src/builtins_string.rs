@@ -1099,7 +1099,7 @@ pub(crate) fn builtin_str_map_chars(
                 } => {
                     let pos_args = vec![Arc::clone(&char_thunk)];
                     invoke_s(&CallContext {
-                        params,
+                        params: &**params,
                         body,
                         closure_env,
                         positional: &pos_args,

@@ -100,7 +100,7 @@ fn get_diagnostics_for_source(source: &str) -> Vec<Diagnostic> {
     let uri = "file:///test.llt"
         .parse::<lsp_types::Uri>()
         .expect("Failed to parse test URI");
-    let lsp_diagnostics = diagnostics_for(&doc, &uri);
+    let lsp_diagnostics = diagnostics_for(&doc, &uri, &eval_ctx);
 
     // Convert to simplified diagnostic struct
     lsp_diagnostics
@@ -261,9 +261,21 @@ fn test_lsp_unopened_document_hover() {
     // Load document from URI (without opening it in the store)
     let doc = load_doc_from_uri(&uri).expect("Failed to load unopened document");
 
+    // Create eval context for macro expansion
+    let stdlib_env = tinct::create_stdlib_env().expect("Failed to create stdlib environment");
+    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .expect("Failed to open current directory");
+    let eval_ctx = tinct::EvalContext::new(
+        base_dir,
+        Arc::clone(&stdlib_env),
+        type_stage_env,
+        true, // no_fs
+    );
+
     // Test hover at offset 4 (on '42')
     let include_graph = std::collections::HashMap::new();
-    let hover = hover_at(&doc, &uri, 4, &include_graph);
+    let hover = hover_at(&doc, &uri, 4, &include_graph, &eval_ctx);
 
     assert!(hover.is_some(), "hover should work on unopened document");
     let text = hover.unwrap();

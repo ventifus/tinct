@@ -33,6 +33,14 @@ Every networking operation in tinct is one of three things:
 
 **Session** — represents a multiplexed connection from which multiple logical streams can be opened. Created from a Handle; produces stream Handles.
 
+**Note on Handle types:** The type system now enforces capability rows on `Handle`.
+`Type::Handle(Box<Type>)` carries a capability row describing operations like
+`Readable`, `Writable`, `Binary`, etc. Builtins like `open`, `connect`, `slurp`,
+and `write-handle` are typed with `Handle[Unknown]` (gradual typing — unknown
+capabilities) until precise capability inference is implemented. Network code
+annotations use capability rows for documentation: `Handle@[Stream Tls]` means
+a TLS-upgraded stream handle.
+
 These compose left-to-right. An HTTP/2-over-SOCKS5 stack (TCP tunnel → TLS → HTTP/2):
 
 ```tinct

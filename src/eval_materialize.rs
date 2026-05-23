@@ -15,9 +15,9 @@ use crate::ast::{Annotation, Expr, Param, Span, Spanned};
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    annotation_has_structural_fields, as_record_row_merged, eval, eval_dict, eval_recursive,
-    format_field_path, format_type_for_assert, validate_and_wrap_record, value_matches_type,
-    EvalContext, DEFAULT_ANNOTATION_KEY,
+    annotation_has_structural_fields, as_record_row_merged, eval, eval_core_expr_pub, eval_dict,
+    eval_recursive, format_field_path, format_type_for_assert, validate_and_wrap_record,
+    value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{eval_call, invoke_function, CallContext};
@@ -73,6 +73,9 @@ pub(crate) fn attach_materialization_context(
 /// when a non-cacheable error occurs.
 ///
 pub(crate) enum RestoreState {
+    /// Restore state for UnevaluatedState::Expr thunks (old Expr-based runtime path).
+    /// TODO(parts-e): once Expr-based thunks are fully replaced by CoreExpr thunks,
+    /// this variant and UnevaluatedState::Expr can be removed.
     Unevaluated {
         expr: Rc<Spanned<Expr>>,
         env: Arc<RwLock<Environment>>,
@@ -103,6 +106,31 @@ pub(crate) enum RestoreState {
             Rc<crate::ast::Spanned<crate::ast::Expr>>,
             Arc<RwLock<Environment>>,
         )>,
+    },
+    /// Restore a Surface thunk for non-cacheable errors (e.g., DepthExceeded).
+    /// Holds the raw SurfaceNode so the thunk can be re-lowered on retry.
+    /// TODO(parts-e): replace with RestoreState::CoreExpr (store already-lowered CoreExpr)
+    /// to avoid re-lowering on each DepthExceeded retry.
+    Surface {
+        node: std::sync::Arc<crate::ast::SurfaceNode>,
+        res: std::sync::Arc<crate::ast::ResolutionTable>,
+        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<EvalContext>,
+    },
+    /// Restore an AstNodeField thunk for non-cacheable errors.
+    #[allow(dead_code)]
+    AstNodeField {
+        node: std::sync::Arc<crate::ast::SurfaceNode>,
+        field: &'static str,
+        ctx: Arc<EvalContext>,
+    },
+    /// Restore a CoreExpr thunk for non-cacheable errors (e.g., DepthExceeded).
+    /// Stores the Arc<Spanned<CoreExpr>> directly — no re-lowering on retry.
+    CoreExpr {
+        expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<EvalContext>,
     },
 }
 
@@ -160,6 +188,25 @@ impl RestoreState {
                 blame_label,
                 default,
             },
+            RestoreState::Surface {
+                node,
+                res,
+                types,
+                env,
+                ctx,
+            } => UnevaluatedState::Surface {
+                node,
+                res,
+                types,
+                env,
+                ctx,
+            },
+            RestoreState::AstNodeField { node, field, ctx } => {
+                UnevaluatedState::AstNodeField { node, field, ctx }
+            }
+            RestoreState::CoreExpr { expr, env, ctx } => {
+                UnevaluatedState::CoreExpr { expr, env, ctx }
+            }
         };
 
         thunk.restore_unevaluated(unevaled);
@@ -217,6 +264,12 @@ pub(crate) struct GuardedValidateData {
 }
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
+///
+/// TODO(parts-e): `annotation` is Box<Spanned<Annotation>> where Annotation::PropertyDict
+/// entries store Spanned<Expr> values. The default-fallback paths in apply_cont extract
+/// the "default:" property as &Spanned<Expr> and clone it into Rc<Spanned<Expr>> for
+/// Action::Eval. When Annotation stores CoreExpr values natively, this clone becomes a
+/// cheaper Arc<Spanned<CoreExpr>> and dispatches via Action::EvalCore.
 pub(crate) struct TypeAssertCheckData {
     pub(crate) annotation: Box<Spanned<Annotation>>,
     pub(crate) resolved: Box<Option<Type>>,
@@ -279,6 +332,13 @@ pub(crate) enum Cont {
     /// After the inner thunk is forced, this continuation runs
     /// `validate_and_wrap_record` (for record types) or `value_matches_type` (for
     /// scalar types), then memoizes the validated value into `thunk`.
+    ///
+    /// TODO(parts-e): GuardedValidateData::default stores Option<(Rc<Spanned<Expr>>,
+    /// Arc<RwLock<Environment>>)> — the `default:` expression from the TypeAssert annotation.
+    /// This comes from UnevaluatedState::Guarded which also stores Rc<Spanned<Expr>>.
+    /// When the runtime is fully CoreExpr-based, this should store Option<(Spanned<CoreExpr>,
+    /// Arc<RwLock<Environment>>)> so the default expression can be evaluated directly via
+    /// eval_core_expr without a round-trip through eval() and the Expr AST bridge.
     GuardedValidate(Box<GuardedValidateData>),
     /// Resume a PendingBuiltin call after iteratively materializing arg[0].
     /// This prevents Rust stack growth from chains like $- → materialize → $- → ...
@@ -291,11 +351,61 @@ pub(crate) enum Cont {
     /// Validate a materialized value against a TypeAssert annotation.
     /// Pushed by eval_step() after evaluating the inner expression thunk; replaces the
     /// synchronous materialize() call that was the laziness violation in the TypeAssert branch.
+    ///
+    /// TODO(parts-e): TypeAssertCheckData::annotation is Box<Spanned<Annotation>>, and
+    /// Annotation::PropertyDict entries are Spanned<Entry> whose values are Spanned<Expr>.
+    /// The default-fallback paths in apply_cont call annotation.node.get_property("default:")
+    /// → &Spanned<Expr> → Rc::new(expr.clone()) → Action::Eval. This Expr clone is the
+    /// round-trip: it re-creates an Rc<Spanned<Expr>> from the annotation to pass to eval_step.
+    /// When annotations store CoreExpr values, the clone becomes Arc<Spanned<CoreExpr>> →
+    /// Action::EvalCore, eliminating the round-trip.
     TypeAssertCheck(Box<TypeAssertCheckData>),
 }
 
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
 const _: () = assert!(std::mem::size_of::<Cont>() <= 96);
+
+/// RAII guard that pops one entry from the eval_stack when dropped.
+///
+/// Created immediately after an eval_stack.push() in force_step. Ensures the push
+/// is always paired with a pop, even on early error exits, without manual pop calls
+/// at every error site.
+///
+/// **Disarming:** Call `.disarm()` before returning `Action::Materialize` on the
+/// success path. On those paths a `Cont::Memoize` continuation takes ownership of
+/// the pop (see `apply_cont` Cont::Memoize handler). Without disarming the guard
+/// would double-pop the stack.
+///
+/// This guard is used **only** in the Unevaluated arm of `force_step`, where all
+/// error-exit pops are local to `force_step`. In the PendingBuiltin and PendingCall
+/// arms the corresponding pop happens inside `apply_cont` (distributed across
+/// multiple continuation handlers), so the RAII pattern does not apply there.
+struct EvalStackGuard<'a> {
+    ctx: &'a Arc<EvalContext>,
+    armed: bool,
+}
+
+impl<'a> EvalStackGuard<'a> {
+    fn new(ctx: &'a Arc<EvalContext>, label: String, span: Span) -> Self {
+        ctx.state.lock().unwrap().eval_stack.push((label, span));
+        EvalStackGuard { ctx, armed: true }
+    }
+
+    /// Disarm the guard so that `Drop` does not pop the eval_stack.
+    /// Call this when a `Cont::Memoize` continuation has been pushed and will
+    /// perform the pop instead.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for EvalStackGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.ctx.state.lock().unwrap().eval_stack.pop();
+        }
+    }
+}
 
 /// Check continuation stack depth before pushing. Returns `Err(DepthExceeded)` if
 /// the stack has reached MAX_CONTINUATION_STACK, otherwise returns `Ok(())`.
@@ -323,6 +433,13 @@ pub(crate) enum Action {
     /// Evaluate an expression to a thunk (wrapping, not forcing).
     /// Used by TypeAssert default expression evaluation and other iterative eval paths.
     /// Eventually eval() will become a run(Action::Eval) wrapper when fully iterative.
+    ///
+    /// TODO(parts-e): Action::Eval stores Rc<Spanned<Expr>>. When the CEK machine is
+    /// fully CoreExpr-based, add an Action::EvalCore { expr: Arc<Spanned<CoreExpr>>, ... }
+    /// parallel variant so default expressions (from Annotation::get_property("default:"))
+    /// can flow as CoreExpr without an Expr round-trip through eval_step's match arms.
+    /// Emit sites: GuardedValidate default-fallback (apply_cont ~lines 1303/1335/1395)
+    /// and TypeAssertCheck default-fallback (apply_cont ~lines 1919/1935/1957/2001/2026).
     Eval {
         expr: Rc<Spanned<Expr>>,
         env: Arc<RwLock<Environment>>,
@@ -368,7 +485,7 @@ pub(crate) async fn force_step(
             }
         }
         if should_update_cache && cloned.kind.is_cacheable() {
-            thunk.cache_failure(&cloned);
+            thunk.cache_failure_once(&cloned);
         }
         return Action::Continue(Err(cloned));
     }
@@ -392,7 +509,7 @@ pub(crate) async fn force_step(
             err = err.with_materialization_span(span);
         }
         let err_boxed: Box<EvalError> = err.into();
-        thunk.cache_failure(&err_boxed);
+        thunk.cache_failure_once(&err_boxed);
         return Action::Continue(Err(err_boxed));
     }
 
@@ -421,13 +538,14 @@ pub(crate) async fn force_step(
     let origin = thunk.origin.clone();
 
     if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
-        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
-        thunk_ctx
-            .state
-            .lock()
-            .unwrap()
-            .eval_stack
-            .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
+        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
+        // EvalStackGuard auto-pops on drop (error exits). Disarm it on success paths where
+        // a Cont::Memoize continuation takes ownership of the pop.
+        let mut stack_guard = EvalStackGuard::new(
+            &thunk_ctx,
+            origin.as_deref().unwrap_or("thunk").to_string(),
+            thunk_span,
+        );
 
         let restore = RestoreState::Unevaluated {
             expr: expr.clone(),
@@ -444,6 +562,8 @@ pub(crate) async fn force_step(
             // Evaluate target expression
             match eval(Rc::new((**target).clone()), Arc::clone(&env), &thunk_ctx).await {
                 Ok(target_thunk) => {
+                    // Memoize continuation takes ownership of the eval_stack pop.
+                    stack_guard.disarm();
                     // Push Memoize for the outer thunk (the access result)
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
@@ -480,10 +600,9 @@ pub(crate) async fn force_step(
                         origin.as_deref(),
                         thunk_span,
                     );
-                    // Pop from eval_stack before early return
-                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                    // stack_guard drops here, popping eval_stack automatically.
                     if decorated.kind.is_cacheable() {
-                        thunk.cache_failure(&decorated);
+                        thunk.cache_failure_once(&decorated);
                     } else {
                         restore.restore(thunk);
                     }
@@ -518,9 +637,9 @@ pub(crate) async fn force_step(
                         origin.as_deref(),
                         thunk_span,
                     );
-                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                    // stack_guard drops here, popping eval_stack automatically.
                     if decorated.kind.is_cacheable() {
-                        thunk.cache_failure(&decorated);
+                        thunk.cache_failure_once(&decorated);
                     } else {
                         restore.restore(thunk);
                     }
@@ -550,6 +669,8 @@ pub(crate) async fn force_step(
                 crate::ast::Annotation::Annotated(_, _) => true,
             };
 
+            // Memoize continuation takes ownership of the eval_stack pop.
+            stack_guard.disarm();
             // Push Memoize first so the result gets stored in the outer thunk.
             stack.push(Cont::Memoize(Box::new(MemoizeData {
                 thunk: Arc::clone(thunk),
@@ -585,6 +706,8 @@ pub(crate) async fn force_step(
 
         match eval(expr, Arc::clone(&env), &thunk_ctx).await {
             Ok(result_thunk) => {
+                // Memoize continuation takes ownership of the eval_stack pop.
+                stack_guard.disarm();
                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                     thunk: Arc::clone(thunk),
                     origin,
@@ -605,10 +728,9 @@ pub(crate) async fn force_step(
                     origin.as_deref(),
                     thunk_span,
                 );
-                // Pop from eval_stack before error return
-                thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                // stack_guard drops here, popping eval_stack automatically.
                 if decorated.kind.is_cacheable() {
-                    thunk.cache_failure(&decorated);
+                    thunk.cache_failure_once(&decorated);
                 } else {
                     restore.restore(thunk);
                 }
@@ -616,7 +738,10 @@ pub(crate) async fn force_step(
             }
         }
     } else if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
-        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
+        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
+        // Note: unlike the Unevaluated arm, the pop for PendingBuiltin is distributed across
+        // multiple sites in apply_cont (fast-path, Memoize, and error returns), so RAII via
+        // EvalStackGuard cannot be applied here — each apply_cont handler pops manually.
         thunk_ctx
             .state
             .lock()
@@ -745,7 +870,7 @@ pub(crate) async fn force_step(
                 // Pop from eval_stack before error return
                 thunk_ctx.state.lock().unwrap().eval_stack.pop();
                 if decorated.kind.is_cacheable() {
-                    thunk.cache_failure(&decorated);
+                    thunk.cache_failure_once(&decorated);
                 } else {
                     // Move args/named into PendingBuiltin — no clone needed.
                     thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
@@ -828,12 +953,135 @@ pub(crate) async fn force_step(
             thunk: Arc::clone(&inner),
             mat_span,
         }
+    } else if let Some((node, res, types, env, thunk_ctx)) = thunk.take_surface() {
+        // Surface thunk handling in the CEK machine.
+        //
+        // The round-trip here is: SurfaceNode → lower() → Spanned<CoreExpr> → eval_core_expr()
+        // → Arc<Thunk>. The lower() call is done here; the result is a CoreExpr thunk.
+        // TODO(parts-e): pre-lower Surface thunks at creation time (store as CoreExpr thunk)
+        // to avoid re-lowering on each DepthExceeded retry.
+        //
+        // After lower() we call eval_core_expr() to get a result thunk, then push a Memoize
+        // continuation and return Action::Materialize to force the result thunk iteratively.
+        // This keeps the Rust call stack flat (no recursive materialize() call).
+        //
+        // Contrast with the monolithic path in eval.rs::materialize() (line 2580) which calls
+        // run() recursively (async stack frame). The CEK machine path below uses the shared
+        // continuation stack instead — consistent with the iterative evaluation model.
+        let restore = RestoreState::Surface {
+            node: Arc::clone(&node),
+            res: Arc::clone(&res),
+            types: Arc::clone(&types),
+            env: Arc::clone(&env),
+            ctx: Arc::clone(&thunk_ctx),
+        };
+
+        let lowered = crate::lower::lower(&node, &res, &types);
+
+        // TODO(parts-e): eval_core_expr itself may recurse for complex CoreExpr variants
+        // (Sequential, Match, etc.) — those will need their own CEK continuation variants
+        // to be fully iterative. For now, this at least removes the Surface → force_step
+        // panic and integrates Surface handling into the CEK machine.
+        match crate::eval::eval_core_expr_pub(&lowered, &env, &thunk_ctx).await {
+            Ok(result_thunk) => {
+                // Fast path: if eval_core_expr already produced a materialized thunk
+                // (e.g., literals), skip the Memoize push entirely.
+                if let Some(value) = result_thunk.try_get_materialized() {
+                    thunk.set_materialized(value.clone());
+                    Action::Continue(Ok(value))
+                } else {
+                    stack.push(Cont::Memoize(Box::new(MemoizeData {
+                        thunk: Arc::clone(thunk),
+                        origin,
+                        thunk_span,
+                        mat_span,
+                        restore: Some(restore),
+                        ctx: Arc::clone(&thunk_ctx),
+                    })));
+                    Action::Materialize {
+                        thunk: result_thunk,
+                        mat_span,
+                    }
+                }
+            }
+            Err(e) => {
+                let decorated = attach_materialization_context(
+                    e,
+                    mat_span.as_ref(),
+                    origin.as_deref(),
+                    thunk_span,
+                );
+                if decorated.kind.is_cacheable() {
+                    thunk.cache_failure_once(&decorated);
+                } else {
+                    restore.restore(thunk);
+                }
+                Action::Continue(Err(decorated))
+            }
+        }
+    } else if let Some((node, field, thunk_ctx)) = thunk.take_ast_node_field() {
+        // AstNodeField thunk: evaluate a single named field from a SurfaceNode.
+        // This is a fast synchronous computation (no async, no eval recursion).
+        // surface_node_get_field returns a Value directly — no thunk to force.
+        let value = crate::surface_fields::surface_node_get_field(&node, field, &thunk_ctx);
+        thunk.set_materialized(value.clone());
+        Action::Continue(Ok(value))
+    } else if let Some((core_expr, env, thunk_ctx)) = thunk.take_core_expr() {
+        // CoreExpr thunk — created by invoke_function from Value::Function.body.
+        // Calls eval_core_expr_pub directly (no CoreExpr→Expr round-trip).
+        //
+        // Restore state on DepthExceeded so the thunk can be retried.
+        let restore = crate::value::UnevaluatedState::CoreExpr {
+            expr: Arc::clone(&core_expr),
+            env: Arc::clone(&env),
+            ctx: Arc::clone(&thunk_ctx),
+        };
+        match eval_core_expr_pub(&core_expr, &env, &thunk_ctx).await {
+            Ok(result_thunk) => {
+                // Fast path: literal or already-materialized result.
+                if let Some(value) = result_thunk.try_get_materialized() {
+                    thunk.set_materialized(value.clone());
+                    return Action::Continue(Ok(value));
+                }
+                // Defer to Memoize continuation.
+                stack.push(Cont::Memoize(Box::new(MemoizeData {
+                    thunk: Arc::clone(thunk),
+                    origin,
+                    thunk_span,
+                    mat_span,
+                    restore: Some(RestoreState::CoreExpr {
+                        expr: core_expr,
+                        env,
+                        ctx: Arc::clone(&thunk_ctx),
+                    }),
+                    ctx: thunk_ctx,
+                })));
+                Action::Materialize {
+                    thunk: result_thunk,
+                    mat_span,
+                }
+            }
+            Err(e) => {
+                let decorated = attach_materialization_context(
+                    e,
+                    mat_span.as_ref(),
+                    origin.as_deref(),
+                    thunk_span,
+                );
+                if decorated.kind.is_cacheable() {
+                    thunk.cache_failure_once(&decorated);
+                } else {
+                    thunk.restore_unevaluated(restore);
+                }
+                Action::Continue(Err(decorated))
+            }
+        }
     } else {
         unreachable!(
             "force_step: all ThunkState variants are handled. \
              Materialized/Failed/InProgress are early-returned at lines 354-399, \
-             Unevaluated/PendingBuiltin/PendingCall/Guarded are processed above. \
-             If this fires, a new ThunkState variant was added without updating force_step."
+             Unevaluated/PendingBuiltin/PendingCall/Guarded/Surface/AstNodeField/CoreExpr are processed above. \
+             If this fires, a new UnevaluatedState variant was added without updating force_step."
         )
     }
 }
@@ -869,7 +1117,7 @@ pub(crate) async fn apply_cont(
                     // Pop from eval_stack on error (cacheable or not)
                     ctx.state.lock().unwrap().eval_stack.pop();
                     if e.kind.is_cacheable() {
-                        thunk.cache_failure(&e);
+                        thunk.cache_failure_once(&e);
                     } else if let Some(restore_state) = restore {
                         restore_state.restore(&thunk);
                     }
@@ -918,7 +1166,7 @@ pub(crate) async fn apply_cont(
                         // allows args.take()/named.take() in the match arms below.
                         let invoke_result = {
                             let call_ctx = CallContext {
-                                params: &params,
+                                params: &*params,
                                 body: &body,
                                 closure_env: &env,
                                 positional: args.as_deref().expect("args set above"),
@@ -965,7 +1213,7 @@ pub(crate) async fn apply_cont(
                                 // Pop from eval_stack before error return
                                 thunk_ctx.state.lock().unwrap().eval_stack.pop();
                                 if e.kind.is_cacheable() {
-                                    thunk.cache_failure(&e);
+                                    thunk.cache_failure_once(&e);
                                 } else {
                                     // Move args/named into PendingCall — no clone needed.
                                     thunk.restore_unevaluated(
@@ -1078,7 +1326,7 @@ pub(crate) async fn apply_cont(
                                 // Pop from eval_stack before error return
                                 thunk_ctx.state.lock().unwrap().eval_stack.pop();
                                 if e.kind.is_cacheable() {
-                                    thunk.cache_failure(&e);
+                                    thunk.cache_failure_once(&e);
                                 } else {
                                     // Move args/named into PendingCall — no clone needed.
                                     thunk.restore_unevaluated(
@@ -1096,6 +1344,30 @@ pub(crate) async fn apply_cont(
                             }
                         }
                     }
+                    // Unit variant used as a constructor: [Ok payload] where Ok = [variant "Ok"].
+                    // When a unit Variant (payload: None) is called with exactly one positional
+                    // arg and no named args, treat it as constructing Variant(tag, payload).
+                    // This allows `Ok: [variant "Ok"]` in the prelude to be called as `[Ok 42]`.
+                    Value::Variant { tag, payload: None }
+                        if args.as_ref().map_or(0, |v| v.len()) == 1
+                            && named
+                                .as_ref()
+                                .map_or(true, |m| m.as_ref().map_or(true, |b| b.is_empty())) =>
+                    {
+                        // Allocate the single positional arg as a ThunkId for the payload.
+                        // The arg is already an Arc<Thunk> (unevaluated), so this is lazy.
+                        let payload_thunk = args.as_ref().expect("args set above")[0].clone();
+                        let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
+                        let result_val = Value::Variant {
+                            tag,
+                            payload: Some(payload_id),
+                        };
+                        // Fast path: the result is immediately materialized — no need to
+                        // push a Memoize continuation. Pop eval_stack and cache directly.
+                        thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                        thunk.set_materialized(result_val.clone());
+                        Action::Continue(Ok(result_val))
+                    }
                     other => {
                         let err = EvalError::type_mismatch(
                             "Function or Builtin",
@@ -1106,7 +1378,7 @@ pub(crate) async fn apply_cont(
                         // Pop from eval_stack before error return
                         thunk_ctx.state.lock().unwrap().eval_stack.pop();
                         if decorated.kind.is_cacheable() {
-                            thunk.cache_failure(&decorated);
+                            thunk.cache_failure_once(&decorated);
                         } else {
                             // Move args/named into PendingCall — no clone needed.
                             thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
@@ -1126,7 +1398,7 @@ pub(crate) async fn apply_cont(
                     // Pop from eval_stack before error return
                     thunk_ctx.state.lock().unwrap().eval_stack.pop();
                     if e.kind.is_cacheable() {
-                        thunk.cache_failure(&e);
+                        thunk.cache_failure_once(&e);
                     } else {
                         // Move args/named into PendingCall — no clone needed.
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
@@ -1173,7 +1445,7 @@ pub(crate) async fn apply_cont(
                                 Err(e) => {
                                     let e = decorate(e);
                                     if e.kind.is_cacheable() {
-                                        thunk.cache_failure(&e);
+                                        thunk.cache_failure_once(&e);
                                     } else if let Some(r) = restore.take() {
                                         r.restore(&thunk);
                                     }
@@ -1231,7 +1503,7 @@ pub(crate) async fn apply_cont(
                                     }
                                     let err = decorate(err);
                                     if err.kind.is_cacheable() {
-                                        thunk.cache_failure(&err);
+                                        thunk.cache_failure_once(&err);
                                     } else if let Some(r) = restore.take() {
                                         r.restore(&thunk);
                                     }
@@ -1287,7 +1559,7 @@ pub(crate) async fn apply_cont(
                             }
                             let err = decorate(err.into());
                             if err.kind.is_cacheable() {
-                                thunk.cache_failure(&err);
+                                thunk.cache_failure_once(&err);
                             } else if let Some(r) = restore.take() {
                                 r.restore(&thunk);
                             }
@@ -1347,7 +1619,7 @@ pub(crate) async fn apply_cont(
                             }
                             let err = decorate(err.into());
                             if err.kind.is_cacheable() {
-                                thunk.cache_failure(&err);
+                                thunk.cache_failure_once(&err);
                             } else if let Some(r) = restore.take() {
                                 r.restore(&thunk);
                             }
@@ -1359,7 +1631,7 @@ pub(crate) async fn apply_cont(
                     // Inner materialization error propagates
                     let e = decorate(e);
                     if e.kind.is_cacheable() {
-                        thunk.cache_failure(&e);
+                        thunk.cache_failure_once(&e);
                     } else if let Some(r) = restore.take() {
                         r.restore(&thunk);
                     }
@@ -1509,7 +1781,7 @@ pub(crate) async fn apply_cont(
                             // Pop from eval_stack before error return
                             thunk_ctx.state.lock().unwrap().eval_stack.pop();
                             if e.kind.is_cacheable() {
-                                thunk.cache_failure(&e);
+                                thunk.cache_failure_once(&e);
                             } else {
                                 // Move args/named into PendingBuiltin — no clone needed.
                                 thunk.restore_unevaluated(
@@ -1531,7 +1803,7 @@ pub(crate) async fn apply_cont(
                     // Pop from eval_stack before error return
                     thunk_ctx.state.lock().unwrap().eval_stack.pop();
                     if e.kind.is_cacheable() {
-                        thunk.cache_failure(&e);
+                        thunk.cache_failure_once(&e);
                     } else {
                         // Move args/named into PendingBuiltin — no clone needed.
                         thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
@@ -1723,18 +1995,59 @@ pub(crate) async fn apply_cont(
                             // Document field access — expressions, declarations, name, etc.
                             let val = match field_str.as_str() {
                                 "expressions" => {
-                                    let mut map = indexmap::IndexMap::new();
-                                    for (i, item) in doc.items.iter().enumerate() {
-                                        if let crate::ast::SurfaceItem::Expr(node) = item {
-                                            let expr_val =
-                                                Value::Expression(std::sync::Arc::clone(node));
-                                            let tid = ctx.alloc_thunk(Arc::new(
-                                                Thunk::new_materialized(expr_val, access_span),
-                                            ));
-                                            map.insert(crate::value::Key::Int(i as i64), tid);
+                                    // Build a LLT Seq linked list (not integer-keyed Dict)
+                                    // because builtin_eval expects [Seq Expression].
+                                    let expr_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> =
+                                        doc.items
+                                            .iter()
+                                            .filter_map(|item| {
+                                                if let crate::ast::SurfaceItem::Expr(node) = item {
+                                                    Some(std::sync::Arc::clone(node))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+                                    if expr_nodes.is_empty() {
+                                        Value::Dict(indexmap::IndexMap::new())
+                                    } else {
+                                        // End-of-Seq sentinel
+                                        let mut tail_id =
+                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                Value::Dict(indexmap::IndexMap::new()),
+                                                access_span,
+                                            )));
+                                        // Wrap elements from second-to-last down to index 1
+                                        for node in
+                                            expr_nodes.iter().rev().take(expr_nodes.len() - 1)
+                                        {
+                                            let head_id =
+                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                    Value::Expression(std::sync::Arc::clone(node)),
+                                                    access_span,
+                                                )));
+                                            tail_id =
+                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                    Value::Seq {
+                                                        head: head_id,
+                                                        tail: tail_id,
+                                                    },
+                                                    access_span,
+                                                )));
+                                        }
+                                        // First expression is the outermost head
+                                        let head_id =
+                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                Value::Expression(std::sync::Arc::clone(
+                                                    &expr_nodes[0],
+                                                )),
+                                                access_span,
+                                            )));
+                                        Value::Seq {
+                                            head: head_id,
+                                            tail: tail_id,
                                         }
                                     }
-                                    Value::Dict(map)
                                 }
                                 "name" => match &doc.name {
                                     Some(n) => Value::Variant {
@@ -1751,6 +2064,18 @@ pub(crate) async fn apply_cont(
                                         payload: None,
                                     },
                                 },
+                                "stage" => {
+                                    // stage: [Runtime] | [Type] — nominal variant
+                                    // Default to Runtime when stage is None (matches ast_dict.rs behavior)
+                                    let stage_tag = match &doc.stage {
+                                        Some(crate::ast::Stage::Type) => "Type",
+                                        Some(crate::ast::Stage::Runtime) | None => "Runtime",
+                                    };
+                                    Value::Variant {
+                                        tag: stage_tag.to_string(),
+                                        payload: None,
+                                    }
+                                }
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
                             let thunk = Arc::new(Thunk::new_materialized(val, access_span));
@@ -2079,9 +2404,12 @@ pub(crate) async fn eval_step(
         }
         Expr::Fn { params, body, .. } => {
             let fn_params: Vec<Param> = params.iter().map(|p| p.node.clone()).collect();
+            // Convert Expr body to CoreExpr for Value::Function.body (Arc<Spanned<CoreExpr>>).
+            // This path handles Expr::Fn nodes from UnevaluatedState::Expr thunks (old runtime).
+            let core_body = Arc::new(crate::ast_convert::expr_to_core_expr(body));
             Action::Continue(Ok(Value::Function {
                 params: Rc::new(fn_params),
-                body: Rc::new(body.as_ref().clone()),
+                body: core_body,
                 env: Arc::clone(&env),
                 annotation: None,
             }))
@@ -2225,7 +2553,7 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Expr;
+    use crate::ast::{CoreExpr, Expr};
     use crate::test_util::{sp, test_span};
     use crate::value::{Environment, Key, Thunk};
 
@@ -2347,7 +2675,7 @@ mod tests {
         let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
                 params: Rc::new(vec![]),
-                body: Rc::new(sp(Expr::Int(42))),
+                body: Arc::new(sp(CoreExpr::Int(42))),
                 env: empty_env(),
                 annotation: None,
             },
@@ -2404,7 +2732,7 @@ mod tests {
         let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Function {
                 params: Rc::new(vec![]),
-                body: Rc::new(sp(Expr::Int(42))),
+                body: Arc::new(sp(CoreExpr::Int(42))),
                 env: empty_env(),
                 annotation: None,
             },

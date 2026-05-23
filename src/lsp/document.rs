@@ -661,6 +661,13 @@ impl DocumentStore {
     pub fn docs_iter(&self) -> impl Iterator<Item = (&Uri, &DocumentState)> {
         self.docs.iter()
     }
+
+    /// Get the base evaluation context.
+    ///
+    /// Used by LSP analysis functions that need to expand macros.
+    pub fn eval_ctx(&self) -> &Arc<crate::eval::EvalContext> {
+        &self.base_eval_ctx
+    }
 }
 
 impl Default for DocumentStore {

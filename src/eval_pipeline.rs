@@ -229,7 +229,7 @@ fn wrap_with_nominal_validation(
 /// # Precondition
 ///
 /// **Pipeline invariant:** `expand_surface_program` → `desugar_surface_program` →
-/// `surface_program_to_file` must be called before passing the [`File`] here.
+/// `resolve_surface_program` → `surface_program_to_file` must be called before passing the [`File`] here.
 /// The evaluator has no `$_` handling; callers that skip the desugar pass will see
 /// `UndefinedVariable("_")` errors for any `$_` expression. Macros must be expanded
 /// before desugaring so that macro-introduced `$_` patterns are also desugared.

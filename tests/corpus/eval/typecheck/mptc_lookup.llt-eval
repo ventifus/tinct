@@ -1,0 +1,30 @@
+# MPTC lookup returns correct instance
+# Verifies that multi-parameter type class instance resolution works correctly.
+[
+  # Define an MPTC with two parameters
+  Convert: [class [let Convert a b] []
+    do-convert: [Fn@b [a]]]
+
+  # Instance: String converts to Int (via parse)
+  ConvertStrInt: [instance [let Convert String Int]
+    do-convert: to-int]
+
+  # Instance: Int converts to String
+  ConvertIntStr: [instance [let Convert Int String]
+    do-convert: str]
+
+  # Test lookup: String -> Int
+  result1: [do-convert "123"]
+
+  # Test lookup: Int -> String
+  result2: [do-convert 456]
+]
+
+---
+
+[
+  r1: %.result1
+  r2: %.result2
+]
+=== out
+Dict({r1: Int(123), r2: String("456")})

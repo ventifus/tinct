@@ -35,15 +35,15 @@
 retry-impl: [fn [let n@Int thunk@Fn]
     [match [try thunk]
         [Ok v]:    v
-        [Error _]: [if [> n 0]
-                       [retry-impl [- n 1] thunk]
-                       [raise "retry limit exceeded"]]]]
+        [Error _]: [builtin-if [> n 0]
+                       [retry-impl [builtin-sub n 1] thunk]
+                       [builtin-raise "retry limit exceeded"]]]]
 
 # loop-select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
 # Checks ctx cancellation before each iteration so callers can bound the loop.
 loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
-    [if [cancelled? ctx]
+    [builtin-if [cancelled? ctx]
         null
         [do
             [handler [select-once sources]]
@@ -149,7 +149,7 @@ Example: [exit 0]
 Note: Requires cancel-root / drain / exit-now (runtime-v2 Sprint 3).
 Currently raises an error until those builtins are available.
 """]: [fn [let code@Int]
-    [raise "exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
+    [builtin-raise "exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
 
 # graceful-exit: bounded graceful shutdown with an explicit drain timeout.
 # Cancels all tasks, waits up to drain-timeout for them to finish, then
@@ -165,7 +165,7 @@ Example: [graceful-exit [seconds 10] 0]
 Note: Requires cancel-root / drain / exit-now (runtime-v2 Sprint 3).
 Currently raises an error until those builtins are available.
 """]: [fn [let drain-timeout code@Int]
-    [raise "graceful-exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
+    [builtin-raise "graceful-exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
 
 # ============================================================================
 # Event-loop utilities
@@ -247,6 +247,6 @@ Cleanup return value is discarded. Rust-level EvalErrors bypass finally.
 """]: [fn [let cleanup@Fn body@Fn]
     [match [try body]
         [Ok v]:    [do [cleanup] v]
-        [Error e]: [do [cleanup] [raise e]]]]
+        [Error e]: [do [cleanup] [builtin-raise e]]]]
 
 ]

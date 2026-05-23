@@ -1,0 +1,5 @@
+// Test: reduce over a 5000-element sequence should not cause stack overflow
+[reduce [_ acc x: [+ acc x]] 0 [range 0 5000]]
+---
+// Expected: sum of 0..4999 = (4999 * 5000) / 2 = 12497500
+12497500

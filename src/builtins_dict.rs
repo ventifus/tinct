@@ -15,6 +15,15 @@
 //! - `each-key`: Convert dict to Seq of keys
 //! - `each-kv`: Convert dict to Seq of {key, value} pairs
 //!
+//! **Transient builders:**
+//! - `make-builder`: Create an empty mutable builder
+//! - `builder-set`: Set key-value pair, returns builder for chaining
+//! - `builder-delete`: Remove key, returns builder for chaining
+//! - `builder-finish`: Take inner dict, freeze builder
+//! - `builder-snapshot`: Clone inner dict without freezing
+//! - `builder-has?`: Check if key exists
+//! - `builder-get`: Get value by key
+//!
 //! All three iterators preserve insertion order and use an O(n) offset-based
 //! recursion strategy to avoid O(n²) IndexMap rebuilds.
 //!
@@ -30,6 +39,7 @@ use indexmap::IndexMap;
 
 use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
+use crate::eval::materialize;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
@@ -660,6 +670,607 @@ pub(crate) fn builtin_each_kv(
                     },
                     call_span,
                 )
+            }
+        }
+    })
+}
+
+/// `build-dict`: Efficiently construct a dict from a Seq or Dict of key-value pairs.
+///
+/// Takes 1 arg (a Seq or Dict where each element is a dict with `key` and `value` fields).
+/// Returns a new flat Dict with those entries.
+///
+/// - **Seq input:** Each element should be `[key: K, value: V]` (like what `each-kv` returns).
+///   Forces the key (to extract it), keeps value lazy. Builds an IndexMap. O(n).
+/// - **Dict input:** Copies all entries into a new flat IndexMap (eliminates Overlay depth). O(n).
+///
+/// Pre-allocates the IndexMap when size is known.
+///
+/// This replaces O(n²) merge-accumulation in dict-building stdlib functions like
+/// `from-entries`, `map-entries`, `walk`, `transpose`, `collect-kv`, etc.
+pub(crate) fn builtin_build_dict(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("build-dict", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // args[0] is Spine-pre-materialized by pos_strictness[0].
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+
+        match val {
+            // Seq input: each element is [key: K, value: V]
+            Value::Seq { head, tail } => {
+                // Count the seq length for pre-allocation (eagerly walks the spine).
+                // This is O(n) but allows us to allocate the right size upfront.
+                let mut count = 0;
+                let mut current_tail_id = tail;
+                count += 1; // For the head
+
+                loop {
+                    let tail_thunk = ctx.thunk_arena.lock().unwrap().get(current_tail_id).clone();
+                    let tail_val = materialize(&tail_thunk, None, &ctx).await?;
+
+                    match tail_val {
+                        Value::Dict(map) if map.is_empty() => break,
+                        Value::Seq {
+                            head: _,
+                            tail: next_tail,
+                        } => {
+                            count += 1;
+                            current_tail_id = next_tail;
+                        }
+                        other => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "build-dict".to_string(),
+                                "Seq (empty dict tail)",
+                                other.type_name(),
+                                args[0].span,
+                            )
+                            .into())
+                        }
+                    }
+                }
+
+                // Now build the dict from the seq
+                let mut result = IndexMap::with_capacity(count);
+                let mut current_head_id = head;
+                let mut current_tail_id = tail;
+
+                loop {
+                    // Process the head
+                    let head_thunk = ctx.thunk_arena.lock().unwrap().get(current_head_id).clone();
+                    let head_val = materialize(&head_thunk, None, &ctx).await?;
+
+                    let entry_map = crate::builtins::require_dict(
+                        "build-dict (seq element)",
+                        head_val,
+                        head_thunk.span,
+                        &ctx,
+                        call_span,
+                    )?;
+
+                    // Extract key and value from the entry dict
+                    let key_id =
+                        entry_map
+                            .get(&Key::String("key".to_string()))
+                            .ok_or_else(|| {
+                                EvalError::key_not_found(
+                                    "key",
+                                    entry_map
+                                        .keys()
+                                        .map(|k| match k {
+                                            Key::Int(n) => n.to_string(),
+                                            Key::String(s) => s.clone(),
+                                        })
+                                        .collect(),
+                                    call_span,
+                                )
+                            })?;
+
+                    let value_id = entry_map
+                        .get(&Key::String("value".to_string()))
+                        .ok_or_else(|| {
+                            EvalError::key_not_found(
+                                "value",
+                                entry_map
+                                    .keys()
+                                    .map(|k| match k {
+                                        Key::Int(n) => n.to_string(),
+                                        Key::String(s) => s.clone(),
+                                    })
+                                    .collect(),
+                                call_span,
+                            )
+                        })?;
+
+                    // Materialize the key to extract it (values stay lazy)
+                    let key_thunk = ctx.thunk_arena.lock().unwrap().get(*key_id).clone();
+                    let key_val = materialize(&key_thunk, None, &ctx).await?;
+
+                    let key = match key_val {
+                        Value::Int(n) => Key::Int(n),
+                        Value::String {
+                            ref source,
+                            start,
+                            end,
+                        } => {
+                            let s = &source[start..end];
+                            Key::String(s.to_string())
+                        }
+                        other => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "build-dict".to_string(),
+                                "Int or String (for key)",
+                                other.type_name(),
+                                key_thunk.span,
+                            )
+                            .into())
+                        }
+                    };
+
+                    // Insert the entry (value stays as a thunk)
+                    result.insert(key, *value_id);
+
+                    // Move to the next element
+                    let tail_thunk = ctx.thunk_arena.lock().unwrap().get(current_tail_id).clone();
+                    let tail_val = materialize(&tail_thunk, None, &ctx).await?;
+
+                    match tail_val {
+                        Value::Dict(map) if map.is_empty() => break,
+                        Value::Seq { head, tail } => {
+                            current_head_id = head;
+                            current_tail_id = tail;
+                        }
+                        _ => unreachable!("already validated tail structure during counting"),
+                    }
+                }
+
+                ok_val(Value::Dict(result), call_span)
+            }
+
+            // Dict input: flatten to a new IndexMap (eliminates Overlay depth)
+            Value::Dict(map) => {
+                // Pre-allocate with the known size
+                let mut result = IndexMap::with_capacity(map.len());
+                for (key, thunk_id) in &map {
+                    result.insert(key.clone(), *thunk_id);
+                }
+                ok_val(Value::Dict(result), call_span)
+            }
+
+            // Overlay input: flatten to a new IndexMap
+            Value::Overlay(_left_id, _right_id) => {
+                // Use require_dict to flatten the overlay
+                let map = crate::builtins::require_dict(
+                    "build-dict",
+                    val,
+                    args[0].span,
+                    &ctx,
+                    call_span,
+                )?;
+                let mut result = IndexMap::with_capacity(map.len());
+                for (key, thunk_id) in &map {
+                    result.insert(key.clone(), *thunk_id);
+                }
+                ok_val(Value::Dict(result), call_span)
+            }
+
+            other => Err(EvalError::type_mismatch_ctx(
+                "build-dict".to_string(),
+                "Seq or Dict",
+                other.type_name(),
+                args[0].span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// `make-builder`: Create an empty transient builder for efficient mutable dict construction.
+/// Takes 0 args. Returns a new Builder.
+pub(crate) fn builtin_make_builder(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("make-builder", named.as_ref(), call_span)?;
+        if !args.is_empty() {
+            return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
+        }
+        ok_val(
+            Value::Builder(Arc::new(crate::value::Builder::new())),
+            call_span,
+        )
+    })
+}
+
+/// `builder-set`: Set a key-value pair in a builder. Returns the builder for chaining.
+/// Takes 3 args: builder, key (Int or String), value (any).
+/// Errors if the builder is frozen.
+pub(crate) fn builtin_builder_set(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builder-set", named.as_ref(), call_span)?;
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+
+        // args[0] (builder) is pre-forced by force_count
+        let builder_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-set".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // args[1] (key) is pre-forced by force_count
+        let key_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let key = match key_val {
+            Value::Int(n) => Key::Int(n),
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                Key::String(s.to_string())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-set".to_string(),
+                    "Int or String (for key)",
+                    other.type_name(),
+                    args[1].span,
+                )
+                .into())
+            }
+        };
+
+        // args[2] (value) is NOT materialized — inserted as a thunk
+        let value_id = ctx.alloc_thunk(Arc::clone(&args[2]));
+
+        // Set the key-value pair
+        builder
+            .set(key, value_id)
+            .map_err(|e| EvalError::internal(format!("builder-set: {}", e), call_span))?;
+
+        // Return the builder for chaining
+        Ok(Arc::clone(&args[0]))
+    })
+}
+
+/// `builder-delete`: Remove a key from a builder. Returns the builder for chaining.
+/// Takes 2 args: builder, key (Int or String).
+/// Errors if the builder is frozen.
+pub(crate) fn builtin_builder_delete(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builder-delete", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // args[0] (builder) is pre-forced by force_count
+        let builder_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-delete".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // args[1] (key) is pre-forced by force_count
+        let key_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let key = match key_val {
+            Value::Int(n) => Key::Int(n),
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                Key::String(s.to_string())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-delete".to_string(),
+                    "Int or String (for key)",
+                    other.type_name(),
+                    args[1].span,
+                )
+                .into())
+            }
+        };
+
+        // Delete the key
+        builder
+            .delete(&key)
+            .map_err(|e| EvalError::internal(format!("builder-delete: {}", e), call_span))?;
+
+        // Return the builder for chaining
+        Ok(Arc::clone(&args[0]))
+    })
+}
+
+/// `builder-finish`: Take the inner dict from a builder, freezing it permanently.
+/// Takes 1 arg: builder. Returns a Dict.
+/// Errors if the builder is already frozen.
+pub(crate) fn builtin_builder_finish(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builder-finish", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // args[0] (builder) is pre-forced by force_count
+        let builder_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-finish".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Take the inner dict, freezing the builder
+        let dict = builder
+            .finish()
+            .map_err(|e| EvalError::internal(format!("builder-finish: {}", e), call_span))?;
+
+        ok_val(Value::Dict(dict), call_span)
+    })
+}
+
+/// `builder-snapshot`: Clone the inner dict without freezing the builder.
+/// Takes 1 arg: builder. Returns a Dict.
+/// Errors if the builder is frozen.
+pub(crate) fn builtin_builder_snapshot(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builder-snapshot", named.as_ref(), call_span)?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // args[0] (builder) is pre-forced by force_count
+        let builder_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-snapshot".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Clone the inner dict
+        let dict = builder
+            .snapshot()
+            .map_err(|e| EvalError::internal(format!("builder-snapshot: {}", e), call_span))?;
+
+        ok_val(Value::Dict(dict), call_span)
+    })
+}
+
+/// `builder-has?`: Check if a key exists in a builder.
+/// Takes 2 args: builder, key (Int or String). Returns Bool.
+pub(crate) fn builtin_builder_has(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builder-has?", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // args[0] (builder) is pre-forced by force_count
+        let builder_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-has?".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // args[1] (key) is pre-forced by force_count
+        let key_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let key = match key_val {
+            Value::Int(n) => Key::Int(n),
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                Key::String(s.to_string())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-has?".to_string(),
+                    "Int or String (for key)",
+                    other.type_name(),
+                    args[1].span,
+                )
+                .into())
+            }
+        };
+
+        // Check if the key exists
+        let has = builder.has(&key);
+        ok_val(Value::Bool(has), call_span)
+    })
+}
+
+/// `builder-get`: Get a value from a builder by key.
+/// Takes 2 args: builder, key (Int or String). Returns the value or errors if key not found.
+pub(crate) fn builtin_builder_get(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builder-get", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // args[0] (builder) is pre-forced by force_count
+        let builder_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-get".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // args[1] (key) is pre-forced by force_count
+        let key_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let key = match key_val {
+            Value::Int(n) => Key::Int(n),
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
+                let s = &source[start..end];
+                Key::String(s.to_string())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-get".to_string(),
+                    "Int or String (for key)",
+                    other.type_name(),
+                    args[1].span,
+                )
+                .into())
+            }
+        };
+
+        // Get the value
+        match builder.get(&key) {
+            Some(thunk_id) => {
+                let thunk = ctx.thunk_arena.lock().unwrap().get(thunk_id).clone();
+                Ok(thunk)
+            }
+            None => {
+                let key_str = match &key {
+                    Key::Int(n) => n.to_string(),
+                    Key::String(s) => s.to_string(),
+                };
+                Err(EvalError::internal(
+                    format!("builder-get: key '{}' not found", key_str),
+                    call_span,
+                )
+                .into())
             }
         }
     })

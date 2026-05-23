@@ -1,6 +1,6 @@
 # Builtin Reference
 
-This chapter provides a complete reference for all 184 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
+This chapter provides a complete reference for all 283 Rust-native builtins. For an overview of the stdlib boundary and higher-level LLT-implemented functions, see [Standard Library](11-stdlib.md). For strictness analysis and thunk lifecycle details, see [Evaluation](08-evaluation.md).
 
 ## Notation
 
@@ -357,15 +357,22 @@ File loading, JSON parsing, and text output.
 | `Appendable` | `open` in append mode (`"a"`) |
 | `Deletable` | `delete-file` |
 | `Renameable` | `rename-file` |
+| `Symlinkable` | `symlink`; create symbolic links within the DirCap's directory |
+| `PosixPermissions` | `set-permissions`; change Unix mode bits |
+| `ExtendedAttributes` | `get-xattr`, `set-xattr`, `remove-xattr`, `list-xattrs`; read and write xattrs |
 
 **Row-polymorphic signatures** express capability requirements without over-constraining the DirCap:
 
 ```text
-open      [cap@[DirCap [Readable ...]]   path@String "r"] → Handle@[Readable ...]
-open      [cap@[DirCap [Writable ...]]   path@String "w"] → Handle@[Writable ...]
-open      [cap@[DirCap [Appendable ...]] path@String "a"] → Handle@[Appendable ...]
-list-dir  [cap@[DirCap [Listable ...]]   path@String]     → [Seq Dict]
-write     [cap@[DirCap [Writable ...]]   path@String content@String]
+open             [cap@[DirCap [Readable ...]]            path@String "r"] → Handle@[Readable ...]
+open             [cap@[DirCap [Writable ...]]            path@String "w"] → Handle@[Writable ...]
+open             [cap@[DirCap [Appendable ...]]          path@String "a"] → Handle@[Appendable ...]
+list-dir         [cap@[DirCap [Listable ...]]            path@String]     → [Seq Dict]
+write            [cap@[DirCap [Writable ...]]            path@String content@String]
+symlink          [cap@[DirCap [Symlinkable ...]]         target@String link@String]
+set-permissions  [cap@[DirCap [PosixPermissions ...]]   path@String mode@Int]
+get-xattr        [cap@[DirCap [ExtendedAttributes ...]] path@String attr@String] → Bytes
+list-xattrs      [cap@[DirCap [ExtendedAttributes ...]] path@String]             → [Seq String]
 ```
 
 The `...` row tail means "this flag plus possibly others." A `DirCap` holding `[Readable Listable Writable]` satisfies `[DirCap [Writable ...]]` because `Writable` is present; `...` absorbs the remaining flags. This allows callers to pass richer caps to functions that need only a subset of permissions.
@@ -373,6 +380,87 @@ The `...` row tail means "this flag plus possibly others." A `DirCap` holding `[
 **Capability error message format:** `"DirCap: operation requires <Flag> permission"`. These errors are catchable via `try`.
 
 For DirCap creation (via `--cap-fs NAME=PATH[:MODE]`) and in-script attenuation (via `narrow`), see [Tooling](12-tooling.md) §Object Capability Model.
+
+## Filesystem Operations
+
+Capability-based filesystem operations. All require a `DirCap` with appropriate permission flags.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `stat` | 2 | `DirCap × S → D` | Dict | Get file metadata (follows symlinks); returns dict with `name`, `type`, `size`, `mtime`, `mode`, `is-dir`, `is-file`, `is-symlink` |
+| `exists` | 2 | `DirCap × S → V` | Bool | Check if path exists; cheaper than `try`+`stat` for existence checks |
+| `stat-symlink` | 2 | `DirCap × S → D` | Dict | Get file metadata without following symlinks (lstat equivalent); same dict schema as `stat` |
+| `list-dir` | 2 | `DirCap × S → D` | Seq | List directory contents; returns lazy Seq of filename Strings |
+| `make-dir` | 2 | `DirCap × S → Null` | Null | Create directory and parent directories if needed; returns empty dict |
+| `copy-file` | 4 | `DirCap × S × DirCap × S → Null` | Null | Copy file from src DirCap/path to dst DirCap/path using kernel-level copy |
+| `symlink` | 3 | `DirCap × S × S → Null` | Null | Create symbolic link; args: DirCap, target String, link path String |
+| `set-permissions` | 3 | `DirCap × S × S → Null` | Null | Set Unix file permissions; mode is Int (e.g., 0o755); Unix-only |
+| `builtin-remove` | 2 | `DirCap × S → Null` | Null | Remove file or empty directory; tries file first, then directory |
+| `rename` | 3 | `DirCap × S × S → Null` | Null | Rename/move file within DirCap; args: DirCap, old path, new path |
+| `link` | 3 | `DirCap × S × S → Null` | Null | Create hard link; args: DirCap, target path, link path |
+| `read-link` | 2 | `DirCap × S → V` | String | Read symlink target path |
+
+**Permission requirements:**
+
+- `stat`, `exists`, `stat-symlink`, `read-link`: require `Statable` flag
+- `list-dir`: requires `Listable` flag (implies `Statable`)
+- `make-dir`, `write`, `write-atomic`: require `Writable` flag
+- `copy-file`: requires `Readable` on src DirCap, `Writable` on dst DirCap
+- `symlink`: requires `Symlinkable` flag
+- `set-permissions`: requires `PosixPermissions` flag
+- `builtin-remove`: requires `Deletable` flag
+- `rename`, `link`: require `Renameable` flag
+
+**`stat` and `stat-symlink` dict schema:**
+
+```tinct
+{
+  name: String           # path as provided
+  type: String           # "file", "dir", "symlink", or "other"
+  size: Int              # file size in bytes
+  mtime: Int             # modification time as Unix timestamp
+  mode: Int              # Unix permissions (e.g., 0o644); 0 on non-Unix
+  is-dir: Bool           # true if directory
+  is-file: Bool          # true if regular file
+  is-symlink: Bool       # true if symbolic link
+}
+```
+
+**Error cases:**
+
+- All: Type mismatch if DirCap arg is not DirCap or RevocableDirCap; revoked capability error if using a revoked `RevocableDirCap`
+- All: Capability permission error if required flag is absent
+- `stat`, `stat-symlink`, `exists`, `read-link`: I/O error if path doesn't exist or stat fails; permission denied
+- `list-dir`: I/O error if path is not a directory or not readable
+- `make-dir`: I/O error if directory creation fails
+- `copy-file`: I/O error if source doesn't exist, destination creation fails, or copy operation fails
+- `symlink`: I/O error if link creation fails; platform error on unsupported systems
+- `set-permissions`: Type mismatch if mode is not Int; range error if mode < 0 or > 0o7777; platform error on non-Unix systems; I/O error if permission change fails
+- `builtin-remove`: I/O error if path doesn't exist or removal fails
+- `rename`, `link`: I/O error if operation fails
+
+## Extended Attributes (xattr)
+
+Linux-only extended attribute operations. All require a `DirCap` with the `ExtendedAttributes` permission flag. On non-Linux systems, all four builtins raise a platform error.
+
+| Builtin | Arity | Signature | Result | Description |
+|---------|-------|-----------|--------|-------------|
+| `get-xattr` | 3 | `DirCap × S × S → V` | Bytes or Null | Get the value of an extended attribute on a file; returns `Bytes` if the attribute exists, `[]` (null) if not found |
+| `set-xattr` | 4 | `DirCap × S × S × Bytes → Null` | Null | Set an extended attribute on a file; value must be Bytes; requires `ExtendedAttributes` and `Writable` permissions; returns empty dict on success |
+| `remove-xattr` | 3 | `DirCap × S × S → Null` | Null | Remove an extended attribute from a file; no-op if the attribute does not exist; returns empty dict on success |
+| `list-xattrs` | 2 | `DirCap × S → D` | Seq | List all extended attribute names on a file; returns a Seq of String attribute names |
+
+**Platform note:** All four builtins are Linux-only. Calling them on non-Linux platforms (macOS, Windows) raises a user error: `<builtin>: extended attributes are only supported on Linux`.
+
+**Error cases:**
+
+- All: Type mismatch if DirCap arg is not DirCap or RevocableDirCap; revoked capability error if using a revoked `RevocableDirCap`
+- All: Capability permission error if `ExtendedAttributes` flag is absent
+- `set-xattr`, `remove-xattr`: Capability permission error if `Writable` flag is also absent
+- `set-xattr`: I/O error if the attribute cannot be set
+- `remove-xattr`: I/O error if removal fails for a reason other than attribute not found
+- `list-xattrs`: I/O error if the path is inaccessible or the attribute list cannot be read
+- All: I/O error if the path does not exist or is not accessible
 
 ## Include Pipeline Primitives
 
@@ -973,7 +1061,7 @@ Capability-gated time access and timestamp manipulation.
 
 ## Summary
 
-**Total:** 185 Rust-native builtins registered in `standard_builtins()`.
+**Total:** 283 Rust-native builtins registered in `standard_builtins()`.
 
 Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation.
 

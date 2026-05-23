@@ -114,6 +114,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Supplemental Stdlib Modules](completed/lib-supplemental.md) | **Accepted 2026-05-07.** Strings, math, bitwise, Bytes, TOML-lite, FsCap, handle caps, StringView, path utils |
 | [Date-Time Support](completed/lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
 | [Pure-Tinct Regex Engine](completed/lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
+| [Linear Accumulators](linear-accumulators.md) | **Accepted 2026-05-22.** `build-dict` O(n) keyed-dict construction; `Value::Builder` O(1) transient accumulation; stdlib rewrite eliminating O(n²) `append`/`merge` loops; dist-eval wire serialization fix |
 
 ---
 
@@ -130,6 +131,7 @@ Accepted proposals with sprints in TODO.md. Not yet fully implemented.
 | [Runtime v2 — AST Redesign, Native Value Types, Async Parallel Evaluation](runtime-v2.md) | `SurfaceExpression`/`CoreExpr` split; `NodeId` side tables; `ResolutionTable`/`TypeAnnotationTable`; `Value::Program`/`Document`/`Expression`; `async fn` eval; `Rc`→`Arc`; `OnceCell` thunk; parallel dict eval; `task`/`await`/`channel`/`select-once`; context/cancellation | 2026-05-20 |
 | [CHR-Unified Type Constraints](chr-unification.md) | `Type::TypeStageApp`; `normalize()` unified simplification pass; FD elaboration into equality goals; deferred equality for non-injective resolvers; `[class ...]` two-bracket form; `[instance ...]` match-arm syntax; scope-resident ClassEnv; arithmetic class migration to prelude; boundary guard elaboration | 2026-05-16 |
 | [Unified Binding Declarations](unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; `Expr::LetDecl`/`CaseArm`/`Placeholder` | 2026-05-17 |
+| [Linear Accumulators](linear-accumulators.md) | `build-dict` Rust primitive (O(n) keyed-dict construction); `Value::Builder` transient (O(1) amortized stateful accumulation); stdlib rewrite eliminating all O(n²) `append`/`merge` accumulator loops | 2026-05-22 |
 | [Type Annotations v2](type-annotations-v2.md) | Single-bracket `@[type: T ...]` form; `or`/`each` type-stage combinators; `bind:`/`return:`/`constraint:`/`kinds:` keys; TypeVar scoping; double-`@` chained form retired in favour of bracket application `@[Type Arg]` | 2026-05-14 |
 
 ### Completed

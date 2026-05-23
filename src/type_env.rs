@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::Span;
 
@@ -189,11 +190,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         // Copy constraints with renamed variables
         for constraint in &scheme.constraints {
             match constraint {
-                Constraint::Class {
-                    class,
-                    vars,
-                    fundeps,
-                } => {
+                Constraint::Class { class, vars } => {
                     // Rename all vars in the constraint
                     let fresh_vars: Vec<String> = vars
                         .iter()
@@ -201,9 +198,8 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
                         .collect();
                     if fresh_vars.len() == vars.len() {
                         state.constraints.push(Constraint::Class {
-                            class: class.clone(),
+                            class: Arc::clone(class),
                             vars: fresh_vars,
-                            fundeps: fundeps.clone(),
                         });
                     }
                 }
@@ -271,11 +267,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     // Copy constraints with renamed variables
     for constraint in &scheme.constraints {
         match constraint {
-            Constraint::Class {
-                class,
-                vars,
-                fundeps,
-            } => {
+            Constraint::Class { class, vars } => {
                 // Rename all vars in the constraint
                 let fresh_vars: Vec<String> = vars
                     .iter()
@@ -283,9 +275,8 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
                     .collect();
                 if fresh_vars.len() == vars.len() {
                     state.constraints.push(Constraint::Class {
-                        class: class.clone(),
+                        class: Arc::clone(class),
                         vars: fresh_vars,
-                        fundeps: fundeps.clone(),
                     });
                 }
             }
@@ -369,9 +360,13 @@ pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
 /// `subst_snapshot` is a read-only clone of the substitution map taken before this call.
 /// A variable is considered "discharged" (already satisfied during unification) when it
 /// is bound in the snapshot to a non-TypeVar, non-Operator type.
+///
+/// `source_names` maps internal TypeVar names to user-visible source names (e.g., `"_t42"` → `"x"`).
+/// When present, diagnostics report "ambiguous type variable 'x' (internal: _t42)" for better readability.
 fn emit_ambiguous_constraint_diagnostics(
     constraints: &[Constraint],
     subst_snapshot: &HashMap<String, Type>,
+    source_names: &HashMap<String, String>,
     diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
     span: crate::ast::Span,
 ) {
@@ -381,6 +376,15 @@ fn emit_ambiguous_constraint_diagnostics(
             .map(|t| !matches!(t, Type::TypeVar(_, _) | Type::Operator(_)))
             .unwrap_or(false)
     };
+
+    // Format a variable name with source name if available
+    let format_var_name = |var: &str| -> String {
+        if let Some(source_name) = source_names.get(var) {
+            format!("'{}' (internal: {})", source_name, var)
+        } else {
+            format!("'{}'", var)
+        }
+    };
     for c in constraints {
         match c {
             Constraint::Class { class, vars, .. } => {
@@ -388,8 +392,8 @@ fn emit_ambiguous_constraint_diagnostics(
                     if !is_discharged(var) {
                         diagnostics.push(crate::error::TypeDiagnostic {
                             message: format!(
-                                "ambiguous type variable '{}' in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                                var, class
+                                "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                                format_var_name(var), class
                             ),
                             span,
                             code: "T013",
@@ -406,8 +410,8 @@ fn emit_ambiguous_constraint_diagnostics(
                 if !is_discharged(dict_var) {
                     diagnostics.push(crate::error::TypeDiagnostic {
                         message: format!(
-                            "ambiguous type variable '{}' (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                            dict_var
+                            "ambiguous type variable {} (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                            format_var_name(dict_var)
                         ),
                         span,
                         code: "T013",
@@ -422,8 +426,8 @@ fn emit_ambiguous_constraint_diagnostics(
                     if !is_discharged(label_var) {
                         diagnostics.push(crate::error::TypeDiagnostic {
                             message: format!(
-                                "ambiguous label variable '{}' in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                                label_var
+                                "ambiguous label variable {} in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                                format_var_name(label_var)
                             ),
                             span,
                             code: "T013",
@@ -434,8 +438,8 @@ fn emit_ambiguous_constraint_diagnostics(
                 if !is_discharged(field_var) {
                     diagnostics.push(crate::error::TypeDiagnostic {
                         message: format!(
-                            "ambiguous type variable '{}' (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                            field_var
+                            "ambiguous type variable {} (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                            format_var_name(field_var)
                         ),
                         span,
                         code: "T013",
@@ -479,6 +483,7 @@ pub fn generalize_with_doc(
             emit_ambiguous_constraint_diagnostics(
                 &state.constraints,
                 &subst_snapshot,
+                &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
             );
@@ -519,6 +524,7 @@ pub fn generalize_with_doc(
             emit_ambiguous_constraint_diagnostics(
                 &state.constraints,
                 &subst_snapshot,
+                &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
             );
@@ -564,6 +570,15 @@ pub fn generalize_with_doc(
                 .unwrap_or(false)
         };
 
+        // Helper: format a variable name with source name if available
+        let format_var_name = |var: &str| -> String {
+            if let Some(source_name) = state.type_var_source_names.get(var) {
+                format!("'{}' (internal: {})", source_name, var)
+            } else {
+                format!("'{}'", var)
+            }
+        };
+
         // Build generalizable constraints. For each constraint, resolve TypeVar names through one
         // level of substitution before checking generalizable membership AND before storing into
         // the TypeScheme. This handles the case where instantiate_scheme generates fresh vars
@@ -573,20 +588,15 @@ pub fn generalize_with_doc(
         let mut generalizable_constraints: Vec<Constraint> = Vec::new();
         for c in &state.constraints {
             match c {
-                Constraint::Class {
-                    class,
-                    vars,
-                    fundeps,
-                } => {
+                Constraint::Class { class, vars } => {
                     // Resolve all vars through one substitution level
                     let resolved_vars: Vec<String> =
                         vars.iter().map(|v| resolve_var_name(v)).collect();
                     // Keep constraint if ALL resolved vars are generalizable
                     if resolved_vars.iter().all(|v| generalizable_vars.contains(v)) {
                         generalizable_constraints.push(Constraint::Class {
-                            class: class.clone(),
+                            class: Arc::clone(class),
                             vars: resolved_vars,
-                            fundeps: fundeps.clone(),
                         });
                     } else {
                         // Diagnostic: ambiguous type variable in constraint
@@ -595,9 +605,9 @@ pub fn generalize_with_doc(
                             if !generalizable_vars.contains(var) && !is_discharged(var) {
                                 state.diagnostics.push(crate::error::TypeDiagnostic {
                                     message: format!(
-                                        "ambiguous type variable '{}' in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                                        var,
-                                        class
+                                        "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                                        format_var_name(var),
+                                        class.name
                                     ),
                                     span,
                                     code: "T013",
@@ -625,8 +635,8 @@ pub fn generalize_with_doc(
                                 if !is_discharged(&resolved) {
                                     state.diagnostics.push(crate::error::TypeDiagnostic {
                                         message: format!(
-                                            "ambiguous type variable '{}' in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                            resolved
+                                            "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                            format_var_name(&resolved)
                                         ),
                                         span,
                                         code: "T013",
@@ -659,9 +669,9 @@ pub fn generalize_with_doc(
                                 if !dict_discharged || !field_discharged {
                                     state.diagnostics.push(crate::error::TypeDiagnostic {
                                         message: format!(
-                                            "ambiguous type variables '{}', '{}' in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
-                                            effective_dict,
-                                            effective_field
+                                            "ambiguous type variables {}, {} in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
+                                            format_var_name(&effective_dict),
+                                            format_var_name(&effective_field)
                                         ),
                                         span,
                                         code: "T013",
@@ -671,8 +681,8 @@ pub fn generalize_with_doc(
                             } else if dict_ambiguous && !is_discharged(&effective_dict) {
                                 state.diagnostics.push(crate::error::TypeDiagnostic {
                                     message: format!(
-                                        "ambiguous type variable '{}' in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                        effective_dict
+                                        "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                        format_var_name(&effective_dict)
                                     ),
                                     span,
                                     code: "T013",
@@ -681,8 +691,8 @@ pub fn generalize_with_doc(
                             } else if field_ambiguous && !is_discharged(&effective_field) {
                                 state.diagnostics.push(crate::error::TypeDiagnostic {
                                     message: format!(
-                                        "ambiguous type variable '{}' in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                        effective_field
+                                        "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                        format_var_name(&effective_field)
                                     ),
                                     span,
                                     code: "T013",
@@ -1062,6 +1072,79 @@ impl TypeEnv {
             Type::normalize_intersection(members)
         };
 
+        // Create ClassDecl instances for arithmetic operators.
+        // These match the declarations registered in InferState::new().
+        use std::sync::Arc;
+        let addable_class = Arc::new(ClassDecl {
+            name: "Addable".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        let subtractable_class = Arc::new(ClassDecl {
+            name: "Subtractable".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        let multipliable_class = Arc::new(ClassDecl {
+            name: "Multipliable".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        let divisible_class = Arc::new(ClassDecl {
+            name: "Divisible".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        let equatable_class = Arc::new(ClassDecl {
+            name: "Equatable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        let comparable_class = Arc::new(ClassDecl {
+            name: "Comparable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+        });
+
         // Addition: Addable a b c => a -> b -> c
         // Multi-parameter type class with functional dependency (a,b) → c
         env.insert_scheme(
@@ -1069,9 +1152,8 @@ impl TypeEnv {
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Addable".to_string(),
+                    class: Arc::clone(&addable_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1093,9 +1175,8 @@ impl TypeEnv {
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Subtractable".to_string(),
+                    class: Arc::clone(&subtractable_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1117,9 +1198,8 @@ impl TypeEnv {
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Multipliable".to_string(),
+                    class: Arc::clone(&multipliable_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1141,9 +1221,8 @@ impl TypeEnv {
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 constraints: vec![Constraint::Class {
-                    class: "Divisible".to_string(),
+                    class: Arc::clone(&divisible_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                    fundeps: vec![(vec![0, 1], vec![2])], // (a,b) → c
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1164,7 +1243,7 @@ impl TypeEnv {
             "=".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                constraints: vec![Constraint::new("Equatable", "a")],
+                constraints: vec![Constraint::new(Arc::clone(&equatable_class), "a")],
                 body: Type::Function {
                     params: vec![
                         (None, Type::TypeVar("a".to_string(), 0)),
@@ -1184,7 +1263,7 @@ impl TypeEnv {
             "<".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                constraints: vec![Constraint::new("Comparable", "a")],
+                constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
                 body: Type::Function {
                     params: vec![
                         (None, Type::TypeVar("a".to_string(), 0)),
@@ -1294,7 +1373,7 @@ impl TypeEnv {
             "str".to_string(),
             TypeScheme {
                 type_vars: vec!["a".to_string()],
-                constraints: vec![Constraint::new("Showable", "a")],
+                constraints: vec![Constraint::new_by_name("Showable", "a")],
                 body: Type::Function {
                     params: vec![(None, Type::TypeVar("a".to_string(), 0))],
                     ret: Box::new(Type::Str),
@@ -1742,8 +1821,9 @@ impl TypeEnv {
             "variant".to_string(),
             Type::Function {
                 params: vec![],
-                ret: Box::new(Type::Unknown), // Returns a Variant, but we don't have Type::Variant yet
-                variadic: true,               // 1 arg (unit variant: tag) or 2 args (tag + payload)
+                // Genuinely unknown: Returns a Variant, but we don't have Type::Variant yet
+                ret: Box::new(Type::Unknown),
+                variadic: true, // 1 arg (unit variant: tag) or 2 args (tag + payload)
             },
         );
         env.insert(
@@ -1766,7 +1846,8 @@ impl TypeEnv {
             "decimal".to_string(),
             Type::Function {
                 params: vec![(None, Type::Top)],
-                ret: Box::new(Type::Unknown), // Returns Decimal
+                // Genuinely unknown: Returns Decimal type (not yet in Type enum)
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -1774,7 +1855,8 @@ impl TypeEnv {
             "big-int".to_string(),
             Type::Function {
                 params: vec![(None, Type::Top)],
-                ret: Box::new(Type::Unknown), // Returns BigInt
+                // Genuinely unknown: Returns BigInt type (not yet in Type enum)
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -1919,14 +2001,14 @@ impl TypeEnv {
             "open".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-                ret: Box::new(Type::Handle),
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "slurp".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle)],
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
                 // Returns Str for text handles ("r"); Bytes for binary handles ("rb")
                 ret: Box::new(Type::normalize_union(vec![Type::Str, Type::Bytes])),
                 variadic: false,
@@ -1935,7 +2017,7 @@ impl TypeEnv {
         env.insert(
             "lines".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle)],
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
             },
@@ -2022,7 +2104,7 @@ impl TypeEnv {
                 ],
                 // Returns Handle (stream) or DatagramHandle (datagram) depending on transport.
                 ret: Box::new(Type::normalize_union(vec![
-                    Type::Handle,
+                    Type::Handle(Box::new(Type::Unknown)),
                     Type::DatagramHandle,
                 ])),
                 variadic: false,
@@ -2061,20 +2143,20 @@ impl TypeEnv {
             "tls-layer".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Handle),
+                    (None, Type::Handle(Box::new(Type::Unknown))),
                     (None, Type::Str),
                     // TODO(unknown-elimination): opts is an open record {alpn?: Seq(Str), ...}.
                     // Use an open Record with RowVar tail once opts-dict pattern is established.
                     (None, Type::Top), // opts dict — any record or null
                 ],
-                ret: Box::new(Type::Handle),
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: false,
             },
         );
         env.insert(
             "tls-peer-cert".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle)],
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::from([
                         ("subject".to_string(), Type::Str),
@@ -2105,7 +2187,7 @@ impl TypeEnv {
             "quic-open-stream".to_string(),
             Type::Function {
                 params: vec![(None, Type::QuicSession)],
-                ret: Box::new(Type::Handle), // Returns a bidirectional stream Handle
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns a bidirectional stream Handle
                 variadic: false,
             },
         );
@@ -2198,7 +2280,10 @@ impl TypeEnv {
         env.insert(
             "cap-data".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle), (None, Type::Str)],
+                params: vec![
+                    (None, Type::Handle(Box::new(Type::Unknown))),
+                    (None, Type::Str),
+                ],
                 // Genuinely unknown: cap-data returns the value stored in the Handle's
                 // capability map, which can be any type (cap name is a dynamic string key).
                 ret: Box::new(Type::Unknown),
@@ -2210,25 +2295,25 @@ impl TypeEnv {
             "write-handle".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Handle),
+                    (None, Type::Handle(Box::new(Type::Unknown))),
                     (None, Type::normalize_union(vec![Type::Str, Type::Bytes])), // String or Bytes
                 ],
-                ret: Box::new(Type::Handle), // Returns WriteHandle
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns WriteHandle
                 variadic: false,
             },
         );
         env.insert(
             "flush".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle)], // WriteHandle
-                ret: Box::new(Type::Handle),        // Returns WriteHandle
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // WriteHandle
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))),        // Returns WriteHandle
                 variadic: false,
             },
         );
         env.insert(
             "close".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle)], // WriteHandle
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // WriteHandle
                 // Null -- Type::Record(Row::Empty), see doc/whatif/null-semantics.md
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2240,31 +2325,34 @@ impl TypeEnv {
             "raw-create".to_string(),
             Type::Function {
                 params: vec![(None, Type::DirCap), (None, Type::Str)],
-                ret: Box::new(Type::Handle), // Returns WriteHandle
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns WriteHandle
                 variadic: false,
             },
         );
         env.insert(
             "seek".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle), (None, Type::Int)], // Handle, byte offset
-                ret: Box::new(Type::Handle), // Returns Handle for chaining
+                params: vec![
+                    (None, Type::Handle(Box::new(Type::Unknown))),
+                    (None, Type::Int),
+                ], // Handle, byte offset
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns Handle for chaining
                 variadic: false,
             },
         );
         env.insert(
             "seek-end".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle)], // Handle
-                ret: Box::new(Type::Handle),        // Returns Handle for chaining
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // Handle
+                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns Handle for chaining
                 variadic: false,
             },
         );
         env.insert(
             "position".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle)], // Handle
-                ret: Box::new(Type::Int),           // Current byte offset
+                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))], // Handle
+                ret: Box::new(Type::Int),                                    // Current byte offset
                 variadic: false,
             },
         );
@@ -2402,12 +2490,13 @@ impl TypeEnv {
             },
         );
         // builtin-collect: ∀T. Seq(T) → Dict
-        // The Unknown in Seq(Unknown) should ideally be TypeVar("T") but the Dict return type
-        // already erases element type information, so the polymorphism buys nothing here.
         // TODO(unknown-elimination): Make Seq param ∀T once collect returns a typed Dict.
         env.insert(
             "builtin-collect".to_string(),
             Type::Function {
+                // Genuinely unknown: The Unknown in Seq(Unknown) should ideally be TypeVar("T")
+                // but the Dict return type already erases element type information, so the
+                // polymorphism buys nothing here.
                 params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::new(),
@@ -2505,10 +2594,12 @@ impl TypeEnv {
             "map".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Top),     // callback: any function
-                    (None, Type::Unknown), // collection: Dict or Seq, can't express yet
+                    (None, Type::Top), // callback: any function
+                    // Genuinely unknown: collection is Dict or Seq, can't express yet
+                    (None, Type::Unknown),
                 ],
-                ret: Box::new(Type::Unknown), // returns same shape as input
+                // Genuinely unknown: returns same shape as input (HKT needed for precision)
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2621,8 +2712,8 @@ impl TypeEnv {
             TypeScheme {
                 type_vars: vec!["a".to_string(), "b".to_string()],
                 constraints: vec![
-                    Constraint::new("Appendable", "a"),
-                    Constraint::new("Appendable", "b"),
+                    Constraint::new_by_name("Appendable", "a"),
+                    Constraint::new_by_name("Appendable", "b"),
                 ],
                 body: Type::Function {
                     params: vec![
@@ -2745,7 +2836,7 @@ impl TypeEnv {
             "Handle".to_string(),
             TypeAlias {
                 params: vec![],
-                body: Type::Handle,
+                body: Type::Handle(Box::new(Type::Unknown)),
             },
         );
         env.insert_type_alias(
@@ -2836,6 +2927,8 @@ impl TypeEnv {
                 type_vars: vec![],
                 constraints: vec![],
                 body: Type::Function {
+                    // Genuinely unknown: conservative fallback signature (any dict-like, any key, any result).
+                    // The type checker special-cases get calls for precise Map/Record typing.
                     params: vec![(None, Type::Unknown), (None, Type::Unknown)],
                     ret: Box::new(Type::Unknown),
                     variadic: false,
@@ -2847,15 +2940,16 @@ impl TypeEnv {
         );
 
         // get?: registered directly. It is a Rust builtin (builtin_get_optional) that returns
-        // the value at the key or Null (empty dict) if missing. Conservative type is
-        // Unknown → Unknown → Union(Unknown, Null). The type checker special-cases get? for
-        // Map and Record args to produce precise Union(V|Null) return types.
+        // the value at the key or Null (empty dict) if missing. The type checker special-cases get?
+        // for Map and Record args to produce precise Union(V|Null) return types.
         env.insert_scheme(
             "get?".to_string(),
             TypeScheme {
                 type_vars: vec![],
                 constraints: vec![],
                 body: Type::Function {
+                    // Genuinely unknown: conservative fallback signature Unknown → Unknown → Union(Unknown, Null).
+                    // The type checker special-cases get? calls for precise Map/Record typing.
                     params: vec![(None, Type::Unknown), (None, Type::Unknown)],
                     ret: Box::new(Type::normalize_union(vec![
                         Type::Unknown,

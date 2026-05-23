@@ -54,12 +54,15 @@
   scheme-default-port: [fn [let scheme@String]
     [match scheme "https": 443  "http": 80  _: 443]]
 
-  decompress-response: [fn [let resp@RawResponse]
+  # max-decompressed: ceiling on decompressed output size (bytes).
+  # Default 256 MB. Enforced by the Rust builtins (builtin-gzip-decode etc.)
+  # which error if decompressed output would exceed the limit — prevents zip bombs.
+  decompress-response: [fn [let resp@RawResponse  max-decompressed@[type: Int  default: 268435456]]
     [ce: [get? resp.headers "content-encoding"]]
     [body:
-      [if [= ce "gzip"]    [match [decode Gzip    resp.body] [Ok b]: b [Err _]: resp.body]
-      [if [= ce "br"]      [match [decode Brotli  resp.body] [Ok b]: b [Err _]: resp.body]
-      [if [= ce "zstd"]    [match [decode Zstd    resp.body] [Ok b]: b [Err _]: resp.body]
+      [if [= ce "gzip"]    [match [decode Gzip    resp.body max-decompressed] [Ok b]: b [Err _]: resp.body]
+      [if [= ce "br"]      [match [decode Brotli  resp.body max-decompressed] [Ok b]: b [Err _]: resp.body]
+      [if [= ce "zstd"]    [match [decode Zstd    resp.body max-decompressed] [Ok b]: b [Err _]: resp.body]
                             resp.body]]]]
     [if [= body resp.body]
       resp
@@ -91,7 +94,7 @@
         [Ok records]:
           [match records
             []: null
-            [let [rec ...]]:
+            [let [rec ...rest]]:
               [match rec
                 [let [HttpsRecord 0 target _]]:
                   [resolve-svcb cap target [+ depth 1]]
@@ -123,12 +126,14 @@
         [raw: [happy-connect cap port addrs]]
         [tls-layer raw [sni: host  alpn: ["h2" "http/1.1"]  ech: []  trust-roots: SystemRoots]]]]
 
-  fetch: [fn [let cap@NetCap url@Url]
+  # max-decompressed: ceiling on decompressed body (default 256 MB); prevents zip bombs.
+  fetch: [fn [let cap@NetCap url@Url  max-decompressed@[type: Int  default: 268435456]]
     [host: [or url.host [error "fetch: URL has no host"]]]
     [port: [or url.port [scheme-default-port url.scheme]]]
     [conn: [http-connect cap host port]]
-    [decompress-response [await [http-request conn
-      [method: "GET"  path: url.path  headers: []  body: []  host: host]]]]]
+    [decompress-response
+      [await [http-request conn [method: "GET"  path: url.path  headers: []  body: []  host: host]]]
+      max-decompressed]]
 
   fetch-h1: [fn [let cap@NetCap url@Url]
     [host: [or url.host [error "fetch-h1: no host"]]]
@@ -138,6 +143,7 @@
 
   router: [fn [let routes@[Seq [Seq t]]]
     [fn [let req@RawRequest]
+      # find returns [Some x] or [None] (prelude function — constructs explicit Maybe).
       [match [find [fn [let route] [str-starts-with? req.path [get route 0]]] routes]
         [Some route]: [[get route 1] req]
         [None]:       not-found]]]

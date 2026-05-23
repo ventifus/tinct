@@ -1,0 +1,34 @@
+# Constraint propagation through higher-order function arguments.
+# Verifies that a constraint-bearing function type flows correctly when passed
+# as an argument to a higher-order function (HOF).
+#
+# The HOF `apply-fn` has no explicit type annotation — its parameter types are
+# inferred. When called with a constrained lambda (a -> String | Describable a)
+# and an Int, the type checker must:
+#   1. Unify the HOF's first-param type with the constrained function type.
+#   2. Allow the constrained lambda to be applied to 42 (Int satisfies Describable).
+#
+# At the eval level the constraint is erased: the result is always String("42").
+# This test documents the ACTUAL behavior: eval succeeds regardless of whether
+# the constraint propagates fully through the HOF's inferred type, because
+# constraint checking happens at the call site of the constrained lambda, not
+# inside the HOF body.
+[
+  # User-defined class and Int instance
+  Describable: [class [let Describable a]]
+  DescribableInt: [instance Describable [pattern [Int]]:]
+
+  # Higher-order function: takes a function f and a value p, applies f to p.
+  # No explicit type annotation — types are fully inferred.
+  apply-fn: [fn [f p] [f p]]
+
+  # Call apply-fn with a constrained lambda and an Int argument.
+  # The lambda converts a Describable value to its String representation.
+  result: [apply-fn [fn@[bind: [a]  constraint: [a: Describable]  return: String] [x@a] [str x]] 42]
+]
+
+---
+
+%.result
+=== out
+String("42")

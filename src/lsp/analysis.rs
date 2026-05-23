@@ -2,7 +2,7 @@
 
 use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DocumentSymbol, Location,
-    SymbolKind, TextEdit, Uri,
+    NumberOrString, SymbolKind, TextEdit, Uri,
 };
 
 use std::sync::Arc;
@@ -33,6 +33,7 @@ pub fn hover_at(
     doc_url: &Uri,
     offset: usize,
     include_graph: &crate::lsp::document::IncludeGraph,
+    eval_ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Option<String> {
     // For markdown documents, map offset to block-local coordinates
     if !doc.literate_blocks.is_empty() {
@@ -44,13 +45,18 @@ pub fn hover_at(
         // doc.type_map is empty for markdown documents (type-checking runs per-block,
         // not at document level). We must re-run here to populate hover type info.
         let block_parsed = crate::parser::parse(&block.code).ok()?;
-        // TODO: expand_surface_program should be called here before desugar, matching the
-        // pipeline invariant (expand → desugar → surface_program_to_file). Macros defined
-        // in markdown blocks will not be expanded in hover context until hover_at is updated
-        // to accept an EvalContext (requires threading through server.rs call sites).
-        // Tracked: TODO.md "LSP markdown block paths missing expand_surface_program".
-        // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+        // Expand macros on SurfaceProgram (before conversion to File), matching the
+        // pipeline invariant (expand → desugar → surface_program_to_file).
         let mut program = block_parsed.program.clone();
+        if let Err(_) = crate::expand::expand_surface_program(
+            &mut program,
+            eval_ctx.config.no_fs,
+            &eval_ctx.config.base_dir,
+        ) {
+            // Macro expansion error — skip hover for this block
+            return None;
+        }
+        // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
         crate::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let _resolution_table = crate::resolve::resolve_surface_program(&program);
@@ -1323,7 +1329,11 @@ fn collect_var_refs_spanned(
 ///
 /// `uri` is the document's URI, used to construct `DiagnosticRelatedInformation`
 /// locations that point back into the same file.
-pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
+pub fn diagnostics_for(
+    doc: &DocumentState,
+    uri: &Uri,
+    eval_ctx: &std::sync::Arc<crate::eval::EvalContext>,
+) -> Vec<Diagnostic> {
     let source = &doc.text;
     let mut diagnostics = Vec::new();
 
@@ -1352,13 +1362,38 @@ pub fn diagnostics_for(doc: &DocumentState, uri: &Uri) -> Vec<Diagnostic> {
                     }
 
                     // Type errors
-                    // TODO: expand_surface_program should be called here before desugar, matching
-                    // the pipeline invariant (expand → desugar → surface_program_to_file). Macros
-                    // in markdown blocks will not be expanded for diagnostics until diagnostics_for
-                    // is updated to accept an EvalContext (requires threading through server.rs).
-                    // Tracked: TODO.md "LSP markdown block paths missing expand_surface_program".
-                    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+                    // Expand macros on SurfaceProgram (before conversion to File), matching the
+                    // pipeline invariant (expand → desugar → surface_program_to_file).
                     let mut program = output.program.clone();
+                    if let Err(e) = crate::expand::expand_surface_program(
+                        &mut program,
+                        eval_ctx.config.no_fs,
+                        &eval_ctx.config.base_dir,
+                    ) {
+                        // Macro expansion error — convert to diagnostic
+                        let mut diag = Diagnostic {
+                            range: llt_span_to_lsp_range(&e.definition_span, &block.code),
+                            severity: Some(DiagnosticSeverity::ERROR),
+                            code: Some(NumberOrString::String(e.kind.code().to_string())),
+                            source: Some("tinct".to_string()),
+                            message: e.to_string(),
+                            related_information: None,
+                            tags: None,
+                            code_description: None,
+                            data: None,
+                        };
+                        // Map span from block-local to markdown coordinates
+                        let md_span = crate::literate::block_span_to_md(
+                            &doc.literate_blocks,
+                            block_idx,
+                            e.definition_span,
+                            source,
+                        );
+                        diag.range = llt_span_to_lsp_range(&md_span, source);
+                        diagnostics.push(diag);
+                        continue;
+                    }
+                    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
                     crate::desugar::desugar_surface_program(&mut program);
                     // Variable resolution pass (Phase 1 of arena allocation strategy).
                     let _resolution_table = crate::resolve::resolve_surface_program(&program);
@@ -1615,7 +1650,7 @@ mod tests {
     fn test_hover_int_literal() {
         let env = test_env();
         let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
         assert_eq!(hover.as_deref(), Some("Int literal: 42 (42)"));
     }
 
@@ -1624,7 +1659,7 @@ mod tests {
         let env = test_env();
         // $x is undefined, so no type is inferred -- just syntactic info.
         let doc = DocumentState::new("$x".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph(), &test_ctx());
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $x"));
     }
@@ -1637,7 +1672,7 @@ mod tests {
         // Offset 12 is inside "$x" in the second expression "[y: $x]"
         // "[x: 42]\n[y: $x]"
         //  0123456 7 89012345
-        let hover = hover_at(&doc, &test_uri(), 12, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 12, &test_include_graph(), &test_ctx());
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Variable: $x"), "got: {text}");
@@ -1648,7 +1683,7 @@ mod tests {
     fn test_hover_string_literal() {
         let env = test_env();
         let doc = DocumentState::new("\"hello\"".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 2, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 2, &test_include_graph(), &test_ctx());
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("String literal"), "got: {text}");
@@ -1663,7 +1698,7 @@ mod tests {
         let env = test_env();
         let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
         // Hover on whitespace between entries.
-        let hover = hover_at(&doc, &test_uri(), 100, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 100, &test_include_graph(), &test_ctx());
         assert!(hover.is_none());
     }
 
@@ -1671,7 +1706,7 @@ mod tests {
     fn test_diagnostics_parse_error() {
         let env = test_env();
         let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri());
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diags[0].source, Some("tinct-parser".to_string()));
@@ -1681,7 +1716,7 @@ mod tests {
     fn test_diagnostics_type_error() {
         let env = test_env();
         let doc = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri());
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
         assert!(!diags.is_empty());
         let type_diag = diags
             .iter()
@@ -1696,7 +1731,7 @@ mod tests {
         // Undefined variables are caught by the type checker instead.
         let env = test_env();
         let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri());
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
         assert!(!diags.is_empty());
         // No eval diagnostic — eval is skipped in LSP context.
         assert!(
@@ -1718,7 +1753,7 @@ mod tests {
     fn test_diagnostics_valid_source() {
         let env = test_env();
         let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri());
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
         assert!(diags.is_empty());
     }
 
@@ -1726,7 +1761,7 @@ mod tests {
     fn test_hover_dict_entry_key() {
         let env = test_env();
         let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph()); // on 'x'
+        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph(), &test_ctx()); // on 'x'
         assert!(hover.is_some());
     }
 
@@ -1734,7 +1769,7 @@ mod tests {
     fn test_hover_dict_entry_value() {
         let env = test_env();
         let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 4, &test_include_graph()); // on '42'
+        let hover = hover_at(&doc, &test_uri(), 4, &test_include_graph(), &test_ctx()); // on '42'
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Int literal"), "got: {text}");
@@ -1745,7 +1780,7 @@ mod tests {
     fn test_hover_nested_dict() {
         let env = test_env();
         let doc = DocumentState::new("[a: [b: 1]]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 8, &test_include_graph()); // on '1'
+        let hover = hover_at(&doc, &test_uri(), 8, &test_include_graph(), &test_ctx()); // on '1'
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Int literal"), "got: {text}");
@@ -1756,7 +1791,7 @@ mod tests {
         let env = test_env();
         // "[fn [let x] $x]" — 'x' is at offset 9
         let doc = DocumentState::new("[fn [let x] $x]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph()); // on 'x' in param list
+        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph(), &test_ctx()); // on 'x' in param list
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Parameter"));
     }
@@ -1765,7 +1800,7 @@ mod tests {
     fn test_hover_call_expression() {
         let env = test_env();
         let doc = DocumentState::new("[call $+ 1 2]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph()); // on '$+'
+        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph(), &test_ctx()); // on '$+'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $+"));
     }
@@ -1774,7 +1809,7 @@ mod tests {
     fn test_hover_float_literal() {
         let env = test_env();
         let doc = DocumentState::new("3.14".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
         assert_eq!(hover.as_deref(), Some("Float literal: 3.14 (Float)"));
     }
 
@@ -1782,7 +1817,7 @@ mod tests {
     fn test_hover_bool_literal() {
         let env = test_env();
         let doc = DocumentState::new("true".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
         assert_eq!(hover.as_deref(), Some("Bool literal: true (Bool)"));
     }
 
@@ -1792,7 +1827,7 @@ mod tests {
         // $undefined has type <error> when inference fails -- LSP hover shows the sentinel
         // so users can see that the expression has a type error rather than seeing Any.
         let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph(), &test_ctx());
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert_eq!(text, "Variable: $undefined (<error>)");
@@ -2007,7 +2042,7 @@ mod tests {
         // Offset 6 is on '$map'
         // "[call $map [fn [let x] x] [1 2 3]]"
         //  0123456789...
-        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "should find hover for $map");
         let text = hover.unwrap();
         assert!(
@@ -2035,7 +2070,7 @@ mod tests {
         //  0         1         2         3         4
         //  01234567890123456789012345678901234567890123456
         //                                             ^-- $ at 43, x at 44
-        let hover = hover_at(&doc, &test_uri(), 43, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 43, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2058,7 +2093,7 @@ mod tests {
         // "[fn [let x@String] $x]"
         //  0         1         2
         //  0123456789012345678901
-        let hover = hover_at(&doc, &test_uri(), 19, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 19, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2081,7 +2116,7 @@ mod tests {
         // "[fn [let x@[type: Number default: 0 doc: "count"]] $x]"
         //  0         1         2         3         4         5
         //  01234567890123456789012345678901234567890123456789012345
-        let hover = hover_at(&doc, &test_uri(), 52, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 52, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2104,7 +2139,7 @@ mod tests {
         // Hover on parameter "x" itself (at offset 9 in [fn [let x@...]])
         // "[fn [let x@[type: String doc: "the name"]] $x]"
         //  012345678 9
-        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "hover should be present on param");
         let text = hover.unwrap();
         assert!(
@@ -2133,7 +2168,7 @@ mod tests {
         //  0         1         2         3
         //  0123456789012345678901234567890123456789012345
         //                                       ^ 37 = '$f'
-        let hover = hover_at(&doc, &test_uri(), 37, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 37, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "should have hover on $f");
         let text = hover.unwrap();
         assert!(
@@ -2159,7 +2194,7 @@ mod tests {
         let source = "[call $= 1 2]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
         // Offset 6 is on '$='
-        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "should have hover on $=");
         let text = hover.unwrap();
         // Should show the "Equatable" constraint in the type display
@@ -2185,7 +2220,13 @@ mod tests {
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
         // Find offset of "$identity" in the call expression
         let identity_offset = source.find("$identity").expect("should find $identity");
-        let hover = hover_at(&doc, &test_uri(), identity_offset, &test_include_graph());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            identity_offset,
+            &test_include_graph(),
+            &test_ctx(),
+        );
         assert!(hover.is_some(), "should have hover on $identity");
         let text = hover.unwrap();
         assert!(
@@ -2744,7 +2785,13 @@ mod tests {
 
         // Test offset inside the code block (after first [)
         let test_offset = block.md_code_start + 1;
-        let hover = hover_at(&doc, &test_uri(), test_offset, &test_include_graph());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            test_offset,
+            &test_include_graph(),
+            &test_ctx(),
+        );
         assert!(
             hover.is_some(),
             "hover should work inside markdown code blocks"
@@ -2762,7 +2809,7 @@ mod tests {
         let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
 
         // Offset 0 is in the prose before the code block
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph());
+        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
         assert!(
             hover.is_none(),
             "hover should return None outside code blocks"
@@ -2776,7 +2823,7 @@ mod tests {
 [unterminated
 ```"#;
         let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri());
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
         assert!(!diags.is_empty(), "should have parse error diagnostics");
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diags[0].source, Some("tinct-parser".to_string()));
@@ -2789,7 +2836,7 @@ mod tests {
 [@Number "not a number"]
 ```"#;
         let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri());
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
         assert!(!diags.is_empty(), "should have type error diagnostics");
         // Type errors are warnings in tinct
         assert!(diags
@@ -2848,7 +2895,7 @@ mod tests {
                 // We exercise the code path via hover_at on the DocumentState.
                 let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
                 // Find an offset that could hit an Error node (offset 4 is at '@')
-                let hover = hover_at(&doc, &test_uri(), 4, &test_include_graph());
+                let hover = hover_at(&doc, &test_uri(), 4, &test_include_graph(), &test_ctx());
                 // If hover is Some, it should contain "Parse error" when on an error node
                 if let Some(text) = hover {
                     // Either it returned some other node's hover (if recovery put '@' elsewhere),

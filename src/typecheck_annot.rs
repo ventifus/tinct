@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
 use crate::ast::{Annotation, Entry, Expr, Span, Spanned};
@@ -279,6 +280,10 @@ pub(crate) fn resolve_fn_metadata(
                                         let fresh = format!("_t{}", state.name_counter);
                                         state.name_counter = state.name_counter.saturating_add(1);
                                         state.levels.insert(fresh.clone(), state.level);
+                                        // Register source name for better T013 diagnostics
+                                        state
+                                            .type_var_source_names
+                                            .insert(fresh.clone(), name.clone());
                                         if let Some(ref mut mapping) = ann_mapping {
                                             mapping.insert(name.clone(), fresh);
                                         } else {
@@ -352,6 +357,10 @@ pub(crate) fn resolve_fn_metadata(
                                 let fresh = format!("_t{}", state.name_counter);
                                 state.name_counter = state.name_counter.saturating_add(1);
                                 state.levels.insert(fresh.clone(), state.level);
+                                // Register source name for better T013 diagnostics
+                                state
+                                    .type_var_source_names
+                                    .insert(fresh.clone(), name.to_string());
                                 if let Some(ref mut mapping) = ann_mapping {
                                     mapping.insert(name.to_string(), fresh);
                                 } else {
@@ -497,6 +506,10 @@ pub(crate) fn resolve_fn_metadata(
                                         let fresh = format!("_t{}", state.name_counter);
                                         state.name_counter = state.name_counter.saturating_add(1);
                                         state.levels.insert(fresh.clone(), state.level);
+                                        // Register source name for better T013 diagnostics
+                                        state
+                                            .type_var_source_names
+                                            .insert(fresh.clone(), typevar_name.clone());
                                         mapping.insert(typevar_name.clone(), fresh.clone());
                                         fresh
                                     }
@@ -698,23 +711,17 @@ pub(crate) fn resolve_fn_metadata(
                                         // Escaped reference like $Add — this is the class name
                                         let class_name = name;
 
-                                        // Validate the class exists in ClassEnv
-                                        if state.class_env.get(class_name).is_none() {
-                                            return Err(TypeError::new(
-                                                format!(
-                                                    "unknown class '{}' in MPTC constraint",
-                                                    class_name
-                                                ),
-                                                c_entry.node.value.span,
-                                            ));
-                                        }
-
-                                        // Extract fundeps from ClassDecl
-                                        let fundeps = state
-                                            .class_env
-                                            .get(class_name)
-                                            .map(|decl| decl.determines.clone())
-                                            .unwrap_or_default();
+                                        // Validate the class exists in ClassEnv and get the ClassDecl
+                                        let class_decl =
+                                            state.class_env.get(class_name).ok_or_else(|| {
+                                                TypeError::new(
+                                                    format!(
+                                                        "unknown class '{}' in MPTC constraint",
+                                                        class_name
+                                                    ),
+                                                    c_entry.node.value.span,
+                                                )
+                                            })?;
 
                                         // Collect TypeVar names from subsequent positional entries
                                         let mut typevar_names = Vec::new();
@@ -767,11 +774,10 @@ pub(crate) fn resolve_fn_metadata(
                                             j += 1;
                                         }
 
-                                        // Create the MPTC constraint
+                                        // Create the MPTC constraint using Arc<ClassDecl>
                                         state.constraints.push(Constraint::Class {
-                                            class: class_name.clone(),
+                                            class: Arc::new(class_decl.clone()),
                                             vars: typevar_names,
-                                            fundeps,
                                         });
 
                                         // Skip the entries we just processed (the class name + TypeVars)
@@ -1180,6 +1186,10 @@ pub(crate) fn resolve_annotation(
                                             state
                                                 .kind_env
                                                 .insert(fresh.clone(), crate::types::Kind::Label);
+                                            // Register source name for better T013 diagnostics
+                                            state
+                                                .type_var_source_names
+                                                .insert(fresh.clone(), name.clone());
                                             mapping.insert(name.clone(), fresh.clone());
                                             fresh
                                         }
@@ -1817,6 +1827,8 @@ pub(crate) fn resolve_type_name(
                         let fresh = format!("_t{}", state.name_counter);
                         state.name_counter = state.name_counter.saturating_add(1);
                         state.levels.insert(fresh.clone(), state.level);
+                        // Register source name for better T013 diagnostics
+                        state.type_var_source_names.insert(fresh.clone(), name.to_string());
                         mapping.insert(name.to_string(), fresh.clone());
                         Ok(Type::TypeVar(fresh, state.level))
                     }

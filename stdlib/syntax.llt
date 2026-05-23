@@ -8,14 +8,15 @@
 # Usage (still works, but not required):
 #   [include %libdir "syntax.llt"]
 #
-# With the macros globally registered:
-#   [fn [x y] body]              works in programmatic (macro-output) contexts
-#   [fn [x@Int y@Float] body]    works in programmatic contexts
-#   [fn [let x y] body]          works (explicit, idempotent)
+# Per unified-bindings.md (Accepted 2026-05-17), [fn [x y] body] (without let)
+# SHOULD be a parse error. Currently the parser accepts both forms — this is a
+# known bug tracked in TODO.md (unified-bindings-parser-enforcement).
+# The macros here handle programmatic macro-output cases where old-form Call
+# nodes are produced by other macros.
 #
-# Note: The parser already accepts both [fn [x y] body] (old form) and
-# [fn [let x y] body] (new form) for normal source code. The macros only
-# apply when another macro produces Call(VarRef("fn"), ...) nodes.
+# Eventually (once the parser enforces let-only params):
+#   [fn [let x y] body]          only valid source form
+#   [fn [x y] body]              parse error — must use [let ...] params
 #
 # Implementation: see stdlib/macros.llt for the transformer functions
 # (syntax-fn, syntax-class, syntax-type) and src/expand.rs for registration.

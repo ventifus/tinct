@@ -10,68 +10,70 @@
 
 # ── IO Typeclasses ────────────────────────────────────────────────────────────────────────────────
 
-[class [ByteStream h]
-  read-bytes:  [Fn [h@h n@Int] Bytes]
-  write-bytes: [Fn [h@h data@Bytes] Null]]
+[class [let ByteStream h]
+  read-bytes:  [Fn@Bytes [h Int]]
+  write-bytes: [Fn@Null [h Bytes]]]
 
-[class [Datagram d]
-  send-datagram: [Fn [d@d addr@SocketAddress data@Bytes] Null]
-  recv-datagram: [Fn [d@d] UdpDatagram]]
+[class [let Datagram d]
+  send-datagram: [Fn@Null [d SocketAddress Bytes]]
+  recv-datagram: [Fn@UdpDatagram [d]]]
 
-[class [MessageStream s t]
-  FD: [s → t]
-  send-message: [Fn [s@s t] Null]
-  recv-message: [Fn [s@s] t]]
+[class [let MessageStream s t]
+  send-message: [Fn@Null [s t]]
+  recv-message: [Fn@t [s]]]
 
-[class [Listener l]
-  accept: [Fn [l@l] Handle]]
+[class [let Listener l]
+  accept: [Fn@Handle [l]]]
 
-[class [Indexed s e]
-  get:    [Fn [s@s i@Int] e]
-  slice:  [Fn [s@s start@Int len@Int] s]
-  length: [Fn [s@s] Int]]
+[class [let Indexed s e]
+  get:    [Fn@e [s Int]]
+  slice:  [Fn@s [s Int Int]]
+  length: [Fn@Int [s]]]
 
-[class [ByteLabel t a b]
-  FD: [(t b) → a]
-  encode: [Fn [t@t a] b]
-  decode: [Fn [t@t b] [Result a]]]
+[class [let ByteLabel t a b]
+  encode: [Fn@b [t a]]
+  decode: [Fn@[Result a] [t b]]]
+
+[type [BigEndian]]
+[type [LittleEndian]]
+[type [NativeEndian]]
 
 # ── Typeclass Instances ───────────────────────────────────────────────────────────────────────────
 
-[instance [ByteStream Handle]
+[instance ByteStream [pattern [h@Handle]]:
   read-bytes:  builtin-read-bytes
   write-bytes: builtin-write-bytes]
 
-[instance [Datagram UdpSocket]
+[instance Datagram [pattern [d@UdpSocket]]:
   send-datagram: builtin-udp-send
   recv-datagram: builtin-udp-recv]
 
-[instance [MessageStream [Channel t] t]
+[instance MessageStream [pattern [s@[Channel t] t]]:
   send-message: send
   recv-message: recv]
 
-[instance [Listener TcpListener]
+[instance Listener [pattern [l@TcpListener]]:
   accept: tcp-accept]
 
-[instance [Indexed Bytes UInt8]
+[instance Indexed [pattern [s@Bytes e@UInt8]]:
   get:    [fn [let b@Bytes i@Int]           builtin-bytes-get]
   slice:  [fn [let b@Bytes s@Int n@Int]     builtin-bytes-slice]
   length: [fn [let b@Bytes]                 builtin-bytes-length]]
 
-[instance [Indexed [Seq T] T]
+[instance Indexed [pattern [s@[Seq T] e@T]]:
   get:    [fn [let s@[Seq T] i@Int]         builtin-seq-get]
   slice:  [fn [let s@[Seq T] s2@Int n@Int]  builtin-seq-slice]
   length: [fn [let s@[Seq T]]               builtin-seq-length]]
 
-[instance [ByteLabel ByteOrder UInt16 [Bytes 2]]
+[instance ByteLabel [pattern [t@ByteOrder a@UInt16 b@[Bytes 2]]]:
   encode: [fn [let order@ByteOrder v@UInt16]   builtin-encode-u16 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 2]] builtin-decode-u16 order b]]
 
-[instance [ByteLabel ByteOrder UInt32 [Bytes 4]]
+[instance ByteLabel [pattern [t@ByteOrder a@UInt32 b@[Bytes 4]]]:
   encode: [fn [let order@ByteOrder v@UInt32]   builtin-encode-u32 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 4]] builtin-decode-u32 order b]]
 
-[instance [ByteLabel ByteOrder UInt64 [Bytes 8]]
+[instance ByteLabel [pattern [t@ByteOrder a@UInt64 b@[Bytes 8]]]:
   encode: [fn [let order@ByteOrder v@UInt64]   builtin-encode-u64 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 8]] builtin-decode-u64 order b]]
 
@@ -108,7 +110,7 @@
     [Ipv6     [Bytes 16]]
     [Ipv6Zone [Bytes 16] zone@String]]
 
-  Port: [type Int@[is: [between 0 65535]  repr: u16]]
+  Port: [type Int@[is: [between 0 65535]  repr: "u16"]]
 
   SocketAddress: [type [addr: IpAddress  port: Port]]
 
@@ -131,9 +133,6 @@
 
   # Wire encoding utilities.
   ByteOrder: [union [BigEndian] [LittleEndian] [NativeEndian]]
-  [type [BigEndian]]
-  [type [LittleEndian]]
-  [type [NativeEndian]]
 
   OrderedBytes: [type [data: Bytes  order: ByteOrder]]
 
@@ -212,11 +211,12 @@
   parse-query: [fn [let q@String]
     [if [null? q]
       []
-      [pairs: [str-split "&" q]]
-      [reduce [fn [let acc pair]
-        [kv: [str-split "=" pair]]
-        [assoc acc [get kv 0] [if [> [length kv] 1] [get kv 1] ""]]]
-       [] pairs]]]
+      [[fn [let pairs]
+         [reduce [fn [let acc pair]
+           [kv: [str-split "=" pair]]
+           [assoc acc [get kv 0] [if [> [length kv] 1] [get kv 1] ""]]]
+          [] pairs]]
+       [str-split "&" q]]]]
 
   url->string: [fn [let u@Url]
     [str u.scheme "://"

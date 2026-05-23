@@ -89,7 +89,8 @@ pub(crate) fn builtin_range(
             )
         } else {
             // Finite range: [start, start+1, ..., end-1]
-            let end = materialize(&args[1], None, &ctx).await?; // H2: conditional 2-arg form — deferred to dispatch-cont sprint
+            // Safe conditional: args.len() check (line 66) doesn't force thunks
+            let end = materialize(&args[1], None, &ctx).await?; // H2: conditioned on args.len()!=1 (else branch of len==1 check at line 66)
             let end_int = match end {
                 Value::Int(n) => n,
                 other => {

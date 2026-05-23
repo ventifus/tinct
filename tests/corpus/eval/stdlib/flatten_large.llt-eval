@@ -1,0 +1,6 @@
+# flatten: large input (n=100 sublists of 10 elements each) to verify O(n) performance
+# Build 100 sublists, each with 10 elements
+[let sublists [collect [map [fn [i] [collect [range [* i 10] [* [+ i 1] 10]]]] [range 0 100]]]]
+[length [flatten sublists]]
+=== out
+Int(1000)
