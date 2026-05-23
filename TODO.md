@@ -656,28 +656,28 @@ T013 warnings currently report internal inference variable names like `_t86` ins
 
 After chr-instances-gaps, 6 typecheck + 5 type-error corpus tests still fail because these CHR features are not yet wired. Each group below identifies the root cause.
 
-**Group A — User-defined class constraint lookup (2 typecheck failures):**
-- [ ] Fix `class_decl_after_use.llt-eval` — "unknown constraint class 'MyClass'": constraint annotation lookup at typecheck time does not find locally-defined class declarations (`src/typecheck_annot.rs` or `src/type_infer.rs`)
-- [ ] Fix `constraint_annotation_basic.llt-eval` — same root cause
+**Group A — User-defined class constraint lookup (2 typecheck failures) — KNOWN ISSUE:**
+- [ ] Fix `class_decl_after_use.llt-eval` — "unknown constraint class 'MyClass'": investigation showed lookup code is correct (checks state.class_env), but class registration during Pass 0c may be failing silently. Needs debug tracing through Pass 0c → class_env population. [KNOWN ISSUE]
+- [ ] Fix `constraint_annotation_basic.llt-eval` — same root cause [KNOWN ISSUE]
 
-**Group B — ADT type registration (2 typecheck failures):**
-- [ ] Fix `constructor_payload_type_precision.llt-eval` — "undefined type: Result2": user-defined `[type [Result2 v] ...]` not registered in the type environment during typecheck
-- [ ] Fix `exhaustiveness_bare_nominal.llt-eval` — "undefined type: Tag": same root cause — user-defined `[type [Tag] ...]` not found at match exhaustiveness check
+**Group B — ADT type registration (2 typecheck failures) — KNOWN ISSUE:**
+- [ ] Fix `constructor_payload_type_precision.llt-eval` — "undefined type: Result2": user-defined `[type [Result2 v] ...]` not registered. Added nominal variant constructor parsing to typecheck_annot.rs (commit e07d63e) but the type NAME registration (state.type_env) is the real issue — not annotation parsing. [KNOWN ISSUE]
+- [ ] Fix `exhaustiveness_bare_nominal.llt-eval` — "undefined type: Tag": same root cause [KNOWN ISSUE]
 
-**Group C — Exhaustiveness checking for ADT constructors (2 type-error failures):**
-- [ ] Fix `exhaustiveness_bare_nominal_variant.llt-eval` — expected "non-exhaustive match: missing coverage for [MyTag _]" but got "undefined type: MyTag" — fix ADT type registration (Group B fix may suffice)
-- [ ] Fix `exhaustiveness_multi_field_nominal.llt-eval` — same: "undefined type: Shape" instead of non-exhaustive error
+**Group C — Exhaustiveness checking for ADT constructors (2 type-error failures) — KNOWN ISSUE:**
+- [ ] Fix `exhaustiveness_bare_nominal_variant.llt-eval` — depends on Group B type registration fix [KNOWN ISSUE]
+- [ ] Fix `exhaustiveness_multi_field_nominal.llt-eval` — same [KNOWN ISSUE]
 
-**Group D — Instance check violations not triggered (3 type-error failures):**
-- [ ] Fix `instance_consistency_error.llt-eval` — expected "consistency violation" but got "inferred type is Unknown" — instance consistency check not running for user-defined classes
-- [ ] Fix `instance_coverage_error.llt-eval` — expected "coverage violation" — instance coverage check not running
-- [ ] Fix `instance_disjointness_error.llt-eval` — expected "overlapping instance patterns" — instance disjointness check not running
+**Group D — Instance check violations not triggered (3 type-error failures) — KNOWN ISSUE:**
+- [ ] Fix `instance_consistency_error.llt-eval` — diagnostic T017 error added (commit e07d63e); root cause: pattern types infer as Unknown because class instances reference unregistered user types [KNOWN ISSUE]
+- [ ] Fix `instance_coverage_error.llt-eval` — same [KNOWN ISSUE]
+- [ ] Fix `instance_disjointness_error.llt-eval` — same [KNOWN ISSUE]
 
 **Group E — Equatable for Variant types (1 typecheck failure):**
-- [ ] Fix `transport_typed.llt-eval` — "type Variant does not satisfy constraint Equatable" — `=` on Variant values gives a typecheck warning; register Equatable instance for Variant in TypeEnv or adjust constraint check to permit Variant (Equatable is checked at runtime via tag equality)
+- [x] Fix `transport_typed.llt-eval` — FIXED: Added `Type::NominalVariant { .. }` to Equatable instances in `satisfies_constraint_inner` (`src/type_unify.rs:108`); Variant equality is runtime tag comparison (commit e07d63e)
 
-**Group F — Nominal variant match + instance Multipliable (1 typecheck failure):**
-- [ ] Fix `nominal_variant_exhaustive_match.llt-eval` — "undefined variable: Circle" + "no instance for Multipliable [] []" — requires ADT constructor registration (Group B fix) + Multipliable instance propagation
+**Group F — Nominal variant match + instance Multipliable (1 typecheck failure) — KNOWN ISSUE:**
+- [ ] Fix `nominal_variant_exhaustive_match.llt-eval` — depends on Group B type registration fix [KNOWN ISSUE]
 
 ---
 
