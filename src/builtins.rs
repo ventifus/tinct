@@ -2407,8 +2407,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let root_env = create_root_env();
         crate::eval::EvalContext::new(
             base_dir,
@@ -2440,8 +2439,7 @@ mod tests {
         let parsed = crate::parser::parse(llt_src)
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let mut program = parsed.program;
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("parse_eval: failed to open base_dir");
+        let base_dir = Arc::clone(&crate::test_util::test_caps().root);
         crate::expand::expand_surface_program(&mut program, false, &base_dir)
             .unwrap_or_else(|e| panic!("parse_eval: expand failed for {:?}: {}", llt_src, e));
         crate::desugar::desugar_surface_program(&mut program);

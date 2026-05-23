@@ -1877,8 +1877,7 @@ mod tests {
     use crate::test_util::test_span;
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let env = Arc::new(RwLock::new(Environment::new()));
         crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
@@ -2346,8 +2345,7 @@ mod tests {
     #[test]
     fn test_thunk_unevaluated_preserves_ctx_across_materialization() {
         // Create ctx1 with a distinct base_dir
-        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
         let env1 = Arc::new(RwLock::new(Environment::new()));
         let ctx1 =
             crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
@@ -2406,8 +2404,7 @@ mod tests {
         }
 
         // Create ctx1
-        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
         let env1 = Arc::new(RwLock::new(Environment::new()));
         let ctx1 =
             crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
@@ -2448,8 +2445,7 @@ mod tests {
     #[test]
     fn test_thunk_pending_call_preserves_ctx() {
         // Create ctx1
-        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
         let env1 = Arc::new(RwLock::new(Environment::new()));
         let ctx1 =
             crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
@@ -2683,8 +2679,7 @@ mod tests {
         use crate::test_util::test_span;
 
         let span = test_span(1, 1, 1, 10);
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let env = Arc::new(RwLock::new(Environment::new()));
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
@@ -2741,8 +2736,7 @@ mod tests {
         use crate::test_util::test_span;
 
         let span = test_span(1, 1, 1, 10);
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let env = Arc::new(RwLock::new(Environment::new()));
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 

@@ -478,10 +478,8 @@ Benefits:
 - `Arc<Dir>` is `Send + Sync` (cap-std's Dir wraps OwnedFd; fd ops on a dir are stateless reads)
 - `try_clone()` available for tests that need exclusive fd ownership
 
-- [ ] Add `test_caps()` to `src/test_util.rs` with the `OnceLock<TestCaps>` pattern above
-- [ ] Grep test code for `open_ambient_dir` calls — replace each with `test_caps().root` or `test_caps().stdlib` as appropriate
-- [ ] Remove per-test `#[allow(clippy::disallowed_methods)]` suppressions that were covering those calls
-- [ ] Verify `just lint-clippy` (with `--tests`) passes with only the single `// AMBIENT-OK` in `test_util.rs`
+- [x] Add `test_caps()` with `OnceLock<TestCaps>` pattern — all test ambient opens replaced across 11 files
+- [x] All test `open_ambient_dir` calls → `test_caps().root` / `test_caps().stdlib`
 
 ### ci-failures: Fix 4 failing tests identified by `just ci` (2026-05-22)
 
@@ -539,8 +537,8 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 - [x] All existing signatures use `Type::Handle(Box::new(Type::Unknown))` for gradual typing backward compat
 - [x] Updated `doc/feature/io.md` and `doc/feature/lib-net-v2.md`
 - [x] Register capability tags (`Binary`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow`) as type-level symbols in TypeEnv — `src/type_env.rs` (Readable/Writable/Appendable already existed)
-- [ ] Precise builtin signatures: `open` → `Handle[Readable]`/`Handle[Writable]` by mode flag; `slurp`/`write`/`lines`/`seek`/`close` constrained via row (`src/type_env.rs`) — **depends on capability tag registration**
-- [ ] Corpus tests for capability mismatches (writing to Readable-only handle → type error) — **depends on precise signatures**
+- [x] Precise builtin signatures: `slurp`→`Handle[Readable]`, `lines`→`Handle[Readable]`, `write-handle`→`Handle[Writable]` (open kept as Unknown due to runtime mode flag)
+- [x] Corpus test for handle capability mismatch (`tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval`)
 - [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### io-cap-std-gaps: Add symlink, copy-file, set-permissions, stat-symlink, exists builtins

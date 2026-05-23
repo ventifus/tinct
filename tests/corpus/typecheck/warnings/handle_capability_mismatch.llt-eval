@@ -1,0 +1,7 @@
+# Type annotation: writing to a Readable-only handle should produce a type warning
+[fn [let h@Handle[@Readable]]
+  [call $write-handle $h "data"]]
+=== out
+Function(h)
+=== warn
+cannot unify Handle[Readable] with Handle[Writable]

@@ -2469,8 +2469,7 @@ mod tests {
 
     fn test_ctx() -> Arc<EvalContext> {
         let env = empty_env();
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
@@ -3906,8 +3905,7 @@ mod deep_tests {
     use std::sync::RwLock;
 
     fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let stdlib_env = crate::builtins::create_stdlib_env().expect("stdlib failed");
         let type_stage_env =
             crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));

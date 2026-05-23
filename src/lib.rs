@@ -1254,8 +1254,7 @@ mod tests {
     }
 
     fn test_ctx() -> Arc<eval::EvalContext> {
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = test_util::test_caps().root.try_clone().unwrap();
         let stdlib_env = builtins::create_stdlib_env().expect("stdlib failed");
         let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
         eval::EvalContext::new(base_dir, stdlib_env, type_stage_env, false)
@@ -1956,8 +1955,7 @@ mod tests {
     fn typecheck_source_resolves_prelude_map() {
         let input = "[call $map [fn [let x] $x] [1 2 3]]";
         let parsed = parse(input).expect("parse failed");
-        let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("open cwd for test macro expansion");
+        let expand_base_dir = Arc::clone(&test_util::test_caps().root);
         // Use expand_surface_program so SurfaceItem::Decl macros are seen.
         let mut program = parsed.program;
         expand::expand_surface_program(&mut program, false, &expand_base_dir)

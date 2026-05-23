@@ -3118,8 +3118,7 @@ mod tests {
 
     fn test_ctx() -> Arc<EvalContext> {
         let env = empty_env();
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
@@ -8813,9 +8812,7 @@ mod tests {
                     .expect("stdlib env creation should succeed");
                 let type_stage_env =
                     crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-                let base_dir =
-                    cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-                        .expect("failed to open test base_dir");
+                let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
                 let ctx = EvalContext::new(base_dir, Arc::clone(&env), type_stage_env, false);
                 let thunk = crate::async_rt::block_on_anywhere(super::eval_surface_file(
                     &parsed_output.program,
@@ -8877,12 +8874,10 @@ mod tests {
     #[test]
     fn test_eval_context_no_fs_flag() {
         // EvalContext should preserve the no_fs flag
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
         let env = empty_env();
 
         let ctx_with_fs = EvalContext::new(
-            base_dir.try_clone().unwrap(),
+            crate::test_util::test_caps().root.try_clone().unwrap(),
             Arc::clone(&env),
             Arc::clone(&env),
             false,
@@ -8892,7 +8887,12 @@ mod tests {
             "no_fs should be false when created with false"
         );
 
-        let ctx_no_fs = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), true);
+        let ctx_no_fs = EvalContext::new(
+            crate::test_util::test_caps().root.try_clone().unwrap(),
+            Arc::clone(&env),
+            Arc::clone(&env),
+            true,
+        );
         assert!(
             ctx_no_fs.config.no_fs,
             "no_fs should be true when created with true"
@@ -8913,20 +8913,21 @@ mod tests {
     #[ignore = "pre-existing regression from runtime-v2 merge: stdlib loading fails"]
     fn test_eval_context_with_base_dir_inherits_no_fs() {
         // Two separate base dirs: ctx1 starts with no_fs=true.
-        let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open base_dir1");
-        let base_dir2 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open base_dir2");
         let env = crate::builtins::create_stdlib_env().expect("stdlib env");
         let type_stage_env =
             crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
         // ctx1 has no_fs=true
-        let ctx1 = EvalContext::new(base_dir1, Arc::clone(&env), type_stage_env, true);
+        let ctx1 = EvalContext::new(
+            crate::test_util::test_caps().root.try_clone().unwrap(),
+            Arc::clone(&env),
+            type_stage_env,
+            true,
+        );
         assert!(ctx1.config.no_fs, "ctx1 must have no_fs=true");
 
         // ctx2 shares ctx1's state but has a different base_dir
-        let ctx2 = ctx1.with_base_dir(base_dir2);
+        let ctx2 = ctx1.with_base_dir(crate::test_util::test_caps().root.try_clone().unwrap());
 
         // Verify structural properties of ctx2
         assert!(

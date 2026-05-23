@@ -2432,8 +2432,7 @@ mod tests {
         use std::sync::RwLock;
 
         let env = Arc::new(RwLock::new(Environment::new()));
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 

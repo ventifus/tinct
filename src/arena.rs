@@ -436,8 +436,7 @@ mod tests {
 
         // Create a minimal test context
         let env = Arc::new(std::sync::RwLock::new(Environment::new()));
-        let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test base_dir");
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
         // After the runtime-v2 ThunkInner representation change, placeholder thunks

@@ -1971,6 +1971,18 @@ impl TypeEnv {
             );
         }
 
+        // Helper: create Handle capability flag type (Readable, Writable, etc.)
+        fn cap_flag(flag_name: &str) -> Type {
+            let mut fields = HashMap::new();
+            fields.insert(
+                format!("__cap_flag_{}", flag_name.to_lowercase()),
+                Type::Record(Row {
+                    fields: HashMap::new(),
+                }),
+            );
+            Type::Record(Row { fields })
+        }
+
         // I/O
         env.insert(
             "emit".to_string(),
@@ -2008,7 +2020,7 @@ impl TypeEnv {
         env.insert(
             "slurp".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
+                params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
                 // Returns Str for text handles ("r"); Bytes for binary handles ("rb")
                 ret: Box::new(Type::normalize_union(vec![Type::Str, Type::Bytes])),
                 variadic: false,
@@ -2017,7 +2029,7 @@ impl TypeEnv {
         env.insert(
             "lines".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
+                params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
                 ret: Box::new(Type::Seq(Box::new(Type::Str))),
                 variadic: false,
             },
@@ -2295,10 +2307,10 @@ impl TypeEnv {
             "write-handle".to_string(),
             Type::Function {
                 params: vec![
-                    (None, Type::Handle(Box::new(Type::Unknown))),
+                    (None, Type::Handle(Box::new(cap_flag("writable")))),
                     (None, Type::normalize_union(vec![Type::Str, Type::Bytes])), // String or Bytes
                 ],
-                ret: Box::new(Type::Handle(Box::new(Type::Unknown))), // Returns WriteHandle
+                ret: Box::new(Type::Handle(Box::new(cap_flag("writable")))), // Returns WriteHandle
                 variadic: false,
             },
         );
