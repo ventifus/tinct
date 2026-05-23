@@ -2332,6 +2332,9 @@ pub(crate) async fn apply_cont(
                                 .get_property("type")
                                 .and_then(|type_expr| match &type_expr.node {
                                     Expr::Str(s) => Some(s.clone()),
+                                    // Type names written as bare identifiers (e.g., `type: Number`)
+                                    // are parsed as VarRef, not Str. Extract the name directly.
+                                    Expr::VarRef { name, .. } => Some(name.clone()),
                                     _ => None,
                                 }),
                             Annotation::Annotated(name, _) => Some(name.clone()),

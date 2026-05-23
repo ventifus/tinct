@@ -185,7 +185,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = resolve::resolve_surface_program(&program);
+    // Keep the table for eval_surface_file (used by lower.rs to resolve VarRef → Var).
+    let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
+    // Lower to File for typecheck (typecheck still uses the old Expr-based AST).
     let file = ast_convert::surface_program_to_file(&program);
     let provenance = expand_result.provenance;
 
@@ -297,9 +299,20 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             }
         }
     }
-    let thunk =
-        crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, Arc::clone(&env), &ctx))
-            .map_err(&attach_provenance)?;
+    // Use the empty TypeAnnotationTable: typecheck_file_with_types_and_env_and_source_returning_state
+    // uses the old File-based AST and does not produce a TypeAnnotationTable keyed by SurfaceNode
+    // NodeIds. TypeAssert nodes will fall back to RuntimeTypeCheck (dynamic validation) for now.
+    // TODO(surface-typecheck): produce TypeAnnotationTable from the surface typecheck path so
+    // TypeAssert nodes get statically-resolved types here.
+    let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
+    let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
+        &program,
+        Arc::clone(&env),
+        &ctx,
+        &resolution_table,
+        &type_annotation_table,
+    ))
+    .map_err(&attach_provenance)?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(&attach_provenance)?;
     let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
@@ -344,7 +357,9 @@ pub fn eval_source_with_cap_net(
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = resolve::resolve_surface_program(&program);
+    // Keep the table for eval_surface_file (used by lower.rs to resolve VarRef → Var).
+    let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
+    // Lower to File for typecheck (typecheck still uses the old Expr-based AST).
     let file = ast_convert::surface_program_to_file(&program);
     let provenance = expand_result.provenance;
 
@@ -421,9 +436,18 @@ pub fn eval_source_with_cap_net(
         env.write().unwrap().insert(format!("%{}", name), cap_thunk);
     }
 
-    let thunk =
-        crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, Arc::clone(&env), &ctx))
-            .map_err(&attach_provenance)?;
+    // Use empty TypeAnnotationTable: typecheck uses old File-based AST, not SurfaceNode NodeIds.
+    // TypeAssert nodes fall back to RuntimeTypeCheck (dynamic validation).
+    // TODO(surface-typecheck): wire TypeAnnotationTable from surface typecheck path.
+    let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
+    let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
+        &program,
+        Arc::clone(&env),
+        &ctx,
+        &resolution_table,
+        &type_annotation_table,
+    ))
+    .map_err(&attach_provenance)?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(&attach_provenance)?;
     let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;

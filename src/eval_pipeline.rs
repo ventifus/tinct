@@ -9,7 +9,9 @@ use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{Document, File, Span, Spanned};
+use crate::ast::{
+    Document, File, ResolutionTable, Span, Spanned, SurfaceProgram, TypeAnnotationTable,
+};
 use crate::error::{EvalError, EvalResult};
 use crate::value::{Environment, Key, Thunk, Value};
 
@@ -303,6 +305,240 @@ pub async fn eval_file_with_input(
 
         // If this document is named, accumulate it in the named map
         if let Some(ref name) = doc.node.name {
+            named.insert(name.clone(), Arc::clone(&result));
+        }
+
+        prev_output = result; // lazy: no materialization at boundary
+    }
+
+    Ok(prev_output)
+}
+
+// ============================================================================
+// Surface AST evaluation — runtime-v2 pipeline
+// ============================================================================
+//
+// These functions bypass the Expr/File/Document bridge and evaluate SurfaceProgram
+// directly. `eval_surface_document` lowers each SurfaceNode to CoreExpr via lower.rs,
+// then calls eval_core_expr_pub. This eliminates the surface_program_to_file +
+// expr_to_core_expr round-trip from the hot evaluation path.
+//
+// Callers must provide:
+// - ResolutionTable: from resolve::resolve_surface_program (variable de Bruijn coords)
+// - TypeAnnotationTable: from typecheck::typecheck_surface_program (TypeAssert resolution)
+//   An empty table is valid — TypeAssert nodes fall back to RuntimeTypeCheck.
+
+/// Evaluate a SurfaceDocument: a sequence of expression items forming a scope chain.
+///
+/// This is the runtime-v2 replacement for `eval_document`. Each `SurfaceItem::Expr`
+/// is lowered to `CoreExpr` via `lower.rs` and evaluated via `eval_core_expr_pub`.
+/// `SurfaceItem::Decl` items are skipped (they were processed at expand time).
+///
+/// The scope-chain semantics are identical to `eval_document`:
+/// - Intermediate expressions are materialized and must produce `Value::Dict`.
+/// - Dict entries become bindings in a child environment for subsequent expressions.
+/// - The last expression is returned as-is (lazy, any type).
+/// - An empty document returns an empty dict.
+pub async fn eval_surface_document(
+    doc: &Spanned<crate::ast::SurfaceDocument>,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+) -> EvalResult<Arc<Thunk>> {
+    // Collect expression nodes (skip Decl items — processed by expander)
+    let expr_nodes: Vec<&Arc<crate::ast::SurfaceNode>> = doc.node.expressions().collect();
+
+    if expr_nodes.is_empty() {
+        return Ok(Arc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            doc.span,
+        )));
+    }
+
+    // Validate capabilities (same logic as eval_document)
+    if let Some(ref caps_ann) = doc.node.caps {
+        for (cap_name, annotation) in &caps_ann.node {
+            let full_cap_name = format!("%{}", cap_name);
+
+            let cap_present = {
+                let env_ref = env.read().unwrap();
+                env_ref.get(&full_cap_name).is_some()
+            };
+
+            if !cap_present {
+                let (flag_type, flag_example) = match annotation {
+                    crate::ast::Annotation::Simple(type_name) if type_name == "NetCap" => {
+                        ("--cap-net", format!("{}=HOST:PORT", cap_name))
+                    }
+                    crate::ast::Annotation::Simple(type_name) if type_name == "DirCap" => {
+                        ("--cap-fs", format!("{}=PATH", cap_name))
+                    }
+                    crate::ast::Annotation::Simple(type_name) if type_name == "Handle" => {
+                        ("--cap-file", format!("{}=PATH:r", cap_name))
+                    }
+                    _ => ("--cap", format!("{}=VALUE", cap_name)),
+                };
+
+                let auto_injected_caps = ["pwd", "libdir", "stdin"];
+                let is_auto_injected = auto_injected_caps.contains(&cap_name.as_str());
+
+                let mut message = format!(
+                    "{}@{} is required but not provided",
+                    full_cap_name,
+                    match annotation {
+                        crate::ast::Annotation::Simple(type_name) => type_name.clone(),
+                        crate::ast::Annotation::PropertyDict(_) => "Dict".to_string(),
+                        crate::ast::Annotation::Annotated(name, _) => name.clone(),
+                    }
+                );
+
+                if is_auto_injected {
+                    message.push_str(&format!(
+                        "\n  note: {} is injected automatically — did you pass --no-{}?",
+                        full_cap_name, cap_name
+                    ));
+                } else {
+                    message.push_str(&format!(
+                        "\n  inject it with:  tinct run {} {} ...\n  or unrestricted: tinct run {} {}=any ...",
+                        flag_type, flag_example, flag_type, cap_name
+                    ));
+                }
+
+                return Err(EvalError::internal(message, caps_ann.span).into());
+            }
+        }
+    }
+
+    let mut current_env = env;
+
+    for (i, node) in expr_nodes.iter().enumerate() {
+        let is_last = i == expr_nodes.len() - 1;
+
+        // Lower the SurfaceNode to CoreExpr
+        let core_spanned = crate::lower::lower(node, res, types);
+        let node_span = node.span;
+
+        if is_last {
+            // Last expression: return its thunk as-is (lazy, any type)
+            return super::eval_core_expr_pub(&core_spanned, &current_env, ctx).await;
+        }
+
+        // Intermediate expression: materialize and extract dict bindings
+        let thunk =
+            super::eval_core_expr_pub(&core_spanned, &Arc::clone(&current_env), ctx).await?;
+        let value = materialize(&thunk, Some(&node_span), ctx).await?;
+
+        let map = match value {
+            Value::Dict(map) => map,
+            Value::Overlay(l, r) => {
+                crate::builtins::flatten_overlay(&l, &r, "document pipeline", ctx, node_span)?
+            }
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "document pipeline".to_string(),
+                    "Dict",
+                    value.type_name(),
+                    node_span,
+                )
+                .into());
+            }
+        };
+        {
+            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+                &current_env,
+            ))));
+            for (key, val_thunk_id) in map {
+                if let Key::String(name) = key {
+                    let val_thunk = ctx.get_thunk(val_thunk_id);
+                    let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
+                    let strict_thunk = Arc::new(Thunk::new_materialized(forced_value, node_span));
+                    child_env.write().unwrap().insert(name, strict_thunk);
+                }
+            }
+            current_env = child_env;
+        }
+    }
+
+    unreachable!(
+        "eval_surface_document: loop did not return — expr_nodes was non-empty but is_last never triggered"
+    )
+}
+
+/// Evaluate a SurfaceProgram: one or more documents separated by `---`.
+///
+/// Runtime-v2 replacement for `eval_file`. Evaluates `SurfaceDocument`s directly
+/// without the `surface_program_to_file` + `eval()` bridge conversion.
+///
+/// # Precondition
+///
+/// **Pipeline invariant:** `expand_surface_program` → `desugar_surface_program` →
+/// `resolve_surface_program` must be called before passing the program here.
+/// The `res` table must be the one returned by `resolve_surface_program`.
+/// The `types` table may be empty (from `TypeAnnotationTable::new()`) if type checking
+/// was skipped; `TypeAssert` nodes will fall back to `RuntimeTypeCheck` in that case.
+pub async fn eval_surface_file(
+    program: &SurfaceProgram,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+) -> EvalResult<Arc<Thunk>> {
+    eval_surface_file_with_input(program, env, ctx, res, types, None).await
+}
+
+/// Evaluate a SurfaceProgram with an optional initial `%` value.
+///
+/// Runtime-v2 replacement for `eval_file_with_input`. See `eval_surface_file` for
+/// preconditions.
+pub async fn eval_surface_file_with_input(
+    program: &SurfaceProgram,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+    initial_input: Option<Arc<Thunk>>,
+) -> EvalResult<Arc<Thunk>> {
+    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(|t| Arc::clone(t)));
+    let mut named: IndexMap<String, Arc<Thunk>> = IndexMap::new();
+
+    for surface_doc in &program.documents {
+        // Skip type-stage documents
+        if surface_doc.node.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+
+        // Each document gets a fresh scope with % and %name bindings
+        let doc_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+
+        // Bind % (pipeline variable), wrapping with validation if expects: is declared
+        let percent_thunk = if let Some(ref expects_ann) = surface_doc.node.expects {
+            wrap_with_nominal_validation(
+                Arc::clone(&prev_output),
+                expects_ann,
+                surface_doc.span,
+                ctx,
+            )
+        } else {
+            Arc::clone(&prev_output)
+        };
+
+        doc_env
+            .write()
+            .unwrap()
+            .insert("%".to_string(), percent_thunk);
+
+        // Bind all previously named sections as %name
+        for (section_name, section_thunk) in &named {
+            doc_env
+                .write()
+                .unwrap()
+                .insert(format!("%{}", section_name), Arc::clone(section_thunk));
+        }
+
+        let result = eval_surface_document(surface_doc, doc_env, ctx, res, types).await?;
+
+        if let Some(ref name) = surface_doc.node.name {
             named.insert(name.clone(), Arc::clone(&result));
         }
 

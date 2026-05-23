@@ -113,12 +113,12 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Part E — Evaluator cutover + delete old types:**
 ✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: eval_pipeline.rs calls eval(Rc<Spanned<Expr>>) for doc expressions; eval.rs quote/unquote uses ast_dict.rs; must migrate eval_pipeline.rs to SurfaceProgram first
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: typecheck/formatter/repl/LSP/builtins_meta.rs/main.rs still consume File; old eval_document/eval_file kept for those paths; must migrate remaining callers first
 - [x] **MAJOR MILESTONE**: UnevaluatedState::Expr DELETED (commit 18711a0) — evaluator fully CoreExpr-based
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted; force_step handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; eval_step deleted; Action::EvalCore added
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; file deleted ✓ (commit 92ff2fc)
-- [ ] Migrate eval_pipeline.rs to SurfaceProgram — change eval_document to lower Surface→CoreExpr via lower.rs and use eval_core_expr_pub; eliminates eval() + Rc<Spanned<Expr>>
-- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **BLOCKED** on eval_pipeline.rs migration
+- [x] Migrate eval_pipeline.rs to SurfaceProgram — added eval_surface_document/eval_surface_file/eval_surface_file_with_input; lib.rs callers (eval_source_with_config, eval_source_with_cap_net) now call eval_surface_file; resolution_table kept (no longer discarded); TODO(surface-typecheck): wire TypeAnnotationTable from surface typecheck path so TypeAssert nodes get statically-resolved types (currently empty table → RuntimeTypeCheck fallback)
+- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **BLOCKED**: old eval_document/eval_file/eval_file_with_input still present (public API, main.rs callers not yet migrated); Expr/File/Document still used by typecheck, builtins_meta.rs include cache, formatter, repl, LSP
 - [x] Update `IncludeCacheEntry::Cached` — **DONE**
 - [x] Rc→Arc migration — **DONE (commit b0aa803)**: 34 files, 2450 ins, 2437 del
 - [x] **`cargo check` clean** — `just build` passes with -D warnings ✓ (commit 18711a0)
