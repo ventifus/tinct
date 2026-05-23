@@ -88,7 +88,7 @@ lint:
     echo "✅ All lint checks passed!"
 
 lint-clippy:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy -- -D warnings"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy --tests -- -D warnings"
 
 # Outer attributes: #[allow(...)]. The ! in #![allow is NOT matched here — see lint-inner-allows.
 lint-clippy-allows:
@@ -149,7 +149,7 @@ lint-md-fix:
 
 # Run clippy with auto-fixes
 lint-fix:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy --fix --allow-dirty --allow-staged"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "rustup component add clippy 2>/dev/null; cargo clippy --tests --fix --allow-dirty --allow-staged"
 
 # Check code formatting
 fmt-check:

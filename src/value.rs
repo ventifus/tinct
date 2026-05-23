@@ -7,6 +7,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::{Equivalent, IndexMap};
@@ -334,7 +335,13 @@ impl DirPerms {
 /// Provides O(1) insert/delete with a one-shot invariant: once frozen (via builder-finish),
 /// all subsequent mutations return errors. The Option enables the frozen pattern: finish takes
 /// the inner map, leaving None behind.
+///
+/// `frozen` is an `AtomicBool` fast-path: set to `true` in `finish()` BEFORE taking the
+/// mutex. All read/write methods check `frozen.load(Relaxed)` first and return immediately
+/// without acquiring the lock. This eliminates mutex contention on post-freeze reads (which
+/// are the hot path in builder-heavy prelude code like `collect-kv`).
 pub struct Builder {
+    frozen: AtomicBool,
     inner: Mutex<Option<IndexMap<Key, ThunkId>>>,
 }
 
@@ -342,6 +349,7 @@ impl Builder {
     /// Create a new empty builder.
     pub fn new() -> Self {
         Self {
+            frozen: AtomicBool::new(false),
             inner: Mutex::new(Some(IndexMap::new())),
         }
     }
@@ -349,17 +357,22 @@ impl Builder {
     /// Create a new empty builder with pre-allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
+            frozen: AtomicBool::new(false),
             inner: Mutex::new(Some(IndexMap::with_capacity(capacity))),
         }
     }
 
-    /// Check if the builder is frozen (inner has been taken).
+    /// Check if the builder is frozen (fast-path: atomic load, no mutex).
     pub fn is_frozen(&self) -> bool {
-        self.inner.lock().unwrap().is_none()
+        self.frozen.load(Ordering::Relaxed)
     }
 
     /// Set a key-value pair. Returns error if frozen.
     pub fn set(&self, key: Key, value: ThunkId) -> Result<(), String> {
+        // Fast-path: check frozen flag without taking the mutex.
+        if self.frozen.load(Ordering::Relaxed) {
+            return Err("builder is frozen (already finished)".to_string());
+        }
         let mut guard = self.inner.lock().unwrap();
         match guard.as_mut() {
             Some(map) => {
@@ -372,6 +385,10 @@ impl Builder {
 
     /// Delete a key. Returns error if frozen.
     pub fn delete(&self, key: &Key) -> Result<(), String> {
+        // Fast-path: check frozen flag without taking the mutex.
+        if self.frozen.load(Ordering::Relaxed) {
+            return Err("builder is frozen (already finished)".to_string());
+        }
         let mut guard = self.inner.lock().unwrap();
         match guard.as_mut() {
             Some(map) => {
@@ -382,20 +399,34 @@ impl Builder {
         }
     }
 
-    /// Check if a key exists.
+    /// Check if a key exists. Returns false (not error) if frozen.
     pub fn has(&self, key: &Key) -> bool {
+        // Fast-path: frozen builder has no entries.
+        if self.frozen.load(Ordering::Relaxed) {
+            return false;
+        }
         let guard = self.inner.lock().unwrap();
         guard.as_ref().map_or(false, |map| map.contains_key(key))
     }
 
     /// Get a value by key. Returns None if key doesn't exist or builder is frozen.
     pub fn get(&self, key: &Key) -> Option<ThunkId> {
+        // Fast-path: frozen builder has no entries.
+        if self.frozen.load(Ordering::Relaxed) {
+            return None;
+        }
         let guard = self.inner.lock().unwrap();
         guard.as_ref().and_then(|map| map.get(key).copied())
     }
 
     /// Take the inner map, freezing the builder. Returns error if already frozen.
     pub fn finish(&self) -> Result<IndexMap<Key, ThunkId>, String> {
+        // Set the frozen flag BEFORE taking the mutex so that concurrent readers
+        // on the fast-path see frozen=true as soon as possible.
+        if self.frozen.swap(true, Ordering::Relaxed) {
+            // Already frozen — swap returned the old value (true).
+            return Err("builder is already frozen".to_string());
+        }
         let mut guard = self.inner.lock().unwrap();
         guard
             .take()
@@ -404,6 +435,10 @@ impl Builder {
 
     /// Clone the inner map without freezing. Returns error if frozen.
     pub fn snapshot(&self) -> Result<IndexMap<Key, ThunkId>, String> {
+        // Fast-path: no need to take the lock to know it's empty.
+        if self.frozen.load(Ordering::Relaxed) {
+            return Err("builder is frozen".to_string());
+        }
         let guard = self.inner.lock().unwrap();
         guard
             .as_ref()
@@ -416,6 +451,7 @@ impl Clone for Builder {
     fn clone(&self) -> Self {
         let guard = self.inner.lock().unwrap();
         Self {
+            frozen: AtomicBool::new(self.frozen.load(Ordering::Relaxed)),
             inner: Mutex::new(guard.clone()),
         }
     }

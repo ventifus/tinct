@@ -1213,8 +1213,12 @@ Merge two dicts recursively.
 Example: [deep-merge [a: [x: 1] b: 2] [a: [y: 3] c: 4]] => [a: [x: 1 y: 3] b: 2 c: 4]
 
 Note: Sub-dicts are merged depth-first; all other values from b override a (right-biased at each level). O(n) via build-dict.
+Returns a flat Dict (not an Overlay): keys only in a come first, then all keys from b (merged where both are dicts).
 """] [let a@Dict b@Dict]
-    [merge a [build-dict [builtin-map [fn [let e] [deep-merge-step a b e]] [each-kv b]]]]]
+    [build-dict
+        [concat
+            [filter [fn [let e] [not [has? b e.key]]] [each-kv a]]
+            [builtin-map [fn [let e] [deep-merge-step a b e]] [each-kv b]]]]]
 
 # Apply a function bottom-up to every node in a nested dict structure.
 # For dicts: recursively transform all values first, then apply f to the resulting dict.
