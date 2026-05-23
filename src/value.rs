@@ -1035,17 +1035,6 @@ const _: () = {
 /// Stores the data needed to evaluate a thunk when it's first accessed.
 #[derive(Debug)]
 pub enum UnevaluatedState {
-    /// AST expression from the old Expr-based runtime path.
-    /// New code should prefer UnevaluatedState::CoreExpr to avoid the Expr round-trip.
-    /// TODO(parts-e): retire this variant once all Expr-based thunk creation sites are migrated.
-    Expr {
-        expr: Rc<Spanned<Expr>>,
-        env: Arc<RwLock<Environment>>,
-        // TODO(parts-e): env_id is stored but never read; will be removed with the Expr variant.
-        #[allow(dead_code)]
-        env_id: Option<crate::arena::EnvId>,
-        ctx: Arc<crate::eval::EvalContext>,
-    },
     /// Pre-lowering Surface thunk — created by the `eval` builtin.
     Surface {
         node: Arc<SurfaceNode>,
@@ -1061,7 +1050,6 @@ pub enum UnevaluatedState {
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
-    /// Avoids the CoreExpr→Expr round-trip that UnevaluatedState::Expr required.
     CoreExpr {
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
         env: Arc<RwLock<Environment>>,
@@ -1149,54 +1137,6 @@ impl Thunk {
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(None), // Placeholder: no unevaluated state, no result
-                result: tokio::sync::OnceCell::new(),
-            },
-            span,
-            origin: None,
-        }
-    }
-
-    pub fn new_unevaluated(
-        expr: Rc<Spanned<Expr>>,
-        env: Arc<RwLock<Environment>>,
-        ctx: Arc<crate::eval::EvalContext>,
-        span: Span,
-    ) -> Self {
-        Self {
-            inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Expr {
-                    expr,
-                    env,
-                    env_id: None,
-                    ctx,
-                })),
-                result: tokio::sync::OnceCell::new(),
-            },
-            span,
-            origin: None,
-        }
-    }
-
-    /// Create an unevaluated thunk with a flat environment ID for O(1) variable lookup.
-    ///
-    /// The `env_id` parameter enables the O(1) variable lookup path when the resolver
-    /// has populated VarRef coordinates. The Arc<RwLock<Environment>> chain remains
-    /// as a fallback for stdlib bindings and computed keys.
-    pub fn new_unevaluated_with_env_id(
-        expr: Rc<Spanned<Expr>>,
-        env: Arc<RwLock<Environment>>,
-        env_id: crate::arena::EnvId,
-        ctx: Arc<crate::eval::EvalContext>,
-        span: Span,
-    ) -> Self {
-        Self {
-            inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Expr {
-                    expr,
-                    env,
-                    env_id: Some(env_id),
-                    ctx,
-                })),
                 result: tokio::sync::OnceCell::new(),
             },
             span,
@@ -1426,27 +1366,6 @@ impl Thunk {
     /// Take ownership of unevaluated data, atomically setting state to InProgress.
     /// Returns None if the thunk is not in the Unevaluated state.
     #[allow(clippy::type_complexity)]
-    pub fn take_unevaluated(
-        &self,
-    ) -> Option<(
-        Rc<Spanned<Expr>>,
-        Arc<RwLock<Environment>>,
-        Arc<crate::eval::EvalContext>,
-    )> {
-        let mut guard = self.inner.unevaluated.lock().unwrap();
-        match guard.take() {
-            Some(UnevaluatedState::Expr { expr, env, ctx, .. }) => {
-                // State is now InProgress (unevaluated = None, result = empty)
-                Some((expr, env, ctx))
-            }
-            other => {
-                // Restore the state
-                *guard = other;
-                None
-            }
-        }
-    }
-
     /// Atomically take the CoreExpr state (if present), transitioning to InProgress.
     ///
     /// Returns `Some((expr, env, ctx))` if the thunk was in CoreExpr state.
@@ -1684,16 +1603,6 @@ impl Thunk {
     // ========================================================================
     // Non-destructive introspection methods (for builtin_ast_of, debugging)
     // ========================================================================
-
-    /// Peek at the expression if this thunk is in Unevaluated Expr state.
-    /// Does not force or transition the thunk.
-    pub fn peek_expr(&self) -> Option<Rc<Spanned<Expr>>> {
-        let guard = self.inner.unevaluated.lock().unwrap();
-        match &*guard {
-            Some(UnevaluatedState::Expr { expr, .. }) => Some(expr.clone()),
-            _ => None,
-        }
-    }
 
     /// Peek at the builtin def if this thunk is in Unevaluated Builtin state.
     /// Does not force or transition the thunk.
@@ -2419,10 +2328,10 @@ mod tests {
             "thunk should evaluate using the ctx it captured at creation (ctx1)"
         );
 
-        // Verify that the thunk is now InProgress (after take_unevaluated)
+        // Verify that the thunk is now InProgress (after take_core_expr)
         assert!(
             thunk.is_in_progress(),
-            "thunk should be InProgress after take_unevaluated"
+            "thunk should be InProgress after take_core_expr"
         );
     }
 
@@ -2919,7 +2828,7 @@ mod tests {
     // --- is_in_progress() contract ---
 
     #[test]
-    fn test_is_in_progress_true_after_take_unevaluated() {
+    fn test_is_in_progress_true_after_take_core_expr() {
         // After take_core_expr(), thunk is InProgress: is_in_progress() must return true.
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
@@ -2928,7 +2837,7 @@ mod tests {
         thunk.take_core_expr(); // transitions to InProgress
         assert!(
             thunk.is_in_progress(),
-            "is_in_progress() must return true after take_unevaluated()"
+            "is_in_progress() must return true after take_core_expr()"
         );
     }
 

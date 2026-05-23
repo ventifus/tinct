@@ -278,8 +278,8 @@ pub struct EvalContext {
     /// to share the parent's arena, preventing ThunkId index-out-of-bounds panics.
     pub(crate) thunk_arena: Arc<Mutex<ThunkArena>>,
     /// Environment arena registry. Phase 3: populated by `eval_dict` (alloc_root +
-    /// fill_letrec_slot per dict scope). Full O(1) dispatch deferred until `take_unevaluated`
-    /// propagates `env_id` through the force loop.
+    /// fill_letrec_slot per dict scope). Env IDs enable O(1) variable lookup in the
+    /// CoreExpr force path.
     /// **Shared ownership:** Arc<Mutex<>> allows child contexts to share the parent's arena.
     pub(crate) env_arena: Arc<Mutex<EnvArena>>,
     /// Environment variable allowlist. None = unrestricted (all allowed), Some(set) = only those in set.
@@ -1455,8 +1455,7 @@ fn eval_core_expr<'a>(
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
             // Per-argument core_expr_to_expr conversion still occurs inside eval_call_core
-            // because Thunk::new_unevaluated requires Rc<Spanned<Expr>>; this is tracked
-            // by the TODO(parts-e) comments in eval_call.rs.
+            // (tracked by the TODO(parts-e) comments in eval_call.rs).
             CoreExpr::Call {
                 func,
                 args,
@@ -1518,10 +1517,9 @@ fn eval_core_expr<'a>(
                 )))
             }
 
-            // TypeAssert: wrap as CoreExpr thunk — force_step routes to eval_core_expr_pub,
-            // which converts to Expr::TypeAssert and wraps in a new_unevaluated thunk,
-            // letting the CEK machine's eval_step handle the TypeAssertCheck continuation.
-            // This avoids direct recursion back through eval_core_expr.
+            // TypeAssert: wrap as CoreExpr thunk — force_step's take_core_expr branch
+            // handles CoreExpr::TypeAssert inline, pushing a TypeAssertCheck continuation.
+            // Wrapping here prevents direct recursion back through eval_core_expr.
             CoreExpr::TypeAssert { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
                 Arc::new(expr.clone()),
                 Arc::clone(env),
@@ -1800,44 +1798,7 @@ pub fn materialize<'a>(
         let origin_opt: Option<&str> = origin.as_deref();
         let decorate = |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span);
 
-        if let Some((expr, env, thunk_ctx)) = thunk.take_unevaluated() {
-            let result = async {
-                let result_thunk = eval(Rc::clone(&expr), Arc::clone(&env), &thunk_ctx).await?;
-                run(
-                    Action::Materialize {
-                        thunk: result_thunk,
-                        mat_span: mat_span.copied(),
-                    },
-                    &thunk_ctx,
-                )
-                .await
-            }
-            .await
-            .map_err(&decorate);
-
-            match result {
-                Ok(value) => {
-                    thunk.set_materialized(value.clone());
-                    Ok(value)
-                }
-                Err(e) => {
-                    // Restore Unevaluated state for non-cacheable errors (e.g., DepthExceeded)
-                    // so the thunk can be re-evaluated at a shallower continuation stack depth.
-                    if e.kind.is_cacheable() {
-                        thunk.cache_failure_once(&e);
-                    } else {
-                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Expr {
-                            expr,
-                            env,
-                            env_id: None,
-                            ctx: thunk_ctx,
-                        });
-                    }
-                    Err(e)
-                }
-            }
-        } else if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin()
-        {
+        if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
             // Pre-materialize strict args before calling the builtin.
             //
             // The CEK machine (eval_materialize.rs::force_step) handles force_count and
@@ -9203,7 +9164,7 @@ mod tests {
             );
 
             // Note: cycle_path may be empty with the iterative CEK machine because
-            // EvalStackGuard drops at the end of each force_step call (not at thunk completion).
+            // eval_stack entries are popped at force_step exit (not at thunk completion).
             // The cycle is still detected correctly; only the path visualization may be incomplete.
             let _ = cycle_path; // Accept empty cycle_path in iterative evaluator
         } else {

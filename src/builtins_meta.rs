@@ -859,16 +859,6 @@ pub(crate) fn builtin_ast_of(
 
         // Inspect the thunk state WITHOUT forcing it using ThunkInner API
 
-        // Check for Unevaluated Expr state first (most common for ast-of introspection)
-        if let Some(expr) = thunk.peek_expr() {
-            // runtime-v2 Part G: return Value::Expression for unevaluated thunks.
-            let surface_node = crate::ast_convert::expr_to_surface_node(&expr);
-            return Ok(Arc::new(crate::value::Thunk::new_materialized(
-                Value::Expression(surface_node),
-                call_span,
-            )));
-        }
-
         // Check for PendingBuiltin
         if let Some(def) = thunk.peek_builtin_def() {
             let mut entries = IndexMap::new();

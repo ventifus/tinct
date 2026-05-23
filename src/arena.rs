@@ -111,7 +111,7 @@ impl Default for ThunkArena {
 /// Phase 3 (arena-eval): `EnvArena` and `FlatEnv` provide flat environment infrastructure.
 /// `alloc_root` and `fill_letrec_slot` are called by `eval_dict` to populate FlatEnv slots
 /// for dict scopes. `get` and display-vector lookup are scaffolding for the full O(1)
-/// VarRef dispatch path, which is deferred until `take_unevaluated` propagates `env_id`.
+/// VarRef dispatch path for O(1) variable lookup in the CoreExpr force path.
 #[derive(Debug)]
 pub(crate) struct EnvArena {
     envs: Vec<FlatEnv>,
