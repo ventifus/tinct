@@ -19,10 +19,7 @@ use crate::desugar; // TODO(parts-e): remove when desugar.rs is deleted (blocked
 use crate::expand;
 use crate::parser;
 use crate::resolve;
-use crate::typecheck::{
-    typecheck_file_with_types_and_env,
-    typecheck_file_with_types_and_env_and_source_returning_state, TypeMap,
-};
+use crate::typecheck::{typecheck_surface_program, typecheck_surface_program_with_env, TypeMap};
 use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeEnv};
 
 /// Type alias for include bindings map: span → list of (name, type) pairs
@@ -89,15 +86,14 @@ fn typecheck_and_merge_stdlib_module(
     _source_path: Option<&str>,
 ) -> Result<InferState, ()> {
     // Parse the module source
-    let (program, file) = {
+    let program = {
         let parsed = parser::parse(source).map_err(|_| ())?;
         let mut program = parsed.program.clone();
         // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
         desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let _res_table = resolve::resolve_surface_program(&program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
-        (program, file)
+        program
     };
 
     // Skip macro expansion for stdlib modules.
@@ -118,13 +114,11 @@ fn typecheck_and_merge_stdlib_module(
     //
     // `enable_scheme_map: false` — no LSP hover needed for stdlib modules.
     // `in_prelude_load: true` — skip instance method body inference (optimization).
+    //
+    // typecheck_surface_program_with_env bridges to the File-based path internally via
+    // surface_program_to_file, so no manual conversion is needed here.
     let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, state, final_env) =
-        typecheck_file_with_types_and_env_and_source_returning_state(
-            &file.node,
-            Rc::clone(parent_env),
-            false,
-            true,
-        );
+        typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true);
 
     // Merge the generalized schemes from the final env into the output env.
     //
@@ -777,12 +771,12 @@ fn resolve_includes(
         desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let _resolution_table = resolve::resolve_surface_program(&program);
-        // Lower to File for the type-checker (which still works on the Expr-based AST).
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
-        // Type-check with the current accumulated environment
+        // Type-check with the current accumulated environment.
+        // typecheck_surface_program bridges to the File-based path internally via
+        // surface_program_to_file, so no manual conversion is needed here.
         let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::clone(&env));
+            typecheck_surface_program(&program, Rc::clone(&env));
 
         // Extract bindings from this program and track them
         let mut new_env = TypeEnv::with_parent(&env);

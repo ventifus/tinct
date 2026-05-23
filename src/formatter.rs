@@ -95,7 +95,7 @@ pub fn format_source_tinct_with_dir(
         std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
 
     // Typecheck the expanded and desugared formatter.
-    let _ = typecheck::typecheck_surface_program(&formatter_program);
+    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program);
 
     // Create env+ctx AFTER expand_surface_program so STDLIB_ARENA_CACHE is stable.
     // Use new_sharing_arena (not new) so stdlib ThunkIds are valid in the eval ctx —

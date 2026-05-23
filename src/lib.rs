@@ -196,8 +196,6 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     // Keep the table for eval_surface_file (used by lower.rs to resolve VarRef → Var).
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-    // Lower to File for typecheck (typecheck still uses the old Expr-based AST).
-    let file = ast_convert::surface_program_to_file(&program);
     let provenance = expand_result.provenance;
 
     // Helper: attach macro expansion provenance to errors before formatting.
@@ -235,10 +233,12 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         format!("{e}")
     };
     // Type errors are advisory; evaluation proceeds regardless.
-    // Use the version that returns InferState so we can extract boundary_guards.
+    // Use the surface-based path: typecheck_surface_program_with_env bridges to the
+    // File-based path internally via surface_program_to_file, eliminating the manual
+    // surface_program_to_file step here.
     let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
-        typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
-            &file.node,
+        typecheck::typecheck_surface_program_with_env(
+            &program,
             crate::imports::build_prelude_env(),
             false, // disable scheme_map (not needed for eval)
             false, // not in prelude load
@@ -368,8 +368,6 @@ pub fn eval_source_with_cap_net(
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     // Keep the table for eval_surface_file (used by lower.rs to resolve VarRef → Var).
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-    // Lower to File for typecheck (typecheck still uses the old Expr-based AST).
-    let file = ast_convert::surface_program_to_file(&program);
     let provenance = expand_result.provenance;
 
     let attach_provenance = |mut e: Box<error::EvalError>| -> String {
@@ -386,10 +384,12 @@ pub fn eval_source_with_cap_net(
         }
         format!("{e}")
     };
-    // Use the version that returns InferState so we can extract boundary_guards.
+    // Use the surface-based path: typecheck_surface_program_with_env bridges to the
+    // File-based path internally via surface_program_to_file, eliminating the manual
+    // surface_program_to_file step here.
     let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
-        typecheck::typecheck_file_with_types_and_env_and_source_returning_state(
-            &file.node,
+        typecheck::typecheck_surface_program_with_env(
+            &program,
             crate::imports::build_prelude_env(),
             false, // disable scheme_map (not needed for eval)
             false, // not in prelude load
@@ -523,11 +523,12 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let _resolution_table = resolve::resolve_surface_program(&program);
-    let file = ast_convert::surface_program_to_file(&program);
-    // Type check the file with prelude-seeded environment
+    // Type check the surface program with prelude-seeded environment.
+    // typecheck_surface_program bridges to the File-based path internally via
+    // surface_program_to_file; callers no longer need the intermediate File AST.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck::typecheck_file_with_types_and_env(&file.node, env);
+        typecheck::typecheck_surface_program(&program, env);
     if type_errors.is_empty() && diagnostics.is_empty() {
         Ok(())
     } else {
@@ -566,10 +567,12 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let _resolution_table = resolve::resolve_surface_program(&program);
-    let file = ast_convert::surface_program_to_file(&program);
+    // Type check the surface program with prelude-seeded environment.
+    // typecheck_surface_program bridges to the File-based path internally via
+    // surface_program_to_file; callers no longer need the intermediate File AST.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck::typecheck_file_with_types_and_env(&file.node, env);
+        typecheck::typecheck_surface_program(&program, env);
     if type_errors.is_empty() {
         Ok(())
     } else {
@@ -1131,7 +1134,7 @@ pub fn format_with_json_llt(
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-    let (_type_errors, _table) = typecheck::typecheck_surface_program(&program);
+    let (_type_errors, _table) = typecheck::typecheck_surface_program_annotation_table(&program);
     let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
 
     // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
@@ -1901,7 +1904,8 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let (_type_errors, _table) = typecheck::typecheck_surface_program(&program);
+        let (_type_errors, _table) =
+            typecheck::typecheck_surface_program_annotation_table(&program);
         let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
@@ -1976,10 +1980,9 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let _resolution_table = resolve::resolve_surface_program(&program);
-        let file = ast_convert::surface_program_to_file(&program);
         let env = imports::build_prelude_env();
         let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-            typecheck::typecheck_file_with_types_and_env(&file.node, env);
+            typecheck::typecheck_surface_program(&program, env);
         assert!(
             type_errors.is_empty(),
             "expected no type errors (prelude map should be in scope), got: {:?}",

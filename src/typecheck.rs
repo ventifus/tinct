@@ -396,8 +396,12 @@ pub fn typecheck_file_with_types_and_env_and_source_returning_state(
 
 /// Type-check a SurfaceProgram and return a TypeAnnotationTable.
 ///
-/// This is the runtime-v2 entry point for type checking. The SurfaceProgram is
-/// unchanged (immutable); all type annotations are captured in the returned table.
+/// This is the runtime-v2 entry point for type checking used by the eval pipeline.
+/// The SurfaceProgram is unchanged (immutable); all type annotations are captured
+/// in the returned table keyed by NodeId.
+///
+/// For the public API that returns a `TypeMap` (span-keyed, compatible with the
+/// LSP and import-resolution paths), use [`typecheck_surface_program`] instead.
 ///
 /// # Algorithm
 ///
@@ -414,7 +418,7 @@ pub fn typecheck_file_with_types_and_env_and_source_returning_state(
 /// Returns `(errors, table)` where:
 /// - `errors`: Type errors encountered during inference (advisory — evaluation proceeds)
 /// - `table`: TypeAnnotationTable mapping NodeId → Type for successfully inferred expressions
-pub fn typecheck_surface_program(
+pub fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
 ) -> (Vec<TypeError>, TypeAnnotationTable) {
     let mut errors = Vec::new();
@@ -462,6 +466,77 @@ pub fn typecheck_surface_program(
     }
 
     (errors, table)
+}
+
+/// Type-check a `SurfaceProgram` with a given initial type environment, returning a
+/// span-keyed [`TypeMap`].
+///
+/// This is the surface-based replacement for [`typecheck_file_with_types_and_env`].
+/// Internally it converts the `SurfaceProgram` to a `File` via
+/// [`crate::ast_convert::surface_program_to_file`] and delegates to the existing
+/// file-based typecheck machinery, so behaviour is identical to the old path.
+///
+/// Callers that previously called `typecheck_file_with_types_and_env` after running
+/// `surface_program_to_file` manually should switch to this function so the
+/// `surface_program_to_file` step is encapsulated here and can be removed in a
+/// follow-up sprint once the type checker is fully SurfaceExpr-native.
+///
+/// # Returns
+///
+/// `(errors, type_map, doc_map, scheme_map, diagnostics)`
+pub fn typecheck_surface_program(
+    program: &SurfaceProgram,
+    parent_env: Rc<TypeEnv>,
+) -> (
+    Vec<TypeError>,
+    TypeMap,
+    DocMap,
+    SchemeMap,
+    Vec<crate::error::TypeDiagnostic>,
+) {
+    let file = crate::ast_convert::surface_program_to_file(program);
+    typecheck_file_with_types_and_env(&file.node, parent_env)
+}
+
+/// Type-check a `SurfaceProgram` with full control over scheme-map generation and the
+/// prelude-load optimisation flag, returning all intermediate state.
+///
+/// This is the surface-based replacement for
+/// [`typecheck_file_with_types_and_env_and_source_returning_state`].
+/// Internally converts via [`crate::ast_convert::surface_program_to_file`] and delegates
+/// to the file-based path.
+///
+/// # Parameters
+///
+/// - `program`: The surface AST to type-check.
+/// - `parent_env`: Initial type environment (e.g., from `build_prelude_env()`).
+/// - `enable_scheme_map`: When `true`, populates the [`SchemeMap`] for LSP hover.
+/// - `in_prelude_load`: When `true`, skips instance-method body inference (prelude optimisation).
+///
+/// # Returns
+///
+/// `(errors, type_map, doc_map, scheme_map, diagnostics, infer_state, final_env)`
+pub fn typecheck_surface_program_with_env(
+    program: &SurfaceProgram,
+    parent_env: Rc<TypeEnv>,
+    enable_scheme_map: bool,
+    in_prelude_load: bool,
+) -> (
+    Vec<TypeError>,
+    TypeMap,
+    DocMap,
+    SchemeMap,
+    Vec<crate::error::TypeDiagnostic>,
+    InferState,
+    Rc<TypeEnv>,
+) {
+    let file = crate::ast_convert::surface_program_to_file(program);
+    typecheck_file_with_types_and_env_and_source_returning_state(
+        &file.node,
+        parent_env,
+        enable_scheme_map,
+        in_prelude_load,
+    )
 }
 
 /// Type-check a single SurfaceDocument.
@@ -6012,7 +6087,7 @@ mod tests {
     fn check(input: &str) -> Result<(), Vec<TypeError>> {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let (errors, _table) = typecheck_surface_program(&program);
+        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -11380,7 +11455,7 @@ mod tests {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let (errors, _table) = typecheck_surface_program(&program);
+        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "% pipeline binding should work, got error: {:?}",
@@ -11396,7 +11471,7 @@ mod tests {
         let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let (errors, _table) = typecheck_surface_program(&program);
+        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "% multi-field pipeline should type-check without errors; got: {:?}",
@@ -11418,7 +11493,7 @@ mod tests {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let (errors, _table) = typecheck_surface_program(&program);
+        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "named section binding should work, got error: {:?}",
@@ -11430,12 +11505,12 @@ mod tests {
 
     #[test]
     fn test_typecheck_returns_diagnostics() {
-        // Verify that typecheck_surface_program returns no errors for a simple dict
+        // Verify that typecheck_surface_program_annotation_table returns no errors for a simple dict
         let input = "[x: 42]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let (errors, _table) = typecheck_surface_program(&program);
+        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "simple dict should typecheck without errors"
