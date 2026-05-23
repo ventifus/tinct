@@ -1,0 +1,6 @@
+# $proxy named arg is absorbed by prelude wrapper (handler param matches)
+[proxy handler: [fn [let k] k]]
+=== out
+Proxy
+=== warn
+unknown named argument: function has no parameter named 'handler' at 1:17-1:31
