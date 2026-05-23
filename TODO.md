@@ -661,3 +661,51 @@ Files to move from `tests/corpus/eval/errors/` → `tests/corpus/typecheck/warni
 - [ ] `closed_record_rejects_extra.llt-eval`
 - [ ] `proxy_named_arg.llt-eval`
 
+---
+
+## Evaluator Correctness + Performance (Health Review #311)
+
+### eval-hot-path-fixes: CoreExpr regression, EvalStackGuard, alloc hotspots, TypeAnnotationTable wire
+
+**Sources:** computer-scientist, performance-expert, integration-verifier (review #311)
+
+**Correctness (Critical/Major):**
+- [ ] Investigate and fix CoreExpr round-trip at `eval.rs:1412-1418`, `eval_call.rs:72` — `core_expr_to_expr` re-enters old `eval()` path, losing de Bruijn coordinates and partially undoing the CoreExpr migration (computer-scientist) [Major]
+- [ ] Implement `EvalStackGuard` RAII struct in `eval_materialize.rs` — comments describe the struct but ~18 manual push/pop sites have no structural balance guarantee; implement or replace with Drop-based guard (computer-scientist) [Major]
+- [ ] Wire TypeAnnotationTable from `typecheck_surface_program*` result into `eval_surface_file` — currently `eval_source_with_config` passes empty `TypeAnnotationTable::default()`, forcing all TypeAssert nodes to `RuntimeTypeCheck` fallback; annotate the threading path and pass the table (integration-verifier) [Major]
+
+**Performance (Critical/Major):**
+- [ ] Fix `BuiltinArgs` clone in `force_step` (`eval_materialize.rs:578-583`) — change `args.as_ref().expect(...).clone()` to `args.take().expect(...)` to avoid Vec/IndexMap clone on every builtin call (performance-expert) [Critical]
+- [ ] Change `Environment.bindings` from `IndexMap` to `HashMap` (`value.rs:1777`) — insertion order has no semantic meaning after resolver populates slots; `HashMap` is ~20% faster for lookups (performance-expert) [Critical]
+- [ ] Skip `dict_env` allocation for literal-only dicts in `eval_dict_core` (`eval_dict.rs:82-84`) — `Arc::new(RwLock::new(Environment::with_parent(...)))` allocated even when all values are Int/Float/Bool/Str (performance-expert) [Major]
+
+**Performance (Minor):**
+- [ ] Start W1 strictness scan at `arg_idx+1`, not 0, in `BuiltinForceArg` continuation (`eval_materialize.rs:550-556`) — linear scan restarts from 0 on every resume (performance-expert) [Minor]
+- [ ] `Key::String` should use `Rc<str>` + range instead of owned `String` (`eval_dict.rs:27`, `value.rs:104`) — every string-keyed dict entry allocates a new String despite `Value::String` having `Rc<str>` sharing (performance-expert) [Minor]
+- [ ] `count_static_keys_core` double-pass: use `entries.len()` as capacity upper bound instead of counting-then-inserting (`eval_dict.rs:52-63`) (performance-expert) [Minor]
+
+### test-coverage-cycle311: Unit tests for CEK machine, letrec scoping, and corpus edge cases
+
+**Sources:** test-crafter, performance-expert (review #311)
+
+**Unit tests (Major):**
+- [ ] Add unit tests for `eval_materialize.rs` CEK machine: (1) continuation stack at `MAX_CONTINUATION_STACK=2048` enforced, (2) `RestoreState::PendingBuiltin` and `PendingCall` variants, (3) `attach_materialization_context` error decoration, (4) inline TypeAssert in `force_step` (test-crafter) [Major]
+- [ ] Add unit tests for `eval_dict.rs` letrec scoping: (1) key evaluated in parent scope, (2) value evaluated in dict scope (sees siblings), (3) circular dependency detection → error, (4) nested dict shadowing (test-crafter) [Major]
+
+**Corpus tests (Minor):**
+- [ ] Add `tests/corpus/eval/errors/key_scope_sibling_reference_fails.llt-eval` — `[x: 1  $x: 2]` must produce "undefined variable: x" (key `$x` evaluates in parent scope) (test-crafter) [Minor]
+- [ ] Expand `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval` — add cases: (1) missing capability (Readable required, plain Handle provided), (2) extra capability, (3) multiple mismatches (test-crafter) [Minor]
+- [ ] Add `tests/corpus/eval/errors/continuation_stack_depth_limit.llt-eval` — depth 2048 succeeds; depth 2049 fails with "resource limit exceeded" (test-crafter) [Minor]
+
+### doc-health-cycle311: Fix documentation gaps from health review #311
+
+**Sources:** type-theorist, stdlib-author, eval-engine, grammar-architect, security-expert (review #311)
+
+- [ ] Update `doc/05-type-annotations.md` §20 (around line 848) — Handle section says "opaque base type, no parametric polymorphism" but `Type::Handle(Box<Type>)` has been parameterized with capability row since `handle-parameterization` sprint; update to document `Handle[readable: () writable: ()]` notation (type-theorist) [Major]
+- [ ] Update `doc/11a-builtins.md:3,1064` — builtin count is 284, not 283 (stdlib-author) [Major]
+- [ ] Add `SurfaceNode`/`SurfaceExpression`/`SurfaceProgram` section to `doc/15-ast.md` — surface AST types added in runtime-v2 Part A are completely undocumented; only old `Expr`/`Document`/`File` types documented (grammar-architect) [Major]
+- [ ] Add clarification to `doc/08-evaluation.md` §Recursive Dict Scoping — ALL non-literal key expressions (not just effectful ones like `$include`) force eagerly at dict construction time because `IndexMap` requires concrete `Key` values before letrec scoping can proceed; literal keys use `Materialized` fast-path (eval-engine) [Minor]
+- [ ] Add TypeAssert default validation note to `doc/06-type-inference.md` after the `[ASSERT-DEFAULT]` rule — "The type checker validates `default_ty <: σ` at elaboration time, ensuring defaults are type-safe regardless of whether the expression reaches the default branch" (type-theorist) [Minor]
+- [ ] Verify `Span::origin()` frame filtering in `EvalError::Display` (`src/error.rs`) — confirm stdlib frames with `0:0-0:0` synthetic spans are filtered from user-facing error output; add regression corpus test if filtering is confirmed (integration-verifier) [Minor]
+- [ ] Fix Windows symlink fallback: replace `.unwrap_or(false)` with explicit error check at `src/builtins_io.rs:2981` — current code silently treats unreadable target as "not a directory", obscuring the real error (security-expert) [Minor]
+
