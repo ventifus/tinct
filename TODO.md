@@ -113,13 +113,13 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Part E — Evaluator cutover + delete old types:**
 ✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: eval_materialize.rs, eval_dict.rs, eval_call.rs still use Expr types; must migrate those first
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: eval_step in eval_materialize.rs still uses Expr::DotAccess/TypeAssert via Action::Eval path; eval_pipeline.rs also uses Expr types; must eliminate Action::Eval and migrate eval_pipeline.rs first
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted to new_unevaluated_core; force_step now handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; 1889 tests pass
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; updated all re-exports; file deleted ✓
-- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **PARTIALLY BLOCKED**: eval_pipeline.rs has 20+ active callers; remaining new_unevaluated (Expr) sites: eval.rs:1385 (CoreExpr::DotAccess fallback) + eval_materialize.rs:2694 (eval_step Expr::DotAccess) — both intentional for DotAccess CEK path
+- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **BLOCKED**: eval_pipeline.rs has 20+ active callers; remaining prod new_unevaluated: eval_materialize.rs:2698 (eval_step Expr::DotAccess via Action::Eval); all require Action::Eval migration + architectural updates
 - [x] Update `IncludeCacheEntry::Cached` — **DONE**
 - [x] Rc→Arc migration — **DONE (commit b0aa803)**: 34 files, 2450 ins, 2437 del
-- [ ] **`cargo check` clean after Part E** — first checkpoint per plan
+- [x] **`cargo check` clean** — `just build` passes with -D warnings ✓ (commit cf34e8b)
 
 ### Part F ✅, Part G ✅, sprint-2a-rc-arc ✅ — All complete (see DONE.md)
 
