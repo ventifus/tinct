@@ -6,10 +6,10 @@
 
   # Define an instance of MyClass for Int
   MyClassInt: [instance MyClass [pattern [Int]]:
-    my-method: [fn [x] [+ x 1]]]
+    my-method: [fn [let x] [+ x 1]]]
 
   # Use the class in a constrained function (constraint checked at call site)
-  use-myclass: [fn [x] [+ x 2]]
+  use-myclass: [fn [let x] [+ x 2]]
 
   # Call the function with an Int
   result: [use-myclass 5]

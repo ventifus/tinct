@@ -3,7 +3,7 @@
 # that calling + with Int and Float arguments correctly infers Float return type.
 # (MPTC keyed-form constraint annotation e.g. [c: [Addable a b]] is future work.)
 [
-  add-mixed: [fn [x@Int y@Float] [+ x y]]
+  add-mixed: [fn [let x@Int y@Float] [+ x y]]
   result: [add-mixed 1 2.0]
 ]
 

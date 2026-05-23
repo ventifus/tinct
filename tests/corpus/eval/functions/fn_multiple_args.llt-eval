@@ -1,4 +1,4 @@
-[second: [fn [a b] b]]
+[second: [fn [let a b] b]]
 
 [second 10 20]
 === out

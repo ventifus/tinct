@@ -1,5 +1,5 @@
 # reduce on empty Dict returns init value unchanged
-[reduce [fn [acc x] [+ acc x]] 99 []]
+[reduce [fn [let acc x] [+ acc x]] 99 []]
 === out
 Int(99)
 === warn

@@ -1,4 +1,4 @@
 # map-entries: transform values using key-value entry dicts
-[map-entries [fn [e] [str e.key "=" e.value]] [a: 1 b: 2]]
+[map-entries [fn [let e] [str e.key "=" e.value]] [a: 1 b: 2]]
 === out
 Dict({"a": String("a=1"), "b": String("b=2")})

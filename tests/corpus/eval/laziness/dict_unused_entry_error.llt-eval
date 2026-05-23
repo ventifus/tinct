@@ -1,5 +1,5 @@
 # Laziness proof: unused function argument containing $error is never forced
-[first: [fn [a b] a]]
+[first: [fn [let a b] a]]
 
 [first 42 [raise "should not fire"]]
 === out

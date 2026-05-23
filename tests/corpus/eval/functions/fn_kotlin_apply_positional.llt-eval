@@ -1,6 +1,6 @@
 # $apply positional-only: dict with int keys only (regression test)
 [
-  f: [fn [x y] [+ x y]]
+  f: [fn [let x y] [+ x y]]
   args: [0: 10 1: 20]
   result: [apply f args]
 ]

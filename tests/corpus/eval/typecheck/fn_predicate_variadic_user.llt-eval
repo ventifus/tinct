@@ -3,7 +3,7 @@
 # correctly with user-defined variadic functions.
 
 [
-  f: [fn [...xs] xs]
+  f: [fn [let ...xs] xs]
   result: [if [fn? f] [f 1 2 3] []]
 ]
 === out

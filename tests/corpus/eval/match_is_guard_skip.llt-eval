@@ -1,6 +1,6 @@
 # is: soft guard — predicate returns falsy, arm is skipped
 [match -1
-  x@[is: [fn [n] [> n 0]]]: "yes"
+  x@[is: [fn [let n] [> n 0]]]: "yes"
   _:                         "no"]
 === out
 String("no")

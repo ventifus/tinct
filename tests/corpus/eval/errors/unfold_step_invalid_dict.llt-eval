@@ -1,4 +1,4 @@
 # unfold: step function returning dict with fewer than 2 entries produces an error
-[unfold [fn [s] [value: s]] 1]
+[unfold [fn [let s] [value: s]] 1]
 === error
 [E010] unfold: expected Dict with at least 2 entries, got Dict with 1 entry

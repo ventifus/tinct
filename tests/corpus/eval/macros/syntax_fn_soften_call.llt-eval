@@ -1,5 +1,5 @@
-# fn let-softening: [fn [x y] body] parsed directly by the parser.
-# When syntax.llt is included, calling functions defined with bare param lists still works.
+# fn [let ...] form: [fn [let x y] body] parsed directly by the parser.
+# When syntax.llt is included, calling functions defined with [let ...] param lists still works.
 [include %libdir "syntax.llt"]
 [add: [fn [let x y] [+ x y]]]
 [add 3 4]

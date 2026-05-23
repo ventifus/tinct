@@ -12,7 +12,7 @@
   # to-description is defined before Describable and DescribableInt exist.
   # Pass 0c ensures they will be visible by the time typecheck resolves this
   # function's constraint annotation.
-  to-description: [fn@[return: String  constraint: [a: Describable]] [x@a] [str x]]
+  to-description: [fn@[return: String  constraint: [a: Describable]] [let x@a] [str x]]
 
   # ---- (many lines later in a real file) ----
   #

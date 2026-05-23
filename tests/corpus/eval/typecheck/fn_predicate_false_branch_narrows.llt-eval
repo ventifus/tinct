@@ -19,7 +19,7 @@
   result2: [if [fn? s] "function" "not-function"]
 
   # Test 3: apply-or-default: if value is a function, calls it; otherwise returns default
-  apply-or-default: [fn [f default-val]
+  apply-or-default: [fn [let f default-val]
     [if [fn? f] [f] default-val]]
   r1: [apply-or-default [fn [] 99] 0]
   r2: [apply-or-default 42 0]

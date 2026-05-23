@@ -1,5 +1,5 @@
 # E024: MissingRequiredParam - function expects 2 params, called with 1
-[f: [fn [x y] [+ x y]]]
+[f: [fn [let x y] [+ x y]]]
 
 [f 10]
 === error

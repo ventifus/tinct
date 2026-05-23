@@ -5,7 +5,7 @@
   p1: [x: 1  y: 2]
   p2: [x: 1  y: 2]
   p3: [x: 3  y: 4]
-  equal: [fn [a b] [and [= a.x b.x] [= a.y b.y]]]
+  equal: [fn [let a b] [and [= a.x b.x] [= a.y b.y]]]
   same: [equal p1 p2]
   diff: [equal p1 p3]
 ]

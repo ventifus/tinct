@@ -1,7 +1,7 @@
 # Call with both positional and named arg for the same parameter
 # Type checker can't detect this in same-dict letrec (TypeVar arm skips named-arg checks)
 # Evaluator catches it as a missing-argument error at runtime
-[f: [fn [x@Int y@Int] [+ x y]]
+[f: [fn [let x@Int y@Int] [+ x y]]
  result: [f 42 x: 99]]
 === warn
 named argument 'x' conflicts with positional argument at position 0 at 4:19-4:21

@@ -4,6 +4,6 @@
 # (Pierce & Turner 2000 lambda checking mode).
 # Here, [@[Fn@Int [Int]] [fn [x] $x]] checks the identity lambda against
 # Fn(Int -> Int), propagating Int to the unannotated param x.
-[@[Fn@Int [Int]] [fn [x] x]]
+[@[Fn@Int [Int]] [fn [let x] x]]
 === out
 Function(x)

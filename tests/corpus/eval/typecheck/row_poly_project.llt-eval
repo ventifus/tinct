@@ -1,7 +1,7 @@
 # Row polymorphism: function that projects a field
 # get-name accepts any record with at least `name: String`.
 # Called with two different records with different extra fields.
-[get-name: [fn [r@[name: String ...]] [get "name" r]]
+[get-name: [fn [let r@[name: String ...]] [get "name" r]]
  r1: [get-name [name: "alice"  age: 30]]
  r2: [get-name [name: "bob"  city: "NYC"]]]
 === out

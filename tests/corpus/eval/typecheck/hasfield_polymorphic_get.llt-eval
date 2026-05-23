@@ -1,7 +1,7 @@
 # Polymorphic function that generates HasField constraint
 # The function takes a dict parameter and accesses a field
 # Type inference should generate: forall d a. HasField "name" d a => (d) -> a
-[get_name: [fn [dict] [get "name" dict]]
+[get_name: [fn [let dict] [get "name" dict]]
  result: [get_name [name: "Alice"]]]
 === out
 Dict({"get_name": Function(dict), "result": String("Alice")})

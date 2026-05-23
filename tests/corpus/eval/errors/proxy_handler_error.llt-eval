@@ -15,6 +15,6 @@
 
 # This placeholder test demonstrates proxy behavior but does NOT test E035.
 # It tests E080 (UserError from $raise builtin) instead.
-[p: [proxy [fn [key] [raise "handler called"]]]  result: p.test]
+[p: [proxy [fn [let key] [raise "handler called"]]]  result: p.test]
 === error
 [E080] handler called

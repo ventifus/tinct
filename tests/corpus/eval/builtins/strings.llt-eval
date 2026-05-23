@@ -34,8 +34,8 @@
   str_chars_head: [head [str-chars "abc"]]
   str_to_upper: [str-to-upper-char "h"]
   str_to_lower: [str-to-lower-char "H"]
-  str_map_chars_basic: [str-map-chars [fn [c] [str-to-upper-char c]] "ab"]
-  str_map_chars_empty: [str-map-chars [fn [c] c] ""]
+  str_map_chars_basic: [str-map-chars [fn [let c] [str-to-upper-char c]] "ab"]
+  str_map_chars_empty: [str-map-chars [fn [let c] c] ""]
 
   # First/last characters
   first_string: [first "hello"]

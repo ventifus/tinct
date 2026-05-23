@@ -3,6 +3,6 @@
 # (e.g. `fn@[Int Null]`). The fix removes the uppercase guard so `fn@[a Null]` and `fn@[a b]`
 # work as union type annotations with TypeVar members.
 # This tests: fn@[a b] where both a and b are lowercase TypeVars is now a valid annotation.
-[f: [fn@[a b] [x] x]]
+[f: [fn@[a b] [let x] x]]
 === out
-["f": [fn@[a  b] [x] x]]
+["f": [fn@[a  b] [let x] x]]

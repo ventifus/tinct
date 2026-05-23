@@ -1,6 +1,6 @@
 # Named arg targeting optional param (not just required): Kotlin model allows naming any param
 [
-  f: [fn [a b@[default: 2] c@[default: 3]] [str a [str b c]]]
+  f: [fn [let a b@[default: 2] c@[default: 3]] [str a [str b c]]]
   result: [f a: 5]
 ]
 === warn

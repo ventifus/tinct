@@ -1,8 +1,8 @@
 # Annotation isolation: two sibling functions each using @a should not cross-contaminate.
 # f's @a and g's @a are independently scoped type variables — f can accept Int
 # while g accepts String in the same dict without a type error.
-[f: [fn [x@a] x]
- g: [fn [y@a] y]
+[f: [fn [let x@a] x]
+ g: [fn [let y@a] y]
  result: [f 42]]
 === out
 Dict({"f": Function(x), "g": Function(y), "result": Int(42)})

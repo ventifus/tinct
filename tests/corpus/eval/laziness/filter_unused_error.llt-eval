@@ -9,7 +9,7 @@
 # does not yet implement cross-binding forward references for multi-entry dicts. The
 # warning is a known type checker limitation, not an evaluator bug. The === warn section
 # documents and pins this expected diagnostic so unexpected changes are caught.
-[filtered: [filter [fn [x] [> x 0]] [1 2 [/ 1 0]]]]
+[filtered: [filter [fn [let x] [> x 0]] [1 2 [/ 1 0]]]]
 [result: [head filtered]]
 === out
 Dict({"result": Int(1)})

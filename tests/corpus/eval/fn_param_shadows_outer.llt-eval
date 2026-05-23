@@ -4,7 +4,7 @@
 # so $x inside the function body is 10, not 42.
 [
   x: 42
-  result: [call [fn [x] [* $x 2]] 10]
+  result: [call [fn [let x] [* $x 2]] 10]
 ]
 === out
 Dict({"x": Int(42), "result": Int(20)})

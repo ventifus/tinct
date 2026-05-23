@@ -2,8 +2,8 @@
 # because they use $builtin-lt, $builtin-add, etc. internally.
 # $> (prelude) uses $builtin-lt, so shadowing < should not affect it.
 [
-  <: [fn [a b] false]
-  +: [fn [a b] 0]
+  <: [fn [let a b] false]
+  +: [fn [let a b] 0]
   gt-result: [> 5 3]
   not-result: [not false]
 ]

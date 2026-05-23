@@ -1,6 +1,6 @@
 # Mixed params: optional-required-optional, provide required by name
 [
-  f: [fn [a@[default: 1] b c@[default: 3]] [+ a [+ b c]]]
+  f: [fn [let a@[default: 1] b c@[default: 3]] [+ a [+ b c]]]
   result: [f b: 10]
 ]
 === warn

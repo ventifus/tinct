@@ -3,13 +3,13 @@
 # to Function{params:[], ret:Unknown, variadic:true} (the "any function" type).
 
 [
-  apply-if-fn: [fn [x]
+  apply-if-fn: [fn [let x]
     [cond [
       [[fn? x] [x 42]]
       [true x]
     ]]]
 
-  r1: [apply-if-fn [fn [n] [+ n 1]]]
+  r1: [apply-if-fn [fn [let n] [+ n 1]]]
   r2: [apply-if-fn "not a function"]
 ]
 === out

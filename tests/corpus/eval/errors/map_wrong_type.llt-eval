@@ -1,4 +1,4 @@
 # map: error when xs is not a Dict or Seq
-[map [fn [x] x] "hello"]
+[map [fn [let x] x] "hello"]
 === error
 [E010] map: expected Dict or Seq, got String

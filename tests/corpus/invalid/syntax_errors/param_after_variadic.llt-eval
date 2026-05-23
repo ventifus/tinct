@@ -1,3 +1,3 @@
-[fn [...rest x] x]
+[fn [let ...rest x] x]
 === out
 variadic parameter (...name) must be the last parameter

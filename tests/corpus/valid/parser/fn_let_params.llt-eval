@@ -4,4 +4,4 @@
 
 === out
 
-[fn [x@Int y] [+ x y]]
+[fn [let x@Int y] [+ x y]]

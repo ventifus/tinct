@@ -1,5 +1,5 @@
 # any?: Seq input produces clear error message
-[any? [fn [x] true] [range 0 3]]
+[any? [fn [let x] true] [range 0 3]]
 === error
 [E011] type assertion failed: expected [], got Seq
 

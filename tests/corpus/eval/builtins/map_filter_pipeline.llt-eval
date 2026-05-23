@@ -1,5 +1,5 @@
 # map then filter pipeline on seq
-[collect [take 3 [filter [fn [x] [> x 10]] [map [fn [x] [* x x]] [range 1]]]]]
+[collect [take 3 [filter [fn [let x] [> x 10]] [map [fn [let x] [* x x]] [range 1]]]]]
 === out
 Dict({0: Int(16), 1: Int(25), 2: Int(36)})
 

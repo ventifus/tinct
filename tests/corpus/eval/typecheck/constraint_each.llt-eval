@@ -3,7 +3,7 @@
 # applies both Comparable and Showable constraints to TypeVar 'a'
 [
   compare-and-show: [fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]
-    [x@a] x]
+    [let x@a] x]
   result: [compare-and-show 42]
 ]
 

@@ -1,5 +1,5 @@
 # Open-record function accepts a dict with extra fields; $r.y returns the y field value.
-[f: [fn [r@[x: Int  ...]] r.y]]
+[f: [fn [let r@[x: Int  ...]] r.y]]
 ---
 [r: [call %.f [x: 1  y: "hello"]]]
 === out

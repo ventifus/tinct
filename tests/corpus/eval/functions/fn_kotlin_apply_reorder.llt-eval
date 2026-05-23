@@ -1,6 +1,6 @@
 # $apply with out-of-order integer keys: sorted by key, not insertion order
 [
-  f: [fn [a b c] [str a b c]]
+  f: [fn [let a b c] [str a b c]]
   args: [2: "c" 0: "a" 1: "b"]
   result: [apply f args]
 ]

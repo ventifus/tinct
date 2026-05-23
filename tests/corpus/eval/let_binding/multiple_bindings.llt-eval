@@ -1,5 +1,5 @@
 # Multiple bindings in single intermediate expression
-[combine: [fn [a b] [x: a y: b sum: [+ a b]] sum]]
+[combine: [fn [let a b] [x: a y: b sum: [+ a b]] sum]]
 [combine 20 22]
 === out
 Int(42)

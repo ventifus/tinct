@@ -1,5 +1,5 @@
 # Multi-expression function body with intermediate binding
-[process: [fn [data] [cleaned: [* data 2]] [+ cleaned 1]]]
+[process: [fn [let data] [cleaned: [* data 2]] [+ cleaned 1]]]
 [process 20]
 === out
 Int(41)

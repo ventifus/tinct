@@ -1,4 +1,4 @@
 # Row polymorphism - rest with field constraints
-[f: [fn [r@[x: Number  y: Number ...]] [+ r.x r.y]]  result: [call $f [x: 10  y: 20  z: "extra"]]]
+[f: [fn [let r@[x: Number  y: Number ...]] [+ r.x r.y]]  result: [call $f [x: 10  y: 20  z: "extra"]]]
 === out
 Dict({"f": Function(r), "result": Int(30)})

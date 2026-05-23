@@ -1,8 +1,8 @@
 # $_ with get (dynamic key access)
-# [get _ data] wrapped to [fn [_] [get _ data]]
+# [get _ data] wrapped to [fn [let _] [get _ data]]
 # Wrap in explicit function to provide $_ as bound variable
 [data: [name: "Alice" age: 30]]
 
-[call [fn [_] [get _ data]] "name"]
+[call [fn [let _] [get _ data]] "name"]
 === out
 String("Alice")

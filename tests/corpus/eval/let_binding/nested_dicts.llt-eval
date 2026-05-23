@@ -1,5 +1,5 @@
 # Sequential body with nested dict intermediate result
-[build: [fn [x] [data: [value: x doubled: [* x 2]]] data.doubled]]
+[build: [fn [let x] [data: [value: x doubled: [* x 2]]] data.doubled]]
 [build 21]
 === out
 Int(42)

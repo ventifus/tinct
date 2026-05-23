@@ -5,7 +5,7 @@
 
   # New syntax: class name, then [pattern [...]], then colon, then methods
   EqInt: [instance Equatable [pattern [Int]]:
-    eq: [fn [x y] [= x y]]]
+    eq: [fn [let x y] [= x y]]]
 
   result: true
 ]

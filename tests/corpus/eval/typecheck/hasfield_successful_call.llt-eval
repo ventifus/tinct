@@ -1,6 +1,6 @@
 # Successful call site where dict has the required field
 # The polymorphic get_field function should accept any dict with a "port" field
-[get_port: [fn [config] [get "port" config]]
+[get_port: [fn [let config] [get "port" config]]
  server: [port: 8080  host: "localhost"]
  result: [get_port server]]
 === out

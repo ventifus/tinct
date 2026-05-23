@@ -1,8 +1,8 @@
 [
-    transform: [fn [x] [uppercase x]]
-    filter: [fn [item] item.active?]
+    transform: [fn [let x] [uppercase x]]
+    filter: [fn [let item] item.active?]
 ]
 === out
-["transform": [fn [x] [uppercase x]]  "filter": [fn [item] item.active?]]
+["transform": [fn [let x] [uppercase x]]  "filter": [fn [let item] item.active?]]
 === warn
-undefined variable: uppercase at 2:25-2:34
+undefined variable: uppercase at 2:29-2:38

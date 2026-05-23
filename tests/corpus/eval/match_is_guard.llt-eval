@@ -1,6 +1,6 @@
 # is: soft guard — predicate returns truthy, arm matches
 [match 42
-  x@[is: [fn [n] [> n 0]]]: "yes"
+  x@[is: [fn [let n] [> n 0]]]: "yes"
   _:                         "no"]
 === out
 String("yes")

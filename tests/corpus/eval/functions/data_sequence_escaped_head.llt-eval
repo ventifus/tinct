@@ -1,5 +1,5 @@
 # $items in head position creates data sequence, not a call
 # The function reference becomes a value in the sequence
-[items: [fn [x] [+ x 1]]  stages: [$items]]
+[items: [fn [let x] [+ x 1]]  stages: [$items]]
 === out
 Dict({"items": Function(x), "stages": Dict({0: Function(x)})})

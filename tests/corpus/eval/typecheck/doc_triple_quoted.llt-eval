@@ -4,7 +4,7 @@
   add: [fn@[doc: """
     Adds two numbers.
     Returns their sum.
-    """ return: Int] [x@Int y@Int] [+ x y]]
+    """ return: Int] [let x@Int y@Int] [+ x y]]
   result: [add 2 3]
 ]
 

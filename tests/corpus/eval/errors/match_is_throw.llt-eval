@@ -1,5 +1,5 @@
 # is: predicate that throws propagates as hard error (no skip)
 [match 42
-  x@[is: [fn [v] [raise "boom"]]]: "yes"]
+  x@[is: [fn [let v] [raise "boom"]]]: "yes"]
 === error
 [E080] boom

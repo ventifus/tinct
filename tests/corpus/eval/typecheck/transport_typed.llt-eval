@@ -12,7 +12,7 @@
   icmp-tag: [tag-of Icmp]
 
   # Variants can be passed to functions
-  extract-tag: [fn [t] [tag-of t]]
+  extract-tag: [fn [let t] [tag-of t]]
   tcp-via-fn: [extract-tag Tcp]
 
   # Equality works on variants

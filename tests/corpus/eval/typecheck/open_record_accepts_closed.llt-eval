@@ -2,7 +2,7 @@
 # Function f expects an open record [x: Int ...] — any record with at least x: Int.
 # We call it with a closed record [x: 42] (no extra fields).
 # This should work: closed records are subtypes of open records with the same base fields.
-[f: [fn [r@[x: Int ...]] r.x]
+[f: [fn [let r@[x: Int ...]] r.x]
  result: [f [x: 42]]]
 === out
 Dict({"f": Function(r), "result": Int(42)})

@@ -1,8 +1,8 @@
 # Lazy evaluation: chained $map operations remain lazy
 # Three maps, only access one key - none of the intermediate errors should fire
-[map [fn [x] [+ x 100]]
-  [map [fn [y] [+ y 10]]
-    [map [fn [z] [+ z 1]]
+[map [fn [let x] [+ x 100]]
+  [map [fn [let y] [+ y 10]]
+    [map [fn [let z] [+ z 1]]
       [a: 1  b: [raise "map chain should not force"]]]]]
 ---
 %.a

@@ -23,17 +23,17 @@
   ]
 
   # Map operations on dicts
-  map_dict: [map [fn [x] [* x 2]] [a: 1 b: 2 c: 3]]
-  map_empty_dict: [map [fn [x] [* x 2]] []]
+  map_dict: [map [fn [let x] [* x 2]] [a: 1 b: 2 c: 3]]
+  map_empty_dict: [map [fn [let x] [* x 2]] []]
 
   # Filter operations on dicts (returns seq)
-  filter_dict: [collect [filter [fn [x] [> x 2]] [a: 1 b: 3 c: 5]]]
-  filter_dict_multi: [collect [filter [fn [x] [> x 2]] [a: 1 b: 2 c: 3 d: 4 e: 5]]]
-  filter_empty_dict: [collect [filter [fn [x] true] []]]
+  filter_dict: [collect [filter [fn [let x] [> x 2]] [a: 1 b: 3 c: 5]]]
+  filter_dict_multi: [collect [filter [fn [let x] [> x 2]] [a: 1 b: 2 c: 3 d: 4 e: 5]]]
+  filter_empty_dict: [collect [filter [fn [let x] true] []]]
 
   # Reduce operations on dicts
-  reduce_dict: [reduce [fn [acc x] [+ acc x]] 0 [10 20 30]]
-  reduce_empty_dict: [reduce [fn [acc x] [+ acc x]] 99 []]
+  reduce_dict: [reduce [fn [let acc x] [+ acc x]] 0 [10 20 30]]
+  reduce_empty_dict: [reduce [fn [let acc x] [+ acc x]] 99 []]
 
   # Take and drop on dicts
   take_dict: [take 2 [a: 1  b: 2  c: 3]]

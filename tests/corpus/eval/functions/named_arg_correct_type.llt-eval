@@ -1,5 +1,5 @@
 [
-    f: [fn [x@Int y@Int] [call $+ $x $y]]
+    f: [fn [let x@Int y@Int] [call $+ $x $y]]
     result: [call $f 42 y: 10]
 ]
 === out

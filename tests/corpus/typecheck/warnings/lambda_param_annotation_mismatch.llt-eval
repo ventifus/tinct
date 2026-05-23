@@ -1,6 +1,6 @@
 # Lambda parameter annotation incompatible with expected type
-[@[Fn@Int [String]] [fn [x@Int] x]]
+[@[Fn@Int [String]] [fn [let x@Int] x]]
 === out
 Function(x)
 === warn
-parameter annotation Int is more restrictive than required type String at 1:28-1:31
+parameter annotation Int is more restrictive than required type String

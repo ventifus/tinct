@@ -1,5 +1,5 @@
 # Laziness proof: take does not materialize error in sequence tail beyond count
-[seq: [iterate [fn [x] [/ 1 0]] 1]]
+[seq: [iterate [fn [let x] [/ 1 0]] 1]]
 [result: [head [take 1 seq]]]
 === out
 Dict({"result": Int(1)})

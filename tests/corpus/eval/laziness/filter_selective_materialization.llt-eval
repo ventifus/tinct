@@ -2,7 +2,7 @@
 # Take 1 element from filtered Seq - the error in the tail shouldn't fire
 [collect [take 1
     [filter
-     [fn [x] [< x 10]]
+     [fn [let x] [< x 10]]
      [seq 5 [seq [raise "should not evaluate"] []]]]]]
 === out
 Dict({0: Int(5)})

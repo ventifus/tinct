@@ -1,6 +1,6 @@
 # Unannotated recursive function should error
 # A function without a return type annotation that calls itself
 # should be rejected during type checking.
-[f: [fn [x] [$f $x]]]
+[f: [fn [let x] [$f $x]]]
 === warn
 infinite type

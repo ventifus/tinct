@@ -1826,19 +1826,19 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 
 EquatableInt@[doc: "Equatable instance for Int"]:
   [instance Equatable
-    [let a@Int]: [eq: [fn [a b] [builtin-eq a b]]]]
+    [let a@Int]: [eq: [fn [let a b] [builtin-eq a b]]]]
 
 EquatableFloat@[doc: "Equatable instance for Float"]:
   [instance Equatable
-    [let a@Float]: [eq: [fn [a b] [builtin-eq a b]]]]
+    [let a@Float]: [eq: [fn [let a b] [builtin-eq a b]]]]
 
 EquatableStr@[doc: "Equatable instance for Str"]:
   [instance Equatable
-    [let a@String]: [eq: [fn [a b] [builtin-eq a b]]]]
+    [let a@String]: [eq: [fn [let a b] [builtin-eq a b]]]]
 
 EquatableBool@[doc: "Equatable instance for Bool"]:
   [instance Equatable
-    [let a@Bool]: [eq: [fn [a b] [builtin-eq a b]]]]
+    [let a@Bool]: [eq: [fn [let a b] [builtin-eq a b]]]]
 
 # ============================================================================
 # Type Class Declarations: Comparable
@@ -1850,15 +1850,15 @@ Comparable@[doc: "Type class for types that support ordering"]:
 
 ComparableInt@[doc: "Comparable instance for Int"]:
   [instance Comparable
-    [let a@Int]: [lt: [fn [a b] [builtin-lt a b]]]]
+    [let a@Int]: [lt: [fn [let a b] [builtin-lt a b]]]]
 
 ComparableFloat@[doc: "Comparable instance for Float"]:
   [instance Comparable
-    [let a@Float]: [lt: [fn [a b] [builtin-lt a b]]]]
+    [let a@Float]: [lt: [fn [let a b] [builtin-lt a b]]]]
 
 ComparableStr@[doc: "Comparable instance for Str"]:
   [instance Comparable
-    [let a@String]: [lt: [fn [a b] [builtin-lt a b]]]]
+    [let a@String]: [lt: [fn [let a b] [builtin-lt a b]]]]
 
 # ============================================================================
 # Type Class Declarations: Showable

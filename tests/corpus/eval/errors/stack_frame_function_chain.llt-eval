@@ -1,6 +1,6 @@
 [
-  f1: [fn [x] [head x]]
-  f2: [fn [y] [f1 y]]
+  f1: [fn [let x] [head x]]
+  f2: [fn [let y] [f1 y]]
 ]
 [f2 []]
 === error

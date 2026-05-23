@@ -7,8 +7,8 @@
 
   # Define overlapping instances - both arms match Int
   TestClassInst: [instance TestClass
-    [pattern [a@Int]]: m: [fn [x] true]
-    [pattern [a@Int]]: m: [fn [x] false]]
+    [pattern [a@Int]]: m: [fn [let x] true]
+    [pattern [a@Int]]: m: [fn [let x] false]]
 
   result: 42
 ]

@@ -1,5 +1,5 @@
 # reduce on Dict: multiply all values (Dict path, product accumulator)
-[reduce [fn [acc x] [* acc x]] 1 [2 3 4]]
+[reduce [fn [let acc x] [* acc x]] 1 [2 3 4]]
 === out
 Int(24)
 === warn

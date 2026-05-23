@@ -1,8 +1,8 @@
 # Composite type annotation: function type via [Fn@ReturnType [ParamType]] syntax.
 # A higher-order function annotated to accept Fn(Int -> Number).
-# The composite annotation [type: [Fn@Number [Int]] default: [fn [x] 0]] resolves
+# The composite annotation [type: [Fn@Number [Int]] default: [fn [let x] 0]] resolves
 # the parameter type to Function(Int -> Number) via resolve_type_expr_value.
-[apply: [fn [f@[type: [Fn@Number [Int]] default: [fn [x] 0]]] [f 1]]
- result: [apply [fn [x] 2]]]
+[apply: [fn [let f@[type: [Fn@Number [Int]] default: [fn [let x] 0]]] [f 1]]
+ result: [apply [fn [let x] 2]]]
 === out
 Dict({"apply": Function(f), "result": Int(2)})

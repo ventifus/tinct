@@ -1,7 +1,7 @@
 # Test named parameter support in function type expressions
 # Named parameters: [x: String  y: Bool] should preserve param names
 # This test validates that the type annotation accepts named parameters
-[@[Fn@Int [x: String  y: Bool]] [fn [a b]
+[@[Fn@Int [x: String  y: Bool]] [fn [let a b]
   [if $b 1 0]
 ]]
 === out

@@ -4,7 +4,7 @@
 # Since dict entries are lazy thunks and "expensive" is unused, the callback is
 # never invoked and no error fires.
 [cheap: 7
- expensive: [map [fn [x] [raise "should not fire"]] [p: 1  q: 2  r: 3]]]
+ expensive: [map [fn [let x] [raise "should not fire"]] [p: 1  q: 2  r: 3]]]
 ---
 %.cheap
 === out

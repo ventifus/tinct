@@ -2,7 +2,7 @@
 # A function with annotated Int param is called with an integer literal.
 # The type checker uses check_expr (bidirectional checking) for this argument,
 # allowing IntLiteral(42) <: Int subsumption to succeed.
-[f: [fn [x@Int] x]
+[f: [fn [let x@Int] x]
  result: [f 42]]
 === out
 Dict({"f": Function(x), "result": Int(42)})

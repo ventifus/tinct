@@ -3,7 +3,7 @@
 # constraint is ambiguous because _t1 doesn't appear in the inferred return type.
 # The type checker reports ambiguous type variable and Unknown inference warnings.
 # Eval proceeds — the function body is never invoked so no runtime error occurs.
-[f: [fn [x] [call $+ x "hello"]]]
+[f: [fn [let x] [call $+ x "hello"]]]
 === out
 Dict({"f": Function(x)})
 === warn

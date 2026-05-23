@@ -7,7 +7,7 @@
 
   # Define an instance using the new pattern syntax
   TestEqInt: [instance TestEq
-    [pattern [a@Int]]: test-eq: [fn [x y] [= x y]]]
+    [pattern [a@Int]]: test-eq: [fn [let x y] [= x y]]]
 
   # Use the instance
   result: true

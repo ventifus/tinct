@@ -3,7 +3,7 @@
 [
   MyClass: [class [let MyClass a]]
   MyClassInt: [instance MyClass [pattern [Int]]:]
-  constrained-fn: [fn@[return: a  constraint: [a: MyClass]] [x@a] x]
+  constrained-fn: [fn@[return: a  constraint: [a: MyClass]] [let x@a] x]
   result: [constrained-fn 42]
 ]
 

@@ -1,6 +1,6 @@
 # $apply with named args: dict with string keys becomes named args
 [
-  f: [fn [x y] [+ x y]]
+  f: [fn [let x y] [+ x y]]
   args: [x: 10 y: 20]
   result: [apply f args]
 ]

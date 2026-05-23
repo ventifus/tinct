@@ -4,7 +4,7 @@
 # with >256 entries (> MAX_EVAL_DEPTH). A 5-entry dict passes both before and after
 # the fix. This test verifies filter_dict_step produces correct results at all positions.
 # Filter a multi-entry dict through a predicate that accesses each value.
-[collect [filter [fn [x] [> x 2]] [a: 1 b: 2 c: 3 d: 4 e: 5]]]
+[collect [filter [fn [let x] [> x 2]] [a: 1 b: 2 c: 3 d: 4 e: 5]]]
 === out
 Dict({0: Int(3), 1: Int(4), 2: Int(5)})
 === warn

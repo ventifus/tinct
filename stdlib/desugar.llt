@@ -17,7 +17,7 @@
 #
 # DIRECT predicate: matches VarRef("_", escaped=true) or DotAccess/Pipe chains
 # rooted at `$_`. Used by WRAP rules to detect when wrapping is needed.
-is-direct-underscore: [fn [expr@Expression]
+is-direct-underscore: [fn [let expr@Expression]
   [match expr
     [Var name: "_" escaped: _ span: _]:
       true
@@ -29,22 +29,22 @@ is-direct-underscore: [fn [expr@Expression]
       false]]
 
 # has-direct-in-args: Check if any positional arg is DIRECT.
-has-direct-in-args: [fn [args]
+has-direct-in-args: [fn [let args]
   [any? is-direct-underscore [collect args]]]
 
 # has-direct-in-named: Check if any named arg value is DIRECT.
-has-direct-in-named: [fn [named]
-  [any? [fn [na] [is-direct-underscore na.value]] [collect named]]]
+has-direct-in-named: [fn [let named]
+  [any? [fn [let na] [is-direct-underscore na.value]] [collect named]]]
 
 # has-direct-in-entries: Check if any dict entry value is DIRECT.
-has-direct-in-entries: [fn [entries]
-  [any? [fn [e] [is-direct-underscore e.value]] [collect entries]]]
+has-direct-in-entries: [fn [let entries]
+  [any? [fn [let e] [is-direct-underscore e.value]] [collect entries]]]
 
 # wrap-in-lambda: Wrap an expression in `[fn [_] expr]`.
 #
 # Returns a new Fn expression with a single parameter `_` and the original
 # expression as the body. The desugared field is set to true.
-wrap-in-lambda: [fn [expr@Expression]
+wrap-in-lambda: [fn [let expr@Expression]
   [Fn
     params: [[Parameter name: "_" annotation: [] variadic: false span: expr.span]]
     body: expr
@@ -55,7 +55,7 @@ wrap-in-lambda: [fn [expr@Expression]
 # try-wrap: Check if an expression should be wrapped based on WRAP rules.
 #
 # Returns wrapped expression if wrapping occurred, or [] if no wrapping needed.
-try-wrap: [fn [expr@Expression depth@Int]
+try-wrap: [fn [let expr@Expression depth@Int]
   [if [> depth 0]
     []  # No wrapping at depth > 0
     [match expr
@@ -84,8 +84,8 @@ try-wrap: [fn [expr@Expression depth@Int]
         []]]]
 
 # has-underscore-param: Check if a parameter list contains `_`.
-has-underscore-param: [fn [params]
-  [any? [fn [p] [= p.name "_"]] [collect params]]]
+has-underscore-param: [fn [let params]
+  [any? [fn [let p] [= p.name "_"]] [collect params]]]
 
 # desugar-expr-impl: Core desugaring logic with depth tracking.
 #
@@ -94,7 +94,7 @@ has-underscore-param: [fn [params]
 # Then recurse into children at depth+1 (inside the lambda, `$_` is bound).
 #
 # At depth>0, only recurse into children (no wrapping).
-desugar-expr-impl: [fn [expr@Expression depth@Int]
+desugar-expr-impl: [fn [let expr@Expression depth@Int]
   # Try wrapping at depth 0
   [wrapped: [try-wrap expr depth]]
   [if [not [= wrapped []]]
@@ -109,7 +109,7 @@ desugar-expr-impl: [fn [expr@Expression depth@Int]
 # desugar-children: Recurse into all children of an expression.
 #
 # For Fn nodes with `_` parameter, increment depth when recursing into the body.
-desugar-children: [fn [expr@Expression depth@Int]
+desugar-children: [fn [let expr@Expression depth@Int]
   [match expr
     # Literals: no children
     [IntLiteral value: _ span: _]: expr
@@ -131,18 +131,18 @@ desugar-children: [fn [expr@Expression depth@Int]
 
     # Sequential: recurse into all expressions
     [Sequential exprs: es span: s]:
-      [Sequential exprs: [map [fn [e] [desugar-expr-impl e depth]] es] span: s]
+      [Sequential exprs: [map [fn [let e] [desugar-expr-impl e depth]] es] span: s]
 
     # Dict: recurse into entries
     [Dict entries: es span: s]:
-      [Dict entries: [map [fn [e] [desugar-entry e depth]] es] span: s]
+      [Dict entries: [map [fn [let e] [desugar-entry e depth]] es] span: s]
 
     # Call: recurse into func, args, named args
     [Call fn: f args: a named: na implied: impl span: s]:
       [Call
         fn: [desugar-expr-impl f depth]
-        args: [map [fn [arg] [desugar-expr-impl arg depth]] a]
-        named: [map [fn [n] [desugar-named-arg n depth]] na]
+        args: [map [fn [let arg] [desugar-expr-impl arg depth]] a]
+        named: [map [fn [let n] [desugar-named-arg n depth]] na]
         implied: impl
         span: s]
 
@@ -176,7 +176,7 @@ desugar-children: [fn [expr@Expression depth@Int]
     [Match scrutinee: scr arms: as span: s]:
       [Match
         scrutinee: [desugar-expr-impl scr depth]
-        arms: [map [fn [a] [desugar-match-arm a depth]] as]
+        arms: [map [fn [let a] [desugar-match-arm a depth]] as]
         span: s]
 
     # TypeApp: recurse into both
@@ -185,9 +185,9 @@ desugar-children: [fn [expr@Expression depth@Int]
 
     # Pattern/LetDecl: recurse into bindings
     [PatternDecl bindings: bs span: s]:
-      [PatternDecl bindings: [map [fn [b] [desugar-expr-impl b depth]] bs] span: s]
+      [PatternDecl bindings: [map [fn [let b] [desugar-expr-impl b depth]] bs] span: s]
     [LetDecl bindings: bs span: s]:
-      [LetDecl bindings: [map [fn [b] [desugar-expr-impl b depth]] bs] span: s]
+      [LetDecl bindings: [map [fn [let b] [desugar-expr-impl b depth]] bs] span: s]
 
     # CaseArm: recurse into pattern and body
     [CaseArm pattern: p body: b span: s]:
@@ -197,21 +197,21 @@ desugar-children: [fn [expr@Expression depth@Int]
     _: expr]]
 
 # desugar-entry: Desugar a dict entry (key and value).
-desugar-entry: [fn [e@Entry depth@Int]
+desugar-entry: [fn [let e@Entry depth@Int]
   [Entry
     key: e.key  # Keys can be expressions but desugaring them is low priority
     value: [desugar-expr-impl e.value depth]
     span: e.span]]
 
 # desugar-named-arg: Desugar a named argument value.
-desugar-named-arg: [fn [na@NamedArg depth@Int]
+desugar-named-arg: [fn [let na@NamedArg depth@Int]
   [NamedArg
     name: na.name
     value: [desugar-expr-impl na.value depth]
     span: na.span]]
 
 # desugar-match-arm: Desugar a match arm (pattern guard not implemented yet).
-desugar-match-arm: [fn [a@MatchArm depth@Int]
+desugar-match-arm: [fn [let a@MatchArm depth@Int]
   [MatchArm
     pattern: a.pattern  # Patterns don't contain runtime expressions
     guard: a.guard  # Guard desugaring skipped for simplicity
@@ -219,10 +219,10 @@ desugar-match-arm: [fn [a@MatchArm depth@Int]
     span: a.span]]
 
 # desugar-document: Desugar all expressions in a document.
-desugar-document: [fn [doc@Document]
+desugar-document: [fn [let doc@Document]
   [Document
     name: doc.name
-    expressions: [map [fn [e] [desugar-expr-impl e 0]] doc.expressions]
+    expressions: [map [fn [let e] [desugar-expr-impl e 0]] doc.expressions]
     declarations: doc.declarations  # Declarations not desugared (done by expander)
     output-type: doc.output-type
     expects: doc.expects]]
@@ -245,7 +245,7 @@ Parameters:
 
 Returns:
   Program — The desugared program with all $_ references wrapped in lambdas"]:
-  [fn [p@Program]
+  [fn [let p@Program]
     [Program documents: [map desugar-document p.documents]]]
 
 ]

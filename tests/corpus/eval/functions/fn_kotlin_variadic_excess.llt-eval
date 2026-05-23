@@ -1,6 +1,6 @@
 # C-VARIADIC: excess positional args collected into variadic Seq cons-list
 [
-  f: [fn [a b ...rest] rest]
+  f: [fn [let a b ...rest] rest]
   result: [f 1 2 3 4 5]
 ]
 === out

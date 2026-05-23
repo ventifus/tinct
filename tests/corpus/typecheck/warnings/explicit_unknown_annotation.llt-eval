@@ -1,6 +1,6 @@
 # Explicit @Unknown annotation: should produce an Info diagnostic (T011)
 # The type checker detects explicit @Unknown and emits Info instead of Warn
-[f: [fn@Unknown [x] x]]
+[f: [fn@Unknown [let x] x]]
 === out
 Dict({"f": Function(x)})
 === warn

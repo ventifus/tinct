@@ -3,6 +3,6 @@
 # constrains the parameter to have at least field x, but does not rule out field y —
 # BAS allows extra fields via width subtyping. No warning is emitted.
 # Eval proceeds — the function is defined but never called.
-[f: [fn [r@[x: Int]] r.y]]
+[f: [fn [let r@[x: Int]] r.y]]
 === out
 Dict({"f": Function(r)})

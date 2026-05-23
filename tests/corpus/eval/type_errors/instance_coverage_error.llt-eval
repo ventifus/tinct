@@ -8,7 +8,7 @@
 
   # Coverage violation: c@z uses TypeVar "z" which is absent from (a, b) positions
   TestAddInst: [instance TestAdd
-    [pattern [a@x b@y c@z]]: op: [fn [p q] p]]
+    [pattern [a@x b@y c@z]]: op: [fn [let p q] p]]
 
   result: 42
 ]

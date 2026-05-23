@@ -5,7 +5,7 @@
 [include %rust "type-core"]
 [
   # Type-stage content
-  TypeHelper: [fn [x] [merge x [extra: "from-type-stage"]]]
+  TypeHelper: [fn [let x] [merge x [extra: "from-type-stage"]]]
 ]
 
 ---

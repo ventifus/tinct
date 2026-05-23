@@ -1,5 +1,5 @@
 # Function call with argument type mismatch
-[f: [fn [x@Int] x]
+[f: [fn [let x@Int] x]
  result: [call $f "hello"]]
 === out
 Dict({"f": Function(x), "result": String("hello")})

@@ -2,7 +2,7 @@
 # Type::is_subtype triggers check_s_rcd_top when a Union of closed single-field Records
 # with different field names is encountered — such a union is semantically equivalent to Top.
 # This test verifies the eval-layer behavior for the disjoint-record shapes that S-RcdTop reasons about.
-[f: [fn [r] r]
+[f: [fn [let r] r]
  r1: [f [x: 42]]
  r2: [f [y: "hello"]]]
 === out

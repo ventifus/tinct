@@ -2,7 +2,7 @@
 # [ok: v] binds v to the value of the ok field.
 # The type checker must not emit "undefined variable: v" — v is in scope.
 # With type narrowing: v gets the type of the ok field from the scrutinee Record.
-[f: [fn [x]
+[f: [fn [let x]
   [match x
     [ok: v]:  [+ v 1]
     _:        0]]

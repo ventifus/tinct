@@ -2,7 +2,7 @@
 # scrutinee ∩ ~Int (Negation accumulation). After the Str arm it becomes
 # scrutinee ∩ ~Int ∩ ~Str. The wildcard arm sees the fully narrowed remaining type.
 # normalize_intersection handles the negation accumulation correctly.
-[describe: [fn [x]
+[describe: [fn [let x]
   [match x
     Int:  "integer"
     Str:  "string"

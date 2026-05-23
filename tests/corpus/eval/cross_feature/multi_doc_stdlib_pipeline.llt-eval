@@ -3,6 +3,6 @@
 # First doc defines data; second doc uses reduce and map over %.data.
 [data: [1 2 3]]
 ---
-[result: [reduce + 0 [map [fn [x] [* x 2]] %.data]]]
+[result: [reduce + 0 [map [fn [let x] [* x 2]] %.data]]]
 === out
 Dict({"result": Int(12)})

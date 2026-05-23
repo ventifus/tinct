@@ -1,5 +1,5 @@
 # map on dict: verify laziness (function not called until access)
 # If map were eager, calling $error would throw. Since it's lazy, length works.
-[length [map [fn [x] [raise "boom"]] [a: 1 b: 2]]]
+[length [map [fn [let x] [raise "boom"]] [a: 1 b: 2]]]
 === out
 Int(2)

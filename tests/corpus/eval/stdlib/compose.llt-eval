@@ -1,6 +1,6 @@
 # compose: f(g(x)) = add1(double(5)) = 11
-[add1: [fn [x] [+ x 1]]
- double: [fn [x] [* x 2]]
+[add1: [fn [let x] [+ x 1]]
+ double: [fn [let x] [* x 2]]
  f: [compose add1 double]]
 
 [f 5]

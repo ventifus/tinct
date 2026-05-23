@@ -3,7 +3,7 @@
 # "proxy field access" — this frame appears in the error stack trace.
 # Note: "accessing .field" push_frame only applies to synchronous errors during
 # handler invocation (e.g., handler not callable), not to errors raised inside the body.
-[p: [proxy [fn [key] [raise "proxy-error"]]]
+[p: [proxy [fn [let key] [raise "proxy-error"]]]
  result: p.test]
 === error
 [E080] proxy-error

@@ -1,5 +1,5 @@
 # $proxy named arg is absorbed by prelude wrapper (handler param matches)
-[proxy handler: [fn [k] k]]
+[proxy handler: [fn [let k] k]]
 === out
 Proxy
 === warn

@@ -89,7 +89,7 @@
     [if [null? u.query]
       []
       [pairs: [split u.query "&"]
-      [reduce [fn [acc pair]
+      [reduce [fn [let acc pair]
         [kv: [split pair "="]
         [set acc [get 0 kv] [if [= [length kv] 1] "" [get 1 kv]]]]]
         [] pairs]]]]

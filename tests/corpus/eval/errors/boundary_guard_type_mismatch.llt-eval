@@ -2,6 +2,6 @@
 # The type checker (CALL-MONO path) records a boundary guard because from-json
 # returns Unknown and the function expects Int. At eval time, from-json "\"hello\""
 # evaluates to String "hello", which fails the Int guard.
-[call [fn [x@Int] x] [from-json "\"hello\""]]
+[call [fn [let x@Int] x] [from-json "\"hello\""]]
 === error
 [E011] type assertion failed: expected Int, got String

@@ -2,7 +2,7 @@
 # Pass 0c pre-registers class/instance declarations before the SCC loop, so MyClass
 # is visible when use-it's annotation is resolved even though MyClass is declared later.
 [
-  use-it: [fn@[return: a constraint: [a: MyClass]] [x@a] x]
+  use-it: [fn@[return: a constraint: [a: MyClass]] [let x@a] x]
   MyClass: [class [let MyClass a]]
   MyClassInt: [instance MyClass [pattern [Int]]:]
   result: [use-it 42]

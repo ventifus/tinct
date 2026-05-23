@@ -1,7 +1,7 @@
 # BAS narrowing: [str? x] in if-condition narrows x to Str in the true branch,
 # and to Type::Negation(Str) in the false branch via apply_negation_narrowings.
 # This complements bas_negation_narrowing.llt-eval (which tests int?/Negation(Int)).
-[greet: [fn [x] [if [str? x] [str "Hello, " x] "not a string"]]
+[greet: [fn [let x] [if [str? x] [str "Hello, " x] "not a string"]]
  r1: [greet "World"]
  r2: [greet 42]]
 === out

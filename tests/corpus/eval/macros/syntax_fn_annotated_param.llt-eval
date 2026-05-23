@@ -1,4 +1,4 @@
-# fn with annotated params: [fn [x@Int y@Int] body]
+# fn with annotated params: [fn [let x@Int y@Int] body]
 # The parser handles this directly (not via macro).
 # syntax.llt should not interfere.
 [include %libdir "syntax.llt"]

@@ -3,6 +3,6 @@
 # Wrap in explicit function to provide $_ as bound variable
 [data: [0 10 20 30 40 50]]
 
-[call [fn [_] [slice data _ 3]] 1]
+[call [fn [let _] [slice data _ 3]] 1]
 === out
 Dict({1: Int(10), 2: Int(20)})

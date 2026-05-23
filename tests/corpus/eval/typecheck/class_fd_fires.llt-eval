@@ -11,7 +11,7 @@
 
   # Constrained function that uses NumConvert
   # When called with Int, FD should improve b to Float
-  double-convert: [fn [x@Int]
+  double-convert: [fn [let x@Int]
     [convert x]]
 
   # Call the function — FD should fire and infer result type as Float

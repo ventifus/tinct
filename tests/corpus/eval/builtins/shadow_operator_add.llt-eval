@@ -1,7 +1,7 @@
 # Shadow + with a custom version that multiplies instead
 # The real + would return 7 for (3 + 4), but our version returns 12
 [
-  +: [fn [a b] [builtin-mul a b]]
+  +: [fn [let a b] [builtin-mul a b]]
   result: [+ 3 4]
 ]
 === out

@@ -3,7 +3,7 @@
 
 [
   # Basic proxy construction
-  handler_echo: [fn [field] field]
+  handler_echo: [fn [let field] field]
   proxy_basic: [proxy handler_echo]
   result_echo: proxy_basic.test
 
@@ -11,25 +11,25 @@
   proxy_type: [type-of [proxy handler_echo]]
 
   # Dot access with String keys
-  handler_type: [fn [key] [type-of key]]
+  handler_type: [fn [let key] [type-of key]]
   p_dot: [proxy handler_type]
   dot_result: p_dot.myfield
 
   # Multiple accesses
-  handler_return: [fn [name] name]
+  handler_return: [fn [let name] name]
   p_multi: [proxy handler_return]
   access_a: p_multi.foo
   access_b: p_multi.bar
 
   # Conditional handler
-  handler_cond: [fn [name] [if [= name "x"] 10 20]]
+  handler_cond: [fn [let name] [if [= name "x"] 10 20]]
   p_cond: [proxy handler_cond]
   cond_x: p_cond.x
   cond_y: p_cond.y
 
   # Handler with closure
   default: 42
-  handler_closure: [fn [key] default]
+  handler_closure: [fn [let key] default]
   p_closure: [proxy handler_closure]
   closure_result: p_closure.anything
 ]

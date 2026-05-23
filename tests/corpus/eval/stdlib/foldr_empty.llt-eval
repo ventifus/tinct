@@ -1,4 +1,4 @@
 # foldr: empty input returns accumulator
-[foldr [fn [a b] [+ a b]] 0 []]
+[foldr [fn [let a b] [+ a b]] 0 []]
 === out
 Int(0)

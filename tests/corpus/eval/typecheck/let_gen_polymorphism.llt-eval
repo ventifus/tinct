@@ -1,6 +1,6 @@
 # Let-gen polymorphism: f is polymorphically generalized (Kiselyov 2013 levels-based let-gen).
 # It can be called at both Int and String in the same dict scope without a type error.
-[f: [fn [x@a] x]
+[f: [fn [let x@a] x]
  r1: [f 42]
  r2: [f "hello"]]
 === out

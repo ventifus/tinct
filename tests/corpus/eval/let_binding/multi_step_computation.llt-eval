@@ -1,5 +1,5 @@
 # Multiple intermediate bindings in sequence
-[compute: [fn [x] [a: [+ x 1]] [b: [* a 2]] [c: [- b 3]] c]]
+[compute: [fn [let x] [a: [+ x 1]] [b: [* a 2]] [c: [- b 3]] c]]
 [compute 10]
 === out
 Int(19)

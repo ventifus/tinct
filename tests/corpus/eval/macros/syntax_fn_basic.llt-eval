@@ -1,8 +1,8 @@
-# Test: parser handles bare params in [fn [x y] body] directly, no macro needed.
-# [fn [x y] body] is parsed as Expr::Fn by the parser — it never reaches the fn macro.
+# Test: parser handles [fn [let x y] body] params directly, no macro needed.
+# [fn [let x y] body] is parsed as Expr::Fn by the parser — it never reaches the fn macro.
 # syntax.llt is a no-op stub; the include does nothing. This is a regression test
 # for the parser's direct Fn node construction, not for macro expansion.
 [include %libdir "syntax.llt"]
-[result: [[fn [x y] [+ x y]] 3 4]]
+[result: [[fn [let x y] [+ x y]] 3 4]]
 === out
 Int(7)

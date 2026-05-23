@@ -1,7 +1,7 @@
 # Pipe in dict entry value
 # [key: val | f] — pipe operator inside dict value position
 [
-  double: [fn [x] [* x 2]]
+  double: [fn [let x] [* x 2]]
   result: [value: 10 | double]
 ]
 

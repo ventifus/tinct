@@ -1,6 +1,6 @@
 # Two optionals before required: optional-optional-required, name c
 [
-  f: [fn [a@[default: 1] b@[default: 2] c] [+ a [+ b c]]]
+  f: [fn [let a@[default: 1] b@[default: 2] c] [+ a [+ b c]]]
   result: [f c: 10]
 ]
 === warn

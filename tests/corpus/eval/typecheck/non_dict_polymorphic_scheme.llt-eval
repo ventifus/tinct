@@ -6,7 +6,7 @@
 #         typecheck_document increments level before inference and generalizes
 #         the Record fields as polymorphic schemes (Fix #3, Cycle #31).
 # Doc 3: %.id accesses the identity function from the previous document's result.
-[make-record: [fn [] [id: [fn [x] x]]]]
+[make-record: [fn [] [id: [fn [let x] x]]]]
 ---
 [call %.make-record]
 ---

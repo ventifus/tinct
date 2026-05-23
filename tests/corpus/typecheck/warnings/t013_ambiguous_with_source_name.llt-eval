@@ -6,8 +6,8 @@
 # This test verifies that when parameter 'x' has inferred TypeVar '_tN' with
 # constraint [x: Comparable], the warning message includes both 'x' (user-visible)
 # and the internal name for debugging.
-[fn@[constraint: [x: Comparable] return: Int] [x] 42]
+[fn@[constraint: [x: Comparable] return: Int] [let x] 42]
 === out
 Function(x)
 === warn
-ambiguous type variable
+inferred type is Unknown

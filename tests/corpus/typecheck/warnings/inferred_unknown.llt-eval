@@ -1,6 +1,6 @@
 # Inferred Unknown type warning: accessing a field that's not in the annotation
 # produces an inferred Unknown type. The type checker should emit a T010 warning.
-[f: [fn [r@[x: Int]] r.y]]
+[f: [fn [let r@[x: Int]] r.y]]
 === out
 Dict({"f": Function(r)})
 === warn

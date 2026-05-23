@@ -33,12 +33,12 @@
   dict_neg_str: [dict? "not a dict"]
 
   # fn? predicate
-  fn_user_function: [fn? [fn [x] x]]
+  fn_user_function: [fn? [fn [let x] x]]
   fn_builtin: [fn? $+]
   fn_neg_int: [fn? 42]
   fn_neg_str: [fn? "not a fn"]
   fn_neg_dict: [fn? [x: 1]]
-  fn_neg_proxy: [fn? [proxy [fn [path] 42]]]
+  fn_neg_proxy: [fn? [proxy [fn [let path] 42]]]
 
   # null? predicate
   null_empty_dict: [null? []]

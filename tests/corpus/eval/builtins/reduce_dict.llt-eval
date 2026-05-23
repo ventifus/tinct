@@ -1,5 +1,5 @@
 # reduce on dict: sum all values
-[reduce [fn [acc x] [+ acc x]] 0 [10 20 30]]
+[reduce [fn [let acc x] [+ acc x]] 0 [10 20 30]]
 === out
 Int(60)
 === warn

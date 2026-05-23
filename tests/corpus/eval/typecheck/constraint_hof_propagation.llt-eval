@@ -20,11 +20,11 @@
 
   # Higher-order function: takes a function f and a value p, applies f to p.
   # No explicit type annotation — types are fully inferred.
-  apply-fn: [fn [f p] [f p]]
+  apply-fn: [fn [let f p] [f p]]
 
   # Call apply-fn with a constrained lambda and an Int argument.
   # The lambda converts a Describable value to its String representation.
-  result: [apply-fn [fn@[bind: [a]  constraint: [a: Describable]  return: String] [x@a] [str x]] 42]
+  result: [apply-fn [fn@[bind: [a]  constraint: [a: Describable]  return: String] [let x@a] [str x]] 42]
 ]
 
 ---

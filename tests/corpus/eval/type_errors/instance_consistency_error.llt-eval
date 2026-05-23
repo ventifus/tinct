@@ -8,8 +8,8 @@
   # Define instances that violate consistency
   # Both arms have (Int, Int) determining positions but disagree on c
   TestAddInst: [instance TestAdd
-    [pattern [a@Int b@Int c@Int]]: op: [fn [x y] [+ x y]]
-    [pattern [a@Int b@Int c@Float]]: op: [fn [x y] [+ x y]]]
+    [pattern [a@Int b@Int c@Int]]: op: [fn [let x y] [+ x y]]
+    [pattern [a@Int b@Int c@Float]]: op: [fn [let x y] [+ x y]]]
 
   result: 42
 ]
