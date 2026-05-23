@@ -89,8 +89,10 @@ pub fn format_source_tinct_with_dir(
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut formatter_program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = resolve::resolve_surface_program(&formatter_program);
-    let formatter_file = crate::ast_convert::surface_program_to_file(&formatter_program);
+    let formatter_resolution_table =
+        std::sync::Arc::new(resolve::resolve_surface_program(&formatter_program));
+    let formatter_type_annotation_table =
+        std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
 
     // Typecheck the expanded and desugared formatter.
     let _ = typecheck::typecheck_surface_program(&formatter_program);
@@ -132,10 +134,12 @@ pub fn format_source_tinct_with_dir(
     .map_err(|e| format!("{e}"))?;
 
     // Evaluate formatter with AST as % (pipeline input).
-    let formatter_thunk = crate::async_rt::block_on_anywhere(eval::eval_file_with_input(
-        &formatter_file.node,
+    let formatter_thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file_with_input(
+        &formatter_program,
         Arc::clone(&env),
         &ctx,
+        &formatter_resolution_table,
+        &formatter_type_annotation_table,
         Some(ast_thunk),
     ))
     .map_err(|e| format!("formatter eval error: {e}"))?;

@@ -2104,8 +2104,8 @@ fn load_stdlib_module(
     let mut program = parsed.program.clone();
     crate::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = crate::resolve::resolve_surface_program(&program);
-    let file = crate::ast_convert::surface_program_to_file(&program);
+    let resolution_table = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
+    let type_annotation_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
 
     // Type errors are advisory and the result is discarded, so skip the type-check pass
     // during stdlib loading. This avoids a full type-check of the prelude (with all its
@@ -2113,10 +2113,12 @@ fn load_stdlib_module(
     // cost reduction (~5s per call in debug builds). The prelude's types are properly
     // checked in build_prelude_env_inner() via typecheck_and_merge_stdlib_module().
 
-    let thunk = crate::async_rt::block_on_anywhere(crate::eval::eval_file(
-        &file.node,
+    let thunk = crate::async_rt::block_on_anywhere(crate::eval::eval_surface_file(
+        &program,
         Arc::clone(env),
         ctx,
+        &resolution_table,
+        &type_annotation_table,
     ))?;
     let val = crate::eval::materialize_sync(&thunk, None, ctx)?;
 
@@ -2437,13 +2439,18 @@ mod tests {
         crate::expand::expand_surface_program(&mut program, false, &base_dir)
             .unwrap_or_else(|e| panic!("parse_eval: expand failed for {:?}: {}", llt_src, e));
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
+        let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
+        let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
         let env = Arc::clone(&ctx.config.stdlib_env);
-        let thunk =
-            crate::async_rt::block_on_anywhere(crate::eval::eval_file(&file.node, env, ctx))
-                .unwrap_or_else(|e| {
-                    panic!("parse_eval: eval_file failed for {:?}: {}", llt_src, e)
-                });
+        let thunk = crate::async_rt::block_on_anywhere(crate::eval::eval_surface_file(
+            &program, env, ctx, &res, &types,
+        ))
+        .unwrap_or_else(|e| {
+            panic!(
+                "parse_eval: eval_surface_file failed for {:?}: {}",
+                llt_src, e
+            )
+        });
         crate::eval::materialize_sync(&thunk, None, ctx)
             .unwrap_or_else(|e| panic!("parse_eval: materialize failed for {:?}: {}", llt_src, e))
     }

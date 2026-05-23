@@ -9136,11 +9136,19 @@ mod tests {
 ]
         "#;
 
-        let parsed = crate::ast_convert::surface_program_to_file(
-            &crate::parse(source).expect("parse should succeed").program,
-        );
-        let thunk = eval_file(&parsed.node, Arc::clone(&env), &ctx)
-            .expect("eval_file should succeed (lazy dict construction)");
+        let parsed = crate::parse(source).expect("parse should succeed");
+        let mut surface_program = parsed.program;
+        crate::desugar::desugar_surface_program(&mut surface_program);
+        let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(&surface_program));
+        let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+        let thunk = crate::async_rt::block_on_anywhere(super::eval_surface_file(
+            &surface_program,
+            Arc::clone(&env),
+            &ctx,
+            &res,
+            &types,
+        ))
+        .expect("eval_surface_file should succeed (lazy dict construction)");
         // Dict construction is lazy — the cycle is only detected when forcing an entry.
         // Materialize the dict to get the Value::Dict, then force an entry to trigger
         // cycle detection. deep_materialize recursively forces all dict entries.
@@ -9205,8 +9213,10 @@ mod tests {
                 );
                 let mut parsed_output = crate::parse(&source).expect("parse should succeed");
                 crate::desugar::desugar_surface_program(&mut parsed_output.program);
-                let parsed = crate::ast_convert::surface_program_to_file(&parsed_output.program);
-                let file = parsed.node;
+                let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(
+                    &parsed_output.program,
+                ));
+                let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
                 let env = crate::builtins::create_stdlib_env()
                     .expect("stdlib env creation should succeed");
                 let type_stage_env =
@@ -9215,7 +9225,14 @@ mod tests {
                     cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
                         .expect("failed to open test base_dir");
                 let ctx = EvalContext::new(base_dir, Arc::clone(&env), type_stage_env, false);
-                let thunk = eval_file(&file, env, &ctx).expect("eval_file should succeed");
+                let thunk = crate::async_rt::block_on_anywhere(super::eval_surface_file(
+                    &parsed_output.program,
+                    env,
+                    &ctx,
+                    &res,
+                    &types,
+                ))
+                .expect("eval_surface_file should succeed");
                 let dict_val =
                     materialize(&thunk, None, &ctx).expect("materialization should succeed");
                 match dict_val {

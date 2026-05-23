@@ -5,7 +5,8 @@
 //! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 //!
 //! Additional public API:
-//! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed AST with optional stdin input (requires EvalContext; `include` uses context base_dir for resolution)
+//! - [`eval_surface_file`] / [`eval_surface_file_with_input`] -- evaluate a `SurfaceProgram` with optional stdin input (runtime-v2 path; requires prior `desugar` + `resolve` passes)
+//! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed `File` AST (legacy bridge; prefer `eval_surface_file`)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
@@ -1123,18 +1124,20 @@ pub fn format_with_json_llt(
     let mut program = ast.program.clone();
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = resolve::resolve_surface_program(&program);
-    let ast_file = ast_convert::surface_program_to_file(&program);
+    let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
     let (_type_errors, _table) = typecheck::typecheck_surface_program(&program);
+    let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
 
     // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
     // from the result_thunk are resolvable when the json functions access dict entries.
     // The initial `%` = result_thunk; json.llt's `[emit [json %]]` is a lazy dict
     // entry (auto-index 0) that is never forced here.
-    let module_thunk = crate::async_rt::block_on_anywhere(eval::eval_file_with_input(
-        &ast_file.node,
+    let module_thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file_with_input(
+        &program,
         Arc::clone(&env),
         eval_ctx,
+        &resolution_table,
+        &type_annotation_table,
         Some(Arc::clone(&result_thunk)),
     ))
     .map_err(|e| format!("json.llt: eval error: {e}"))?;
@@ -1581,7 +1584,8 @@ mod tests {
         let parsed = parse(source).expect("parse failed");
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
-        let file = ast_convert::surface_program_to_file(&program);
+        let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
+        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 
@@ -1590,10 +1594,12 @@ mod tests {
                 .expect("json_to_value failed")
         });
 
-        let thunk = crate::async_rt::block_on_anywhere(eval::eval_file_with_input(
-            &file.node,
+        let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file_with_input(
+            &program,
             env,
             &ctx,
+            &resolution_table,
+            &type_annotation_table,
             initial_input,
         ))
         .expect("eval failed");
@@ -1666,11 +1672,18 @@ mod tests {
         let parsed = parse(source).expect("parse failed");
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
-        let file = ast_convert::surface_program_to_file(&program);
+        let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
+        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, env, &ctx))
-            .expect("eval failed");
+        let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
+            &program,
+            env,
+            &ctx,
+            &resolution_table,
+            &type_annotation_table,
+        ))
+        .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
@@ -1684,11 +1697,18 @@ mod tests {
         let parsed = parse(source).expect("parse failed");
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
-        let file = ast_convert::surface_program_to_file(&program);
+        let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
+        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-        let thunk = crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, env, &ctx))
-            .expect("eval failed");
+        let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
+            &program,
+            env,
+            &ctx,
+            &resolution_table,
+            &type_annotation_table,
+        ))
+        .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
         let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
@@ -1863,14 +1883,20 @@ mod tests {
         let parsed = parse(source).expect("parse should succeed");
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
-        let file = ast_convert::surface_program_to_file(&program);
+        let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
         let (_type_errors, _table) = typecheck::typecheck_surface_program(&program);
+        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 
         // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result =
-            crate::async_rt::block_on_anywhere(eval::eval_file(&file.node, Arc::clone(&env), &ctx));
+        let eval_result = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
+            &program,
+            Arc::clone(&env),
+            &ctx,
+            &resolution_table,
+            &type_annotation_table,
+        ));
         assert!(
             eval_result.is_err(),
             "expected eval to fail for undefined variable"
