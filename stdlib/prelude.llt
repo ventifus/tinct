@@ -320,6 +320,101 @@ try-or-impl: [fn [let try-result default]
         [Ok v]: v
         [Error _]: default]]
 
+# ============================================================================
+# Seq helpers for collection functions (only depend on builtins + siblings)
+# ============================================================================
+
+# take-while-seq: Build a lazy Seq of entries while predicate holds.
+# Used by take-while (public). Entries are [key: k value: v] dicts from each-kv.
+take-while-seq: [fn [let pred@Fn entries]
+    [builtin-if [seq? entries]
+        [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+            [builtin-seq
+                [builtin-head entries]
+                [take-while-seq pred [builtin-tail entries]]]
+            []]
+        []]]
+
+# drop-while-seq: Build a lazy Seq of entries after dropping while predicate holds.
+# Used by drop-while (public). Entries are [key: k value: v] dicts from each-kv.
+drop-while-seq: [fn [let pred@Fn entries dropping@Bool]
+    [builtin-if [seq? entries]
+        [builtin-if dropping
+            [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+                [drop-while-seq pred [builtin-tail entries] true]
+                [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+            [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+        []]]
+
+# Flatten nested lists one level deep via Seq cons pattern. O(n) total.
+# flatten-seq-impl: recursively builds a Seq by appending sublists or single elements.
+# For dict elements: convert to Seq (via values-seq-impl), then append that Seq.
+# For non-dict elements: cons the element onto the result.
+flatten-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
+    [builtin-if [gte-impl i len]
+        []
+        [flatten-seq-step xs ks i len [builtin-get i ks]]]]
+
+flatten-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
+    [builtin-if [dict? [builtin-get k xs]]
+        # Dict element: prepend all its values as a Seq, then continue with rest
+        [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]
+        # Non-dict element: cons it onto the rest
+        [builtin-seq [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]]]
+
+# flatten-seq-append-dict: Convert dict to Seq of values, then append rest.
+# This uses flatten-seq-concat-values to iterate the dict's values.
+flatten-seq-append-dict: [fn [let d@Dict rest]
+    [let ks [keys d]]
+    [flatten-seq-concat-values d ks 0 [length ks] rest]]
+
+# flatten-seq-concat-values: Recursively cons all values from dict onto rest.
+flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
+    [builtin-if [gte-impl i len]
+        rest
+        [builtin-seq
+            [builtin-get [builtin-get i ks] d]
+            [flatten-seq-concat-values d ks [builtin-add i 1] len rest]]]]
+
+# contains-seq?: Check if a Seq contains val (O(n) linear scan).
+# Used by uniq-seq-step to check the seen set.
+contains-seq?: [fn@Bool [let seq val]
+    [builtin-if [seq? seq]
+        [builtin-if [builtin-eq [builtin-head seq] val]
+            true
+            [contains-seq? [builtin-tail seq] val]]
+        false]]  # Empty Seq (terminal []) — not found
+
+# uniq-seq-impl/uniq-seq-step: Build a reversed Seq of unique elements.
+# O(n) per element * O(n) contains-seq? check = still O(n²), but O(1) cons per step.
+# Caller must reverse-seq the result before collect to restore original order.
+uniq-seq-impl: [fn [let ks xs@Dict acc seen i@Int len@Int]
+    [builtin-if [gte-impl i len]
+        acc
+        [uniq-seq-step ks xs acc seen i len [builtin-get [builtin-get i ks] xs]]]]
+
+uniq-seq-step: [fn [let ks xs@Dict acc seen i@Int len@Int v]
+    [builtin-if [contains-seq? seen v]
+        # Already seen: skip this element
+        [uniq-seq-impl ks xs acc seen [builtin-add i 1] len]
+        # New element: cons onto both acc and seen (prepends, so reverses order)
+        [uniq-seq-impl ks xs
+            [builtin-seq v acc]
+            [builtin-seq v seen]
+            [builtin-add i 1]
+            len]]]
+
+# reverse-seq: Reverse a Seq by building a new Seq with reversed order.
+# Iterates through input Seq, cons-ing each element onto accumulator (which reverses).
+# Used by uniq and partition to restore forward order after cons-accumulation.
+reverse-seq: [fn [let seq]
+    [reverse-seq-impl seq []]]
+
+reverse-seq-impl: [fn [let seq acc]
+    [builtin-if [seq? seq]
+        [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
+        acc]]
+
 ]
 
 # ============================================================================
@@ -926,16 +1021,6 @@ Note: Returns the longest prefix of xs where all elements satisfy pred. Inherent
         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
         [build-dict [take-while-seq pred [each-kv xs]]]]]
 
-# take-while-seq: Build a lazy Seq of entries while predicate holds (private helper)
-take-while-seq: [fn [let pred@Fn entries]
-    [builtin-if [seq? entries]
-        [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-            [builtin-seq
-                [builtin-head entries]
-                [take-while-seq pred [builtin-tail entries]]]
-            []]
-        []]]
-
 drop-while: [fn@[return: Dict  doc: """
 Drop elements from the beginning while predicate holds.
 
@@ -946,16 +1031,6 @@ Note: Returns the remaining suffix starting from the first element that fails pr
     [builtin-if [seq? xs]
         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
         [build-dict [drop-while-seq pred [each-kv xs] true]]]]
-
-# drop-while-seq: Build a lazy Seq of entries after dropping while predicate holds (private helper)
-drop-while-seq: [fn [let pred@Fn entries dropping@Bool]
-    [builtin-if [seq? entries]
-        [builtin-if dropping
-            [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-                [drop-while-seq pred [builtin-tail entries] true]
-                [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
-            [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
-        []]]
 
 map-entries: [fn@[return: Dict  doc: """
 Apply a function to every [key: k value: v] entry, returning new values under same keys.
@@ -998,36 +1073,6 @@ Note: If both xs and ys are Seq: lazy Seq of pairs. Otherwise: collect Seqs to D
         [zip-dict-impl
             [builtin-if [seq? xs] [builtin-collect xs] xs]
             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
-
-# Flatten nested lists one level deep via Seq cons pattern. O(n) total.
-# flatten-seq-impl: recursively builds a Seq by appending sublists or single elements.
-# For dict elements: convert to Seq (via values-seq-impl), then append that Seq.
-# For non-dict elements: cons the element onto the result.
-flatten-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
-    [builtin-if [gte-impl i len]
-        []
-        [flatten-seq-step xs ks i len [builtin-get i ks]]]]
-
-flatten-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
-    [builtin-if [dict? [builtin-get k xs]]
-        # Dict element: prepend all its values as a Seq, then continue with rest
-        [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]
-        # Non-dict element: cons it onto the rest
-        [builtin-seq [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]]]
-
-# flatten-seq-append-dict: Convert dict to Seq of values, then append rest.
-# This uses values-seq-impl to build a Seq of the dict's values.
-flatten-seq-append-dict: [fn [let d@Dict rest]
-    [let ks [keys d]]
-    [flatten-seq-concat-values d ks 0 [length ks] rest]]
-
-# flatten-seq-concat-values: Recursively cons all values from dict onto rest.
-flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
-    [builtin-if [gte-impl i len]
-        rest
-        [builtin-seq
-            [builtin-get [builtin-get i ks] d]
-            [flatten-seq-concat-values d ks [builtin-add i 1] len rest]]]]
 
 flatten: [fn@[return: Dict  doc: """
 Flatten nested lists one level deep.
@@ -1289,50 +1334,11 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [let xs val]
                 [seq? [builtin-filter [fn [let e] [builtin-eq e val]] xs]]
                 [any? [fn [let e] [builtin-eq e val]] xs]]]]]
 
-# Remove duplicate elements, keeping the first occurrence of each.
-# O(n) per element * O(n) contains? check = still O(n²), but with O(1) cons instead of O(n) append.
-# Uses Seq cons for both result accumulator and seen set, then reverses result at end.
-# uniq-seq-impl/uniq-seq-step depend on contains-seq? (internal helper below).
-uniq-seq-impl: [fn [let ks xs@Dict acc seen i@Int len@Int]
-    [builtin-if [gte-impl i len]
-        # Reverse acc Seq to restore original order, then collect
-        acc
-        [uniq-seq-step ks xs acc seen i len [builtin-get [builtin-get i ks] xs]]]]
-
-uniq-seq-step: [fn [let ks xs@Dict acc seen i@Int len@Int v]
-    [builtin-if [contains-seq? seen v]
-        # Already seen: skip this element
-        [uniq-seq-impl ks xs acc seen [builtin-add i 1] len]
-        # New element: cons onto both acc and seen (prepends, so reverses order)
-        [uniq-seq-impl ks xs
-            [builtin-seq v acc]
-            [builtin-seq v seen]
-            [builtin-add i 1]
-            len]]]
-
-# contains-seq?: Check if a Seq contains val (O(n) linear scan).
-contains-seq?: [fn@Bool [let seq val]
-    [builtin-if [seq? seq]
-        [builtin-if [builtin-eq [builtin-head seq] val]
-            true
-            [contains-seq? [builtin-tail seq] val]]
-        false]]  # Empty Seq (terminal []) — not found
-
 uniq@[doc: "Remove duplicates (keep first occurrence). Still O(n²) due to O(n) contains-seq? per element, but uses O(1) cons instead of O(n) append."]: [fn@Dict [let xs@Dict]
     [let ks [keys xs]]
     # Build reversed Seq, then reverse back and collect
     [let reversed-seq [uniq-seq-impl ks xs [] [] 0 [length ks]]]
     [builtin-collect [reverse-seq reversed-seq]]]
-
-# reverse-seq: Reverse a Seq by building a new Seq with reversed order.
-# Iterates through input Seq, cons-ing each element onto accumulator (which reverses).
-reverse-seq: [fn [let seq]
-    [reverse-seq-impl seq []]]
-
-reverse-seq-impl: [fn [let seq acc]
-    [builtin-if [seq? seq]
-        [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
-        acc]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).

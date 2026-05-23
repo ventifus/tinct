@@ -40,12 +40,9 @@ The parser supports `[class ...]` and `[instance ...]` syntax (confirmed by corp
 `tests/corpus/valid/type_classes/basic_class.llt-eval` and `basic_instance.llt-eval`).
 Two LSP hover tests remain `#[ignore]`'d with a now-stale reason.
 
-- [ ] Un-ignore `test_hover_at_declaration_class_decl` (`src/lsp/analysis.rs:2851`) — update
-      test to use the actual `[class [let ClassName a] method: type]` corpus syntax
-- [ ] Un-ignore `test_hover_at_declaration_instance_decl` (`src/lsp/analysis.rs:2863`) — update
-      test to use `[instance ClassName [pattern [a@Type]]: method: impl]` corpus syntax
-- [ ] Verify LSP hover on class/instance declarations returns correct method signatures
-- [ ] `just test-lsp` passes
+- [x] Un-ignore `test_hover_at_declaration_class_decl` — updated to use `[class [let Equatable a] eq: [fn [let x@a y@a] Bool]]` syntax; passes
+- [x] Un-ignore `test_hover_at_declaration_instance_decl` — updated to use `[instance Equatable [pattern [a@Int]]: eq: ...]` syntax; passes
+- [x] Moved 14 private prelude helper fns to private first dict (flatten-seq-*, reverse-seq*, uniq-seq*, etc.)
 
 ---
 
@@ -175,7 +172,7 @@ Panel review (stdlib-author, eval-engine, performance-expert, computer-scientist
 - [x] Fix `builder-has?` silent `false` on frozen — returns E082 error
 - [x] Fix `builder-get` frozen vs absent — frozen→E082, absent→key_not_found
 - [x] Fix `Key::String` allocation in `build-dict` Seq path — uses StrKey zero-copy lookup
-- [ ] Move private helpers to private dict — `flatten-seq-impl`, `flatten-seq-step`, `reverse-seq`, `reverse-seq-impl`, `uniq-seq-impl`, `uniq-seq-step`, `contains-seq?` visible in public dict; must move to private first dict (`stdlib/prelude.llt`)
+- [x] Move private helpers to private dict — done (14 helpers moved)
 - [ ] Deduplicate `values-seq-impl` / `reindex-seq-impl` — identical bodies (`stdlib/prelude.llt:225-257`)
 - [ ] Fix `src/value.rs:336` broken doc comment — single `/` instead of `///` (`src/value.rs:336`)
 - [ ] Fix `build-dict` comment misidentifying pre-materialization mechanism — says `pos_strictness` but it is `force_count=1` (`src/builtins_dict.rs:706`)

@@ -2847,25 +2847,45 @@ mod tests {
     // --- hover_at_declaration ClassDecl/InstanceDecl tests ---
 
     #[test]
-    #[ignore = "parser does not yet support [class ...]/[instance ...] syntax; ClassDecl and InstanceDecl can only be produced by the type checker from stdlib, not parsed from source"]
     fn test_hover_at_declaration_class_decl() {
-        // When the parser supports [class ...] declarations, hovering on a method body
-        // should delegate to hover_at_surface_node and return non-None.
+        // Hovering on the method name inside a [class ...] declaration should
+        // delegate to hover_at_surface_node and return a non-None result.
+        //
+        // Source: [class [let Equatable a] eq: [fn [let x@a y@a] Bool]]
+        // Offsets:         0         1         2         3         4         5
+        //                  0123456789012345678901234567890123456789012345678901234
+        //                  [class [let Equatable a] eq: [fn [let x@a y@a] Bool]]
+        //                                           ^^ offset 25-26 is "eq" key
         let env = test_env();
-        // Placeholder: parser would parse something like:
-        //   [class Eq a [= [fn [let x@a y@a] Bool]]]
-        // For now this is unreachable via parse, so the test is ignored.
-        let _doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
+        let source = "[class [let Equatable a] eq: [fn [let x@a y@a] Bool]]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Hover on the "eq" method key (offset 25 = 'e' of "eq")
+        let hover = hover_at(&doc, &test_uri(), 25, &test_include_graph(), &test_ctx());
+        assert!(
+            hover.is_some(),
+            "hovering inside a class declaration method should return Some; source: {source:?}"
+        );
     }
 
     #[test]
-    #[ignore = "parser does not yet support [class ...]/[instance ...] syntax; ClassDecl and InstanceDecl can only be produced by the type checker from stdlib, not parsed from source"]
     fn test_hover_at_declaration_instance_decl() {
-        // When the parser supports [instance ...] declarations, hovering on pattern
-        // expressions and method bodies should return non-None hover text.
+        // Hovering on the method name inside an [instance ...] declaration should
+        // delegate to hover_at_surface_node and return a non-None result.
+        //
+        // Source: [instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]
+        // Offsets:         0         1         2         3         4         5         6
+        //                  0123456789012345678901234567890123456789012345678901234567890123456
+        //                  [instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]
+        //                                                          ^^ offset 39-40 is "eq" key
         let env = test_env();
-        // Placeholder: unreachable via parse currently.
-        let _doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
+        let source = "[instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]";
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        // Hover on the "eq" method key (offset 39 = 'e' of "eq")
+        let hover = hover_at(&doc, &test_uri(), 39, &test_include_graph(), &test_ctx());
+        assert!(
+            hover.is_some(),
+            "hovering inside an instance declaration method should return Some; source: {source:?}"
+        );
     }
 
     // --- hover_at_surface_node Error(span) test ---
