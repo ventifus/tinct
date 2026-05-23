@@ -50,8 +50,7 @@ Two LSP hover tests remain `#[ignore]`'d with a now-stale reason.
 
 - [x] Extend parser to allow ClassDecl/InstanceDecl/TypeDecl as SurfaceExpression variants inside dict values — modified 6 CloseBracket handlers (TypeAlias, DefMacro, MacroDecl, SyntaxClass, ClassDecl, InstanceDecl) to use surface_decl_to_expr bridge instead of erroring (`src/parser.rs`)
 - [x] Un-ignore `test_instance_fd_consistency_violation` (`src/lib.rs`)
-- [ ] Verify 26 corpus tests pass (`tests/corpus_tests.rs`) — **UNVERIFIED** (Bash unavailable)
-- [ ] `just test` passes — **UNVERIFIED** (Bash unavailable)
+- [ ] Verify corpus tests — 6 typecheck + 5 typecheck-error pre-existing failures from CHR not fully wired (unknown constraint class, undefined type, no instance for constraint). CHR gaps tracked in chr-instances-gaps sprint.
 
 ---
 
