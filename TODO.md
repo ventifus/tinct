@@ -657,7 +657,7 @@ Type annotations using `@[constraint: [a: Foo]]` form use PropertyDict, which is
 **Gap 4 — Verify LetDecl/PatternDecl sequential injection**:
 The Sequential handler (lines 118-135) calls `surface_node_static_keys(e)` to decide whether to inject scope after each expression. Verify `LetDecl` and `PatternDecl` nodes are correctly identified by `surface_node_static_keys` so their bindings get slots in subsequent expressions.
 - [ ] Audit `surface_node_static_keys` to confirm it returns keys for all declaration types that introduce bindings (`src/resolve.rs`, helper function) [Minor]
-- [ ] Fix stale comment at `value.rs:1775` — says "future slot-based O(1) lookup (Phase 2)" but slot lookup is already active (`eval.rs:1344`; IndexMap+slots confirmed correct design) [Minor]
+- [x] Fix stale comment at `value.rs:1775` — says "future slot-based O(1) lookup (Phase 2)" but slot lookup is already active (`eval.rs:1344`; IndexMap+slots confirmed correct design) [Minor]
 - [ ] Profile slot hit rate vs name-lookup fallback rate — instrument `Environment::get()` with counter; high fallback indicates resolver coverage gaps (resolver improvements fix, not data structure change) [Minor]
 - [ ] Start W1 strictness scan at `arg_idx+1` in `BuiltinForceArg` continuation (`eval_materialize.rs:550-556`) — scan restarts from 0 on every resume; skipped from eval-hot-path-fixes [Minor]
 
@@ -687,12 +687,15 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 **Fixes:**
 
-- [ ] **[Critical]** Add name verification to `get_by_slot` fast path — compare returned entry's key against the expected variable name; on mismatch, fall back to name-based `get()` instead of silently returning the wrong thunk. This converts the silent-wrong-value bug into a correct fallback. (`src/value.rs:1843`, `src/eval.rs:1341-1345`)
-- [ ] **[Critical]** Fix dict slot-shift: in `eval_dict_core`, track a separate `string_key_insertion_count` and verify it matches the resolver's static-key count for the scope, OR exclude computed-string keys from `dict_env` slot assignment (insert them into the output dict only, not the scope env). (`src/eval_dict.rs:142-148`, `src/resolve.rs:352-367`)
-- [ ] **[Critical]** Fix Sequential/document slot-shift: same root cause — `child_env` receives all `Key::String` entries from the materialized dict including computed ones. (`src/eval.rs:1440-1450`, `src/eval_pipeline.rs:447-459`, `src/resolve.rs:118-135`)
+- [x] **[Critical]** Add name verification to `get_by_slot` fast path — compare returned entry's key against the expected variable name; on mismatch, fall back to name-based `get()` instead of silently returning the wrong thunk. This converts the silent-wrong-value bug into a correct fallback. (`src/value.rs:1843`, `src/eval.rs:1341-1345`)
+- [x] **[Critical]** Fix dict slot-shift: in `eval_dict_core`, track a separate `string_key_insertion_count` and verify it matches the resolver's static-key count for the scope, OR exclude computed-string keys from `dict_env` slot assignment (insert them into the output dict only, not the scope env). (`src/eval_dict.rs:142-148`, `src/resolve.rs:352-367`)
+- [x] **[Critical]** Fix Sequential/document slot-shift: same root cause — `child_env` receives all `Key::String` entries from the materialized dict including computed ones. (`src/eval.rs:1440-1450`, `src/eval_pipeline.rs:447-459`, `src/resolve.rs:118-135`)
 - [ ] **[Major]** Fix type-stage document named sections corrupting `%name` slot indices — resolver includes named `stage: type` documents in `named_sections` (resolve.rs:342-344) but runtime skips them (eval_pipeline.rs:507), leaving subsequent `%name` slots off by one. Fix: skip type-stage documents in `resolve_surface_program`'s `named_sections` accumulation to match runtime behavior. (`src/resolve.rs:326-348`, `src/eval_pipeline.rs:505-545`)
 - [ ] **[Minor]** Add `debug_assert_eq!(slot_idx, static_key_count)` after the Phase-3 arena fill loop in `eval_dict_core` to catch future drift between `count_static_keys_core` and the resolver's static-key definition. (`src/eval_dict.rs:52-63`)
-- [ ] **[Minor]** Add corpus test for named-arg-fills-optional-slot slot correctness: `[fn [let a b@[default: 0]] $b]` called with one positional arg — verifies `b` at slot 1 returns default value 0.
+- [x] **[Minor]** Add corpus test for named-arg-fills-optional-slot slot correctness: `[fn [let a b@[default: 0]] $b]` called with one positional arg — verifies `b` at slot 1 returns default value 0.
+- [ ] **[Minor]** Add corpus test for Sequential/doc computed-key scope: 3-expression document where the MIDDLE expression is a Dict with a computed key (e.g., `[$k: 1  x: 2]`) — tests the active-exclusion branch of the static_keys filter in `eval_pipeline.rs` (intermediate has a computed key that is excluded). Example: `[k: "z"] [$k: 1  x: 2] $x`. (`tests/corpus/eval/regressions/`)
+- [ ] **[Minor]** Move slot-soundness corpus tests from `eval/builtins/` to `eval/regressions/`: `computed_key_slot_correctness.llt-eval` and `named_arg_default_slot.llt-eval` test evaluator core slot behavior, not builtin functions. Better home is `tests/corpus/eval/regressions/`.
+- [ ] **[Minor]** `flatten_overlay` is called in `eval_pipeline.rs` before the `static_keys` guard runs (wasted work when `static_keys` returns `None`). Consider moving `flatten_overlay` inside the `Some(keys)` branch, or using a `peek_static_keys` that doesn't require flattening. (`src/eval_pipeline.rs`)
 
 ### key-string-rc: Change Key::String from owned String to Rc<str>
 
@@ -728,3 +731,123 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [ ] Verify `Span::origin()` frame filtering in `EvalError::Display` (`src/error.rs`) — confirm stdlib frames with `0:0-0:0` synthetic spans are filtered from user-facing error output; add regression corpus test if filtering is confirmed (integration-verifier) [Minor]
 - [ ] Fix Windows symlink fallback: replace `.unwrap_or(false)` with explicit error check at `src/builtins_io.rs:2981` — current code silently treats unreadable target as "not a directory", obscuring the real error (security-expert) [Minor]
 
+---
+
+## Algorithm Correctness Reviews
+
+In-depth formal audits for algorithms not yet reviewed. Each sprint dispatches specialist agents to read the relevant source, identify soundness holes, and produce TODO items for any bugs found. No implementation — findings only.
+
+### review-exhaustiveness: Audit Maranget exhaustiveness checking algorithm
+
+**Agents:** computer-scientist, type-theorist
+**Files:** `src/typecheck.rs` (match exhaustiveness, `check_exhaustiveness`, `useful`, `specialize`, `default_matrix` functions), `doc/07-type-extensions.md` §Pattern Matching
+
+Key questions:
+- Does the usefulness algorithm (Maranget 2007) correctly handle all LLT pattern forms: literal patterns, type-tag patterns (`Tag _`), wildcard, or-patterns, nested constructors?
+- Is the `specialize` matrix operation correct for each constructor shape (unit variant, payload variant, record destructure)?
+- Does the algorithm handle open/closed record types correctly under BAS width subtyping?
+- Are there patterns the type checker accepts as exhaustive that the runtime could fail to match (false-exhaustive)?
+- Are there exhaustive sets the type checker incorrectly reports as non-exhaustive (false-non-exhaustive)?
+
+- [x] Dispatch computer-scientist + type-theorist to read exhaustiveness implementation and report: any pattern forms that are mishandled, missing cases in the specialize/default matrix, or false-exhaustive/false-non-exhaustive scenarios → findings go to TODO.md
+
+**Audit findings (2026-05-23, computer-scientist). Algorithm: Maranget (2007) + Karachalias et al. (2015) lazy bottom extension, implemented in `src/coverage.rs`. Core algorithm is structurally correct; 4 bugs found in the `ConstructorSignature ↔ CoveragePattern` interface layer.**
+
+- [ ] **F1 UNSOUND — `from_union` silently drops unrecognized type variants → false exhaustiveness.** `src/coverage.rs:216-218`. The `_ =>` arm in `from_union` skips `Function`, `Handle`, `Map`, `Top`, `Unknown`, `TypeVar`, `Intersection`, `Negation`, `Proxy`, `Uri`, `Timestamp`, `Duration`, etc. The resulting signature has fewer constructors than the union. `useful()` line 536 compares against the incomplete signature and declares coverage complete. Counterexample: `[match [@[Int Fn@Int [Int]] identity] Int: "int"]` — declared exhaustive, Function values fail at runtime. Fix: when any union member is skipped, skip coverage checking entirely (treat as "statically unverified").
+- [ ] **F2 UNSOUND — `Number` tag mismatch between signature and pattern.** `src/coverage.rs:199` maps `Type::Number` to `TypeTag("Number")`. `src/coverage.rs:271-282` expands a `Number` pattern to `Or(TypeTag("Int"), TypeTag("Float"))`. These tags never match. Counterexample: `[match [@[Number String] 42] Number: "num" String: "str"]` — reported non-exhaustive because `Int`/`Float` tags are not in the signature. Fix: expand `Type::Number` to `[Type::Int, Type::Float]` in `from_union`.
+- [ ] **F3 UNSOUND — Multi-field nominal variant arity mismatch.** `src/coverage.rs:214` sets arity = `fields.fields.len()` (e.g. 2 for `[Point x: Int y: Int]`). `src/coverage.rs:345-353` produces at most 1 sub_pattern (the single `binding`). In `specialize_row`, wildcard rows expand to `arity` wildcards (2), constructor rows splice 1 sub_pattern. Inconsistent row widths violate Maranget's column-consistency invariant. Currently masked by ADT registration bug (Group B). Fix: NominalVariant arity should be `if fields.is_empty() { 0 } else { 1 }`.
+- [ ] **F4 GAP — `Type::Bool` creates `TypeTag("Bool")` but `true`/`false` patterns create `LiteralBool`.** `src/coverage.rs:198,299`. Different constructor tags that never match each other. `bool_sig()` test helper manually constructs `LiteralBool` constructors, masking the real code path. Fix: expand `Type::Bool` to `[LiteralBool(true), LiteralBool(false)]` in `from_union`.
+- [ ] **F5 GAP — Coverage only runs for Union/NominalVariant scrutinees.** `src/typecheck.rs:2891-2897`. `Type::Bool` scrutinee with only `true:` arm gets no exhaustiveness warning. Completeness gap, not soundness. Fix: extend coverage to `Type::Bool` scrutinees.
+- [ ] **F6 GAP — Defensive assertion for S-RcdTop collapse.** Under BAS, structural `{ok: T} | {err: String}` collapses to Top. If `simplify_type` misses S-RcdTop, a non-discriminated record union could leak to coverage and get false exhaustiveness. Fix: add assertion in `from_union` that multi-record unions are genuinely discriminated.
+- [ ] **T1 UNSOUND — Multi-field record `ConstructorTag` uses comma-joined field name string.** `src/coverage.rs:187-192`. `{a: T, b: U}` → `DictKey("a,b")`. A single field literally named `"a,b"` also maps to `DictKey("a,b")`. These are structurally distinct shapes with the same tag, causing wrong arity lookups via `sig.arity(tag)`. Fix: use a separator that cannot appear in tinct field identifiers (e.g. `\x00`), or use `Vec<String>` representation.
+- [ ] **T2 GAP — No registry for cross-`[type]` tag name collisions.** Two separate `[type]` declarations with the same nominal tag name are not detected. The coverage checker builds the signature from the inferred type only; no dedup/collision check across type declarations. Track: add a registration-time check in type alias processing that errors on duplicate nominal tag names.
+- [ ] **T3 GAP — Non-union `Record` / `Dict` scrutinee silently skips coverage checking.** `src/typecheck.rs:2891-2897`. A match on a closed `Record[{a, b}]` scrutinee gets no coverage check — even if only some field patterns are covered. Documented intentional gap but should be tracked for completeness. Long-term: extend coverage to closed Record scrutinees.
+- [ ] **T4 DOC FIX — `doc/feature/pattern-matching.md:266-272` incorrectly states `type+is:` arms cover their type variant.** The doc claims `n@[type: Int  is: [> _ 0]]:` covers the `Int` variant for exhaustiveness. The implementation (correctly per Karachalias et al. 2015) treats all guarded arms as fully opaque — the `Int` constraint does NOT contribute to coverage. Update doc to state: all guarded arms are excluded from exhaustiveness analysis regardless of any type constraint they carry.
+
+### review-pattern-matching: Audit pattern match evaluation semantics
+
+**Agents:** eval-engine, computer-scientist
+**Files:** `src/eval.rs` (`eval_match`, `match_pattern`), `src/eval_materialize.rs`, `doc/08-evaluation.md` §Pattern Matching
+
+Key questions:
+- Is pattern matching evaluation correct for all arm types: literal, type-tag, constructor with payload, or-patterns, guard expressions?
+- Are guards evaluated lazily or eagerly? Can a guard force evaluation that should be deferred?
+- For or-patterns `[P1 | P2]`: if P1 matches but the guard fails, does the matcher correctly try P2?
+- Does `match_pattern` produce the correct bindings for nested destructuring (record fields, payload extraction)?
+- Is backtracking correct — can a partial match in a complex pattern leave bindings from the failed branch visible?
+
+- [ ] Dispatch eval-engine + computer-scientist to audit match evaluation and report findings → findings go to TODO.md
+
+### review-typeassert-semantics: Audit TypeAssert static vs runtime mismatch
+
+**Agents:** type-theorist, computer-scientist, eval-engine
+**Files:** `src/eval_materialize.rs` (`force_step` TypeAssert/RuntimeTypeCheck handling), `src/typecheck.rs` (TypeAssert elaboration, `[ASSERT-TYPE]` rule), `doc/05-type-annotations.md`
+
+Known issue (flagged 2026-04-21): static check uses structural `is_subtype`, runtime check uses nominal `type_name()` string comparison. They can disagree.
+
+Key questions:
+- Which types have matching static and runtime semantics, and which diverge?
+- For record-type assertions: the 2026-04-21 review noted "record-type assertions are no-ops at runtime" — is this still true? What does the user observe?
+- For `@[type: "Foo"]` parameterized assertions: does the runtime correctly dispatch to the right type check?
+- Is `@Unknown` correctly treated as a gradual no-op (never raises E011)?
+- For `@Handle[Readable]`: is the capability type check at runtime correct?
+- Can a well-typed program (no typecheck warnings) produce a TypeAssert failure at runtime? If so, this is a soundness gap.
+
+- [ ] Dispatch type-theorist + computer-scientist + eval-engine to audit TypeAssert static/runtime correspondence and report divergences → findings go to TODO.md
+
+### review-macro-hygiene: Audit macro expansion and quasiquote hygiene
+
+**Agents:** grammar-architect, eval-engine, computer-scientist
+**Files:** `src/expand.rs` (`expand_macros`, `expand_surface_program`), `src/eval.rs` (macro invocation, `eval_defmacro`), `stdlib/prelude.llt` (`defmacro`, `tmpl`, `begin`, `do`, `gensym`), `doc/feature/macros.md`
+
+Key questions:
+- Is macro expansion hygienic? Can a macro-introduced variable name capture a user variable of the same name?
+- Does `gensym` guarantee freshness across all expansion contexts, including nested macro calls?
+- Does quasiquote (`[quote ...]`) + unquote (`[unquote ...]`) correctly reconstruct AST structure? Can unquote-splicing produce malformed AST nodes?
+- Are macro-generated spans correct — do error messages from macro-expanded code point to the right source location?
+- Is `[defmacro]` expansion idempotent? Can a macro expand into another macro call that then re-expands incorrectly?
+- Does the macro expansion boundary prevent infinite expansion (cycle detection)?
+
+- [ ] Dispatch grammar-architect + eval-engine + computer-scientist to audit macro hygiene and quasiquote correctness → findings go to TODO.md
+
+### review-blame-tracking: Audit blame tracking and chaperone semantics
+
+**Agents:** eval-engine, computer-scientist, type-theorist
+**Files:** `src/eval_materialize.rs` (Guarded thunk handling, blame attribution), `src/eval.rs` (TypeAssert wrapping, proxy contract creation), `doc/feature/structural-contracts.md`, `doc/05-type-annotations.md` §TypeAssert
+
+Key questions:
+- Does blame assignment correctly identify the blaming party (call site vs definition site) in all scenarios?
+- Is the chaperone semantics (Strickland et al. 2012) correctly implemented: does wrapping a Guarded thunk compose correctly with nested TypeAssert wrappers?
+- For pipeline blame (`%@Type` input annotation): does the blame chain correctly trace back to the pipeline entry point?
+- Is there a scenario where a TypeAssert failure blames the wrong party — e.g., blames a correct caller instead of an incorrect producer?
+- Are Guarded thunks correctly forced/unwrapped at all access sites, or can a thunk escape the guard boundary undetected?
+
+- [ ] Dispatch eval-engine + computer-scientist + type-theorist to audit blame tracking correctness → findings go to TODO.md
+
+### review-chr-constraints: Audit CHR constraint solving and MPTC/FD soundness
+
+**Agents:** computer-scientist, type-theorist
+**Files:** `src/type_unify.rs` (`improve_functional_dependency`, `lookup_mptc`, `lookup_arithmetic_instance`), `src/typecheck.rs` (`satisfies_constraint`, `check_instance_*` functions), `src/type_env.rs` (InstanceEnv, instance registration), `doc/07-type-extensions.md` §Type Classes
+
+Key questions:
+- Does the CHR constraint solving algorithm (Jaffar & Maher 1994) correctly simplify constraint sets? Can constraints accumulate without being discharged?
+- Is functional dependency improvement (MPTC-FD, Jones 2000) confluent? Can two applicable instances produce different determined types for the same determining types?
+- For user-defined class instances: are instance consistency, coverage, and disjointness checks sufficient to guarantee coherence?
+- Is the recursive instance lookup terminating? Can constraint propagation loop?
+- For arithmetic MPTC instances (Add/Sub/Mul/Div): does the type-level dispatch correctly match the runtime dispatch in `builtin_apply`?
+- Are ambiguity errors (T013) correctly detected — can a genuinely ambiguous constraint slip through as a false success?
+
+- [ ] Dispatch computer-scientist + type-theorist to audit CHR/MPTC/FD soundness → findings go to TODO.md
+
+### review-known-type-issues: Verify status of open type system soundness findings
+
+**Agents:** type-theorist, computer-scientist
+**Files:** `src/type_env.rs` (`rename_single_type_var`), `src/typecheck.rs` (CALL-POLY named-arg path, `check_call_with_scheme`)
+
+Two findings from prior reviews with unclear fix status:
+
+1. **`rename_single_type_var` missing Union/Intersection** (2026-05-07 review): the fast-path in `instantiate_scheme` has a catch-all `_ => ty.clone()` that leaves Union and Intersection types with stale type variable names. Two instantiations share the same variable, violating Damas & Milner (1982) Theorem 2. Latent until algebraic subtyping flows through `generalize()`.
+
+2. **CALL-POLY named-arg `consumed_params` gap** (2026-05-09 review): named args in `check_call` do not mark their param index in `consumed_params`. Duplicate named args for the same parameter can unify twice independently, violating Robinson (1965) idempotency.
+
+- [ ] Dispatch type-theorist + computer-scientist to (a) verify whether both issues are still present in current code, (b) if present, produce minimal fix recommendations → findings go to TODO.md

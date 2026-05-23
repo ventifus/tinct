@@ -1133,7 +1133,8 @@ pub fn format_with_json_llt(
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-    let (_type_errors, type_annotation_table) = typecheck::typecheck_surface_program_annotation_table(&program);
+    let (_type_errors, type_annotation_table) =
+        typecheck::typecheck_surface_program_annotation_table(&program);
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds

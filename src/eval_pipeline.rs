@@ -4,13 +4,15 @@
 //! expression). Files are sequences of documents separated by `---`, with `%` threading
 //! the previous document's output into the next.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
 use crate::ast::{
-    Document, File, ResolutionTable, Span, Spanned, SurfaceProgram, TypeAnnotationTable,
+    Document, File, ResolutionTable, Span, Spanned, SurfaceExpression, SurfaceProgram,
+    TypeAnnotationTable,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::value::{Environment, Key, Thunk, Value};
@@ -415,6 +417,29 @@ pub async fn eval_surface_document(
     for (i, node) in expr_nodes.iter().enumerate() {
         let is_last = i == expr_nodes.len() - 1;
 
+        // Extract static keys from the expression BEFORE lowering.
+        // Only SurfaceExpression::Dict with static keys creates a new scope (mirrors resolve.rs).
+        let static_keys: Option<HashSet<String>> = match &node.expr {
+            SurfaceExpression::Dict(entries) => {
+                let keys: Vec<String> = entries
+                    .iter()
+                    .filter_map(|entry| {
+                        entry.node.key.as_ref().and_then(|k| match &k.expr {
+                            SurfaceExpression::Str(s) => Some(s.clone()),
+                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                            _ => None,
+                        })
+                    })
+                    .collect();
+                if keys.is_empty() {
+                    None
+                } else {
+                    Some(keys.into_iter().collect())
+                }
+            }
+            _ => None,
+        };
+
         // Lower the SurfaceNode to CoreExpr
         let core_spanned = crate::lower::lower(node, res, types);
         let node_span = node.span;
@@ -444,16 +469,23 @@ pub async fn eval_surface_document(
                 .into());
             }
         };
-        {
+
+        // Create child environment with bindings from intermediate expression.
+        // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
+        // If static_keys is None (non-Dict expression or Dict with no static keys), no scope is created.
+        if let Some(ref static_key_set) = static_keys {
             let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
                 &current_env,
             ))));
             for (key, val_thunk_id) in map {
                 if let Key::String(name) = key {
-                    let val_thunk = ctx.get_thunk(val_thunk_id);
-                    let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
-                    let strict_thunk = Arc::new(Thunk::new_materialized(forced_value, node_span));
-                    child_env.write().unwrap().insert(name, strict_thunk);
+                    if static_key_set.contains(&name) {
+                        let val_thunk = ctx.get_thunk(val_thunk_id);
+                        let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
+                        let strict_thunk =
+                            Arc::new(Thunk::new_materialized(forced_value, node_span));
+                        child_env.write().unwrap().insert(name, strict_thunk);
+                    }
                 }
             }
             current_env = child_env;

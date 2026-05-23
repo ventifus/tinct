@@ -81,7 +81,8 @@ pub(crate) fn attach_materialization_context(
 /// Snapshot of a thunk's pre-materialization state, used to restore the thunk
 /// when a non-cacheable error occurs.
 pub(crate) enum RestoreState {
-    #[allow(dead_code)] // Used in tests; runtime paths now skip RestoreState for PendingBuiltin (Task 4 optimization)
+    #[allow(dead_code)]
+    // Used in tests; runtime paths now skip RestoreState for PendingBuiltin (Task 4 optimization)
     PendingBuiltin {
         def: crate::value::BuiltinDef,
         args: Vec<Arc<Thunk>>,
@@ -1624,7 +1625,10 @@ pub(crate) async fn apply_cont(
                                         // eval_stack balanced. Memoize inherits pop responsibility.
                                         let guard_eval_stack = EvalStackGuard::push(
                                             &guard_ctx.state,
-                                            (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+                                            (
+                                                origin.as_deref().unwrap_or("thunk").to_string(),
+                                                thunk_span,
+                                            ),
                                         );
                                         stack.push(Cont::Memoize(Box::new(MemoizeData {
                                             thunk: Arc::clone(&thunk),

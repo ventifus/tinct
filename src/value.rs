@@ -1772,8 +1772,9 @@ impl fmt::Debug for Thunk {
 #[derive(Debug, Clone)]
 pub struct Environment {
     /// Bindings map from name to thunk. Uses IndexMap to preserve insertion order for
-    /// future slot-based O(1) lookup (Phase 2). Phase 1 resolution pass populates VarRef
-    /// caches but evaluator still uses name-based lookup.
+    /// slot-based O(1) lookup. `get_by_slot` (below) uses IndexMap's `get_index` for
+    /// O(1) positional access. Slot indices are assigned by the resolver in resolve.rs
+    /// and used at the `CoreExpr::Var` call site in eval.rs.
     pub(crate) bindings: IndexMap<String, Arc<Thunk>>,
     pub(crate) parent: Option<Arc<RwLock<Environment>>>,
 }
@@ -1840,13 +1841,26 @@ impl Environment {
     ///
     /// Returns `None` if the level or slot is out of bounds (indicates a resolver
     /// bug; `eval.rs` falls back to name-based lookup when this returns `None`).
-    pub fn get_by_slot(&self, level: u32, slot: u32) -> Option<Arc<Thunk>> {
+    ///
+    /// # Safety Net: Name Verification
+    ///
+    /// If the entry at `slot` exists but the key doesn't match `expected_name`,
+    /// this indicates a slot-shift bug (e.g., computed-string keys inserting entries
+    /// out of order). The method falls back to name-based lookup instead of returning
+    /// the wrong thunk.
+    pub fn get_by_slot(&self, level: u32, slot: u32, expected_name: &str) -> Option<Arc<Thunk>> {
         if level == 0 {
             // Fast path: O(1) index into the current scope's bindings
-            return self
-                .bindings
-                .get_index(slot as usize)
-                .map(|(_, thunk)| Arc::clone(thunk));
+            if let Some((key, thunk)) = self.bindings.get_index(slot as usize) {
+                if key == expected_name {
+                    return Some(Arc::clone(thunk));
+                } else {
+                    // Slot-shift detected: key at slot doesn't match expected name.
+                    // Fall back to name-based lookup (correct but slower).
+                    return self.bindings.get(expected_name).map(|t| Arc::clone(t));
+                }
+            }
+            return None;
         }
         // Walk `level` steps up the parent chain, then do slot lookup
         let mut steps_remaining = level;
@@ -1855,10 +1869,18 @@ impl Environment {
             steps_remaining -= 1;
             if steps_remaining == 0 {
                 let env = env_rc.read().unwrap();
-                return env
-                    .bindings
-                    .get_index(slot as usize)
-                    .map(|(_, thunk)| Arc::clone(thunk));
+                if let Some((key, thunk)) = env.bindings.get_index(slot as usize) {
+                    if key == expected_name {
+                        return Some(Arc::clone(thunk));
+                    } else {
+                        // Slot-shift detected: single-env name lookup in this ancestor's own
+                        // bindings only (not a chain walk). If the name is not in this ancestor,
+                        // returns None, and the caller's env_lock.get(name) at eval.rs performs
+                        // the full chain walk from the current scope as the outer fallback.
+                        return env.bindings.get(expected_name).map(|t| Arc::clone(t));
+                    }
+                }
+                return None;
             }
             let next = env_rc.read().unwrap().parent.as_ref().map(Arc::clone);
             current = next;

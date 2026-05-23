@@ -282,15 +282,19 @@ Recursive case:
     θᵢ = eval(eᵢ, ρᵢ₋₁, d)
     vᵢ = materialize(θᵢ, d)                   (intermediate results are materialized)
     vᵢ = Dict(mapᵢ)                           (intermediate must be Dict — type error otherwise)
-    ρᵢ = ({}, Some(ρᵢ₋₁))                    (fresh child env linked to prior scope)
-    ∀(k, θ) ∈ mapᵢ:
-      k = String(s) ⟹ ρᵢ.B[s] ← θ           (string keys become bindings)
-      k = Int(_)    ⟹ no binding              (int keys are positional only)
+    static_keys(eᵢ) ≠ ∅  ⟹  ρᵢ = ({}, Some(ρᵢ₋₁))       (fresh child env only when there are static keys)
+                              ∀(k, θ) ∈ mapᵢ:
+                                k = String(s) ∧ s ∈ static_keys(eᵢ) ⟹ ρᵢ.B[s] ← θ
+                                k = String(s) ∧ s ∉ static_keys(eᵢ) ⟹ no binding
+                                k = Int(_)                             ⟹ no binding
+    static_keys(eᵢ) = ∅  ⟹  ρᵢ = ρᵢ₋₁                   (no scope extension; no new de Bruijn level)
 
   θₙ = eval(eₙ, ρₙ₋₁, d)                     (last expression: lazy, any type)
   ────────────────────────────────────────────
   eval_document(exprs, ρ_input, d) ⇒ θₙ
 ```
+
+**`static_keys(e)`** denotes the set of string names whose keys are syntactically static in expression `e` — specifically, dict entries with a bare-word key (`x:`) or an annotated bare-word key (`x@T:`). Keys computed at runtime (e.g., `[$k: v]` where `$k` is a variable) are excluded even if they happen to evaluate to strings. This restriction is necessary for slot-based variable resolution: the resolver assigns de Bruijn slot indices at compile time counting only static keys, so only those entries may occupy positional slots in the runtime environment. A computed-key entry (e.g., `[$k: 1]` where `k = "z"`) does not receive a slot assignment; the name `"z"` is therefore not resolvable by sibling entries via `$z`, and inserting it into the scope chain would shift the indices of all subsequent static-key entries, causing silent wrong-value bugs.
 
 When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_document([e₁], ρ_input, d) ⇒ eval(e₁, ρ_input, d)` — a single expression is evaluated lazily with no scope chain construction.
 

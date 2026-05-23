@@ -44,6 +44,21 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
 // regression in TODO.md (runtime-v2-fix-class-instance-in-dict).
 // ============================================================================
 
+/// Returns `true` if a dict key expression is "static" — i.e., its name is known at compile
+/// time and the resolver assigned it a slot index.
+///
+/// A key is static iff it is a bare-word string (`CoreExpr::Str`) or an annotated bare-word
+/// (`CoreExpr::Annotated`). All other key forms (variable references, function calls, etc.)
+/// are computed at runtime and are excluded from letrec scope and slot assignment.
+///
+/// **Must stay in sync with `resolve.rs` `surface_dict_static_keys` / `surface_node_static_keys`.**
+/// Both the resolver and all three runtime insertion sites (eval_dict.rs, eval.rs Sequential,
+/// eval_pipeline.rs document) use this predicate so that the slot indices they assign and count
+/// agree exactly.
+pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
+    matches!(k, CoreExpr::Str(_) | CoreExpr::Annotated { .. })
+}
+
 /// Evaluate a dict literal from `CoreExpr::Dict` entries with letrec semantics.
 ///
 /// Directly accepts the `CoreEntry` slice produced by `eval_core_expr`'s Dict arm,
@@ -93,12 +108,12 @@ pub(crate) async fn eval_dict_core(
 
     for entry in entries {
         // Determine if this entry has a static key (CoreExpr::Str or CoreExpr::Annotated).
-        // Must match resolve.rs Resolver::walk_expr Dict arm exactly.
+        // Must match resolve.rs Resolver::walk_expr Dict arm exactly — use the shared predicate.
         let is_static_key = entry
             .node
             .key
             .as_ref()
-            .is_some_and(|k| matches!(&k.node, CoreExpr::Str(_) | CoreExpr::Annotated { .. }));
+            .is_some_and(|k| core_expr_is_static_key(&k.node));
 
         let key = match &entry.node.key {
             Some(key_expr) => eval_key_core(key_expr, parent_env, ctx).await?,
@@ -134,7 +149,11 @@ pub(crate) async fn eval_dict_core(
             // TODO(parts-e): Thunk::new_unevaluated_core_with_env_id (for the env_id fast path).
             _ => Arc::new(Thunk::new_unevaluated_core(
                 Arc::clone(&entry.node.value),
-                Arc::clone(dict_env.as_ref().expect("dict_env present for non-literals")),
+                Arc::clone(
+                    dict_env
+                        .as_ref()
+                        .expect("dict_env present for non-literals"),
+                ),
                 Arc::clone(ctx),
                 entry.node.value.span,
             )),
@@ -142,9 +161,15 @@ pub(crate) async fn eval_dict_core(
 
         // String keys become bindings so sibling entries can reference via $name (letrec).
         // Only insert if we have a dict_env (i.e., if there are non-literals).
-        if let Key::String(ref name) = key {
-            if let Some(ref env) = dict_env {
-                env.write().unwrap().insert(name.clone(), Arc::clone(&thunk));
+        // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
+        // Computed-key entries (even if they evaluate to strings) are NOT part of the letrec scope.
+        if is_static_key {
+            if let Key::String(ref name) = key {
+                if let Some(ref env) = dict_env {
+                    env.write()
+                        .unwrap()
+                        .insert(name.clone(), Arc::clone(&thunk));
+                }
             }
         }
 
@@ -166,6 +191,16 @@ pub(crate) async fn eval_dict_core(
             }
         }
     }
+
+    // Note: a meaningful resolver/runtime drift check would compare slot_idx against
+    // the slot count recorded by the resolver for this dict's env_id. That information
+    // is not currently stored in EvalContext in a queryable form — the resolver writes
+    // slot indices into CoreExpr::Var nodes but does not separately record the total
+    // static-key count per scope. A runtime recount of CoreExpr::Str | CoreExpr::Annotated
+    // entries matches the same predicate used above to compute slot_idx, so any such
+    // assert_eq would be tautological (comparing a value against itself). A proper
+    // resolver/runtime alignment check requires storing the resolver's slot-count per
+    // env_id and comparing here; tracked as a future improvement.
 
     Ok(Arc::new(Thunk::new_materialized(
         Value::Dict(dict_map),

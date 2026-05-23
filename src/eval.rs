@@ -1341,7 +1341,9 @@ fn eval_core_expr<'a>(
             CoreExpr::Var { name, level, slot } => {
                 let env_lock = env.read().unwrap();
                 // Try slot-based lookup first (O(1) when level and slot are correct)
-                if let Some(thunk) = env_lock.get_by_slot(*level, *slot) {
+                // get_by_slot verifies the key at slot matches name; falls back to
+                // name-based lookup if there's a mismatch (slot-shift bug).
+                if let Some(thunk) = env_lock.get_by_slot(*level, *slot, name) {
                     Ok(thunk)
                 } else {
                     // Fallback to name-based lookup (for stale slot references)
@@ -1412,6 +1414,38 @@ fn eval_core_expr<'a>(
                         return eval_core_expr(seq_expr, &current_env, ctx).await;
                     }
 
+                    // Extract static keys from the expression BEFORE evaluating.
+                    // Only CoreExpr::Dict with static keys creates a new scope (mirrors resolve.rs).
+                    // Use core_expr_is_static_key (from eval_dict_mod) to keep predicate in sync.
+                    let static_keys: Option<HashSet<String>> = match &seq_expr.node {
+                        CoreExpr::Dict(entries) => {
+                            let keys: Vec<String> = entries
+                                .iter()
+                                .filter_map(|entry| {
+                                    entry.node.key.as_ref().and_then(|k| {
+                                        if core_expr_is_static_key(&k.node) {
+                                            match &k.node {
+                                                CoreExpr::Str(s) => Some(s.clone()),
+                                                CoreExpr::Annotated { name, .. } => {
+                                                    Some(name.clone())
+                                                }
+                                                _ => None,
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .collect();
+                            if keys.is_empty() {
+                                None
+                            } else {
+                                Some(keys.into_iter().collect())
+                            }
+                        }
+                        _ => None,
+                    };
+
                     // Intermediate expression: evaluate as CoreExpr, materialize, and extract dict bindings
                     let thunk = eval_core_expr(seq_expr, &current_env, ctx).await?;
                     let value = materialize(&thunk, Some(&seq_expr.span), ctx).await?;
@@ -1437,17 +1471,23 @@ fn eval_core_expr<'a>(
                         }
                     };
 
-                    // Create child environment with bindings from intermediate expression
-                    let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-                        &current_env,
-                    ))));
-                    for (key, val_thunk_id) in map {
-                        if let Key::String(name) = key {
-                            let val_thunk = ctx.get_thunk(val_thunk_id);
-                            child_env.write().unwrap().insert(name, val_thunk);
+                    // Create child environment with bindings from intermediate expression.
+                    // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
+                    // If static_keys is None (non-Dict expression or Dict with no static keys), no scope is created.
+                    if let Some(ref static_key_set) = static_keys {
+                        let child_env = Arc::new(RwLock::new(Environment::with_parent(
+                            Arc::clone(&current_env),
+                        )));
+                        for (key, val_thunk_id) in map {
+                            if let Key::String(name) = key {
+                                if static_key_set.contains(&name) {
+                                    let val_thunk = ctx.get_thunk(val_thunk_id);
+                                    child_env.write().unwrap().insert(name, val_thunk);
+                                }
+                            }
                         }
+                        current_env = child_env;
                     }
-                    current_env = child_env;
                 }
 
                 unreachable!("eval_core_expr Sequential: loop did not return")
