@@ -54,7 +54,7 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
 /// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
-/// Delegates to [`crate::eval_deep::deep_materialize`].
+/// Delegates to [`crate::eval_materialize::deep_materialize`].
 /// Inherently materializing: deep-forces all thunks by definition.
 pub(crate) fn builtin_deep_materialize(
     ctx_arg: BuiltinArgs,
@@ -73,7 +73,7 @@ pub(crate) fn builtin_deep_materialize(
             &ctx,
             call_span,
         )?;
-        let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
+        let deep = crate::eval_materialize::deep_materialize(&val, &ctx, Some(&call_span))?;
         ok_val(deep, call_span)
     })
 }
@@ -104,7 +104,7 @@ pub(crate) fn builtin_to_json(
             call_span,
         )?;
         // Deep-materialize first so value_to_json can traverse the full structure.
-        let deep = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
+        let deep = crate::eval_materialize::deep_materialize(&val, &ctx, Some(&call_span))?;
         // LLT null compatibility: [] (empty dict) serializes as JSON null,
         // matching the behavior of the old codecs/json.llt `null?` check.
         if let crate::value::Value::Dict(ref map) = deep {
@@ -1112,7 +1112,7 @@ pub(crate) fn builtin_llt_repr(
         let val =
             crate::builtins::expect_one_arg("llt-repr", &args, named.as_ref(), &ctx, call_span)?;
         // Deep-materialize the value first (value_to_display_string requires it)
-        let deep_val = crate::eval_deep::deep_materialize(&val, &ctx, Some(&call_span))?;
+        let deep_val = crate::eval_materialize::deep_materialize(&val, &ctx, Some(&call_span))?;
         // Convert to display string
         let display_str = crate::value_to_display_string(&deep_val, &ctx).map_err(|e| {
             EvalError::internal(format!("llt-repr: {}", e.kind.to_string()), call_span)

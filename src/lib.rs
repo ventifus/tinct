@@ -28,7 +28,6 @@ pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod eval_access;
 pub(crate) mod eval_call;
-pub(crate) mod eval_deep;
 pub(crate) mod eval_materialize;
 pub mod formatter;
 pub mod lexer;
@@ -102,12 +101,12 @@ pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position
 /// Parser entry points and error type.
 pub use parser::{format_parse_error, parse, parse_expression, ParseError, ParseOutput};
 
+pub use eval::deep_materialize;
 /// Evaluation functions.
 pub use eval::{
     eval_file, eval_file_with_input, materialize, materialize_sync, EvalConfig, EvalContext,
     EvalState,
 };
-pub use eval_deep::deep_materialize;
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
 pub use builtins::{

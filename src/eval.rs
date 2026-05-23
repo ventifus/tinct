@@ -4,8 +4,6 @@
 //! See eval_materialize.rs for the CEK machine implementation.
 
 pub(crate) use crate::eval_call::eval_call_core;
-#[cfg(test)]
-pub(crate) use crate::eval_call::func_label;
 pub use crate::eval_call::{invoke_function, CallContext};
 
 // Re-export CEK machine components from eval_materialize
@@ -903,63 +901,9 @@ fn intern_class_name(name: &str) -> &'static str {
     }
 }
 
-/// Marker for variant constructor functions in closure environment.
-pub(crate) const VARIANT_TAG_MARKER: &str = "__variant_tag__";
-
 /// Check if an identifier starts with an uppercase letter.
 pub(crate) fn is_constructor_name(name: &str) -> bool {
     name.chars().next().map_or(false, |c| c.is_uppercase())
-}
-
-/// Check if an expression is a nominal variant constructor declaration.
-/// Returns (tag, has_payload) if it is, None otherwise.
-pub(crate) fn is_nominal_constructor(expr: &Expr) -> Option<(String, bool)> {
-    match expr {
-        Expr::VarRef { name, .. } if is_constructor_name(name) => Some((name.clone(), false)),
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } if named_args.is_empty() && args.len() == 1 => {
-            if let Expr::VarRef { name, .. } = &func.node {
-                if is_constructor_name(name) {
-                    return Some((name.clone(), true));
-                }
-            }
-            None
-        }
-        // Unit constructor written as a 0-arg call: [None] in [type [Some a] [None]]
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } if named_args.is_empty() && args.is_empty() => {
-            if let Expr::VarRef { name, .. } = &func.node {
-                if is_constructor_name(name) {
-                    return Some((name.clone(), false));
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Extract nominal variant constructors from a type alias body.
-/// Returns a vector of (tag, has_payload) pairs.
-pub(crate) fn extract_nominal_constructors(body: &Expr) -> Vec<(String, bool)> {
-    match body {
-        // Multi-entry union: Dict with auto-indexed entries
-        Expr::Dict(entries) => entries
-            .iter()
-            .filter(|e| e.node.key.is_none())
-            .filter_map(|e| is_nominal_constructor(&e.node.value.node))
-            .collect(),
-        // Single-entry: check if it's a nominal constructor
-        other => is_nominal_constructor(other).into_iter().collect(),
-    }
 }
 
 /// Evaluate a [quote ...] expression, walking the quoted AST and evaluating
@@ -1427,7 +1371,15 @@ fn eval_core_expr<'a>(
                     .ok_or_else(|| EvalError::undefined_variable(name_owned, expr.span).into())
             }
 
-            // DotAccess: convert to Expr and use existing unevaluated thunk infrastructure
+            // DotAccess: convert to Expr::DotAccess and wrap as an Unevaluated(Expr) thunk.
+            //
+            // force_step handles CoreExpr::DotAccess INLINE in both take_core_expr and
+            // take_surface branches (eval_materialize.rs), so this arm is only reached by
+            // direct callers of eval_core_expr_pub (e.g. builtins_async.rs). For those
+            // callers the result thunk is subsequently materialized via run() → force_step,
+            // where the Expr::DotAccess inline handler (take_unevaluated, lines 561-617)
+            // fires correctly. No loop: Expr thunks go through take_unevaluated, not
+            // take_core_expr, so eval_core_expr is not re-entered.
             CoreExpr::DotAccess { .. } => {
                 let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
                 Ok(Arc::new(Thunk::new_unevaluated(
@@ -1572,33 +1524,25 @@ fn eval_core_expr<'a>(
                 )))
             }
 
-            // TypeAssert: convert to Expr::TypeAssert and wrap in an Unevaluated thunk.
-            // Do NOT call eval_recursive — that would convert back to CoreExpr::TypeAssert
-            // and loop. Instead, wrap as Unevaluated so the CEK machine's eval_step handles
-            // it via the Expr::TypeAssert branch, which pushes a TypeAssertCheck continuation
-            // and calls eval_recursive only on the INNER expression.
-            CoreExpr::TypeAssert { .. } => {
-                let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
-                Ok(Arc::new(Thunk::new_unevaluated(
-                    old_expr,
-                    Arc::clone(env),
-                    Arc::clone(ctx),
-                    expr.span,
-                )))
-            }
+            // TypeAssert: wrap as CoreExpr thunk — force_step routes to eval_core_expr_pub,
+            // which converts to Expr::TypeAssert and wraps in a new_unevaluated thunk,
+            // letting the CEK machine's eval_step handle the TypeAssertCheck continuation.
+            // This avoids direct recursion back through eval_core_expr.
+            CoreExpr::TypeAssert { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
+                Arc::new(expr.clone()),
+                Arc::clone(env),
+                Arc::clone(ctx),
+                expr.span,
+            ))),
 
-            // RuntimeTypeCheck: same fix as TypeAssert. core_expr_to_expr produces
-            // Expr::TypeAssert { resolved_type: None }, which the CEK machine handles
-            // correctly without recursing back through eval_recursive.
-            CoreExpr::RuntimeTypeCheck { .. } => {
-                let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
-                Ok(Arc::new(Thunk::new_unevaluated(
-                    old_expr,
-                    Arc::clone(env),
-                    Arc::clone(ctx),
-                    expr.span,
-                )))
-            }
+            // RuntimeTypeCheck: same fix as TypeAssert — wrap as CoreExpr thunk, defer
+            // to force_step → eval_core_expr_pub → Expr::TypeAssert CEK path.
+            CoreExpr::RuntimeTypeCheck { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
+                Arc::new(expr.clone()),
+                Arc::clone(env),
+                Arc::clone(ctx),
+                expr.span,
+            ))),
 
             // Annotated: evaluate as bare string
             CoreExpr::Annotated { name, .. } => Ok(Arc::new(Thunk::new_materialized(
@@ -2710,8 +2654,8 @@ pub fn materialize<'a>(
     }) // end Box::pin(async move {
 }
 
-// Re-export deep_materialize from eval_deep module
-pub use crate::eval_deep::deep_materialize;
+// Re-export deep_materialize from eval_materialize module
+pub use crate::eval_materialize::deep_materialize;
 
 /// Synchronous compatibility wrapper around the async `materialize()`.
 ///
@@ -6043,9 +5987,14 @@ mod tests {
     fn test_deep_materialize_forces_unevaluated_thunks() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(99), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(99), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let unevaluated = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
+        let unevaluated = Arc::new(Thunk::new_unevaluated_core(
+            expr,
+            env,
+            Arc::clone(&ctx),
+            span,
+        ));
 
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(Key::String("val".into()), ctx.alloc_thunk(unevaluated));
@@ -6263,9 +6212,14 @@ mod tests {
         // are in the Materialized state (not Unevaluated or PendingBuiltin)
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(7), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(7), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let unevaluated = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
+        let unevaluated = Arc::new(Thunk::new_unevaluated_core(
+            expr,
+            env,
+            Arc::clone(&ctx),
+            span,
+        ));
 
         let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
         map.insert(Key::String("x".into()), ctx.alloc_thunk(unevaluated));
@@ -6287,17 +6241,17 @@ mod tests {
         // Verify that deep_materialize forces both head and tail of Seq
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let head_expr = Rc::new(Spanned::new(Expr::Int(42), span));
+        let head_expr = Arc::new(Spanned::new(CoreExpr::Int(42), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let head_thunk_rc = Arc::new(Thunk::new_unevaluated(
-            Rc::clone(&head_expr),
+        let head_thunk_rc = Arc::new(Thunk::new_unevaluated_core(
+            head_expr,
             Arc::clone(&env),
             Arc::clone(&ctx),
             span,
         ));
 
-        let tail_expr = Rc::new(Spanned::new(Expr::Str("tail".into()), span));
-        let tail_thunk_rc = Arc::new(Thunk::new_unevaluated(
+        let tail_expr = Arc::new(Spanned::new(CoreExpr::Str("tail".into()), span));
+        let tail_thunk_rc = Arc::new(Thunk::new_unevaluated_core(
             tail_expr,
             Arc::clone(&env),
             Arc::clone(&ctx),
@@ -6458,12 +6412,17 @@ mod tests {
         // Test that deep_materialize traverses into the proxy handler thunk
         // and returns a new Proxy with the deep-materialized handler.
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(42), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span));
         let env = Arc::new(RwLock::new(Environment::new()));
         let ctx = test_ctx();
 
         // Create an unevaluated handler thunk
-        let handler_rc = Arc::new(Thunk::new_unevaluated(expr, env, Arc::clone(&ctx), span));
+        let handler_rc = Arc::new(Thunk::new_unevaluated_core(
+            expr,
+            env,
+            Arc::clone(&ctx),
+            span,
+        ));
         let handler_id = ctx.alloc_thunk(handler_rc);
         let proxy_val = Value::Proxy {
             handler: handler_id,
@@ -6650,9 +6609,9 @@ mod tests {
         let ctx = test_ctx();
         let dict_span = test_span(1, 1, 1, 20);
         let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::new();
-        let bad_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(Spanned::new(
-                Expr::var_ref("missing".into()),
+        let bad_thunk = Arc::new(Thunk::new_unevaluated_core(
+            Arc::new(Spanned::new(
+                CoreExpr::FreeVar("missing".into()),
                 test_span(1, 8, 1, 15),
             )),
             Arc::clone(&env),
@@ -6726,9 +6685,9 @@ mod tests {
         let mut inner_map: IndexMap<Key, ThunkId> = IndexMap::new();
         inner_map.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_unevaluated(
-                Rc::new(Spanned::new(
-                    Expr::var_ref("missing".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_unevaluated_core(
+                Arc::new(Spanned::new(
+                    CoreExpr::FreeVar("missing".into()),
                     test_span(1, 10, 1, 18),
                 )),
                 Arc::clone(&inner_env),
@@ -6775,37 +6734,53 @@ mod tests {
 
     #[test]
     fn test_func_label_varref() {
-        let label = func_label(&Expr::var_ref("f".into()));
+        use crate::eval_call::func_label_core;
+        let label = func_label_core(&CoreExpr::Var {
+            name: "f".to_string(),
+            level: 0,
+            slot: 0,
+        });
         assert_eq!(label.as_deref(), Some("[f ...]"));
     }
 
     #[test]
     fn test_func_label_dot_access() {
-        let expr = Expr::DotAccess {
-            expr: Box::new(sp(Expr::var_ref("utils".into()))),
+        use crate::eval_call::func_label_core;
+        let expr = CoreExpr::DotAccess {
+            expr: Arc::new(sp(CoreExpr::Var {
+                name: "utils".to_string(),
+                level: 0,
+                slot: 0,
+            })),
             field: crate::ast::DotKey::Ident("run".into()),
         };
-        let label = func_label(&expr);
+        let label = func_label_core(&expr);
         assert_eq!(label.as_deref(), Some("[<dot-access> ...]"));
     }
 
     #[test]
     fn test_func_label_chained_dot_access() {
-        let expr = Expr::DotAccess {
-            expr: Box::new(sp(Expr::DotAccess {
-                expr: Box::new(sp(Expr::var_ref("a".into()))),
+        use crate::eval_call::func_label_core;
+        let expr = CoreExpr::DotAccess {
+            expr: Arc::new(sp(CoreExpr::DotAccess {
+                expr: Arc::new(sp(CoreExpr::Var {
+                    name: "a".to_string(),
+                    level: 0,
+                    slot: 0,
+                })),
                 field: crate::ast::DotKey::Ident("b".into()),
             })),
             field: crate::ast::DotKey::Ident("c".into()),
         };
-        let label = func_label(&expr);
+        let label = func_label_core(&expr);
         assert_eq!(label.as_deref(), Some("[<dot-access> ...]"));
     }
 
     #[test]
     fn test_func_label_anonymous() {
+        use crate::eval_call::func_label_core;
         // Anonymous calls return None (no origin label adds diagnostic value)
-        assert_eq!(func_label(&Expr::Int(42)), None);
+        assert_eq!(func_label_core(&CoreExpr::Int(42)), None);
     }
 
     #[test]
@@ -6815,9 +6790,9 @@ mod tests {
         let env = empty_env();
 
         // Create a thunk whose body is another unevaluated thunk that errors
-        let inner_expr = Spanned::new(Expr::var_ref("missing".into()), test_span(1, 1, 1, 8));
-        let inner_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(inner_expr),
+        let inner_expr = Spanned::new(CoreExpr::FreeVar("missing".into()), test_span(1, 1, 1, 8));
+        let inner_thunk = Arc::new(Thunk::new_unevaluated_core(
+            Arc::new(inner_expr),
             Arc::clone(&env),
             Arc::clone(&test_ctx()),
             test_span(1, 1, 1, 8),
@@ -7204,8 +7179,8 @@ mod tests {
         let func_thunk = Arc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
 
         // Create an unevaluated arg
-        let arg_expr = Rc::new(sp(Expr::Int(99)));
-        let arg = Arc::new(Thunk::new_unevaluated(
+        let arg_expr = Arc::new(sp(CoreExpr::Int(99)));
+        let arg = Arc::new(Thunk::new_unevaluated_core(
             arg_expr,
             Arc::clone(&env),
             Arc::clone(&test_ctx()),
@@ -7680,8 +7655,8 @@ mod tests {
 
     #[test]
     fn test_pending_call_func_materialization_failure() {
-        let bad_func = Arc::new(Thunk::new_unevaluated(
-            Rc::new(sp(Expr::var_ref("nonexistent_func".into()))),
+        let bad_func = Arc::new(Thunk::new_unevaluated_core(
+            Arc::new(sp(CoreExpr::FreeVar("nonexistent_func".into()))),
             empty_env(),
             Arc::clone(&test_ctx()),
             test_span(1, 1, 1, 10),
@@ -7724,10 +7699,10 @@ mod tests {
     #[test]
     fn test_unevaluated_error_becomes_failed() {
         // When an Unevaluated thunk fails during materialization, it should transition to Failed
-        let expr = sp(Expr::var_ref("undefined_var".into()));
+        let expr = sp(CoreExpr::FreeVar("undefined_var".into()));
         let env = empty_env();
-        let thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(expr),
+        let thunk = Arc::new(Thunk::new_unevaluated_core(
+            Arc::new(expr),
             Arc::clone(&env),
             Arc::clone(&test_ctx()),
             test_span(1, 1, 1, 15),
@@ -7936,7 +7911,7 @@ mod tests {
         // NOTE: Constructing a deep-enough non-cyclic computation to actually trigger
         // DepthExceeded is complex (requires 256+ nested calls without cycles).
         // This test validates the is_cacheable() property directly. The full
-        // DepthExceeded error path is tested via eval_deep.rs::test_deep_materialize_cache_cleanup_on_error.
+        // DepthExceeded error path is tested via eval_materialize.rs::deep_tests::test_deep_materialize_cache_cleanup_on_materialize_error.
         use crate::error::ErrorKind;
 
         // Verify DepthExceeded is non-cacheable
@@ -8983,9 +8958,9 @@ mod tests {
 
         // Create an inner thunk that will produce a type mismatch when wrapped with Guarded
         // (we expect Int but will get String)
-        let inner_expr = Rc::new(sp(Expr::Str("hello".into())));
+        let inner_expr = Arc::new(sp(CoreExpr::Str("hello".into())));
         let ctx = test_ctx();
-        let inner_thunk = Arc::new(Thunk::new_unevaluated(
+        let inner_thunk = Arc::new(Thunk::new_unevaluated_core(
             inner_expr,
             empty_env(),
             Arc::clone(&ctx),
@@ -9050,9 +9025,9 @@ mod tests {
             };
             let curr_name = format!("var_{}", i);
 
-            let expr = sp(Expr::var_ref(prev_name.clone()));
-            let thunk = Arc::new(Thunk::new_unevaluated(
-                Rc::new(expr),
+            let expr = Arc::new(sp(CoreExpr::FreeVar(prev_name.clone())));
+            let thunk = Arc::new(Thunk::new_unevaluated_core(
+                expr,
                 Arc::clone(&env),
                 Arc::clone(&ctx),
                 span,
@@ -9081,18 +9056,18 @@ mod tests {
 
         // Create a cycle: x references y, y references x
         // x = $y
-        let x_expr = sp(Expr::var_ref("y".into()));
-        let x_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(x_expr),
+        let x_expr = Arc::new(sp(CoreExpr::FreeVar("y".into())));
+        let x_thunk = Arc::new(Thunk::new_unevaluated_core(
+            x_expr,
             Arc::clone(&env),
             Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
         // y = $x
-        let y_expr = sp(Expr::var_ref("x".into()));
-        let y_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(y_expr),
+        let y_expr = Arc::new(sp(CoreExpr::FreeVar("x".into())));
+        let y_thunk = Arc::new(Thunk::new_unevaluated_core(
+            y_expr,
             Arc::clone(&env),
             Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
@@ -9119,25 +9094,25 @@ mod tests {
         // Test 3-node cycle: a→b→c→a
         let env3 = empty_env();
 
-        let a_expr = sp(Expr::var_ref("b".into()));
-        let a_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(a_expr),
+        let a_expr = Arc::new(sp(CoreExpr::FreeVar("b".into())));
+        let a_thunk = Arc::new(Thunk::new_unevaluated_core(
+            a_expr,
             Arc::clone(&env3),
             Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
-        let b_expr = sp(Expr::var_ref("c".into()));
-        let b_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(b_expr),
+        let b_expr = Arc::new(sp(CoreExpr::FreeVar("c".into())));
+        let b_thunk = Arc::new(Thunk::new_unevaluated_core(
+            b_expr,
             Arc::clone(&env3),
             Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
         ));
 
-        let c_expr = sp(Expr::var_ref("a".into()));
-        let c_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(c_expr),
+        let c_expr = Arc::new(sp(CoreExpr::FreeVar("a".into())));
+        let c_thunk = Arc::new(Thunk::new_unevaluated_core(
+            c_expr,
             Arc::clone(&env3),
             Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
@@ -9165,9 +9140,9 @@ mod tests {
         // Test self-reference: x→x
         let env_self = empty_env();
 
-        let self_expr = sp(Expr::var_ref("x".into()));
-        let self_thunk = Arc::new(Thunk::new_unevaluated(
-            Rc::new(self_expr),
+        let self_expr = Arc::new(sp(CoreExpr::FreeVar("x".into())));
+        let self_thunk = Arc::new(Thunk::new_unevaluated_core(
+            self_expr,
             Arc::clone(&env_self),
             Arc::clone(&ctx),
             test_span(1, 1, 1, 2),
@@ -9215,7 +9190,7 @@ mod tests {
         // Materialize the dict to get the Value::Dict, then force an entry to trigger
         // cycle detection. deep_materialize recursively forces all dict entries.
         let dict_val = materialize(&thunk, None, &ctx).expect("dict should materialize");
-        let result = crate::eval_deep::deep_materialize(&dict_val, &ctx, None);
+        let result = crate::eval_materialize::deep_materialize(&dict_val, &ctx, None);
 
         assert!(
             result.is_err(),
@@ -9625,9 +9600,9 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
 
         // Build an unevaluated thunk that evaluates to an empty dict.
-        // `Expr::Dict(vec![])` evaluates to `Value::Dict(IndexMap::new())`.
-        let dict_expr = Rc::new(sp(Expr::Dict(vec![])));
-        let unevaluated_arg = Arc::new(Thunk::new_unevaluated(
+        // `CoreExpr::Dict(vec![])` evaluates to `Value::Dict(IndexMap::new())`.
+        let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
+        let unevaluated_arg = Arc::new(Thunk::new_unevaluated_core(
             dict_expr,
             empty_env(),
             Arc::clone(&ctx),
@@ -9694,8 +9669,8 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
 
         // Build an unevaluated thunk that evaluates to an empty dict.
-        let dict_expr = Rc::new(sp(Expr::Dict(vec![])));
-        let unevaluated_arg = Arc::new(Thunk::new_unevaluated(
+        let dict_expr = Arc::new(sp(CoreExpr::Dict(vec![])));
+        let unevaluated_arg = Arc::new(Thunk::new_unevaluated_core(
             dict_expr,
             empty_env(),
             Arc::clone(&ctx),

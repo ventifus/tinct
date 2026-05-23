@@ -2174,9 +2174,9 @@ mod tests {
     fn test_thunk_debug_unevaluated_state() {
         // Verify that Debug output works for an Unevaluated thunk without panicking.
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
 
         // Debug should not panic for an Unevaluated thunk
         let debug_str = format!("{:?}", thunk);
@@ -2379,8 +2379,6 @@ mod tests {
 
     #[test]
     fn test_thunk_unevaluated_preserves_ctx_across_materialization() {
-        use crate::ast::Expr;
-
         // Create ctx1 with a distinct base_dir
         let base_dir1 = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
@@ -2390,23 +2388,27 @@ mod tests {
 
         // Create a thunk that captures ctx1
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(42), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk =
-            Thunk::new_unevaluated(Rc::clone(&expr), Arc::clone(&env), Arc::clone(&ctx1), span);
+        let thunk = Thunk::new_unevaluated_core(
+            Arc::clone(&expr),
+            Arc::clone(&env),
+            Arc::clone(&ctx1),
+            span,
+        );
 
-        // Verify the thunk is in Unevaluated state (peek_expr returns Some)
+        // Verify the thunk is in Unevaluated state (not yet InProgress or materialized)
         assert!(
-            thunk.peek_expr().is_some(),
-            "thunk should be in Unevaluated state before take_unevaluated"
+            !thunk.is_in_progress() && !thunk.is_materialized(),
+            "thunk should be in Unevaluated state before take_core_expr"
         );
 
         // Materialize the thunk using ctx1 (simulating normal evaluation)
-        // take_unevaluated atomically transitions to InProgress and returns (expr, env, ctx)
-        let taken = thunk.take_unevaluated();
+        // take_core_expr atomically transitions to InProgress and returns (expr, env, ctx)
+        let taken = thunk.take_core_expr();
         assert!(
             taken.is_some(),
-            "take_unevaluated should succeed on Unevaluated thunk"
+            "take_core_expr should succeed on CoreExpr thunk"
         );
 
         let (_taken_expr, _taken_env, taken_ctx) = taken.unwrap();
@@ -2858,9 +2860,9 @@ mod tests {
         // Failed thunk: cache_failure_once() sets the error; get_cached_error() must return Some.
         // Start from Unevaluated so the OnceCell result is unset, then transition to Failed.
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         let err = crate::error::EvalError::internal("sentinel error".into(), span);
         thunk.cache_failure_once(&err);
 
@@ -2891,9 +2893,9 @@ mod tests {
     #[test]
     fn test_get_cached_error_unevaluated_returns_none() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         assert!(
             thunk.get_cached_error().is_none(),
             "get_cached_error() must return None for Unevaluated thunk"
@@ -2902,12 +2904,12 @@ mod tests {
 
     #[test]
     fn test_get_cached_error_in_progress_returns_none() {
-        // InProgress: take_unevaluated() transitions to InProgress; result not yet set.
+        // InProgress: take_core_expr() transitions to InProgress; result not yet set.
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
-        let _taken = thunk.take_unevaluated(); // transitions to InProgress
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
+        let _taken = thunk.take_core_expr(); // transitions to InProgress
         assert!(
             thunk.get_cached_error().is_none(),
             "get_cached_error() must return None for InProgress thunk"
@@ -2918,12 +2920,12 @@ mod tests {
 
     #[test]
     fn test_is_in_progress_true_after_take_unevaluated() {
-        // After take_unevaluated(), thunk is InProgress: is_in_progress() must return true.
+        // After take_core_expr(), thunk is InProgress: is_in_progress() must return true.
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
-        thunk.take_unevaluated(); // transitions to InProgress
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
+        thunk.take_core_expr(); // transitions to InProgress
         assert!(
             thunk.is_in_progress(),
             "is_in_progress() must return true after take_unevaluated()"
@@ -2933,9 +2935,9 @@ mod tests {
     #[test]
     fn test_is_in_progress_false_for_unevaluated() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         assert!(
             !thunk.is_in_progress(),
             "is_in_progress() must return false for Unevaluated thunk"
@@ -2954,11 +2956,11 @@ mod tests {
 
     #[test]
     fn test_is_in_progress_false_for_failed() {
-        // Start from Unevaluated so set_state(Failed) can actually write to the OnceCell.
+        // Start from Unevaluated so cache_failure_once() can write to the OnceCell.
         let span = test_span(1, 1, 1, 5);
-        let expr = Rc::new(Spanned::new(Expr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated(expr, env, test_ctx(), span);
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         let err = crate::error::EvalError::internal("test".into(), span);
         thunk.cache_failure_once(&err);
         assert!(
