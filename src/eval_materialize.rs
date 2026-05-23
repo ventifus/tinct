@@ -2378,6 +2378,9 @@ pub(crate) async fn apply_cont(
                             let actual = value.type_name();
                             let matches = if expected == "Number" {
                                 actual == "Int" || actual == "Float"
+                            } else if expected == "Unknown" || expected == "Top" {
+                                // Unknown and Top accept all values (gradual typing escape hatch)
+                                true
                             } else {
                                 actual == expected.as_str()
                             };
@@ -4102,6 +4105,180 @@ mod deep_tests {
             err2.kind.to_string().contains("undefined"),
             "Expected cached error on retry, got: {}",
             err2.kind
+        );
+    }
+
+    // ========== test-coverage-cycle311 tests ==========
+
+    #[test]
+    fn test_max_continuation_stack_enforced() {
+        // Test that MAX_CONTINUATION_STACK=2048 is enforced.
+        // Create a deeply nested expression that exceeds 2048 continuation frames
+        // and verify it produces a depth-exceeded error.
+        //
+        // Strategy: Use eval_source to evaluate a deeply nested function call chain.
+        // Each nested call adds continuation frames (Memoize, PendingCallDispatch, etc.).
+        // Build a chain that exceeds 2048 depth.
+        //
+        // Pattern: [fn [x] [if [= x 0] 0 [call $recur [- x 1]]]]
+        // But for depth testing, we need to actually invoke the recursion.
+        // Use a simpler approach: nested dict access chains that force materialization.
+        //
+        // Actually, the simplest way is to use deeply nested function calls via
+        // a recursive function that doesn't tail-call optimize away.
+
+        // Build: [fn [n] [if [= n 0] 0 [+ 1 [call $self [- n 1]]]]]
+        // Call with n=2100 (exceeds MAX_CONTINUATION_STACK=2048)
+        let input = r#"
+            [f: [fn [self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
+             result: [call f f 2100]]
+        "#;
+
+        let result = crate::eval_source(input);
+        assert!(
+            result.is_err(),
+            "Expected depth-exceeded error for 2100-depth recursion"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("maximum evaluation depth exceeded") || err.contains("[E040]"),
+            "Error should be E040 (maximum evaluation depth exceeded), got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_restore_state_pending_builtin_non_cacheable_error() {
+        // Test that a non-cacheable error (DepthExceeded / E040) is consistently
+        // raised on repeated evaluation attempts.
+        //
+        // DepthExceeded is the canonical non-cacheable error: the CEK machine cannot
+        // memoize it on the thunk because a retry at shallower depth might succeed.
+        // Both calls to eval_source here re-evaluate fresh source (no shared thunk
+        // state between runs), but the test verifies the error surface is stable:
+        // both calls report a depth/limit error, not a crash or silent success.
+        //
+        // The existing test_restore_state_pending_builtin (line 2569) covers the
+        // RestoreState::PendingBuiltin internal restore mechanism directly.
+
+        let input = r#"
+            [f: [fn [self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
+             result: [call f f 2100]]
+        "#;
+
+        // First call — should hit depth limit
+        let result1 = crate::eval_source(input);
+        assert!(
+            result1.is_err(),
+            "First call: expected depth-exceeded error, got: {:?}",
+            result1
+        );
+        let err1 = result1.unwrap_err();
+        assert!(
+            err1.contains("maximum evaluation depth exceeded") || err1.contains("[E040]"),
+            "First call: error should mention depth limit, got: {}",
+            err1
+        );
+
+        // Second call — same input should produce the same class of error (not a panic
+        // or a different error kind), confirming the non-cacheable error path is stable.
+        let result2 = crate::eval_source(input);
+        assert!(
+            result2.is_err(),
+            "Second call: expected depth-exceeded error, got: {:?}",
+            result2
+        );
+        let err2 = result2.unwrap_err();
+        assert!(
+            err2.contains("maximum evaluation depth exceeded") || err2.contains("[E040]"),
+            "Second call: error should mention depth limit, got: {}",
+            err2
+        );
+    }
+
+    #[test]
+    fn test_attach_materialization_context_preserves_spans() {
+        // Test that attach_materialization_context correctly adds materialization
+        // span and origin frame to errors.
+        //
+        // This is already tested by test_attach_materialization_context_adds_frame,
+        // but we add a variant that tests the preservation of existing spans
+        // (the "if err.materialization_span.is_none()" branch).
+
+        let thunk_span = test_span(1, 1, 1, 10);
+        let err = EvalError::undefined_variable("x".to_string(), thunk_span);
+        let mat_span = test_span(10, 5, 10, 6);
+        let origin = "test_origin";
+
+        // First attachment — should set materialization_span
+        let decorated = attach_materialization_context(
+            Box::new(err),
+            Some(&mat_span),
+            Some(origin),
+            thunk_span,
+        );
+
+        assert_eq!(
+            decorated.materialization_span,
+            Some(mat_span),
+            "materialization_span should be set"
+        );
+
+        // Second attachment with a different mat_span — should preserve the first
+        let second_mat_span = test_span(20, 1, 20, 5);
+        let decorated2 = attach_materialization_context(
+            decorated,
+            Some(&second_mat_span),
+            Some("second_origin"),
+            thunk_span,
+        );
+
+        assert_eq!(
+            decorated2.materialization_span,
+            Some(mat_span),
+            "materialization_span should preserve the first value, not overwrite"
+        );
+    }
+
+    #[test]
+    fn test_type_assert_inline_in_force_step() {
+        // Test that TypeAssert nodes are handled correctly during materialization
+        // (inline in force_step).
+        //
+        // This exercises the CoreExpr::TypeAssert arm in force_step, which pushes
+        // a Cont::TypeAssertCheck continuation and evaluates the inner expression.
+        //
+        // Use eval_source to test end-to-end behavior.
+
+        // Simple case: TypeAssert with a matching type
+        let input = "[x@Int: 42]";
+        let result = crate::eval_source(input);
+        assert!(result.is_ok(), "TypeAssert should succeed: {:?}", result);
+        assert_eq!(result.unwrap(), r#"Dict({"x": Int(42)})"#);
+
+        // Case with type mismatch: `[x@Int: "hello"]` — dict key annotation says x is Int,
+        // but the value is a String. At runtime this triggers a TypeAssert check (E011).
+        let input_mismatch = r#"[x@Int: "hello"]"#;
+        let result_mismatch = crate::eval_source(input_mismatch);
+        assert!(
+            result_mismatch.is_err(),
+            "TypeAssert mismatch [x@Int: \"hello\"] should fail with E011: {:?}",
+            result_mismatch
+        );
+        let err_msg = result_mismatch.unwrap_err();
+        assert!(
+            err_msg.contains("E011") || err_msg.contains("type assertion failed"),
+            "Expected E011 type assertion error, got: {}",
+            err_msg
+        );
+
+        // Case with structural type annotation (record)
+        let input_record = "[user@[name: String]: [name: Alice]]";
+        let result_record = crate::eval_source(input_record);
+        assert!(
+            result_record.is_ok(),
+            "TypeAssert with record should succeed: {:?}",
+            result_record
         );
     }
 }

@@ -1,0 +1,4 @@
+# Key $x evaluates in parent scope where x is not defined
+[x: 1  $x: 2]
+=== error
+[E002] undefined variable: x

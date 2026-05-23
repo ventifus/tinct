@@ -1,0 +1,7 @@
+# Deeply nested function calls exceed MAX_CONTINUATION_STACK=2048
+# Each recursive call adds continuation frames (Memoize, etc.)
+# Use a Y-combinator style recursive function to build depth
+[f: [fn [self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
+ result: [call f f 2100]]
+=== error
+[E040] depth exceeded

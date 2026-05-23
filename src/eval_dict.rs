@@ -228,3 +228,80 @@ pub(crate) async fn eval_key_core(
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that dict keys are evaluated in the parent scope, not the dict scope.
+    /// Per letrec semantics: keys see parent bindings, values see sibling bindings.
+    #[test]
+    fn test_key_evaluated_in_parent_scope() {
+        // [x: 1  y: $x]  -- $x in value position should see sibling x
+        // [outer: 1  inner: [x: 2  y: $outer]]  -- $outer in value should see parent outer
+        // [outer: 1  inner: [x: 2  $outer: 3]]  -- $outer in KEY position should also see parent outer (key=1)
+        let input = r#"
+            [outer: 1  inner: [x: 2  $outer: 999]]
+        "#;
+        let result = crate::eval_source(input);
+        assert!(result.is_ok(), "Should succeed: {:?}", result);
+        let output = result.unwrap();
+        // The key $outer evaluates to 1 (from parent scope) — Value::Int(1) → Key::Int(1).
+        // Key::Int is formatted as the bare integer (e.g., "1: Int(999)"), not "Int(1): Int(999)".
+        assert!(
+            output.contains("1: Int(999)"),
+            "Key $outer should evaluate to 1 (parent scope), got: {}",
+            output
+        );
+    }
+
+    /// Test that dict values are evaluated in the dict's own scope (letrec).
+    /// Sibling entries are visible to each other (forward references allowed).
+    #[test]
+    fn test_value_evaluated_in_dict_scope() {
+        // [x: 1  y: $x]  -- $x in value position should resolve to sibling x (value 1)
+        let input = r#"[x: 1  y: $x]"#;
+        let result = crate::eval_source(input);
+        assert!(result.is_ok(), "Should succeed: {:?}", result);
+        let output = result.unwrap();
+        assert!(
+            output.contains(r#""y": Int(1)"#),
+            "y should reference sibling x (value 1), got: {}",
+            output
+        );
+    }
+
+    /// Test that circular dependencies are detected.
+    /// [x: $y  y: $x] should produce a cycle error.
+    #[test]
+    fn test_circular_dependency_detection() {
+        let input = r#"[x: $y  y: $x]"#;
+        let result = crate::eval_source(input);
+        assert!(
+            result.is_err(),
+            "Should fail with circular dependency error"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("circular dependency"),
+            "Error should mention circular dependency, got: {}",
+            err
+        );
+    }
+
+    /// Test that nested dicts properly shadow outer bindings.
+    /// [x: 1  inner: [x: 2  y: $x]]  -- $x in inner.y should see inner.x (2), not outer.x (1)
+    #[test]
+    fn test_nested_dict_shadowing() {
+        let input = r#"[x: 1  inner: [x: 2  y: $x]]"#;
+        let result = crate::eval_source(input);
+        assert!(result.is_ok(), "Should succeed: {:?}", result);
+        let output = result.unwrap();
+        // The inner dict should have y: 2 (shadowed x)
+        assert!(
+            output.contains(r#""y": Int(2)"#),
+            "inner.y should reference inner.x (2, shadowed), got: {}",
+            output
+        );
+    }
+}
