@@ -1408,14 +1408,12 @@ fn eval_core_expr<'a>(
                     let is_last = i == exprs.len() - 1;
 
                     if is_last {
-                        // Last expression: convert to Expr and evaluate
-                        let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(seq_expr));
-                        return Box::pin(eval(old_expr, current_env, ctx)).await;
+                        // Last expression: evaluate directly as CoreExpr
+                        return eval_core_expr(seq_expr, &current_env, ctx).await;
                     }
 
-                    // Intermediate expression: convert to Expr, materialize, and extract dict bindings
-                    let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(seq_expr));
-                    let thunk = Box::pin(eval(old_expr, Arc::clone(&current_env), ctx)).await?;
+                    // Intermediate expression: evaluate as CoreExpr, materialize, and extract dict bindings
+                    let thunk = eval_core_expr(seq_expr, &current_env, ctx).await?;
                     let value = materialize(&thunk, Some(&seq_expr.span), ctx).await?;
 
                     // Flatten Overlay to Dict for scope chain binding
@@ -1604,7 +1602,14 @@ fn eval_core_expr<'a>(
                 .into())
             }
 
-            // Quote: convert to Expr and use eval_quote
+            // Quote: convert to Expr and use eval_quote.
+            //
+            // DESIGN DECISION: This round-trip (CoreExpr→Expr) is intentional.
+            // Quote captures *surface syntax* for metaprogramming, not the desugared
+            // CoreExpr form with de Bruijn indices. Users expect [quote x] to show
+            // the variable name "x", not FreeVar(0). eval_quote walks the Expr AST
+            // to handle unquotes and produces Value::Expression(SurfaceNode), which
+            // represents the code as written, not as compiled.
             CoreExpr::Quote(inner) => {
                 let old_inner = Box::new(crate::ast_convert::core_expr_to_expr(inner));
                 eval_quote(&old_inner, env.clone(), ctx).await

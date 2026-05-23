@@ -15,7 +15,7 @@ use crate::value::{Environment, Thunk, Value};
 // eval.rs imports invoke_function/CallContext from this module, while
 // this module imports eval/EvalContext from eval.rs. Neither module's
 // initialization depends on the other.
-use crate::eval::{eval, materialize, EvalContext};
+use crate::eval::{eval, eval_core_expr_pub, materialize, EvalContext};
 
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -60,17 +60,10 @@ pub(crate) async fn eval_call_core(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
-    // Evaluate the function as a thunk by routing through eval_core_expr.
-    // eval() → eval_recursive → eval_core_expr, so we call eval_core_expr
-    // here directly to keep the CoreExpr path end-to-end. We use the public
-    // eval() entry point (which does the Expr→CoreExpr conversion) only for
-    // the func, since func_expr is already a CoreExpr.
-    //
-    // TODO(parts-e): expose eval_core_expr publicly (or add a dedicated entry
-    // point) so this can skip the Expr round-trip entirely for the func expression.
-    // For now: convert func_expr to Expr and call eval(), matching the bridge path.
-    let func_old = Rc::new(crate::ast_convert::core_expr_to_expr(func_expr));
-    let func_thunk = eval(func_old, Arc::clone(env), ctx).await?;
+    // Evaluate the function as a thunk using eval_core_expr_pub directly.
+    // This keeps the CoreExpr path end-to-end without round-tripping through Expr,
+    // preserving de Bruijn coordinates and other CoreExpr-specific data.
+    let func_thunk = eval_core_expr_pub(func_expr, env, ctx).await?;
 
     // Wrap positional arguments as Unevaluated CoreExpr thunks (lazy).
     let pos_thunks: SmallVec<[Arc<Thunk>; 4]> = args

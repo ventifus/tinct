@@ -44,24 +44,6 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
 // regression in TODO.md (runtime-v2-fix-class-instance-in-dict).
 // ============================================================================
 
-/// Count static string-keyed entries in a CoreEntry slice.
-///
-/// Static string keys are those that produce `Key::String` bindings visible to
-/// sibling VarRef lookups: `CoreExpr::Str` and `CoreExpr::Annotated`. Must stay
-/// in sync with the resolver's walk_expr Dict arm.
-fn count_static_keys_core(entries: &[Spanned<CoreEntry>]) -> usize {
-    entries
-        .iter()
-        .filter(|entry| {
-            entry
-                .node
-                .key
-                .as_ref()
-                .is_some_and(|k| matches!(&k.node, CoreExpr::Str(_) | CoreExpr::Annotated { .. }))
-        })
-        .count()
-}
-
 /// Evaluate a dict literal from `CoreExpr::Dict` entries with letrec semantics.
 ///
 /// Directly accepts the `CoreEntry` slice produced by `eval_core_expr`'s Dict arm,
@@ -79,15 +61,34 @@ pub(crate) async fn eval_dict_core(
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
-    let dict_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-        parent_env,
-    ))));
+    // Task 6: Skip dict_env allocation for literal-only dicts.
+    // Check if all values are literals (Int/Float/Bool/Str) - if so, we don't need letrec scoping.
+    let has_non_literal = entries.iter().any(|entry| {
+        !matches!(
+            &entry.node.value.node,
+            CoreExpr::Int(_) | CoreExpr::Float(_) | CoreExpr::Bool(_) | CoreExpr::Str(_)
+        )
+    });
+
+    let dict_env = if has_non_literal {
+        Some(Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+            parent_env,
+        )))))
+    } else {
+        None
+    };
     let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
-    // Allocate a FlatEnv for this dict scope (same logic as eval_dict).
-    let static_key_count = count_static_keys_core(entries);
-    let env_id = ctx.env_arena.lock().unwrap().alloc_root(static_key_count);
+    // Allocate a FlatEnv for this dict scope with entries.len() capacity (upper bound).
+    // This avoids the count_static_keys_core() pass. May slightly over-allocate when
+    // some entries have computed keys, but the single-pass is faster than counting first.
+    // Only allocate if we have non-literals that need env slots.
+    let env_id = if has_non_literal {
+        Some(ctx.env_arena.lock().unwrap().alloc_root(entries.len()))
+    } else {
+        None
+    };
     let mut slot_idx: u32 = 0;
 
     for entry in entries {
@@ -133,18 +134,18 @@ pub(crate) async fn eval_dict_core(
             // TODO(parts-e): Thunk::new_unevaluated_core_with_env_id (for the env_id fast path).
             _ => Arc::new(Thunk::new_unevaluated_core(
                 Arc::clone(&entry.node.value),
-                Arc::clone(&dict_env),
+                Arc::clone(dict_env.as_ref().expect("dict_env present for non-literals")),
                 Arc::clone(ctx),
                 entry.node.value.span,
             )),
         };
 
         // String keys become bindings so sibling entries can reference via $name (letrec).
+        // Only insert if we have a dict_env (i.e., if there are non-literals).
         if let Key::String(ref name) = key {
-            dict_env
-                .write()
-                .unwrap()
-                .insert(name.clone(), Arc::clone(&thunk));
+            if let Some(ref env) = dict_env {
+                env.write().unwrap().insert(name.clone(), Arc::clone(&thunk));
+            }
         }
 
         let thunk_id = ctx.alloc_thunk(thunk);
@@ -156,11 +157,13 @@ pub(crate) async fn eval_dict_core(
         }
 
         if is_static_key {
-            ctx.env_arena
-                .lock()
-                .unwrap()
-                .fill_letrec_slot(env_id, slot_idx, thunk_id);
-            slot_idx += 1;
+            if let Some(id) = env_id {
+                ctx.env_arena
+                    .lock()
+                    .unwrap()
+                    .fill_letrec_slot(id, slot_idx, thunk_id);
+                slot_idx += 1;
+            }
         }
     }
 

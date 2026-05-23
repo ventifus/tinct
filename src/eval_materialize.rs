@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
@@ -81,6 +81,7 @@ pub(crate) fn attach_materialization_context(
 /// Snapshot of a thunk's pre-materialization state, used to restore the thunk
 /// when a non-cacheable error occurs.
 pub(crate) enum RestoreState {
+    #[allow(dead_code)] // Used in tests; runtime paths now skip RestoreState for PendingBuiltin (Task 4 optimization)
     PendingBuiltin {
         def: crate::value::BuiltinDef,
         args: Vec<Arc<Thunk>>,
@@ -349,16 +350,66 @@ pub(crate) enum Cont {
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
 const _: () = assert!(std::mem::size_of::<Cont>() <= 96);
 
-// RAII guard that pops one entry from the eval_stack when dropped.
-//
-// Created immediately after an eval_stack.push() in force_step. Ensures the push
-// is always paired with a pop, even on early error exits, without manual pop calls
-// at every error site.
-//
-// **Disarming:** Call `.disarm()` before returning `Action::Materialize` on the
-// success path. On those paths a `Cont::Memoize` continuation takes ownership of
-// the pop (see `apply_cont` Cont::Memoize handler). Without disarming the guard
-// would double-pop the stack.
+/// RAII guard that pops one entry from the eval_stack when dropped.
+///
+/// Created immediately after an `eval_stack.push()` in `force_step` or `apply_cont`.
+/// Ensures the push is always paired with a pop, even on early error exits, without
+/// manual pop calls at every error site.
+///
+/// **Disarming:** Call `.disarm()` before returning `Action::Materialize` on paths
+/// where a continuation (`Cont::Memoize`, `Cont::BuiltinForceArg`, or
+/// `Cont::PendingCallDispatch`) takes ownership of the pop. Without disarming, the
+/// guard would double-pop the stack.
+///
+/// **Inherited guards:** Use `EvalStackGuard::inherited()` in `apply_cont` handlers
+/// that receive pop responsibility from a prior push (e.g., `Cont::PendingCallDispatch`
+/// inherits from `force_step`'s PendingCall push). The inherited guard does not push
+/// but will pop on drop unless disarmed.
+#[allow(dead_code)] // TODO: implement RAII guard for eval_stack push/pop (see TODO.md eval-hot-path-fixes)
+struct EvalStackGuard {
+    state: Arc<Mutex<crate::eval::EvalState>>,
+    armed: bool,
+}
+
+#[allow(dead_code)] // TODO: implement RAII guard for eval_stack push/pop (see TODO.md eval-hot-path-fixes)
+impl EvalStackGuard {
+    /// Push an entry onto the eval_stack and create a guard that will pop on drop.
+    fn push(state: &Arc<Mutex<crate::eval::EvalState>>, entry: (String, Span)) -> Self {
+        state.lock().unwrap().eval_stack.push(entry);
+        EvalStackGuard {
+            state: Arc::clone(state),
+            armed: true,
+        }
+    }
+
+    /// Create a guard for an inherited eval_stack entry (no push, but will pop on drop).
+    ///
+    /// Used in `apply_cont` handlers where the eval_stack entry was pushed by a prior
+    /// `force_step` call (e.g., `PendingCallDispatch` inherits from PendingCall's push,
+    /// `BuiltinForceArg` inherits from PendingBuiltin's push, `Memoize` inherits from
+    /// any pusher).
+    fn inherited(state: &Arc<Mutex<crate::eval::EvalState>>) -> Self {
+        EvalStackGuard {
+            state: Arc::clone(state),
+            armed: true,
+        }
+    }
+
+    /// Disarm: prevent the guard from popping on drop. Call this when transferring
+    /// pop ownership to a continuation (Memoize, BuiltinForceArg, PendingCallDispatch).
+    fn disarm(mut self) {
+        self.armed = false;
+        // self is dropped here, but armed=false prevents the pop in Drop.
+    }
+}
+
+impl Drop for EvalStackGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.lock().unwrap().eval_stack.pop();
+        }
+    }
+}
 
 /// Check continuation stack depth before pushing. Returns `Err(DepthExceeded)` if
 /// the stack has reached MAX_CONTINUATION_STACK, otherwise returns `Ok(())`.
@@ -494,14 +545,12 @@ pub(crate) async fn force_step(
 
     if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
-        // The pop for PendingBuiltin is distributed across multiple sites in apply_cont
-        // (fast-path, Memoize, and error returns); each apply_cont handler pops manually.
-        thunk_ctx
-            .state
-            .lock()
-            .unwrap()
-            .eval_stack
-            .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
+        // EvalStackGuard ensures pop on all exit paths; disarmed when delegating to a
+        // continuation (BuiltinForceArg, Memoize) that inherits pop responsibility.
+        let eval_stack_guard = EvalStackGuard::push(
+            &thunk_ctx.state,
+            (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+        );
 
         // Wrap args/named in Option so each exclusive match arm can move them
         // without cloning. Taking ownership avoids the pre-clone of Vec/IndexMap
@@ -536,6 +585,8 @@ pub(crate) async fn force_step(
                     mat_span,
                     arg_idx,
                 })));
+                // BuiltinForceArg continuation inherits eval_stack pop responsibility
+                eval_stack_guard.disarm();
                 return Action::Materialize {
                     thunk: arg_thunk,
                     mat_span: None,
@@ -567,6 +618,8 @@ pub(crate) async fn force_step(
                 mat_span,
                 arg_idx,
             })));
+            // BuiltinForceArg continuation inherits eval_stack pop responsibility
+            eval_stack_guard.disarm();
             return Action::Materialize {
                 thunk: arg_thunk,
                 mat_span: None,
@@ -574,10 +627,10 @@ pub(crate) async fn force_step(
         }
 
         // `named` is None for internally-created thunks (common case); only $apply
-        // passes named args through. Use an empty map ref for the None case.
+        // passes named args through. Take ownership to avoid cloning Vec/IndexMap.
         let builtin_args = crate::value::BuiltinArgs {
-            args: args.as_ref().expect("args set above").clone(),
-            named: named.as_ref().expect("named set above").clone(),
+            args: args.take().expect("args set above"),
+            named: named.take().expect("named set above"),
             call_span,
             ctx: Arc::clone(&thunk_ctx),
         };
@@ -587,27 +640,24 @@ pub(crate) async fn force_step(
                 // Fast path: if the builtin already materialized its result, skip recursion
                 if let Some(value) = result_thunk.try_get_materialized() {
                     // args/named are no longer needed; drop them implicitly.
-                    // Pop from eval_stack before fast-path return
-                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                    // eval_stack_guard pops on drop (armed)
                     thunk.set_materialized(value.clone());
                     Action::Continue(Ok(value))
                 } else {
-                    // Move args/named into RestoreState — clone was taken above for BuiltinArgs.
-                    let restore = RestoreState::PendingBuiltin {
-                        def,
-                        args: args.take().expect("args set above"),
-                        named: named.take().expect("named set above"),
-                        call_span,
-                        ctx: Arc::clone(&thunk_ctx),
-                    };
+                    // args/named were moved into BuiltinArgs (no clone), so we can't create RestoreState.
+                    // If result materialization fails with DepthExceeded, the thunk will transition to
+                    // Failed rather than being restored to PendingBuiltin. This trades retry-ability for
+                    // performance (avoiding Vec/IndexMap clone on every builtin call).
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
                         thunk_span,
                         mat_span,
-                        restore: Some(restore),
+                        restore: None,
                         ctx: Arc::clone(&thunk_ctx),
                     })));
+                    // Memoize continuation inherits eval_stack pop responsibility
+                    eval_stack_guard.disarm();
                     Action::Materialize {
                         thunk: result_thunk,
                         mat_span,
@@ -621,33 +671,23 @@ pub(crate) async fn force_step(
                     origin.as_deref(),
                     thunk_span,
                 );
-                // Pop from eval_stack before error return
-                thunk_ctx.state.lock().unwrap().eval_stack.pop();
-                if decorated.kind.is_cacheable() {
-                    thunk.cache_failure_once(&decorated);
-                } else {
-                    // Move args/named into PendingBuiltin — no clone needed.
-                    thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
-                        def,
-                        args: args.take().expect("args set above"),
-                        named: named.take().expect("named set above"),
-                        call_span,
-                        ctx: thunk_ctx,
-                    });
-                }
+                // eval_stack_guard pops on drop (armed)
+                // args/named were moved into BuiltinArgs, so we always cache errors (even DepthExceeded).
+                // This means non-cacheable errors from builtins will transition to Failed rather than
+                // being restored to PendingBuiltin. This trades retry-ability for performance.
+                thunk.cache_failure_once(&decorated);
                 Action::Continue(Err(decorated))
             }
         }
     } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
         thunk.take_pending_call()
     {
-        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction)
-        thunk_ctx
-            .state
-            .lock()
-            .unwrap()
-            .eval_stack
-            .push((origin.as_deref().unwrap_or("thunk").to_string(), thunk_span));
+        // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
+        // PendingCallDispatch continuation inherits eval_stack pop responsibility.
+        let eval_stack_guard = EvalStackGuard::push(
+            &thunk_ctx.state,
+            (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+        );
 
         stack.push(Cont::PendingCallDispatch(Box::new(
             PendingCallDispatchData {
@@ -663,6 +703,7 @@ pub(crate) async fn force_step(
                 mat_span,
             },
         )));
+        eval_stack_guard.disarm();
         Action::Materialize {
             thunk: Arc::clone(&func_thunk),
             mat_span: Some(call_span),
@@ -1197,20 +1238,22 @@ pub(crate) async fn apply_cont(
                 restore,
                 ctx,
             } = *data;
+            // Inherited guard: Memoize always pops the eval_stack entry that was
+            // pushed by the originating force_step (PendingBuiltin, PendingCall, or
+            // GuardedValidate default fallback). The guard auto-pops on all exit paths.
+            let _eval_stack_guard = EvalStackGuard::inherited(&ctx.state);
             let decorated_result = result.map_err(|e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
             });
 
             match decorated_result {
                 Ok(value) => {
-                    // Pop from eval_stack on successful materialization
-                    ctx.state.lock().unwrap().eval_stack.pop();
+                    // eval_stack_guard pops on drop (armed)
                     thunk.set_materialized(value.clone());
                     Action::Continue(Ok(value))
                 }
                 Err(e) => {
-                    // Pop from eval_stack on error (cacheable or not)
-                    ctx.state.lock().unwrap().eval_stack.pop();
+                    // eval_stack_guard pops on drop (armed)
                     if e.kind.is_cacheable() {
                         thunk.cache_failure_once(&e);
                     } else if let Some(restore_state) = restore {
@@ -1241,6 +1284,10 @@ pub(crate) async fn apply_cont(
                 thunk_span,
                 mat_span,
             } = *data;
+            // Inherited guard: PendingCallDispatch inherits the eval_stack entry
+            // pushed by force_step(PendingCall). Auto-pops on all exit paths;
+            // disarmed when delegating to Memoize or re-dispatching via PendingBuiltin.
+            let eval_stack_guard = EvalStackGuard::inherited(&thunk_ctx.state);
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
             };
@@ -1295,6 +1342,8 @@ pub(crate) async fn apply_cont(
                                     restore: Some(restore),
                                     ctx: thunk_ctx,
                                 })));
+                                // Memoize continuation inherits eval_stack pop responsibility
+                                eval_stack_guard.disarm();
                                 Action::Materialize {
                                     thunk: result_thunk,
                                     mat_span,
@@ -1305,8 +1354,7 @@ pub(crate) async fn apply_cont(
                                     origin.as_deref().unwrap_or("call").to_string(),
                                     call_span,
                                 );
-                                // Pop from eval_stack before error return
-                                thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                                // eval_stack_guard pops on drop (armed)
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure_once(&e);
                                 } else {
@@ -1336,7 +1384,7 @@ pub(crate) async fn apply_cont(
                         // recursive call adds Rust frames (materialize → run). Pre-materializing
                         // args in the CEK machine (heap-allocated continuations) prevents this.
                         //
-                        // Note: we pop eval_stack BEFORE converting to PendingBuiltin so that
+                        // Note: eval_stack_guard pops BEFORE converting to PendingBuiltin so that
                         // force_step(PendingBuiltin) can push a fresh entry — avoiding a
                         // duplicate that would cause an extra pop on completion.
                         use crate::value::Strictness;
@@ -1356,9 +1404,8 @@ pub(crate) async fn apply_cont(
                             });
 
                         if has_force_count_unevaluated || has_strict_unevaluated {
-                            // Pop the eval_stack entry pushed by force_step(PendingCall).
-                            // force_step(PendingBuiltin) will push a new entry for this thunk.
-                            thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                            // eval_stack_guard pops on drop (armed) before PendingBuiltin re-dispatch.
+                            // force_step(PendingBuiltin) will push a fresh entry for this thunk.
                             // Transition thunk from InProgress → PendingBuiltin.
                             // args is Box<Vec<...>> (matches ThunkState::PendingBuiltin.args).
                             // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
@@ -1389,8 +1436,7 @@ pub(crate) async fn apply_cont(
                                 if let Some(value) = result_thunk.try_get_materialized() {
                                     // Fast path: builtin result is already materialized.
                                     // args/named are no longer needed; drop them implicitly.
-                                    // Pop from eval_stack before fast-path return
-                                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                                    // eval_stack_guard pops on drop (armed)
                                     thunk.set_materialized(value.clone());
                                     Action::Continue(Ok(value))
                                 } else {
@@ -1411,6 +1457,8 @@ pub(crate) async fn apply_cont(
                                         restore: Some(restore),
                                         ctx: thunk_ctx,
                                     })));
+                                    // Memoize continuation inherits eval_stack pop responsibility
+                                    eval_stack_guard.disarm();
                                     Action::Materialize {
                                         thunk: result_thunk,
                                         mat_span,
@@ -1418,8 +1466,7 @@ pub(crate) async fn apply_cont(
                                 }
                             }
                             Err(e) => {
-                                // Pop from eval_stack before error return
-                                thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                                // eval_stack_guard pops on drop (armed)
                                 if e.kind.is_cacheable() {
                                     thunk.cache_failure_once(&e);
                                 } else {
@@ -1458,8 +1505,7 @@ pub(crate) async fn apply_cont(
                             payload: Some(payload_id),
                         };
                         // Fast path: the result is immediately materialized — no need to
-                        // push a Memoize continuation. Pop eval_stack and cache directly.
-                        thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                        // push a Memoize continuation. eval_stack_guard pops on drop (armed).
                         thunk.set_materialized(result_val.clone());
                         Action::Continue(Ok(result_val))
                     }
@@ -1470,8 +1516,7 @@ pub(crate) async fn apply_cont(
                             call_span,
                         );
                         let decorated = decorate(Box::new(err));
-                        // Pop from eval_stack before error return
-                        thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                        // eval_stack_guard pops on drop (armed)
                         if decorated.kind.is_cacheable() {
                             thunk.cache_failure_once(&decorated);
                         } else {
@@ -1490,8 +1535,7 @@ pub(crate) async fn apply_cont(
                 },
                 Err(e) => {
                     // Function materialization failed
-                    // Pop from eval_stack before error return
-                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                    // eval_stack_guard pops on drop (armed)
                     if e.kind.is_cacheable() {
                         thunk.cache_failure_once(&e);
                     } else {
@@ -1571,17 +1615,17 @@ pub(crate) async fn apply_cont(
                                 Err(err) => {
                                     // Guard validation failed - use default if present
                                     if let Some((default_expr, default_env)) = default {
-                                        // Push to eval_stack to match the Memoize pop below.
+                                        // Push to eval_stack to match the Memoize pop.
                                         // Guarded thunks don't push at force_step time (unlike
                                         // Unevaluated/PendingBuiltin/PendingCall) because
                                         // GuardedValidate normally exits via Action::Continue
                                         // without a Memoize pop. Only the default-fallback
                                         // paths push Cont::Memoize, so we push here to keep
-                                        // eval_stack balanced.
-                                        guard_ctx.state.lock().unwrap().eval_stack.push((
-                                            origin.as_deref().unwrap_or("thunk").to_string(),
-                                            thunk_span,
-                                        ));
+                                        // eval_stack balanced. Memoize inherits pop responsibility.
+                                        let guard_eval_stack = EvalStackGuard::push(
+                                            &guard_ctx.state,
+                                            (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+                                        );
                                         stack.push(Cont::Memoize(Box::new(MemoizeData {
                                             thunk: Arc::clone(&thunk),
                                             origin: Some(Arc::from("default fallback")),
@@ -1590,6 +1634,8 @@ pub(crate) async fn apply_cont(
                                             restore: restore.take(),
                                             ctx: Arc::clone(&guard_ctx),
                                         })));
+                                        // Memoize continuation inherits eval_stack pop responsibility
+                                        guard_eval_stack.disarm();
                                         return Action::EvalCore {
                                             expr: Arc::clone(&default_expr),
                                             env: default_env,
@@ -1608,12 +1654,12 @@ pub(crate) async fn apply_cont(
                         } else {
                             // Expected Record but got non-Dict - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                // Push to eval_stack to match the Memoize pop below (see
+                                // Push to eval_stack to match the Memoize pop (see
                                 // comment at the first default-fallback site above).
-                                guard_ctx.state.lock().unwrap().eval_stack.push((
-                                    origin.as_deref().unwrap_or("thunk").to_string(),
-                                    thunk_span,
-                                ));
+                                let guard_eval_stack = EvalStackGuard::push(
+                                    &guard_ctx.state,
+                                    (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+                                );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin: Some(Arc::from("default fallback")),
@@ -1622,6 +1668,8 @@ pub(crate) async fn apply_cont(
                                     restore: restore.take(),
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
+                                // Memoize continuation inherits eval_stack pop responsibility
+                                guard_eval_stack.disarm();
                                 return Action::EvalCore {
                                     expr: Arc::clone(&default_expr),
                                     env: default_env,
@@ -1668,12 +1716,12 @@ pub(crate) async fn apply_cont(
                         } else {
                             // Type mismatch for non-Record types - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                // Push to eval_stack to match the Memoize pop below (see
+                                // Push to eval_stack to match the Memoize pop (see
                                 // comment at the first default-fallback site above).
-                                guard_ctx.state.lock().unwrap().eval_stack.push((
-                                    origin.as_deref().unwrap_or("thunk").to_string(),
-                                    thunk_span,
-                                ));
+                                let guard_eval_stack = EvalStackGuard::push(
+                                    &guard_ctx.state,
+                                    (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+                                );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin: Some(Arc::from("default fallback")),
@@ -1682,6 +1730,8 @@ pub(crate) async fn apply_cont(
                                     restore: restore.take(),
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
+                                // Memoize continuation inherits eval_stack pop responsibility
+                                guard_eval_stack.disarm();
                                 return Action::EvalCore {
                                     expr: Arc::clone(&default_expr),
                                     env: default_env,
@@ -1747,6 +1797,10 @@ pub(crate) async fn apply_cont(
                 mat_span,
                 arg_idx,
             } = *data;
+            // Inherited guard: BuiltinForceArg inherits the eval_stack entry
+            // pushed by force_step(PendingBuiltin). Auto-pops on all exit paths;
+            // disarmed when delegating to another BuiltinForceArg or Memoize.
+            let eval_stack_guard = EvalStackGuard::inherited(&thunk_ctx.state);
             let decorate = |e| {
                 attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span)
             };
@@ -1787,6 +1841,8 @@ pub(crate) async fn apply_cont(
                                 mat_span,
                                 arg_idx: next_idx,
                             })));
+                            // Next BuiltinForceArg inherits eval_stack pop responsibility
+                            eval_stack_guard.disarm();
                             return Action::Materialize {
                                 thunk: next_arg,
                                 mat_span: None,
@@ -1828,6 +1884,8 @@ pub(crate) async fn apply_cont(
                             mat_span,
                             arg_idx: next_idx,
                         })));
+                        // Next BuiltinForceArg inherits eval_stack pop responsibility
+                        eval_stack_guard.disarm();
                         return Action::Materialize {
                             thunk: next_arg,
                             mat_span: None,
@@ -1835,9 +1893,10 @@ pub(crate) async fn apply_cont(
                     }
 
                     // All forced and strict args materialized — call the builtin.
+                    // Take ownership to avoid cloning Vec/IndexMap.
                     let builtin_args = crate::value::BuiltinArgs {
-                        args: args.as_ref().expect("args set above").clone(),
-                        named: named.as_ref().expect("named set above").clone(),
+                        args: args.take().expect("args set above"),
+                        named: named.take().expect("named set above"),
                         call_span,
                         ctx: Arc::clone(&thunk_ctx),
                     };
@@ -1845,27 +1904,21 @@ pub(crate) async fn apply_cont(
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
                                 // args/named are no longer needed; drop them implicitly.
-                                // Pop from eval_stack before fast-path return
-                                thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                                // eval_stack_guard pops on drop (armed)
                                 thunk.set_materialized(value.clone());
                                 Action::Continue(Ok(value))
                             } else {
-                                // Move args/named into RestoreState — no clone needed.
-                                let restore = RestoreState::PendingBuiltin {
-                                    def,
-                                    args: args.take().expect("args set above"),
-                                    named: named.take().expect("named set above"),
-                                    call_span,
-                                    ctx: Arc::clone(&thunk_ctx),
-                                };
+                                // args/named were moved into BuiltinArgs (no clone), so we can't create RestoreState.
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin,
                                     thunk_span,
                                     mat_span,
-                                    restore: Some(restore),
+                                    restore: None,
                                     ctx: Arc::clone(&thunk_ctx),
                                 })));
+                                // Memoize continuation inherits eval_stack pop responsibility
+                                eval_stack_guard.disarm();
                                 Action::Materialize {
                                     thunk: result_thunk,
                                     mat_span,
@@ -1873,30 +1926,16 @@ pub(crate) async fn apply_cont(
                             }
                         }
                         Err(e) => {
-                            // Pop from eval_stack before error return
-                            thunk_ctx.state.lock().unwrap().eval_stack.pop();
-                            if e.kind.is_cacheable() {
-                                thunk.cache_failure_once(&e);
-                            } else {
-                                // Move args/named into PendingBuiltin — no clone needed.
-                                thunk.restore_unevaluated(
-                                    crate::value::UnevaluatedState::Builtin {
-                                        def,
-                                        args: args.take().expect("args set above"),
-                                        named: named.take().expect("named set above"),
-                                        call_span,
-                                        ctx: thunk_ctx,
-                                    },
-                                );
-                            }
+                            // eval_stack_guard pops on drop (armed)
+                            // args/named were moved into BuiltinArgs, so we always cache errors (even DepthExceeded).
+                            thunk.cache_failure_once(&e);
                             Action::Continue(Err(e))
                         }
                     }
                 }
                 Err(e) => {
                     let e = decorate(e);
-                    // Pop from eval_stack before error return
-                    thunk_ctx.state.lock().unwrap().eval_stack.pop();
+                    // eval_stack_guard pops on drop (armed)
                     if e.kind.is_cacheable() {
                         thunk.cache_failure_once(&e);
                     } else {

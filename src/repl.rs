@@ -221,8 +221,10 @@ impl ReplSession {
             return Err("empty input".to_string());
         }
 
-        // Delegate to the same eval pipeline used by `llt eval`.
-        let type_annotation_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+        // Get TypeAnnotationTable from typecheck for static type resolution in TypeAssert nodes.
+        let (_annotation_errors, type_annotation_table) =
+            crate::typecheck::typecheck_surface_program_annotation_table(&program);
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let result_thunk = crate::async_rt::block_on_anywhere(eval_surface_file_with_input(
             &program,
             Arc::clone(&self.env),

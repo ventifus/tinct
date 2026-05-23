@@ -648,13 +648,74 @@ After chr-instances-gaps, 6 typecheck + 5 type-error corpus tests still fail bec
 
 **Performance (Critical/Major):**
 - [ ] Fix `BuiltinArgs` clone in `force_step` (`eval_materialize.rs:578-583`) — change `args.as_ref().expect(...).clone()` to `args.take().expect(...)` to avoid Vec/IndexMap clone on every builtin call (performance-expert) [Critical]
-- [ ] Change `Environment.bindings` from `IndexMap` to `HashMap` (`value.rs:1777`) — insertion order has no semantic meaning after resolver populates slots; `HashMap` is ~20% faster for lookups (performance-expert) [Critical]
+- [x] Change `Environment.bindings` from `IndexMap` to `HashMap` — **NOT VIABLE**: `get_by_slot()` calls `bindings.get_index(slot)` (IndexMap positional access); slot system already makes IndexMap+slots faster than HashMap+name lookup. Removing would break slot fast-path entirely.
+- [ ] Fix stale comment at `value.rs:1775` — says "future slot-based O(1) lookup (Phase 2)" but slot lookup is already implemented and active (`eval.rs:1344` uses `env.get_by_slot(level, slot)`) [Minor]
+- [ ] Profile slot hit rate vs name-lookup fallback rate — if fallback is high, it indicates resolver coverage gaps (some variable types not getting slots assigned), not a data structure problem. Fix: improve resolver slot assignment, not data structure. Instrument `Environment::get()` with a counter to measure [Minor]
+
+### resolver-slot-coverage: Extend slot assignment to all variable types
+
+**Goal:** Eliminate name-lookup fallback by giving every resolvable variable a slot. Currently `get_by_slot()` is the fast path but several constructs force `get(name)` fallback.
+
+**Gap 1 — `Annotation::PropertyDict` entries** (`src/resolve.rs:214-228`):
+`walk_surface_annotation` explicitly skips PropertyDict entries with comment "fall back to FreeVar (name-based lookup) at runtime". This is a migration artifact — PropertyDict still holds old Expr nodes. Once `Annotation` is fully migrated to `Arc<SurfaceNode>`, wire resolution here.
+- [ ] After Annotation migration: remove the skip comment and walk PropertyDict entry Arc<SurfaceNode> values through `walk_surface_node` in `walk_surface_annotation` (`src/resolve.rs:217-221`)
+
+**Gap 2 — Match arm pattern-bound variables** (`src/resolve.rs:172-180`):
+`Match` arms walk scrutinee + body but never call `enter_scope()` for pattern-bound variables (e.g., `[match x  [Int n]: [+ n 1]]` — `n` has no slot, falls back to name lookup inside the arm body).
+- [ ] Extend `walk_surface_expr` for `SurfaceExpression::Match`: extract bound variable names from each arm's pattern (`CaseArm::pattern`), call `enter_scope(bound_names)` before walking `arm.body`, call `exit_scope()` after (`src/resolve.rs:172-180`) [Major]
+
+**Gap 3 — Variables inside type annotations** (cross-cutting):
+Type annotations using `@[constraint: [a: Foo]]` form use PropertyDict, which is skipped. Until Gap 1 is fixed, all constraint-annotation variables fall back to name lookup.
+- [ ] Track as a consequence of Gap 1 — fixing PropertyDict annotation resolution fixes this too [Minor]
+
+**Gap 4 — Verify LetDecl/PatternDecl sequential injection**:
+The Sequential handler (lines 118-135) calls `surface_node_static_keys(e)` to decide whether to inject scope after each expression. Verify `LetDecl` and `PatternDecl` nodes are correctly identified by `surface_node_static_keys` so their bindings get slots in subsequent expressions.
+- [ ] Audit `surface_node_static_keys` to confirm it returns keys for all declaration types that introduce bindings (`src/resolve.rs`, helper function) [Minor]
 - [ ] Skip `dict_env` allocation for literal-only dicts in `eval_dict_core` (`eval_dict.rs:82-84`) — `Arc::new(RwLock::new(Environment::with_parent(...)))` allocated even when all values are Int/Float/Bool/Str (performance-expert) [Major]
 
 **Performance (Minor):**
 - [ ] Start W1 strictness scan at `arg_idx+1`, not 0, in `BuiltinForceArg` continuation (`eval_materialize.rs:550-556`) — linear scan restarts from 0 on every resume (performance-expert) [Minor]
-- [ ] `Key::String` should use `Rc<str>` + range instead of owned `String` (`eval_dict.rs:27`, `value.rs:104`) — every string-keyed dict entry allocates a new String despite `Value::String` having `Rc<str>` sharing (performance-expert) [Minor]
 - [ ] `count_static_keys_core` double-pass: use `entries.len()` as capacity upper bound instead of counting-then-inserting (`eval_dict.rs:52-63`) (performance-expert) [Minor]
+
+### resolver-slot-soundness: Fix computed-string key slot-shift and add get_by_slot name verification
+
+**Source:** eval-engine + computer-scientist audit (2026-05-23)
+
+**Root cause:** The resolver counts only `Str`/`Annotated` (statically-string) keys when building scope slot indices (`surface_dict_static_keys`, `surface_node_static_keys`). At runtime, `eval_dict_core` and the Sequential handler insert **all** evaluated `Key::String` entries into `dict_env`/`child_env` — including computed-string keys whose value is a VarRef or expression that produces a string at runtime. Because `IndexMap` preserves insertion order, a computed-string key inserted at position K shifts all static keys after it by 1, causing `get_by_slot(level, slot)` to return the wrong thunk with no error (the slot is in bounds; the wrong value is silently used).
+
+**Critical: silent wrong-value bug** — the fallback to name-based lookup only fires on `None`; a mismatched-but-valid slot result is never detected.
+
+**Concrete counterexample:**
+```
+[k: "z"]
+[result: [$k: 1  x: 2  y: $x]]
+```
+Resolver assigns `$x` → slot 0 (counts only `x`, `y`). Runtime inserts `z` at index 0, `x` at index 1. `get_by_slot(0, 0)` → returns `1` (the value for `z`). `y` silently gets the wrong value.
+
+Same bug in Sequential/document pipelines:
+```
+[k: "z"]
+[$k: 1  x: 2]
+$x
+```
+Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_slot(0, 0)` → `1`.
+
+**Fixes:**
+
+- [ ] **[Critical]** Add name verification to `get_by_slot` fast path — compare returned entry's key against the expected variable name; on mismatch, fall back to name-based `get()` instead of silently returning the wrong thunk. This converts the silent-wrong-value bug into a correct fallback. (`src/value.rs:1843`, `src/eval.rs:1341-1345`)
+- [ ] **[Critical]** Fix dict slot-shift: in `eval_dict_core`, track a separate `string_key_insertion_count` and verify it matches the resolver's static-key count for the scope, OR exclude computed-string keys from `dict_env` slot assignment (insert them into the output dict only, not the scope env). (`src/eval_dict.rs:142-148`, `src/resolve.rs:352-367`)
+- [ ] **[Critical]** Fix Sequential/document slot-shift: same root cause — `child_env` receives all `Key::String` entries from the materialized dict including computed ones. (`src/eval.rs:1440-1450`, `src/eval_pipeline.rs:447-459`, `src/resolve.rs:118-135`)
+- [ ] **[Major]** Fix type-stage document named sections corrupting `%name` slot indices — resolver includes named `stage: type` documents in `named_sections` (resolve.rs:342-344) but runtime skips them (eval_pipeline.rs:507), leaving subsequent `%name` slots off by one. Fix: skip type-stage documents in `resolve_surface_program`'s `named_sections` accumulation to match runtime behavior. (`src/resolve.rs:326-348`, `src/eval_pipeline.rs:505-545`)
+- [ ] **[Minor]** Add `debug_assert_eq!(slot_idx, static_key_count)` after the Phase-3 arena fill loop in `eval_dict_core` to catch future drift between `count_static_keys_core` and the resolver's static-key definition. (`src/eval_dict.rs:52-63`)
+- [ ] **[Minor]** Add corpus test for named-arg-fills-optional-slot slot correctness: `[fn [let a b@[default: 0]] $b]` called with one positional arg — verifies `b` at slot 1 returns default value 0.
+
+### key-string-rc: Change Key::String from owned String to Rc<str>
+
+**Sources:** performance-expert (review #311)
+**Scope:** 555 occurrences of `Key::String(` across 18 files — mechanical refactoring but massive scale, split from eval-hot-path-fixes.
+
+- [ ] Change `Key::String(String)` to `Key::String(Rc<str>)` in `value.rs:104` and update Hash/Eq/Display impls
+- [ ] Update all 555 construction/match sites across 18 files (ast_dict.rs: 174, eval.rs: 85, builtins.rs: 79, builtins_io.rs: 56, type_normalize.rs: 24, builtins_meta.rs: 23, builtins_uri.rs: 25, builtins_dict.rs: 19, surface_fields.rs: 14, builtins_datetime.rs: 14, value.rs: 12, eval_materialize.rs: 6, builtins_math.rs: 4, eval_dict.rs: 3, eval_pipeline.rs: 3, builtins_async.rs: 2, lib.rs: 11, repl.rs: 1)
 
 ### test-coverage-cycle311: Unit tests for CEK machine, letrec scoping, and corpus edge cases
 

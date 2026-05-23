@@ -108,9 +108,9 @@ For each task (or batch of parallel tasks):
    - The specific task to implement (ONE task per agent)
    - Which files to read for context (e.g., "read doc/08-evaluation.md §Lazy Evaluation for design intent")
    - Permission to refactor anything needed — always favor correctness. Pre-1.0, no users.
-   - Instruction to run `just test` after making changes and fix any failures
+   - **Do NOT ask agents to run `just test` or any build command.** Agents only write code and return. Build verification is the coordinator's job (step 5 below).
 4. Tasks touching different files can be dispatched in parallel (single message, multiple Agent calls)
-5. After agent(s) complete, run `just test` to confirm. If tests fail, dispatch the same agent to fix.
+5. After agent(s) complete, run `just build` to verify compilation. If build fails, dispatch the same agent to fix. Do NOT run `just test` here — the full test suite runs in the build gate (step 2b).
 6. Update task status in `.tmp/sprint-{slug}.md` to `DONE`
 
 On re-entry (after build gate or sprint-reviewer failure), only implement fixes for the specific issues identified — do not re-implement completed tasks.

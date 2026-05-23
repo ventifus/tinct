@@ -243,6 +243,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             false, // disable scheme_map (not needed for eval)
             false, // not in prelude load
         );
+    // Also get the TypeAnnotationTable for use in eval (enables static type resolution in TypeAssert nodes).
+    let (_annotation_errors, type_annotation_table) =
+        typecheck::typecheck_surface_program_annotation_table(&program);
+    let type_annotation_table = std::sync::Arc::new(type_annotation_table);
+
     // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
     // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
     // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
@@ -308,12 +313,6 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             }
         }
     }
-    // Use the empty TypeAnnotationTable: typecheck_file_with_types_and_env_and_source_returning_state
-    // uses the old File-based AST and does not produce a TypeAnnotationTable keyed by SurfaceNode
-    // NodeIds. TypeAssert nodes will fall back to RuntimeTypeCheck (dynamic validation) for now.
-    // TODO(surface-typecheck): produce TypeAnnotationTable from the surface typecheck path so
-    // TypeAssert nodes get statically-resolved types here.
-    let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
     let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
         &program,
         Arc::clone(&env),
@@ -394,6 +393,11 @@ pub fn eval_source_with_cap_net(
             false, // disable scheme_map (not needed for eval)
             false, // not in prelude load
         );
+    // Also get the TypeAnnotationTable for use in eval (enables static type resolution in TypeAssert nodes).
+    let (_annotation_errors, type_annotation_table) =
+        typecheck::typecheck_surface_program_annotation_table(&program);
+    let type_annotation_table = std::sync::Arc::new(type_annotation_table);
+
     let (env, stdlib_arena) =
         builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
     // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
@@ -444,11 +448,6 @@ pub fn eval_source_with_cap_net(
         let cap_thunk = Arc::new(Thunk::new_materialized(cap_val, Span::origin()));
         env.write().unwrap().insert(format!("%{}", name), cap_thunk);
     }
-
-    // Use empty TypeAnnotationTable: typecheck uses old File-based AST, not SurfaceNode NodeIds.
-    // TypeAssert nodes fall back to RuntimeTypeCheck (dynamic validation).
-    // TODO(surface-typecheck): wire TypeAnnotationTable from surface typecheck path.
-    let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
     let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
         &program,
         Arc::clone(&env),
@@ -1134,8 +1133,8 @@ pub fn format_with_json_llt(
     desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-    let (_type_errors, _table) = typecheck::typecheck_surface_program_annotation_table(&program);
-    let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
+    let (_type_errors, type_annotation_table) = typecheck::typecheck_surface_program_annotation_table(&program);
+    let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
     // from the result_thunk are resolvable when the json functions access dict entries.
@@ -1601,7 +1600,9 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
+        let (_type_errors, type_annotation_table) =
+            typecheck::typecheck_surface_program_annotation_table(&program);
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 
@@ -1689,7 +1690,9 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
+        let (_type_errors, type_annotation_table) =
+            typecheck::typecheck_surface_program_annotation_table(&program);
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
         let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
@@ -1714,7 +1717,9 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
+        let (_type_errors, type_annotation_table) =
+            typecheck::typecheck_surface_program_annotation_table(&program);
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
         let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
@@ -1904,9 +1909,9 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let (_type_errors, _table) =
+        let (_type_errors, type_annotation_table) =
             typecheck::typecheck_surface_program_annotation_table(&program);
-        let type_annotation_table = std::sync::Arc::new(ast::TypeAnnotationTable::new());
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
 

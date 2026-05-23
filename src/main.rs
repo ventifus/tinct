@@ -1941,8 +1941,10 @@ fn run_eval(
         eval_ctx.set_boundary_guards(infer_state.boundary_guards);
         eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
-        // Evaluate file with pipeline input
-        let type_annotation_table = std::sync::Arc::new(tinct::TypeAnnotationTable::new());
+        // Get TypeAnnotationTable from typecheck for static type resolution in TypeAssert nodes.
+        let (_annotation_errors, type_annotation_table) =
+            tinct::typecheck::typecheck_surface_program_annotation_table(&program);
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let file_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
             &program,
             Arc::clone(&env),
@@ -2467,8 +2469,9 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-    let (type_errors, _table) =
+    let (type_errors, type_annotation_table) =
         tinct::typecheck::typecheck_surface_program_annotation_table(&program);
+    let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     // In strict mode, type errors are fatal
     if strict && !type_errors.is_empty() {
@@ -2611,7 +2614,6 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         Some(std::collections::HashSet::new()),
     );
 
-    let type_annotation_table = std::sync::Arc::new(tinct::TypeAnnotationTable::new());
     let thunk = tinct::async_rt::block_on(tinct::eval_surface_file(
         &program,
         Arc::clone(&env),
@@ -2924,8 +2926,9 @@ fn run_literate_weave(
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-        let (type_errors, _table) =
+        let (type_errors, type_annotation_table) =
             tinct::typecheck::typecheck_surface_program_annotation_table(&program);
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
         // Capture type warnings (always non-fatal in literate mode unless --strict)
         let type_warnings = if !strict && !type_errors.is_empty() {
@@ -2963,7 +2966,6 @@ fn run_literate_weave(
 
         let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
 
-        let type_annotation_table = std::sync::Arc::new(tinct::TypeAnnotationTable::new());
         let thunk_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
             &program,
             Arc::clone(&env),
