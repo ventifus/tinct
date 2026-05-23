@@ -348,17 +348,16 @@ pub(crate) enum Cont {
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
 const _: () = assert!(std::mem::size_of::<Cont>() <= 96);
 
-/// RAII guard that pops one entry from the eval_stack when dropped.
-///
-/// Created immediately after an eval_stack.push() in force_step. Ensures the push
-/// is always paired with a pop, even on early error exits, without manual pop calls
-/// at every error site.
-///
-/// **Disarming:** Call `.disarm()` before returning `Action::Materialize` on the
-/// success path. On those paths a `Cont::Memoize` continuation takes ownership of
-/// the pop (see `apply_cont` Cont::Memoize handler). Without disarming the guard
-/// would double-pop the stack.
-///
+// RAII guard that pops one entry from the eval_stack when dropped.
+//
+// Created immediately after an eval_stack.push() in force_step. Ensures the push
+// is always paired with a pop, even on early error exits, without manual pop calls
+// at every error site.
+//
+// **Disarming:** Call `.disarm()` before returning `Action::Materialize` on the
+// success path. On those paths a `Cont::Memoize` continuation takes ownership of
+// the pop (see `apply_cont` Cont::Memoize handler). Without disarming the guard
+// would double-pop the stack.
 
 /// Check continuation stack depth before pushing. Returns `Err(DepthExceeded)` if
 /// the stack has reached MAX_CONTINUATION_STACK, otherwise returns `Ok(())`.

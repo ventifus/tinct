@@ -243,10 +243,16 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // so the type checker needs to know about them to avoid false "undefined variable" errors.
     env.insert("%pwd".to_string(), crate::types::Type::DirCap);
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    env.insert(
-        "%stdin".to_string(),
-        crate::types::Type::Handle(Box::new(Type::Unknown)),
-    );
+    // %stdin is Handle[Readable Text]
+    {
+        let mut caps = HashMap::new();
+        caps.insert("Readable".to_string(), Type::Bool);
+        caps.insert("Text".to_string(), Type::Bool);
+        env.insert(
+            "%stdin".to_string(),
+            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+        );
+    }
 
     // Only prelude.llt is loaded at startup.
     // strings.llt, math.llt, and encoding.llt require explicit [include libdir "module.llt"].
@@ -632,8 +638,6 @@ fn collect_include_paths_from_node(
 ///
 /// Returns `base_env` unchanged on any IO or parse failure (best-effort approach).
 /// Depth is capped at `MAX_INCLUDE_DEPTH` to prevent runaway recursion.
-// AMBIENT-OK: typecheck-time include resolution falls back to std::fs when cap_dir unavailable.
-#[allow(clippy::disallowed_methods)]
 fn resolve_includes(
     include_paths: &[(Span, Option<String>, String)],
     base_dir: Option<&Path>,
@@ -641,7 +645,7 @@ fn resolve_includes(
     base_env: Rc<TypeEnv>,
     visited: &mut HashSet<String>,
     depth: usize,
-    base_cap_dir: Option<&cap_std::fs::Dir>,
+    cap_dir: &cap_std::fs::Dir,
 ) -> (Rc<TypeEnv>, IncludeBindings) {
     if depth >= MAX_INCLUDE_DEPTH {
         // Depth limit reached: return base_env unchanged with empty binding map
@@ -701,27 +705,19 @@ fn resolve_includes(
         visited.insert(path_key);
 
         // Enforce the same 10 MB limit as the runtime $include.
-        // When a cap_std Dir is available for the %pwd base, use it (RESOLVE_BENEATH semantics);
-        // fall back to std::fs for %libdir paths or when no cap dir was provided.
+        // Use cap_std for %pwd paths (RESOLVE_BENEATH semantics); fall back to std::fs for %libdir paths.
         let use_cap = cap_name.as_deref() == Some("%pwd");
         let file_len = if use_cap {
-            if let Some(cap_dir) = base_cap_dir {
-                // Derive relative path by stripping the canonical base prefix.
-                let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
-                let relative = if let Some(ref base) = canonical_base {
-                    normalized.strip_prefix(base).unwrap_or(&normalized)
-                } else {
-                    &normalized
-                };
-                match cap_dir.metadata(relative) {
-                    Ok(m) => m.len(),
-                    Err(_) => continue,
-                }
+            // Derive relative path by stripping the canonical base prefix.
+            let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
+            let relative = if let Some(ref base) = canonical_base {
+                normalized.strip_prefix(base).unwrap_or(&normalized)
             } else {
-                match std::fs::metadata(&normalized) {
-                    Ok(m) => m.len(),
-                    Err(_) => continue,
-                }
+                &normalized
+            };
+            match cap_dir.metadata(relative) {
+                Ok(m) => m.len(),
+                Err(_) => continue,
             }
         } else {
             match std::fs::metadata(&normalized) {
@@ -733,31 +729,24 @@ fn resolve_includes(
             continue;
         }
 
-        // Read the file — use cap_std RESOLVE_BENEATH when available for %pwd paths.
+        // Read the file — use cap_std RESOLVE_BENEATH for %pwd paths.
         let content = if use_cap {
-            if let Some(cap_dir) = base_cap_dir {
-                let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
-                let relative = if let Some(ref base) = canonical_base {
-                    normalized.strip_prefix(base).unwrap_or(&normalized)
-                } else {
-                    &normalized
-                };
-                match cap_dir.open(relative) {
-                    Ok(mut f) => {
-                        use std::io::Read;
-                        let mut buf = String::new();
-                        match f.read_to_string(&mut buf) {
-                            Ok(_) => buf,
-                            Err(_) => continue,
-                        }
-                    }
-                    Err(_) => continue,
-                }
+            let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
+            let relative = if let Some(ref base) = canonical_base {
+                normalized.strip_prefix(base).unwrap_or(&normalized)
             } else {
-                match std::fs::read_to_string(&normalized) {
-                    Ok(c) => c,
-                    Err(_) => continue,
+                &normalized
+            };
+            match cap_dir.open(relative) {
+                Ok(mut f) => {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    match f.read_to_string(&mut buf) {
+                        Ok(_) => buf,
+                        Err(_) => continue,
+                    }
                 }
+                Err(_) => continue,
             }
         } else {
             match std::fs::read_to_string(&normalized) {
@@ -773,20 +762,8 @@ fn resolve_includes(
         };
 
         // Run macro expansion (tolerate errors).
-        // Use the cap_std Dir for expansion when available (avoids re-acquiring ambient authority).
-        // AMBIENT-OK: falls back to CWD open only when no cap Dir is provided (lib API boundary).
-        let fallback_dir;
-        let expand_dir: &cap_std::fs::Dir = match base_cap_dir {
-            Some(dir) => dir,
-            None => {
-                fallback_dir =
-                    match cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()) {
-                        Ok(d) => d,
-                        Err(_) => continue,
-                    };
-                &fallback_dir
-            }
-        };
+        // Use the provided cap_std Dir for expansion.
+        let expand_dir = cap_dir;
         // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve.
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -817,17 +794,28 @@ fn resolve_includes(
         include_bindings.insert(*span, bindings);
 
         // Recursively resolve includes from this program.
-        // Open a new cap-std Dir for the nested file's parent directory to enforce
-        // RESOLVE_BENEATH on nested includes (no std::fs fallback).
+        // Open the nested file's parent directory via cap_dir to enforce RESOLVE_BENEATH.
         let nested_includes = collect_include_paths(&program);
         let parent_dir = normalized.parent();
-        // AMBIENT-OK: Nested include resolution opens parent dir to enforce RESOLVE_BENEATH
-        #[allow(clippy::disallowed_methods)]
-        let nested_cap_dir = if let Some(parent) = parent_dir {
-            cap_std::fs::Dir::open_ambient_dir(parent, cap_std::ambient_authority()).ok()
+
+        // Derive relative path from cap_dir to the parent directory
+        let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
+        let relative_parent = if let Some(parent) = parent_dir {
+            if let Some(ref base) = canonical_base {
+                parent.strip_prefix(base).unwrap_or(parent)
+            } else {
+                parent
+            }
         } else {
-            None
+            std::path::Path::new(".")
         };
+
+        // Open nested dir through cap_dir (narrow from existing cap)
+        let nested_cap_dir = match cap_dir.open_dir(relative_parent) {
+            Ok(d) => d,
+            Err(_) => continue, // Skip if parent dir can't be opened
+        };
+
         let (nested_env, nested_bindings) = resolve_includes(
             &nested_includes,
             parent_dir,
@@ -835,7 +823,7 @@ fn resolve_includes(
             env,
             visited,
             depth + 1,
-            nested_cap_dir.as_ref(),
+            &nested_cap_dir,
         );
         env = nested_env;
 
@@ -1016,7 +1004,10 @@ pub fn build_type_env(
     program: &SurfaceProgram,
     base_dir: Option<&Path>,
 ) -> (Rc<TypeEnv>, IncludeBindings) {
-    build_type_env_with_cap(program, base_dir, None)
+    // Open "." as the base cap dir for type-checking includes
+    let cwd_cap = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .expect("build_type_env: failed to open CWD as cap dir");
+    build_type_env_with_cap(program, base_dir, &cwd_cap)
 }
 
 /// Like `build_type_env`, but also accepts a `cap_std::fs::Dir` for `%pwd` I/O.
@@ -1027,7 +1018,7 @@ pub fn build_type_env(
 pub fn build_type_env_with_cap(
     program: &SurfaceProgram,
     base_dir: Option<&Path>,
-    base_cap_dir: Option<&cap_std::fs::Dir>,
+    cap_dir: &cap_std::fs::Dir,
 ) -> (Rc<TypeEnv>, IncludeBindings) {
     let prelude_env = build_prelude_env();
 
@@ -1035,10 +1026,16 @@ pub fn build_type_env_with_cap(
     let mut env = TypeEnv::with_parent(&prelude_env);
     env.insert("%pwd".to_string(), crate::types::Type::DirCap);
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    env.insert(
-        "%stdin".to_string(),
-        crate::types::Type::Handle(Box::new(Type::Unknown)),
-    );
+    // %stdin is Handle[Readable Text]
+    {
+        let mut caps = HashMap::new();
+        caps.insert("Readable".to_string(), Type::Bool);
+        caps.insert("Text".to_string(), Type::Bool);
+        env.insert(
+            "%stdin".to_string(),
+            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+        );
+    }
     let mut env = Rc::new(env);
 
     let mut include_bindings = HashMap::new();
@@ -1054,7 +1051,7 @@ pub fn build_type_env_with_cap(
             env,
             &mut visited,
             0,
-            base_cap_dir,
+            cap_dir,
         );
         env = new_env;
         include_bindings = bindings;
@@ -1202,6 +1199,10 @@ mod tests {
         let tmp = std::env::temp_dir();
         let mut visited = HashSet::new();
 
+        // Open a test cap dir (required by resolve_includes signature)
+        let test_cap_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+            .expect("failed to open test cap dir");
+
         let (result_env, result_bindings) = resolve_includes(
             &include_paths,
             Some(tmp.as_path()),
@@ -1209,7 +1210,7 @@ mod tests {
             Rc::clone(&base_env),
             &mut visited,
             0,
-            None, // no cap dir in this test
+            &test_cap_dir,
         );
 
         // Missing file: canonicalize fails → skipped → base_env returned as-is.
@@ -1238,10 +1239,15 @@ mod tests {
         use crate::types::Type;
         assert_eq!(env.get("%pwd").unwrap().body, Type::DirCap);
         assert_eq!(env.get("%libdir").unwrap().body, Type::DirCap);
-        assert_eq!(
-            env.get("%stdin").unwrap().body,
-            Type::Handle(Box::new(Type::Unknown))
-        );
+        // %stdin is Handle[Readable Text] (updated to use concrete capability row)
+        if let Type::Handle(inner) = &env.get("%stdin").unwrap().body {
+            assert!(
+                !matches!(inner.as_ref(), Type::Unknown),
+                "expected Handle with concrete capability row, got Handle(Unknown)"
+            );
+        } else {
+            panic!("expected Handle type for %stdin");
+        }
     }
 
     /// Verify that `build_type_env` returns binding maps for includes.

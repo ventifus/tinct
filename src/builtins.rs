@@ -5742,7 +5742,7 @@ mod tests {
             thunk(string_val("World".into())),
         ];
         let result = mat(builtin_str(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5761,7 +5761,7 @@ mod tests {
             thunk(Value::Bool(true)),
         ];
         let result = mat(builtin_str(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8131,7 +8131,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let result = mat(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8147,7 +8147,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let result = mat(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8162,7 +8162,7 @@ mod tests {
 
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42)), error_thunk];
         let result = mat(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8181,7 +8181,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let result = mat(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8197,7 +8197,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let e = run(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8223,7 +8223,7 @@ mod tests {
             thunk(Value::Int(99)),
         ];
         let e = run(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8240,7 +8240,7 @@ mod tests {
     fn if_arity_too_few() {
         let args = vec![thunk(Value::Bool(true)), thunk(Value::Int(42))];
         let e = run(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8262,7 +8262,7 @@ mod tests {
             thunk(Value::Int(3)),
         ];
         let e = run(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -8289,7 +8289,7 @@ mod tests {
         ];
 
         let err = run(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: call_span_val,
             ctx: test_ctx(),
@@ -8332,7 +8332,7 @@ mod tests {
         ];
 
         let err = run(builtin_if(BuiltinArgs {
-            args: args,
+            args,
             named: no_named(),
             call_span: same_span,
             ctx: test_ctx(),

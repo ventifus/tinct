@@ -455,6 +455,51 @@ fn main() {
     }
 }
 
+/// Open a base directory for the given file path, using the file's parent directory.
+/// Falls back to "." if the path has no parent or is "-" (stdin).
+///
+/// AMBIENT-OK: Helper for CLI bootstrap — operator specified file paths.
+fn open_file_base_dir(file_path: &str, context: &str) -> Result<cap_std::fs::Dir, String> {
+    let dir_path = if file_path == "-" {
+        std::path::Path::new(".")
+    } else {
+        let p = std::path::Path::new(file_path);
+        p.parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."))
+    };
+    cap_std::fs::Dir::open_ambient_dir(dir_path, cap_std::ambient_authority())
+        .map_err(|e| format!("{context}: cannot open base directory: {e}"))
+}
+
+/// Open cap_std::fs::Dir entries for the given --cap-fs list.
+/// Skips injection when no_fs is true.
+/// Returns Vec<(name, Arc<cap_std::fs::Dir>, perms)>.
+fn open_cap_fs_entries(
+    cap_fs: &[String],
+    no_fs: bool,
+) -> Result<Vec<(String, Arc<cap_std::fs::Dir>, tinct::DirPerms)>, String> {
+    if no_fs {
+        return Ok(Vec::new());
+    }
+
+    let parsed_entries = parse_cap_fs_entries(cap_fs)?;
+    let mut result = Vec::new();
+
+    for (name, cap_path, perms) in parsed_entries {
+        let cap_dir = cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
+            .map_err(|e| {
+            format!(
+                "--cap-fs: cannot open directory {:?}: {e}",
+                cap_path.display()
+            )
+        })?;
+        result.push((name, Arc::new(cap_dir), perms));
+    }
+
+    Ok(result)
+}
+
 /// Parse a duration string like "5s", "500ms", "2m" into seconds (u32).
 /// Rounds up milliseconds to the nearest second (minimum 1).
 fn parse_duration(s: &str) -> Result<u32, String> {
@@ -1384,21 +1429,14 @@ fn run_eval(
     // MODE syntax: r/w/a/s/l letters or [Cap1 Cap2 ...] extended form.
     // --no-fs suppresses all cap-fs injection: operator-specified caps are not available
     // to user code when filesystem access is globally disabled.
-    if !no_fs {
+    {
         use tinct::Value;
-        let parsed_entries = parse_cap_fs_entries(&cap_fs)?;
-        for (name, cap_path, perms) in parsed_entries {
-            let cap_dir =
-                cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
-                    .map_err(|e| {
-                        format!(
-                            "--cap-fs: cannot open directory {:?}: {e}",
-                            cap_path.display()
-                        )
-                    })?;
-
+        let cap_entries = open_cap_fs_entries(&cap_fs, no_fs)?;
+        for (name, cap_dir_arc, perms) in cap_entries {
+            // Clone the Arc to get an independent Rc for the DirCap value
+            let dir_for_cap = Rc::new(cap_dir_arc.open_dir(".").expect("failed to dup cap dir"));
             let cap_value = Value::DirCap {
-                dir: Rc::new(cap_dir),
+                dir: dir_for_cap,
                 perms,
             };
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
@@ -1785,8 +1823,6 @@ fn run_eval(
 
         // Open base_dir as a cap-std Dir before expand_surface_program so it can be passed in
         // without re-acquiring ambient authority inside the expansion step.
-        // AMBIENT-OK: CLI bootstrap — operator chose this file; base_dir is then passed
-        // down to expand_surface_program and eval without further ambient opens.
         let base_dir =
             cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
                 .map_err(|e| format!("cannot open base directory: {e}"))?;
@@ -2024,16 +2060,7 @@ fn run_fmt(
 
         // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-        // AMBIENT-OK: CLI bootstrap — operator specified this file path.
-        let fmt_base_dir = {
-            let p = std::path::Path::new(file_path);
-            let dir = p
-                .parent()
-                .filter(|d| !d.as_os_str().is_empty())
-                .unwrap_or(std::path::Path::new("."));
-            cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
-                .map_err(|e| format!("cannot open base directory for fmt: {e}"))?
-        };
+        let fmt_base_dir = open_file_base_dir(file_path, "fmt")?;
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         let mut program = output.program;
         tinct::expand::expand_surface_program(&mut program, false, &fmt_base_dir)
@@ -2085,14 +2112,7 @@ fn run_fmt(
     // The formatter re-parses internally; we cannot reuse the typecheck AST because
     // the formatter needs to preserve comments and layout details.
     // Pass the file's directory as an already-open Dir to avoid re-acquiring ambient authority.
-    let fmt_base_dir_for_formatter = {
-        let p = std::path::Path::new(file_path);
-        let dir = p
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(std::path::Path::new("."));
-        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority()).ok()
-    };
+    let fmt_base_dir_for_formatter = open_file_base_dir(file_path, "fmt").ok();
     let formatted =
         tinct::format_source_tinct_with_dir(&source, &script_path, fmt_base_dir_for_formatter)?;
 
@@ -2425,16 +2445,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    // AMBIENT-OK: CLI bootstrap — operator specified this markdown_path.
-    let weave_base_dir = {
-        let p = std::path::Path::new(markdown_path);
-        let dir = p
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(std::path::Path::new("."));
-        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open base directory for weave: {e}"))?
-    };
+    let weave_base_dir = open_file_base_dir(markdown_path, "weave")?;
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
     tinct::expand::expand_surface_program(&mut program, false, &weave_base_dir)
@@ -2513,19 +2524,12 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
     {
         use tinct::Value;
-        let parsed_entries = parse_cap_fs_entries(cap_fs)?;
-        for (name, cap_path, perms) in parsed_entries {
-            let cap_dir =
-                cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
-                    .map_err(|e| {
-                        format!(
-                            "--cap-fs: cannot open directory {:?}: {e}",
-                            cap_path.display()
-                        )
-                    })?;
-
+        let cap_entries = open_cap_fs_entries(cap_fs, false)?;
+        for (name, cap_dir_arc, perms) in cap_entries {
+            // Clone the Arc to get an independent Rc for the DirCap value
+            let dir_for_cap = Rc::new(cap_dir_arc.open_dir(".").expect("failed to dup cap dir"));
             let cap_value = Value::DirCap {
-                dir: Rc::new(cap_dir),
+                dir: dir_for_cap,
                 perms,
             };
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
@@ -2743,19 +2747,12 @@ fn run_literate_weave(
     // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
     {
         use tinct::Value;
-        let parsed_entries = parse_cap_fs_entries(cap_fs)?;
-        for (name, cap_path, perms) in parsed_entries {
-            let cap_dir =
-                cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
-                    .map_err(|e| {
-                        format!(
-                            "--cap-fs: cannot open directory {:?}: {e}",
-                            cap_path.display()
-                        )
-                    })?;
-
+        let cap_entries = open_cap_fs_entries(cap_fs, false)?;
+        for (name, cap_dir_arc, perms) in cap_entries {
+            // Clone the Arc to get an independent Rc for the DirCap value
+            let dir_for_cap = Rc::new(cap_dir_arc.open_dir(".").expect("failed to dup cap dir"));
             let cap_value = Value::DirCap {
-                dir: Rc::new(cap_dir),
+                dir: dir_for_cap,
                 perms,
             };
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());

@@ -18,6 +18,12 @@
 //! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]
+// Arc<Thunk> and related types are !Send because Thunk contains Rc<...> (e.g. Rc<str>
+// for string sharing, Rc<RefCell<...>> for IO handles). LLT uses tokio::task::LocalSet
+// with a current_thread runtime, so values never cross thread boundaries. The !Send
+// constraint is intentional and correct; Rc-based sharing is cheaper and simpler than
+// Arc<Mutex<...>> for data that never leaves the local thread.
+#![allow(clippy::arc_with_non_send_sync)]
 
 pub(crate) mod arena;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).

@@ -152,11 +152,7 @@ impl DocumentState {
             };
             // Pass the eval context's cap_std Dir so that %pwd file reads use RESOLVE_BENEATH
             // semantics (kernel-level path confinement) instead of plain std::fs calls.
-            let type_cap_dir = if eval_ctx.config.no_fs {
-                None
-            } else {
-                Some(&eval_ctx.config.base_dir)
-            };
+            let type_cap_dir = &eval_ctx.config.base_dir;
             if let Some(ref prog) = surface {
                 let (seeded_env, include_bindings) =
                     crate::imports::build_type_env_with_cap(prog, type_base_dir, type_cap_dir);
