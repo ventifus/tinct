@@ -1371,24 +1371,18 @@ fn eval_core_expr<'a>(
                     .ok_or_else(|| EvalError::undefined_variable(name_owned, expr.span).into())
             }
 
-            // DotAccess: convert to Expr::DotAccess and wrap as an Unevaluated(Expr) thunk.
+            // DotAccess: wrap as a CoreExpr thunk directly.
             //
             // force_step handles CoreExpr::DotAccess INLINE in both take_core_expr and
-            // take_surface branches (eval_materialize.rs), so this arm is only reached by
-            // direct callers of eval_core_expr_pub (e.g. builtins_async.rs). For those
-            // callers the result thunk is subsequently materialized via run() → force_step,
-            // where the Expr::DotAccess inline handler (take_unevaluated, lines 561-617)
-            // fires correctly. No loop: Expr thunks go through take_unevaluated, not
-            // take_core_expr, so eval_core_expr is not re-entered.
-            CoreExpr::DotAccess { .. } => {
-                let old_expr = Rc::new(crate::ast_convert::core_expr_to_expr(expr));
-                Ok(Arc::new(Thunk::new_unevaluated(
-                    old_expr,
-                    Arc::clone(env),
-                    Arc::clone(ctx),
-                    expr.span,
-                )))
-            }
+            // take_surface branches (eval_materialize.rs), so when run() forces this thunk
+            // the take_core_expr inline handler fires and pushes Memoize + DotAccessForce
+            // without re-entering eval_core_expr. No core_expr_to_expr round-trip needed.
+            CoreExpr::DotAccess { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
+                Arc::new(expr.clone()),
+                Arc::clone(env),
+                Arc::clone(ctx),
+                expr.span,
+            ))),
 
             // Sequential: evaluate each expression in order, return the last result
             CoreExpr::Sequential(exprs) => {

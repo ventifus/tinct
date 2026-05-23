@@ -984,8 +984,8 @@ pub(crate) async fn force_step(
         let lowered = crate::lower::lower(&node, &res, &types);
 
         // Handle CoreExpr::DotAccess inline after lowering, for the same reason as the
-        // take_core_expr branch above: avoids the extra Memoize continuation that
-        // eval_core_expr(DotAccess) would add via new_unevaluated(Expr::DotAccess).
+        // take_core_expr branch above: avoids the looping extra Memoize continuation that
+        // eval_core_expr(DotAccess) would add via new_unevaluated_core(DotAccess).
         if let crate::ast::CoreExpr::DotAccess {
             expr: target,
             field,
@@ -1205,10 +1205,9 @@ pub(crate) async fn force_step(
 
         // Handle CoreExpr::DotAccess inline — mirrors the Expr::DotAccess inline handler
         // in the take_unevaluated branch above. MUST NOT delegate to eval_core_expr_pub
-        // here: eval_core_expr(CoreExpr::DotAccess) returns new_unevaluated(Expr::DotAccess),
-        // which would add an extra Memoize continuation per access level and cause
-        // DepthExceeded on deeply-nested DotAccess chains (or when many callers
-        // go through materialize() instead of run()).
+        // here: eval_core_expr(CoreExpr::DotAccess) returns new_unevaluated_core(DotAccess),
+        // which loops back into this branch and adds an extra Memoize continuation per
+        // access level, causing DepthExceeded on deeply-nested DotAccess chains.
         if let crate::ast::CoreExpr::DotAccess {
             expr: target,
             field,
@@ -2688,8 +2687,13 @@ pub(crate) async fn eval_step(
         }
         Expr::Dict(_) => wrap_thunk(eval_recursive(Rc::clone(&expr), Arc::clone(&env), ctx).await),
         Expr::DotAccess { .. } => {
-            // Return Unevaluated thunk — force_step handles these iteratively via
-            // DotAccessForce continuation
+            // Wrap as an Unevaluated(Expr) thunk — force_step handles it iteratively via
+            // the take_unevaluated Expr::DotAccess inline handler → DotAccessForce continuation.
+            //
+            // This arm is reached when a default expression in a type annotation is a
+            // dot-access expression (e.g. [@[default: $obj.field] $x]). The Action::Eval
+            // path from apply_cont dispatch passes Rc<Spanned<Expr>> here. Cannot use
+            // new_unevaluated_core because we only have an Rc<Spanned<Expr>>, not an Arc.
             let span = expr.span;
             wrap_thunk(Ok(Arc::new(Thunk::new_unevaluated(
                 Rc::clone(&expr),
