@@ -5,3 +5,7 @@ i"""
   """
 === out
 [unindent [call tmpl "\n  Dear $name,\n  Your order #$order-id is ready.\n  "]]
+
+=== warn
+undefined variable: name at 1:1-1:1
+undefined variable: order-id at 1:1-1:1

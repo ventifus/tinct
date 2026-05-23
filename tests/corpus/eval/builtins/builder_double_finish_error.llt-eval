@@ -1,0 +1,8 @@
+# builder: double-finish is an error
+[call [fn [let b]
+    [call [fn [let _]
+        [builder-finish b]]
+    [builder-finish b]]]
+ [make-builder]]
+=== error
+[E082] builder-finish: builder has already been finished

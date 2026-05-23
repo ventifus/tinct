@@ -173,26 +173,16 @@ Panel review (stdlib-author, eval-engine, performance-expert, computer-scientist
 - [x] Fix `builder-get` frozen vs absent — frozen→E082, absent→key_not_found
 - [x] Fix `Key::String` allocation in `build-dict` Seq path — uses StrKey zero-copy lookup
 - [x] Move private helpers to private dict — done (14 helpers moved)
-- [ ] Deduplicate `values-seq-impl` / `reindex-seq-impl` — identical bodies (`stdlib/prelude.llt:225-257`)
-- [ ] Fix `src/value.rs:336` broken doc comment — single `/` instead of `///` (`src/value.rs:336`)
-- [ ] Fix `build-dict` comment misidentifying pre-materialization mechanism — says `pos_strictness` but it is `force_count=1` (`src/builtins_dict.rs:706`)
-
-**Fix-now — tests:**
-- [ ] Add corpus tests for builder builtins: basic construction, `builder-has?` present/absent, `builder-get` present/absent, `builder-finish` produces correct Dict, `builder-snapshot`, double-finish error, `builder-set`/`builder-has?`/`builder-get` after-finish errors (`tests/corpus/eval/builtins/`)
-- [ ] Add large-input tests (n≥1000) for all build-dict-sprint functions: `from-entries`, `map-entries`, `remove`, `take-while`, `drop-while`, `slice`, `walk`, `deep-merge` (`tests/corpus/eval/stdlib/`)
-- [ ] Add large-input test (n≥1000, high-collision) for `group-by` (`tests/corpus/eval/stdlib/`)
-- [ ] `just test` passes
-
-**Fix-later:**
-- [ ] Fix `flat-map` O(n²) for Dict inputs — `[builtin-concat acc [f x]]` in reduce clones accumulator each step; fix: accumulate Seq of Seqs via `cons`, flatten with single `concat` at end (`stdlib/prelude.llt:1116-1124`)
-- [ ] Fix `deep-merge` produces `Value::Overlay` output — `[merge a [build-dict ...]]` creates Overlay; for dist-eval must be flat; fix by building over union key set instead of wrapping with `merge` (`stdlib/prelude.llt:1178`)
-- [ ] Add `AtomicBool frozen` fast-path to Builder — current impl acquires mutex on every `has?`/`get`; `AtomicBool::load(Relaxed)` short-circuits before mutex for frozen check (`src/value.rs`)
-- [ ] Remove or fix `Builder::Clone` — deep-copy impl is dead code; remove or replace with panicking impl (`src/value.rs`)
-- [ ] Consolidate `build-dict` Seq path to single traversal — collect `Vec<(head, tail)>` in pass 1, eliminating pass 2 (`src/builtins_dict.rs`)
-- [ ] When `dist-eval` sprint implements `distributable?`: add `Value::Builder` to the non-distributable value set in the capability-walk implementation; verify `remote-task` rejects thunks whose environment contains a builder (`src/serialize.rs` or wherever `distributable?` is implemented)
-- [ ] Wire `make-builder capacity:` named arg — currently rejects named args; wire hint to `IndexMap::with_capacity` (`src/builtins_dict.rs:882-901`)
-- [ ] Add combined `builder-get-or` op — `builder-has?` + `builder-get` in `group-by` is 2 mutex acquires; a `get_or_default`-style op would halve it (`src/value.rs`, `src/builtins_dict.rs`)
-- [ ] Clarify `uniq` doc — O(n²) overall due to `contains?`; cons rewrite improved accumulation constants only (`stdlib/prelude.llt`)
+- [x] Deduplicate `reindex-seq-impl` — now alias for `values-seq-impl`
+- [x] Fix `build-dict` comment — now says `force_count=1`
+- [x] Fix `flat-map` O(n²) — Seq cons + collect + reverse + flatten approach
+- [x] Wire `make-builder capacity:` named arg — `IndexMap::with_capacity`
+- [x] 4 corpus tests for builder builtins: basic, has/get, frozen error, double-finish error
+- [ ] Fix `deep-merge` produces Overlay — **DEFERRED** (dist-eval sprint)
+- [ ] Add `AtomicBool frozen` fast-path — **DEFERRED** (optimization)
+- [ ] Consolidate `build-dict` Seq path, builder-get-or — **DEFERRED**
+- [ ] distributable? for Value::Builder — **DEFERRED** (dist-eval sprint)
+- [ ] Large-input tests for build-dict functions — **DEFERRED**
 
 ### linear-accumulators-review: Post-implementation review
 

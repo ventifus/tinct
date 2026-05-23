@@ -703,10 +703,10 @@ pub(crate) fn builtin_build_dict(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        // args[0] is Spine-pre-materialized by pos_strictness[0].
+        // args[0] is pre-materialized by force_count=1.
         let val = args[0]
             .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Spine");
+            .expect("pre-materialized by force_count=1");
 
         match val {
             // Seq input: each element is [key: K, value: V]
@@ -881,17 +881,60 @@ pub(crate) fn builtin_make_builder(
         args,
         named,
         call_span,
-        ..
+        ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("make-builder", named.as_ref(), call_span)?;
         if !args.is_empty() {
             return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
         }
-        ok_val(
-            Value::Builder(Arc::new(crate::value::Builder::new())),
-            call_span,
-        )
+        // Optional named arg: capacity: <Int> — pre-allocates the inner IndexMap.
+        // Any other named arg is rejected.
+        let capacity: usize = if let Some(ref named_map) = named {
+            let cap_thunk = named_map.get("capacity").cloned();
+            // Reject unexpected named args (all except "capacity").
+            let unexpected: IndexMap<String, Arc<Thunk>> = named_map
+                .iter()
+                .filter(|(k, _)| k.as_str() != "capacity")
+                .map(|(k, v)| (k.clone(), Arc::clone(v)))
+                .collect();
+            if !unexpected.is_empty() {
+                reject_named("make-builder", Some(&unexpected), call_span)?;
+            }
+            if let Some(cap_thunk) = cap_thunk {
+                let cap_val = materialize(&cap_thunk, None, &ctx).await?;
+                match cap_val {
+                    Value::Int(n) if n >= 0 => n as usize,
+                    Value::Int(n) => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "make-builder".to_string(),
+                            "non-negative Int",
+                            &format!("Int({})", n),
+                            cap_thunk.span,
+                        )
+                        .into())
+                    }
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "make-builder".to_string(),
+                            "Int",
+                            other.type_name(),
+                            cap_thunk.span,
+                        )
+                        .into())
+                    }
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let builder = if capacity > 0 {
+            crate::value::Builder::with_capacity(capacity)
+        } else {
+            crate::value::Builder::new()
+        };
+        ok_val(Value::Builder(Arc::new(builder)), call_span)
     })
 }
 

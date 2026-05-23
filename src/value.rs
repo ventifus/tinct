@@ -348,6 +348,13 @@ impl Builder {
         }
     }
 
+    /// Create a new empty builder with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(Some(IndexMap::with_capacity(capacity))),
+        }
+    }
+
     /// Check if the builder is frozen (inner has been taken).
     pub fn is_frozen(&self) -> bool {
         self.inner.lock().unwrap().is_none()

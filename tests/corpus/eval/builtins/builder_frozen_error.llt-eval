@@ -1,0 +1,8 @@
+# builder: set after finish is an error (builder is frozen)
+[call [fn [let b]
+    [call [fn [let _]
+        [builder-set b "x" 1]]
+    [builder-finish b]]]
+ [make-builder]]
+=== error
+[E082] builder-set: builder has already been finished

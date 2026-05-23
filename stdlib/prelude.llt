@@ -247,14 +247,9 @@ entries-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
 nth-impl: [fn [let xs@Dict ks n@Int len@Int]
     [builtin-get [builtin-get [builtin-if [builtin-lt n 0] [builtin-add len n] n] ks] xs]]
 
-# reindex-seq-impl: Build a lazy Seq of values (O(1) per element).
-# Identical to values-seq-impl — reindex just extracts values and collect renumbers.
-reindex-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
-    [builtin-if [gte-impl i len]
-        []
-        [builtin-seq
-            [builtin-get [builtin-get i ks] xs]
-            [reindex-seq-impl xs ks [builtin-add i 1] len]]]]
+# reindex-seq-impl: Alias for values-seq-impl — identical body, kept for clarity.
+# Both extract values in order; collect renumbers keys automatically.
+reindex-seq-impl: values-seq-impl
 
 # ============================================================================
 # Universal collection helpers (only depend on builtins + siblings)
@@ -1156,9 +1151,12 @@ Map a function over a collection and flatten (concatenate) the results.
 
 Example: [flat-map [fn [x] [x [* x 2]]] [1 2 3]] => [1 2 2 4 3 6]
 
-Note: f must return a collection for each element; results are concatenated. Uses concat to accumulate the results of f. Inherently materializing: f must return collections that can be concatenated.
+Note: f must return a collection for each element; results are concatenated. O(n+m): accumulates f(x) results as a reversed Seq via builtin-seq (O(1) per step), then reverses and flattens once. Avoids the O(n²) accumulator-copy of the naive concat-in-reduce approach.
 """] [let f@Fn xs]
-    [builtin-reduce [fn [let acc x] [builtin-concat acc [f x]]] [] xs]]
+    [flatten
+        [reverse
+            [builtin-collect
+                [builtin-reduce [fn [let acc x] [builtin-seq [f x] acc]] [] xs]]]]]
 
 # Return the first element satisfying pred, or error if none found.
 # filter on Dict returns a Seq; head gets the first element (errors if Seq is empty).
