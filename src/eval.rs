@@ -3108,7 +3108,6 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 mod tests {
     use super::*;
     use crate::ast::*;
-    use crate::error::ErrorKind;
     use crate::test_util::{rsp, sp, test_span};
     use crate::value::*;
     use std::cell::RefCell;
@@ -5324,67 +5323,16 @@ mod tests {
     #[test]
     fn test_eval_file_single_document() {
         // A file with one document containing [x: 1]. Verify x=1.
-        let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("x".into()))),
-                value: rsp(Expr::Int(1)),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 1);
-                assert_eq!(
-                    mat_id(map.get(&Key::String("x".into())).unwrap(), &ctx).unwrap(),
-                    Value::Int(1)
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let result = crate::eval_source("[x: 1]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"x": Int(1)})"#);
     }
 
     #[test]
     fn test_eval_file_percent_is_empty_for_first_doc() {
         // A file with one document containing [prev: %].
         // % is VarRef("%"), should resolve to empty dict for first doc.
-        let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("prev".into()))),
-                value: rsp(Expr::var_ref("%".into())),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let prev_id = map.get(&Key::String("prev".into())).unwrap();
-                let prev_val = mat_id(prev_id, &ctx).unwrap();
-                match prev_val {
-                    Value::Dict(inner) => assert_eq!(inner.len(), 0),
-                    other => panic!("expected empty Dict for %, got {other:?}"),
-                }
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let result = crate::eval_source("[prev: %]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"prev": Dict({})})"#);
     }
 
     #[test]
@@ -5392,44 +5340,8 @@ mod tests {
         // Doc 1: [x: 10]
         // Doc 2: [y: %.x]  (access previous doc's x via %)
         // Verify y=10.
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("x".into()))),
-                value: rsp(Expr::Int(10)),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::var_ref("%".into()))),
-                    field: crate::ast::DotKey::Ident("x".into()),
-                }),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let y_id = map.get(&Key::String("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).unwrap(), Value::Int(10));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let result = crate::eval_source("[x: 10]\n---\n[y: %.x]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"y": Int(10)})"#);
     }
 
     #[test]
@@ -5437,38 +5349,8 @@ mod tests {
         // Doc 1: 42 (a bare Int, not a dict)
         // Doc 2: [prev: %]
         // Verify that prev resolves to Int(42).
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Int(42)))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("prev".into()))),
-                value: rsp(Expr::var_ref("%".into())),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let prev_id = map.get(&Key::String("prev".into())).unwrap();
-                assert_eq!(mat_id(prev_id, &ctx).unwrap(), Value::Int(42));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let result = crate::eval_source("42\n---\n[prev: %]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"prev": Int(42)})"#);
     }
 
     #[test]
@@ -5476,53 +5358,12 @@ mod tests {
         // Verify that % is lazy: Doc 1 contains a value that would error if
         // materialized. Doc 2 accesses a DIFFERENT key from %, so the error
         // value is never forced.
-        // Doc 1: [good: 1  bad: missing]
+        // Doc 1: [good: 1  bad: $missing]
         // Doc 2: [result: %.good]
-        // Verify result=1.
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![
-                sp(Entry {
-                    key: Some(sp(Expr::Str("good".into()))),
-                    value: rsp(Expr::Int(1)),
-                }),
-                sp(Entry {
-                    key: Some(sp(Expr::Str("bad".into()))),
-                    value: rsp(Expr::var_ref("missing".into())),
-                }),
-            ])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("result".into()))),
-                value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::var_ref("%".into()))),
-                    field: crate::ast::DotKey::Ident("good".into()),
-                }),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let result_id = map.get(&Key::String("result".into())).unwrap();
-                assert_eq!(mat_id(result_id, &ctx).unwrap(), Value::Int(1));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Doc 2's output only has `result` — `bad` from doc 1 is never forced.
+        let result = crate::eval_source("[good: 1  bad: $missing]\n---\n[result: %.good]")
+            .expect("eval failed");
+        assert_eq!(result, r#"Dict({"result": Int(1)})"#);
     }
 
     #[test]
@@ -5532,130 +5373,34 @@ mod tests {
         // Doc 2: [b: %.a  c: 2]
         // Doc 3: [result: %.b]
         // Verify result=1 (piped through two boundaries).
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("a".into()))),
-                value: rsp(Expr::Int(1)),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![
-                sp(Entry {
-                    key: Some(sp(Expr::Str("b".into()))),
-                    value: rsp(Expr::DotAccess {
-                        expr: Box::new(sp(Expr::var_ref("%".into()))),
-                        field: crate::ast::DotKey::Ident("a".into()),
-                    }),
-                }),
-                sp(Entry {
-                    key: Some(sp(Expr::Str("c".into()))),
-                    value: rsp(Expr::Int(2)),
-                }),
-            ])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc3 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("result".into()))),
-                value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::var_ref("%".into()))),
-                    field: crate::ast::DotKey::Ident("b".into()),
-                }),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2, doc3],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let result_id = map.get(&Key::String("result".into())).unwrap();
-                assert_eq!(mat_id(result_id, &ctx).unwrap(), Value::Int(1));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let result = crate::eval_source("[a: 1]\n---\n[b: %.a  c: 2]\n---\n[result: %.b]")
+            .expect("eval failed");
+        assert_eq!(result, r#"Dict({"result": Int(1)})"#);
     }
 
     #[test]
     fn test_eval_file_documents_isolated() {
         // Verify documents don't share scope:
         // Doc 1: [x: 42]
-        // Doc 2: [y: x]  (NOT %.x, just x -- should fail)
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("x".into()))),
-                value: rsp(Expr::Int(42)),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::var_ref("x".into())),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2],
-        };
-        // eval_file succeeds (dict is lazy), but materializing y should fail
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let y_id = map.get(&Key::String("y".into())).unwrap();
-                let err = mat_id(y_id, &ctx).unwrap_err();
-                assert!(
-                    err.to_string().contains("undefined variable: x"),
-                    "got: {}",
-                    err.to_string()
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Doc 2: [y: $x]  (NOT %.x — bare $x is undefined in doc 2's scope)
+        // eval_source deep-materializes all keys, so forcing y fails.
+        let err = crate::eval_source("[x: 42]\n---\n[y: $x]").expect_err("expected error");
+        assert!(err.contains("undefined variable: x"), "got: {err}");
     }
 
     #[test]
     fn test_eval_file_empty() {
-        // A file with zero documents. Should return an empty dict.
-        let file = File { documents: vec![] };
-        let thunk = eval_file(&file, empty_env(), &test_ctx()).unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).unwrap();
-        match val {
-            Value::Dict(map) => assert_eq!(map.len(), 0),
-            other => panic!("expected empty Dict, got {other:?}"),
-        }
+        // A file with zero documents (empty string). Should return an empty dict.
+        let result = crate::eval_source("").expect("eval failed");
+        assert_eq!(result, "Dict({})");
     }
 
     #[test]
     fn test_eval_file_inherits_env() {
         // A file evaluated with a pre-populated parent env.
         // Document expressions should see the parent's bindings.
+        // This test cannot use eval_source (no way to inject custom env bindings),
+        // so it keeps the manual AST construction + eval_file approach.
         let parent_env = empty_env();
         parent_env.write().unwrap().insert(
             "external".into(),
@@ -5693,70 +5438,18 @@ mod tests {
 
     #[test]
     fn test_eval_file_named_sections() {
-        // Test named sections with %name binding
+        // Test named sections with %name binding.
         // Doc 1 (named "defaults"): [port: 8080]
         // Doc 2 (named "overrides"): [host: "prod"]
         // Doc 3 (anonymous): [port: %defaults.port  host: %overrides.host]
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("port".into()))),
-                value: rsp(Expr::Int(8080)),
-            })])))],
-            name: Some("defaults".to_string()),
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("host".into()))),
-                value: rsp(Expr::Str("prod".into())),
-            })])))],
-            name: Some("overrides".to_string()),
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc3 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![
-                sp(Entry {
-                    key: Some(sp(Expr::Str("port".into()))),
-                    value: rsp(Expr::DotAccess {
-                        expr: Box::new(sp(Expr::var_ref("%defaults".into()))),
-                        field: crate::ast::DotKey::Ident("port".into()),
-                    }),
-                }),
-                sp(Entry {
-                    key: Some(sp(Expr::Str("host".into()))),
-                    value: rsp(Expr::DotAccess {
-                        expr: Box::new(sp(Expr::var_ref("%overrides".into()))),
-                        field: crate::ast::DotKey::Ident("host".into()),
-                    }),
-                }),
-            ])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2, doc3],
-        };
-        let ctx = test_ctx();
-        let thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let port_id = map.get(&Key::String("port".into())).unwrap();
-                assert_eq!(mat_id(port_id, &ctx).unwrap(), Value::Int(8080));
-                let host_id = map.get(&Key::String("host".into())).unwrap();
-                assert_eq!(mat_id(host_id, &ctx).unwrap(), string_val("prod".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        let result = crate::eval_source(
+            "--- %defaults\n[port: 8080]\n--- %overrides\n[host: \"prod\"]\n---\n[port: %defaults.port  host: %overrides.host]",
+        )
+        .expect("eval failed");
+        assert_eq!(
+            result,
+            r#"Dict({"port": Int(8080), "host": String("prod")})"#
+        );
     }
 
     #[test]
@@ -5769,76 +5462,14 @@ mod tests {
         //   Doc 3 (unnamed):        [result: %early.x]  — forces materialization of doc1's x field
         //
         // The forward reference %late inside doc1 should produce UndefinedVariable when doc3
-        // forces doc1 to materialize. This proves the no-forward-refs invariant.
-        let doc1 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("x".into()))),
-                value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::var_ref("%late".into()))),
-                    field: crate::ast::DotKey::Ident("value".into()),
-                }),
-            })])))],
-            name: Some("early".to_string()),
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let doc2 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("value".into()))),
-                value: rsp(Expr::Int(42)),
-            })])))],
-            name: Some("late".to_string()),
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        // Doc 3: references %early.x, which forces doc1's x thunk to materialise.
-        // x = %late.value, but %late is not bound in doc1's scope, so this must fail.
-        let doc3 = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(vec![sp(Entry {
-                key: Some(sp(Expr::Str("result".into()))),
-                value: rsp(Expr::DotAccess {
-                    expr: Box::new(sp(Expr::var_ref("%early".into()))),
-                    field: crate::ast::DotKey::Ident("x".into()),
-                }),
-            })])))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let file = File {
-            documents: vec![doc1, doc2, doc3],
-        };
-        // eval_file builds lazy thunks — no materialisation yet, so it must succeed.
-        let ctx = test_ctx();
-        let doc3_thunk = eval_file(&file, empty_env(), &ctx).unwrap();
-
-        // Materialise doc3's outer dict — this succeeds (lazy dict construction).
-        // The `result` field holds an unevaluated DotAccess thunk for `%early.x`.
-        let doc3_val = materialize(&doc3_thunk, None, &ctx)
-            .expect("doc3 outer dict should materialise (lazily)");
-        let result_thunk = match doc3_val {
-            Value::Dict(ref map) => {
-                let id = map.get(&Key::String("result".into())).unwrap();
-                get_thunk_rc(id, &ctx)
-            }
-            other => panic!("expected Dict for doc3, got {other:?}"),
-        };
-
-        // Forcing `result` (= %early.x) forces doc1's x thunk, which evaluates `%late.value`.
-        // `%late` was NOT bound in doc1's scope (named sections are only bound forward).
-        // This must produce UndefinedVariable("%late").
-        let err = materialize(&result_thunk, None, &ctx)
-            .expect_err("forcing %early.x should fail: %late was not in scope when doc1 was built");
+        // forces doc1 to materialize. eval_source deep-materializes all keys, so result is forced.
+        let err = crate::eval_source(
+            "--- %early\n[x: %late.value]\n--- %late\n[value: 42]\n---\n[result: %early.x]",
+        )
+        .expect_err("expected error: %late not in scope for doc1");
         assert!(
-            matches!(err.kind, ErrorKind::UndefinedVariable { ref name } if name == "%late"),
-            "expected UndefinedVariable(\"%late\"), got: {:?}",
-            err.kind
+            err.contains("undefined variable: %late"),
+            "expected 'undefined variable: %late', got: {err}"
         );
     }
 
