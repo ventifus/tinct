@@ -3579,7 +3579,7 @@ fn type_error_note(err: &TypeError) -> Option<String> {
             lines.push(format!(
                 "  = note: `{name}` is not defined in any enclosing scope at this point"
             ));
-            lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [] ...]]".to_string());
+            lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [let] ...]]".to_string());
         }
 
         Some(lines.join("\n"))

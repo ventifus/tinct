@@ -503,7 +503,7 @@ mod tests {
     /// In a Fn body, VarRef to the param resolves to (level=0, slot=0).
     #[test]
     fn fn_param_scoping_in_body() {
-        let (program, table) = parse_and_resolve("[fn [myarg] $myarg]");
+        let (program, table) = parse_and_resolve("[fn [let myarg] $myarg]");
         let refs = find_varref_nodes(&program, "myarg");
         assert!(!refs.is_empty(), "expected at least one VarRef for $myarg");
         let (id, _) = &refs[0];
@@ -519,7 +519,7 @@ mod tests {
     /// A multi-param fn resolves each param to its correct slot.
     #[test]
     fn fn_multi_param_slots() {
-        let (program, table) = parse_and_resolve("[fn [a b c] $b]");
+        let (program, table) = parse_and_resolve("[fn [let a b c] $b]");
         let refs = find_varref_nodes(&program, "b");
         assert!(!refs.is_empty(), "expected VarRef for $b");
         let (id, _) = &refs[0];
@@ -536,7 +536,7 @@ mod tests {
         // When resolving $outer inside fn body:
         //   scopes (innermost first): [fn-params={}] → [dict-keys={outer=0, inner=1}] → [runtime=%]
         //   so $outer is at level=1, slot=0
-        let (program, table) = parse_and_resolve("[outer: 42  inner: [fn [] $outer]]");
+        let (program, table) = parse_and_resolve("[outer: 42  inner: [fn [let] $outer]]");
         let refs = find_varref_nodes(&program, "outer");
         assert!(
             !refs.is_empty(),

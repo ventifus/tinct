@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn test_convert_fn() {
-        let output = parse("[fn [x y] [+ x y]]").expect("parse failed");
+        let output = parse("[fn [let x y] [+ x y]]").expect("parse failed");
         let program = output.program.clone();
         let doc = &program.documents[0].node;
         match &doc.items[0] {

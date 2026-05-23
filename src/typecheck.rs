@@ -6890,7 +6890,7 @@ mod tests {
         // Previously failed with "property dict annotation must be a dict expression"
         // because the parser rejected lowercase-headed implied calls in annotation position.
         // After fix: [Int Null] is two positional entries → Union(Int, Null).
-        let ty = infer("[fn@[Int Null] [] []]");
+        let ty = infer("[fn@[Int Null] [let] []]");
         match ty {
             Type::Function { ret, .. } => {
                 // Return type should be Union(Int, empty-record) — the Null type
@@ -6908,7 +6908,7 @@ mod tests {
         // Regression: fn@[a Null] must route to union return type path.
         // 'a' is a lowercase type variable name; 'Null' is the empty record type.
         // Both are positional entries → treated as union type members.
-        let ty = infer("[fn@[a Null] [] []]");
+        let ty = infer("[fn@[a Null] [let] []]");
         match ty {
             Type::Function { ret, .. } => {
                 // Return type is Union(TypeVar, Record({})) — the [a Null] union annotation.
@@ -12890,7 +12890,7 @@ mod tests {
     fn test_recursive_function_with_annotation_works() {
         // Task 1: Recursive functions WITH return annotations should work
         // Use a simple recursive function that returns a constant (doesn't actually recurse at runtime)
-        let result = check("[f: [fn@Int [x@Int] 42]]");
+        let result = check("[f: [fn@Int [let x@Int] 42]]");
         assert!(
             result.is_ok(),
             "function with return annotation should type-check: {:?}",
@@ -14021,7 +14021,7 @@ mod tests {
     #[test]
     fn test_label_annotation_named_form_requires_lowercase() {
         // label: value must be a lowercase name
-        let result = check("[f: [fn@a [key@[label: UpperCase] dict@d] dict]]");
+        let result = check("[f: [fn@a [let key@[label: UpperCase] dict@d] dict]]");
         assert!(
             result.is_err(),
             "label: value with uppercase name should be rejected"
@@ -14323,7 +14323,7 @@ mod tests {
     fn test_placeholder_in_function_body_typechecks() {
         // Task 4: ... in a function body satisfies any return type annotation.
         // [fn@Int [x@Int] ...] should type-check without error because ... : Unknown ~ Int.
-        let result = check("[f: [fn@Int [x@Int] ...]]");
+        let result = check("[f: [fn@Int [let x@Int] ...]]");
         assert!(
             result.is_ok(),
             "... in function body should satisfy any return type annotation; got: {:?}",

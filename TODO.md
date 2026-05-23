@@ -10,11 +10,12 @@ See DONE.md for the full history of completed sprints.
 
 Per unified-bindings.md: `[fn [x y] body]` without `let` should be a **parse error**. The invariant: any bracket not starting with `let` is always an expression. Currently the parser accepts both forms — this is a bug.
 
-- [ ] Make parser reject `[fn [x y] body]` (non-`let` params) with parse error — only `[fn [let x y] body]` valid (`src/parser.rs`)
-- [ ] Same enforcement for `[class [a b c] ...]` and `[type [a b] ...]` — type params must also use `[let ...]` form
-- [ ] Update syntax.llt to document the macro purpose (handles old-form from OTHER macros, not user code)
-- [ ] Update any test inputs using old form to use `[let ...]`
-- [ ] `just test` passes
+- [x] Parser rejects `[fn [x y] body]` (non-`let` non-empty params) — `[fn [let x y] body]` required; `[fn [] body]` still allowed as zero-arg shorthand (`src/parser.rs`)
+- [x] Updated ~30 test inputs in src/ to use `[let ...]` form
+- [x] Updated stdlib/syntax.llt comment to clarify macro purpose
+- [ ] Enforce `[class [let ...]]` and `[type [let ...]]` — type/class params not yet enforced
+- [ ] Update tests/corpus/ and stdlib/ to use `[let ...]` throughout
+- [ ] `just test` passes — lib tests 1881/0 ✓
 
 ---
 

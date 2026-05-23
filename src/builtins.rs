@@ -2427,7 +2427,7 @@ mod tests {
     /// Parse and evaluate an LLT snippet, returning the result value.
     ///
     /// Uses the stdlib environment so that builtins are available in the body.
-    /// The snippet should be a complete expression (e.g. `"[fn [] 42]"`).
+    /// The snippet should be a complete expression (e.g. `"[fn [let] 42]"`).
     fn parse_eval(llt_src: &str, ctx: &Arc<crate::eval::EvalContext>) -> Value {
         let parsed = crate::parser::parse(llt_src)
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
@@ -3841,9 +3841,9 @@ mod tests {
 
     #[test]
     fn try_success_returns_ok_variant() {
-        // [fn [] 42]
+        // [fn [let] 42]
         let ctx = test_ctx();
-        let func = parse_eval("[fn [] 42]", &ctx);
+        let func = parse_eval("[fn [let] 42]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![thunk(func)],
             named: no_named(),
@@ -3863,7 +3863,7 @@ mod tests {
     #[test]
     fn try_success_with_string_body() {
         let ctx = test_ctx();
-        let func = parse_eval("[fn [] \"hello\"]", &ctx);
+        let func = parse_eval("[fn [let] \"hello\"]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![thunk(func)],
             named: no_named(),
@@ -3882,9 +3882,9 @@ mod tests {
 
     #[test]
     fn try_failure_returns_err_variant() {
-        // [fn [] $nonexistent] -- references an undefined variable
+        // [fn [let] $nonexistent] -- references an undefined variable
         let ctx = test_ctx();
-        let func = parse_eval("[fn [] $nonexistent]", &ctx);
+        let func = parse_eval("[fn [let] $nonexistent]", &ctx);
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![thunk(func)],
             named: no_named(),
@@ -3933,7 +3933,7 @@ mod tests {
     #[test]
     fn try_non_zero_arg_function_error() {
         let ctx = test_ctx();
-        let func = parse_eval("[fn [x] $x]", &ctx);
+        let func = parse_eval("[fn [let x] $x]", &ctx);
         let err = run(builtin_try(BuiltinArgs {
             args: vec![thunk(func)],
             named: no_named(),
@@ -4106,7 +4106,7 @@ mod tests {
     fn apply_single_arg() {
         // [fn [x] $x] applied to [42]
         let ctx = test_ctx();
-        let func = parse_eval("[fn [x] $x]", &ctx);
+        let func = parse_eval("[fn [let x] $x]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -4129,7 +4129,7 @@ mod tests {
     fn apply_multiple_args_returns_first() {
         // [fn [a b] $a] applied to [10, 20]
         let ctx = test_ctx();
-        let func = parse_eval("[fn [a b] $a]", &ctx);
+        let func = parse_eval("[fn [let a b] $a]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -4153,7 +4153,7 @@ mod tests {
     fn apply_multiple_args_returns_second() {
         // [fn [a b] $b] applied to [10, 20]
         let ctx = test_ctx();
-        let func = parse_eval("[fn [a b] $b]", &ctx);
+        let func = parse_eval("[fn [let a b] $b]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -4223,7 +4223,7 @@ mod tests {
     #[test]
     fn apply_arity_mismatch() {
         let ctx = test_ctx();
-        let func = parse_eval("[fn [x y] $x]", &ctx);
+        let func = parse_eval("[fn [let x y] $x]", &ctx);
         let args_val = thunk_dict(
             {
                 let mut m = IndexMap::new();
@@ -4280,7 +4280,7 @@ mod tests {
     #[test]
     fn apply_non_dict_args_type_error() {
         let ctx = test_ctx();
-        let func = parse_eval("[fn [x] $x]", &ctx);
+        let func = parse_eval("[fn [let x] $x]", &ctx);
         let apply_result = run(builtin_apply(BuiltinArgs {
             args: vec![thunk(func), thunk(Value::Int(42))],
             named: no_named(),
@@ -4371,7 +4371,7 @@ mod tests {
     #[test]
     fn type_of_function() {
         let ctx = test_ctx();
-        let func = parse_eval("[fn [] 0]", &ctx);
+        let func = parse_eval("[fn [let] 0]", &ctx);
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![thunk(func)],
             named: no_named(),
@@ -6743,7 +6743,7 @@ mod tests {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let func = parse_eval("[fn [] 42]", &ctx);
+        let func = parse_eval("[fn [let] 42]", &ctx);
         let err = run(builtin_try(BuiltinArgs {
             args: vec![thunk(func)],
             named: Some(named),
@@ -6763,7 +6763,7 @@ mod tests {
         let ctx = test_ctx();
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let func = parse_eval("[fn [] 42]", &ctx);
+        let func = parse_eval("[fn [let] 42]", &ctx);
         let apply_result = run(builtin_apply(BuiltinArgs {
             args: vec![thunk(func), thunk(Value::Dict(IndexMap::new()))],
             named: Some(named),
@@ -10331,8 +10331,8 @@ mod tests {
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
                 let ctx = test_ctx();
-                let pred = parse_eval("[fn [x] [= $x 10]]", &ctx);
-                let f = parse_eval("[fn [x] [+ $x 1]]", &ctx);
+                let pred = parse_eval("[fn [let x] [= $x 10]]", &ctx);
+                let f = parse_eval("[fn [let x] [+ $x 1]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
                     args: vec![thunk(pred), thunk(f), thunk(Value::Int(0))],
@@ -10358,8 +10358,8 @@ mod tests {
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
                 let ctx = test_ctx();
-                let pred = parse_eval("[fn [x] true]", &ctx);
-                let f = parse_eval("[fn [x] [$error \"should not be called\"]]", &ctx);
+                let pred = parse_eval("[fn [let x] true]", &ctx);
+                let f = parse_eval("[fn [let x] [$error \"should not be called\"]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
                     args: vec![thunk(pred), thunk(f), thunk(Value::Int(42))],
@@ -10383,8 +10383,8 @@ mod tests {
             .stack_size(TEST_STACK_SIZE)
             .spawn(|| {
                 let ctx = test_ctx();
-                let pred = parse_eval("[fn [x] [= $x 300]]", &ctx);
-                let f = parse_eval("[fn [x] [+ $x 1]]", &ctx);
+                let pred = parse_eval("[fn [let x] [= $x 300]]", &ctx);
+                let f = parse_eval("[fn [let x] [+ $x 1]]", &ctx);
 
                 let result = mat(builtin_until(BuiltinArgs {
                     args: vec![thunk(pred), thunk(f), thunk(Value::Int(0))],

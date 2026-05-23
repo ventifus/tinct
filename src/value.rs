@@ -848,12 +848,9 @@ impl fmt::Display for Value {
                 }
             }
             Value::Function { params, .. } => {
-                write!(f, "[fn [")?;
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", p.name)?;
+                write!(f, "[fn [let")?;
+                for p in params.iter() {
+                    write!(f, " {}", p.name)?;
                 }
                 write!(f, "] ...]")
             }
@@ -2261,7 +2258,7 @@ mod tests {
             env,
             annotation: None,
         };
-        assert_eq!(format!("{func}"), "[fn [x y] ...]");
+        assert_eq!(format!("{func}"), "[fn [let x y] ...]");
     }
 
     #[test]

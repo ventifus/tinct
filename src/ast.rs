@@ -564,11 +564,9 @@ impl fmt::Display for Expr {
                 if let Some(ann) = return_ann {
                     write!(f, "@{}", ann.node)?;
                 }
-                write!(f, " [")?;
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
+                write!(f, " [let")?;
+                for p in params.iter() {
+                    write!(f, " ")?;
                     if p.node.variadic {
                         write!(f, "...")?;
                     }
@@ -1337,7 +1335,7 @@ mod tests {
             body: Rc::new(sp(Expr::Int(42))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn [] 42]");
+        assert_eq!(format!("{expr}"), "[fn [let] 42]");
     }
 
     #[test]
@@ -1359,7 +1357,7 @@ mod tests {
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn [x y] x]");
+        assert_eq!(format!("{expr}"), "[fn [let x y] x]");
     }
 
     #[test]
@@ -1370,7 +1368,7 @@ mod tests {
             body: Rc::new(sp(Expr::Int(0))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn@Number [] 0]");
+        assert_eq!(format!("{expr}"), "[fn@Number [let] 0]");
     }
 
     #[test]
@@ -1385,7 +1383,7 @@ mod tests {
             body: Rc::new(sp(Expr::var_ref("x".into()))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn [x@Int] x]");
+        assert_eq!(format!("{expr}"), "[fn [let x@Int] x]");
     }
 
     #[test]
@@ -1400,7 +1398,7 @@ mod tests {
             body: Rc::new(sp(Expr::var_ref("args".into()))),
             desugared: false,
         };
-        assert_eq!(format!("{expr}"), "[fn [...args] args]");
+        assert_eq!(format!("{expr}"), "[fn [let ...args] args]");
     }
 
     #[test]

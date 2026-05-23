@@ -941,7 +941,7 @@ mod tests {
             .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels
             .spawn(|| {
                 let mut session = ReplSession::new().unwrap();
-                session.eval_input("[f: [fn [x] [f [+ x 1]]]]").unwrap();
+                session.eval_input("[f: [fn [let x] [f [+ x 1]]]]").unwrap();
                 session.eval_input("[f 0]").unwrap_err()
             })
             .unwrap()

@@ -2326,7 +2326,7 @@ mod tests {
         //   expression 1: some dict (mock of [include %rust "core"])
         //   expression 2: format-* dict with a 0-arg function
         //   expression 3: call the function
-        let result = eval_source("[]\n[f: [fn [] \"hello\"]]\n[f]");
+        let result = eval_source("[]\n[f: [fn [let] \"hello\"]]\n[f]");
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         let output = result.unwrap();
         assert_eq!(
@@ -2350,11 +2350,12 @@ mod tests {
     fn test_formatter_arity_via_eval_source() {
         // eval_source with the exact formatter pattern: include core, define function, call it
         let result =
-            eval_source("[include %rust \"core\"]\n[f: [fn [let x] x]]\n[try [fn [] [f 42]]]");
+            eval_source("[include %rust \"core\"]\n[f: [fn [let x] x]]\n[try [fn [let] [f 42]]]");
         assert!(result.is_ok(), "eval_source should work: {:?}", result);
         // Compact.llt pattern: define 0-param function, call it
-        let result2 =
-            eval_source("[include %rust \"core\"]\n[f: [fn [] \"hello\"]]\n[try [fn [] [f]]]");
+        let result2 = eval_source(
+            "[include %rust \"core\"]\n[f: [fn [let] \"hello\"]]\n[try [fn [let] [f]]]",
+        );
         assert!(
             result2.is_ok(),
             "eval_source 0-param should work: {:?}",

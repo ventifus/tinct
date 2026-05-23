@@ -1523,7 +1523,7 @@ mod tests {
     /// in LOCAL_SET.run_until() so spawn_local tasks are driven concurrently.
     #[tokio::test]
     async fn test_task_await_basic() {
-        let result = crate::eval_source_with_config("[await [task [fn [] 42]]]", false);
+        let result = crate::eval_source_with_config("[await [task [fn [let] 42]]]", false);
         // Output is the Value Display format; Int(42) renders as "Int(42)" via eval_source.
         // Just confirm it succeeded and contains 42.
         let output = result.unwrap();
@@ -1708,7 +1708,7 @@ mod tests {
         // The bug: before the fix, Done stored Ok({}) after first await and second
         // await would return {} instead of the original error.
         let result = crate::eval_source_with_config(
-            "[t: [task [fn [] [+ 1 2 3]]]] [first-err: [try [fn [] [await t]]]] [second-err: [try [fn [] [await t]]]] [first-result: first-err  second-result: second-err]",
+            "[t: [task [fn [let] [+ 1 2 3]]]] [first-err: [try [fn [let] [await t]]]] [second-err: [try [fn [let] [await t]]]] [first-result: first-err  second-result: second-err]",
             false,
         );
         let output = result.expect("eval should succeed (try catches errors)");

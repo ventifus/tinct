@@ -1,4 +1,5 @@
 //! Iterative parser for tinct.
+//! unified-bindings invariant: [fn [let ...] body] required; [fn [x y] body] is a parse error.
 //!
 //! Hand-written recursive-descent parser that replaced the pest-based parser in sprint parser-core-c3.
 //! Implements all language constructs: call/fn/type-alias/type-assert forms, keyed entries,
@@ -867,9 +868,9 @@ enum StackFrame {
         pending_key: Option<(String, Span)>,
         span_start: Position,
     },
-    /// Function definition: `[fn [params] body]` or `[fn@Type [params] body]`
+    /// Function definition: `[fn [let params...] body]` or `[fn@Type [let params...] body]`
     Fn {
-        /// Parameter list — parsed from `[fn [x y] body]` syntax
+        /// Parameter list — parsed from `[fn [let x y] body]` syntax
         params: Vec<Spanned<SurfaceParam>>,
         /// Body expressions — for multi-expression bodies (let-binding)
         body: Vec<Arc<SurfaceNode>>,
@@ -1330,7 +1331,7 @@ fn recover_from_failed_open(
 /// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `Identifier`, `EscapedRef`
 /// - Dicts: `[]`, `[42]`, `[a: 1 b: 2]`, keyed and auto-indexed entries
 /// - Call forms: `[call $f arg1 arg2 name: val]`
-/// - Fn forms: `[fn [x y@Int ...rest] body]`, `[fn@Type [params] body]` with full param parsing
+/// - Fn forms: `[fn [let x y@Int ...rest] body]`, `[fn@Type [let params...] body]` with full param parsing
 /// - Type-alias: `[type expr]`
 /// - Type-assert: `[@Annotation expr]`
 /// - Dot access chains: `$a.b.c`, `$a.0` (identifier and integer keys)
@@ -1458,7 +1459,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 Some((Token::Colon, _))
                             ) =>
                     {
-                        // Fn form: [fn [params] body] or [fn@RetType [params] body]
+                        // Fn form: [fn [let params...] body] or [fn@RetType [let params...] body]
                         // (Not a fn form if the keyword is followed by colon: [fn: x] is a dict.)
                         // (depth already checked above)
 
@@ -5119,155 +5120,19 @@ fn push_expr_to_parent(
                 ref mut params_consumed,
                 ..
             }) => {
-                // First expression: check if it's a parameter list.
-                // Accepts both the new [let x y] form (SurfaceExpression::LetDecl) and the old [x y] form
-                // (SurfaceExpression::Dict with all positional entries). Both produce the same param list.
+                // First expression: must be a [let ...] parameter list (StackFrame::LetDecl → LetDecl),
+                // or an empty [] (zero-arg shorthand, equivalent to [fn [let] body]).
                 // params_consumed guards against a second empty bracket being mistaken for params.
                 if !*params_consumed && body.is_empty() {
-                    // Old-form backward compatibility: [fn [x y@Int ...rest] body]
-                    // The param bracket parses as either an implied Call or a Dict, depending on
-                    // whether the first token triggers Call dispatch or not:
-                    //
-                    //   [x]            → Call { func: VarRef("x"), args: [], implied: true }
-                    //   [x y]          → Call { func: VarRef("x"), args: [VarRef("y")], implied: true }
-                    //   [f ...args]    → Call { func: VarRef("f"), args: [Rest("args")], implied: true }
-                    //   [x@Int y]      → Dict([Annotated("x",Int), VarRef("y")]) (@ on head → Dict)
-                    //   [...rest]      → Dict([Rest("rest")]) (Ellipsis head → Dict)
-                    //   []             → Dict([]) (empty)
-                    //
-                    // Recognized when all elements are valid param patterns (VarRef, Annotated,
-                    // Rest(Some(_)), Placeholder) and there are no named args / keyed entries.
-                    let old_form_params: Option<Vec<Arc<SurfaceNode>>> = match &node.expr {
-                        // Empty param list [] or annotated/variadic-head list
-                        SurfaceExpression::Dict(entries)
-                            if entries.iter().all(|e| e.node.key.is_none()) =>
-                        {
-                            let all_valid = entries.iter().all(|e| {
-                                matches!(
-                                    &e.node.value.expr,
-                                    SurfaceExpression::VarRef { .. }
-                                        | SurfaceExpression::Placeholder
-                                        | SurfaceExpression::Annotated { .. }
-                                        | SurfaceExpression::Rest(Some(_))
-                                )
-                            });
-                            if all_valid {
-                                Some(entries.iter().map(|e| Arc::clone(&e.node.value)).collect())
-                            } else {
-                                None
-                            }
+                    // Allow [] as zero-arg shorthand — equivalent to [let] with no bindings.
+                    if let SurfaceExpression::Dict(entries) = &node.expr {
+                        if entries.is_empty() {
+                            *params_consumed = true;
+                            return Ok(());
                         }
-                        // Unannotated-head list: [x], [x y], [f ...args], etc.
-                        SurfaceExpression::Call {
-                            func,
-                            args,
-                            named_args,
-                            implied: true,
-                        } if named_args.is_empty() => {
-                            // func must be a bare VarRef (first param)
-                            if matches!(
-                                &func.expr,
-                                SurfaceExpression::VarRef { .. }
-                                    | SurfaceExpression::Annotated { .. }
-                                    | SurfaceExpression::Rest(Some(_))
-                                    | SurfaceExpression::Placeholder
-                            ) {
-                                // All args must also be valid param patterns
-                                let all_valid = args.iter().all(|arg| {
-                                    matches!(
-                                        &arg.expr,
-                                        SurfaceExpression::VarRef { .. }
-                                            | SurfaceExpression::Placeholder
-                                            | SurfaceExpression::Annotated { .. }
-                                            | SurfaceExpression::Rest(Some(_))
-                                    )
-                                });
-                                if all_valid {
-                                    let mut param_nodes: Vec<Arc<SurfaceNode>> =
-                                        vec![Arc::clone(func)];
-                                    param_nodes.extend(args.iter().map(Arc::clone));
-                                    Some(param_nodes)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
-                    if let Some(param_nodes) = old_form_params {
-                        // Validate variadic constraints
-                        let variadic_count = param_nodes
-                            .iter()
-                            .filter(|p| matches!(&p.expr, SurfaceExpression::Rest(Some(_))))
-                            .count();
-                        if variadic_count > 1 {
-                            return Err(ParseError {
-                                message: "only one variadic parameter (...name) is allowed per fn"
-                                    .to_string(),
-                                span: Some(node.span),
-                            });
-                        }
-                        if variadic_count == 1 {
-                            let last_non_placeholder = param_nodes
-                                .iter()
-                                .filter(|p| !matches!(&p.expr, SurfaceExpression::Placeholder))
-                                .last();
-                            if let Some(last) = last_non_placeholder {
-                                if !matches!(&last.expr, SurfaceExpression::Rest(Some(_))) {
-                                    return Err(ParseError {
-                                        message:
-                                            "variadic parameter (...name) must be the last parameter"
-                                                .to_string(),
-                                        span: Some(node.span),
-                                    });
-                                }
-                            }
-                        }
-                        // Extract parameters from old-form param nodes
-                        *params_consumed = true;
-                        for p in &param_nodes {
-                            match &p.expr {
-                                SurfaceExpression::VarRef { name, .. } => {
-                                    params.push(Spanned::new(
-                                        SurfaceParam {
-                                            name: name.clone(),
-                                            annotation: None,
-                                            variadic: false,
-                                        },
-                                        p.span,
-                                    ));
-                                }
-                                SurfaceExpression::Annotated { name, annotation } => {
-                                    params.push(Spanned::new(
-                                        SurfaceParam {
-                                            name: name.clone(),
-                                            annotation: Some(annotation.clone()),
-                                            variadic: false,
-                                        },
-                                        p.span,
-                                    ));
-                                }
-                                SurfaceExpression::Rest(Some(name)) => {
-                                    params.push(Spanned::new(
-                                        SurfaceParam {
-                                            name: name.clone(),
-                                            annotation: None,
-                                            variadic: true,
-                                        },
-                                        p.span,
-                                    ));
-                                }
-                                SurfaceExpression::Placeholder => {
-                                    // Wildcard — skip
-                                }
-                                _ => {}
-                            }
-                        }
-                        return Ok(());
                     }
-
+                    // Only [let ...] form is accepted for non-empty param lists.
+                    // [fn [x y] body] is a parse error — the param bracket must start with `let`.
                     if let SurfaceExpression::LetDecl { bindings } = &node.expr {
                         // Validate all bindings are valid parameter patterns before extracting.
                         // Valid: VarRef (bare), Annotated (typed), Rest(Some(_)) (variadic),
@@ -5282,90 +5147,103 @@ fn push_expr_to_parent(
                             )
                         });
 
-                        if all_valid_params {
-                            // Validate variadic constraints before extracting:
-                            // 1. At most one variadic param
-                            // 2. Variadic must be last (after ignoring Placeholders)
-                            // 3. Variadic params cannot be annotated (Rest is never Annotated)
-                            let variadic_count = bindings
-                                .iter()
-                                .filter(|b| matches!(&b.expr, SurfaceExpression::Rest(Some(_))))
-                                .count();
-                            if variadic_count > 1 {
-                                return Err(ParseError {
-                                    message:
-                                        "only one variadic parameter (...name) is allowed per fn"
-                                            .to_string(),
-                                    span: Some(node.span),
-                                });
-                            }
-                            if variadic_count == 1 {
-                                // Find the last non-Placeholder binding and check it's variadic
-                                let last_non_placeholder = bindings
-                                    .iter()
-                                    .filter(|b| !matches!(&b.expr, SurfaceExpression::Placeholder))
-                                    .last();
-                                if let Some(last) = last_non_placeholder {
-                                    if !matches!(&last.expr, SurfaceExpression::Rest(Some(_))) {
-                                        return Err(ParseError {
-                                            message: "variadic parameter (...name) must be the last parameter".to_string(),
-                                            span: Some(node.span),
-                                        });
-                                    }
-                                }
-                            }
-
-                            // Extract parameters from LetDecl bindings
-                            *params_consumed = true;
-                            for binding in bindings {
-                                match &binding.expr {
-                                    SurfaceExpression::VarRef { name, .. } => {
-                                        // Untyped parameter
-                                        params.push(Spanned::new(
-                                            SurfaceParam {
-                                                name: name.clone(),
-                                                annotation: None,
-                                                variadic: false,
-                                            },
-                                            binding.span,
-                                        ));
-                                    }
-                                    SurfaceExpression::Annotated { name, annotation } => {
-                                        // Typed parameter (x@Int)
-                                        params.push(Spanned::new(
-                                            SurfaceParam {
-                                                name: name.clone(),
-                                                annotation: Some(annotation.clone()),
-                                                variadic: false,
-                                            },
-                                            binding.span,
-                                        ));
-                                    }
-                                    SurfaceExpression::Rest(Some(name)) => {
-                                        // Variadic parameter (...name)
-                                        params.push(Spanned::new(
-                                            SurfaceParam {
-                                                name: name.clone(),
-                                                annotation: None,
-                                                variadic: true,
-                                            },
-                                            binding.span,
-                                        ));
-                                    }
-                                    SurfaceExpression::Placeholder => {
-                                        // Wildcard parameter — skip (valid but unusual)
-                                        // Don't add to params, as Param requires a name
-                                    }
-                                    _ => {
-                                        // Should not reach here due to all_valid_params check
-                                    }
-                                }
-                            }
-                            return Ok(());
+                        if !all_valid_params {
+                            return Err(ParseError {
+                                message: "fn parameter list contains invalid binding patterns; each entry must be a name, name@Type, ...name, or _ wildcard".to_string(),
+                                span: Some(node.span),
+                            });
                         }
+
+                        // Validate variadic constraints before extracting:
+                        // 1. At most one variadic param
+                        // 2. Variadic must be last (after ignoring Placeholders)
+                        // 3. Variadic params cannot be annotated (Rest is never Annotated)
+                        let variadic_count = bindings
+                            .iter()
+                            .filter(|b| matches!(&b.expr, SurfaceExpression::Rest(Some(_))))
+                            .count();
+                        if variadic_count > 1 {
+                            return Err(ParseError {
+                                message: "only one variadic parameter (...name) is allowed per fn"
+                                    .to_string(),
+                                span: Some(node.span),
+                            });
+                        }
+                        if variadic_count == 1 {
+                            // Find the last non-Placeholder binding and check it's variadic
+                            let last_non_placeholder = bindings
+                                .iter()
+                                .filter(|b| !matches!(&b.expr, SurfaceExpression::Placeholder))
+                                .last();
+                            if let Some(last) = last_non_placeholder {
+                                if !matches!(&last.expr, SurfaceExpression::Rest(Some(_))) {
+                                    return Err(ParseError {
+                                        message: "variadic parameter (...name) must be the last parameter".to_string(),
+                                        span: Some(node.span),
+                                    });
+                                }
+                            }
+                        }
+
+                        // Extract parameters from LetDecl bindings
+                        *params_consumed = true;
+                        for binding in bindings {
+                            match &binding.expr {
+                                SurfaceExpression::VarRef { name, .. } => {
+                                    // Untyped parameter
+                                    params.push(Spanned::new(
+                                        SurfaceParam {
+                                            name: name.clone(),
+                                            annotation: None,
+                                            variadic: false,
+                                        },
+                                        binding.span,
+                                    ));
+                                }
+                                SurfaceExpression::Annotated { name, annotation } => {
+                                    // Typed parameter (x@Int)
+                                    params.push(Spanned::new(
+                                        SurfaceParam {
+                                            name: name.clone(),
+                                            annotation: Some(annotation.clone()),
+                                            variadic: false,
+                                        },
+                                        binding.span,
+                                    ));
+                                }
+                                SurfaceExpression::Rest(Some(name)) => {
+                                    // Variadic parameter (...name)
+                                    params.push(Spanned::new(
+                                        SurfaceParam {
+                                            name: name.clone(),
+                                            annotation: None,
+                                            variadic: true,
+                                        },
+                                        binding.span,
+                                    ));
+                                }
+                                SurfaceExpression::Placeholder => {
+                                    // Wildcard parameter — skip (valid but unusual)
+                                    // Don't add to params, as Param requires a name
+                                }
+                                _ => {
+                                    // Should not reach here due to all_valid_params check
+                                }
+                            }
+                        }
+                        return Ok(());
+                    } else {
+                        // First expression is not a [let ...] binding list — parse error.
+                        // Per unified-bindings invariant: fn parameter list must use [let ...] form.
+                        return Err(ParseError {
+                            message: "fn parameter list must use [let ...] form (e.g. [fn [let x y] body]); \
+                                      [fn [x y] body] without `let` is no longer valid"
+                                .to_string(),
+                            span: Some(node.span),
+                        });
                     }
                 }
-                // Not a parameter list (or already have params) — push to body
+                // params already consumed — push to body
                 body.push(node);
                 Ok(())
             }
@@ -6019,7 +5897,7 @@ fn push_value(
             } else {
                 // InstanceDecl expects keyed entries only (method names)
                 Err(ParseError {
-                    message: "instance methods must have names (e.g., `eq: [fn [x y] ...]`)"
+                    message: "instance methods must have names (e.g., `eq: [fn [let x y] ...]`)"
                         .to_string(),
                     span: Some(node.span),
                 })
@@ -6038,7 +5916,7 @@ fn push_value(
 /// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `Identifier`, `EscapedRef`
 /// - Dicts: `[]`, `[42]`, `[a: 1 b: 2]`, keyed and auto-indexed entries
 /// - Call forms: `[call $f arg1 arg2 name: val]`
-/// - Fn forms: `[fn [x y@Int ...rest] body]`, `[fn@Type [params] body]` with full param parsing
+/// - Fn forms: `[fn [let x y@Int ...rest] body]`, `[fn@Type [let params...] body]` with full param parsing
 /// - Type-alias: `[type expr]`
 /// - Type-assert: `[@Annotation expr]`
 /// - Dot access chains: `$a.b.c`, `$a.0` (identifier and integer keys)
@@ -6292,7 +6170,7 @@ mod tests {
 
     #[test]
     fn test_fn_simple() {
-        let output = parse("[fn 42]").expect("parse failed");
+        let output = parse("[fn [let] 42]").expect("parse failed");
         let doc = surface_doc_to_doc(&output.program.documents[0].node);
         match &doc.expressions[0].node {
             Expr::Fn {
@@ -6614,8 +6492,8 @@ mod tests {
 
     #[test]
     fn test_fn_multiple_bodies() {
-        // [fn 1 2] — two body expressions in an fn form (Sequential wrapping)
-        let output = parse("[fn 1 2]").expect("parse should succeed");
+        // [fn [let] 1 2] — two body expressions in an fn form (Sequential wrapping)
+        let output = parse("[fn [let] 1 2]").expect("parse should succeed");
         assert!(
             output.errors.is_empty(),
             "multi-expression fn bodies should parse successfully via Sequential, got errors: {:?}",
@@ -7651,7 +7529,7 @@ mod tests {
         }
 
         // Fn form on line 3
-        let input_fn = "# Line 1\n# Line 2\n[fn [x] $x]";
+        let input_fn = "# Line 1\n# Line 2\n[fn [let x] $x]";
         let output = parse(input_fn).expect("parse failed");
         let doc = surface_doc_to_doc(&output.program.documents[0].node);
         let fn_expr = &doc.expressions[0];
@@ -8485,7 +8363,8 @@ mod tests {
     #[test]
     fn test_class_params_letdecl() {
         // Test [class [let Equatable a] ...] — LetDecl as class header
-        let output = parse("[class [let Equatable a] eq: [fn [x y] Bool]]").expect("parse failed");
+        let output =
+            parse("[class [let Equatable a] eq: [fn [let x y] Bool]]").expect("parse failed");
         // [class ...] is a declaration — access via SurfaceItem::Decl
         let items = &output.program.documents[0].node.items;
         assert_eq!(items.len(), 1, "expected one item");
@@ -8505,7 +8384,8 @@ mod tests {
     #[test]
     fn test_class_params_letdecl_multiple() {
         // Test [class [let Ord a b] ...] — LetDecl with multiple params
-        let output = parse("[class [let Ord a b] compare: [fn [x y] Int]]").expect("parse failed");
+        let output =
+            parse("[class [let Ord a b] compare: [fn [let x y] Int]]").expect("parse failed");
         // [class ...] is a declaration — access via SurfaceItem::Decl
         let items = &output.program.documents[0].node.items;
         assert_eq!(items.len(), 1, "expected one item");

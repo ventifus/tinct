@@ -2214,7 +2214,7 @@ mod tests {
         // is displayed in the hover text.
         let env = test_env();
         let source = r#"[
-  identity@[doc: "Returns the argument unchanged"]: [fn [x@a] $x]
+  identity@[doc: "Returns the argument unchanged"]: [fn [let x@a] $x]
   test: [call $identity 42]
 ]"#;
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
@@ -2247,7 +2247,7 @@ mod tests {
         let env = test_env();
         let ctx = test_ctx();
         // Use a prelude function like "map" (defined in the prelude)
-        let source = "[call $map [fn [x] x] [1 2 3]]";
+        let source = "[call $map [fn [let x] x] [1 2 3]]";
         let doc = DocumentState::new(source.to_string(), &env, &ctx, None);
         let uri = test_uri();
 
@@ -2258,7 +2258,7 @@ mod tests {
             .map(|o| crate::ast_convert::surface_program_to_file(&o.program));
 
         // Offset 6 is on '$map'
-        // "[call $map [fn [x] x] [1 2 3]]"
+        // "[call $map [fn [let x] x] [1 2 3]]"
         //  0123456789...
         let def_result = definition_at(&doc, &uri, 6, &test_include_graph(), prelude_ast.as_ref());
 
@@ -2618,11 +2618,11 @@ mod tests {
     #[test]
     fn test_signature_help_inside_call() {
         let env = test_env();
-        // "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]"
+        // "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]"
         //  0         1         2         3
         //  0123456789012345678901234567890123456789
         // "$f" is at offset 33, "1" is at offset 36, "2" is at offset 38
-        let source = "[f: [fn [x@Int y@Int] 0]]\n[call $f 1 2]";
+        let source = "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
         // Offset 37 is between "1" and "2" — on the second argument.
         let help = signature_help_at(&doc, 37);
