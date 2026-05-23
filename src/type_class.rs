@@ -103,8 +103,9 @@ pub struct ClassDecl {
     pub(crate) resolver: Option<String>,
     /// Whether the resolver is injective (one-to-one mapping).
     /// If true, the type checker can use the resolver result to refine the determining types.
-    // TODO(chr-instances-gaps): wire up when Gap 1 (resolver evaluation) is implemented.
-    #[allow(dead_code)]
+    /// Field is fully wired through parser → AST → typecheck → ClassDecl (chr-instances-gaps done).
+    /// The read site is future CHR congruence work (bidirectional FD refinement from resolver output).
+    #[allow(dead_code)] // read site is future CHR congruence work, not yet implemented
     pub(crate) resolver_injective: bool,
 }
 

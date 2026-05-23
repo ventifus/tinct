@@ -97,7 +97,7 @@ pub(crate) enum RestoreState {
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
             Arc<RwLock<Environment>>,
         )>,
     },
@@ -246,7 +246,7 @@ pub(crate) struct GuardedValidateData {
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
     /// Default expression and environment from TypeAssert `default:` annotation.
     pub(crate) default: Option<(
-        Rc<crate::ast::Spanned<crate::ast::Expr>>,
+        Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
         Arc<RwLock<crate::value::Environment>>,
     )>,
     /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
@@ -324,13 +324,6 @@ pub(crate) enum Cont {
     /// `validate_and_wrap_record` (for record types) or `value_matches_type` (for
     /// scalar types), then memoizes the validated value into `thunk`.
     ///
-    /// TODO(parts-e): GuardedValidateData::default stores Option<(Rc<Spanned<Expr>>,
-    /// Arc<RwLock<Environment>>)> — the `default:` expression from the TypeAssert annotation.
-    /// This comes from UnevaluatedState::Guarded which also stores Rc<Spanned<Expr>>.
-    /// The default-fallback paths convert to CoreExpr via expr_to_core_expr at emit time
-    /// (Action::EvalCore). When the runtime is fully CoreExpr-based, UnevaluatedState::Guarded
-    /// and GuardedValidateData should store Option<(Arc<Spanned<CoreExpr>>, ...)> directly,
-    /// eliminating the expr_to_core_expr call at each fallback site.
     GuardedValidate(Box<GuardedValidateData>),
     /// Resume a PendingBuiltin call after iteratively materializing arg[0].
     /// This prevents Rust stack growth from chains like $- → materialize → $- → ...
@@ -1599,9 +1592,7 @@ pub(crate) async fn apply_cont(
                                             ctx: Arc::clone(&guard_ctx),
                                         })));
                                         return Action::EvalCore {
-                                            expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                                &default_expr,
-                                            )),
+                                            expr: Arc::clone(&default_expr),
                                             env: default_env,
                                             ctx: guard_ctx,
                                         };
@@ -1633,9 +1624,7 @@ pub(crate) async fn apply_cont(
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
                                 return Action::EvalCore {
-                                    expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                        &default_expr,
-                                    )),
+                                    expr: Arc::clone(&default_expr),
                                     env: default_env,
                                     ctx: guard_ctx,
                                 };
@@ -1695,9 +1684,7 @@ pub(crate) async fn apply_cont(
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
                                 return Action::EvalCore {
-                                    expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                        &default_expr,
-                                    )),
+                                    expr: Arc::clone(&default_expr),
                                     env: default_env,
                                     ctx: guard_ctx,
                                 };
@@ -2244,7 +2231,12 @@ pub(crate) async fn apply_cont(
                                 let default_opt = annotation
                                     .node
                                     .get_property(DEFAULT_ANNOTATION_KEY)
-                                    .map(|expr| (Rc::new(expr.clone()), Arc::clone(&env)));
+                                    .map(|expr| {
+                                        (
+                                            Arc::new(crate::ast_convert::expr_to_core_expr(expr)),
+                                            Arc::clone(&env),
+                                        )
+                                    });
                                 match validate_and_wrap_record(
                                     entries,
                                     row.as_ref(),
@@ -2262,9 +2254,7 @@ pub(crate) async fn apply_cont(
                                             // Evaluate default expression iteratively.
                                             // The result will flow to the next continuation on the stack.
                                             Action::EvalCore {
-                                                expr: Arc::new(
-                                                    crate::ast_convert::expr_to_core_expr(&default),
-                                                ),
+                                                expr: default,
                                                 env,
                                                 ctx: Arc::clone(&ctx),
                                             }
@@ -3117,11 +3107,8 @@ mod tests {
         ));
 
         // Default expression: a variable reference to `fallback_val` in caller's env.
-        let default_expr = Rc::new(sp(Expr::VarRef {
-            name: "fallback_val".into(),
-            escaped: true,
-            resolved: std::cell::RefCell::new(None),
-        }));
+        // Uses CoreExpr::FreeVar for name-based env lookup at runtime.
+        let default_expr = Arc::new(sp(CoreExpr::FreeVar("fallback_val".into())));
 
         let guarded = Arc::new(Thunk::new_guarded_full(
             Arc::clone(&inner),

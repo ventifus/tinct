@@ -234,7 +234,7 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 - [x] Survey all 9 H2 sites — 1 real fix (sort: updated registration to `[Spine, Spine]`, replaced materialize with try_get_materialized), 8 documented as safe conditionals (args.len() check or pre-materialized discriminant dispatch)
 - [x] All `// H2:` markers removed — replaced with safe-conditional documentation
-- [ ] `builtins_datetime.rs` field-access materialize — **DEFERRED** (agent did not find H2 markers in datetime; needs separate lint check)
+- [ ] `builtins_datetime.rs` field-access materialize — update `just lint-builtins-cps` grep pattern to also catch `args.args[N]` field-access syntax; then audit datetime builtins (`src/builtins_datetime.rs`)
 - [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### reduce-cont-step: Continuation-based reduce — unlimited-depth inputs, no stack cliffs
@@ -259,9 +259,9 @@ The migration must be completed. `#[allow]` suppression of a soundness-adjacent 
 off the table.
 
 The outer Rc→Arc migration (commit b0aa803) wrapped things in Arc but left `Rc<>` inside
-`Thunk` itself. This causes `clippy::arc_with_non_send_sync` to fire 690 times in
-`ast_dict.rs` because `Arc<Thunk>` requires `Thunk: Send + Sync`, but `Thunk` contains
-`Rc<Environment>` and other non-Send types.
+`Thunk` itself. This causes `clippy::arc_with_non_send_sync` to fire 687 times (down from
+690 after type alias fixes) because `Arc<Thunk>` requires `Thunk: Send + Sync`, but
+`Thunk` contains `Rc<Environment>` and other non-Send types.
 
 **Scope:** Replace remaining `Rc<>` inside `Thunk` and its dependencies with `Arc<>` or
 `Arc<RwLock<>>` / `Arc<Mutex<>>` as appropriate. This is the final step to make `Thunk`
@@ -307,7 +307,7 @@ All 10 annotated as `// H2:` (conditional materialize — correct pattern):
 **doc/whatif/linear-accumulators.md** (1 error):
 - Line 186: MD032 list needs surrounding blank lines
 
-- [x] Run `just lint-md-fix` — passes 0 errors; all MD040/MD051/MD036 fixed manually
+- [x] All 26 errors fixed by `just lint-md-fix` — `just lint-md` now passes with 0 errors across 172 files
 
 ### lint-allow-cleanup: Fix removable `#[allow]` suppressions
 
@@ -330,6 +330,29 @@ Already justified (keep, no audit needed):
 - `src/arena.rs:129,212,221,248,251,255,260,284` — "arena-phase3 scaffolding"
 - `src/ast_convert.rs:57,64,83,103,117,1165` — "Part B/Part E scaffolding"
 - `src/surface_fields.rs:61,80,87` — "Part E/F scaffolding"
+
+### lint-clippy-style: Fix remaining non-Arc clippy errors (2026-05-23)
+
+Beyond the 619+ `arc_with_non_send_sync` errors (tracked in `rc-arc-complete`), the fresh
+lint run found ~68 additional fixable violations. Most are style/correctness lints that
+are separate from the Rc→Arc migration.
+
+**Critical (correctness):**
+- [ ] **`MutexGuard held across await point`** — a `MutexGuard` is being held when an `.await` is reached. In async code this can deadlock if the mutex is ever contended. Find the location (`grep -n 'MutexGuard.*await\|await.*Mutex' src/`) and restructure to drop the guard before awaiting.
+
+**Redundant boxing:**
+- [ ] **`Box<Vec<..>>`** (3 occurrences) — `Box<Vec<T>>` is equivalent to `Vec<T>` since Vec is already heap-allocated. Remove the outer Box.
+
+**Style/idiom (all easy, batch-fixable with `cargo clippy --fix`):**
+- [ ] `empty line after doc comment` (1) — remove blank line between `///` and item
+- [ ] `redundant closure` (2) — `|x| f(x)` → `f`
+- [ ] `deref which would be done by auto-deref` (2) — remove explicit `*` deref
+- [ ] `loop variable only used to index` (2) — use `for item in &collection` instead of indexed loop
+- [ ] `map_or can be simplified` (4) — use `.is_some_and(...)` or `.map_or_else`
+- [ ] `expression creates reference immediately dereferenced` (3) — remove `&*` pattern
+- [ ] `needlessly taken reference of both operands` (1) — remove unnecessary `&` in comparison
+
+Run `cargo clippy --fix` for the style lints after fixing the critical ones manually.
 
 ### ci-failures: Fix 4 failing tests identified by `just ci` (2026-05-22)
 
@@ -386,9 +409,9 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 - [x] Change `Type::Handle` → `Type::Handle(Box<Type>)` with capability row; updated all 25+ construction/match sites across type_def.rs, type_normalize.rs, type_unify.rs, type_env.rs, imports.rs, eval.rs
 - [x] All existing signatures use `Type::Handle(Box::new(Type::Unknown))` for gradual typing backward compat
 - [x] Updated `doc/feature/io.md` and `doc/feature/lib-net-v2.md`
-- [ ] Register capability tags (`Binary`, `Readable`, etc.) as type-level symbols — **DEFERRED** (gradual typing works for now)
-- [ ] Precise builtin signatures (open→Handle[Readable], slurp requires Readable) — **DEFERRED** (needs capability tag registration first)
-- [ ] Corpus tests for capability mismatches — **DEFERRED** (needs precise signatures)
+- [ ] Register capability tags (`Binary`, `Readable`, `Writable`, `Appendable`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow`) as type-level symbols in TypeEnv — specified in `doc/whatif/completed/lib-tls.md` (Accepted 2026-05-07) and `doc/whatif/completed/lib-net-v2.md` (`src/typecheck.rs`)
+- [ ] Precise builtin signatures: `open` → `Handle[Readable]`/`Handle[Writable]` by mode flag; `slurp`/`write`/`lines`/`seek`/`close` constrained via row (`src/type_env.rs`) — **depends on capability tag registration**
+- [ ] Corpus tests for capability mismatches (writing to Readable-only handle → type error) — **depends on precise signatures**
 - [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### io-cap-std-gaps: Add symlink, copy-file, set-permissions, stat-symlink, exists builtins

@@ -11,9 +11,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::{Equivalent, IndexMap};
 
-use crate::ast::{
-    CoreExpr, Expr, Param, Span, Spanned, SurfaceDocument, SurfaceNode, SurfaceProgram,
-};
+use crate::ast::{CoreExpr, Param, Span, Spanned, SurfaceDocument, SurfaceNode, SurfaceProgram};
 use crate::error::{EvalError, EvalResult};
 use crate::types::Type;
 
@@ -1079,7 +1077,7 @@ pub enum UnevaluatedState {
         field_path: Box<Vec<String>>,
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
-        default: Option<(Rc<Spanned<Expr>>, Arc<RwLock<Environment>>)>,
+        default: Option<(Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Environment>>)>,
     },
 }
 
@@ -1126,6 +1124,32 @@ pub type PendingCallParts = (
     Vec<Arc<Thunk>>,
     Option<IndexMap<String, Arc<Thunk>>>,
     Span,
+    Arc<RwLock<Environment>>,
+    Arc<crate::eval::EvalContext>,
+);
+
+/// Return type of `Thunk::take_core_expr`.
+pub type CoreExprParts = (
+    Arc<Spanned<CoreExpr>>,
+    Arc<RwLock<Environment>>,
+    Arc<crate::eval::EvalContext>,
+);
+
+/// Return type of `Thunk::take_guarded`.
+pub type GuardedParts = (
+    Arc<Thunk>,
+    Type,
+    Vec<String>,
+    Span,
+    Option<crate::error::BlameLabel>,
+    Option<(Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>)>,
+);
+
+/// Return type of `Thunk::take_surface`.
+pub type SurfaceParts = (
+    Arc<SurfaceNode>,
+    Arc<crate::ast::ResolutionTable>,
+    Arc<crate::ast::TypeAnnotationTable>,
     Arc<RwLock<Environment>>,
     Arc<crate::eval::EvalContext>,
 );
@@ -1311,7 +1335,7 @@ impl Thunk {
         guard_span: Span,
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
+            Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
             Arc<RwLock<Environment>>,
         )>,
     ) -> Self {
@@ -1363,20 +1387,11 @@ impl Thunk {
         let _ = self.inner.result.set(Ok(value));
     }
 
-    /// Take ownership of unevaluated data, atomically setting state to InProgress.
-    /// Returns None if the thunk is not in the Unevaluated state.
-    #[allow(clippy::type_complexity)]
     /// Atomically take the CoreExpr state (if present), transitioning to InProgress.
     ///
     /// Returns `Some((expr, env, ctx))` if the thunk was in CoreExpr state.
     /// Returns `None` if the thunk was in any other state (state is restored).
-    pub fn take_core_expr(
-        &self,
-    ) -> Option<(
-        Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        Arc<RwLock<Environment>>,
-        Arc<crate::eval::EvalContext>,
-    )> {
+    pub fn take_core_expr(&self) -> Option<CoreExprParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
             Some(UnevaluatedState::CoreExpr { expr, env, ctx }) => {
@@ -1444,19 +1459,7 @@ impl Thunk {
     /// - If the thunk is NOT Guarded, the state is restored unchanged and None is returned.
     ///
     /// The InProgress transition prevents re-entrance during guard materialization.
-    pub fn take_guarded(
-        &self,
-    ) -> Option<(
-        Arc<Thunk>,
-        Type,
-        Vec<String>,
-        Span,
-        Option<crate::error::BlameLabel>,
-        Option<(
-            Rc<crate::ast::Spanned<crate::ast::Expr>>,
-            Arc<RwLock<Environment>>,
-        )>,
-    )> {
+    pub fn take_guarded(&self) -> Option<GuardedParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
             Some(UnevaluatedState::Guarded {
@@ -1489,15 +1492,7 @@ impl Thunk {
     ///
     /// Returns `Some((node, res, types, env, ctx))` if the thunk was in Surface state.
     /// Returns `None` if the thunk was in any other state (state is restored).
-    pub fn take_surface(
-        &self,
-    ) -> Option<(
-        std::sync::Arc<crate::ast::SurfaceNode>,
-        std::sync::Arc<crate::ast::ResolutionTable>,
-        std::sync::Arc<crate::ast::TypeAnnotationTable>,
-        Arc<RwLock<Environment>>,
-        Arc<crate::eval::EvalContext>,
-    )> {
+    pub fn take_surface(&self) -> Option<SurfaceParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
             Some(UnevaluatedState::Surface {

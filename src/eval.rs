@@ -774,7 +774,7 @@ pub(crate) fn validate_and_wrap_record(
     guard_span: Span,
     data_span: Span,
     ctx: &Arc<EvalContext>,
-    default: Option<(Rc<Spanned<Expr>>, Arc<RwLock<Environment>>)>,
+    default: Option<(Arc<Spanned<crate::ast::CoreExpr>>, Arc<RwLock<Environment>>)>,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -2245,9 +2245,9 @@ pub fn materialize<'a>(
                                 Err(err) => {
                                     // Guard validation failed - use default if present
                                     if let Some((default_expr, default_env)) = default {
-                                        let default_thunk = match eval_recursive(
-                                            Rc::clone(&default_expr),
-                                            Arc::clone(&default_env),
+                                        let default_thunk = match eval_core_expr_pub(
+                                            &default_expr,
+                                            &default_env,
                                             ctx,
                                         )
                                         .await
@@ -2318,9 +2318,9 @@ pub fn materialize<'a>(
                         } else {
                             // Expected Record/Intersection but got non-Dict - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                let default_thunk = match eval_recursive(
-                                    Rc::clone(&default_expr),
-                                    Arc::clone(&default_env),
+                                let default_thunk = match eval_core_expr_pub(
+                                    &default_expr,
+                                    &default_env,
                                     ctx,
                                 )
                                 .await
@@ -2406,9 +2406,9 @@ pub fn materialize<'a>(
                         } else {
                             // Type mismatch for non-Record types - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                let default_thunk = match eval_recursive(
-                                    Rc::clone(&default_expr),
-                                    Arc::clone(&default_env),
+                                let default_thunk = match eval_core_expr_pub(
+                                    &default_expr,
+                                    &default_env,
                                     ctx,
                                 )
                                 .await
