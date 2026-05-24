@@ -634,12 +634,22 @@ The `doc/whatif/completed/builtin-privacy.md` whatif is **accepted** (2026-05-11
 
 ### builtin-privacy: Restrict Rust builtin visibility to prelude only
 
+**Deferred — needs fresh session.** This sprint changes the core evaluation pipeline (imports.rs root env setup) and needs careful testing. Decomposition plan below — run as 3 sequential sub-sprints.
+
 **Whatif:** `doc/whatif/completed/builtin-privacy.md`
+
+#### Phase 1 (verify)
+
+- [ ] Wire `inject_builtin_aliases()` to be called ONLY during prelude type-checking (it is already, but verify no other call sites exist).
+- [ ] Verify that all prelude stdlib functions that currently call canonical builtin names (`split`, `str`, etc.) have been migrated to `builtin-*` names — or that the canonical names are re-exported by prelude from the prelude dict.
+
+#### Phase 2 (implement)
 
 - [ ] **Remove `TypeEnv::with_builtins()` from the user-code path.** Currently `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()` at `src/imports.rs:241`, which leaks all Rust builtins into user scope. Fix: use `TypeEnv::with_builtins()` only for prelude type-checking internally, then build the user-facing TypeEnv from the prelude's output types only — not from the raw builtin env. (`src/imports.rs:239-340`)
 - [ ] Change the evaluator's root env to mirror this: user code's root `Environment` should contain only prelude output, not the raw builtin registry. The `standard_builtins()` registry is used internally for dispatch but not exposed as variable bindings. (`src/imports.rs`, eval pipeline setup)
-- [ ] Wire `inject_builtin_aliases()` to be called ONLY during prelude type-checking (it is already, but verify no other call sites exist).
-- [ ] Verify that all prelude stdlib functions that currently call canonical builtin names (`split`, `str`, etc.) have been migrated to `builtin-*` names — or that the canonical names are re-exported by prelude from the prelude dict.
+
+#### Phase 3 (migrate + lint)
+
 - [ ] Update corpus tests that call builtins directly in user code (e.g., `[split "\n" text]` → must go through prelude-exported `split`).
 - [ ] Add a lint warning (T002 with helpful message) when user code directly references a name that matches a known Rust builtin but was not exported by prelude.
 
