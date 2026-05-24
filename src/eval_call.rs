@@ -1,12 +1,11 @@
 //! Function call evaluation: argument binding, default parameters, and variadic support.
 
-use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 use smallvec::SmallVec;
 
-use crate::ast::{CoreExpr, CoreNamedArg, Expr, Param, Span, Spanned};
+use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::value::{Environment, Thunk, Value};
 
@@ -15,15 +14,14 @@ use crate::value::{Environment, Thunk, Value};
 // eval.rs imports invoke_function/CallContext from this module, while
 // this module imports eval/EvalContext from eval.rs. Neither module's
 // initialization depends on the other.
-use crate::eval::{eval, eval_core_expr_pub, materialize, EvalContext};
+use crate::eval::{eval_core_expr_pub, materialize, EvalContext};
 
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
 /// Extract a human-readable label from a CoreExpr function position for stack frames.
 ///
-/// Parallel to `func_label` for `Expr`, but operates on `CoreExpr` directly so
-/// `eval_call_core` does not need to convert the func expression to `Expr` solely
-/// for the label.
+/// Operates on `CoreExpr` directly so `eval_call_core` does not need any
+/// conversion solely for the label.
 pub(crate) fn func_label_core(expr: &CoreExpr) -> Option<Arc<str>> {
     match expr {
         CoreExpr::Var { name, .. } | CoreExpr::FreeVar(name) => {
@@ -283,9 +281,20 @@ pub(crate) async fn bind_args_thunks(
             // Case (ii): named arg fills gap beyond positional args
             // (Kotlin model: ANY param can be named, not just optional)
             Arc::clone(named_thunk)
-        } else if let Some(default_val) = get_default(param) {
-            // Case (iii): use default value
-            eval(Rc::new(default_val), Arc::clone(default_env), ctx).await?
+        } else if let Some(default_node) = get_default(param) {
+            // Case (iii): use default value — wrap as a lazy Surface thunk.
+            // Empty ResolutionTable is correct: the default expression uses FreeVar name-based
+            // lookup in default_env (the caller's environment), which is semantically equivalent
+            // to the old eval(Rc::new(surface_node_to_expr(node)), ...) path.
+            let span = default_node.span;
+            Arc::new(Thunk::new_surface(
+                default_node,
+                std::sync::Arc::new(crate::ast::ResolutionTable::new()),
+                std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                Arc::clone(default_env),
+                Arc::clone(ctx),
+                span,
+            ))
         } else {
             // Unreachable: BIND-ARITY guarantees every required param is covered
             unreachable!(
@@ -373,16 +382,20 @@ pub(crate) fn split_variadic(params: &[Param]) -> (&[Param], Option<&Param>) {
     }
 }
 
-/// Extract the default value expression from a param's annotation, if present.
-/// default: is specified via PropertyDict annotation with a "default" key.
-/// Returns old Spanned<Expr> form via bridge for compatibility with eval_call evaluation sites.
-/// TODO(rv2-migrate-annotation Phase 6): change return type to Option<Arc<SurfaceNode>>.
-pub(crate) fn get_default(param: &Param) -> Option<Spanned<Expr>> {
+/// Extract the default value node from a param's annotation, if present.
+///
+/// `default:` is specified via PropertyDict annotation with a "default" key, e.g.:
+/// `[fn [let x@[default: 42]] ...]`
+///
+/// Returns the `Arc<SurfaceNode>` of the default expression directly — no Expr conversion.
+/// The caller wraps this in a lazy `Thunk::new_surface` using empty resolution/type tables
+/// (name-based FreeVar lookup in the caller env is correct for default expressions).
+pub(crate) fn get_default(param: &Param) -> Option<Arc<SurfaceNode>> {
     param
         .annotation
         .as_ref()
         .and_then(|ann| ann.node.get_property(DEFAULT_ANNOTATION_KEY))
-        .map(|node| crate::ast_convert::surface_node_to_expr(node))
+        .map(Arc::clone)
 }
 
 #[cfg(test)]

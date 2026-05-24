@@ -6,11 +6,16 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    node_id, Annotation, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
-    SurfaceDeclaration, SurfaceDocument, SurfaceItem, SurfaceProgram, TypeAnnotationTable,
+    node_id, Annotation, Entry, NamedArg, Param, Pattern, Span, Spanned, SurfaceDeclaration,
+    SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
+    TypeAnnotationTable,
 };
+// Expr: used by production inference helpers (infer_expr, extract_narrowings, typecheck_document,
+// etc.) and by #[cfg(test)] reset_expr / reset_elaboration. TODO(rv2-delete-old-ast): remove once
+// typecheck_document and all inference helpers are rewritten to walk SurfaceExpression natively.
+use crate::ast::Expr;
 #[cfg(test)]
-use crate::ast::{Document, SurfaceExpression};
+use crate::ast::{Document, File}; // test-only: Document used by reset_elaboration; File by typecheck_file_* wrappers
 use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, resolve_has_field, unify, InferState,
@@ -380,8 +385,10 @@ fn typecheck_file_with_types_and_env_and_source_returning_state(
     // Extract scheme_map from state (was populated during VarRef inference).
     let scheme_map = state.scheme_map.take().unwrap_or_default();
 
-    // Scan for type quality issues (Unknown types, over-broad annotations)
-    scan_type_quality(&type_map, file, &mut diagnostics);
+    // Scan for type quality issues (Unknown types, over-broad annotations).
+    // scan_type_quality takes &SurfaceProgram; convert via bridge (test-only path).
+    let surface_for_scan = crate::ast_convert::file_to_surface_program(file);
+    scan_type_quality(&type_map, &surface_for_scan, &mut diagnostics);
 
     // Extract diagnostics accumulated during type inference (e.g., T013 ambiguous constraints).
     // These are distinct from scan_type_quality diagnostics (T010/T011 Unknown type warnings).
@@ -602,6 +609,12 @@ pub fn typecheck_surface_program_with_env(
 
     // Collect diagnostics from state (e.g., T013 ambiguous constraints).
     diagnostics.append(&mut state.diagnostics);
+
+    // Scan for type quality issues (Unknown types, over-broad annotations).
+    // Uses type_map_inner — only populated when enable_scheme_map is true (LSP + typecheck_surface_program path).
+    // When enable_scheme_map is false (annotation-table-only path), type_map_inner is empty so
+    // T010/T011/T012 diagnostics are suppressed — acceptable since that path is for evaluation only.
+    scan_type_quality(&type_map_inner, program, &mut diagnostics);
 
     // Extract doc strings from the Surface AST (equivalent to extract_doc_strings on File AST).
     // Only needed when enable_scheme_map is true (i.e., LSP path — doc_map is for hover).
@@ -6640,209 +6653,372 @@ fn infer_fn(
     })
 }
 
+/// Check if a type recursively contains `Unknown`.
+fn stq_contains_unknown(ty: &Type) -> bool {
+    match ty {
+        Type::Unknown => true,
+        Type::Record(row) => row.fields.values().any(stq_contains_unknown),
+        Type::Function { params, ret, .. } => {
+            params.iter().any(|(_, t)| stq_contains_unknown(t)) || stq_contains_unknown(ret)
+        }
+        Type::Seq(elem) => stq_contains_unknown(elem),
+        Type::Map(k, v) => stq_contains_unknown(k) || stq_contains_unknown(v),
+        Type::Union(members) | Type::Intersection(members) => {
+            members.iter().any(stq_contains_unknown)
+        }
+        Type::Negation(t) => stq_contains_unknown(t),
+        _ => false,
+    }
+}
+
+/// Check if an annotation explicitly references `Unknown`.
+fn stq_is_unknown_annotation(ann: &Annotation) -> bool {
+    match ann {
+        Annotation::Simple(name) => name == "Unknown",
+        Annotation::PropertyDict(entries) => {
+            // Check if there's a "return: Unknown" entry (for function metadata dicts)
+            entries.iter().any(|entry| {
+                if let Some(key_node) = &entry.node.key {
+                    if let SurfaceExpression::Str(key_name) = &key_node.expr {
+                        if key_name == "return" {
+                            if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
+                                return name == "Unknown";
+                            }
+                        }
+                    }
+                }
+                false
+            })
+        }
+        Annotation::Annotated(_, _) => false,
+    }
+}
+
+/// Walk a SurfaceNode recursively, collecting spans of explicit `@Unknown` annotations.
+fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usize, usize)>) {
+    match &node.expr {
+        SurfaceExpression::TypeAssert {
+            annotation,
+            expr: inner,
+        } => {
+            if stq_is_unknown_annotation(&annotation.node) {
+                spans.insert((node.span.start.offset, node.span.end.offset));
+            }
+            stq_walk_node_unknown(inner, spans);
+        }
+        SurfaceExpression::Fn {
+            return_ann, body, ..
+        } => {
+            if let Some(ann) = return_ann {
+                if stq_is_unknown_annotation(&ann.node) {
+                    spans.insert((node.span.start.offset, node.span.end.offset));
+                }
+            }
+            stq_walk_node_unknown(body, spans);
+        }
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            stq_walk_node_unknown(func, spans);
+            for arg in args {
+                stq_walk_node_unknown(arg, spans);
+            }
+            for na in named_args {
+                stq_walk_node_unknown(&na.node.value, spans);
+            }
+        }
+        SurfaceExpression::Sequential(exprs) => {
+            for e in exprs {
+                stq_walk_node_unknown(e, spans);
+            }
+        }
+        SurfaceExpression::DotAccess { expr, .. } => stq_walk_node_unknown(expr, spans),
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            stq_walk_node_unknown(lhs, spans);
+            stq_walk_node_unknown(rhs, spans);
+        }
+        SurfaceExpression::Match { scrutinee, arms } => {
+            stq_walk_node_unknown(scrutinee, spans);
+            for arm in arms {
+                stq_walk_node_unknown(&arm.body, spans);
+                if let Some(guard) = &arm.guard {
+                    stq_walk_node_unknown(guard, spans);
+                }
+            }
+        }
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                if let Some(key) = &entry.node.key {
+                    stq_walk_node_unknown(key, spans);
+                }
+                stq_walk_node_unknown(&entry.node.value, spans);
+            }
+        }
+        SurfaceExpression::Quote(e)
+        | SurfaceExpression::Unquote(e)
+        | SurfaceExpression::UnquoteSplice(e) => stq_walk_node_unknown(e, spans),
+        SurfaceExpression::TypeApp { func, arg } => {
+            stq_walk_node_unknown(func, spans);
+            stq_walk_node_unknown(arg, spans);
+        }
+        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            for b in bindings {
+                stq_walk_node_unknown(b, spans);
+            }
+        }
+        SurfaceExpression::CaseArm { pattern, body } => {
+            stq_walk_node_unknown(pattern, spans);
+            stq_walk_node_unknown(body, spans);
+        }
+        SurfaceExpression::Decl(decl) => stq_walk_decl_unknown(decl, spans),
+        _ => {}
+    }
+}
+
+/// Walk a SurfaceDeclaration recursively, collecting spans of explicit `@Unknown` annotations.
+fn stq_walk_decl_unknown(decl: &SurfaceDeclaration, spans: &mut HashSet<(usize, usize)>) {
+    match decl {
+        SurfaceDeclaration::TypeAlias { body, .. } => stq_walk_node_unknown(body, spans),
+        SurfaceDeclaration::ClassDecl { methods, .. } => {
+            for entry in methods {
+                if let Some(key) = &entry.node.key {
+                    stq_walk_node_unknown(key, spans);
+                }
+                stq_walk_node_unknown(&entry.node.value, spans);
+            }
+        }
+        SurfaceDeclaration::InstanceDecl { arms, .. } => {
+            for (pattern, methods) in arms {
+                stq_walk_node_unknown(pattern, spans);
+                for entry in methods {
+                    if let Some(key) = &entry.node.key {
+                        stq_walk_node_unknown(key, spans);
+                    }
+                    stq_walk_node_unknown(&entry.node.value, spans);
+                }
+            }
+        }
+        SurfaceDeclaration::DefMacro { params, body, .. } => {
+            stq_walk_node_unknown(params, spans);
+            stq_walk_node_unknown(body, spans);
+        }
+        SurfaceDeclaration::MacroDecl { params, body, .. } => {
+            stq_walk_node_unknown(params, spans);
+            stq_walk_node_unknown(body, spans);
+        }
+        SurfaceDeclaration::SyntaxClass { pattern, .. } => stq_walk_node_unknown(pattern, spans),
+        SurfaceDeclaration::Splice(forms) => {
+            for form in forms {
+                stq_walk_node_unknown(form, spans);
+            }
+        }
+    }
+}
+
+/// Walk a SurfaceNode recursively, checking for over-broad function return annotations.
+fn stq_walk_node_overbroad(
+    node: &SurfaceNode,
+    type_map: &TypeMap,
+    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
+) {
+    match &node.expr {
+        SurfaceExpression::Fn {
+            return_ann: Some(ann),
+            body,
+            ..
+        } => {
+            if let Some(declared_type) = stq_resolve_simple_annotation(&ann.node) {
+                let body_key = (body.span.start.offset, body.span.end.offset);
+                if let Some(inferred_type) = type_map.get(&body_key) {
+                    if Type::is_subtype(inferred_type, &declared_type)
+                        && !Type::is_subtype(&declared_type, inferred_type)
+                    {
+                        let type_str = format!("{}", inferred_type);
+                        let ann_str = format!("{}", ann.node);
+                        diagnostics.push(crate::error::TypeDiagnostic {
+                            level: crate::error::DiagnosticLevel::Info,
+                            code: "T012",
+                            message: format!(
+                                "annotation @{} is over-broad — inferred type is {}; consider using @{}",
+                                ann_str, type_str, type_str
+                            ),
+                            span: ann.span,
+                        });
+                    }
+                }
+            }
+            stq_walk_node_overbroad(body, type_map, diagnostics);
+        }
+        SurfaceExpression::Fn { body, .. } => {
+            stq_walk_node_overbroad(body, type_map, diagnostics);
+        }
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            stq_walk_node_overbroad(func, type_map, diagnostics);
+            for arg in args {
+                stq_walk_node_overbroad(arg, type_map, diagnostics);
+            }
+            for na in named_args {
+                stq_walk_node_overbroad(&na.node.value, type_map, diagnostics);
+            }
+        }
+        SurfaceExpression::Sequential(exprs) => {
+            for e in exprs {
+                stq_walk_node_overbroad(e, type_map, diagnostics);
+            }
+        }
+        SurfaceExpression::DotAccess { expr, .. } => {
+            stq_walk_node_overbroad(expr, type_map, diagnostics)
+        }
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            stq_walk_node_overbroad(lhs, type_map, diagnostics);
+            stq_walk_node_overbroad(rhs, type_map, diagnostics);
+        }
+        SurfaceExpression::Match { scrutinee, arms } => {
+            stq_walk_node_overbroad(scrutinee, type_map, diagnostics);
+            for arm in arms {
+                stq_walk_node_overbroad(&arm.body, type_map, diagnostics);
+                if let Some(guard) = &arm.guard {
+                    stq_walk_node_overbroad(guard, type_map, diagnostics);
+                }
+            }
+        }
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                if let Some(key) = &entry.node.key {
+                    stq_walk_node_overbroad(key, type_map, diagnostics);
+                }
+                stq_walk_node_overbroad(&entry.node.value, type_map, diagnostics);
+            }
+        }
+        SurfaceExpression::TypeAssert { expr, .. } => {
+            stq_walk_node_overbroad(expr, type_map, diagnostics)
+        }
+        SurfaceExpression::Quote(e)
+        | SurfaceExpression::Unquote(e)
+        | SurfaceExpression::UnquoteSplice(e) => stq_walk_node_overbroad(e, type_map, diagnostics),
+        SurfaceExpression::TypeApp { func, arg } => {
+            stq_walk_node_overbroad(func, type_map, diagnostics);
+            stq_walk_node_overbroad(arg, type_map, diagnostics);
+        }
+        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            for b in bindings {
+                stq_walk_node_overbroad(b, type_map, diagnostics);
+            }
+        }
+        SurfaceExpression::CaseArm { pattern, body } => {
+            stq_walk_node_overbroad(pattern, type_map, diagnostics);
+            stq_walk_node_overbroad(body, type_map, diagnostics);
+        }
+        SurfaceExpression::Decl(decl) => stq_walk_decl_overbroad(decl, type_map, diagnostics),
+        _ => {}
+    }
+}
+
+/// Walk a SurfaceDeclaration recursively, checking for over-broad function return annotations.
+fn stq_walk_decl_overbroad(
+    decl: &SurfaceDeclaration,
+    type_map: &TypeMap,
+    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
+) {
+    match decl {
+        SurfaceDeclaration::TypeAlias { body, .. } => {
+            stq_walk_node_overbroad(body, type_map, diagnostics)
+        }
+        SurfaceDeclaration::ClassDecl { methods, .. } => {
+            for entry in methods {
+                if let Some(key) = &entry.node.key {
+                    stq_walk_node_overbroad(key, type_map, diagnostics);
+                }
+                stq_walk_node_overbroad(&entry.node.value, type_map, diagnostics);
+            }
+        }
+        SurfaceDeclaration::InstanceDecl { arms, .. } => {
+            for (pattern, methods) in arms {
+                stq_walk_node_overbroad(pattern, type_map, diagnostics);
+                for entry in methods {
+                    if let Some(key) = &entry.node.key {
+                        stq_walk_node_overbroad(key, type_map, diagnostics);
+                    }
+                    stq_walk_node_overbroad(&entry.node.value, type_map, diagnostics);
+                }
+            }
+        }
+        SurfaceDeclaration::DefMacro { params, body, .. } => {
+            stq_walk_node_overbroad(params, type_map, diagnostics);
+            stq_walk_node_overbroad(body, type_map, diagnostics);
+        }
+        SurfaceDeclaration::MacroDecl { params, body, .. } => {
+            stq_walk_node_overbroad(params, type_map, diagnostics);
+            stq_walk_node_overbroad(body, type_map, diagnostics);
+        }
+        SurfaceDeclaration::SyntaxClass { pattern, .. } => {
+            stq_walk_node_overbroad(pattern, type_map, diagnostics)
+        }
+        SurfaceDeclaration::Splice(forms) => {
+            for form in forms {
+                stq_walk_node_overbroad(form, type_map, diagnostics);
+            }
+        }
+    }
+}
+
+/// Resolve a simple annotation name to a concrete Type (for over-broad annotation detection).
+fn stq_resolve_simple_annotation(ann: &Annotation) -> Option<Type> {
+    match ann {
+        Annotation::Simple(name) => match name.as_str() {
+            "Int" => Some(Type::Int),
+            "Float" => Some(Type::Float),
+            "Number" => Some(Type::Number),
+            "Str" => Some(Type::Str),
+            "Bool" => Some(Type::Bool),
+            "Top" => Some(Type::Top),
+            "Unknown" => Some(Type::Unknown),
+            _ => None,
+        },
+        Annotation::PropertyDict(_) => None,
+        Annotation::Annotated(_, _) => None,
+    }
+}
+
 /// Scan inferred types for quality issues (Unknown types, over-broad annotations).
 ///
 /// Emits diagnostics at base level (Info/Warn). The CLI/LSP layer WILL apply a `--strict` bump
 /// once the type-warning channel is wired (TODO — escalation is not yet implemented).
 /// This is called at the end of type checking to produce advisory notifications.
+///
+/// Accepts `&SurfaceProgram` — walks the Surface AST natively via `SurfaceExpression`.
 pub fn scan_type_quality(
     type_map: &TypeMap,
-    ast: &File,
+    ast: &SurfaceProgram,
     diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
 ) {
-    use crate::ast::{Annotation, Position};
+    use crate::ast::Position;
     use crate::error::{DiagnosticLevel, TypeDiagnostic};
-    use std::collections::HashSet;
 
-    // Helper function to recursively check if a type contains Unknown
-    fn contains_unknown(ty: &Type) -> bool {
-        match ty {
-            Type::Unknown => true,
-            Type::Record(row) => row.fields.values().any(contains_unknown),
-            Type::Function { params, ret, .. } => {
-                params.iter().any(|(_, t)| contains_unknown(t)) || contains_unknown(ret)
+    // Collect all explicit @Unknown annotation spans from the Surface AST.
+    let mut explicit_unknown_spans: HashSet<(usize, usize)> = HashSet::new();
+    for doc_spanned in &ast.documents {
+        for item in &doc_spanned.node.items {
+            match item {
+                SurfaceItem::Expr(node) => stq_walk_node_unknown(node, &mut explicit_unknown_spans),
+                SurfaceItem::Decl(decl_spanned) => {
+                    stq_walk_decl_unknown(&decl_spanned.node, &mut explicit_unknown_spans)
+                }
             }
-            Type::Seq(elem) => contains_unknown(elem),
-            Type::Map(k, v) => contains_unknown(k) || contains_unknown(v),
-            Type::Union(members) | Type::Intersection(members) => {
-                members.iter().any(contains_unknown)
-            }
-            Type::Negation(t) => contains_unknown(t),
-            _ => false,
         }
     }
-
-    // Helper to check if an annotation explicitly references Unknown
-    fn is_unknown_annotation(ann: &Annotation) -> bool {
-        use crate::ast::SurfaceExpression;
-        match ann {
-            Annotation::Simple(name) => name == "Unknown",
-            Annotation::PropertyDict(entries) => {
-                // Check if there's a "return: Unknown" entry (for function metadata dicts)
-                entries.iter().any(|entry| {
-                    if let Some(key_node) = &entry.node.key {
-                        if let SurfaceExpression::Str(key_name) = &key_node.expr {
-                            if key_name == "return" {
-                                // Check if the value is a VarRef to "Unknown"
-                                if let SurfaceExpression::VarRef { name, .. } =
-                                    &entry.node.value.expr
-                                {
-                                    return name == "Unknown";
-                                }
-                            }
-                        }
-                    }
-                    false
-                })
-            }
-            Annotation::Annotated(_, _) => false, // Parameterized annotations are never Unknown
-        }
-    }
-
-    // Collect all explicit @Unknown annotation spans from the AST
-    fn collect_explicit_unknown_spans(ast: &File) -> HashSet<(usize, usize)> {
-        use crate::ast::Expr;
-        let mut spans = HashSet::new();
-
-        fn walk_expr(expr: &Spanned<Expr>, spans: &mut HashSet<(usize, usize)>) {
-            match &expr.node {
-                Expr::TypeAssert {
-                    annotation,
-                    expr: inner,
-                    ..
-                } => {
-                    if is_unknown_annotation(&annotation.node) {
-                        // Record the span of the entire TypeAssert expression
-                        spans.insert((expr.span.start.offset, expr.span.end.offset));
-                    }
-                    walk_expr(inner, spans);
-                }
-                Expr::Fn {
-                    return_ann, body, ..
-                } => {
-                    // Check for @Unknown return annotation
-                    if let Some(ann) = return_ann {
-                        if is_unknown_annotation(&ann.node) {
-                            // Record the span of the function expression
-                            spans.insert((expr.span.start.offset, expr.span.end.offset));
-                        }
-                    }
-                    walk_expr(body, spans);
-                }
-                Expr::Call { func, args, .. } => {
-                    walk_expr(func, spans);
-                    for arg in args {
-                        walk_expr(arg, spans);
-                    }
-                }
-                Expr::Sequential(exprs) => {
-                    for e in exprs {
-                        walk_expr(e, spans);
-                    }
-                }
-                Expr::DotAccess { expr, .. } => {
-                    walk_expr(expr, spans);
-                }
-                Expr::Pipe { lhs, rhs } => {
-                    walk_expr(lhs, spans);
-                    walk_expr(rhs, spans);
-                }
-                Expr::Match {
-                    scrutinee, arms, ..
-                } => {
-                    walk_expr(scrutinee, spans);
-                    for arm in arms {
-                        walk_expr(&arm.body, spans);
-                        if let Some(guard) = &arm.guard {
-                            walk_expr(guard, spans);
-                        }
-                    }
-                }
-                Expr::Dict(entries) => {
-                    for entry in entries {
-                        if let Some(key) = &entry.node.key {
-                            walk_expr(key, spans);
-                        }
-                        walk_expr(&entry.node.value, spans);
-                    }
-                }
-                Expr::Quote(e)
-                | Expr::Unquote(e)
-                | Expr::UnquoteSplice(e)
-                | Expr::TypeAlias { body: e, .. } => {
-                    walk_expr(e, spans);
-                }
-                Expr::DefMacro { body, .. } => {
-                    walk_expr(body, spans);
-                }
-                Expr::MacroDecl { params, body, .. } => {
-                    walk_expr(params, spans);
-                    walk_expr(body, spans);
-                }
-                Expr::Splice(forms) => {
-                    for form in forms {
-                        walk_expr(form, spans);
-                    }
-                }
-                Expr::SyntaxClass { pattern, .. } => {
-                    walk_expr(pattern, spans);
-                }
-                Expr::ClassDecl { methods, .. } => {
-                    for entry in methods {
-                        if let Some(key) = &entry.node.key {
-                            walk_expr(key, spans);
-                        }
-                        walk_expr(&entry.node.value, spans);
-                    }
-                }
-                Expr::InstanceDecl { arms, .. } => {
-                    for (pattern_expr, methods) in arms {
-                        walk_expr(pattern_expr, spans);
-                        for entry in methods {
-                            if let Some(key) = &entry.node.key {
-                                walk_expr(key, spans);
-                            }
-                            walk_expr(&entry.node.value, spans);
-                        }
-                    }
-                }
-                Expr::PatternDecl { bindings } => {
-                    for binding in bindings {
-                        walk_expr(binding, spans);
-                    }
-                }
-                Expr::LetDecl { bindings } => {
-                    for binding in bindings {
-                        walk_expr(binding, spans);
-                    }
-                }
-                Expr::CaseArm { pattern, body } => {
-                    walk_expr(pattern, spans);
-                    walk_expr(body, spans);
-                }
-                Expr::TypeApp { func, arg } => {
-                    walk_expr(func, spans);
-                    walk_expr(arg, spans);
-                }
-                _ => {}
-            }
-        }
-
-        for doc in &ast.documents {
-            for expr in &doc.node.expressions {
-                walk_expr(expr, &mut spans);
-            }
-        }
-
-        spans
-    }
-
-    let explicit_unknown_spans = collect_explicit_unknown_spans(ast);
 
     // Scan all inferred types for Unknown
     for ((start, end), ty) in type_map {
-        if contains_unknown(ty) {
-            // Check if this is an explicit @Unknown annotation
+        if stq_contains_unknown(ty) {
             let is_explicit = explicit_unknown_spans.contains(&(*start, *end));
 
             let (level, code, message) = if is_explicit {
@@ -6880,7 +7056,6 @@ pub fn scan_type_quality(
     }
 
     // Over-broad annotation detection (Tasks 3 & 4)
-    // Check for function return annotations that are wider than the inferred body type
     check_overbroad_annotations(ast, type_map, diagnostics);
 }
 
@@ -6889,184 +7064,21 @@ pub fn scan_type_quality(
 /// Detects patterns like:
 /// - `fn@Number` when body infers `Int` → suggest `@Int`
 /// - `fn@Top` when body infers a specific type → suggest the specific type
+///
+/// Accepts `&SurfaceProgram` — walks the Surface AST natively via `SurfaceExpression`.
 fn check_overbroad_annotations(
-    ast: &File,
+    ast: &SurfaceProgram,
     type_map: &TypeMap,
     diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
 ) {
-    use crate::ast::{Annotation, Expr};
-    use crate::error::{DiagnosticLevel, TypeDiagnostic};
-
-    // Helper to resolve an annotation to a Type for comparison
-    fn resolve_simple_annotation(ann: &Annotation) -> Option<Type> {
-        match ann {
-            Annotation::Simple(name) => match name.as_str() {
-                "Int" => Some(Type::Int),
-                "Float" => Some(Type::Float),
-                "Number" => Some(Type::Number),
-                "Str" => Some(Type::Str),
-                "Bool" => Some(Type::Bool),
-                "Top" => Some(Type::Top),
-                // Gradual: explicit @Unknown annotation
-                "Unknown" => Some(Type::Unknown),
-                _ => None, // Type variables, named types, etc.
-            },
-            Annotation::PropertyDict(_) => None, // Complex annotations not handled yet
-            Annotation::Annotated(_, _) => None, // Parameterized annotations not handled yet
-        }
-    }
-
-    // Walk the AST to find function expressions with return annotations
-    fn walk_for_functions(
-        expr: &Spanned<Expr>,
-        type_map: &TypeMap,
-        diagnostics: &mut Vec<TypeDiagnostic>,
-    ) {
-        match &expr.node {
-            Expr::Fn {
-                return_ann: Some(ann),
-                body,
-                ..
-            } => {
-                // Only check simple annotations for now
-                if let Some(declared_type) = resolve_simple_annotation(&ann.node) {
-                    // Look up the inferred body type
-                    let body_key = (body.span.start.offset, body.span.end.offset);
-                    if let Some(inferred_type) = type_map.get(&body_key) {
-                        // Check if declared is over-broad:
-                        // inferred <: declared (inferred is narrower)
-                        // but NOT declared <: inferred (declared is NOT narrower)
-                        if Type::is_subtype(inferred_type, &declared_type)
-                            && !Type::is_subtype(&declared_type, inferred_type)
-                        {
-                            // Found an over-broad annotation
-                            let type_str = format!("{}", inferred_type);
-                            let ann_str = format!("{}", ann.node);
-                            diagnostics.push(TypeDiagnostic {
-                                level: DiagnosticLevel::Info,
-                                code: "T012",
-                                message: format!(
-                                    "annotation @{} is over-broad — inferred type is {}; consider using @{}",
-                                    ann_str, type_str, type_str
-                                ),
-                                span: ann.span,
-                            });
-                        }
-                    }
-                }
-                // Continue walking into the body
-                walk_for_functions(body, type_map, diagnostics);
-            }
-            // Fn without return annotation: no over-broad check needed, but must
-            // walk the body so nested annotated functions are still visited.
-            Expr::Fn { body, .. } => {
-                walk_for_functions(body, type_map, diagnostics);
-            }
-            Expr::Call { func, args, .. } => {
-                walk_for_functions(func, type_map, diagnostics);
-                for arg in args {
-                    walk_for_functions(arg, type_map, diagnostics);
+    for doc_spanned in &ast.documents {
+        for item in &doc_spanned.node.items {
+            match item {
+                SurfaceItem::Expr(node) => stq_walk_node_overbroad(node, type_map, diagnostics),
+                SurfaceItem::Decl(decl_spanned) => {
+                    stq_walk_decl_overbroad(&decl_spanned.node, type_map, diagnostics)
                 }
             }
-            Expr::Sequential(exprs) => {
-                for e in exprs {
-                    walk_for_functions(e, type_map, diagnostics);
-                }
-            }
-            Expr::DotAccess { expr, .. } => {
-                walk_for_functions(expr, type_map, diagnostics);
-            }
-            Expr::Pipe { lhs, rhs } => {
-                walk_for_functions(lhs, type_map, diagnostics);
-                walk_for_functions(rhs, type_map, diagnostics);
-            }
-            Expr::Match {
-                scrutinee, arms, ..
-            } => {
-                walk_for_functions(scrutinee, type_map, diagnostics);
-                for arm in arms {
-                    walk_for_functions(&arm.body, type_map, diagnostics);
-                    if let Some(guard) = &arm.guard {
-                        walk_for_functions(guard, type_map, diagnostics);
-                    }
-                }
-            }
-            Expr::Dict(entries) => {
-                for entry in entries {
-                    if let Some(key) = &entry.node.key {
-                        walk_for_functions(key, type_map, diagnostics);
-                    }
-                    walk_for_functions(&entry.node.value, type_map, diagnostics);
-                }
-            }
-            Expr::TypeAssert { expr, .. } => {
-                walk_for_functions(expr, type_map, diagnostics);
-            }
-            Expr::Quote(e)
-            | Expr::Unquote(e)
-            | Expr::UnquoteSplice(e)
-            | Expr::TypeAlias { body: e, .. } => {
-                walk_for_functions(e, type_map, diagnostics);
-            }
-            Expr::DefMacro { body, .. } => {
-                walk_for_functions(body, type_map, diagnostics);
-            }
-            Expr::MacroDecl { params, body, .. } => {
-                walk_for_functions(params, type_map, diagnostics);
-                walk_for_functions(body, type_map, diagnostics);
-            }
-            Expr::Splice(forms) => {
-                for form in forms {
-                    walk_for_functions(form, type_map, diagnostics);
-                }
-            }
-            Expr::SyntaxClass { pattern, .. } => {
-                walk_for_functions(pattern, type_map, diagnostics);
-            }
-            Expr::ClassDecl { methods, .. } => {
-                for entry in methods {
-                    if let Some(key) = &entry.node.key {
-                        walk_for_functions(key, type_map, diagnostics);
-                    }
-                    walk_for_functions(&entry.node.value, type_map, diagnostics);
-                }
-            }
-            Expr::InstanceDecl { arms, .. } => {
-                for (pattern_expr, methods) in arms {
-                    walk_for_functions(pattern_expr, type_map, diagnostics);
-                    for entry in methods {
-                        if let Some(key) = &entry.node.key {
-                            walk_for_functions(key, type_map, diagnostics);
-                        }
-                        walk_for_functions(&entry.node.value, type_map, diagnostics);
-                    }
-                }
-            }
-            Expr::PatternDecl { bindings } => {
-                for binding in bindings {
-                    walk_for_functions(binding, type_map, diagnostics);
-                }
-            }
-            Expr::LetDecl { bindings } => {
-                for binding in bindings {
-                    walk_for_functions(binding, type_map, diagnostics);
-                }
-            }
-            Expr::CaseArm { pattern, body } => {
-                walk_for_functions(pattern, type_map, diagnostics);
-                walk_for_functions(body, type_map, diagnostics);
-            }
-            Expr::TypeApp { func, arg } => {
-                walk_for_functions(func, type_map, diagnostics);
-                walk_for_functions(arg, type_map, diagnostics);
-            }
-            _ => {}
-        }
-    }
-
-    for doc in &ast.documents {
-        for expr in &doc.node.expressions {
-            walk_for_functions(expr, type_map, diagnostics);
         }
     }
 }

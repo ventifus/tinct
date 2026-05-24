@@ -35,7 +35,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::ast::{Entry, Expr, MatchArm, NamedArg, Param, Span, Spanned};
+use crate::ast::{Entry, MatchArm, NamedArg, Param, Span, Spanned};
+// Expr: the macro expander operates on old-style Expr AST via the bridge (expand_expr, pre_scan_expr,
+// etc.). TODO(rv2-delete-old-ast): remove once E3e expander cutover to SurfaceExpression is done.
+use crate::ast::Expr;
 use crate::ast_convert::{expr_to_surface_node, surface_node_to_expr};
 use crate::ast_dict::{dict_to_surface_node, surface_node_to_dict, AstToDictOpts}; // TODO(parts-e): remove when macro expander is rewritten on SurfaceExpression (blocked on E3e expander cutover)
 use crate::builtins;

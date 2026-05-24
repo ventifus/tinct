@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{infer_expr, resolve_annotation, resolve_type_expr, TypeMap};
-use crate::ast::{Entry, Expr, Span, Spanned, SurfaceEntry, SurfaceExpression};
+use crate::ast::{Entry, Span, Spanned, SurfaceEntry, SurfaceExpression};
+// Expr: used by infer_dict and collect_dependencies which operate on old-style Entry/Expr AST.
+// TODO(rv2-delete-old-ast): remove once infer_dict is rewritten to walk SurfaceEntry natively.
+use crate::ast::Expr;
 use crate::types::{
     generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,

@@ -191,6 +191,12 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - ~~`src/parser.rs:725`~~ — ✅ DONE (2026-05-23, rv2-migrate-annotation Phases 3-5): `surface_program_to_file` call replaced with direct `SurfaceExpression` matching; `adjust_entries`/`adjust_expr`/`adjust_spanned_expr`/`adjust_annotation` helpers deleted; `entry_to_surface` no longer called from parser
 - ~~`src/typecheck.rs:497`~~ — ✅ DONE (2026-05-23, rv2-migrate-annotation final commit): `typecheck_surface_program` now delegates to `typecheck_surface_program_with_env` (native Surface walk); `surface_program_to_file` call deleted. Old `typecheck_file_*` functions and `reset_elaboration`/`typecheck_document` marked `#[cfg(test)]`.
 
+**Production Expr/File import cleanup (2026-05-23):**
+- [x] `src/eval_call.rs` — removed `Expr` from production import; `get_default` now returns `Arc<SurfaceNode>`; call site uses `Thunk::new_surface` (lazy, empty ResolutionTable for FreeVar name-based lookup)
+- [x] `src/typecheck.rs` — `scan_type_quality` and `check_overbroad_annotations` migrated to `&SurfaceProgram`; `File` moved to `#[cfg(test)]` import; `scan_type_quality` now also called from `typecheck_surface_program_with_env` so warnings work on Surface path
+- [x] `src/typecheck_dict.rs` — `Expr` split out of compound production import to standalone `use crate::ast::Expr;` (still needed by `infer_dict`; TODO(rv2-delete-old-ast): remove once `infer_dict` rewritten natively on SurfaceEntry)
+- [x] `src/expand.rs` — `Expr` split out of compound production import to standalone `use crate::ast::Expr;` (still needed by macro expander; BLOCKED on E3e expander cutover to SurfaceExpression)
+
 **Once ALL above are migrated:**
 - [ ] Delete `src/ast_convert.rs` dead code DONE (2026-05-23): deleted `file_to_surface_program_with_types` + 4 private helpers; remaining live functions (`file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr`, etc.) still needed
 - [ ] Delete `src/ast_convert.rs` entirely — once `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers are all migrated
@@ -198,6 +204,12 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
 - [ ] `src/desugar.rs` — NOT deletable: old `desugar_file` was already deleted; `desugar_surface_program`/`desugar_surface_node` are the live API and will remain
 - [ ] `just build` passes; `just test` passes
+
+**Pre-existing corpus test failures (NOT caused by this sprint):**
+- `tests/corpus/eval/typecheck/warnings/constraint_*` (9 tests) — typecheck strict-warnings errors treated as test failures; pre-existing CHR regressions from runtime-v2 merge
+- `tests/corpus/eval/typecheck/warnings/doc_not_string`, `help_suggestion_*`, `unknown_fn_annotation_key` — same category
+- `tests/corpus/eval/type_errors/fn_annotation_mixed_keys_error`, `string_not_handle` — pre-existing type error format mismatches
+- `tests/corpus/typecheck/warnings/fn_annotation_mixed_keys`, `handle_capability_mismatch` — tracked: handle_capability_mismatch blocked on parser support for `Handle[Type]` annotation syntax
 
 ---
 
