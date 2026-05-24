@@ -2795,8 +2795,12 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
             }
         }
         Pattern::Or(branches) => {
-            // Check each branch independently — a duplicate within a single branch
-            // is still a linearity violation even inside an or-pattern.
+            // Accumulate names from all branches into the parent list.
+            // Top-level Or arms are handled by `check_pattern_linearity` before
+            // calling this function. For nested Or sub-patterns within a larger
+            // pattern, accumulating from all branches is conservative: any variable
+            // that appears in the nested Or cannot safely appear elsewhere in the arm
+            // (because whichever branch fires, that variable is bound).
             for branch in branches {
                 collect_pattern_variable_names(branch, out);
             }

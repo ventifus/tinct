@@ -2721,6 +2721,14 @@ mod tests {
             cycle_path: Vec::new(),
         }
         .is_cacheable());
+        assert!(ErrorKind::MatchExhaustion {
+            scrutinee_type: "Int".to_string()
+        }
+        .is_cacheable());
+        assert!(ErrorKind::DuplicateVariable {
+            name: "x".to_string()
+        }
+        .is_cacheable());
         assert!(ErrorKind::UserError {
             message: "test".to_string()
         }
@@ -3120,6 +3128,24 @@ mod tests {
                 }
             ),
             "circular dependency detected while evaluating x"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::MatchExhaustion {
+                    scrutinee_type: "Int".to_string()
+                }
+            ),
+            "non-exhaustive match: no pattern matched the Int value"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::DuplicateVariable {
+                    name: "x".to_string()
+                }
+            ),
+            "duplicate variable in pattern: 'x' appears more than once"
         );
 
         // User-generated (E080-E089)
