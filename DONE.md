@@ -9191,6 +9191,15 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 
 - [x] Replaced all 7 occurrences of `has_type_vars` with `has_inference_vars` in doc/06-type-inference.md (lines 140, 156, 160, 166, 185, 196, 380). Code uses `has_inference_vars()` which also covers `Type::Operator(_)`.
 
+### slurp-text-returns-string: `check_slurp` returns `String` for text handles, `Bytes` for binary
+
+`src/typecheck.rs`. The `slurp` builtin was typed conservatively as `String | Bytes`, causing T003 errors when used in String-only contexts (e.g., `split "\n" cargo-toml-text`). These T003s cascaded into `failed_bindings` → cross-document T002s → E099 runtime crashes.
+
+- [x] Added `check_slurp` special-case function in `src/typecheck.rs` — inspects the inferred Handle capability row: if `__cap_flag_binary` is present → `Bytes`; if absent (text mode) → `String`; if `Handle(Unknown)` or other gradual type → `Union(Str, Bytes)` fallback.
+- [x] Wired dispatch into Call expression handler: `name == "slurp" && named_args.is_empty() && args.len() == 1` guard, positioned after `check_open` block.
+- [x] Static TypeEnv signature (`Handle[Readable] → String | Bytes`) unchanged — `check_slurp` overrides return type at call sites with statically-known handle types.
+- [x] `just fmt && just build && just test-lib` — all pass with `-D warnings`.
+
 ### review-macro-hygiene: Audit macro expansion and quasiquote hygiene
 
 **Agents:** grammar-architect, eval-engine, computer-scientist

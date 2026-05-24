@@ -550,13 +550,6 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 
 - [x] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
 
-### slurp-text-returns-string: `slurp` TypeEnv returns `String | Bytes` but text handles always produce `String`
-
-`src/type_env.rs`. The `slurp` builtin is typed conservatively as `String | Bytes`. But `open %cwd "file.txt" Readable` (text mode) always produces `String` at runtime. The `String | Bytes` type causes T003 when the result is used as `String` (e.g., `split "\n" cargo-toml-text`). This T003 cascades into `failed_bindings` → cross-document T002s → E099 runtime crashes — making lint fail on semantically correct programs.
-
-- [ ] Update `slurp` TypeEnv signature to return `String` when handle is `Handle[Readable]` (text mode) and `Bytes` when `Handle[Readable Binary]`. Requires inspecting the Handle capability row. (`src/type_env.rs`, `src/typecheck.rs`) [Major]
-- [ ] Alternative: split into `slurp` (always `String`, text handles only) and `slurp-bytes` (always `Bytes`, binary handles). [Alternative]
-
 ### dependent-return-types: Other builtins with over-broad union/Unknown return types
 
 Audit of `src/type_env.rs` found four additional builtins where return type could be made precise based on argument types. Each needs a `check_X` special case in `src/typecheck.rs` (same pattern as the existing `check_open`):

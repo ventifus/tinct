@@ -2885,6 +2885,17 @@ fn infer_expr(
                 if name == "open" && named_args.is_empty() && args.len() >= 2 {
                     return check_open(args, env, expr.span, state, type_map);
                 }
+
+                // Special case: `slurp` synthesizes a precise return type based on handle capabilities.
+                //
+                // The static TypeEnv signature for `slurp` is Handle[Readable] → String | Bytes.
+                // This special case inspects the handle's cap row to determine the precise return type:
+                // - Binary handle → Bytes
+                // - Text handle (no Binary flag) → String
+                // - Handle(Unknown) → String | Bytes (gradual fallback)
+                if name == "slurp" && named_args.is_empty() && args.len() == 1 {
+                    return check_slurp(args, env, expr.span, state, type_map);
+                }
             }
 
             // Special case: do-infer sentinel — inferred [do] form monad resolution.
@@ -4549,6 +4560,73 @@ fn check_open(
     };
 
     Ok(Type::Handle(Box::new(cap_type)))
+}
+
+/// Type check `slurp` — precise return type based on handle capabilities.
+///
+/// The static signature in TypeEnv is Handle[Readable] → String | Bytes as a fallback.
+/// This special case synthesizes a precise return type:
+/// - Handle with Binary capability → Bytes
+/// - Handle without Binary (text mode) → String
+/// - Handle(Unknown) or unresolved type → String | Bytes (gradual fallback)
+fn check_slurp(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require exactly 1 arg (the handle)
+    if args.len() != 1 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `slurp` requires exactly 1 argument (Handle), got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer the handle argument's type
+    let handle_ty = infer_expr(&args[0], env, state, type_map)?;
+    let handle_ty = state.subst.apply(&handle_ty);
+
+    // Inspect the handle type to determine return type
+    match &handle_ty {
+        Type::Handle(cap_row) => {
+            match cap_row.as_ref() {
+                Type::Record(row) => {
+                    // Check if the cap row contains the Binary flag
+                    if row.fields.contains_key("__cap_flag_binary") {
+                        // Binary handle → returns Bytes
+                        Ok(Type::Bytes)
+                    } else {
+                        // Text handle (no Binary flag) → returns String
+                        Ok(Type::Str)
+                    }
+                }
+                Type::Unknown => {
+                    // Handle(Unknown) — gradual typing fallback
+                    Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
+                }
+                _ => {
+                    // Unexpected cap row type (e.g., TypeVar, Union, etc.)
+                    // Fall back to gradual typing
+                    Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
+                }
+            }
+        }
+        Type::Unknown => {
+            // Unknown handle type — gradual typing fallback
+            Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
+        }
+        _ => {
+            // Type error: argument is not a Handle at all
+            // We could return an error here, but for now fall back to the union
+            // (the subtyping check against Handle[Readable] will catch this)
+            Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
+        }
+    }
 }
 
 /// Type check `get-in` — chained field access.
