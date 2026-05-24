@@ -241,6 +241,31 @@ impl ConstructorSignature {
                 }
             }
         }
+        // S-RcdTop regression guard: if two DictKey constructors have the same
+        // combined field tag, the union has collapsed to Top (two Record members
+        // with identical field sets should unify before reaching coverage).  A
+        // duplicate tag means the signature is unsound — coverage would see the
+        // same constructor twice and report false exhaustiveness.
+        {
+            let mut seen_dict_keys: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            for (tag, _) in &constructors {
+                if let ConstructorTag::DictKey(key) = tag {
+                    let count = seen_dict_keys.entry(key.as_str()).or_insert(0);
+                    *count += 1;
+                    if *count > 1 {
+                        panic!(
+                            "coverage::ConstructorSignature::from_union: duplicate DictKey \
+                             constructor {:?} — union contains two Record members with the same \
+                             field set; the type system should have collapsed them to Top before \
+                             coverage checking reaches here (S-RcdTop regression)",
+                            key
+                        );
+                    }
+                }
+            }
+        }
+
         if skipped_any {
             // At least one member was unrepresentable. Returning a partial signature
             // would cause false exhaustiveness: the algorithm would think all

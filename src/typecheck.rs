@@ -2892,6 +2892,12 @@ fn infer_expr(
                 Type::NominalVariant { tag, fields } => Some(
                     coverage::ConstructorSignature::from_nominal_variant(tag, fields),
                 ),
+                Type::Bool => Some(coverage::ConstructorSignature {
+                    constructors: vec![
+                        (coverage::ConstructorTag::LiteralBool(true), 0),
+                        (coverage::ConstructorTag::LiteralBool(false), 0),
+                    ],
+                }),
                 _ => None,
             };
 
