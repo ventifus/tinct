@@ -2196,6 +2196,22 @@ pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Arc<Mutex<crate::arena:
     })
 }
 
+/// Clear the STDLIB_ARENA_CACHE. This is intended for test environments where the cache
+/// needs to be reset between test iterations to prevent memory accumulation.
+///
+/// **Performance impact:** After calling this function, the next call to
+/// `create_stdlib_env_with_arena()` will rebuild the stdlib from scratch (parsing and
+/// evaluating prelude.llt and macros.llt). Subsequent calls will use the new cached arena.
+///
+/// **Production use:** This function should NOT be called in production code. The stdlib
+/// cache is intentionally persistent across multiple evaluations to amortize the cost of
+/// stdlib loading. Only test harnesses that run hundreds of independent evaluations in
+/// the same process should call this.
+#[cfg(test)]
+pub fn clear_stdlib_cache() {
+    STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = None);
+}
+
 pub fn create_stdlib_env() -> Result<Arc<RwLock<Environment>>, Box<crate::error::EvalError>> {
     let (env, _arena) = create_stdlib_env_with_arena()?;
     // Arena already cached by create_stdlib_env_with_arena

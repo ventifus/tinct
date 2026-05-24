@@ -299,6 +299,12 @@ fn test_eval_corpus() {
         .stack_size(512 * 1024 * 1024) // 512MB — debug-mode stdlib cleanup needs ~100MB; extra headroom for prelude growth
         .spawn(move || {
             run_corpus_dir(&corpus_dir, &[type_errors_dir.as_path()], |test| {
+                // Clear the stdlib cache before each test to prevent memory accumulation.
+                // The STDLIB_ARENA_CACHE retains Arc<Thunk> references from previous test
+                // iterations, preventing the ThunkArena from being freed. After ~500 iterations
+                // in an 8GB container, cumulative memory growth causes OOM/SIGKILL.
+                tinct::clear_stdlib_cache();
+
                 // Eval pipeline: eval_source_with_config() + typecheck_source()
                 let eval_result = if test.cap_net.is_empty() {
                     eval_source_with_config(&test.input, test.no_fs)
@@ -557,6 +563,9 @@ fn test_typecheck_warnings_corpus() {
                         continue;
                     }
                 };
+
+                // Clear the stdlib cache before each test to prevent memory accumulation.
+                tinct::clear_stdlib_cache();
 
                 // 1. Eval must succeed.
                 let eval_result_tc = if test.cap_net.is_empty() {

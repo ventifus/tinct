@@ -122,6 +122,10 @@ pub use builtins::{
     create_stdlib_env, create_type_stage_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
 
+/// Test-only: clear the stdlib cache to prevent memory accumulation in test harnesses.
+#[cfg(test)]
+pub use builtins::clear_stdlib_cache;
+
 /// Import resolution for the type checker.
 pub use imports::{
     apply_include_type_post_pass, build_prelude_env, build_type_env, build_type_env_with_cap,
