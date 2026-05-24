@@ -1479,6 +1479,58 @@ pub(crate) fn resolve_annotation(
                                     ));
                                 }
                             }
+                            "Handle" => {
+                                // @[Handle Readable Writable] → Handle(Record({ __cap_flag_readable, __cap_flag_writable }))
+                                // Each capability flag becomes a field in the capability row.
+                                // This matches the internal representation used by check_open.
+                                if positional_entries.len() < 2 {
+                                    return Err(TypeError::new(
+                                        "Handle requires at least one capability flag argument",
+                                        span,
+                                    ));
+                                }
+                                let mut cap_fields = HashMap::new();
+                                for entry in &positional_entries[1..] {
+                                    // Extract capability flag name from VarRef
+                                    if let Expr::VarRef {
+                                        name: flag_name, ..
+                                    } = &entry.node.value.node
+                                    {
+                                        // Known capability flags: Readable, Writable, Appendable, Binary, Text, Seekable
+                                        // Normalize to lowercase for field name
+                                        let canonical_flag = match flag_name.as_str() {
+                                            "Readable" => "readable",
+                                            "Writable" => "writable",
+                                            "Appendable" => "appendable",
+                                            "Binary" => "binary",
+                                            "Text" => "text",
+                                            "Seekable" => "seekable",
+                                            _ => {
+                                                return Err(TypeError::new(
+                                                    format!(
+                                                        "Unknown capability flag: {}. Expected Readable, Writable, Appendable, Binary, Text, or Seekable",
+                                                        flag_name
+                                                    ),
+                                                    span,
+                                                ));
+                                            }
+                                        };
+                                        cap_fields.insert(
+                                            format!("__cap_flag_{}", canonical_flag),
+                                            Type::Record(Row {
+                                                fields: HashMap::new(),
+                                            }),
+                                        );
+                                    } else {
+                                        return Err(TypeError::new(
+                                            "Handle capability flags must be simple names (e.g., Readable, Writable)",
+                                            span,
+                                        ));
+                                    }
+                                }
+                                let cap_row = Type::Record(Row { fields: cap_fields });
+                                return Ok(Type::Handle(Box::new(cap_row)));
+                            }
                             _ => {}
                         }
                     }

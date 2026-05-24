@@ -9431,3 +9431,16 @@ Key questions:
 - [x] **T6 KNOWN ISSUE — `Constraint::new_by_name` creates a minimal `ClassDecl` with empty `determines`** (`src/type_class.rs:49-63`). Call sites audited: none currently used for classes with functional dependencies. Comment added at `new_by_name` documenting invariant violation risk and required audit if new arithmetic constraint creation is added.
 
 Commit: `review-chr-constraints: fix F1/F3/T1/T2 UNSOUND + F6/F7/T5/F10 + KNOWN ISSUE docs`
+
+## Type Annotation Fixes
+
+### parser-annotation-type-params: Support parameterized types in @annotation position
+
+The parser treats `[Readable]` in `@[Handle [Readable]]` as a subscript/function-call expression, not a type parameter. This prevents writing `Handle[Readable]` annotations in user code. Blocks: `handle_capability_mismatch` corpus test (test-coverage-cycle311), capability type checking in annotations.
+
+- [x] Fix parser to recognize type parameters inside `@annotation` context — `@[Handle Readable]` or `@[Handle [Readable Writable]]` should parse as a parameterized type, not a subscript. (`src/parser.rs`, annotation parsing). NOTE: `@[Handle Readable]` already parses to PropertyDict with auto-indexed entries via implied-call-to-PropertyDict conversion (parser.rs ~line 752); the real gap is in `resolve_annotation`'s PropertyDict handler — `Handle` is missing from the built-in ctor-app match alongside `Seq`/`Map` (~line 1482 of `src/typecheck_annot.rs`). FIXED: Added `Handle` ctor-app match at line 1482 of `src/typecheck_annot.rs`.
+- [x] Re-add `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval` corpus test once the parser supports this syntax — ADDED: test created at `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval`
+- [x] Unblock `typecheck-handle-annotation-bug` verify item once Handle ctor-app is resolved — UNBLOCKED: verify item now complete (see `typecheck-handle-annotation-bug`)
+
+`just fmt && just build && just test-lib` — all pass (exit 0).
+Commit: `parser-annotation-type-params: Handle ctor-app in resolve_annotation + capability mismatch test`
