@@ -111,6 +111,29 @@ This allows TypeVar-to-concrete unification during instance lookup while maintai
 - [x] Verified arithmetic FD improvement still works (test_add tests pass)
 - [x] Build passes: `just fmt && just build`
 
+### typecheck-surface-migration: Migrate type-checker to native SurfaceProgram (Tasks 6-8)
+
+**Sprint:** `typecheck-surface-migration` (2026-05-24, Tasks 6-8)
+
+**Goal:** Delete the `surface_program_to_file()` bridge from `typecheck_surface_program_with_env` and replace with a native Surface document walk. Tasks 2-5 (adding native entry points) were done in commit 70be7b1.
+
+**Change:** `typecheck_surface_program_with_env` was a pure bridge: it called `surface_program_to_file()` then `typecheck_file_with_types_and_env_and_source_returning_state()`, then did span-based correlation to populate the `TypeAnnotationTable`. This bridge is now replaced with a direct `typecheck_surface_document` loop (same pattern as `typecheck_surface_program_annotation_table`). The `TypeAnnotationTable` is populated during inference via `node_id(surface_node)` — no span-based correlation needed.
+
+**Deleted (~300 lines):**
+- Comment block explaining the span-based bridge approach
+- `collect_type_assert_node_ids()` + `collect_type_assert_node_ids_from_node()` — walked SurfaceProgram to build span→NodeId map
+- `extract_resolved_types_from_file()` + `extract_resolved_types_from_expr()` — walked converted File to read RefCell types by span
+- `build_type_annotation_table_from_file()` — joined the two maps on span to produce NodeId→Type
+
+**Removed imports:** `SyncArc`, `NodeId`, `SurfaceExpression`, `SurfaceNode` (all only used by deleted bridge code)
+
+**Task 7 status:** `file_to_surface_program_with_types()` was already deleted in a prior sprint (ast_convert.rs). The TypeAnnotationTable is now populated natively.
+
+- [x] Delete `surface_program_to_file()` call from `typecheck_surface_program_with_env`
+- [x] Delete span-based bridge helpers (~300 lines of dead code)
+- [x] `just fmt && just build` passes (exit 0, 0 warnings)
+- [x] `just test-lib` — 341 passed, 7 failed (2 pre-existing `undefined variable: get` failures; 5 from unrelated dirty working-tree changes in `builtins.rs`/`prelude.llt` — not caused by this sprint)
+
 ## Async
 
 ### select-once-hang: `select-once` busy-polls in spin-poll executor causing infinite loop

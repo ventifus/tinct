@@ -177,22 +177,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `typecheck_file_with_types` made `#[cfg(test)]` (test-only); others made `fn` (private) [commit 98148cc]
 - [x] `just build` passes [commit 98148cc]
 
-### typecheck-surface-migration: Migrate type-checker to native SurfaceProgram
-
-**Goal:** Replace `typecheck_file()` internals with native SurfaceNode walking. Once complete, `surface_program_to_file()` bridge in typecheck can be deleted, unblocking all rv2-delete-old-ast items.
-
-**Scope:** ~50 match arms in typecheck.rs + typecheck_dict.rs + typecheck_annot.rs
-
-- [x] Survey: count all `Expr::` and `Spanned<Expr>` match arms in typecheck.rs, typecheck_dict.rs, typecheck_annot.rs
-  <!-- Result: 31 Expr variants total. 24 have direct SurfaceExpression equivalents. 7 map to SurfaceExpression::Decl(SurfaceDeclaration::*): TypeAlias, ClassDecl, InstanceDecl, DefMacro, MacroDecl, Splice, SyntaxClass. No Expr variant is left without a Surface representation — all 7 "missing" ones route through SurfaceDeclaration. Arm counts (non-test code): typecheck.rs ~100+ sites, typecheck_dict.rs ~47 sites, typecheck_annot.rs ~92 sites. -->
-- [x] Add `typecheck_surface_document_native(doc: &SurfaceDocument, state, ...)` that walks SurfaceItem::Expr and SurfaceItem::Decl natively
-- [x] Migrate Pass 0c (pre-scan for ClassDecl, TypeAlias, InstanceDecl) to walk SurfaceDeclaration variants directly — already done via `typecheck_surface_document`; `typecheck_surface_document_native` delegates to it
-- [x] Migrate Pass 1-3 dict inference in typecheck_dict.rs to walk SurfaceExpression variants — added `infer_surface_dict` wrapper
-- [x] Migrate typecheck_annot.rs annotation elaboration to accept SurfaceNode — added `resolve_surface_annotation` wrapper
-- [ ] Delete `surface_program_to_file()` call from typecheck_surface_program_with_env
-- [ ] Delete `file_to_surface_program_with_types()` extraction step
-- [ ] `just build` passes; `just test` passes
-
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files — BLOCKED
 
 **Depends on:** rv2-migrate-ast-dict ✅(partial), rv2-migrate-repl ✅, rv2-migrate-lsp ✅, rv2-migrate-typecheck-api ✅
@@ -200,7 +184,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Still BLOCKED on (these callers must be migrated first):**
 - ~~`src/expand.rs:1661,1694,1802`~~ — ✅ DONE (2026-05-23): expand.rs already uses `surface_node_to_dict`/`dict_to_surface_node`
 - ~~`src/eval.rs:992,1004`~~ — ✅ DONE (Part G): unquote handling migrated to `Value::Expression` path
-- `src/typecheck.rs` internal bridge — `typecheck_surface_program` still converts via `surface_program_to_file` internally; old `typecheck_file_*` functions still exist as private (can delete after bridge is removed)
+- ~~`src/typecheck.rs` internal bridge~~ — ✅ DONE (2026-05-24, typecheck-surface-migration tasks 6-8): `typecheck_surface_program_with_env` now walks `program.documents` directly via `typecheck_surface_document`; `surface_program_to_file()` bridge deleted from the hot path. `typecheck_surface_program` still uses the bridge (span-keyed TypeMap path); old `typecheck_file_*` functions remain private for tests.
 - ~~`src/eval_pipeline.rs`~~ — ✅ old `eval_document`/`eval_file`/`eval_file_with_input` DELETED (2026-05-23)
 
 **Once ALL above are migrated:**

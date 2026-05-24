@@ -4,12 +4,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc as SyncArc;
 
 use crate::ast::{
-    node_id, Annotation, Document, Entry, Expr, File, NamedArg, NodeId, Param, Pattern, Span,
-    Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode,
-    SurfaceProgram, TypeAnnotationTable,
+    node_id, Annotation, Document, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
+    SurfaceDeclaration, SurfaceDocument, SurfaceItem, SurfaceProgram, TypeAnnotationTable,
 };
 use crate::coverage;
 use crate::types::{
@@ -499,309 +497,14 @@ pub fn typecheck_surface_program(
     typecheck_file_with_types_and_env(&file.node, parent_env)
 }
 
-// ============================================================================
-// TypeAnnotationTable population from the file-based bridge path
-// ============================================================================
-//
-// The file-based typecheck bridge (`surface_program_to_file` → `typecheck_file_*`)
-// resolves TypeAssert annotations by writing into `Expr::TypeAssert.resolved_type:
-// RefCell<Option<Type>>`. The evaluator's lowering pass (`lower.rs`) reads the
-// TypeAnnotationTable keyed by `NodeId` (Arc pointer identity of the original
-// `SurfaceNode`). These two representations are disconnected: the converted `Expr`
-// tree carries resolved types in RefCells, but the TypeAnnotationTable keyed on the
-// original `SurfaceNode` pointers is never populated.
-//
-// The fix: after the file-based typecheck, walk the original `SurfaceProgram` and
-// the converted `File` in parallel by span to extract resolved types from the
-// RefCells and insert them into a `TypeAnnotationTable` keyed by the original
-// `SurfaceNode` NodeIds.
-
-/// Walk a SurfaceProgram and collect all TypeAssert nodes, keyed by span offsets.
-///
-/// The span `(start_offset, end_offset)` uniquely identifies a TypeAssert node in the
-/// source (TypeAssert spans are the span of the entire `[@Type expr]` expression).
-/// The value is the `NodeId` of the `Arc<SurfaceNode>` — stable as long as the
-/// SurfaceProgram is live.
-fn collect_type_assert_node_ids(program: &SurfaceProgram) -> HashMap<(usize, usize), NodeId> {
-    let mut map = HashMap::new();
-    for doc_spanned in &program.documents {
-        for item in &doc_spanned.node.items {
-            if let SurfaceItem::Expr(node) = item {
-                collect_type_assert_node_ids_from_node(node, &mut map);
-            }
-        }
-    }
-    map
-}
-
-/// Recursively walk a SurfaceNode, inserting TypeAssert nodes into the map.
-fn collect_type_assert_node_ids_from_node(
-    arc: &SyncArc<SurfaceNode>,
-    map: &mut HashMap<(usize, usize), NodeId>,
-) {
-    match &arc.expr {
-        SurfaceExpression::TypeAssert { expr: inner, .. } => {
-            // Record this TypeAssert node keyed by its span offsets.
-            let span = arc.span;
-            map.insert((span.start.offset, span.end.offset), node_id(arc));
-            // Recurse into the inner expression (nested TypeAsserts are valid).
-            collect_type_assert_node_ids_from_node(inner, map);
-        }
-        SurfaceExpression::Dict(entries) => {
-            for entry in entries {
-                if let Some(ref key) = entry.node.key {
-                    collect_type_assert_node_ids_from_node(key, map);
-                }
-                collect_type_assert_node_ids_from_node(&entry.node.value, map);
-            }
-        }
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            collect_type_assert_node_ids_from_node(func, map);
-            for arg in args {
-                collect_type_assert_node_ids_from_node(arg, map);
-            }
-            for na in named_args {
-                collect_type_assert_node_ids_from_node(&na.node.value, map);
-            }
-        }
-        SurfaceExpression::Fn { body, .. } => {
-            collect_type_assert_node_ids_from_node(body, map);
-        }
-        SurfaceExpression::Pipe { lhs, rhs } => {
-            collect_type_assert_node_ids_from_node(lhs, map);
-            collect_type_assert_node_ids_from_node(rhs, map);
-        }
-        SurfaceExpression::Sequential(exprs) => {
-            for e in exprs {
-                collect_type_assert_node_ids_from_node(e, map);
-            }
-        }
-        SurfaceExpression::DotAccess { expr: inner, .. } => {
-            collect_type_assert_node_ids_from_node(inner, map);
-        }
-        SurfaceExpression::Match { scrutinee, arms } => {
-            collect_type_assert_node_ids_from_node(scrutinee, map);
-            for arm in arms {
-                if let Some(ref guard) = arm.guard {
-                    collect_type_assert_node_ids_from_node(guard, map);
-                }
-                collect_type_assert_node_ids_from_node(&arm.body, map);
-            }
-        }
-        SurfaceExpression::Quote(inner)
-        | SurfaceExpression::Unquote(inner)
-        | SurfaceExpression::UnquoteSplice(inner) => {
-            collect_type_assert_node_ids_from_node(inner, map);
-        }
-        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
-            for b in bindings {
-                collect_type_assert_node_ids_from_node(b, map);
-            }
-        }
-        SurfaceExpression::CaseArm { pattern, body } => {
-            collect_type_assert_node_ids_from_node(pattern, map);
-            collect_type_assert_node_ids_from_node(body, map);
-        }
-        SurfaceExpression::TypeApp { func, arg } => {
-            collect_type_assert_node_ids_from_node(func, map);
-            collect_type_assert_node_ids_from_node(arg, map);
-        }
-        // Leaf nodes: no children to recurse into.
-        SurfaceExpression::Int(_)
-        | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
-        | SurfaceExpression::Str(_)
-        | SurfaceExpression::VarRef { .. }
-        | SurfaceExpression::Annotated { .. }
-        | SurfaceExpression::Rest(_)
-        | SurfaceExpression::Placeholder
-        | SurfaceExpression::Decl(_) // type-level declaration; no TypeAssert children
-        | SurfaceExpression::Error(_) => {}
-    }
-}
-
-/// Walk a converted `File` and extract resolved TypeAssert types by span.
-///
-/// After the file-based typecheck has run, `Expr::TypeAssert.resolved_type` RefCells
-/// hold the resolved types. This function collects them into a span-keyed map so they
-/// can be correlated with the original `SurfaceNode` NodeIds.
-fn extract_resolved_types_from_file(file: &File) -> HashMap<(usize, usize), Type> {
-    let mut map = HashMap::new();
-    for doc in &file.documents {
-        for expr in &doc.node.expressions {
-            extract_resolved_types_from_expr(expr, &mut map);
-        }
-    }
-    map
-}
-
-/// Recursively walk an `Expr` tree collecting resolved TypeAssert types by span.
-fn extract_resolved_types_from_expr(expr: &Spanned<Expr>, map: &mut HashMap<(usize, usize), Type>) {
-    match &expr.node {
-        Expr::TypeAssert {
-            expr: inner,
-            resolved_type,
-            ..
-        } => {
-            if let Some(ty) = resolved_type.borrow().clone() {
-                let span = expr.span;
-                map.insert((span.start.offset, span.end.offset), ty);
-            }
-            extract_resolved_types_from_expr(inner, map);
-        }
-        Expr::Dict(entries) => {
-            for entry in entries {
-                if let Some(ref key) = entry.node.key {
-                    extract_resolved_types_from_expr(key, map);
-                }
-                extract_resolved_types_from_expr(&entry.node.value, map);
-            }
-        }
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            extract_resolved_types_from_expr(func, map);
-            for arg in args {
-                extract_resolved_types_from_expr(arg, map);
-            }
-            for na in named_args {
-                extract_resolved_types_from_expr(&na.node.value, map);
-            }
-        }
-        Expr::Fn { body, .. } => {
-            extract_resolved_types_from_expr(body, map);
-        }
-        Expr::Pipe { lhs, rhs } => {
-            extract_resolved_types_from_expr(lhs, map);
-            extract_resolved_types_from_expr(rhs, map);
-        }
-        Expr::Sequential(exprs) => {
-            for e in exprs {
-                extract_resolved_types_from_expr(e, map);
-            }
-        }
-        Expr::DotAccess { expr: inner, .. } => {
-            extract_resolved_types_from_expr(inner, map);
-        }
-        Expr::TypeAlias { body, .. } => {
-            extract_resolved_types_from_expr(body, map);
-        }
-        Expr::Match { scrutinee, arms } => {
-            extract_resolved_types_from_expr(scrutinee, map);
-            for arm in arms {
-                if let Some(ref guard) = arm.guard {
-                    extract_resolved_types_from_expr(guard, map);
-                }
-                extract_resolved_types_from_expr(&arm.body, map);
-            }
-        }
-        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
-            extract_resolved_types_from_expr(inner, map);
-        }
-        Expr::PatternDecl { bindings } | Expr::LetDecl { bindings } => {
-            for b in bindings {
-                extract_resolved_types_from_expr(b, map);
-            }
-        }
-        Expr::CaseArm { pattern, body } => {
-            extract_resolved_types_from_expr(pattern, map);
-            extract_resolved_types_from_expr(body, map);
-        }
-        Expr::ClassDecl { methods, .. } => {
-            for method in methods {
-                if let Some(ref key) = method.node.key {
-                    extract_resolved_types_from_expr(key, map);
-                }
-                extract_resolved_types_from_expr(&method.node.value, map);
-            }
-        }
-        Expr::InstanceDecl { arms, .. } => {
-            for (pattern_expr, methods) in arms {
-                extract_resolved_types_from_expr(pattern_expr, map);
-                for method in methods {
-                    if let Some(ref key) = method.node.key {
-                        extract_resolved_types_from_expr(key, map);
-                    }
-                    extract_resolved_types_from_expr(&method.node.value, map);
-                }
-            }
-        }
-        Expr::DefMacro { body, .. } => {
-            extract_resolved_types_from_expr(body, map);
-        }
-        Expr::MacroDecl { body, .. } => {
-            extract_resolved_types_from_expr(body, map);
-        }
-        Expr::Splice(forms) => {
-            for form in forms {
-                extract_resolved_types_from_expr(form, map);
-            }
-        }
-        // Leaf nodes and nodes whose children are only type expressions (not value expressions):
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Str(_)
-        | Expr::VarRef { .. }
-        | Expr::Rest(_)
-        | Expr::Placeholder
-        | Expr::TypeApp { .. }
-        | Expr::SyntaxClass { .. }
-        | Expr::Annotated { .. }
-        | Expr::Error(_) => {}
-    }
-}
-
-/// Build a [`TypeAnnotationTable`] from the results of a file-based typecheck of a
-/// [`SurfaceProgram`].
-///
-/// The file-based bridge (`surface_program_to_file` → `typecheck_file_*`) resolves
-/// TypeAssert annotations by writing into `Expr::TypeAssert.resolved_type: RefCell`.
-/// This function correlates those RefCell values with the original `SurfaceNode`
-/// NodeIds (Arc pointer identity) using span offsets as the bridge key.
-///
-/// # Algorithm
-/// 1. Walk `program` to collect `span_offsets → NodeId` for all TypeAssert nodes.
-/// 2. Walk `file` (the converted AST, post-typecheck) to collect `span_offsets → Type`
-///    for all TypeAssert nodes whose `resolved_type` RefCell is `Some`.
-/// 3. Join on span offsets to produce `NodeId → Type` entries in the table.
-///
-/// Span offsets are a reliable join key: the conversion (`surface_program_to_file`)
-/// preserves spans from the original surface AST, so a TypeAssert in the surface AST
-/// and the corresponding `Expr::TypeAssert` in the converted file share the same span.
-fn build_type_annotation_table_from_file(
-    program: &SurfaceProgram,
-    file: &File,
-) -> TypeAnnotationTable {
-    let node_id_map = collect_type_assert_node_ids(program);
-    let resolved_map = extract_resolved_types_from_file(file);
-
-    let mut table = TypeAnnotationTable::new();
-    for (span_key, ty) in resolved_map {
-        if let Some(nid) = node_id_map.get(&span_key) {
-            table.insert(*nid, ty);
-        }
-    }
-    table
-}
-
 /// Type-check a `SurfaceProgram` with full control over scheme-map generation and the
 /// prelude-load optimisation flag, returning all intermediate state including a
 /// [`TypeAnnotationTable`] for the evaluator's lowering pass.
 ///
-/// This is the surface-based replacement for
-/// [`typecheck_file_with_types_and_env_and_source_returning_state`].
-/// Internally converts via [`crate::ast_convert::surface_program_to_file`] and delegates
-/// to the file-based path, then extracts the TypeAnnotationTable directly from the
-/// elaborated `Expr::TypeAssert.resolved_type` RefCells using span-based correlation.
+/// This is the native-Surface implementation — it walks `program.documents` directly
+/// via [`typecheck_surface_document`] without any conversion through the old `File` AST.
+/// The [`TypeAnnotationTable`] is populated directly during inference (keyed by `NodeId`
+/// of the original `Arc<SurfaceNode>`) — no span-based correlation is needed.
 ///
 /// # Parameters
 ///
@@ -814,8 +517,8 @@ fn build_type_annotation_table_from_file(
 ///
 /// `(errors, type_map, doc_map, scheme_map, diagnostics, infer_state, final_env, annotation_table)`
 ///
-/// The `annotation_table` is populated directly from the file-based typecheck result —
-/// callers do NOT need to call [`typecheck_surface_program_annotation_table`] separately.
+/// `type_map` and `doc_map` are currently empty — all callers discard them. If a caller
+/// needs span-keyed types, use [`typecheck_surface_program`] instead.
 pub fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Rc<TypeEnv>,
@@ -831,28 +534,70 @@ pub fn typecheck_surface_program_with_env(
     Rc<TypeEnv>,
     TypeAnnotationTable,
 ) {
-    let file = crate::ast_convert::surface_program_to_file(program);
-    let result = typecheck_file_with_types_and_env_and_source_returning_state(
-        &file.node,
-        parent_env,
-        enable_scheme_map,
-        in_prelude_load,
-    );
-    // Populate the TypeAnnotationTable directly from the elaborated file AST.
-    // This avoids a second typecheck call at the caller site.
-    // TODO: this extraction step is now redundant once the type checker is fully
-    // SurfaceExpr-native (typecheck_surface_document path). At that point,
-    // TypeAssert nodes will be populated directly during inference without the
-    // File bridge conversion.
-    let annotation_table = build_type_annotation_table_from_file(program, &file.node);
+    let mut errors = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut env = parent_env;
+    let mut state = InferState::new();
+    // Seed with prelude instances so constraint checking works for dynamically registered classes.
+    crate::imports::seed_infer_state_from_prelude_cache(&mut state);
+
+    state.in_prelude_load = in_prelude_load;
+
+    if enable_scheme_map {
+        state.scheme_map = Some(SchemeMap::new());
+    }
+
+    let mut annotation_table = TypeAnnotationTable::new();
+    let mut named_types: HashMap<String, Type> = HashMap::new();
+    let mut pipeline_type = Type::Record(Row {
+        fields: HashMap::new(),
+    });
+
+    for doc_spanned in &program.documents {
+        let doc = &doc_spanned.node;
+
+        // Skip type-stage documents — handled separately by create_type_stage_env().
+        if doc.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+
+        match typecheck_surface_document(
+            doc,
+            &env,
+            &mut state,
+            &mut annotation_table,
+            &pipeline_type,
+            &named_types,
+        ) {
+            Ok((new_env, doc_output_type, mut advisory)) => {
+                env = new_env;
+                // Advisory errors (expects:/output_type) are reported without blocking propagation.
+                errors.append(&mut advisory);
+                // Store named section type if this document has a name.
+                if let Some(ref name) = doc.name {
+                    named_types.insert(name.clone(), doc_output_type.clone());
+                }
+                // Update pipeline type for next document.
+                pipeline_type = doc_output_type;
+            }
+            Err(mut doc_errors) => errors.append(&mut doc_errors),
+        }
+    }
+
+    // Extract scheme_map from state (populated during VarRef inference).
+    let scheme_map = state.scheme_map.take().unwrap_or_default();
+
+    // Collect diagnostics from state (e.g., T013 ambiguous constraints).
+    diagnostics.append(&mut state.diagnostics);
+
     (
-        result.0,
-        result.1,
-        result.2,
-        result.3,
-        result.4,
-        result.5,
-        result.6,
+        errors,
+        TypeMap::new(),
+        DocMap::new(),
+        scheme_map,
+        diagnostics,
+        state,
+        env,
         annotation_table,
     )
 }
