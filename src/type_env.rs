@@ -1081,6 +1081,24 @@ impl TypeEnv {
         }
     }
 
+    /// Collect only the binding names defined in THIS frame (no parent walk).
+    ///
+    /// Used by `imports::collect_names_above_baseline` to identify names introduced
+    /// by the prelude (rather than inherited from the builtin baseline).
+    pub fn collect_own_names(&self, names: &mut std::collections::HashSet<String>) {
+        for name in self.bindings.keys() {
+            names.insert(name.clone());
+        }
+    }
+
+    /// Return the parent environment frame, if any.
+    ///
+    /// Used by `imports::collect_names_above_baseline` to walk the frame chain up to
+    /// the builtin baseline boundary.
+    pub fn parent(&self) -> Option<&Rc<TypeEnv>> {
+        self.parent.as_ref()
+    }
+
     /// Create a `TypeEnv` pre-registered with builtin function type signatures.
     ///
     /// This enables the type checker to validate user code that calls builtins.

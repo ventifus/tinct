@@ -149,25 +149,54 @@ fn typecheck_and_merge_stdlib_module(
     Ok(state)
 }
 
-/// Copy all bindings from `source_env` that are not in `baseline_env` into `target`.
+/// Copy all bindings from `source_env` that were explicitly defined by the prelude into `target`.
 ///
-/// This is used after type-checking a stdlib module to extract the newly-added bindings
-/// (the ones the module introduced) without including the builtins already in baseline_env.
-/// The bindings are inserted as TypeSchemes, preserving let-generalization.
-fn merge_env_bindings_into(source_env: &TypeEnv, baseline_env: &TypeEnv, target: &mut TypeEnv) {
-    // Collect all names visible in source_env
-    let mut all_names = std::collections::HashSet::new();
-    source_env.collect_all_names(&mut all_names);
+/// "Prelude-defined" means the binding appears in at least one frame of `source_env` that is
+/// NOT part of the `baseline_env` chain. This correctly captures names that the prelude
+/// explicitly exports (e.g., `=`, `+`, `keys`, `any?`) while excluding raw builtin names that
+/// the prelude never mentions (e.g., `connect`, `http2-session`).
+///
+/// For names that exist in BOTH the prelude's frames AND the baseline (e.g., `=`, `+`),
+/// the prelude's scheme takes precedence — this is intentional: the prelude may add richer
+/// type information (e.g., Equatable constraints on `=`) than the raw builtin scheme.
+///
+/// Algorithm: walk `source_env`'s frame chain collecting names, stopping at the frame
+/// identified as the baseline root by pointer comparison with `baseline_env`. Names found
+/// in frames above the baseline are "prelude-defined" and are included.
+fn merge_env_bindings_into(source_env: &TypeEnv, baseline_env: &Rc<TypeEnv>, target: &mut TypeEnv) {
+    // Collect names from source_env frames that are ABOVE the baseline.
+    // We walk the frame chain, collecting names until we reach a frame that IS the baseline
+    // (by pointer identity) or has no further parent.
+    let mut prelude_names = std::collections::HashSet::new();
+    collect_names_above_baseline(source_env, baseline_env, &mut prelude_names);
 
-    for name in all_names {
-        // Skip bindings already present in the baseline (builtins, cap vars)
-        if baseline_env.get(&name).is_some() {
-            continue;
-        }
-        // Insert the scheme from source_env into target
+    // Insert the scheme for each prelude-defined name (using source_env.get for the full lookup).
+    for name in prelude_names {
         if let Some(scheme) = source_env.get(&name) {
             target.insert_scheme(name, scheme.clone());
         }
+    }
+}
+
+/// Collect all binding names from `env`'s frame chain that are above (not part of) `baseline`.
+///
+/// Walks the frame chain, adding names from each frame to `names`. Stops when it reaches
+/// a frame pointer-equal to `baseline` (the frame IS the baseline) or when there is no parent.
+/// This correctly collects all names introduced by the prelude without including the raw builtins.
+fn collect_names_above_baseline(
+    env: &TypeEnv,
+    baseline: &Rc<TypeEnv>,
+    names: &mut std::collections::HashSet<String>,
+) {
+    // Add names from this frame (own frame only, no parent walk)
+    env.collect_own_names(names);
+
+    // Walk to parent, stopping if we've reached the baseline
+    if let Some(ref parent) = env.parent() {
+        if !Rc::ptr_eq(parent, baseline) {
+            collect_names_above_baseline(parent, baseline, names);
+        }
+        // If parent IS the baseline, stop — we've collected all prelude-defined names.
     }
 }
 
@@ -241,8 +270,13 @@ fn extract_bindings_fallback_from_node(
 /// types into a new `TypeEnv`. Returns the environment even if type errors occur
 /// (best-effort approach).
 fn build_prelude_env_inner() -> Rc<TypeEnv> {
-    // Start with builtins
-    let mut env = TypeEnv::with_builtins();
+    // Start with an empty TypeEnv.
+    // The user-facing TypeEnv should contain ONLY what the prelude explicitly exports,
+    // NOT the raw builtin registry. Builtins are visible during prelude type-checking
+    // (via builtins_env below), but must not leak into user scope.
+    // After typecheck_and_merge_stdlib_module runs, merge_env_bindings_into copies
+    // only the prelude-added entries (filtered against builtins_env as baseline) into env.
+    let mut env = TypeEnv::new();
 
     // Inject capability variable types that the CLI always provides.
     // These are runtime-injected by the CLI (see main.rs:905, 955, 934),
@@ -1088,12 +1122,34 @@ mod tests {
     }
 
     #[test]
-    fn test_build_prelude_env_has_builtins() {
+    fn test_build_prelude_env_has_prelude_exports() {
         let env = build_prelude_env();
-        // Check that builtins are present
-        assert!(env.get("+").is_some());
-        assert!(env.get("if").is_some());
-        assert!(env.get("keys").is_some());
+        // After builtin-privacy Phase 2: user-facing env contains ONLY prelude exports,
+        // not the raw builtin registry. Check a representative sample of prelude-exported names.
+        //
+        // Prelude re-exports: keys, map, filter, split, str, append, range, error, ...
+        assert!(
+            env.get("keys").is_some(),
+            "keys should be in prelude exports"
+        );
+        assert!(env.get("map").is_some(), "map should be in prelude exports");
+        assert!(
+            env.get("filter").is_some(),
+            "filter should be in prelude exports"
+        );
+        //
+        // Raw network I/O builtins that are NOT exported by prelude should be absent.
+        // These test the boundary: user code should not see raw TCP/QUIC primitives.
+        // http2-session and connect are registered in standard_builtins() but not re-exported
+        // by prelude, so they should be absent in the user-facing TypeEnv.
+        assert!(
+            env.get("http2-session").is_none(),
+            "http2-session should NOT be in prelude env — raw I/O builtin not exported by prelude"
+        );
+        assert!(
+            env.get("connect").is_none(),
+            "connect should NOT be in prelude env — raw I/O builtin not exported by prelude"
+        );
     }
 
     #[test]

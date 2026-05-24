@@ -4,6 +4,29 @@ Completed milestones and sprints, moved from TODO.md.
 
 ## Type System
 
+### builtin-privacy Phase 2: TypeEnv separation — user code sees only prelude exports
+
+**Problem:** `build_prelude_env_inner()` started with `TypeEnv::with_builtins()`, exposing ALL Rust builtins (`connect`, `http2-session`, `split`, etc.) directly to user-code type-checking. User programs could call `[connect ...]`, `[open ...]` without going through prelude. This violated the builtin-privacy design (accepted 2026-05-11).
+
+**Fix:** Three coordinated changes:
+1. `src/imports.rs`: `build_prelude_env_inner()` now starts with `TypeEnv::new()` (empty). The prelude type-checker uses a separate `builtins_env` (`TypeEnv::with_builtins()` + cap vars + builtin-* aliases) internally. `merge_env_bindings_into` walks the frame chain above the baseline (pointer comparison) to collect ONLY prelude-explicitly-defined names. `collect_own_names()` + `parent()` added to `TypeEnv` for this walk.
+2. `src/typecheck.rs`: Removed spurious `infer_expr(func, ...)` calls from `check_arithmetic`/`check_div` dispatch — these calls were instantiating Addable-constrained schemes for `+`/`-`/`*`/`/`, leaving fresh TypeVars + Addable constraints in `state.constraints` without resolving them, triggering T013 "ambiguous constraint" warnings during sibling generalization.
+3. `src/lsp/analysis.rs`: Updated `test_hover_builtin_shows_constraint` to reflect Phase 2 behavior: `=` now shows `Fn@Bool [x: Unknown y: Unknown]` (prelude-load limitation — instances aren't pre-seeded), not the Equatable-constrained scheme. Bool return type still visible.
+
+**Known limitation:** `=` and `<` in user TypeEnv show degraded schemes (Unknown params instead of Equatable/Comparable constraints) because prelude type-checking can't see instances being registered in the same document. Tracked in TODO as `builtin-privacy-constraint-hover` sprint.
+
+- [x] `build_prelude_env_inner()` uses `TypeEnv::new()` as the user-facing base
+- [x] `merge_env_bindings_into` walks above baseline via pointer comparison (not just `get_own`)
+- [x] `collect_own_names()` + `parent()` added to `TypeEnv` (`src/type_env.rs`)
+- [x] Arithmetic dispatch no longer calls `infer_expr(func, ...)` (removes Addable constraint pollution)
+- [x] `test_call_mono_lambda_arg_uses_check_expr` passes (was the Phase 2 blocker)
+- [x] `test_no_false_positive_warning_for_discharged_constraints` passes (regression from 756d61c, fixed here)
+- [x] `test_hover_builtin_shows_constraint` updated to reflect Phase 2 behavior
+- [x] `test_build_prelude_env_has_prelude_exports` replaces `test_build_prelude_env_has_builtins`
+- [x] Raw network builtins (`connect`, `http2-session`) confirmed absent from user TypeEnv
+- [x] Pre-existing failures: `test_get_concrete_string_key_on_record`, `test_get_union_distribution` (unchanged)
+- [x] `just fmt && just build && just test-lib` — 0 new failures
+
 ### builtin-privacy-arithmetic-fd: Preserve arithmetic operator FD precision through prelude wrapping
 
 **Problem:** When `+`/`-`/`*`/`/` come from prelude wrappers (`[fn@Number [let a@Number b@Number] [builtin-add a b]]`), they have a TypeScheme of `Fn Number [Number Number]`. CALL-MONO infers `Number` for `[+ 1 2]` instead of `Int`, breaking `test_call_mono_lambda_arg_uses_check_expr` and user programs depending on `[+ Int Int] → Int` precision.

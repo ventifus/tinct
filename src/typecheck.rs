@@ -2958,7 +2958,12 @@ fn infer_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    // Do NOT call infer_expr(func, ...) here — instantiating the Addable-constrained
+                    // scheme for `+` would add fresh TypeVars and an Addable constraint to
+                    // state.constraints. Those TypeVars are never unified (check_arithmetic returns
+                    // the result type directly), leaving unresolved Addable constraints that trigger
+                    // spurious T013 "ambiguous constraint" warnings during generalization of sibling
+                    // bindings. check_open uses the same pattern (no infer_expr on func).
                     return check_arithmetic(args, env, expr.span, state, type_map);
                 }
 
@@ -2967,7 +2972,6 @@ fn infer_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
                     return check_arithmetic(args, env, expr.span, state, type_map);
                 }
 
@@ -2976,7 +2980,6 @@ fn infer_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
                     return check_arithmetic(args, env, expr.span, state, type_map);
                 }
 
@@ -2986,7 +2989,6 @@ fn infer_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
                     return check_div(args, env, expr.span, state, type_map);
                 }
             }

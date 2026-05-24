@@ -638,22 +638,31 @@ Pre-existing failures (NOT caused by Phase 2 change, already failing at baseline
 
 **Phase 2 is blocked on resolving the `+` type precision issue.** The prelude-missing-wrappers prerequisite is now complete — the only remaining blocker is the arithmetic operator TypeScheme precision: the prelude's `+`/`-`/`*`/`/` wrappers lose the Addable/Subtractable/Multipliable/Divisible FD constraint, causing CALL-MONO Int precision failures. The sprint `builtin-privacy-arithmetic-fd` (below) must fix this before Phase 2 can land.
 
-- [ ] **Remove `TypeEnv::with_builtins()` from the user-code path.** Currently `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()` at `src/imports.rs:245`, which leaks all Rust builtins into user scope. Fix: use `TypeEnv::with_builtins()` only for prelude type-checking internally, then build the user-facing TypeEnv from the prelude's output types only — not from the raw builtin env. (`src/imports.rs:239-340`) **Blocked on arithmetic FD precision (see builtin-privacy-arithmetic-fd below).**
-- [ ] Change the evaluator's root env to mirror this: user code's root `Environment` should contain only prelude output, not the raw builtin registry. The `standard_builtins()` registry is used internally for dispatch but not exposed as variable bindings. (`src/imports.rs`, eval pipeline setup)
+- [x] **Remove `TypeEnv::with_builtins()` from the user-code path.** `build_prelude_env_inner()` now starts with `TypeEnv::new()`. Prelude type-checking uses `builtins_env` (a separate `TypeEnv::with_builtins()`) internally. `merge_env_bindings_into` uses pointer-walk above baseline to extract only prelude-defined names. (`src/imports.rs`) **DONE 2026-05-24.**
+- [x] Change the evaluator's root env to mirror this: the TypeEnv returned by `build_prelude_env()` now contains ONLY prelude-exported names, not the raw builtin registry. Raw builtins (`connect`, `http2-session`, etc.) are absent from user TypeEnv. (`src/imports.rs`) **DONE 2026-05-24.**
 
-#### builtin-privacy-arithmetic-fd: Preserve arithmetic operator FD precision through prelude wrapping
+**Known limitation (post-Phase-2):** `=` and `<` in user-facing TypeEnv show degraded schemes (`Fn@Bool [Unknown Unknown]`) instead of Equatable/Comparable constrained schemes. Root cause: prelude type-checking runs with `in_prelude_load: true` and empty instance env (instances can't be pre-seeded during prelude load). LSP hover for `=` shows Bool but not the Equatable constraint. Fix tracked separately: `builtin-privacy-constraint-hover` sprint below.
 
-**Prerequisite for Phase 2.** When `+` in user scope comes from the prelude wrapper `[fn@Number [let a@Number b@Number] [builtin-add a b]]` instead of `TypeEnv::with_builtins()`, it loses the Addable FD — `[+ 1 2]` returns `Number` not `Int`, breaking `test_call_mono_lambda_arg_uses_check_expr` and likely user programs that depend on `[+ Int Int] → Int` precision.
+#### builtin-privacy-arithmetic-fd: Preserve arithmetic operator FD precision through prelude wrapping ✅
 
-Options (choose one):
-1. Add `check_add` / `check_sub` / `check_mul` / `check_div` special-case handlers in `src/typecheck.rs` that refine the return type when both args are statically known Int or Float (mirrors `check_open` pattern). Does not require changing the prelude or TypeScheme.
-2. Override the prelude wrapper's inferred scheme for `+`/`-`/`*`/`/` in `merge_env_bindings_into`: when the name is an arithmetic operator and `baseline_env` (builtins) has an Addable-constrained scheme, prefer the baseline scheme over the prelude wrapper's inferred scheme. Controlled by a list of "scheme-preserving names".
+- [x] Implemented `check_arithmetic` (shared by `+`/`-`/`*` and `builtin-*` aliases) in `src/typecheck.rs`
+- [x] Implemented `check_div` (always `Float`) for `/`/`builtin-div` in `src/typecheck.rs`
+- [x] Removed spurious `infer_expr(func, ...)` call from arithmetic dispatch (was leaking uncleaned Addable constraints → T013 warnings)
+- [x] `test_call_mono_lambda_arg_uses_check_expr` passes
+- [x] `test_no_false_positive_warning_for_discharged_constraints` passes
+- [x] Phase 2 change (`TypeEnv::new()`) landed cleanly.
 
-Option 1 is preferred — it keeps type precision purely in the type checker where it belongs, without coupling `merge_env_bindings_into` to specific operator names.
+#### builtin-privacy-constraint-hover: Restore Equatable/Comparable constraint in LSP hover for `=`, `<`
 
-- [x] Implement `check_add`/`check_sub`/`check_mul`/`check_div` special forms in `src/typecheck.rs` that refine return type to `Int` when both args are `Int` (or `Float` when either is `Float`). Mirror the `check_open` pattern at `src/typecheck.rs:4278-4350`.
-- [x] Verify `test_call_mono_lambda_arg_uses_check_expr` passes with this fix applied.
-- [ ] Retry Phase 2 change (`TypeEnv::new()`) — should now land cleanly.
+**Post-Phase-2 known limitation.** `=` shows `Fn@Bool [x: Unknown y: Unknown]` in hover instead of the Equatable-constrained scheme. The root cause: prelude type-checking runs with `in_prelude_load: true` (instance bodies not inferred) and the instance env is empty during prelude load (Equatable instances are being defined in the same prelude document, creating a chicken-and-egg). The constraint `[a: Equatable]` on `=`'s annotation can't be resolved → TypeVars degrade to Unknown.
+
+Fix options:
+1. Pre-seed the instance env with builtin-provided instances before type-checking the prelude (so Equatable, Comparable, Addable are available when `=`, `<`, `+` etc. are typed).
+2. Post-process the returned prelude env: for names like `=`, `<` where the prelude's inferred scheme is degraded (has Unknown params), fall back to the builtin scheme from `TypeEnv::with_builtins()`.
+
+Option 1 is correct but requires splitting prelude into "instances first" and "functions second" sections. Option 2 is a targeted workaround.
+
+- [ ] Implement fix (Option 1 or 2) so `=` hover shows `Equatable a => Fn@Bool [a a]` (`src/imports.rs`, `src/lsp/analysis.rs`)
 
 #### Phase 3 (migrate + lint)
 
