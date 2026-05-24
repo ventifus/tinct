@@ -46,6 +46,12 @@ impl Constraint {
     /// Create a single-parameter Class constraint from a class name string.
     /// Constructs a minimal `ClassDecl` with just the name (no params, superclasses, or FDs).
     /// Used in built-in environment construction where the full `ClassDecl` is not yet available.
+    /// KNOWN ISSUE (T6): Constraint::new_by_name creates minimal ClassDecl with empty determines.
+    /// Any code path creating arithmetic constraints via new_by_name instead of full ClassDecl
+    /// from state.class_env produces constraints where improve_functional_dependency finds no FDs
+    /// and silently skips. Audit all new_by_name call sites to verify they are not used for
+    /// FD-bearing classes (Add/Sub/Mul/Div). Currently only used in tests and for non-FD classes.
+    /// Deferred to chr-new-by-name-audit sprint.
     pub fn new_by_name(name: impl Into<String>, var: impl Into<String>) -> Self {
         let name = name.into();
         let class = Arc::new(ClassDecl {
@@ -104,6 +110,13 @@ pub struct ClassDecl {
     /// Whether the resolver is injective (one-to-one mapping).
     /// If true, the type checker can use the resolver result to refine the determining types.
     /// Field is fully wired through parser → AST → typecheck → ClassDecl (chr-instances-gaps done).
+    ///
+    /// KNOWN ISSUE (T4): Reverse FD (resolver_injective) not implemented — this field exists
+    /// but is dead code. Parser can parse `injective: true` and threads it through to ClassDecl,
+    /// but FD improvement only fires forward (determining→determined). Backward inference
+    /// (determined→determining) requires congruence-based unification of TypeStageApp nodes,
+    /// which is blocked on stuck-app deferral and unification semantics. Deferred to chr-reverse-fd sprint.
+    ///
     /// The read site is future CHR congruence work (bidirectional FD refinement from resolver output).
     #[allow(dead_code)] // read site is future CHR congruence work, not yet implemented
     pub(crate) resolver_injective: bool,
@@ -239,8 +252,11 @@ impl InstanceEnv {
     /// The key is `(class_name, determining_type_strings)` derived from `inst.det_positions`.
     /// For single-parameter classes the key is `(class_name, [instance_type_string])`.
     ///
-    /// Note: this function does NOT detect or reject overlapping instances whose keys differ
-    /// but whose patterns overlap. Overlap checking is deferred to future work.
+    /// KNOWN ISSUE (F4): This function does NOT detect or reject overlapping instances whose
+    /// keys differ but whose patterns unify. String-key dedup catches exact duplicates but not
+    /// structural overlap (e.g., `[Seq a]` vs `[Seq Int]` have different keys but overlap).
+    /// Overlap checking requires unification probes at insert time, which would need state save/restore
+    /// (same pattern as F1 fix) to avoid leaking probe mutations. Deferred to chr-overlap-insert sprint.
     pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
         let key = Self::build_key(&inst);
         if self.instances.contains_key(&key) {
@@ -302,6 +318,15 @@ impl InstanceEnv {
                 continue;
             }
 
+            // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
+            // unify() mutates state.levels, state.constraints, state.kind_env, state.deferred_equalities,
+            // and state.name_counter (via instantiate_at_level). Failed candidates must not leak these.
+            let saved_levels = state.levels.clone();
+            let saved_constraints = state.constraints.clone();
+            let saved_kind_env = state.kind_env.clone();
+            let saved_deferred = state.deferred_equalities.clone();
+            let saved_name_counter = state.name_counter;
+
             // Attempt unification of all determining positions.
             // Use a temporary substitution to avoid polluting the global state.
             let mut temp_subst = state.subst.clone();
@@ -326,8 +351,24 @@ impl InstanceEnv {
             }
 
             if all_match {
+                // F1 FIX: On successful match, restore state but keep the successful temp_subst results.
+                // The state mutations from this probe ARE valid, but we don't commit temp_subst to
+                // state.subst — the caller will handle substitution propagation.
+                state.levels = saved_levels;
+                state.constraints = saved_constraints;
+                state.kind_env = saved_kind_env;
+                state.deferred_equalities = saved_deferred;
+                state.name_counter = saved_name_counter;
+
                 // Found a matching instance - return a clone
                 return Some(inst.clone());
+            } else {
+                // F1 FIX: Restore state after failed probe (discard leaked mutations).
+                state.levels = saved_levels;
+                state.constraints = saved_constraints;
+                state.kind_env = saved_kind_env;
+                state.deferred_equalities = saved_deferred;
+                state.name_counter = saved_name_counter;
             }
         }
 
@@ -372,6 +413,15 @@ impl InstanceEnv {
 
         // Try to unify with each candidate
         for inst in candidates {
+            // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
+            // unify() mutates state.levels, state.constraints, state.kind_env, state.deferred_equalities,
+            // and state.name_counter (via instantiate_at_level). Failed candidates must not leak these.
+            let saved_levels = state.levels.clone();
+            let saved_constraints = state.constraints.clone();
+            let saved_kind_env = state.kind_env.clone();
+            let saved_deferred = state.deferred_equalities.clone();
+            let saved_name_counter = state.name_counter;
+
             // 1. Freshen the instance type to prevent variable leakage
             //    (e.g., `b` in `AppendableSeq [Seq b]` must be fresh for each resolution attempt)
             let freshened_instance_type = instantiate_at_level(&inst.instance_type, state);
@@ -400,12 +450,27 @@ impl InstanceEnv {
                     })
                     .collect();
 
+                // F1 FIX: Restore state after successful probe — we return the instance but don't
+                // commit the probe's state mutations (they were exploratory).
+                state.levels = saved_levels;
+                state.constraints = saved_constraints;
+                state.kind_env = saved_kind_env;
+                state.deferred_equalities = saved_deferred;
+                state.name_counter = saved_name_counter;
+
                 return Some(InstanceDecl {
                     class_name: inst.class_name.clone(),
                     instance_type: freshened_instance_type,
                     det_positions: inst.det_positions.clone(),
                     method_types: freshened_method_types,
                 });
+            } else {
+                // F1 FIX: Restore state after failed probe (discard leaked mutations).
+                state.levels = saved_levels;
+                state.constraints = saved_constraints;
+                state.kind_env = saved_kind_env;
+                state.deferred_equalities = saved_deferred;
+                state.name_counter = saved_name_counter;
             }
         }
 

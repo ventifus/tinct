@@ -3659,6 +3659,13 @@ fn infer_expr(
             }
 
             // Pairwise disjointness check (Task 7.2)
+            // KNOWN ISSUE (F11): This check is intra-declaration only — it does not detect
+            // overlapping instances across different [instance ...] declarations or across
+            // module boundaries. A user could declare `[instance Foo [Seq a] ...]` in one
+            // file and `[instance Foo [Seq Int] ...]` in another; both would be registered
+            // in InstanceEnv without error, causing nondeterministic resolution (HashMap
+            // iteration order). Full overlap checking requires cross-module instance tracking
+            // and pairwise unification probes at module merge time. Deferred to chr-cross-module-overlap sprint.
             for i in 0..arm_data.len() {
                 for j in (i + 1)..arm_data.len() {
                     let (types_i, span_i, _) = &arm_data[i];

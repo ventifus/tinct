@@ -560,12 +560,25 @@ pub fn generalize_with_doc(
         // the effective free variable "_label_0" before checking generalizable membership.
         let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
 
-        // Helper: resolve a type variable name through one level of substitution.
+        // Helper: resolve a type variable name through the full substitution chain.
+        // T5 FIX: Follow chains like α→β→γ to the end (was only doing one hop).
         let resolve_var_name = |var_name: &str| -> String {
-            match subst_snapshot.get(var_name) {
-                Some(Type::TypeVar(resolved_name, _)) => resolved_name.clone(),
-                Some(Type::Operator(resolved_name)) => resolved_name.clone(),
-                _ => var_name.to_string(),
+            let mut current = var_name.to_string();
+            let mut visited = HashSet::new();
+            loop {
+                if !visited.insert(current.clone()) {
+                    // Cycle detected — return current
+                    return current;
+                }
+                match subst_snapshot.get(&current) {
+                    Some(Type::TypeVar(resolved_name, _)) => {
+                        current = resolved_name.clone();
+                    }
+                    Some(Type::Operator(resolved_name)) => {
+                        current = resolved_name.clone();
+                    }
+                    _ => return current,
+                }
             }
         };
 
@@ -609,18 +622,39 @@ pub fn generalize_with_doc(
                     } else {
                         // Diagnostic: ambiguous type variable in constraint
                         // (appears in constraint but not in the type — constraint will be silently dropped)
-                        for var in &resolved_vars {
+                        // T2 FIX: For MPTC constraints with FDs, only flag vars that are non-generalizable
+                        // AND not covered by a FD whose determining positions are all generalizable.
+                        for (var_idx, var) in resolved_vars.iter().enumerate() {
                             if !generalizable_vars.contains(var) && !is_discharged(var) {
-                                state.diagnostics.push(crate::error::TypeDiagnostic {
-                                    message: format!(
-                                        "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                                        format_var_name(var),
-                                        class.name
-                                    ),
-                                    span,
-                                    code: "T013",
-                                    level: crate::error::DiagnosticLevel::Warn,
-                                });
+                                // Check if this var is covered by a FD with all determining positions generalizable
+                                let is_fd_covered = class.determines.iter().any(
+                                    |(det_positions, ded_positions)| {
+                                        // Is this var in a determined position?
+                                        if !ded_positions.contains(&var_idx) {
+                                            return false;
+                                        }
+                                        // Are ALL determining positions generalizable?
+                                        det_positions.iter().all(|&det_idx| {
+                                            resolved_vars
+                                                .get(det_idx)
+                                                .map(|v| generalizable_vars.contains(v))
+                                                .unwrap_or(false)
+                                        })
+                                    },
+                                );
+
+                                if !is_fd_covered {
+                                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                                        message: format!(
+                                            "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                                            format_var_name(var),
+                                            class.name
+                                        ),
+                                        span,
+                                        code: "T013",
+                                        level: crate::error::DiagnosticLevel::Warn,
+                                    });
+                                }
                             }
                         }
                     }

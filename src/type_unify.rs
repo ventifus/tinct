@@ -22,6 +22,12 @@ const MAX_CONSTRAINT_DEPTH: usize = 256;
 /// `InstanceEnv::resolve_instance` in `check_constraints_on_var`.
 /// This requires prelude.llt instances to be propagated into the `InferState`
 /// (done by `imports::seed_infer_state_from_prelude_cache`).
+///
+/// KNOWN ISSUE (F5): Hardcoded instance sets may diverge from InstanceEnv if prelude
+/// instances are added/modified without updating this function. The correct long-term
+/// solution is to make ALL constraint satisfaction go through InstanceEnv (eliminating
+/// hardcoded sets entirely), but this requires seeding the InstanceEnv before early-stage
+/// operator type inference runs. Deferred to chr-eliminate-hardcoded-instances sprint.
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     satisfies_constraint_inner(ty, class_name, 0)
 }
@@ -381,6 +387,14 @@ fn check_constraints_on_var(
                 fundeps,
             } => {
                 // Multi-parameter type class constraint with functional dependencies
+                // KNOWN ISSUE (T3): MPTC check_constraints_on_var does FD improvement only,
+                // no class membership check. If _t0 is constrained by Add _t0 _t1 _t2 and
+                // _t0 is bound to Str, no error fires at binding time — it defers until FD
+                // improvement (which requires all determining positions ground simultaneously).
+                // Invalid MPTC usage not caught early. Fixing requires MPTC instance membership
+                // checks analogous to single-param satisfies_constraint, but with partial-param
+                // matching (e.g., can we find Add Str β γ for any β, γ?). Deferred to chr-mptc-membership sprint.
+                //
                 // Check if this variable binding triggers FD improvement
                 improve_functional_dependency(
                     &class,
@@ -423,7 +437,14 @@ fn improve_functional_dependency(
 ) -> Result<(), TypeError> {
     // Depth guard: prevent infinite recursion through the FD improvement cycle.
     if state.fd_depth >= MAX_FD_DEPTH {
-        return Ok(());
+        // F7 FIX: Return error instead of silently succeeding when depth limit is reached
+        return Err(TypeError::new(
+            format!(
+                "functional dependency improvement depth limit exceeded (max {}) — possible recursive FD chain for class {}",
+                MAX_FD_DEPTH, class
+            ),
+            span,
+        ));
     }
     state.fd_depth += 1;
     let result = improve_functional_dependency_inner(
@@ -621,6 +642,13 @@ fn improve_functional_dependency_inner(
             let ded_var = &vars[ded_pos];
             let ded_type_var = Type::TypeVar(ded_var.clone(), 0);
 
+            // KNOWN ISSUE (F2): Dual substitution inconsistency — determining lookup uses
+            // `subst` parameter (lines 488-503), but determined unification uses `state.subst`
+            // via mem::take (below). These can be DIFFERENT substitutions if the caller passed
+            // a temp_subst. This can cause FD improvement to miss bindings or use stale state.
+            // Deep architectural issue — fixing requires threading the active subst consistently
+            // or eliminating the mem::take pattern entirely. Deferred to chr-fd-subst-unify sprint.
+            //
             // Unify the determined variable with the result type
             // Use std::mem::take to avoid borrow conflicts (same pattern as typecheck.rs:2124)
             let mut subst = std::mem::take(&mut state.subst);
@@ -684,6 +712,8 @@ fn lookup_arithmetic_instance(
             | ("Int", "Number")
             | ("Number", "Float")
             | ("Float", "Number") => Ok(Type::Number),
+            // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
+            ("Never", _) | (_, "Never") => Ok(Type::Never),
             _ => Err(TypeError::new(
                 format!("no instance for {} {} {}", class, a, b),
                 span,
@@ -698,6 +728,8 @@ fn lookup_arithmetic_instance(
             | ("Int", "Number")
             | ("Number", "Float")
             | ("Float", "Number") => Ok(Type::Number),
+            // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
+            ("Never", _) | (_, "Never") => Ok(Type::Never),
             _ => Err(TypeError::new(
                 format!("no instance for Divisible {} {}", a, b),
                 span,
@@ -772,7 +804,8 @@ fn type_key(ty: &Type) -> &'static str {
         Type::Float => "Float",
         Type::Number => "Number",
         Type::IntLiteral(_) => "Int", // Promoted
-        _ => "Unknown",
+        Type::Never => "Never",       // T1 FIX: Never gets its own key (not "Unknown")
+        _ => "_other", // F6 FIX: renamed from "Unknown" (clearer sentinel for unhandled types)
     }
 }
 
@@ -1446,13 +1479,12 @@ fn lower_levels_check_occurs(
 ///
 /// Returns immediately if α has no class constraints (fast path for the common case).
 fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
-    // Collect all Class constraints on α. Early-exit if there are none.
-    // For single-param constraints only (MPTC transfer is more complex and deferred)
+    // Collect all Class constraints on α (both single-param and MPTC).
     let alpha_constraints: Vec<(Arc<ClassDecl>, Vec<String>)> = state
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars } if vars.len() == 1 && vars[0] == alpha => {
+            Constraint::Class { class, vars } if vars.contains(&alpha.to_string()) => {
                 Some((Arc::clone(class), vars.clone()))
             }
             _ => None,
@@ -1463,23 +1495,36 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
     }
 
     // Transfer to β (deduplicated: only add if not already present).
-    // Collect β's existing class names as owned Strings so we do not hold a
-    // shared borrow on `state.constraints` while the loop pushes new entries.
-    let beta_existing: HashSet<String> = state
+    // F3 FIX: For MPTC constraints, substitute alpha→beta in the vars list.
+    let beta_existing: HashSet<Vec<String>> = state
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars } if vars.len() == 1 && vars[0] == beta => {
-                Some(class.name.clone())
+            Constraint::Class { class: _, vars } if vars.contains(&beta.to_string()) => {
+                Some(vars.clone())
             }
             _ => None,
         })
         .collect();
-    for (class, _vars) in alpha_constraints {
-        if !beta_existing.contains(&class.name) {
+
+    for (class, vars) in alpha_constraints {
+        // Substitute alpha → beta in vars list
+        let renamed_vars: Vec<String> = vars
+            .iter()
+            .map(|v| {
+                if v == alpha {
+                    beta.to_string()
+                } else {
+                    v.clone()
+                }
+            })
+            .collect();
+
+        // F3 FIX: Check if the renamed constraint already exists (avoid duplicates)
+        if !beta_existing.contains(&renamed_vars) {
             state.constraints.push(Constraint::Class {
                 class,
-                vars: vec![beta.to_string()],
+                vars: renamed_vars,
             });
         }
     }
@@ -2229,13 +2274,25 @@ pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitut
 
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
-                // Ignore failures: errors will surface later when the type variable is used.
-                // Crucially, do NOT use `?` here — a failure on one equality must not abort
-                // processing of the remaining equalities in this iteration.
-                if unify(&a_norm, &b_norm, subst, state, span).is_ok() {
-                    progress = true;
+                // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
+                match unify(&a_norm, &b_norm, subst, state, span) {
+                    Ok(()) => {
+                        progress = true;
+                    }
+                    Err(err) => {
+                        // Deferred equality failed — emit T013-style diagnostic
+                        state.diagnostics.push(crate::error::TypeDiagnostic {
+                            message: format!(
+                                "deferred type equality failed: cannot unify {} with {} — {}",
+                                a_norm, b_norm, err.message
+                            ),
+                            span,
+                            code: "T013",
+                            level: crate::error::DiagnosticLevel::Warn,
+                        });
+                    }
                 }
-                // If unification failed, discard this equality (don't re-defer it).
+                // Don't re-defer either way (fully reduced)
             } else {
                 // Still stuck — keep deferred for the next iteration
                 state.deferred_equalities.push((a_norm, b_norm));

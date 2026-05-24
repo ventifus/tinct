@@ -9376,3 +9376,58 @@ Known issue (flagged 2026-04-21): static check uses structural `is_subtype`, run
 **SOUND (verified):** `Int`/`Float`/`Bool`/`Str` primitives, `Number` (special-cased, now includes Decimal/BigInt), `Seq[T]` tag-only (documented), `Fn@T [U]` tag-only (documented), `Variant` tag-comparison matches static, `Union` (`any(members)` mirrors static), `Intersection` (`all(members)` mirrors static), `default:` compile-time validated + runtime lookup correct, guarded thunk lifecycle (all 4 paths), nested TypeAssert (independent per level), blame attribution (inner_span = producer per Findler & Felleisen 2002). Record-type assertions are **NOT** no-ops — `validate_and_wrap_record` performs shape checking and guard-wrapping via `Cont::GuardedValidate`.
 
 Commit: `review-typeassert-semantics: fix TA3/TA4/TA7 + document TA5/TA6 as KNOWN ISSUE`
+
+### review-chr-constraints: Audit CHR constraint solving and MPTC/FD soundness
+
+**Agents:** computer-scientist, type-theorist
+**Files:** `src/type_unify.rs` (`improve_functional_dependency`, `lookup_mptc`, `lookup_arithmetic_instance`), `src/typecheck.rs` (`satisfies_constraint`, `check_instance_*` functions), `src/type_env.rs` (InstanceEnv, instance registration), `doc/07-type-extensions.md` §Type Classes
+
+Key questions:
+- Does the CHR constraint solving algorithm (Jaffar & Maher 1994) correctly simplify constraint sets? Can constraints accumulate without being discharged?
+- Is functional dependency improvement (MPTC-FD, Jones 2000) confluent? Can two applicable instances produce different determined types for the same determining types?
+- For user-defined class instances: are instance consistency, coverage, and disjointness checks sufficient to guarantee coherence?
+- Is the recursive instance lookup terminating? Can constraint propagation loop?
+- For arithmetic MPTC instances (Add/Sub/Mul/Div): does the type-level dispatch correctly match the runtime dispatch in `builtin_apply`?
+- Are ambiguity errors (T013) correctly detected — can a genuinely ambiguous constraint slip through as a false success?
+
+- [x] Dispatch computer-scientist to audit CHR/MPTC/FD soundness (2026-05-23)
+
+#### Findings (2026-05-23 formal audit)
+
+- [x] **F1 Fixed — `lookup_mptc` and `resolve_instance` now save/restore `state.levels`, `state.constraints`, `state.kind_env`, `state.deferred_equalities`, `state.name_counter` around each candidate probe** (`src/type_class.rs:307-326`). Failed unification probes no longer leak TypeVar names, level entries, or constraints into global state.
+
+- [x] **F2 KNOWN ISSUE — `improve_functional_dependency_inner` uses dual substitutions inconsistently** (`src/type_unify.rs:481-497` vs `src/type_unify.rs:624-627`). Determining position lookup uses the `subst` parameter; determined position unification uses `state.subst` (via `mem::take`). These can differ when callers separate substitutions. Comment added at both sites documenting the dual-subst hazard and required fix (pass `subst` through to inner `unify` call). Requires larger refactor of FD improvement threading.
+
+- [x] **F3 Fixed — `transfer_class_constraints` now transfers MPTC constraints with variable substitution** (`src/type_unify.rs:1446-1484`). Multi-parameter constraints (`Add _t0 _t1 _t2`) are no longer silently dropped when `_t0` is bound to another TypeVar `_t3` — the constraint is renamed (`_t0 → _t3`) and re-inserted.
+
+- [x] **F4 KNOWN ISSUE — `InstanceEnv::insert` does not reject overlapping instances with different string keys** (`src/type_class.rs:244-253`). Two instances with different `build_key` outputs (e.g. `[Mappable [Seq a]]` vs `[Mappable [Seq Int]]`) are both inserted without overlap detection. `resolve_instance` is insertion-order-dependent. Comment added at insert site documenting required unification-probe overlap check. Tracked as inter-module coherence gap (related to F11).
+
+- [x] **F5 KNOWN ISSUE — `satisfies_constraint` has hardcoded instance sets that may diverge from `InstanceEnv`** (`src/type_unify.rs:25-148`). Dual-source-of-truth design is fragile; no concrete unsoundness found currently. Comment added documenting invariant (hardcoded sets must be subset of InstanceEnv), required correspondence test, and long-term plan (remove hardcoded sets when InstanceEnv seeded early enough).
+
+- [x] **F6 Fixed — `type_key` sentinel renamed from `"Unknown"` to `"_other"`** (`src/type_unify.rs:767-775`). The return value `"Unknown"` was a misleading sentinel collapsing all non-{Int,Float,Number,IntLiteral} types. Renamed to `"_other"` to distinguish from the Unknown type and clarify "not handled by fast path" semantics. Comment added noting Str/Bool cases for future concatenation/logic instances.
+
+- [x] **F7 Fixed — `MAX_FD_DEPTH` silent success changed to error** (`src/type_unify.rs:424`). `fd_depth` counter silently returned `Ok(())` at the limit, potentially producing under-constrained types. Now returns `Err` with a "FD improvement depth limit exceeded" message, consistent with `MAX_INSTANCE_RESOLUTION_DEPTH` behavior. Comment added noting lack of Paterson condition checking (Sulzmann et al. 2007).
+
+- [x] **F8 Already done/SOUND — Confluence of FD improvement holds for current constraint set.** Hardcoded arithmetic table is a total function on its domain. User-defined instance consistency check (`src/typecheck.rs:3232-3276`) implements Jones (2000) Definition 8. Caveat: consistency check ignored for class/instance inside dict values (`test_instance_fd_consistency_violation` `#[ignore]`) — KNOWN ISSUE.
+
+- [x] **F9 Already done/SOUND — Coverage check is correct per Jones (2000) Definition 7** (`src/typecheck.rs:3197-3229`). Every TypeVar in a determined position must appear in a determining position. Handles concrete determined types correctly.
+
+- [x] **F10 Fixed — `process_deferred_equalities` now accumulates failed unifications as diagnostics** (`src/type_unify.rs:2178-2212`). Failed deferred equalities are no longer silently discarded; they emit a warning diagnostic so type errors surface at the deferred equality site rather than manifesting as wrong inferred types later. Implements Schrijvers et al. (2009) OutsideIn(X) requirement that all wanted constraints are either discharged or reported.
+
+- [x] **F11 KNOWN ISSUE — No inter-module instance overlap checking** (`src/type_class.rs:242-243`, `src/typecheck.rs:3172-3192`). Disjointness check only covers arms within a single `[instance ...]` declaration; separate declarations across modules are not checked. Comment added at `InstanceEnv::insert` documenting required global probe. See also F4.
+
+- [x] **F12 Already done/SOUND — `Constraint::Class.fundeps` correctly sourced from `ClassDecl` via `Arc<ClassDecl>`.** `check_constraints_on_var` extracts `fundeps: class.determines.clone()` from the ClassDecl reference, not a standalone field. Fixed in chr-instances-gaps.
+
+- [x] **T1 Fixed — `type_key(Never)` now returns `"Never"`; arithmetic table handles `("Never", _) | (_, "Never") → Never`** (`src/type_unify.rs:47,767-774`). `satisfies_constraint(Never, _)` correctly returns `true` (vacuous truth) and FD improvement on `Add Never Never _c` now resolves `_c = Never`, consistent with bottom-type arithmetic (⊥ ∨ τ = τ).
+
+- [x] **T2 Fixed — T013 emission is now FD-aware** (`src/type_env.rs:590-618`). For MPTC constraint `Add α β γ` with FD `(α,β)→γ`, T013 no longer fires for `α`/`β` when only `γ` is non-generalizable and the determining positions are all covered by generalizable vars. Logic refactored to check per-var generalizability accounting for FD structure.
+
+- [x] **T3 KNOWN ISSUE — `check_constraints_on_var` (MultiParam path) runs FD improvement only, no class membership check** (`src/type_unify.rs:376-393`). If `_t0` (constrained by `Add _t0 _t1 _t2`) is bound to `Str`, no error is raised. Comment added documenting required `satisfies_constraint`/`resolve_instance` call after FD improvement.
+
+- [x] **T4 KNOWN ISSUE — Reverse FD lookup (`resolver_injective`) not implemented; field is dead code** (`src/type_unify.rs:455`, `src/type_class.rs:108`). FD improvement only propagates forward. Comment added at `resolver_injective` field documenting backward improvement design and Stolarek et al. (2015) reference.
+
+- [x] **T5 Fixed — `resolve_var_name` in `generalize_with_doc` now does full chain-walk** (`src/type_env.rs:556-561`). The one-hop `subst_snapshot.get()` is replaced with an inline loop that follows the full `α → β → γ` chain. MPTC constraints involving chained TypeVars are now correctly found in `generalizable_vars`, preventing spurious T013.
+
+- [x] **T6 KNOWN ISSUE — `Constraint::new_by_name` creates a minimal `ClassDecl` with empty `determines`** (`src/type_class.rs:49-63`). Call sites audited: none currently used for classes with functional dependencies. Comment added at `new_by_name` documenting invariant violation risk and required audit if new arithmetic constraint creation is added.
+
+Commit: `review-chr-constraints: fix F1/F3/T1/T2 UNSOUND + F6/F7/T5/F10 + KNOWN ISSUE docs`
