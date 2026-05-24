@@ -1439,6 +1439,19 @@ fn typecheck_document(
     }
 }
 
+/// Collect all NominalVariant tag names reachable from a type.
+/// A type alias body such as `[Ok a] | [Err b]` resolves to `Union([NominalVariant("Ok",...),
+/// NominalVariant("Err",...)])`. This function extracts `["Ok", "Err"]` so the caller can
+/// check each tag against the `registered_nominal_tags` registry for W042 duplicates.
+fn collect_nominal_tags(ty: &Type) -> Vec<String> {
+    match ty {
+        Type::NominalVariant { tag, .. } => vec![tag.clone()],
+        Type::Union(members) => members.iter().flat_map(collect_nominal_tags).collect(),
+        // Intersection, Seq, Record, and all scalar types carry no nominal tags.
+        _ => vec![],
+    }
+}
+
 fn register_type_aliases(
     expr: &Spanned<Expr>,
     target_env: &mut TypeEnv,
@@ -1452,12 +1465,18 @@ fn register_type_aliases(
         // Pass 2: Resolve actual bodies (now recursive references can be looked up)
 
         // Pass 1: Collect alias names and pre-register placeholders
-        let mut alias_entries = Vec::new();
+        // Each entry carries (alias_name, params, body_expr, declaration_span).
+        let mut alias_entries: Vec<(String, Vec<String>, Spanned<Expr>, Span)> = Vec::new();
         for entry in entries {
             if let Some(ref key) = entry.node.key {
                 if let Expr::Str(name) = &key.node {
                     if let Expr::TypeAlias { params, body } = &entry.node.value.node {
-                        alias_entries.push((name.clone(), params.clone(), body.clone()));
+                        alias_entries.push((
+                            name.clone(),
+                            params.clone(),
+                            *body.clone(),
+                            entry.node.value.span,
+                        ));
                         // Pre-register with placeholder body
                         // Gradual: Pre-register with placeholder during forward-reference resolution
                         target_env.insert_type_alias(
@@ -1473,7 +1492,7 @@ fn register_type_aliases(
         }
 
         // Pass 2: Resolve actual bodies
-        for (name, params, body) in alias_entries {
+        for (name, params, body, decl_span) in alias_entries {
             // Use a fresh per-alias mapping so annotation names within one type
             // alias expression (e.g., `a` in `[Fn@a [a]]`) consistently map to
             // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
@@ -1506,6 +1525,30 @@ fn register_type_aliases(
                 0,
             ) {
                 Ok(alias_ty) => {
+                    // W042: check each NominalVariant tag name in the resolved body against
+                    // the global registry. Two separate [type ...] declarations with the same
+                    // tag name are ambiguous at match sites — the second definition shadows the
+                    // first in runtime pattern matching but both contribute to the type's union.
+                    for tag in collect_nominal_tags(&alias_ty) {
+                        // Copy the span out before any mutable borrow of state, so Rust's borrow
+                        // checker sees the immutable borrow end before the push below.
+                        let prev = state.registered_nominal_tags.get(tag.as_str()).copied();
+                        if let Some(prev_span) = prev {
+                            state.diagnostics.push(crate::error::TypeDiagnostic {
+                                message: format!(
+                                    "duplicate nominal tag name '{tag}': previously defined at \
+                                     {}:{} — tag names must be unique across [type ...] declarations",
+                                    prev_span.start.line, prev_span.start.column,
+                                ),
+                                span: decl_span,
+                                code: "W042",
+                                level: crate::error::DiagnosticLevel::Warn,
+                            });
+                        } else {
+                            state.registered_nominal_tags.insert(tag, decl_span);
+                        }
+                    }
+
                     // Use the fresh names assigned to params
                     let remapped_params: Vec<String> = params
                         .iter()
@@ -2885,8 +2928,14 @@ fn infer_expr(
             // Coverage is checked when the scrutinee's type is either:
             // - Type::Union (multiple constructors)
             // - Type::NominalVariant (single constructor, not wrapped in Union)
+            // - Type::Bool (two constructors: true, false)
             // Without one of these types, the match is dynamically correct but
             // statically unverified (consistent with Karachalias et al. 2015).
+            //
+            // TODO(coverage-closed-record): Coverage checking not yet implemented for
+            // closed Record scrutinees. Extending requires teaching coverage.rs to
+            // recognize field patterns and build Record constructor signatures from
+            // the record's field types. Tracked as T3 in review-exhaustiveness findings.
             let sig = match &scrutinee_ty {
                 Type::Union(members) => coverage::ConstructorSignature::from_union(members),
                 Type::NominalVariant { tag, fields } => Some(

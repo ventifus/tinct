@@ -266,13 +266,13 @@ the match is dynamically correct but statically unverified. A runtime
 `MatchError` fires if no arm matches.
 
 - **Unreachable arms:** an arm after a wildcard `_:` is flagged as a type warning.
-- **`is:` arms and coverage:** `n@[type: Int  is: [> _ 0]]:` covers the `Int`
-  variant for coverage purposes (the type constraint `@Int` is structural; the
-  `is:` predicate is an additional runtime filter that does not affect which
-  variants are covered). This treatment of guards as opaque for coverage
-  purposes follows Karachalias et al. (2015): guards are irrefutable with
-  respect to type-level exhaustiveness — they may cause runtime match failure
-  but cannot be statically proven to cover or exclude a type variant.
+- **`is:` arms and coverage:** guarded arms (those with `is:` conditions) are
+  excluded from exhaustiveness analysis regardless of any type annotation they
+  carry. This matches Karachalias et al. (2015) lazy bottom semantics — a guard
+  can always return false at runtime, so the arm cannot be counted as covering
+  its type variant. For example, `n@[type: Int  is: [> _ 0]]:` does **not**
+  cover the `Int` variant for exhaustiveness purposes; an unguarded `Int:` arm
+  or a wildcard `_:` arm is still required to satisfy coverage.
 
 ### Lazy Evaluation
 
