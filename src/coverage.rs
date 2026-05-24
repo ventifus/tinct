@@ -227,10 +227,24 @@ impl ConstructorSignature {
                     // nominal variants use the declared variant name as the constructor (Variant tag)
                     // because they are nominally typed — [IntLit value: 42] is not a subtype of
                     // {value: Int}, it is a distinct nominal variant.
-                    // Arity is 0 for unit variants (no payload) or 1 for payload variants.
-                    // The pattern side (ast_pattern_to_coverage) produces at most one
-                    // sub_pattern (the binding), so arity must agree: using fields.len()
-                    // would produce width mismatches when wildcard rows are expanded.
+                    //
+                    // KNOWN ISSUE (Maranget column-consistency): arity is clamped to 0 or 1
+                    // rather than fields.len(). This prevents field-by-field recursive
+                    // exhaustiveness checking on multi-field variant payloads (e.g.,
+                    // [Point x: Int y: Int] with arity 2 would enable nested decomposition).
+                    //
+                    // Why we can't use fields.len() yet:
+                    //   1. Pattern::Constructor has a single `binding`, not per-field bindings.
+                    //   2. ast_pattern_to_coverage produces at most 1 sub_pattern (the binding).
+                    //   3. The parser only accepts [Constructor payload] with one positional arg.
+                    //   Using fields.len() here while the pattern side produces 1 sub-pattern
+                    //   would violate Maranget's column-consistency invariant: wildcard rows
+                    //   would expand to fields.len() wildcards while constructor rows splice
+                    //   only 1 sub-pattern, producing inconsistent matrix row widths.
+                    //
+                    // To fix properly: extend Pattern::Constructor with per-field bindings,
+                    // update the parser to support [Point x y] multi-field patterns, and
+                    // update ast_pattern_to_coverage to produce fields.len() sub-patterns.
                     let arity = if fields.fields.is_empty() { 0 } else { 1 };
                     constructors.push((ConstructorTag::Variant(tag.clone()), arity));
                 }
@@ -281,7 +295,8 @@ impl ConstructorSignature {
     /// Used when coverage checking a match on a bare variant type.
     pub fn from_nominal_variant(tag: &str, fields: &crate::type_def::Row) -> Self {
         // Arity matches the pattern side: 0 for unit variants, 1 for payload variants.
-        // (ast_pattern_to_coverage produces at most 1 sub_pattern — the binding.)
+        // See KNOWN ISSUE in from_union for why this is clamped to 0/1 rather than
+        // fields.len() — Pattern::Constructor has a single binding, not per-field.
         let arity = if fields.fields.is_empty() { 0 } else { 1 };
         let constructors = vec![(ConstructorTag::Variant(tag.to_string()), arity)];
         ConstructorSignature { constructors }

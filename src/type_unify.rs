@@ -1,5 +1,5 @@
 //! Substitution, unification, and constraint solving for Hindley-Milner polymorphism
-//! with Rémy-style row polymorphism and algebraic subtyping.
+//! with Boolean-Algebraic Subtyping (BAS) and structural record types.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -1655,6 +1655,37 @@ pub fn unify(
             for var in &type_vars {
                 state.levels.insert(var.clone(), 0);
             }
+            Ok(())
+        }
+
+        // TypeVar-to-TypeVar unification: bind higher-level var to lower-level var
+        // (Kiselyov 2013 L3 invariant — reduces substitution chain length).
+        // Skipping `lower_levels_check_occurs` is safe: by binding high→low, the surviving
+        // variable already holds the minimum level, so the level-lowering step would be a
+        // no-op. No occurs-check is needed because the two variables are distinct — the
+        // same-name case (`a == b`) is caught by the early return above.
+        (Type::TypeVar(name_a, _), Type::TypeVar(name_b, _)) => {
+            let level_a = state.levels.get(name_a).copied().unwrap_or(0);
+            let level_b = state.levels.get(name_b).copied().unwrap_or(0);
+
+            // Bind the higher-level variable to the lower-level one.
+            // If levels are equal, bind left-to-right for determinism.
+            if level_a >= level_b {
+                // Bind name_a → TypeVar(name_b)
+                transfer_class_constraints(name_a, name_b, state);
+                subst
+                    .type_map
+                    .borrow_mut()
+                    .insert(name_a.clone(), Type::TypeVar(name_b.clone(), level_b));
+            } else {
+                // Bind name_b → TypeVar(name_a)
+                transfer_class_constraints(name_b, name_a, state);
+                subst
+                    .type_map
+                    .borrow_mut()
+                    .insert(name_b.clone(), Type::TypeVar(name_a.clone(), level_a));
+            }
+            subst.check_size(span)?;
             Ok(())
         }
 

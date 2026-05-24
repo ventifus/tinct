@@ -1313,14 +1313,10 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 
 ## Codebase Health Audit Findings (Cycle #216, 2026-05-23)
 
-### fix-type-system-comments: Type system doc/comment accuracy
+### fix-doc06-predicate-names: Fix `has_type_vars` predicate name in doc/06-type-inference.md
 
-**Sources:** type-theorist, computer-scientist (Cycle #216)
+**Sources:** grammar-architect, computer-scientist, integration-verifier (Cycle #221 fix-later)
 
-- [ ] Add `TypeVar` level semantics docstring to `src/type_def.rs:105` — "The u32 is the creation-time level; `InferState.levels[name]` holds the current (possibly lowered) level (Kiselyov 2013)." [Major]
-- [ ] Update `src/type_unify.rs:2` — remove "Rémy-style row polymorphism" claim; BAS is the live design; Rémy is archived in `doc/whatif/completed/`. [Major]
-- [ ] Fix `src/type_infer.rs:161` comment — says `satisfies_constraint` hardcodes "Numeric only" but actually hardcodes 4 classes (Numeric, Comparable, Equatable, Showable). [Minor]
-- [ ] Fix U-VAR-LEVEL binding direction in `src/type_unify.rs:1662-1697` — when unifying two TypeVars, bind the higher-level var to the lower-level one (Kiselyov 2013 L3). Currently always binds left→right. Performance optimization (shorter substitution chains), not a soundness issue. [Major]
-- [ ] Fix CALL-MONO double inference in `src/typecheck.rs:5486-5497` — boundary guard check calls `infer_expr(arg)` then `check_expr` calls it again internally. Extract Unknown check from infer result before calling check_expr. [Minor]
-- [ ] Fix coverage nested variant payload gap in `src/coverage.rs:234,400-408` — NominalVariant arity should be `fields.len()` (not 0 or 1) to allow recursive specialize for nested variant patterns. [Minor]
-- [ ] Document constraint save/restore contract in `generalize` docstring at `src/type_env.rs:470-473` — callers must manually save/restore `state.constraints`; undocumented invariant will cause constraint leaks in future callers. [Minor]
+The formal rules in `doc/06-type-inference.md` use `has_type_vars(...)` as the predicate discriminator for CALL-MONO vs CALL-POLY (lines 140, 156, 160, 166, 185, 196, 380). The actual code guard (`src/typecheck.rs:5459`) uses `has_inference_vars()`, which is a strict superset also covering `Type::Operator(_)` variables. The predicate name is stale at 7 locations.
+
+- [ ] Replace all 7 occurrences of `has_type_vars` with `has_inference_vars` in `doc/06-type-inference.md` (lines 140, 156, 160, 166, 185, 196, 380). [Minor]

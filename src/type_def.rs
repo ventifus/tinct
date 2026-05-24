@@ -102,6 +102,10 @@ pub enum Type {
     Map(Box<Type>, Box<Type>), // Map[K V] — homogeneous map with key type and value type
     Proxy,
     #[allow(clippy::enum_variant_names)]
+    /// Type variable for parametric polymorphism.
+    /// The u32 is the creation-time level; InferState.levels[name] holds the current
+    /// (possibly lowered) level (Kiselyov 2013). PartialEq ignores the level field
+    /// because type variables with the same name are identical regardless of level.
     TypeVar(String, u32),
     /// Unknown type — the gradual typing "?" type. Represents "I don't know the type"
     /// (unannotated params, inference defaults, builtin returns that can't be precisely typed).

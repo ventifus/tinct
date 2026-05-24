@@ -153,7 +153,7 @@ impl InferState {
         // Register built-in type classes with their superclass relationships.
         // Class declarations define the hierarchy (which classes extend which).
         // Instance resolution happens in two stages:
-        //   1. satisfies_constraint: hardcoded for Numeric only
+        //   1. satisfies_constraint: hardcoded for Numeric, Comparable, Equatable, and Showable
         //   2. InstanceEnv::resolve_instance: dynamic resolution from prelude.llt instances
         //
         // These pre-registrations ensure the class hierarchy is available before prelude.llt

@@ -183,13 +183,14 @@ Three rules depending on the function type. Arity is always checked.
 
 ```text
 Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = false
-Γ ⊢ aᵢ ⇐ σᵢ  for i = 1..n                         [checking mode]
+Γ ⊢ aᵢ ⇐ σᵢ                 for lambda args i      [CHECK-FN / checking mode]
+Γ ⊢ aⱼ ⇒ τⱼ,  τⱼ ≤ σⱼ       for non-lambda args j  [infer + subsume]
 |args| = |params|
 ────────────────────────────────── [CALL-MONO]
 Γ ⊢ [call f a₁...aₙ] ⇒ σᵣ
 ```
 
-Monomorphic path with checking: each argument is **checked** against its parameter type using subsumption. `[add "hello"]` where `add : Fn(Int Int → Int)` produces a type error because `String ≮: Int`. The `check_expr` call synthesizes the argument type and applies `[SUB]`.
+Monomorphic path with a per-argument mode split. Lambda arguments are **checked** via `check_expr` (⇐ mode), which propagates the expected parameter type into the lambda body and enables bidirectional lambda checking mode ([CHECK-FN]). Non-lambda arguments are **synthesized** via `infer_expr` (⇒ mode), producing an inferred type τⱼ, which is then subsumed against σⱼ inline: the check passes when `τⱼ ≤ σⱼ` (i.e., `is_subtype(τⱼ, σⱼ)` holds, or when Unknown/Top is involved, `is_consistent(τⱼ, σⱼ)`). This split avoids the double-inference that would occur if `check_expr` were called on an already-inferred non-lambda expression. The net effect is the same as uniform [SUB]-based checking for ground parameter types: `[add "hello"]` where `add : Fn(Int Int → Int)` produces a type error because `String ≮: Int`.
 
 ```text
 Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = true
@@ -205,7 +206,7 @@ S = unify(σ'₁ ≐ τ₁, ..., σ'ₙ ≐ τₙ)                  [with U-SUBS
 
 Polymorphic path with unification: arguments are checked via `check_expr`, which internally dispatches to unification when the expected type contains type variables. Unification binds type variables via [U-VAR] and handles concrete-type comparisons via [U-SUBSUME] (bidirectional subsumption fallback). This is critical for confluence: when multiple arguments constrain the same type variable with different precision (e.g., `IntLiteral(42)` and `Int`), the subsumptive fallback ensures type checking succeeds regardless of argument order. See the Unification section for [U-SUBSUME] details.
 
-Note: Both CALL-MONO and CALL-POLY use `check_expr`. `check_expr` internally dispatches to unification when the expected type has type variables (CALL-POLY), or to subsumption when fully concrete (CALL-MONO).
+Note: CALL-POLY routes all argument checking through `check_expr`, which internally dispatches to unification when the expected type contains type variables. CALL-MONO uses `check_expr` only for lambda arguments; non-lambda arguments take the inline infer+subsume path described above. `check_expr`'s unification dispatch is therefore relevant only on the CALL-POLY path — CALL-MONO guarantees no inference variables in the function type, so the subsumption check is always against a ground type.
 
 **CALL-MONO/CALL-POLY literal type divergence.** CALL-POLY is more permissive than CALL-MONO for most literal type pairs. The divergence arises because `unify()` has bidirectional literal promotion rules (5 type pairs × 2 directions = 10 match alternatives in `src/types.rs`), while `check_expr` uses directional `is_subtype(actual, expected)`. Concrete-type pair behavior across both paths (rows marked **fails** reject under both CALL-MONO and CALL-POLY; the `IntLiteral`/`Float` pair is documented here because [U-SUBSUME] correctly rejects it after removal of the former unsound promotion arm):
 
@@ -221,7 +222,7 @@ Note: Both CALL-MONO and CALL-POLY use `check_expr`. `check_expr` internally dis
 
 In practice, this divergence rarely surfaces because CALL-MONO only fires for monomorphic function types (no type variables), and monomorphic parameter types like `IntLiteral(n)` are uncommon — they arise only from singleton literal type annotations, not from normal inference. The divergence is harmless for correctness today because it only makes CALL-POLY more lenient, never more restrictive. The [U-SUBSUME] fallback in `unify()` checks `is_subtype` in both directions for concrete type pairs, producing the same result as the explicit promotion arms for all valid subtype relationships. The `IntLiteral`/`Float` pair correctly fails under [U-SUBSUME] because they are in different branches of the numeric lattice (`IntLiteral <: Int <: Number` and `Float <: Number`, but no `IntLiteral <: Float` rule exists). Full divergence elimination (making CALL-MONO and CALL-POLY agree on all cases) requires directional [U-SUBSUME] — threading actual/expected roles through unification (Pierce & Turner 2000, local type inference), which is a more substantial change.
 
-**Unified CALL-MONO/CALL-POLY path.** Both CALL-MONO and CALL-POLY route through `check_expr`, which internally dispatches to `unify` when the expected type has inference vars (TypeVars), or to `is_subtype` when fully concrete. This ensures identical literal pairs receive consistent verdicts regardless of whether the function type has inference vars. The table above illustrates the logical difference between subsumption and unification semantics; in practice both paths produce the same verdict.
+**CALL-MONO implementation path.** CALL-MONO uses a split dispatch: lambda arguments go through `check_expr` (bidirectional checking mode enables lambda parameter inference), while non-lambda arguments are handled by an inline infer+subsume path — `infer_expr` once, then `is_subtype`/consistency check directly — avoiding the double-inference that `check_expr` would cause if called after `infer_expr`. Since CALL-MONO's function type has no inference vars, parameter types are always ground, so unification is never needed; subsumption suffices. The table above illustrates the logical difference between subsumption and unification semantics for concrete type pairs.
 
 ```text
 Γ ⊢ f ⇒ Unknown

@@ -460,6 +460,14 @@ fn emit_ambiguous_constraint_diagnostics(
 /// Ambiguous type variables (appearing in constraints but not in the type) trigger
 /// diagnostic warnings pushed to `state.diagnostics`. The `span` parameter provides
 /// source location for these warnings.
+///
+/// **Constraint scoping contract**: Callers must manually save and restore `state.constraints`
+/// around generalize calls when constraint scoping is required. This function does NOT manage
+/// constraint scoping itself — it filters constraints by TypeVar membership but does not
+/// preserve or restore the original constraint set. If the caller needs to isolate constraints
+/// for a nested scope (e.g., a let-binding that should not leak constraints to the outer scope),
+/// the caller must use `std::mem::take(&mut state.constraints)` before generalize and restore
+/// afterward. See dict inference passes 1-4 for the canonical pattern.
 pub fn generalize_with_doc(
     level: u32,
     ty: &Type,

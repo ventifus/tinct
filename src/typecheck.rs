@@ -5478,26 +5478,68 @@ fn check_call(
                 {
                     consumed_params.insert(idx);
 
-                    // Boundary guard tracking (mirrors check_call_with_scheme lines ~3568-3576):
-                    // if the argument's inferred type is Unknown and the parameter expects a
-                    // concrete type, record the span for gradual typing boundary guard insertion.
-                    // Infer first (may update type_map for LSP hover), then check_expr for
-                    // bidirectional checking. Double-inference is safe: state remains consistent.
-                    if is_concrete_type(param_ty) {
-                        if let Ok(arg_ty) = infer_expr(arg, env, state, type_map) {
-                            let resolved_arg_ty = if state.subst.is_empty() {
-                                arg_ty
-                            } else {
-                                state.subst.apply(&arg_ty)
-                            };
-                            if matches!(resolved_arg_ty, Type::Unknown) {
-                                state.boundary_guards.insert(arg.span, param_ty.clone());
+                    // Boundary guard tracking and bidirectional checking:
+                    // - For lambda args: use check_expr (lambda checking mode, no inference needed)
+                    // - For non-lambda args: infer, check for Unknown, then subsume (avoids double-inference)
+                    match &arg.node {
+                        Expr::Fn { .. } => {
+                            // Lambda: use check_expr for bidirectional lambda checking mode.
+                            // Lambdas can't be Unknown, so no boundary guard needed.
+                            // param_ty is ground under the CALL-MONO invariant (!func_ty.has_inference_vars()),
+                            // so no explicit state.subst.apply() is needed here — check_expr applies
+                            // state.subst to its expected type internally, which is a no-op on ground types.
+                            if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
+                                errors.append(&mut errs);
                             }
                         }
-                    }
-
-                    if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
-                        errors.append(&mut errs);
+                        _ => {
+                            // Non-lambda: infer once, check Unknown, then subsume (no double-inference).
+                            match infer_expr(arg, env, state, type_map) {
+                                Ok(arg_ty) => {
+                                    // Apply substitution before Unknown check and subsumption.
+                                    let arg_ty_resolved = if state.subst.is_empty() {
+                                        arg_ty
+                                    } else {
+                                        state.subst.apply(&arg_ty)
+                                    };
+                                    // Boundary guard: Unknown→concrete boundary needs runtime guard.
+                                    if is_concrete_type(param_ty)
+                                        && matches!(arg_ty_resolved, Type::Unknown)
+                                    {
+                                        state.boundary_guards.insert(arg.span, param_ty.clone());
+                                    }
+                                    // CALL-MONO guarantees func_ty has no inference vars, so
+                                    // param_ty (drawn from func_ty.params) is always ground.
+                                    // Applying state.subst to a ground type is a no-op, but we
+                                    // do it for consistency with the arg side above.
+                                    // Unification is never needed here — use subsumption directly.
+                                    let param_ty_resolved = if state.subst.is_empty() {
+                                        param_ty.clone()
+                                    } else {
+                                        state.subst.apply(param_ty)
+                                    };
+                                    // Subsumption: arg_ty <: param_ty OR consistency if Unknown/Top present.
+                                    let sub_passes =
+                                        Type::is_subtype(&arg_ty_resolved, &param_ty_resolved)
+                                            || ((contains_unknown_or_top(&arg_ty_resolved)
+                                                || contains_unknown_or_top(&param_ty_resolved))
+                                                && Type::is_consistent(
+                                                    &arg_ty_resolved,
+                                                    &param_ty_resolved,
+                                                ));
+                                    if !sub_passes {
+                                        errors.push(TypeError::type_mismatch(
+                                            &param_ty_resolved,
+                                            &arg_ty_resolved,
+                                            arg.span,
+                                        ));
+                                    }
+                                }
+                                Err(mut errs) => {
+                                    errors.append(&mut errs);
+                                }
+                            }
+                        }
                     }
                 }
                 // Check variadic args: if the function is variadic, infer all args starting at
@@ -9701,6 +9743,46 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.message.contains("cannot unify")),
             "CALL-MONO should reject String arg for Int param, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_call_mono_lambda_arg_uses_check_expr() {
+        // CALL-MONO with Expr::Fn argument: exercises the `Expr::Fn { .. }` branch at
+        // typecheck.rs:5485 which dispatches to check_expr (lambda checking mode) instead
+        // of infer_expr + subsumption.
+        //
+        // Setup: `apply-fn` takes a concrete `(Int -> Int)` function param so its type has
+        // no inference vars — guaranteeing CALL-MONO is entered. Calling it with an inline
+        // lambda triggers the Expr::Fn arm.
+        //
+        // Two-document form: doc 1 defines apply-fn (fully generalised by doc boundary),
+        // doc 2 calls it with a lambda so $apply-fn resolves to a concrete Function type.
+        //
+        // SUCCESS CASE: lambda body [+ x 1] infers Int, matches Fn(Int→Int) expected param.
+        // check_expr propagates Int as the unannotated param's type (lambda checking mode).
+        let result = check(
+            "[apply-fn: [fn [let g@[type: [Fn@Int [Int]]]] [call $g 0]]]\n\
+             [result: [call $apply-fn [fn [let x] [+ $x 1]]]]",
+        );
+        assert!(
+            result.is_ok(),
+            "CALL-MONO lambda arg: compatible lambda should type-check, got: {:?}",
+            result.err()
+        );
+
+        // ERROR CASE: lambda body returns a string literal — does not match Int return type.
+        // check_expr detects the mismatch between StringLiteral and Int.
+        let errors = check_err(
+            "[apply-fn: [fn [let g@[type: [Fn@Int [Int]]]] [call $g 0]]]\n\
+             [result: [call $apply-fn [fn [let x] \"wrong\"]]]",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("cannot unify") || e.message.contains("mismatch")),
+            "CALL-MONO lambda arg: lambda returning String should fail for Int return param, got: {:?}",
             errors
         );
     }

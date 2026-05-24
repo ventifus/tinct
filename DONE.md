@@ -9170,3 +9170,14 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 
 - [x] Verify CoreExpr match exhaustiveness — ALREADY CORRECT: `eval_core_expr` in `eval.rs` has explicit exhaustive match on all 25 CoreExpr variants with no `_` catch-all. Integration-verifier finding was a false alarm. [Major]
 - [x] Add `test_all_standard_builtins_registered` unit test in `src/builtins.rs:2601`. [Major]
+
+### fix-type-system-comments: Type system doc/comment accuracy
+
+- [x] TypeVar level semantics docstring added to `src/type_def.rs:105` (Kiselyov 2013 dual-level design).
+- [x] `src/type_unify.rs` module comment updated: Rémy-style → BAS (Boolean-Algebraic Subtyping).
+- [x] `src/type_infer.rs` comment fixed: "Numeric only" → "Numeric, Comparable, Equatable, Showable".
+- [x] U-VAR-LEVEL: TypeVar-TypeVar unification now binds higher-level → lower-level (Kiselyov 2013 L3, performance).
+- [x] CALL-MONO: eliminated double inference — lambda args use check_expr (⇐), non-lambda args use infer+subsume; dead branch removed. New test: `test_call_mono_lambda_arg_uses_check_expr`.
+- [x] Coverage nested variant payload: KNOWN ISSUE documented — requires AST+parser+coverage coordinated fix.
+- [x] `generalize_with_doc` constraint save/restore contract docstring added to `src/type_env.rs`.
+- [x] `doc/06-type-inference.md` formal [CALL-MONO] rule updated with split-dispatch premises.
