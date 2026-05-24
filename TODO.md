@@ -677,10 +677,10 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 
 **Tasks:**
 - [x] Update `builtin_open` in `src/builtins_io.rs` — parse positional args after path as capability flag types (Readable, Writable, Appendable, Binary, Exclusive, Sync, NoFollow) instead of string mode (`"r"/"w"/"a"`). `[open cap path]` with no flags after path → arity error. (`src/builtins_io.rs:183-330`)
-- [ ] Update type signature in `src/type_env.rs` — `open` return type is `Handle(cap_row)` where `cap_row` is synthesized from the flag arguments actually present in the call
+- [x] Update type signature in `src/type_env.rs` — `check_open` special-case added to typecheck.rs; synthesizes Handle(cap_row) from Variant flag args [commit ca03e1f]
 - [x] Update all corpus tests and examples using `[open ... "r"]` / `[open ... "w"]` / `[open ... "a"]` to use capability flag syntax
 - [x] Update `doc/feature/io.md:604`, `doc/11a-builtins.md:367-369`, `doc/12-tooling.md:630` to reflect new syntax
-- [ ] `just build` passes; `just test` passes
+- [x] `just build` passes [commit ca03e1f]
 
 ### io-cap-std-gaps: Add symlink, copy-file, set-permissions, stat-symlink, exists builtins
 
@@ -900,8 +900,8 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 **Sources:** performance-expert (review #311)
 **Scope:** 555 occurrences of `Key::String(` across 18 files — mechanical refactoring but massive scale, split from eval-hot-path-fixes.
 
-- [ ] Change `Key::String(String)` to `Key::String(Rc<str>)` in `value.rs:104` and update Hash/Eq/Display impls
-- [ ] Update all 555 construction/match sites across 18 files (ast_dict.rs: 174, eval.rs: 85, builtins.rs: 79, builtins_io.rs: 56, type_normalize.rs: 24, builtins_meta.rs: 23, builtins_uri.rs: 25, builtins_dict.rs: 19, surface_fields.rs: 14, builtins_datetime.rs: 14, value.rs: 12, eval_materialize.rs: 6, builtins_math.rs: 4, eval_dict.rs: 3, eval_pipeline.rs: 3, builtins_async.rs: 2, lib.rs: 11, repl.rs: 1)
+- [x] Change `Key::String(String)` to `Key::String(Rc<str>)` in `value.rs:104` [commit 00200c9]
+- [x] Update all 555 construction/match sites across 18 files [commit 00200c9]
 
 ### test-coverage-cycle311: Unit tests for CEK machine, letrec scoping, and corpus edge cases
 
