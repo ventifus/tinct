@@ -9138,3 +9138,10 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 - [x] Change the injected value from script-parent-dir to `std::env::current_dir()` — the actual process CWD at invocation time.
 - [x] Update `samples/versions.llt` to use `%cwd` and remove the `--no-cwd --cap-fs cwd=.:r` workaround from `just versions`. Workaround removed; `just versions` now relies on auto-injected `%cwd` (process CWD). `samples/versions.llt` comment already reflected the intended invocation.
 - [x] Grep for all `%pwd` uses in corpus tests and stdlib to update them.
+
+### eval-dict-hot-path: Fix dict construction hot path
+
+**Sources:** performance-expert (Cycle #216)
+
+- [x] Fix `Key::clone()` in `eval_dict.rs:183` — moved owned key into `dict_map.insert(key, thunk_id)` instead of cloning. Eliminates 1 `Rc::from()` per dict entry. Added `CoreExpr::Annotated` case to key reconstruction for duplicate key error messages. [Critical]
+- [x] Guard `env_id` allocation with `has_non_literal` in `eval_dict.rs:108` — ALREADY DONE (verified; code already checks `if has_non_literal` before allocation). [Major]

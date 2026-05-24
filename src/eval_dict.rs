@@ -180,11 +180,20 @@ pub(crate) async fn eval_dict_core(
         }
 
         let thunk_id = ctx.alloc_thunk(thunk);
-        if dict_map.insert(key.clone(), thunk_id).is_some() {
-            return Err(Box::new(EvalError::duplicate_key(
-                &key.to_string(),
-                entry.span,
-            )));
+        // Task 1: Move key into dict_map instead of cloning (saves Rc::from allocation per entry).
+        // If duplicate, reconstruct key string from entry (rare error path).
+        if dict_map.insert(key, thunk_id).is_some() {
+            // key was moved; reconstruct string representation from entry for error message
+            let key_str = match &entry.node.key {
+                Some(k_expr) => match &k_expr.node {
+                    CoreExpr::Str(s) => s.clone(),
+                    CoreExpr::Int(n) => n.to_string(),
+                    CoreExpr::Annotated { name, .. } => name.clone(),
+                    _ => "<computed key>".to_string(),
+                },
+                None => (auto_index - 1).to_string(),
+            };
+            return Err(Box::new(EvalError::duplicate_key(&key_str, entry.span)));
         }
 
         if is_static_key {

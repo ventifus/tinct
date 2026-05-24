@@ -1308,3 +1308,50 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 2. **CALL-POLY named-arg `consumed_params` gap** (2026-05-09 review) — **FIXED**: All three CALL-POLY paths now insert `param_idx` into `consumed_params` after the overlap check: `check_call_with_scheme` line 4728, `check_call` CALL-MONO line 5021, `check_call` CALL-POLY line 5196. Additionally, all three paths have a duplicate named-arg guard (`seen_names: HashSet<&str>`) that rejects duplicate named args before they reach unification (lines 4690-4698, 4984-4993, 5155-5164). Robinson (1965) idempotency is preserved.
 
 - [x] Dispatch type-theorist + computer-scientist to (a) verify whether both issues are still present in current code, (b) if present, produce minimal fix recommendations → findings go to TODO.md
+
+---
+
+## Codebase Health Audit Findings (Cycle #216, 2026-05-23)
+
+### fix-desugar-span-errors: Fix desugar ordering and Span::origin filtering
+
+**Sources:** integration-verifier (Cycle #216)
+
+- [ ] Fix desugar ordering in `src/imports.rs:93` — `desugar_surface_program` is called BEFORE `expand_surface_program` (line 96), violating the `parse → expand → desugar → resolve → typecheck → eval` invariant. Move desugar call to after the expand comment block. [Critical]
+- [ ] Filter `Span::origin()` frames from `EvalError::Display` — add `if frame.span == Span::origin() { continue; }` before the suffix filter loop in `src/error.rs:889-907`. Eliminates stdlib/synthetic spans from user-facing stack traces. [Critical]
+- [ ] Add unit test: construct `EvalError` with `Span::origin()` frame; verify it's absent from Display output. [Major]
+
+### fix-stdlib-doc-counts: Update doc/11-stdlib.md stale counts
+
+**Sources:** stdlib-author (Cycle #216)
+
+- [ ] Update `doc/11-stdlib.md:302,308` — change "all 228 builtin functions" to "all 284 builtin functions" (verified via `standard_builtins_count()` test). [Major]
+- [ ] Update `doc/11-stdlib.md:314` — expand stable alias list from "11 builtins" to complete list of 29+ aliases with table. [Major]
+- [ ] Update `doc/11-stdlib.md:358` — change "184 Rust-native builtins" to "284 Rust-native builtins". [Major]
+
+### fix-test-taxonomy: Fix test file misclassification and required dirs
+
+**Sources:** test-crafter (Cycle #216)
+
+- [ ] Move 13 misclassified test files from `tests/corpus/eval/errors/` to `tests/corpus/eval/typecheck/warnings/` — these tests use `=== warn` (typecheck warning) not `=== error` (eval failure): `constraint_class_not_varref`, `fn_annotation_mixed_keys`, `unknown_fn_annotation_key`, `doc_not_string`, `constraint_value_invalid`, `constraint_positional_entry`, `constraint_not_dict`, `constraint_multi_class_keyed_entry`, `constraint_key_not_bareword`, `closed_record_rejects_extra`, `help_suggestion_arity`, `help_suggestion_type_mismatch`, `proxy_named_arg`. [Major]
+- [ ] Add `"tests/corpus/eval/builtins/errors"` to `required_dirs` in `tests/corpus_tests.rs:194-231` — directory exists with 21 tests but isn't enforced. [Major]
+- [ ] Update `corpus-test-hang` sprint: test-crafter found no actual hang; likely the 10 slow CHR failures + container memory pressure. Investigate with `just test-lib` first, then individual corpus runners. [Minor]
+
+### fix-core-expr-coverage: Compile-time CoreExpr variant exhaustiveness
+
+**Sources:** integration-verifier (Cycle #216)
+
+- [ ] Replace `_ => unreachable!("...")` catch-all in `force_step` CoreExpr match with explicit exhaustive arms — ensures new `CoreExpr` variants added to `src/ast.rs` trigger compile errors, not silent runtime panics. (`src/eval_materialize.rs`) [Major]
+- [ ] Add unit test verifying all builtins in `standard_builtins()` are registered in `create_root_env()`. (`src/builtins.rs` test module) [Major]
+
+### fix-type-system-comments: Type system doc/comment accuracy
+
+**Sources:** type-theorist, computer-scientist (Cycle #216)
+
+- [ ] Add `TypeVar` level semantics docstring to `src/type_def.rs:105` — "The u32 is the creation-time level; `InferState.levels[name]` holds the current (possibly lowered) level (Kiselyov 2013)." [Major]
+- [ ] Update `src/type_unify.rs:2` — remove "Rémy-style row polymorphism" claim; BAS is the live design; Rémy is archived in `doc/whatif/completed/`. [Major]
+- [ ] Fix `src/type_infer.rs:161` comment — says `satisfies_constraint` hardcodes "Numeric only" but actually hardcodes 4 classes (Numeric, Comparable, Equatable, Showable). [Minor]
+- [ ] Fix U-VAR-LEVEL binding direction in `src/type_unify.rs:1662-1697` — when unifying two TypeVars, bind the higher-level var to the lower-level one (Kiselyov 2013 L3). Currently always binds left→right. Performance optimization (shorter substitution chains), not a soundness issue. [Major]
+- [ ] Fix CALL-MONO double inference in `src/typecheck.rs:5486-5497` — boundary guard check calls `infer_expr(arg)` then `check_expr` calls it again internally. Extract Unknown check from infer result before calling check_expr. [Minor]
+- [ ] Fix coverage nested variant payload gap in `src/coverage.rs:234,400-408` — NominalVariant arity should be `fields.len()` (not 0 or 1) to allow recursive specialize for nested variant patterns. [Minor]
+- [ ] Document constraint save/restore contract in `generalize` docstring at `src/type_env.rs:470-473` — callers must manually save/restore `state.constraints`; undocumented invariant will cause constraint leaks in future callers. [Minor]
