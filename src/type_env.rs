@@ -2833,23 +2833,26 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // builtin-cons: Top -> Dict -> Dict (prepends element, reindexes)
-        env.insert(
+        // builtin-cons: ∀T. T → Seq[T] → Seq[T] (prepends element to sequence)
+        // Uses a polymorphic TypeScheme to preserve element type precision:
+        // prepending an Int to Seq[Int] produces Seq[Int], not Seq[Unknown].
+        // Runtime also supports Dict (reindexing), but type signature is Seq-focused.
+        env.insert_scheme(
             "builtin-cons".to_string(),
-            Type::Function {
-                params: vec![
-                    (None, Type::Top), // element to prepend — any value
-                    (
-                        None,
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                        }),
-                    ),
-                ],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                })),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["T".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("T".to_string(), 0)), // element to prepend
+                        (None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))), // Seq[T]
+                    ],
+                    ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))), // Seq[T]
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
         // builtin-reverse: Dict -> Dict (reverses insertion order, reindexes)

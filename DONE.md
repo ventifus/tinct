@@ -9236,3 +9236,19 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 - [x] Document `clear_stdlib_cache()` DoS risk in `src/lib.rs` re-export comment — added `/// **Security:** Do not call in production daemons evaluating untrusted scripts` with rationale. (`src/lib.rs:124-129`) [Minor]
 - [x] Fix `src/imports.rs:106` comment — updated to "Expansion is normally in the pipeline but skipped here for stdlib modules (see rationale above)" to accurately describe the intentional design. (`src/imports.rs:108-109`) [Minor]
 - [x] Add `TYPECHECK_WARNINGS_MIN: usize = 25` enforcement to `tests/corpus_tests.rs` test_corpus_structure — prevents accidental deletion of typecheck/warnings/ tests. (`tests/corpus_tests.rs:245,287-293`) [Minor]
+
+### dependent-return-types: Precise return types for connect/first/last/map/concat/tls-layer/cons
+
+Audit of `src/type_env.rs` found six builtins with over-broad Unknown/Union return types fixable with `check_X` special cases in `src/typecheck.rs`.
+
+- [x] **`check_connect`** — `connect` returned `Union(Handle[rw], DatagramHandle)`; now returns `Handle[Readable, Writable]` for `Tcp`/`UnixStream` VarRef transports and `DatagramHandle` for `Udp`/`UnixDatagram`; falls back to Union for unknown transports. (`src/typecheck.rs`)
+- [x] **`check_first`** / **`check_last`** — `builtin-first`/`builtin-last` returned `Unknown`; now return element type `T` for `Seq(T)`, `String` for `Str`, `Int` for `Bytes`, `Unknown` otherwise. (`src/typecheck.rs`)
+- [x] **`check_map`** — `map` and `builtin-map` returned `Unknown`; now return `Seq(B)` when input is `Seq(A)` and callback is `A → B`; `Unknown` for Dict or unknown collection. (`src/typecheck.rs`)
+- [x] **`check_concat`** — `builtin-concat` returned `Unknown`; now returns `Seq(T)` when both inputs are `Seq(T)` (unifying element types); `Unknown` for Dict merge or non-matching types. Fixed `local_subst.unify(...)` method-call bug → free-function `unify(elem_ty0, elem_ty1, &mut local_subst, state, span)`. (`src/typecheck.rs`)
+- [x] **`check_tls_layer`** — `tls-layer` returned `Handle(Unknown)`; now preserves the input handle's capability row: `Handle[α] → Handle[α]`, `Unknown → Handle(Unknown)`. (`src/typecheck.rs`)
+- [x] **`builtin-cons` TypeScheme upgrade** — changed from monomorphic `Top → Dict → Dict` to polymorphic `∀T. T → Seq[T] → Seq[T]` via `env.insert_scheme`. (`src/type_env.rs`)
+
+**LSP hover fix:** Added `let _ = infer_expr(func, env, state, type_map)` before each new dispatch to record the function VarRef's type in the type_map (required because the `call` stdlib macro expands `[call $map ...]` to `[$map ...]`, making the func span not recorded without explicit inference). Applied to all 7 new dispatch sites.
+
+`just fmt && just build && just test-lib` — all pass (exit 0).
+Commit: `dependent-return-types: precise return types for connect/first/last/map/concat/tls-layer/cons`

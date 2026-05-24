@@ -550,22 +550,6 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 
 - [x] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
 
-### dependent-return-types: Other builtins with over-broad union/Unknown return types
-
-Audit of `src/type_env.rs` found four additional builtins where return type could be made precise based on argument types. Each needs a `check_X` special case in `src/typecheck.rs` (same pattern as the existing `check_open`):
-
-- [ ] **`connect`** (`type_env.rs:2144-2168`): returns `Union(Handle[readable+writable], DatagramHandle)` — should return `Handle[...]` for `Tcp`/`UnixStream` transports, `DatagramHandle` for `Udp`/`UnixDatagram`. Determining arg: the Transport variant (arg 1) when statically-known VarRef. Add `check_connect`. [Minor]
-- [ ] **`builtin-first` / `builtin-last`** (`type_env.rs:2268-2285`): returns `Unknown` — should return element type `T` for `Seq(T)` input, `String` for `String` input, `Int` for `Bytes` input. Determining arg: arg 0 type. Add `check_first`/`check_last`. [Minor]
-- [ ] **`map`** (`type_env.rs:2672-2683`): returns `Unknown` — for `Seq(A)` input with `A → B` callback, should return `Seq(B)`. Dict path remains Unknown (opaque shape). Determining args: input collection type + callback return type. Add `check_map` (Seq-only path). [Minor]
-- [ ] **`builtin-concat`** (`type_env.rs:2802`): returns `Unknown` — for `Seq(T) + Seq(T)`, should return `Seq(T)`. Dict merge path remains Unknown. Add `check_concat` (Seq+Seq path). [Minor]
-- [ ] **`builtin-cons`** (`type_env.rs`): uses `Top` for head element type — should be `∀T. T → Seq[T] → Seq[T]`. Fix: register with TypeVar scheme `TypeScheme { type_vars: ["T"], body: Fn(T, Seq[T]) → Seq[T] }`. (`src/type_env.rs`) [Minor]
-- [ ] **`tls-layer`** (`type_env.rs:2200-2216`): returns `Handle(Unknown)` with comment "dependent types needed". The comment is wrong — this is fixable with existing row polymorphism. Add `check_tls_layer`: create fresh TypeVar `α`, constrain arg 0 to `Handle[α]`, return `Handle[α]`. This expresses "return same capability row as input" using the existing TypeVar mechanism. No language features missing. (`src/typecheck.rs`) [Minor]
-
-**Remaining genuinely unfixable with current type system:**
-- `variant` builtin: tag is a runtime string argument — return type depends on value, not type. Would need value-dependent types.
-- `cap-data`: dynamic capability key lookup — return type depends on cap name at runtime.
-- `deep-materialize`: by design returns arbitrary value — Unknown is correct.
-- `from-json`: schema-directed fix tracked as a separate whatif (`doc/whatif/schema-directed-from-json.md`) — accept via `/rnd` to create implementation sprint.
 
 ### indexable-typeclass: Replace `get`/`get?` special case with `Indexable` MPTC
 

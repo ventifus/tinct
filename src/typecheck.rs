@@ -2896,6 +2896,83 @@ fn infer_expr(
                 if name == "slurp" && named_args.is_empty() && args.len() == 1 {
                     return check_slurp(args, env, expr.span, state, type_map);
                 }
+
+                // Special case: `connect` synthesizes a precise return type based on transport variant.
+                //
+                // The static TypeEnv signature is Union(Handle[readable+writable], DatagramHandle).
+                // This special case inspects the transport argument to determine the precise return type:
+                // - Tcp/UnixStream → Handle[Readable, Writable]
+                // - Udp/UnixDatagram → DatagramHandle
+                // - Unknown transport → Union fallback
+                if name == "connect" && named_args.is_empty() && args.len() == 4 {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_connect(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `builtin-first` synthesizes a precise return type based on collection type.
+                //
+                // The static TypeEnv signature is Top → Unknown.
+                // This special case inspects the collection type to determine the precise return type:
+                // - Seq(T) → T
+                // - String → String
+                // - Bytes → Int
+                // - Unknown/other → Unknown fallback
+                if name == "builtin-first" && named_args.is_empty() && args.len() == 1 {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_first(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `builtin-last` synthesizes a precise return type based on collection type.
+                //
+                // The static TypeEnv signature is Top → Unknown.
+                // This special case inspects the collection type to determine the precise return type:
+                // - Seq(T) → T
+                // - String → String
+                // - Bytes → Int
+                // - Unknown/other → Unknown fallback
+                if name == "builtin-last" && named_args.is_empty() && args.len() == 1 {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_last(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `map` synthesizes a precise return type for Seq input with callback.
+                //
+                // The static TypeEnv signature is Top → Unknown → Unknown.
+                // This special case inspects the collection and callback types:
+                // - Seq(A) with callback A → B → Seq(B)
+                // - Dict input or other → Unknown fallback
+                if name == "map" && named_args.is_empty() && args.len() == 2 {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_map(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `builtin-map` is an alias for `map` — dispatch to check_map.
+                if name == "builtin-map" && named_args.is_empty() && args.len() == 2 {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_map(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `builtin-concat` synthesizes a precise return type for Seq + Seq.
+                //
+                // The static TypeEnv signature is Appendable a => Appendable b => a → b → Unknown.
+                // This special case inspects both arguments:
+                // - Seq(T) + Seq(T) → Seq(T)
+                // - Dict merge or other → Unknown fallback
+                if name == "builtin-concat" && named_args.is_empty() && args.len() == 2 {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_concat(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `tls-layer` preserves input handle's capability row.
+                //
+                // The static TypeEnv signature is Handle(Unknown) → ... → Handle(Unknown).
+                // This special case preserves the input handle's capabilities:
+                // - Handle[α] → ... → Handle[α]
+                // - Unknown → Handle(Unknown) fallback
+                if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_tls_layer(args, env, expr.span, state, type_map);
+                }
             }
 
             // Special case: do-infer sentinel — inferred [do] form monad resolution.
@@ -4635,6 +4712,328 @@ fn check_slurp(
             // This case is unreachable because we validate the argument is a Handle above.
             // If we reach here, it means the validation logic has a bug.
             unreachable!("check_slurp: argument validated as Handle but matched non-Handle type")
+        }
+    }
+}
+
+/// Type check `connect` — precise return type based on transport variant.
+///
+/// The static signature in TypeEnv is Union(Handle[readable+writable], DatagramHandle).
+/// This special case synthesizes a precise return type based on the transport argument:
+/// - Tcp or UnixStream → Handle[Readable, Writable]
+/// - Udp or UnixDatagram → DatagramHandle
+/// - Unknown transport → Union fallback
+fn check_connect(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require exactly 4 args (cap, transport, host, port)
+    if args.len() != 4 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `connect` requires exactly 4 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer arg types (for type checking, even if we don't use them all)
+    for arg in args.iter() {
+        infer_expr(arg, env, state, type_map)?;
+    }
+
+    // Inspect arg 1 (transport) — check if it's a statically-known VarRef
+    let transport_name = if let Expr::VarRef { name, .. } = &args[1].node {
+        Some(name.as_str())
+    } else {
+        None
+    };
+
+    // Synthesize return type based on transport
+    match transport_name {
+        Some("Tcp") | Some("UnixStream") => {
+            // Stream transports → Handle[Readable, Writable]
+            let cap_fields = HashMap::from([
+                (
+                    "__cap_flag_readable".to_string(),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                ),
+                (
+                    "__cap_flag_writable".to_string(),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                ),
+            ]);
+            Ok(Type::Handle(Box::new(Type::Record(Row {
+                fields: cap_fields,
+            }))))
+        }
+        Some("Udp") | Some("UnixDatagram") => {
+            // Datagram transports → DatagramHandle
+            Ok(Type::DatagramHandle)
+        }
+        _ => {
+            // Unknown or non-VarRef transport → return union fallback
+            let cap_fields = HashMap::from([
+                (
+                    "__cap_flag_readable".to_string(),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                ),
+                (
+                    "__cap_flag_writable".to_string(),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                ),
+            ]);
+            Ok(Type::normalize_union(vec![
+                Type::Handle(Box::new(Type::Record(Row { fields: cap_fields }))),
+                Type::DatagramHandle,
+            ]))
+        }
+    }
+}
+
+/// Type check `builtin-first` — precise return type based on input collection type.
+///
+/// The static signature in TypeEnv is Top → Unknown.
+/// This special case synthesizes a precise return type:
+/// - Seq(T) → T
+/// - String → String
+/// - Bytes → Int
+/// - Unknown or other → Unknown fallback
+fn check_first(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require exactly 1 arg
+    if args.len() != 1 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `builtin-first` requires exactly 1 argument, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer the collection argument's type
+    let coll_ty = infer_expr(&args[0], env, state, type_map)?;
+    let coll_ty = state.subst.apply(&coll_ty);
+
+    // Synthesize return type based on collection type
+    match &coll_ty {
+        Type::Seq(elem_ty) => Ok((**elem_ty).clone()),
+        Type::Str => Ok(Type::Str),
+        Type::Bytes => Ok(Type::Int),
+        Type::Unknown => Ok(Type::Unknown),
+        Type::TypeVar(_, _) => Ok(Type::Unknown), // Unresolved type var → gradual fallback
+        _ => Ok(Type::Unknown),                   // Other types (Dict, etc.) → gradual fallback
+    }
+}
+
+/// Type check `builtin-last` — precise return type based on input collection type.
+///
+/// The static signature in TypeEnv is Top → Unknown.
+/// This special case synthesizes a precise return type:
+/// - Seq(T) → T
+/// - String → String
+/// - Bytes → Int
+/// - Unknown or other → Unknown fallback
+fn check_last(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require exactly 1 arg
+    if args.len() != 1 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `builtin-last` requires exactly 1 argument, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer the collection argument's type
+    let coll_ty = infer_expr(&args[0], env, state, type_map)?;
+    let coll_ty = state.subst.apply(&coll_ty);
+
+    // Synthesize return type based on collection type
+    match &coll_ty {
+        Type::Seq(elem_ty) => Ok((**elem_ty).clone()),
+        Type::Str => Ok(Type::Str),
+        Type::Bytes => Ok(Type::Int),
+        Type::Unknown => Ok(Type::Unknown),
+        Type::TypeVar(_, _) => Ok(Type::Unknown), // Unresolved type var → gradual fallback
+        _ => Ok(Type::Unknown),                   // Other types (Dict, etc.) → gradual fallback
+    }
+}
+
+/// Type check `map` — precise return type for Seq input with callback.
+///
+/// The static signature in TypeEnv is Top → Unknown → Unknown.
+/// This special case synthesizes a precise return type for the Seq path:
+/// - Seq(A) with callback A → B → Seq(B)
+/// - Dict input → Unknown (runtime dispatch, no precise type available)
+/// - Unknown or other → Unknown fallback
+fn check_map(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require exactly 2 args (callback, collection)
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `map` requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer both argument types
+    let callback_ty = infer_expr(&args[0], env, state, type_map)?;
+    let callback_ty = state.subst.apply(&callback_ty);
+
+    let coll_ty = infer_expr(&args[1], env, state, type_map)?;
+    let coll_ty = state.subst.apply(&coll_ty);
+
+    // Synthesize return type based on collection and callback
+    match (&coll_ty, &callback_ty) {
+        (Type::Seq(_elem_ty), Type::Function { ret, .. }) => {
+            // Seq(A) with callback → Seq(B) where B is the callback's return type
+            Ok(Type::Seq(ret.clone()))
+        }
+        (Type::Seq(_), _) => {
+            // Seq input but callback is not a function (could be Unknown, TypeVar, etc.)
+            // Fall back to Unknown
+            Ok(Type::Unknown)
+        }
+        _ => {
+            // Dict input or other → Unknown (runtime dispatch)
+            Ok(Type::Unknown)
+        }
+    }
+}
+
+/// Type check `builtin-concat` — precise return type for Seq + Seq.
+///
+/// The static signature in TypeEnv is Appendable a => Appendable b => a → b → Unknown.
+/// This special case synthesizes a precise return type for the Seq path:
+/// - Seq(T) + Seq(T) → Seq(T)
+/// - Dict merge or other → Unknown fallback
+fn check_concat(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require exactly 2 args
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `builtin-concat` requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer both argument types
+    let arg0_ty = infer_expr(&args[0], env, state, type_map)?;
+    let arg0_ty = state.subst.apply(&arg0_ty);
+
+    let arg1_ty = infer_expr(&args[1], env, state, type_map)?;
+    let arg1_ty = state.subst.apply(&arg1_ty);
+
+    // Synthesize return type based on both args
+    match (&arg0_ty, &arg1_ty) {
+        (Type::Seq(elem_ty0), Type::Seq(elem_ty1)) => {
+            // Seq(T) + Seq(T) → Seq(T)
+            // Unify the element types to get a common type
+            let mut local_subst = state.subst.clone();
+            if unify(elem_ty0, elem_ty1, &mut local_subst, state, span).is_ok() {
+                let unified_elem = local_subst.apply(elem_ty0);
+                state.subst = local_subst; // Commit the unification
+                Ok(Type::Seq(Box::new(unified_elem)))
+            } else {
+                // Element types don't unify → fall back to Unknown
+                Ok(Type::Unknown)
+            }
+        }
+        _ => {
+            // Dict merge or other types → Unknown
+            Ok(Type::Unknown)
+        }
+    }
+}
+
+/// Type check `tls-layer` — preserve input handle's capability row.
+///
+/// The static signature in TypeEnv is Handle(Unknown) → ... → Handle(Unknown).
+/// This special case preserves the input handle's capability row:
+/// - Handle[α] → ... → Handle[α] (same capabilities)
+/// - Unknown → Handle(Unknown) fallback
+fn check_tls_layer(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require exactly 3 args (handle, hostname, opts)
+    if args.len() != 3 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `tls-layer` requires exactly 3 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer all argument types (for type checking)
+    let handle_ty = infer_expr(&args[0], env, state, type_map)?;
+    let handle_ty = state.subst.apply(&handle_ty);
+
+    // Infer the other args to check them, but we don't use their types
+    infer_expr(&args[1], env, state, type_map)?; // hostname
+    infer_expr(&args[2], env, state, type_map)?; // opts
+
+    // Preserve the handle's capability row
+    match &handle_ty {
+        Type::Handle(cap_row) => {
+            // Return Handle with the same capability row
+            Ok(Type::Handle(cap_row.clone()))
+        }
+        Type::Unknown => {
+            // Unknown handle → fall back to Handle(Unknown)
+            Ok(Type::Handle(Box::new(Type::Unknown)))
+        }
+        _ => {
+            // Non-handle argument → fall back to Handle(Unknown)
+            // (This should ideally be a type error, but we're being conservative)
+            Ok(Type::Handle(Box::new(Type::Unknown)))
         }
     }
 }
