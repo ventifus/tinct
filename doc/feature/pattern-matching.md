@@ -40,6 +40,9 @@ dicts are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
     n@Str:  i"got: $n"
     _:      x]
 
+# Note: `n@Int:` provides compile-time type narrowing only — no runtime type check is performed.
+# For runtime type enforcement, use `[is: int?]` guard instead.
+
 # Literal patterns — literals match by equality
 [match x
     42:      the-answer
@@ -206,9 +209,9 @@ or-patterns, and guards. Every exhaustive match on `Expr` gains one arm
 
 ### Evaluator (`src/eval.rs`)
 
-`eval_match()` materializes the scrutinee, tries arms top-to-bottom. Each
-arm's pattern is matched against the scrutinee value. First matching arm's
-body is evaluated. No match → runtime error.
+The `CoreExpr::Match` arm in `eval_core_expr` materializes the scrutinee, tries arms
+top-to-bottom. Each arm's pattern is matched against the scrutinee value via
+`match_pattern`. First matching arm's body is evaluated. No match → runtime error.
 
 ### Type Checker (`src/typecheck.rs`)
 
