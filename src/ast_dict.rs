@@ -115,6 +115,71 @@ pub fn ast_to_dict_expr(
     expr_to_thunk(&expr.node, expr.span, opts, ctx)
 }
 
+// ============================================================================
+// Surface AST Bridge Functions
+// ============================================================================
+//
+// These bridge functions convert between SurfaceNode/SurfaceProgram and the
+// dict representation via the old Expr type. This is a TRANSITIONAL approach
+// to enable the runtime-v2 migration without rewriting the entire 1500-line
+// ast_dict.rs implementation.
+//
+// The bridge uses ast_convert.rs's surface_node_to_expr() and
+// expr_to_surface_node() to convert at the boundary.
+//
+// These functions will be deleted when ast_dict.rs is rewritten to work
+// directly with Surface types (Part E).
+
+/// Convert a SurfaceNode to a dict representation.
+///
+/// Bridges through the old Expr type — will be replaced when ast_dict is fully rewritten.
+pub fn surface_node_to_dict(
+    node: &Arc<crate::ast::SurfaceNode>,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
+    let expr = crate::ast_convert::surface_node_to_expr(node);
+    ast_to_dict_expr(&expr, opts, ctx)
+}
+
+/// Convert a SurfaceProgram to a dict representation.
+///
+/// Bridges through the old File type — will be replaced when ast_dict is fully rewritten.
+pub fn surface_program_to_dict(
+    program: &crate::ast::SurfaceProgram,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
+    let file = crate::ast_convert::surface_program_to_file(program);
+    ast_to_dict(&file.node, opts, ctx)
+}
+
+/// Convert a dict representation back to a SurfaceNode.
+///
+/// Bridges through the old Expr type.
+pub fn dict_to_surface_node(
+    val: &Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Arc<crate::ast::SurfaceNode>, AstError> {
+    let expr = dict_to_ast(val, ctx)?;
+    Ok(crate::ast_convert::expr_to_surface_node(&expr))
+}
+
+/// Convert a dict representation back to a SurfaceProgram.
+///
+/// Bridges through the old File type.
+pub fn dict_to_surface_program(
+    val: &Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<crate::ast::SurfaceProgram, AstError> {
+    let file = dict_to_file(val, ctx)?;
+    Ok(crate::ast_convert::file_to_surface_program(&file))
+}
+
+// ============================================================================
+// Internal Implementation (old Expr-based)
+// ============================================================================
+
 fn document_to_dict(
     doc: &Document,
     span: Span,
