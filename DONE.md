@@ -2,6 +2,27 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## Type System
+
+### indexable-map-fd: Fix Map/Seq FD improvement via lookup_mptc
+
+**Problem:** After `indexable-typeclass` sprint, `[builtin-get "key" map]` where `map : Map[Str Int]` returned `Unknown` instead of `Int`. 
+
+**Root cause:** Map unification used `is_subtype` bidirectional checks for key invariance, which doesn't handle TypeVars. When `lookup_mptc` freshened the Map instance to `Map[_K _V]` and tried to unify with `Map[Str Int]`, the `is_subtype(_K, Str)` check returned `false`, causing instance lookup to fail.
+
+**Fix:** Changed Map unification at `src/type_unify.rs:1935-1967` to:
+1. Apply substitution to resolve TypeVars in keys
+2. If either key is still a TypeVar, unify them normally
+3. For concrete types, enforce strict invariance (reject `Int`/`Number` subsumption)
+4. For all other concrete types, check structural equality
+
+This allows TypeVar-to-concrete unification during instance lookup while maintaining Map key invariance for concrete types.
+
+- [x] Fixed Map key unification to handle TypeVars (`src/type_unify.rs`)
+- [x] Un-ignored `test_check_get_map_returns_value_type` and `test_check_get_optional_map_returns_value_or_null` in `src/typecheck.rs` — both now pass
+- [x] Verified arithmetic FD improvement still works (test_add tests pass)
+- [x] Build passes: `just fmt && just build`
+
 ## Async
 
 ### select-once-hang: `select-once` busy-polls in spin-poll executor causing infinite loop

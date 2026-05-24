@@ -551,12 +551,6 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 - [x] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
 
 
-### indexable-map-fd: Fix Map/Seq FD improvement via lookup_mptc (F2 dual substitution issue)
-
-After `indexable-typeclass` sprint, `[builtin-get "key" map]` where `map : Map[Str Int]` returns Unknown instead of `Int`. Root cause is F2 (dual substitution inconsistency in `improve_functional_dependency_inner`): `lookup_mptc` uses `state.subst.clone()` as its temp_subst, but the active local subst (from `check_call_with_scheme`) is separate. The resolved determined type (`Int`) is extracted from the instance but not threaded back to the constraint var. The `ded_type_var` unification at line 679 uses `state.subst` (via `mem::take`) not the probe's temp_subst. Record case bypasses this via HasField special case.
-
-- [ ] Fix F2: thread the active local `subst` into `improve_functional_dependency_inner` so `lookup_mptc` can use it as its initial temp_subst, OR eliminate the mem::take pattern and use a single substitution throughout FD improvement. (`src/type_unify.rs:669`, `src/type_class.rs:lookup_mptc`)
-- [ ] After fix: un-ignore `test_check_get_map_returns_value_type` and `test_check_get_optional_map_returns_value_or_null` in `src/typecheck.rs`
 
 ### rnd-typecheck-runtime-unification: Accept typecheck-runtime-unification whatif
 

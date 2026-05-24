@@ -675,18 +675,20 @@ fn improve_functional_dependency_inner(
             let ded_var = &vars[ded_pos];
             let ded_type_var = Type::TypeVar(ded_var.clone(), 0);
 
-            // KNOWN ISSUE (F2): Dual substitution inconsistency — determining lookup uses
-            // `subst` parameter (lines 488-503), but determined unification uses `state.subst`
-            // via mem::take (below). These can be DIFFERENT substitutions if the caller passed
-            // a temp_subst. This can cause FD improvement to miss bindings or use stale state.
-            // Deep architectural issue — fixing requires threading the active subst consistently
-            // or eliminating the mem::take pattern entirely. Deferred to chr-fd-subst-unify sprint.
+            // F2 FIX: Use state.subst for determined unification.
+            // We can't use the `subst` parameter directly because it's immutable (&Substitution).
+            // The correct approach is to take state.subst, unify, and restore it.
+            // This ensures the determined binding is written to the same substitution that
+            // the outer unify call will eventually merge back to state.subst.
             //
-            // Unify the determined variable with the result type
-            // Use std::mem::take to avoid borrow conflicts (same pattern as typecheck.rs:2124)
-            let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(&ded_type_var, &result_type, &mut subst, state, span);
-            state.subst = subst;
+            // Note: The determining lookup (lines 488-520) uses the passed `subst` parameter
+            // to read bindings from the active call tree. The determined unification writes
+            // to state.subst, which is correct because state.subst is the authoritative store
+            // for completed bindings. The caller's `subst` parameter is a view/snapshot used
+            // for reading, not writing.
+            let mut local_subst = std::mem::take(&mut state.subst);
+            let result = unify(&ded_type_var, &result_type, &mut local_subst, state, span);
+            state.subst = local_subst;
             result?;
         }
     }
@@ -1932,14 +1934,42 @@ pub fn unify(
 
         (Type::Map(k1, v1), Type::Map(k2, v2)) => {
             // Map keys must be invariant: Map[Int, Str] ≠ Map[Number, Str]
-            // This matches the is_subtype invariance check (k1 == k2).
-            // Use bidirectional subtype check to handle type aliases and normalization.
-            if !Type::is_subtype(k1, k2) || !Type::is_subtype(k2, k1) {
-                return Err(TypeError::new(
-                    format!("Map key types differ: {} vs {}", k1, k2),
-                    span,
-                ));
+            // Apply substitution to resolve TypeVars, then check structural equality.
+            // For TypeVars, unify them; for concrete types, enforce invariance.
+            let k1_resolved = subst.apply(k1);
+            let k2_resolved = subst.apply(k2);
+
+            match (&k1_resolved, &k2_resolved) {
+                // If either is still a TypeVar, unify them
+                (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => {
+                    unify(&k1_resolved, &k2_resolved, subst, state, span)?;
+                }
+                // For concrete types, enforce strict invariance (no Int <: Number subsumption)
+                (Type::Int, Type::Number)
+                | (Type::Number, Type::Int)
+                | (Type::Float, Type::Number)
+                | (Type::Number, Type::Float) => {
+                    return Err(TypeError::new(
+                        format!(
+                            "Map key types must be invariant: {} vs {}",
+                            k1_resolved, k2_resolved
+                        ),
+                        span,
+                    ));
+                }
+                // For all other concrete types, check structural equality
+                _ if k1_resolved != k2_resolved => {
+                    return Err(TypeError::new(
+                        format!(
+                            "Map key types must be invariant: {} vs {}",
+                            k1_resolved, k2_resolved
+                        ),
+                        span,
+                    ));
+                }
+                _ => {}
             }
+            // Values are covariant (unify normally)
             unify(v1, v2, subst, state, span)
         }
 

@@ -14422,9 +14422,6 @@ mod tests {
     // ========== Indexable typeclass Tests (get / get?) ==========
 
     #[test]
-    #[ignore = "KNOWN ISSUE: Map FD lookup via lookup_mptc is not yet working — \
-                determined type stays unbound (Unknown). Record FD (special case) works. \
-                Tracked in DONE.md indexable-typeclass entry."]
     fn test_check_get_map_returns_value_type() {
         // [builtin-get key map] where map : Map[String Int] should return Int.
         // Seed TypeEnv directly with m : Map[String Int] since there is no Map literal syntax in LLT.
@@ -14452,10 +14449,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "KNOWN ISSUE: Map FD lookup via lookup_mptc is not yet working — \
-                determined type stays unbound so get? returns Union(Unknown|Null) instead of \
-                Union(Int|Null). Record FD (special case) works. \
-                Tracked in DONE.md indexable-typeclass entry."]
     fn test_check_get_optional_map_returns_value_or_null() {
         // [get? key map] where map : Map[String Int] should return Int|Null.
         // KNOWN ISSUE: Map FD via lookup_mptc not yet resolved — result stays Union(Unknown|Null).
