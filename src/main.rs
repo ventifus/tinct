@@ -3396,13 +3396,11 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
         tinct::typecheck::typecheck_surface_program(&program, env);
 
-    let ast = tinct::ast_convert::surface_program_to_file(&program);
-
     // Collect contract information from each document section.
     let mut contracts: Vec<serde_json::Value> = Vec::new();
     let mut has_any_contract = false;
 
-    for (doc_idx, doc) in ast.node.documents.iter().enumerate() {
+    for (doc_idx, doc) in program.documents.iter().enumerate() {
         let mut doc_contract = serde_json::Map::new();
         doc_contract.insert("section".into(), serde_json::json!(doc_idx));
 
@@ -3436,7 +3434,7 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
         }
 
         // Detect schema dicts in the document expressions
-        let schema_fields = detect_schema_dict(&doc.node.expressions);
+        let schema_fields = detect_schema_dict(&doc.node);
         if !schema_fields.is_empty() {
             has_any_contract = true;
             doc_contract.insert("schema".into(), serde_json::Value::Object(schema_fields));
@@ -3534,24 +3532,26 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
 /// Extract doc strings from a document's top-level bindings.
 /// Scans dict expressions in the document for entries that have doc strings in the DocMap.
 fn extract_doc_strings_from_doc(
-    doc: &tinct::Document,
+    doc: &tinct::ast::SurfaceDocument,
     doc_map: &std::collections::HashMap<String, String>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut result = serde_json::Map::new();
 
-    for expr in &doc.expressions {
-        if let tinct::Expr::Dict(entries) = &expr.node {
+    for expr in doc.expressions() {
+        if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
             for entry in entries {
-                if let Some(ref key_expr) = entry.node.key {
+                if let Some(ref key_node) = entry.node.key {
                     // Extract the binding name from the key expression
                     // Keys can be:
-                    // - Expr::Str (string literal key)
-                    // - Expr::Annotated { name, .. } (annotated binding like name@[...])
-                    // - Expr::VarRef (bare identifier key)
-                    let name_opt = match &key_expr.node {
-                        tinct::Expr::Str(s) => Some(s.as_str()),
-                        tinct::Expr::Annotated { name, .. } => Some(name.as_str()),
-                        tinct::Expr::VarRef { name, .. } => Some(name.as_str()),
+                    // - SurfaceExpression::Str (string literal key)
+                    // - SurfaceExpression::Annotated { name, .. } (annotated binding like name@[...])
+                    // - SurfaceExpression::VarRef (bare identifier key)
+                    let name_opt = match &key_node.expr {
+                        tinct::ast::SurfaceExpression::Str(s) => Some(s.as_str()),
+                        tinct::ast::SurfaceExpression::Annotated { name, .. } => {
+                            Some(name.as_str())
+                        }
+                        tinct::ast::SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
                         _ => None,
                     };
 
@@ -3586,16 +3586,16 @@ fn describe_annotation_value(expr: &tinct::Expr) -> serde_json::Value {
 /// at least one recognized schema key (type, min, max, min-length, max-length,
 /// pattern, required, items, fields, enum).
 fn detect_schema_dict(
-    expressions: &[std::rc::Rc<tinct::Spanned<tinct::Expr>>],
+    doc: &tinct::ast::SurfaceDocument,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut result = serde_json::Map::new();
-    for expr in expressions {
-        if let tinct::Expr::Dict(entries) = &expr.node {
+    for expr in doc.expressions() {
+        if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
             for entry in entries {
-                if let Some(ref key_expr) = entry.node.key {
-                    if let tinct::Expr::Str(ref field_name) = key_expr.node {
+                if let Some(ref key_node) = entry.node.key {
+                    if let tinct::ast::SurfaceExpression::Str(ref field_name) = key_node.expr {
                         // Check if the value is a dict with schema keys
-                        if let Some(schema_info) = extract_schema_info(&entry.node.value.node) {
+                        if let Some(schema_info) = extract_schema_info(&entry.node.value.expr) {
                             result.insert(field_name.clone(), schema_info);
                         }
                     }
@@ -3608,18 +3608,18 @@ fn detect_schema_dict(
 
 /// If `expr` is a dict containing at least one recognized schema key, return
 /// a JSON object describing the constraints. Otherwise return None.
-fn extract_schema_info(expr: &tinct::Expr) -> Option<serde_json::Value> {
-    if let tinct::Expr::Dict(entries) = expr {
+fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<serde_json::Value> {
+    if let tinct::ast::SurfaceExpression::Dict(entries) = expr {
         let mut info = serde_json::Map::new();
         let mut has_schema_key = false;
         for entry in entries {
-            if let Some(ref key_expr) = entry.node.key {
-                if let tinct::Expr::Str(ref key_name) = key_expr.node {
+            if let Some(ref key_node) = entry.node.key {
+                if let tinct::ast::SurfaceExpression::Str(ref key_name) = key_node.expr {
                     if SCHEMA_KEYS.contains(&key_name.as_str()) {
                         has_schema_key = true;
                         info.insert(
                             key_name.clone(),
-                            describe_annotation_value(&entry.node.value.node),
+                            describe_surface_annotation_value(&entry.node.value.expr),
                         );
                     }
                 }
@@ -3630,6 +3630,18 @@ fn extract_schema_info(expr: &tinct::Expr) -> Option<serde_json::Value> {
         }
     }
     None
+}
+
+/// Turn a surface annotation value expression into a JSON description.
+fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> serde_json::Value {
+    match expr {
+        tinct::ast::SurfaceExpression::Str(s) => serde_json::json!(s),
+        tinct::ast::SurfaceExpression::Int(n) => serde_json::json!(n),
+        tinct::ast::SurfaceExpression::Float(f) => serde_json::json!(f),
+        tinct::ast::SurfaceExpression::Bool(b) => serde_json::json!(b),
+        tinct::ast::SurfaceExpression::VarRef { name, .. } => serde_json::json!(name),
+        _ => serde_json::json!("(complex)"),
+    }
 }
 
 /// Format a constraint JSON value as a human-readable string.
