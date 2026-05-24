@@ -664,10 +664,10 @@ Option 1 is correct but requires splitting prelude into "instances first" and "f
 
 - [ ] Implement fix (Option 1 or 2) so `=` hover shows `Equatable a => Fn@Bool [a a]` (`src/imports.rs`, `src/lsp/analysis.rs`)
 
-#### Phase 3 (migrate + lint)
+#### Phase 3 (migrate + lint) ✅
 
-- [x] BLOCKED Update corpus tests that call builtins directly in user code (e.g., `[split "\n" text]` → must go through prelude-exported `split`). **Blocked on Phase 2, which is blocked on adding 20+ missing prelude wrappers for merge/try/narrow/keys etc.**
-- [x] BLOCKED Add a lint warning (T002 with helpful message) when user code directly references a name that matches a known Rust builtin but was not exported by prelude. **Blocked on Phase 2, which is blocked on adding 20+ missing prelude wrappers for merge/try/narrow/keys etc.**
+- [x] Update corpus tests that call builtins directly in user code — `just test-lib` passes with no new failures after Phase 2; existing corpus tests already use prelude-exported names. **DONE 2026-05-23.**
+- [x] Add T002 lint warning in `src/typecheck.rs` at both `undefined_variable` sites (plain VarRef and call-head VarRef): when the name is a known Rust builtin and `!state.in_prelude_load`, pushes a note onto the `TypeError` and a `TypeDiagnostic` with code `T002` into `state.diagnostics`. Helper `builtin_primary_names()` added to `src/builtins.rs`. Corpus test at `tests/corpus/typecheck/warnings/raw_builtin_t002.llt-eval`. **DONE 2026-05-23.**
 
 ## Research / Design Items
 
@@ -697,6 +697,14 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 
 - [x] Audit all 21 `Type::Unknown` in builtin signatures — all justified, 8 comments added (`src/type_env.rs`)
 - [x] `just test-lib` passes — 1889/0 ✓
+
+### corpus-test-failures: Pre-existing failures in tests/corpus/typecheck/warnings/
+
+Discovered 2026-05-23 during builtin-privacy Phase 3 work. These were already failing before Phase 3 changes.
+
+- [ ] Fix `tests/corpus/typecheck/warnings/constraint_not_satisfied.llt-eval`: expected substring "ambiguous type variable '_t1' in constraint Addable" but actual warnings show "inferred type is Unknown" — the Addable T013 warning is no longer being emitted for this pattern. Investigate why T013 for the `$+` call doesn't fire.
+- [ ] Fix `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval`: eval errors with "document separator cannot appear inside bracket expressions" — parser rejects the test input. File content needs updating for current parser.
+- [ ] Fix `tests/corpus/typecheck/warnings/proxy_named_arg.llt-eval`: expected "unknown named argument: function has no parameter named 'handler'" but actual warnings show "inferred type is Unknown" — the named-arg warning for $proxy is not being emitted for this pattern.
 
 ---
 

@@ -2756,6 +2756,22 @@ fn infer_expr(
                         "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
                         cause_span.start.line, cause_span.start.column
                     ));
+                } else if !state.in_prelude_load
+                    && crate::builtins::builtin_primary_names().contains(name.as_str())
+                {
+                    // T002: raw Rust builtin referenced directly in user code.
+                    // The name is known to the runtime but was not exported by prelude.
+                    err.notes.push(format!(
+                        "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
+                    ));
+                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                        message: format!(
+                            "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
+                        ),
+                        span: expr.span,
+                        code: "T002",
+                        level: crate::error::DiagnosticLevel::Warn,
+                    });
                 }
                 Err(vec![err])
             }
@@ -3151,6 +3167,22 @@ fn infer_expr(
                                     "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
                                     cause_span.start.line, cause_span.start.column
                                 ));
+                            } else if !state.in_prelude_load
+                                && crate::builtins::builtin_primary_names().contains(name.as_str())
+                            {
+                                // T002: raw Rust builtin referenced directly in user code.
+                                // The name is known to the runtime but was not exported by prelude.
+                                err.notes.push(format!(
+                                    "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
+                                ));
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
+                                    ),
+                                    span: func.span,
+                                    code: "T002",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
                             }
                             Err(vec![err])
                         }

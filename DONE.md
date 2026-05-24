@@ -27,6 +27,20 @@ Completed milestones and sprints, moved from TODO.md.
 - [x] Pre-existing failures: `test_get_concrete_string_key_on_record`, `test_get_union_distribution` (unchanged)
 - [x] `just fmt && just build && just test-lib` — 0 new failures
 
+### builtin-privacy Phase 3: corpus test migration + T002 lint
+
+**Problem:** After Phase 2, user code that calls raw Rust builtins (e.g., `[str-chars "hello"]`, `[pow 2 3]`) gets a generic "undefined variable" error with no actionable hint. Phase 3 adds a T002 diagnostic with a helpful message.
+
+**Task 1 — Corpus tests:** `just test-lib` passes with 0 new failures after Phase 2. Existing corpus tests in `tests/corpus/eval/builtins/` call builtins via the runtime env (which still has all builtins), so they do not go through the typecheck TypeEnv. No corpus changes needed.
+
+**Task 2 — T002 lint:** Added `builtin_primary_names()` to `src/builtins.rs` (returns the set of primary non-`builtin-*` builtin names, excluding internal helpers). At both `undefined_variable` sites in `src/typecheck.rs` (`infer_expr` plain VarRef and call-head VarRef), when the name is a known builtin and `!state.in_prelude_load`, the TypeError gets an attached note ("is a Rust builtin that is not exported by the prelude / use the prelude-exported wrapper or include the relevant stdlib module") and a `TypeDiagnostic { code: "T002", level: Warn }` is pushed to `state.diagnostics`. Corpus test: `tests/corpus/typecheck/warnings/raw_builtin_t002.llt-eval`.
+
+- [x] `builtin_primary_names()` added to `src/builtins.rs` (filters `standard_builtins()` to primary names only)
+- [x] T002 check added at both `undefined_variable` sites in `src/typecheck.rs`
+- [x] T002 fires only when `!state.in_prelude_load` (prelude itself uses raw builtins safely)
+- [x] Corpus test `tests/corpus/typecheck/warnings/raw_builtin_t002.llt-eval` — `[pow 2.0 10.0]` triggers T002; eval succeeds (runtime env still has `pow`); typecheck warning matches "raw builtin `pow` is not available in user code"
+- [x] `just fmt && just build && just test-lib` — 0 new failures
+
 ### builtin-privacy-arithmetic-fd: Preserve arithmetic operator FD precision through prelude wrapping
 
 **Problem:** When `+`/`-`/`*`/`/` come from prelude wrappers (`[fn@Number [let a@Number b@Number] [builtin-add a b]]`), they have a TypeScheme of `Fn Number [Number Number]`. CALL-MONO infers `Number` for `[+ 1 2]` instead of `Int`, breaking `test_call_mono_lambda_arg_uses_check_expr` and user programs depending on `[+ Int Int] → Int` precision.

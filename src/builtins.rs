@@ -2125,6 +2125,26 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
     ]
 }
 
+/// Returns the set of primary (non-`builtin-*` alias) Rust builtin names.
+///
+/// Used by the T002 lint in `src/typecheck.rs` to detect when user code directly
+/// references a Rust builtin name that was not exported by prelude. The set excludes:
+/// - `builtin-*` stable aliases (internal to prelude, never user-facing)
+/// - `reduce_dict_step` / `reduce_seq_step` (internal continuation helpers)
+/// - `proxy` (always handled by a special typecheck arm before the undefined-variable path)
+pub fn builtin_primary_names() -> std::collections::HashSet<&'static str> {
+    standard_builtins()
+        .into_iter()
+        .map(|def| def.name)
+        .filter(|name| {
+            !name.starts_with("builtin-")
+                && *name != "reduce_dict_step"
+                && *name != "reduce_seq_step"
+                && *name != "proxy"
+        })
+        .collect()
+}
+
 // TOMBSTONE: rust_module() deleted in include-decomp-redelete sprint (2026-05-20).
 // TOMBSTONE: create_bootstrap_env() deleted in include-decomp-redelete sprint (2026-05-20).
 // The module system and include mechanism have been deleted.
