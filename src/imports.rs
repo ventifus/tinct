@@ -344,6 +344,35 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         }
     }
 
+    // Post-process: restore authoritative builtin schemes for constraint-annotated
+    // operators whose prelude-inferred schemes may be degraded.
+    //
+    // Root cause: prelude type-checking runs in a single pass over a large letrec dict.
+    // If any entry in the dict produces a type error (e.g., an instance pattern overlap),
+    // `infer_dict` returns Err and the entire dict's generalized schemes are discarded
+    // from `final_env`. The fallback path (`extract_bindings_from_program_with_fallback`)
+    // extracts types from the TypeMap, but TypeVars are erased to Unknown — producing
+    // `Fn@Bool [x: Unknown y: Unknown]` instead of `Equatable a => Fn@Bool [x: a y: a]`.
+    //
+    // Fix: if the prelude-inferred scheme for `=` or `<` is monomorphic (no type_vars),
+    // replace it with the authoritative builtin scheme. The builtin schemes have the
+    // correct Equatable/Comparable constraints and are structurally identical to the
+    // prelude wrappers — the only difference is the constraint display in LSP hover.
+    //
+    // Note: if the prelude scheme IS polymorphic (has type_vars), it is kept as-is,
+    // since it may carry additional information (doc strings, tighter return type, etc.).
+    for name in &["=", "<"] {
+        let is_degraded = env
+            .get_own(name)
+            .map(|s| s.type_vars.is_empty())
+            .unwrap_or(true); // missing from env → definitely degraded
+        if is_degraded {
+            if let Some(builtin_scheme) = builtins_env.get(name) {
+                env.insert_scheme((*name).to_string(), builtin_scheme.clone());
+            }
+        }
+    }
+
     Rc::new(env)
 }
 
@@ -1502,6 +1531,52 @@ mod tests {
             "expected 'identity' body to be Function (env path active after %rust fix), \
              got: {:?}",
             scheme.body
+        );
+    }
+
+    /// Verify that `=` and `<` have their constraint-annotated builtin schemes in the
+    /// prelude env, not degraded monomorphic schemes with Unknown params.
+    ///
+    /// This exercises the builtin-privacy-constraint-hover fix: if the prelude's
+    /// type-checking produces a monomorphic (no type_vars) scheme for these operators,
+    /// the fallback to the authoritative builtin scheme restores the Equatable/Comparable
+    /// constraint for LSP hover display.
+    #[test]
+    fn build_prelude_env_eq_lt_have_constrained_schemes() {
+        let env = build_prelude_env();
+
+        // `=` must be polymorphic (has type_vars) — degraded schemes are monomorphic.
+        let eq_scheme = env.get("=").expect("expected '=' in prelude env");
+        assert!(
+            !eq_scheme.type_vars.is_empty(),
+            "expected '=' to have type_vars (Equatable constraint), got monomorphic scheme: {:?}",
+            eq_scheme
+        );
+        // `=` must have an Equatable constraint.
+        assert!(
+            eq_scheme
+                .constraints
+                .iter()
+                .any(|c| matches!(c, crate::types::Constraint::Class { class, .. } if class.name == "Equatable")),
+            "expected '=' to have Equatable constraint, got: {:?}",
+            eq_scheme.constraints
+        );
+
+        // `<` must be polymorphic (has type_vars).
+        let lt_scheme = env.get("<").expect("expected '<' in prelude env");
+        assert!(
+            !lt_scheme.type_vars.is_empty(),
+            "expected '<' to have type_vars (Comparable constraint), got monomorphic scheme: {:?}",
+            lt_scheme
+        );
+        // `<` must have a Comparable constraint.
+        assert!(
+            lt_scheme
+                .constraints
+                .iter()
+                .any(|c| matches!(c, crate::types::Constraint::Class { class, .. } if class.name == "Comparable")),
+            "expected '<' to have Comparable constraint, got: {:?}",
+            lt_scheme.constraints
         );
     }
 }

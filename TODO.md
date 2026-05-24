@@ -641,7 +641,7 @@ Pre-existing failures (NOT caused by Phase 2 change, already failing at baseline
 - [x] **Remove `TypeEnv::with_builtins()` from the user-code path.** `build_prelude_env_inner()` now starts with `TypeEnv::new()`. Prelude type-checking uses `builtins_env` (a separate `TypeEnv::with_builtins()`) internally. `merge_env_bindings_into` uses pointer-walk above baseline to extract only prelude-defined names. (`src/imports.rs`) **DONE 2026-05-24.**
 - [x] Change the evaluator's root env to mirror this: the TypeEnv returned by `build_prelude_env()` now contains ONLY prelude-exported names, not the raw builtin registry. Raw builtins (`connect`, `http2-session`, etc.) are absent from user TypeEnv. (`src/imports.rs`) **DONE 2026-05-24.**
 
-**Known limitation (post-Phase-2):** `=` and `<` in user-facing TypeEnv show degraded schemes (`Fn@Bool [Unknown Unknown]`) instead of Equatable/Comparable constrained schemes. Root cause: prelude type-checking runs with `in_prelude_load: true` and empty instance env (instances can't be pre-seeded during prelude load). LSP hover for `=` shows Bool but not the Equatable constraint. Fix tracked separately: `builtin-privacy-constraint-hover` sprint below.
+**Known limitation (resolved 2026-05-23):** `=` and `<` previously showed degraded schemes in hover. Fixed by `builtin-privacy-constraint-hover` sprint: post-processing falls back to authoritative builtin schemes when prelude-inferred schemes are monomorphic. LSP hover now shows `Equatable a => Fn@Bool [a a]`.
 
 #### builtin-privacy-arithmetic-fd: Preserve arithmetic operator FD precision through prelude wrapping ✅
 
@@ -651,18 +651,6 @@ Pre-existing failures (NOT caused by Phase 2 change, already failing at baseline
 - [x] `test_call_mono_lambda_arg_uses_check_expr` passes
 - [x] `test_no_false_positive_warning_for_discharged_constraints` passes
 - [x] Phase 2 change (`TypeEnv::new()`) landed cleanly.
-
-#### builtin-privacy-constraint-hover: Restore Equatable/Comparable constraint in LSP hover for `=`, `<`
-
-**Post-Phase-2 known limitation.** `=` shows `Fn@Bool [x: Unknown y: Unknown]` in hover instead of the Equatable-constrained scheme. The root cause: prelude type-checking runs with `in_prelude_load: true` (instance bodies not inferred) and the instance env is empty during prelude load (Equatable instances are being defined in the same prelude document, creating a chicken-and-egg). The constraint `[a: Equatable]` on `=`'s annotation can't be resolved → TypeVars degrade to Unknown.
-
-Fix options:
-1. Pre-seed the instance env with builtin-provided instances before type-checking the prelude (so Equatable, Comparable, Addable are available when `=`, `<`, `+` etc. are typed).
-2. Post-process the returned prelude env: for names like `=`, `<` where the prelude's inferred scheme is degraded (has Unknown params), fall back to the builtin scheme from `TypeEnv::with_builtins()`.
-
-Option 1 is correct but requires splitting prelude into "instances first" and "functions second" sections. Option 2 is a targeted workaround.
-
-- [ ] Implement fix (Option 1 or 2) so `=` hover shows `Equatable a => Fn@Bool [a a]` (`src/imports.rs`, `src/lsp/analysis.rs`)
 
 #### Phase 3 (migrate + lint) ✅
 

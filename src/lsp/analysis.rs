@@ -2189,15 +2189,12 @@ mod tests {
 
     #[test]
     fn test_hover_builtin_shows_constraint() {
-        // Hover on `=` should show the Bool return type.
+        // Hover on `=` should show the Equatable constraint and Bool return type.
         //
-        // Note (builtin-privacy Phase 2): `=` is now typed from the prelude's own scheme
-        // rather than the raw builtin registry. The prelude's type-checking runs with
-        // `in_prelude_load: true` (instance bodies not inferred) and without pre-seeded
-        // Equatable instances, so the Equatable constraint is not present in the inferred
-        // scheme. The hover shows `Fn@Bool [x: Unknown y: Unknown]` — Bool is visible
-        // but Equatable is not (tracked: fix in a future sprint by pre-seeding instance
-        // env before prelude type-check).
+        // Fixed by builtin-privacy-constraint-hover sprint: when the prelude's inferred
+        // scheme for `=` is degraded (monomorphic with Unknown params, due to prelude
+        // type-checking discarding schemes when any dict entry fails), we fall back to
+        // the authoritative builtin scheme which has the correct Equatable constraint.
         //
         // "[call $= 1 2]"
         //  0123456789...
@@ -2209,11 +2206,14 @@ mod tests {
         let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph(), &test_ctx());
         assert!(hover.is_some(), "should have hover on $=");
         let text = hover.unwrap();
-        // Bool return type is still visible even though the Equatable constraint is not
-        // (prelude-load limitation — instance env not seeded during prelude type-check).
         assert!(
             text.contains("Bool"),
             "hover should show Bool return type for $=, got: {text}"
+        );
+        // The Equatable constraint must be visible in the hover (from the builtin fallback scheme).
+        assert!(
+            text.contains("Equatable"),
+            "hover should show Equatable constraint for $=, got: {text}"
         );
     }
 

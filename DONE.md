@@ -55,6 +55,18 @@ Completed milestones and sprints, moved from TODO.md.
 - [x] `test_call_mono_lambda_arg_uses_check_expr` passes (the original blocker)
 - [x] `just fmt && just build && just test-lib` all pass
 
+### builtin-privacy-constraint-hover: Restore Equatable/Comparable constraint in LSP hover for `=`, `<`
+
+**Problem:** After builtin-privacy Phase 2 (TypeEnv separation), LSP hover for `=` showed `Fn@Bool [x: Unknown y: Unknown]` instead of `Equatable a => Fn@Bool [a a]`. The prelude's type-checking produces a monomorphic scheme with Unknown params for `=` and `<` when any entry in the large letrec dict produces a type error — `infer_dict` returns `Err`, causing `final_env` to not receive the generalized schemes. The fallback path (`extract_bindings_from_program_with_fallback`) erases TypeVars to Unknown, producing the degraded scheme.
+
+**Fix (Option 2 — targeted workaround):** Post-process `build_prelude_env_inner()` after `typecheck_and_merge_stdlib_module` runs. For `=` and `<`, if the scheme in `env` is monomorphic (no `type_vars`) — indicating degradation — replace it with the authoritative builtin scheme from `TypeEnv::with_builtins()`. The builtin schemes have the correct `Equatable a => Fn@Bool [a a]` and `Comparable a => Fn@Bool [a a]` structure.
+
+- [x] Post-processing loop in `build_prelude_env_inner()` checks `type_vars.is_empty()` for `=` and `<`, falls back to builtin scheme when degraded (`src/imports.rs`)
+- [x] `build_prelude_env_eq_lt_have_constrained_schemes` test verifies both operators have non-empty `type_vars` and the correct class constraint (`src/imports.rs`)
+- [x] `test_hover_builtin_shows_constraint` updated: now asserts `text.contains("Equatable")` in addition to `text.contains("Bool")` (`src/lsp/analysis.rs`)
+- [x] All 17 imports tests pass, all 79 LSP analysis tests pass
+- [x] `just fmt && just build && just test-lib` — exit code 0
+
 ### indexable-map-fd: Fix Map/Seq FD improvement via lookup_mptc
 
 **Problem:** After `indexable-typeclass` sprint, `[builtin-get "key" map]` where `map : Map[Str Int]` returned `Unknown` instead of `Int`. 
