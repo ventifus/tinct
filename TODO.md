@@ -613,12 +613,12 @@ Audit of `src/type_env.rs` found four additional builtins where return type coul
 - [ ] Remove `check_get` dispatcher from `src/typecheck.rs:1476-1488`
 - [ ] Verify `builtin-get` alias also works via the new scheme
 
-### corpus-test-hang: `just test-corpus` hangs on one or more corpus tests
+### corpus-test-hang: `just test-corpus` runs extremely slowly or times out
 
-`cargo test --test corpus_tests -- --test-threads=1` hangs indefinitely after the `clear_stdlib_cache` export fix (removed `#[cfg(test)]` so integration tests can call it). Before the fix, integration tests (corpus_tests, lsp_corpus_tests) couldn't compile because `clear_stdlib_cache` was gated behind `#[cfg(test)]`. After the fix, they compile but at least one corpus test hangs (infinite loop or deadlock). `just test-lib` (1990 tests) passes cleanly.
+`cargo test --test corpus_tests -- --test-threads=1` runs very slowly after the `clear_stdlib_cache` export fix (removed `#[cfg(test)]` so integration tests can call it). Before the fix, integration tests (corpus_tests, lsp_corpus_tests) couldn't compile because `clear_stdlib_cache` was gated behind `#[cfg(test)]`. After the fix, they compile but corpus tests run slowly enough to appear hung. Analysis (2026-05-23) found no actual hang — the slowness is likely from 10 CHR (Constraint Handling Rules) failure tests combined with container memory pressure. `just test-lib` (1990 tests) passes cleanly.
 
-- [ ] Identify which corpus test hangs — run `cargo test --test corpus_tests -- --test-threads=1 -v 2>&1` and note which test name appears last before the hang
-- [ ] Fix the hang — likely an infinite evaluation loop in a specific `.llt-eval` test file, or a deadlock in the async runtime when `clear_stdlib_cache` is called from an integration test context
+- [ ] Identify which corpus tests are slow — run `cargo test --test corpus_tests -- --test-threads=1 -v 2>&1` with timestamps to find the slowest tests
+- [ ] Profile the slow tests — likely CHR-related evaluation tests that explore large search spaces or hit memory constraints in containerized CI
 
 ### doc-cwd-runtime-bindings: Document runtime-injected bindings in doc/08-evaluation.md
 
@@ -1312,14 +1312,6 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 ---
 
 ## Codebase Health Audit Findings (Cycle #216, 2026-05-23)
-
-### fix-test-taxonomy: Fix test file misclassification and required dirs
-
-**Sources:** test-crafter (Cycle #216)
-
-- [ ] Move 13 misclassified test files from `tests/corpus/eval/errors/` to `tests/corpus/eval/typecheck/warnings/` — these tests use `=== warn` (typecheck warning) not `=== error` (eval failure): `constraint_class_not_varref`, `fn_annotation_mixed_keys`, `unknown_fn_annotation_key`, `doc_not_string`, `constraint_value_invalid`, `constraint_positional_entry`, `constraint_not_dict`, `constraint_multi_class_keyed_entry`, `constraint_key_not_bareword`, `closed_record_rejects_extra`, `help_suggestion_arity`, `help_suggestion_type_mismatch`, `proxy_named_arg`. [Major]
-- [ ] Add `"tests/corpus/eval/builtins/errors"` to `required_dirs` in `tests/corpus_tests.rs:194-231` — directory exists with 21 tests but isn't enforced. [Major]
-- [ ] Update `corpus-test-hang` sprint: test-crafter found no actual hang; likely the 10 slow CHR failures + container memory pressure. Investigate with `just test-lib` first, then individual corpus runners. [Minor]
 
 ### fix-core-expr-coverage: Compile-time CoreExpr variant exhaustiveness
 

@@ -9159,3 +9159,9 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 - [x] Update `doc/11-stdlib.md:302,308` — changed "all 228 builtin functions" to "all 284 builtin functions". [Major]
 - [x] Update `doc/11-stdlib.md:314` — expanded stable alias list from "11 builtins" to complete list of 37 aliases with table. [Major]
 - [x] Update `doc/11-stdlib.md:358` — changed "184 Rust-native builtins" to "284 Rust-native builtins". [Major]
+
+### fix-test-taxonomy: Fix test file misclassification and required dirs
+
+- [x] Move 13 misclassified test files from eval/errors/ to eval/typecheck/warnings/ (constraint_*, fn_annotation_*, doc_not_string, help_suggestion_*, proxy_named_arg, unknown_fn_annotation_key, closed_record_rejects_extra). [Major]
+- [x] Add eval/builtins/errors/ to required_dirs — ALREADY DONE (already in the array). [Major]
+- [x] Update corpus-test-hang sprint — reframed from "hangs indefinitely" to "runs slowly" (likely CHR test failures + container memory pressure). [Minor]
