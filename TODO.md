@@ -81,22 +81,17 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 - [x] Add Surface bridge functions — `surface_node_to_dict`, `dict_to_surface_node`, `surface_program_to_dict`, `dict_to_surface_program` in `ast_dict.rs` (bridge via ast_convert.rs) [commit 9849c61]
 - [x] Migrate `formatter.rs` caller — eliminates SurfaceProgram→File→dict conversion [commit 9849c61]
-- [ ] Migrate `builtins_meta.rs` callers — see `rv2-migrate-builtins-meta` sprint below
+- [x] Migrate `builtins_meta.rs` callers — ALREADY DONE (Part G migration; zero ast_dict call sites in builtins_meta.rs)
 - [ ] Migrate `expand.rs:1802` caller — see `rv2-migrate-expand-macro` sprint below
 - [x] `just build` passes [commit 9849c61]
 
-### rv2-migrate-builtins-meta: Migrate builtins_meta.rs ast_dict callers to Surface API
+### rv2-migrate-builtins-meta: ~~Migrate builtins_meta.rs~~ ALREADY COMPLETE
 
-**Goal:** Replace `ast_to_dict_expr` / `dict_to_ast` calls in `builtins_meta.rs` with the Surface bridge functions (`surface_node_to_dict`, `dict_to_surface_node`). This unblocks deleting the old Expr-based ast_dict functions.
+**Status:** NO-OP — builtins_meta.rs has ZERO ast_dict call sites to migrate.
 
-**Context:** `builtins_meta.rs` uses ast_dict for `ast-of` builtin (AST-as-dict representation) and `load`/`builtin_load` (parse source to AST dict). Lines ~1619-1802 of builtins_meta.rs.
+**Finding (2026-05-23):** Grep for `\bast_to_dict\(|\bast_to_dict_expr\(|\bdict_to_ast\(` in src/builtins_meta.rs → 0 matches. The `load` builtin (lines 1629-1736) was already migrated to return `Value::Program` directly (runtime-v2 Part G). Doc comments at lines 1619, 1624 mention "ast_to_dict" but only describe OUTPUT FORMAT, not implementation.
 
-**Survey:** Read `src/builtins_meta.rs` and grep for `ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`. Count and document exact call sites with line numbers.
-
-- [ ] Survey `src/builtins_meta.rs`: find all `ast_to_dict*`/`dict_to_ast` call sites with line numbers. The input to each call is likely a parsed/desugared program (→ use `surface_program_to_dict`) or a single expression (→ use `surface_node_to_dict`). Document which applies to each site.
-- [ ] Update each call site to use the Surface bridge API. For `ast_to_dict(file, ...)` calls: use `surface_program_to_dict(&program)`. For `ast_to_dict_expr(expr, ...)` calls: convert expr to SurfaceNode via `expr_to_surface_node` then `surface_node_to_dict`. For `dict_to_ast(...)` calls: use `dict_to_surface_node` then keep the result as SurfaceNode (or bridge back via `surface_node_to_expr` if needed for the current eval path).
-- [ ] Remove the import of `ast_to_dict_expr`/`dict_to_ast` from `builtins_meta.rs` (see existing TODO comment at line 40 of expand.rs: "remove when macro expander is rewritten on SurfaceExpression")
-- [ ] `just build` passes; run `tinct describe` and `ast-of` manually to verify output format unchanged
+**Remaining work:** This sprint can be deleted. The ACTUAL blockers for rv2-delete-old-ast are expand.rs (3 call sites) and eval.rs (2 call sites for unquote handling).
 
 ### rv2-migrate-expand-macro: Migrate expand.rs macro expansion to Surface ast_dict API
 
@@ -104,6 +99,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Exact call sites (from grep):**
 - `src/expand.rs:1661` — `ast_to_dict_expr(arg, &opts, ctx)?` — converts macro argument to dict for transformer
+- `src/eval.rs:992` — `ast_to_dict_expr(...)` — unquote handling (eval.rs also needs migration)
+- `src/eval.rs:1004` — `ast_to_dict_expr(...)` — unquote handling
 - `src/expand.rs:1694` — `ast_to_dict_expr(&binding_rc, &opts, ctx)?` — converts binding to dict
 - `src/expand.rs:1802` — `dict_to_ast(&deep_result, ctx)` — reconstructs AST from transformer output
 
@@ -182,8 +179,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Depends on:** rv2-migrate-ast-dict ✅(partial), rv2-migrate-repl ✅, rv2-migrate-lsp ✅, rv2-migrate-typecheck-api ✅
 
 **Still BLOCKED on (these callers must be migrated first):**
-- `src/builtins_meta.rs` — still calls `ast_to_dict_expr` / `dict_to_ast` (Expr-based macro AST path)
-- `src/expand.rs:1802` — `dict_to_ast` call in macro expansion (returns Expr, not SurfaceNode)
+- `src/expand.rs:1661,1694,1802` — 3 calls to `ast_to_dict_expr` / `dict_to_ast` in macro expansion (converts macro args to dict, reconstructs AST from transformer output)
+- `src/eval.rs:992,1004` — 2 calls to `dict_to_ast` in unquote handling (Expr::Unquote, Expr::UnquoteSplice)
 - `src/typecheck.rs` internal bridge — `typecheck_surface_program` still converts via `surface_program_to_file` internally; old `typecheck_file_*` functions still exist as private (can delete after bridge is removed)
 - `src/eval_pipeline.rs` — old `eval_document`/`eval_file`/`eval_file_with_input` still present (main.rs path not yet cut over)
 
