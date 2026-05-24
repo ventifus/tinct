@@ -105,8 +105,8 @@ fn typecheck_and_merge_stdlib_module(
 
     // Desugar $_ implicit lambdas on SurfaceProgram (after expansion, before resolve).
     // Correct pipeline order: parse → expand → desugar → resolve → typecheck.
-    // Currently expansion is skipped for stdlib modules (see rationale above), but desugar
-    // must still come after the expand step position to maintain correct ordering.
+    // Expansion is normally in the pipeline but skipped here for stdlib modules
+    // (see rationale above) — desugar still runs to maintain correct ordering.
     desugar::desugar_surface_program(&mut program);
 
     // Variable resolution pass (Phase 1 of arena allocation strategy).

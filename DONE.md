@@ -9225,3 +9225,14 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 - [x] **GAP** Zero-element unquote-splicing path needs corpus regression test. Known issue noted.
 
 **New corpus tests:** `macro_unquote_splice_call.llt-eval`, `macro_named_arg_error.llt-eval`, `syntax_class_letdecl_accept.llt-eval`, `syntax_class_letdecl_reject.llt-eval`. Doc: `doc/feature/macros.md` §Interaction with include corrected. Key lesson: sequence nil sentinel in LLT is `Value::Dict(empty map)`, not `Value::Variant { tag: "[]" }`.
+
+### delta-c226-quick-fixes: Quick fixes from Cycle #226 delta review
+
+**Sources:** delta review of 12 commits (a7fdd97 through aee468f3)
+
+- [x] Fix `check_slurp` missing argument type check — added Handle type validation via `Type::is_subtype`/`Type::is_consistent` after `infer_expr` + `subst.apply`, matching `check_open`'s pattern. Non-Handle args now produce a clear type error. (`src/typecheck.rs:4594-4603`) [Major]
+- [x] Add `MAX_COLLECT_SIZE` resource limit to `collect_seq_elements` in `src/eval.rs` — infinite sequence spliced via `[unquote-splicing ...]` now hits the guard after each push. Uses `EvalError::resource_limit_exceeded` consistent with other collect sites. (`src/eval.rs:1054-1063`) [Major]
+- [x] Add corpus regression test for ExpansionGuard MH0 fix: `tests/corpus/eval/macros/macro_expansion_guard_cleanup.llt-eval` — calls a macro with invalid arg (syntax class mismatch), then calls the same macro with valid arg; verifies the guard prevents spurious "recursive macro expansion detected" error. [Major]
+- [x] Document `clear_stdlib_cache()` DoS risk in `src/lib.rs` re-export comment — added `/// **Security:** Do not call in production daemons evaluating untrusted scripts` with rationale. (`src/lib.rs:124-129`) [Minor]
+- [x] Fix `src/imports.rs:106` comment — updated to "Expansion is normally in the pipeline but skipped here for stdlib modules (see rationale above)" to accurately describe the intentional design. (`src/imports.rs:108-109`) [Minor]
+- [x] Add `TYPECHECK_WARNINGS_MIN: usize = 25` enforcement to `tests/corpus_tests.rs` test_corpus_structure — prevents accidental deletion of typecheck/warnings/ tests. (`tests/corpus_tests.rs:245,287-293`) [Minor]

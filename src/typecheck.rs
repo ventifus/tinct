@@ -4591,6 +4591,17 @@ fn check_slurp(
     let handle_ty = infer_expr(&args[0], env, state, type_map)?;
     let handle_ty = state.subst.apply(&handle_ty);
 
+    // Verify the argument is actually a Handle (not just any type)
+    let expected_handle = Type::Handle(Box::new(Type::Unknown));
+    if !Type::is_subtype(&handle_ty, &expected_handle)
+        && !Type::is_consistent(&handle_ty, &expected_handle)
+    {
+        return Err(vec![TypeError::new(
+            format!("type mismatch: `slurp` expects Handle, got {handle_ty}"),
+            span,
+        )]);
+    }
+
     // Inspect the handle type to determine return type
     match &handle_ty {
         Type::Handle(cap_row) => {
@@ -4621,10 +4632,9 @@ fn check_slurp(
             Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
         }
         _ => {
-            // Type error: argument is not a Handle at all
-            // We could return an error here, but for now fall back to the union
-            // (the subtyping check against Handle[Readable] will catch this)
-            Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
+            // This case is unreachable because we validate the argument is a Handle above.
+            // If we reach here, it means the validation logic has a bug.
+            unreachable!("check_slurp: argument validated as Handle but matched non-Handle type")
         }
     }
 }

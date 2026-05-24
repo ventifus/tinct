@@ -30,6 +30,7 @@ use crate::ast::{
     Annotation, CoreExpr, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span,
     Spanned,
 };
+use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
@@ -1049,6 +1050,18 @@ async fn collect_seq_elements(
                 let head_thunk = ctx.get_thunk(head);
                 let head_value = materialize(&head_thunk, Some(&span), ctx).await?;
                 elements.push(head_value);
+
+                // Enforce size limit to prevent infinite sequences from looping forever
+                if elements.len() >= MAX_COLLECT_SIZE {
+                    return Err(EvalError::resource_limit_exceeded(
+                        format!(
+                            "unquote-splice: too many elements (limit {})",
+                            MAX_COLLECT_SIZE
+                        ),
+                        span,
+                    )
+                    .into());
+                }
 
                 // Materialize and move to the tail
                 let tail_thunk = ctx.get_thunk(tail);

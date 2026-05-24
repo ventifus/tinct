@@ -121,7 +121,10 @@ pub use builtins::{
     create_stdlib_env, create_type_stage_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
 
-/// Clear the stdlib cache to prevent memory accumulation in test harnesses.
+/// Clears the thread-local stdlib cache, forcing re-parse on next evaluation.
+/// **Security:** Do not call in production daemons evaluating untrusted scripts —
+/// forces expensive stdlib re-parse, enabling performance DoS.
+///
 /// Only test harnesses that run hundreds of independent evaluations in the
 /// same process should call this.
 pub use builtins::clear_stdlib_cache;

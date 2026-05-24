@@ -242,6 +242,7 @@ fn test_corpus_structure() {
     const EVAL_STDLIB_MIN: usize = 195;
     const EVAL_ERRORS_MIN: usize = 120;
     const EVAL_MACROS_MIN: usize = 40;
+    const TYPECHECK_WARNINGS_MIN: usize = 25;
 
     let laziness_count = find_test_files(&manifest_dir.join("tests/corpus/eval/laziness")).len();
     assert!(
@@ -281,6 +282,15 @@ fn test_corpus_structure() {
         "tests/corpus/eval/macros/ has {} tests, expected at least {}",
         macros_count,
         EVAL_MACROS_MIN
+    );
+
+    let typecheck_warnings_count =
+        find_test_files(&manifest_dir.join("tests/corpus/eval/typecheck/warnings")).len();
+    assert!(
+        typecheck_warnings_count >= TYPECHECK_WARNINGS_MIN,
+        "tests/corpus/eval/typecheck/warnings/ has {} tests, expected at least {}",
+        typecheck_warnings_count,
+        TYPECHECK_WARNINGS_MIN
     );
 }
 

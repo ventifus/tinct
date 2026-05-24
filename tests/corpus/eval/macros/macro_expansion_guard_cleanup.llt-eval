@@ -1,0 +1,19 @@
+# Test: ExpansionGuard RAII cleanup on macro expansion error (MH0 regression test)
+# Without the ExpansionGuard fix, a macro expansion error would leak depth/blackhole
+# state, causing the next call to the same macro to spuriously fail with
+# "recursive macro expansion detected".
+# This test verifies that after an expansion-time error (syntax class mismatch),
+# a subsequent valid call to the SAME macro succeeds.
+
+[macro wraps-let [let binding@LetDecl]
+  [quote 42]]
+
+# First call: invalid argument (plain integer) → expansion error [E012]
+[wraps-let 99]
+
+---
+# Second call: valid [let ...] argument → should succeed
+# Without ExpansionGuard, this would spuriously error with "recursive macro expansion"
+[wraps-let [let x 1]]
+=== out
+Int(42)
