@@ -1012,33 +1012,6 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 In-depth formal audits for algorithms not yet reviewed. Each sprint dispatches specialist agents to read the relevant source, identify soundness holes, and produce TODO items for any bugs found. No implementation — findings only.
 
-### review-exhaustiveness: Audit Maranget exhaustiveness checking algorithm
-
-**Agents:** computer-scientist, type-theorist
-**Files:** `src/typecheck.rs` (match exhaustiveness, `check_exhaustiveness`, `useful`, `specialize`, `default_matrix` functions), `doc/07-type-extensions.md` §Pattern Matching
-
-Key questions:
-- Does the usefulness algorithm (Maranget 2007) correctly handle all LLT pattern forms: literal patterns, type-tag patterns (`Tag _`), wildcard, or-patterns, nested constructors?
-- Is the `specialize` matrix operation correct for each constructor shape (unit variant, payload variant, record destructure)?
-- Does the algorithm handle open/closed record types correctly under BAS width subtyping?
-- Are there patterns the type checker accepts as exhaustive that the runtime could fail to match (false-exhaustive)?
-- Are there exhaustive sets the type checker incorrectly reports as non-exhaustive (false-non-exhaustive)?
-
-- [x] Dispatch computer-scientist + type-theorist to read exhaustiveness implementation and report: any pattern forms that are mishandled, missing cases in the specialize/default matrix, or false-exhaustive/false-non-exhaustive scenarios → findings go to TODO.md
-
-**Audit findings (2026-05-23, computer-scientist). Algorithm: Maranget (2007) + Karachalias et al. (2015) lazy bottom extension, implemented in `src/coverage.rs`. Core algorithm is structurally correct; 4 bugs found in the `ConstructorSignature ↔ CoveragePattern` interface layer.**
-
-- [x] **F1 FIXED — `from_union` now returns `Option<Self>`; `skipped_any` flag returns `None` when any union member is unrepresentable [commit e61a74c]** `src/coverage.rs:216-218`. The `_ =>` arm in `from_union` skips `Function`, `Handle`, `Map`, `Top`, `Unknown`, `TypeVar`, `Intersection`, `Negation`, `Proxy`, `Uri`, `Timestamp`, `Duration`, etc. The resulting signature has fewer constructors than the union. `useful()` line 536 compares against the incomplete signature and declares coverage complete. Counterexample: `[match [@[Int Fn@Int [Int]] identity] Int: "int"]` — declared exhaustive, Function values fail at runtime. Fix: when any union member is skipped, skip coverage checking entirely (treat as "statically unverified").
-- [x] **F2 FIXED — `Type::Number` expands to `[TypeTag("Int"), TypeTag("Float")]` in `from_union` [commit e61a74c]** `src/coverage.rs:199` maps `Type::Number` to `TypeTag("Number")`. `src/coverage.rs:271-282` expands a `Number` pattern to `Or(TypeTag("Int"), TypeTag("Float"))`. These tags never match. Counterexample: `[match [@[Number String] 42] Number: "num" String: "str"]` — reported non-exhaustive because `Int`/`Float` tags are not in the signature. Fix: expand `Type::Number` to `[Type::Int, Type::Float]` in `from_union`.
-- [x] **F3 FIXED — NominalVariant arity: `if fields.is_empty() { 0 } else { 1 }` (not `fields.len()`) [commit e61a74c]** `src/coverage.rs:214` sets arity = `fields.fields.len()` (e.g. 2 for `[Point x: Int y: Int]`). `src/coverage.rs:345-353` produces at most 1 sub_pattern (the single `binding`). In `specialize_row`, wildcard rows expand to `arity` wildcards (2), constructor rows splice 1 sub_pattern. Inconsistent row widths violate Maranget's column-consistency invariant. Currently masked by ADT registration bug (Group B). Fix: NominalVariant arity should be `if fields.is_empty() { 0 } else { 1 }`.
-- [x] **F4 FIXED — `Type::Bool` expands to `[LiteralBool(true), LiteralBool(false)]` in `from_union` [commit e61a74c]** `src/coverage.rs:198,299`. Different constructor tags that never match each other. `bool_sig()` test helper manually constructs `LiteralBool` constructors, masking the real code path. Fix: expand `Type::Bool` to `[LiteralBool(true), LiteralBool(false)]` in `from_union`.
-- [ ] **F5 GAP — Coverage only runs for Union/NominalVariant scrutinees.** `src/typecheck.rs:2891-2897`. `Type::Bool` scrutinee with only `true:` arm gets no exhaustiveness warning. Completeness gap, not soundness. Fix: extend coverage to `Type::Bool` scrutinees.
-- [ ] **F6 GAP — Defensive assertion for S-RcdTop collapse.** Under BAS, structural `{ok: T} | {err: String}` collapses to Top. If `simplify_type` misses S-RcdTop, a non-discriminated record union could leak to coverage and get false exhaustiveness. Fix: add assertion in `from_union` that multi-record unions are genuinely discriminated.
-- [x] **T1 FIXED — DictKey separator changed `,` → `\x00` at 3 sites (from_union, Display, ast_pattern_to_coverage) [commit e61a74c]** `src/coverage.rs:187-192`. `{a: T, b: U}` → `DictKey("a,b")`. A single field literally named `"a,b"` also maps to `DictKey("a,b")`. These are structurally distinct shapes with the same tag, causing wrong arity lookups via `sig.arity(tag)`. Fix: use a separator that cannot appear in tinct field identifiers (e.g. `\x00`), or use `Vec<String>` representation.
-- [ ] **T2 GAP — No registry for cross-`[type]` tag name collisions.** Two separate `[type]` declarations with the same nominal tag name are not detected. The coverage checker builds the signature from the inferred type only; no dedup/collision check across type declarations. Track: add a registration-time check in type alias processing that errors on duplicate nominal tag names.
-- [ ] **T3 GAP — Non-union `Record` / `Dict` scrutinee silently skips coverage checking.** `src/typecheck.rs:2891-2897`. A match on a closed `Record[{a, b}]` scrutinee gets no coverage check — even if only some field patterns are covered. Documented intentional gap but should be tracked for completeness. Long-term: extend coverage to closed Record scrutinees.
-- [ ] **T4 DOC FIX — `doc/feature/pattern-matching.md:266-272` incorrectly states `type+is:` arms cover their type variant.** The doc claims `n@[type: Int  is: [> _ 0]]:` covers the `Int` variant for exhaustiveness. The implementation (correctly per Karachalias et al. 2015) treats all guarded arms as fully opaque — the `Int` constraint does NOT contribute to coverage. Update doc to state: all guarded arms are excluded from exhaustiveness analysis regardless of any type constraint they carry.
-
 ### review-pattern-matching: Audit pattern match evaluation semantics
 
 **Agents:** eval-engine, computer-scientist
