@@ -1,6 +1,6 @@
 //! REPL (Read-Eval-Print Loop) for the LLT language.
 //!
-//! The REPL mirrors `eval_document()` scope chain semantics: each input is parsed
+//! The REPL mirrors `eval_surface_document()` scope chain semantics: each input is parsed
 //! and evaluated, and if the result is a Dict, its string-keyed entries become
 //! bindings in a child environment for subsequent inputs. The previous result is
 //! always accessible as `%`.
@@ -171,7 +171,7 @@ impl ReplSession {
 
     /// Evaluate a complete input string (one or more expressions forming a scope chain).
     ///
-    /// Mirrors `eval_document()` semantics:
+    /// Mirrors `eval_surface_document()` semantics:
     /// 1. Parse the input as a full LLT source (file with one document).
     /// 2. Evaluate the document's expressions as a scope chain: intermediate Dict
     ///    results extend the environment, the last expression is the final result.
@@ -216,8 +216,7 @@ impl ReplSession {
         self.type_map.extend(type_map);
         self.doc_map.extend(doc_map);
 
-        let file = crate::ast_convert::surface_program_to_file(&program);
-        if file.node.documents.is_empty() {
+        if program.documents.is_empty() {
             return Err("empty input".to_string());
         }
 
@@ -969,7 +968,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Whitespace-only input: parser produces a document with 0 expressions,
-        // which eval_document returns as an empty Dict (graceful, not an error).
+        // which eval_surface_document returns as an empty Dict (graceful, not an error).
         assert_eq!(session.eval_input("   ").unwrap(), "Dict({})");
         assert_eq!(session.eval_input("\n\n").unwrap(), "Dict({})");
     }
