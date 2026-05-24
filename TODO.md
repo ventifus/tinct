@@ -1012,40 +1012,6 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 In-depth formal audits for algorithms not yet reviewed. Each sprint dispatches specialist agents to read the relevant source, identify soundness holes, and produce TODO items for any bugs found. No implementation — findings only.
 
-### review-pattern-matching: Audit pattern match evaluation semantics
-
-**Agents:** eval-engine, computer-scientist
-**Files:** `src/eval.rs` (`eval_match`, `match_pattern`), `src/eval_materialize.rs`, `doc/08-evaluation.md` §Pattern Matching
-
-Key questions:
-- Is pattern matching evaluation correct for all arm types: literal, type-tag, constructor with payload, or-patterns, guard expressions?
-- Are guards evaluated lazily or eagerly? Can a guard force evaluation that should be deferred?
-- For or-patterns `[P1 | P2]`: if P1 matches but the guard fails, does the matcher correctly try P2?
-- Does `match_pattern` produce the correct bindings for nested destructuring (record fields, payload extraction)?
-- Is backtracking correct — can a partial match in a complex pattern leave bindings from the failed branch visible?
-
-- [x] Dispatch eval-engine + computer-scientist to audit match evaluation and report findings → findings go to TODO.md
-
-**Audit findings (2026-05-23). Formal model: Plotkin big-step natural semantics (Launchbury 1993 for the runtime, Peyton Jones 1987 ch.5 for pattern sequencing). Core algorithm sound; 2 UNSOUND + 8 GAP findings.**
-
-**UNSOUND:**
-- [x] **PM1 FIXED — Guard `is:` predicate dispatch restored: Function/Builtin guards invoked with scrutinee value; is_truthy expanded [commit e61a74c]** `src/eval.rs:1627`. Guard truthy check is `!matches!(guard_value, Value::Bool(true))`, but when the guard expression evaluates to a `Value::Function` or `Value::Builtin`, the function is never *called* — the arm is silently skipped. `doc/feature/pattern-matching.md:90-95` specifies that `is: positive?` (a named function) should invoke the predicate with the bound value. This was implemented in the old `eval_recursive` path but lost during the CoreExpr migration. Corpus tests `match_is_guard.llt-eval` and `match_is_guard_skip.llt-eval` use function predicates and are likely failing. Fix: if guard evaluates to `Function`/`Builtin`, invoke it with the scrutinee value and use the return value for the truthiness check. (`src/eval.rs:1627`)
-- [x] **PM2 FIXED — `Value::Overlay` flattened before dict field matching; [merge [a:1] [b:2]] now matches Pattern::Dict [commit e61a74c]** `src/eval.rs:2793`. `Value::Overlay`'s `type_name()` returns `"Dict"`, so `Pattern::TypeTag("Dict")` matches it. But `Pattern::Dict { fields, rest }` only matches `Value::Dict`, so `[a: x ...]:` on a merged dict fails and falls to wildcard. Counterexample: `[match [merge [a: 1] [b: 2]] [a: x ...]: x _: 0]` returns `0` instead of `1`. Fix: flatten `Value::Overlay` to `Value::Dict` before dict pattern matching, as `eval_materialize.rs` already does in the guard-wrapping path.
-
-**GAP (correctness gaps or missing invariants):**
-- [ ] **PM3 GAP — No pattern linearity check (duplicate variable names in one pattern).** `src/eval.rs:2800,2870`. `[a: x  b: x  ...]:` silently binds `x` to the `a` field, then re-binds it to `b`, so the body sees `x = b_value`. ML-family semantics (Peyton Jones 1987, ch.5) require each variable to appear at most once. Fix: in `expr_to_pattern_with_guard` or `match_pattern`, collect all bound names and reject duplicates. Infrastructure (`collect_pattern_variables`) already exists.
-- [x] **PM4 FIXED — `ErrorKind::MatchExhaustion { scrutinee_type }` (E071) added; eval.rs:1695 uses named constructor [commit 58611c9]** `src/eval.rs:1638`. Runtime match failure should have its own `ErrorKind` (e.g. `MatchExhaustion`) with dedicated error code and scrutinee info. Doc says "a MatchError is raised" but no such `ErrorKind` variant exists. Fix: add `ErrorKind::MatchExhaustion { scrutinee_type: String }` with a new error code; include scrutinee's `type_name()` in the message.
-- [x] **PM5 FIXED — is_truthy expanded in PM1 fix: Bool(false)+empty-dict=falsy, all others truthy [commit e61a74c]** `src/eval.rs:1627`. Only `Value::Bool(true)` passes; any other truthy value (Int, non-empty Dict, etc.) causes the arm to be skipped. Doc implies truthiness semantics consistent with `$if`. Decide and document the canonical guard truth semantics; update implementation to match.
-- [ ] **PM6 GAP — Closed dict pattern (`rest: false`) is unreachable from any parsed program.** `src/parser.rs:4996-5004`. `has_rest` is initialized to `true` and never set to `false`; no parser syntax produces `Pattern::Dict { rest: false }`. The closed-match code at `src/eval.rs:2835-2847` is dead. Fix: implement closed-pattern syntax (e.g. trailing `!` per doc), or add comment that `rest: false` is unimplemented. Rename corpus test `dict_closed_matching_fail.llt-eval` to reflect what it actually tests (open matching with extra keys succeeding).
-- [ ] **PM7 GAP — `Constructor { binding: None }` arm unreachable from parsed programs.** `src/eval.rs:2930-2932`. Nullary constructors always parse as `Pattern::TypeTag`, never `Pattern::Constructor { binding: None }`. Add comment noting this arm is dead, or consolidate the two paths.
-- [x] **PM8 FIXED — Deleted eval_case_arm + eval_let_pattern (118 lines of dead code) [commit 58611c9]** `src/eval.rs:3017-3120`. Both are `#[allow(dead_code)]` and unreachable. Delete them (or explicitly track for the `unified-bindings` sprint).
-- [ ] **PM9 GAP — Pin pattern equality skips Dict and Seq values.** `src/eval.rs:3142`. `values_equal` returns `false` for all `(Dict, Dict)` and falls through on `Seq`. Pin-matching `$dict_var:` against a dict scrutinee always fails. Decide semantics and document; add corpus tests.
-- [ ] **PM10 GAP — `n@Int:` runtime type check absent; doc is misleading.** `doc/feature/pattern-matching.md:37-41`. `n@Int:` provides compile-time narrowing only — no runtime `int?` check. For untyped/Any inputs the annotation is silent. Add explicit note: "`n@Int:` is a compile-time annotation; use `[is: int?]` for runtime type checking."
-- [ ] **PM11 GAP — Seq tail forced even for variable/wildcard tail patterns.** `src/eval.rs:2885-2886`. Tail thunk is always materialized before being bound, even when the tail pattern is `Variable(name)` (which never needs the value forced). Laziness violation: binding a variable should not force the value. Fix: defer tail materialization when tail pattern is `Pattern::Variable` or `Pattern::Wildcard`.
-- [ ] **PM12 DOC — `doc/feature/pattern-matching.md:173-174` references nonexistent functions.** `eval_match` → inline handler in `eval_core_expr` for `CoreExpr::Match`; `value_matches_pattern` → `match_pattern`. Update doc.
-
-**SOUND (verified):** arm ordering (source order, first-match-wins), binding scope (no cross-arm leakage), or-pattern left-to-right, guard sees pattern bindings, backtracking (failed arm env dropped), Constructor payload shape (all four None/Some combos handled), scrutinee forced before arms, determinism.
-
 ### review-typeassert-semantics: Audit TypeAssert static vs runtime mismatch
 
 **Agents:** type-theorist, computer-scientist, eval-engine

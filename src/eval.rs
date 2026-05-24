@@ -3222,9 +3222,7 @@ fn match_pattern<'a>(
                                 .await
                             }
                             (None, None) => {
-                                // Constructor { binding: None } is currently unreachable from parsed programs —
-                                // nullary constructors always parse as Pattern::TypeTag, not Pattern::Constructor.
-                                // Retained for structural completeness; safe to delete if TypeTag is sufficient.
+                                // Dead arm: nullary constructors parse as Pattern::TypeTag, not Constructor { binding: None }
                                 Ok(Some(Arc::clone(env)))
                             }
                             (Some(_), None) => {

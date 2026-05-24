@@ -170,8 +170,8 @@ error: no match arm satisfied
 
 - **AST node:** `Expr::Match { scrutinee, arms }`
 - **Type inference:** `infer_match` in `src/typecheck.rs` infers the return type as the union of all arm expression types, narrowed by the scrutinee type
-- **Evaluation:** `eval_match` in `src/eval.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches
-- **Pattern compilation:** Constructor patterns are compiled to `Pattern::Constructor` AST nodes; the evaluator uses `value_matches_pattern` to test each arm
+- **Evaluation:** inline handler in `eval_core_expr` for `CoreExpr::Match` in `src/eval.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches
+- **Pattern compilation:** Constructor patterns are compiled to `Pattern::Constructor` AST nodes; the evaluator uses `match_pattern` to test each arm
 
 See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.
 

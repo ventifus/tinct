@@ -40,8 +40,9 @@ dicts are unchanged: `[n@Int: 1  n@String: "2"]` remains a duplicate-key error.
     n@Str:  i"got: $n"
     _:      x]
 
-# Note: `n@Int:` provides compile-time type narrowing only — no runtime type check is performed.
-# For runtime type enforcement, use `[is: int?]` guard instead.
+# **Note:** `n@Int:` is a compile-time type annotation that narrows the inferred type of `n`
+# within the arm body. It does NOT perform a runtime type check — for runtime type checking,
+# use `[is: int?]` guard instead.
 
 # Literal patterns — literals match by equality
 [match x
@@ -266,13 +267,16 @@ the match is dynamically correct but statically unverified. A runtime
 `MatchError` fires if no arm matches.
 
 - **Unreachable arms:** an arm after a wildcard `_:` is flagged as a type warning.
-- **`is:` arms and coverage:** guarded arms (those with `is:` conditions) are
-  excluded from exhaustiveness analysis regardless of any type annotation they
-  carry. This matches Karachalias et al. (2015) lazy bottom semantics — a guard
-  can always return false at runtime, so the arm cannot be counted as covering
-  its type variant. For example, `n@[type: Int  is: [> _ 0]]:` does **not**
-  cover the `Int` variant for exhaustiveness purposes; an unguarded `Int:` arm
-  or a wildcard `_:` arm is still required to satisfy coverage.
+- **`is:` arms and coverage:** **all guarded arms are fully opaque** to exhaustiveness
+  analysis. Arms with `is:` predicates — including combined `type:` + `is:` arms like
+  `n@[type: Int  is: [> _ 0]]:` — are excluded from coverage entirely, regardless of
+  any type constraint they carry. The `Int` type annotation in this example does **not**
+  contribute to coverage; the arm is treated as if it were `n@[is: [> _ 0]]:` with no
+  type constraint at all. This matches Karachalias et al. (2015) lazy bottom semantics:
+  guards are opaque runtime predicates whose truthfulness cannot be statically determined,
+  so the exhaustiveness checker conservatively assumes the arm might not match even when
+  its type constraint is satisfied. An unguarded `n@Int:` arm or wildcard `_:` arm is
+  still required to satisfy exhaustiveness for the `Int` variant.
 
 ### Lazy Evaluation
 

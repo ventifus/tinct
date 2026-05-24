@@ -4995,6 +4995,10 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
 
             // Regular dict pattern
             let mut fields = Vec::new();
+            // KNOWN ISSUE (PM6): `has_rest` is always true — no parser syntax produces
+            // closed dict patterns (Pattern::Dict { rest: false }). The eval.rs closed-match
+            // path (lines 3074-3087) is dead code. To implement: add trailing `!` syntax
+            // (e.g., `[a: x  b: y !]:`) to produce rest: false.
             let mut has_rest = true; // Default to open matching (extra keys allowed)
 
             for entry in entries {
