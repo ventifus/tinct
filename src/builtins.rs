@@ -1263,9 +1263,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // Dict primitives
         builtin!("keys", builtin_keys, [Strictness::Spine], 1),
+        builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1), // Stable alias
         builtin!("length", builtin_length, [Strictness::Spine], 1),
         builtin!("builtin-length", builtin_length, [Strictness::Spine], 1), // Stable alias
         builtin!("merge", builtin_merge),
+        builtin!("builtin-merge", builtin_merge), // Stable alias
         builtin!(
             "append",
             builtin_append,
@@ -1293,16 +1295,37 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // each: 2-strictness for both 1-arg (user) and 2-arg (internal offset) calls
         builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
         builtin!(
+            "builtin-each",
+            builtin_each,
+            [Strictness::Spine, Strictness::Spine]
+        ), // Stable alias
+        builtin!(
             "each-key",
             builtin_each_key,
             [Strictness::Spine, Strictness::Spine]
         ),
         builtin!(
+            "builtin-each-key",
+            builtin_each_key,
+            [Strictness::Spine, Strictness::Spine]
+        ), // Stable alias
+        builtin!(
             "each-kv",
             builtin_each_kv,
             [Strictness::Spine, Strictness::Spine]
         ),
+        builtin!(
+            "builtin-each-kv",
+            builtin_each_kv,
+            [Strictness::Spine, Strictness::Spine]
+        ), // Stable alias
         builtin!("build-dict", builtin_build_dict, [Strictness::Spine], 1),
+        builtin!(
+            "builtin-build-dict",
+            builtin_build_dict,
+            [Strictness::Spine],
+            1
+        ), // Stable alias
         // Transient builders
         builtin!("make-builder", builtin_make_builder),
         builtin!(
@@ -1448,7 +1471,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // Numeric
         builtin!("floor", builtin_floor, [Strictness::Seq], 1),
+        builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1), // Stable alias
         builtin!("round", builtin_round, [Strictness::Seq], 1),
+        builtin!("builtin-round", builtin_round, [Strictness::Seq], 1), // Stable alias
         builtin!("pow", builtin_pow, [Strictness::Seq, Strictness::Seq], 2),
         builtin!("sqrt", builtin_sqrt, [Strictness::Seq], 1),
         builtin!("log", builtin_log, [Strictness::Seq], 1),
@@ -1482,6 +1507,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]), // Stable alias
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
+        builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]), // Stable alias
         // Evaluation control
         builtin!(
             "deep-materialize",
@@ -1498,15 +1524,23 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         builtin!("try", builtin_try, [Strictness::Id], 1),
+        builtin!("builtin-try", builtin_try, [Strictness::Id], 1), // Stable alias
         builtin!(
             "apply",
             builtin_apply,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
+        builtin!(
+            "builtin-apply",
+            builtin_apply,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ), // Stable alias
         builtin!("until", builtin_until),
         // Type introspection
         builtin!("type-of", builtin_type_of, [Strictness::Seq]),
+        builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]), // Stable alias
         builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
         builtin!("int?", builtin_int_check, [Strictness::Seq]),
         builtin!("builtin-int?", builtin_int_check, [Strictness::Seq]), // Stable alias
@@ -1544,6 +1578,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("slurp", builtin_slurp, [Strictness::Seq]),
         builtin!("narrow", builtin_narrow, [Strictness::Seq, Strictness::Seq]),
+        builtin!(
+            "builtin-narrow",
+            builtin_narrow,
+            [Strictness::Seq, Strictness::Seq]
+        ), // Stable alias
         builtin!("revocable", builtin_revocable, [Strictness::Seq]),
         builtin!("revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
         builtin!(
@@ -1704,6 +1743,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
+        builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq]), // Stable alias
         // Native JSON serializer: deep-materializes and converts to compact JSON string.
         // Replaces the LLT-based codecs/json.llt include approach for the CLI output pipeline.
         builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq]),
@@ -6855,8 +6895,12 @@ mod tests {
         // Added 5 I/O builtins: exists, stat-symlink, copy-file, symlink, set-permissions (274 → 279)
         // Added 4 xattr builtins: get-xattr, set-xattr, remove-xattr, list-xattrs (279 → 283)
         // Added builder-get-or: atomic get-or-insert for builder (283 → 284)
+        // Added 14 builtin-* stable aliases for prelude-missing-wrappers sprint (284 → 298):
+        //   builtin-keys, builtin-merge, builtin-each, builtin-each-key, builtin-each-kv,
+        //   builtin-build-dict, builtin-floor, builtin-round, builtin-to-float, builtin-try,
+        //   builtin-apply, builtin-type-of, builtin-narrow, builtin-from-json
         assert_eq!(
-            count, 284,
+            count, 298,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -7108,10 +7152,43 @@ mod tests {
         );
         // Added context primitives: context, with-cancel, with-timeout, with-deadline,
         // cancelled?, cancel-task (+6 → 246 total from 240)
+        // Added 14 builtin-* stable aliases for prelude-missing-wrappers sprint (284 → 298)
+        assert!(names.contains(&"builtin-keys"), "missing builtin-keys");
+        assert!(names.contains(&"builtin-merge"), "missing builtin-merge");
+        assert!(names.contains(&"builtin-each"), "missing builtin-each");
+        assert!(
+            names.contains(&"builtin-each-key"),
+            "missing builtin-each-key"
+        );
+        assert!(
+            names.contains(&"builtin-each-kv"),
+            "missing builtin-each-kv"
+        );
+        assert!(
+            names.contains(&"builtin-build-dict"),
+            "missing builtin-build-dict"
+        );
+        assert!(names.contains(&"builtin-floor"), "missing builtin-floor");
+        assert!(names.contains(&"builtin-round"), "missing builtin-round");
+        assert!(
+            names.contains(&"builtin-to-float"),
+            "missing builtin-to-float"
+        );
+        assert!(names.contains(&"builtin-try"), "missing builtin-try");
+        assert!(names.contains(&"builtin-apply"), "missing builtin-apply");
+        assert!(
+            names.contains(&"builtin-type-of"),
+            "missing builtin-type-of"
+        );
+        assert!(names.contains(&"builtin-narrow"), "missing builtin-narrow");
+        assert!(
+            names.contains(&"builtin-from-json"),
+            "missing builtin-from-json"
+        );
         assert_eq!(
             names.len(),
-            284,
-            "expected 284 builtins, got {} — update this assertion if adding/removing builtins",
+            298,
+            "expected 298 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

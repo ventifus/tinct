@@ -682,6 +682,21 @@ impl ErrorKind {
                 | "builtin-reverse"
                 | "builtin-sort"
                 | "proxy"
+                // prelude-missing-wrappers: new builtin-* aliases
+                | "builtin-keys"
+                | "builtin-merge"
+                | "builtin-each"
+                | "builtin-each-key"
+                | "builtin-each-kv"
+                | "builtin-build-dict"
+                | "builtin-floor"
+                | "builtin-round"
+                | "builtin-to-float"
+                | "builtin-try"
+                | "builtin-apply"
+                | "builtin-type-of"
+                | "builtin-narrow"
+                | "builtin-from-json"
         )
     }
 

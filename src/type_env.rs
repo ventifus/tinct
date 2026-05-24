@@ -3536,6 +3536,21 @@ impl TypeEnv {
             ("builtin-decimal", "decimal"),
             ("builtin-big-int", "big-int"),
             ("builtin-proxy", "proxy"),
+            // prelude-missing-wrappers sprint: stable aliases for previously-unwrapped builtins
+            ("builtin-keys", "keys"),
+            ("builtin-merge", "merge"),
+            ("builtin-each", "each"),
+            ("builtin-each-key", "each-key"),
+            ("builtin-each-kv", "each-kv"),
+            ("builtin-build-dict", "build-dict"),
+            ("builtin-floor", "floor"),
+            ("builtin-round", "round"),
+            ("builtin-to-float", "to-float"),
+            ("builtin-try", "try"),
+            ("builtin-apply", "apply"),
+            ("builtin-type-of", "type-of"),
+            ("builtin-narrow", "narrow"),
+            ("builtin-from-json", "from-json"),
         ] {
             if let Some(scheme) = self.get(canonical).cloned() {
                 self.insert_scheme(alias.to_string(), scheme);

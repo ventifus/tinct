@@ -9554,3 +9554,35 @@ Investigation sprint (2026-05-23). Previous analysis suggested CHR test failures
 
 - [x] Identify which corpus tests are slow — **FINDING: `async_select_basic.llt-eval` (test 43/1233) causes an infinite busy-poll hang, blocking all subsequent tests.** Diagnostic batch runner with per-test file logging (`diag.log`) showed tests 1-42 completing in 50-100ms each; test 43 (`tests/corpus/eval/builtins/async_select_basic.llt-eval`) starts but never completes. Other corpus test runners (`test_valid_corpus`, `test_typecheck_corpus`, `test_typecheck_error_corpus_eval`, `test_typecheck_warnings_corpus`) all complete in <10s.
 - [x] Profile the slow tests — **ROOT CAUSE: `builtin_select_once` (`src/builtins_async.rs:584-694`) uses `loop { ... tokio::task::yield_now().await }` to busy-poll channels. The `async_rt::block_on_anywhere` spin-poll executor (`src/async_rt.rs:97-117`) re-polls immediately after `yield_now`, creating an infinite busy-spin.** The spin-poll executor's documented invariant ("no channel awaits on external data", `src/async_rt.rs:108-114`) is violated by `select-once`. Additionally, the test's `_: [send ch1 42]` binding may not be forced due to lazy evaluation of `_`, leaving channels permanently empty. **This is NOT related to CHR tests or container memory pressure.** Fix tracked as new sprint `select-once-hang` in TODO.md.
+
+## Standard Library
+
+### prelude-missing-wrappers: Add prelude re-exports for user-visible builtins (2026-05-23)
+
+**Prerequisite for builtin-privacy Phase 2.** Added 14 missing `builtin-*` stable aliases in `src/builtins.rs` and 14 corresponding prelude re-export wrappers in `stdlib/prelude.llt`. Without these, Phase 2 (removing `TypeEnv::with_builtins()` from user-code path) would cause 25+ corpus test failures because the builtins were used directly in user code with no prelude re-export.
+
+**Builtins added (14 total):**
+
+| Builtin | Alias added | Prelude wrapper |
+|---------|-------------|-----------------|
+| `merge` | `builtin-merge` | `merge: builtin-merge` |
+| `try` | `builtin-try` | `try: builtin-try` |
+| `type-of` | `builtin-type-of` | `type-of: builtin-type-of` |
+| `narrow` | `builtin-narrow` | `narrow: builtin-narrow` |
+| `keys` | `builtin-keys` | `keys: builtin-keys` |
+| `to-float` | `builtin-to-float` | `to-float: builtin-to-float` |
+| `floor` | `builtin-floor` | `floor: builtin-floor` |
+| `round` | `builtin-round` | `round: builtin-round` |
+| `from-json` | `builtin-from-json` | `from-json: builtin-from-json` |
+| `apply` | `builtin-apply` | `apply: builtin-apply` |
+| `each` | `builtin-each` | `each: builtin-each` |
+| `each-key` | `builtin-each-key` | `each-key: builtin-each-key` |
+| `each-kv` | `builtin-each-kv` | `each-kv: builtin-each-kv` |
+| `build-dict` | `builtin-build-dict` | `build-dict: builtin-build-dict` |
+
+**Changes:**
+- [x] `src/builtins.rs` — Added 14 `builtin-*` stable aliases in `standard_builtins()` (builtin count 284 → 298); updated `standard_builtins_count` test assertion; added all 14 to `standard_builtins_contains_all` test
+- [x] `src/type_env.rs` — Added all 14 new aliases to `inject_builtin_aliases()` so the type checker can resolve them in prelude context
+- [x] `src/error.rs` — Added all 14 new aliases to `is_known_builtin()` heuristic (prevents false "did you mean a string?" suggestions)
+- [x] `stdlib/prelude.llt` — Added new `## Prelude Re-exports for User-Visible Builtins` section with all 14 wrappers, organized by category (dict primitives, dict iteration, numeric, parsing, eval control, type introspection, capability, I/O)
+- [x] `just fmt && just build` pass; `just test-one standard_builtins_count`, `just test-one standard_builtins_contains_all`, `just test-one prelude` all pass

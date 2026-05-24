@@ -2094,6 +2094,47 @@ append: builtin-append
 to-int: builtin-to-int
 
 # ============================================================================
+# Prelude Re-exports for User-Visible Builtins (prelude-missing-wrappers)
+# ============================================================================
+#
+# These wrappers re-export Rust-native builtins that user code calls directly.
+# Each entry delegates to a stable builtin-* alias so the primary name is
+# overridable while the builtin-* alias is always a stable escape hatch.
+#
+# Required so that user code does not depend on the raw builtin registry being
+# in scope — the prelude is the stable public API, not the builtin registry.
+
+# Dict primitives
+keys@[doc: "Return the keys of a dict as an integer-keyed dict"]: builtin-keys
+merge@[doc: "Merge two dicts (right-biased)"]: builtin-merge
+
+# Dict iteration primitives
+each@[doc: "Iterate over dict values (1-arg: [fn val], 2-arg: [fn val offset])"]: builtin-each
+each-key@[doc: "Iterate over dict keys"]: builtin-each-key
+each-kv@[doc: "Iterate over dict key-value pairs as [{key: K  value: V}]"]: builtin-each-kv
+build-dict@[doc: "Build a dict from a Seq of key-value pair dicts"]: builtin-build-dict
+
+# Numeric primitives
+floor@[doc: "Round Float down to nearest Int"]: builtin-floor
+round@[doc: "Round Float to nearest Int"]: builtin-round
+
+# Parsing
+to-float@[doc: "Parse String to Float"]: builtin-to-float
+
+# Evaluation control
+try@[doc: "Catch errors from a zero-arg function"]: builtin-try
+apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
+
+# Type introspection
+type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
+
+# Capability operations
+narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow
+
+# I/O / parsing
+from-json@[doc: "Parse a JSON string into a value"]: builtin-from-json
+
+# ============================================================================
 # Numeric Range Predicates
 # ============================================================================
 
