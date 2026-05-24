@@ -348,6 +348,12 @@ pub fn resolve_surface_program(program: &SurfaceProgram) -> ResolutionTable {
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
 
+        // Skip type-stage documents — they don't participate in runtime evaluation.
+        // Matches eval_pipeline.rs:539-541 which skips type-stage documents entirely.
+        if doc.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+
         // Build synthetic runtime scope: `%` plus `%name` for previously named sections.
         let mut runtime_names: Vec<String> = vec!["%".to_string()];
         for name in &named_sections {

@@ -1471,31 +1471,32 @@ fn eval_core_expr<'a>(
                     let thunk = eval_core_expr(seq_expr, &current_env, ctx).await?;
                     let value = materialize(&thunk, Some(&seq_expr.span), ctx).await?;
 
-                    // Flatten Overlay to Dict for scope chain binding
-                    let map = match value {
-                        Value::Dict(map) => map,
-                        Value::Overlay(l, r) => crate::builtins::flatten_overlay(
-                            &l,
-                            &r,
-                            "sequential expression",
-                            ctx,
-                            seq_expr.span,
-                        )?,
-                        _ => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                format!("sequential expression #{}", i + 1),
-                                "Dict",
-                                value.type_name(),
-                                seq_expr.span,
-                            )
-                            .into());
-                        }
-                    };
-
                     // Create child environment with bindings from intermediate expression.
                     // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
                     // If static_keys is None (non-Dict expression or Dict with no static keys), no scope is created.
                     if let Some(ref static_key_set) = static_keys {
+                        // Flatten Overlay to Dict for scope chain binding.
+                        // Only computed when static_keys is Some — avoids wasted work when no scope is created.
+                        let map = match value {
+                            Value::Dict(map) => map,
+                            Value::Overlay(l, r) => crate::builtins::flatten_overlay(
+                                &l,
+                                &r,
+                                "sequential expression",
+                                ctx,
+                                seq_expr.span,
+                            )?,
+                            _ => {
+                                return Err(EvalError::type_mismatch_ctx(
+                                    format!("sequential expression #{}", i + 1),
+                                    "Dict",
+                                    value.type_name(),
+                                    seq_expr.span,
+                                )
+                                .into());
+                            }
+                        };
+
                         let child_env = Arc::new(RwLock::new(Environment::with_parent(
                             Arc::clone(&current_env),
                         )));

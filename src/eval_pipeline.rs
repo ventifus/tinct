@@ -454,26 +454,28 @@ pub async fn eval_surface_document(
             super::eval_core_expr_pub(&core_spanned, &Arc::clone(&current_env), ctx).await?;
         let value = materialize(&thunk, Some(&node_span), ctx).await?;
 
-        let map = match value {
-            Value::Dict(map) => map,
-            Value::Overlay(l, r) => {
-                crate::builtins::flatten_overlay(&l, &r, "document pipeline", ctx, node_span)?
-            }
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "document pipeline".to_string(),
-                    "Dict",
-                    value.type_name(),
-                    node_span,
-                )
-                .into());
-            }
-        };
-
         // Create child environment with bindings from intermediate expression.
         // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
         // If static_keys is None (non-Dict expression or Dict with no static keys), no scope is created.
         if let Some(ref static_key_set) = static_keys {
+            // Flatten Overlay to Dict for scope chain binding.
+            // Only computed when static_keys is Some — avoids wasted work when no scope is created.
+            let map = match value {
+                Value::Dict(map) => map,
+                Value::Overlay(l, r) => {
+                    crate::builtins::flatten_overlay(&l, &r, "document pipeline", ctx, node_span)?
+                }
+                _ => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "document pipeline".to_string(),
+                        "Dict",
+                        value.type_name(),
+                        node_span,
+                    )
+                    .into());
+                }
+            };
+
             let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
                 &current_env,
             ))));

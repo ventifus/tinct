@@ -1,0 +1,7 @@
+# Named arg with default: slot 1 should correctly return default value.
+[f: [fn [let a b@[default: 0]] $b]]
+[result: [f 42]]
+---
+%.result
+=== out
+Int(0)
