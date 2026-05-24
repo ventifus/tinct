@@ -1347,6 +1347,75 @@ pub(crate) fn resolve_annotation(
                 // @[type: T ...] shorthand — resolve the type: value as a type expression.
                 let expr = crate::ast_convert::surface_node_to_expr(type_node);
                 resolve_type_expr(&expr, env, state, ann_mapping, row_ann_mapping)
+            } else if let Some(label_value_node) = surface_entries.iter().find_map(|se| {
+                // @[label: name] — named Label-kinded TypeVar annotation.
+                // Only fires when there is exactly one entry and its key is "label".
+                if surface_entries.len() == 1 {
+                    let key_node = se.node.key.as_ref()?;
+                    match &key_node.expr {
+                        SurfaceExpression::Str(s) if s == "label" => Some(&se.node.value),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }) {
+                // @[label: name] — validate and create a Label-kinded TypeVar.
+                //
+                // Validation rules (from doc/07-type-extensions.md §Label polymorphism):
+                // 1. Value must be a bare identifier (VarRef), not a string literal.
+                // 2. The identifier must start with a lowercase letter (label TypeVars are
+                //    lowercase by convention, mirroring type-kind TypeVars).
+                match &label_value_node.expr {
+                    SurfaceExpression::Str(_) => Err(TypeError::new(
+                        "label: value must be a bare name (e.g. `label: l`), not a string literal",
+                        span,
+                    )),
+                    SurfaceExpression::VarRef { name, .. } => {
+                        if name.starts_with(|c: char| c.is_uppercase()) {
+                            Err(TypeError::new(
+                                format!(
+                                    "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
+                                    name
+                                ),
+                                span,
+                            ))
+                        } else {
+                            // Valid lowercase label name: create a Label-kinded TypeVar.
+                            // If we're inside a function scope (ann_mapping is Some), reuse the
+                            // same TypeVar for the same label name across multiple params
+                            // (same-name label vars must share the same TypeVar).
+                            let fresh = if let Some(ref mut mapping) = ann_mapping {
+                                if let Some(existing_var) = mapping.get(name.as_str()) {
+                                    existing_var.clone()
+                                } else {
+                                    let v = format!("_label_{}", state.name_counter);
+                                    state.name_counter = state.name_counter.saturating_add(1);
+                                    state.levels.insert(v.clone(), state.level);
+                                    state.kind_env.insert(v.clone(), Kind::Label);
+                                    state.type_var_source_names.insert(v.clone(), name.clone());
+                                    mapping.insert(name.clone(), v.clone());
+                                    v
+                                }
+                            } else {
+                                let v = format!("_label_{}", state.name_counter);
+                                state.name_counter = state.name_counter.saturating_add(1);
+                                state.levels.insert(v.clone(), state.level);
+                                state.kind_env.insert(v.clone(), Kind::Label);
+                                v
+                            };
+                            let current_level = *state
+                                .levels
+                                .get(&fresh)
+                                .expect("invariant: label var just inserted into levels");
+                            Ok(Type::TypeVar(fresh, current_level))
+                        }
+                    }
+                    _ => Err(TypeError::new(
+                        "label: value must be a bare name (e.g. `label: l`)",
+                        span,
+                    )),
+                }
             } else {
                 // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
                 let entries = surface_entries_to_entries(surface_entries);
