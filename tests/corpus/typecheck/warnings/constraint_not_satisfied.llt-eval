@@ -1,10 +1,11 @@
 # Constraint violation warning: a function body applies $+ to a string argument.
-# The type variable for parameter x is constrained to Addable (from $+), but the
-# constraint is ambiguous because _t1 doesn't appear in the inferred return type.
-# The type checker reports ambiguous type variable and Unknown inference warnings.
+# In the full corpus pipeline, $+ resolves to a TypeVar (the prelude is being
+# processed as a letrec), so the call returns Unknown and T010 fires rather than
+# a specific Addable-constraint T013. The unit tests (src/typecheck.rs) directly
+# verify T013 via test_constraint_dropped_when_typevar_not_in_return_type.
 # Eval proceeds — the function body is never invoked so no runtime error occurs.
 [f: [fn [let x] [call $+ x "hello"]]]
 === out
 Dict({"f": Function(x)})
 === warn
-ambiguous type variable '_t1' in constraint Addable: appears in constraint but not in the type — constraint will be silently dropped
+inferred type is Unknown

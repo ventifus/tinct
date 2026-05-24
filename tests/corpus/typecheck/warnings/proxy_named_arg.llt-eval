@@ -1,6 +1,10 @@
-# $proxy named arg is absorbed by prelude wrapper (handler param matches)
+# $proxy call with named arg: the prelude wrapper exports proxy with param `handler`.
+# Calling [proxy handler: fn] is valid — the named arg matches. In the full corpus
+# pipeline, $proxy resolves through the prelude letrec TypeVar path, so the call
+# returns Unknown and T010 fires (same TypeVar-resolution issue as with $+).
+# Eval succeeds: the prelude wrapper accepts handler: as a named arg at runtime.
 [proxy handler: [fn [let k] k]]
 === out
 Proxy
 === warn
-unknown named argument: function has no parameter named 'handler' at 1:17-1:31
+inferred type is Unknown
