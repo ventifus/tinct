@@ -857,35 +857,37 @@ T013 warnings currently report internal inference variable names like `_t86` ins
 - [x] Audited all 124 `Type::Unknown` in typecheck.rs — 56 gradual (justified), 0 replaceable, 4 HKT deferred. All sites annotated with inline `// Gradual:` or `// HKT:` comments.
 - Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
-### chr-corpus-fixes: Fix 11 pre-existing CHR corpus test failures
+### chr-corpus-fixes: Fix 11 pre-existing CHR corpus test failures ✅ DONE (Groups A-D, partial)
 
 **Whatif:** `chr-unification`
 **Depends on:** chr-instances-gaps ✅, type-inference-cleanup ✅
 
-After chr-instances-gaps, 6 typecheck + 5 type-error corpus tests still fail because these CHR features are not yet wired. Each group below identifies the root cause.
+**Root cause (confirmed):** `[class ...]`, `[type ...]`, and `[instance ...]` inside a dict went through the parser path `surface_decl_to_expr → expr_to_surface_node`, which converted declaration forms to `SurfaceExpression::Placeholder` — discarding all class/instance/type information. Pass 0c in `typecheck_dict.rs` (which pre-registers ClassDecl/InstanceDecl) never saw them, so user-defined classes and type aliases were silently dropped.
 
-**Group A — User-defined class constraint lookup (2 typecheck failures) — KNOWN ISSUE:**
-- [ ] Fix `class_decl_after_use.llt-eval` — "unknown constraint class 'MyClass'": investigation showed lookup code is correct (checks state.class_env), but class registration during Pass 0c may be failing silently. Needs debug tracing through Pass 0c → class_env population. [KNOWN ISSUE]
-- [ ] Fix `constraint_annotation_basic.llt-eval` — same root cause [KNOWN ISSUE]
+**Fix (commit chr-corpus-fixes):** Added `SurfaceExpression::Decl(Box<SurfaceDeclaration>)` to preserve declaration info in expression contexts. Parser now pushes `SurfaceExpression::Decl` instead of going through the lossy two-step conversion. `surface_expr_to_expr` converts `Decl` back to the correct `Expr::ClassDecl`/`InstanceDecl`/`TypeAlias` variant so Pass 0c can match it. Also fixed instance pattern type extraction to resolve bare type names like `[Int]` (VarRef) as concrete types via `resolve_annotation`.
 
-**Group B — ADT type registration (2 typecheck failures) — KNOWN ISSUE:**
-- [ ] Fix `constructor_payload_type_precision.llt-eval` — "undefined type: Result2": user-defined `[type [Result2 v] ...]` not registered. Added nominal variant constructor parsing to typecheck_annot.rs (commit e07d63e) but the type NAME registration (state.type_env) is the real issue — not annotation parsing. [KNOWN ISSUE]
-- [ ] Fix `exhaustiveness_bare_nominal.llt-eval` — "undefined type: Tag": same root cause [KNOWN ISSUE]
+**Group A — User-defined class constraint lookup (2 typecheck failures) — FIXED:**
+- [x] Fix `class_decl_after_use.llt-eval` — FIXED: class now registered via SurfaceExpression::Decl → Expr::ClassDecl path
+- [x] Fix `constraint_annotation_basic.llt-eval` — FIXED: same root cause resolved
 
-**Group C — Exhaustiveness checking for ADT constructors (2 type-error failures) — KNOWN ISSUE:**
-- [ ] Fix `exhaustiveness_bare_nominal_variant.llt-eval` — depends on Group B type registration fix [KNOWN ISSUE]
-- [ ] Fix `exhaustiveness_multi_field_nominal.llt-eval` — same [KNOWN ISSUE]
+**Group B — ADT type registration (2 typecheck failures) — FIXED:**
+- [x] Fix `constructor_payload_type_precision.llt-eval` — FIXED: [type ...] in dict now produces Expr::TypeAlias in Pass 0/2, type alias registered
+- [x] Fix `exhaustiveness_bare_nominal.llt-eval` — FIXED: same root cause resolved
 
-**Group D — Instance check violations not triggered (3 type-error failures) — KNOWN ISSUE:**
-- [ ] Fix `instance_consistency_error.llt-eval` — diagnostic T017 error added (commit e07d63e); root cause: pattern types infer as Unknown because class instances reference unregistered user types [KNOWN ISSUE]
-- [ ] Fix `instance_coverage_error.llt-eval` — same [KNOWN ISSUE]
-- [ ] Fix `instance_disjointness_error.llt-eval` — same [KNOWN ISSUE]
+**Group C — Exhaustiveness checking for ADT constructors (2 type-error failures) — FIXED (cascaded from B):**
+- [x] Fix `exhaustiveness_bare_nominal_variant.llt-eval` — FIXED: type registration now correct, exhaustiveness check fires
+- [x] Fix `exhaustiveness_multi_field_nominal.llt-eval` — FIXED: same
+
+**Group D — Instance check violations not triggered (3 type-error failures) — FIXED (cascaded from A):**
+- [x] Fix `instance_consistency_error.llt-eval` — FIXED: class+instance now registered, pattern types resolve correctly
+- [x] Fix `instance_coverage_error.llt-eval` — FIXED: same
+- [x] Fix `instance_disjointness_error.llt-eval` — FIXED: same
 
 **Group E — Equatable for Variant types (1 typecheck failure):**
 - [x] Fix `transport_typed.llt-eval` — FIXED: Added `Type::NominalVariant { .. }` to Equatable instances in `satisfies_constraint_inner` (`src/type_unify.rs:108`); Variant equality is runtime tag comparison (commit e07d63e)
 
 **Group F — Nominal variant match + instance Multipliable (1 typecheck failure) — KNOWN ISSUE:**
-- [ ] Fix `nominal_variant_exhaustive_match.llt-eval` — depends on Group B type registration fix [KNOWN ISSUE]
+- [ ] Fix `nominal_variant_exhaustive_match.llt-eval` — "undefined variable: Circle at 8:11-8:17": uses `[type Shape [Circle r: Int] [Square s: Int]]` with a named type and constructor syntax. `Circle` must be registered as a constructor function/value in scope; type alias registration alone is insufficient. Requires ADT constructor scoping in the evaluator. [KNOWN ISSUE]
 
 ---
 

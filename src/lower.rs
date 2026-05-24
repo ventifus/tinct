@@ -211,6 +211,11 @@ fn lower_expr(
 
         SurfaceExpression::Placeholder => CoreExpr::Placeholder,
 
+        // Declaration forms embedded in expression position (e.g., dict entry values).
+        // At runtime these produce Placeholder (an error when forced); the type checker
+        // registers them via Pass 0c before evaluation occurs.
+        SurfaceExpression::Decl(_) => CoreExpr::Placeholder,
+
         SurfaceExpression::Error(span) => CoreExpr::Error(*span),
     }
 }

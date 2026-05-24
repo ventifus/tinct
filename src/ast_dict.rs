@@ -153,7 +153,7 @@ fn surface_node_to_thunk_id(
         SurfaceExpression::Match { .. } => 2,
         SurfaceExpression::PatternDecl { .. } | SurfaceExpression::LetDecl { .. } => 1,
         SurfaceExpression::CaseArm { .. } => 2,
-        SurfaceExpression::Placeholder => 0,
+        SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 0,
         SurfaceExpression::TypeApp { .. } => 2,
         SurfaceExpression::Error(_) => 1,
     };
@@ -522,7 +522,7 @@ fn surface_node_to_thunk_id(
             );
         }
 
-        SurfaceExpression::Placeholder => {
+        SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => {
             variant_tag = "Placeholder";
         }
 

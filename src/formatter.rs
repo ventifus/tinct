@@ -575,6 +575,11 @@ impl<'a> Formatter<'a> {
             SurfaceExpression::Placeholder => {
                 self.output.push_str("...");
             }
+            SurfaceExpression::Decl(_) => {
+                // Declaration embedded in expression context: format as Placeholder.
+                // The actual declaration content is preserved for type checking only.
+                self.output.push_str("...");
+            }
             SurfaceExpression::Rest(name) => {
                 self.output.push_str("...");
                 if let Some(n) = name {
@@ -845,7 +850,7 @@ impl<'a> Formatter<'a> {
                 1 + 4 + 1 + self.measure_expr_width(pattern) + 1 + self.measure_expr_width(body) + 1
                 // [case <pattern> <body>]
             }
-            SurfaceExpression::Placeholder => 3, // ...
+            SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 3, // ...
             SurfaceExpression::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
             SurfaceExpression::TypeApp { func, arg } => {
                 // @[func arg]
@@ -1399,7 +1404,9 @@ impl<'a> Formatter<'a> {
             | SurfaceExpression::CaseArm { .. } => Some('['),
             SurfaceExpression::TypeApp { .. } => Some('@'), // starts with @[
             SurfaceExpression::Annotated { name, .. } => name.chars().next(),
-            SurfaceExpression::Placeholder | SurfaceExpression::Rest(_) => Some('.'),
+            SurfaceExpression::Placeholder
+            | SurfaceExpression::Rest(_)
+            | SurfaceExpression::Decl(_) => Some('.'),
             SurfaceExpression::Error(_) => None,
         }
     }

@@ -2226,10 +2226,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                // Declaration appears inside an expression (e.g., dict value)
-                                // Convert to expression form using the bridge
-                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
-                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                // Declaration appears inside an expression (e.g., dict value).
+                                // Preserve the full declaration via SurfaceExpression::Decl so
+                                // the type checker can register class/instance/type declarations
+                                // found inside dicts (Pass 0c). At runtime this evaluates as
+                                // Placeholder (error when forced outside type-checking context).
+                                let node = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Decl(Box::new(spanned_decl.node)),
+                                    span: spanned_decl.span,
+                                });
                                 if let Err(push_err) =
                                     push_value(&mut stack, &mut current_document_items, node)
                                 {
@@ -2391,10 +2396,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                // Declaration appears inside an expression (e.g., dict value)
-                                // Convert to expression form using the bridge
-                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
-                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                // Declaration appears inside an expression (e.g., dict value).
+                                // Preserve the full declaration via SurfaceExpression::Decl so
+                                // the type checker can register class/instance/type declarations
+                                // found inside dicts (Pass 0c). At runtime this evaluates as
+                                // Placeholder (error when forced outside type-checking context).
+                                let node = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Decl(Box::new(spanned_decl.node)),
+                                    span: spanned_decl.span,
+                                });
                                 if let Err(push_err) =
                                     push_value(&mut stack, &mut current_document_items, node)
                                 {
@@ -2437,10 +2447,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                // Declaration appears inside an expression (e.g., dict value)
-                                // Convert to expression form using the bridge
-                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
-                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                // Declaration appears inside an expression (e.g., dict value).
+                                // Preserve the full declaration via SurfaceExpression::Decl so
+                                // the type checker can register class/instance/type declarations
+                                // found inside dicts (Pass 0c). At runtime this evaluates as
+                                // Placeholder (error when forced outside type-checking context).
+                                let node = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Decl(Box::new(spanned_decl.node)),
+                                    span: spanned_decl.span,
+                                });
                                 if let Err(push_err) =
                                     push_value(&mut stack, &mut current_document_items, node)
                                 {
@@ -2484,10 +2499,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                // Declaration appears inside an expression (e.g., dict value)
-                                // Convert to expression form using the bridge
-                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
-                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                // Declaration appears inside an expression (e.g., dict value).
+                                // Preserve the full declaration via SurfaceExpression::Decl so
+                                // the type checker can register class/instance/type declarations
+                                // found inside dicts (Pass 0c). At runtime this evaluates as
+                                // Placeholder (error when forced outside type-checking context).
+                                let node = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Decl(Box::new(spanned_decl.node)),
+                                    span: spanned_decl.span,
+                                });
                                 if let Err(push_err) =
                                     push_value(&mut stack, &mut current_document_items, node)
                                 {
@@ -2641,10 +2661,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                // Declaration appears inside an expression (e.g., dict value)
-                                // Convert to expression form using the bridge
-                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
-                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                // Declaration appears inside an expression (e.g., dict value).
+                                // Preserve the full declaration via SurfaceExpression::Decl so
+                                // the type checker can register class/instance/type declarations
+                                // found inside dicts (Pass 0c). At runtime this evaluates as
+                                // Placeholder (error when forced outside type-checking context).
+                                let node = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Decl(Box::new(spanned_decl.node)),
+                                    span: spanned_decl.span,
+                                });
                                 if let Err(push_err) =
                                     push_value(&mut stack, &mut current_document_items, node)
                                 {
@@ -2718,10 +2743,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if stack.is_empty() {
                                 current_document_items.push(SurfaceItem::Decl(spanned_decl));
                             } else {
-                                // Declaration appears inside an expression (e.g., dict value)
-                                // Convert to expression form using the bridge
-                                let expr = crate::ast_convert::surface_decl_to_expr(&spanned_decl);
-                                let node = crate::ast_convert::expr_to_surface_node(&expr);
+                                // Declaration appears inside an expression (e.g., dict value).
+                                // Preserve the full declaration via SurfaceExpression::Decl so
+                                // the type checker can register class/instance/type declarations
+                                // found inside dicts (Pass 0c). At runtime this evaluates as
+                                // Placeholder (error when forced outside type-checking context).
+                                let node = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Decl(Box::new(spanned_decl.node)),
+                                    span: spanned_decl.span,
+                                });
                                 if let Err(push_err) =
                                     push_value(&mut stack, &mut current_document_items, node)
                                 {

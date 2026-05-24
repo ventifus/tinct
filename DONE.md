@@ -9210,6 +9210,24 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 - [x] Un-ignore `test_instance_fd_consistency_violation` (`src/lib.rs`)
 - [x] Verify corpus tests — 6 typecheck + 5 typecheck-error pre-existing CHR failures confirmed; fixed 1 handle-parameterization regression in `string_not_handle.llt-eval` (updated expected substring to match `Handle[` format). CHR corpus failures tracked in `chr-corpus-fixes` sprint.
 
+### chr-corpus-fixes: Fix pre-existing CHR corpus test failures (Groups A-D)
+
+**Root cause:** `[class ...]`, `[type ...]`, `[instance ...]` inside dicts were converted to `SurfaceExpression::Placeholder` via the lossy two-step bridge (`surface_decl_to_expr → expr_to_surface_node`), discarding all declaration info. Pass 0c in `typecheck_dict.rs` never saw them; user-defined classes and type aliases were silently dropped.
+
+**Fix:** Added `SurfaceExpression::Decl(Box<SurfaceDeclaration>)` variant to `SurfaceExpression` enum. Parser now pushes `SurfaceExpression::Decl` for all 6 declaration-in-expression-context sites. `surface_expr_to_expr` converts `Decl` back to `Expr::ClassDecl`/`InstanceDecl`/`TypeAlias` so Pass 0c correctly registers them. Also fixed `extract_binding_types` to resolve bare type names like `[Int]` in instance patterns via `resolve_annotation` instead of returning `Type::Unknown`.
+
+- [x] Add `SurfaceExpression::Decl(Box<SurfaceDeclaration>)` to `src/ast.rs`
+- [x] Update parser.rs — 6 declaration-in-expression sites now push `SurfaceExpression::Decl` (`src/parser.rs`)
+- [x] Update `surface_expr_to_expr` in ast_convert.rs — `Decl` → appropriate Expr variant (`src/ast_convert.rs`)
+- [x] Update `expr_to_surface_expr` in ast_convert.rs — `Expr::ClassDecl/InstanceDecl/TypeAlias/...` → `SurfaceExpression::Decl` instead of Placeholder (`src/ast_convert.rs`)
+- [x] Update all exhaustive `SurfaceExpression` match arms in lower.rs, formatter.rs, ast_dict.rs, surface_fields.rs, lsp/analysis.rs, desugar.rs, imports.rs, resolve.rs, typecheck.rs
+- [x] Fix `extract_binding_types` — bare VarRef and zero-arg Call in pattern position try `resolve_annotation` for concrete type resolution (`src/typecheck.rs`)
+- [x] Group A fixed: `class_decl_after_use.llt-eval`, `constraint_annotation_basic.llt-eval`
+- [x] Group B fixed: `constructor_payload_type_precision.llt-eval`, `exhaustiveness_bare_nominal.llt-eval`
+- [x] Group C fixed (cascaded): `exhaustiveness_bare_nominal_variant.llt-eval`, `exhaustiveness_multi_field_nominal.llt-eval`
+- [x] Group D fixed (cascaded): `instance_consistency_error.llt-eval`, `instance_coverage_error.llt-eval`, `instance_disjointness_error.llt-eval`
+- [ ] Group F remains: `nominal_variant_exhaustive_match.llt-eval` — requires ADT constructor scoping (tracked in TODO.md)
+
 ## Unified Bindings
 
 ### unified-bindings-parser-enforcement: Enforce [let ...] required in fn/class/type params

@@ -609,7 +609,7 @@ fn hover_at_surface_node(
             )
         }
 
-        SurfaceExpression::Placeholder => Some(format!(
+        SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => Some(format!(
             "Placeholder expression (`...`){}",
             type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
         )),
@@ -904,13 +904,14 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
             name_at_offset(func, offset).or_else(|| name_at_offset(arg, offset))
         }
 
-        // Literals, Error, Rest, Annotated, Placeholder: no VarRef to extract.
+        // Literals, Error, Rest, Annotated, Placeholder, Decl: no VarRef to extract.
         SurfaceExpression::Int(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => None,
     }
@@ -992,7 +993,7 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
             find_key_definition(func, name).or_else(|| find_key_definition(arg, name))
         }
 
-        // Literals, VarRef, Error, Rest, Annotated, Placeholder: no definitions here.
+        // Literals, VarRef, Error, Rest, Annotated, Placeholder, Decl: no definitions here.
         SurfaceExpression::Int(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
@@ -1000,6 +1001,7 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
         | SurfaceExpression::VarRef { .. }
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => None,
     }
@@ -1312,12 +1314,13 @@ fn collect_var_refs_spanned(
             collect_var_refs_spanned(body, name, source, uri, out);
         }
 
-        // Literals, TypeApp, Error, Rest, Annotated, Placeholder: no VarRef children.
+        // Literals, TypeApp, Error, Rest, Annotated, Placeholder, Decl: no VarRef children.
         SurfaceExpression::Int(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_)
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::TypeApp { .. }
@@ -3141,6 +3144,7 @@ fn collect_rename_edits_spanned(
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_)
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::TypeApp { .. }

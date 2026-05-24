@@ -681,6 +681,7 @@ fn collect_include_paths_from_node(
         | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { .. }
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
@@ -1048,6 +1049,7 @@ fn apply_include_type_to_node(
         | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { .. }
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}

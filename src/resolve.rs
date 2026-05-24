@@ -225,6 +225,7 @@ impl SurfaceResolver {
             | SurfaceExpression::Str(_)
             | SurfaceExpression::Rest(_)
             | SurfaceExpression::Placeholder
+            | SurfaceExpression::Decl(_) // type-level declaration, no variable references to resolve
             | SurfaceExpression::Error(_) => {}
         }
     }

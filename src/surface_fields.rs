@@ -53,6 +53,7 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::CaseArm { .. } => "CaseArm",
         SurfaceExpression::TypeApp { .. } => "TypeApp",
         SurfaceExpression::Placeholder => "Placeholder",
+        SurfaceExpression::Decl(_) => "Placeholder", // Treats embedded decl as Placeholder at runtime
         SurfaceExpression::Error(_) => "Error",
     }
 }
@@ -121,7 +122,7 @@ pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static 
         SurfaceExpression::LetDecl { .. } => &["bindings", "span"],
         SurfaceExpression::CaseArm { .. } => &["pattern", "body", "span"],
         SurfaceExpression::TypeApp { .. } => &["fn", "arg", "span"],
-        SurfaceExpression::Placeholder => &["span"],
+        SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => &["span"],
         SurfaceExpression::Error(_) => &["span"],
     }
 }

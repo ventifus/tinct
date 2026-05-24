@@ -620,6 +620,7 @@ fn collect_type_assert_node_ids_from_node(
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_) // type-level declaration; no TypeAssert children
         | SurfaceExpression::Error(_) => {}
     }
 }
@@ -2461,9 +2462,27 @@ fn extract_binding_types(
                 extract_binding_types(sub_binding, env, state, types)?;
             }
         }
-        // Implied call [Int] or [Result String] — treat as a type reference
-        // Gradual: implied call [Int] or [Result String] — treat as Unknown to avoid
-        // infinite recursion. Full implementation would resolve constructor types from the call.
+        // Implied call [Int] or [Result String] — treat as a type name reference.
+        // [Int] is parsed as Call { func: VarRef("Int"), args: [], implied: true }.
+        // Try to resolve the func as a type annotation; fall back to Unknown on failure.
+        Expr::Call {
+            func,
+            args,
+            implied: true,
+            ..
+        } if args.is_empty() => {
+            if let Expr::VarRef { name, .. } = &func.node {
+                let ann = crate::ast::Annotation::Simple(name.clone());
+                match resolve_annotation(&ann, env, func.span, state, &mut None, &mut None) {
+                    Ok(ty) => types.push(ty),
+                    Err(_) => types.push(Type::Unknown),
+                }
+            } else {
+                types.push(Type::Unknown);
+            }
+        }
+        // Multi-arg implied call [Result String] or other complex type expressions:
+        // treat as Unknown (full parametric type resolution is future work).
         Expr::Call { .. } => {
             types.push(Type::Unknown);
         }
@@ -2480,9 +2499,14 @@ fn extract_binding_types(
             .map_err(|e| vec![e])?;
             types.push(ty);
         }
-        // Gradual: bare identifier in pattern binding (no annotation)
-        Expr::VarRef { .. } => {
-            types.push(Type::Unknown);
+        // Bare identifier in pattern position: try to resolve as a type name.
+        // Handles `Int` in [pattern [Int]] where the inner dict entry is VarRef("Int").
+        Expr::VarRef { name, .. } => {
+            let ann = crate::ast::Annotation::Simple(name.clone());
+            match resolve_annotation(&ann, env, binding.span, state, &mut None, &mut None) {
+                Ok(ty) => types.push(ty),
+                Err(_) => types.push(Type::Unknown),
+            }
         }
         // Gradual: wildcard placeholder
         Expr::Placeholder => {

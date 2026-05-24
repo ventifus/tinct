@@ -205,6 +205,7 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
         | SurfaceExpression::VarRef { .. }
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Placeholder
+        | SurfaceExpression::Decl(_) // type-level declaration, no evaluable children
         | SurfaceExpression::Error(_) => {}
 
         // Access expressions: recurse into target

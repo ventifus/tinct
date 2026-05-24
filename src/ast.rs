@@ -933,6 +933,11 @@ pub enum SurfaceExpression {
 
     // Parse error node — span covers the unparseable region
     Error(Span),
+
+    // Declaration embedded inside an expression context (e.g., as a dict entry value).
+    // Preserves the full SurfaceDeclaration so the type checker can register class/instance/type
+    // declarations found inside dicts (Pass 0c). Evaluates to Placeholder at runtime.
+    Decl(Box<SurfaceDeclaration>),
 }
 
 /// A dict/list entry in a SurfaceExpression::Dict.

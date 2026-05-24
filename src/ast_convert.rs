@@ -176,7 +176,7 @@ pub fn surface_node_to_expr(node: &Arc<SurfaceNode>) -> Spanned<Expr> {
     Spanned::new(surface_expr_to_expr(&node.expr, node.span), node.span)
 }
 
-fn surface_expr_to_expr(expr: &SurfaceExpression, _span: crate::ast::Span) -> Expr {
+fn surface_expr_to_expr(expr: &SurfaceExpression, span: crate::ast::Span) -> Expr {
     use std::cell::RefCell;
     use std::rc::Rc;
     match expr {
@@ -313,6 +313,13 @@ fn surface_expr_to_expr(expr: &SurfaceExpression, _span: crate::ast::Span) -> Ex
         },
         SurfaceExpression::Placeholder => Expr::Placeholder,
         SurfaceExpression::Error(s) => Expr::Error(*s),
+        SurfaceExpression::Decl(decl) => {
+            // Convert the embedded SurfaceDeclaration back to the corresponding Expr variant
+            // so that the existing Expr-based type checker (Pass 0c in typecheck_dict.rs) can
+            // match ClassDecl/InstanceDecl/TypeAlias and register them in class_env/type_env.
+            let spanned_decl = Spanned::new(decl.as_ref().clone(), span);
+            surface_decl_to_expr(&spanned_decl).node
+        }
     }
 }
 
@@ -821,16 +828,77 @@ fn expr_to_surface_expr(expr: &Expr) -> SurfaceExpression {
         Expr::Placeholder => SurfaceExpression::Placeholder,
         Expr::Error(span) => SurfaceExpression::Error(*span),
 
-        // Declaration forms should have been filtered out by expr_to_surface_item.
-        // If they appear in a non-item position (e.g., nested in a call), convert
-        // to Placeholder so the lowering pass can raise a proper error at force time.
-        Expr::TypeAlias { .. }
-        | Expr::ClassDecl { .. }
-        | Expr::InstanceDecl { .. }
-        | Expr::DefMacro { .. }
-        | Expr::MacroDecl { .. }
-        | Expr::SyntaxClass { .. }
-        | Expr::Splice(_) => SurfaceExpression::Placeholder,
+        // Declaration forms appearing in expression position: wrap in SurfaceExpression::Decl
+        // so the type checker can still register class/instance/type aliases found inside dicts.
+        // At runtime these evaluate as Placeholder (error when forced).
+        Expr::TypeAlias { params, body } => {
+            SurfaceExpression::Decl(Box::new(SurfaceDeclaration::TypeAlias {
+                params: params.clone(),
+                body: expr_to_surface_node(body),
+            }))
+        }
+        Expr::ClassDecl {
+            name,
+            params,
+            superclasses,
+            methods,
+            determines,
+            resolver,
+            resolver_injective,
+        } => SurfaceExpression::Decl(Box::new(SurfaceDeclaration::ClassDecl {
+            name: name.clone(),
+            params: params.clone(),
+            superclasses: superclasses.clone(),
+            methods: methods
+                .iter()
+                .map(|e| Spanned::new(entry_to_surface(&e.node), e.span))
+                .collect(),
+            determines: determines.iter().map(expr_to_surface_node).collect(),
+            resolver: resolver.as_ref().map(|r| expr_to_surface_node(r)),
+            resolver_injective: *resolver_injective,
+        })),
+        Expr::InstanceDecl { class_name, arms } => {
+            SurfaceExpression::Decl(Box::new(SurfaceDeclaration::InstanceDecl {
+                class_name: class_name.clone(),
+                arms: arms
+                    .iter()
+                    .map(|(pattern_expr, methods)| {
+                        let surface_pattern = expr_to_surface_node(pattern_expr);
+                        let surface_methods = methods
+                            .iter()
+                            .map(|e| Spanned::new(entry_to_surface(&e.node), e.span))
+                            .collect();
+                        (surface_pattern, surface_methods)
+                    })
+                    .collect(),
+            }))
+        }
+        Expr::DefMacro { name, params, body } => {
+            SurfaceExpression::Decl(Box::new(SurfaceDeclaration::DefMacro {
+                name: name.clone(),
+                params: expr_to_surface_node(params),
+                body: expr_to_surface_node(body),
+            }))
+        }
+        Expr::MacroDecl { name, params, body } => {
+            SurfaceExpression::Decl(Box::new(SurfaceDeclaration::MacroDecl {
+                name: name.clone(),
+                params: expr_to_surface_node(params),
+                body: expr_to_surface_node(body),
+            }))
+        }
+        Expr::SyntaxClass {
+            name,
+            pattern,
+            message,
+        } => SurfaceExpression::Decl(Box::new(SurfaceDeclaration::SyntaxClass {
+            name: name.clone(),
+            pattern: expr_to_surface_node(pattern),
+            message: message.clone(),
+        })),
+        Expr::Splice(forms) => SurfaceExpression::Decl(Box::new(SurfaceDeclaration::Splice(
+            forms.iter().map(expr_to_surface_node).collect(),
+        ))),
     }
 }
 
