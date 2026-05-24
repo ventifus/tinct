@@ -582,7 +582,22 @@ pub(crate) fn builtin_select_once(
         let mut closed = vec![false; sources.len()];
 
         // Poll all channels in a loop until one produces a value.
+        // Impose a maximum iteration limit to prevent infinite busy-poll loops
+        // when all channels are empty (e.g., due to lazy evaluation not forcing
+        // send operations before select-once runs).
+        const MAX_SELECT_POLLS: usize = 10_000;
+        let mut poll_count = 0;
+
         loop {
+            poll_count += 1;
+            if poll_count > MAX_SELECT_POLLS {
+                return Err(EvalError::resource_limit_exceeded(
+                    "select-once: channel poll limit exceeded — no channel was ready".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+
             for (i, (channel_inner, handler_id)) in sources.iter().enumerate() {
                 if closed[i] {
                     continue;

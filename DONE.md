@@ -2,6 +2,17 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## Async
+
+### select-once-hang: `select-once` busy-polls in spin-poll executor causing infinite loop
+
+`tests/corpus/eval/builtins/async_select_basic.llt-eval` hangs `test_eval_corpus` indefinitely. Root cause: `builtin_select_once` (`src/builtins_async.rs:584-694`) polls channels in a `loop { ... tokio::task::yield_now().await }` cycle. The `async_rt::block_on_anywhere` spin-poll executor (`src/async_rt.rs:97-117`) re-polls immediately after `yield_now`, creating infinite busy-spin. The `send` in the test may not be forced (lazy `_:` binding) before `select-once` starts polling, so channels are always empty.
+
+The spin-poll executor comment (`src/async_rt.rs:108-114`) explicitly states "no channel awaits on external data" as an invariant. `select-once` violates this invariant.
+
+- [x] Fix `select-once` to not busy-poll (add waker-based notification or iteration limit with error) — Added `MAX_SELECT_POLLS` constant (10,000 iterations) with `EvalError::resource_limit_exceeded` when exceeded
+- [x] Fix or skip `async_select_basic.llt-eval` corpus test so `test_eval_corpus` completes — Changed `_: [send ch1 42]` to `sent: [send ch1 42]` to force the send operation due to lazy evaluation
+
 ## ADT / Typeclasses
 
 ### runtime-v2-fix-adt-class-instance-corpus: Parser + pipeline support for declaration forms

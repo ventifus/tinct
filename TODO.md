@@ -576,17 +576,6 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 - [ ] Remove `check_get` dispatcher from `src/typecheck.rs:1476-1488`
 - [ ] Verify `builtin-get` alias also works via the new scheme
 
-### select-once-hang: `select-once` busy-polls in spin-poll executor causing infinite loop
-
-`tests/corpus/eval/builtins/async_select_basic.llt-eval` hangs `test_eval_corpus` indefinitely. Root cause: `builtin_select_once` (`src/builtins_async.rs:584-694`) polls channels in a `loop { ... tokio::task::yield_now().await }` cycle. The `async_rt::block_on_anywhere` spin-poll executor (`src/async_rt.rs:97-117`) re-polls immediately after `yield_now`, creating infinite busy-spin. The `send` in the test may not be forced (lazy `_:` binding) before `select-once` starts polling, so channels are always empty.
-
-The spin-poll executor comment (`src/async_rt.rs:108-114`) explicitly states "no channel awaits on external data" as an invariant. `select-once` violates this invariant.
-
-Options: (a) Add a timeout/max-iteration guard to `select-once`'s poll loop, (b) ensure `send` is forced before `select-once` by using a sequential binding instead of `_:`, (c) skip this corpus test until a proper async runtime is available for corpus tests.
-
-- [ ] Fix `select-once` to not busy-poll (add waker-based notification or iteration limit with error)
-- [ ] Fix or skip `async_select_basic.llt-eval` corpus test so `test_eval_corpus` completes
-
 ### rnd-typecheck-runtime-unification: Accept typecheck-runtime-unification whatif
 
 `doc/whatif/typecheck-runtime-unification.md` (State: Proposal) documents the root cause of TA1/TA2/BT5 type name mismatch bugs — two separate type judgment systems that can disagree. Needs design review via `/rnd` before implementation.
