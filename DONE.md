@@ -9348,3 +9348,31 @@ Key questions:
 **SOUND (verified):** arm ordering (source order, first-match-wins), binding scope (no cross-arm leakage), or-pattern left-to-right, guard sees pattern bindings, backtracking (failed arm env dropped), Constructor payload shape (all four None/Some combos handled), scrutinee forced before arms, determinism.
 
 Commit: `review-pattern-matching: verify PM3/PM9/PM11 done + PM6/PM7/PM10/PM12 comments + doc fixes`
+
+### review-typeassert-semantics: Audit TypeAssert static vs runtime mismatch
+
+**Agents:** type-theorist, computer-scientist, eval-engine
+**Files:** `src/eval_materialize.rs` (`force_step` TypeAssert/RuntimeTypeCheck handling), `src/typecheck.rs` (TypeAssert elaboration, `[ASSERT-TYPE]` rule), `doc/05-type-annotations.md`
+
+Known issue (flagged 2026-04-21): static check uses structural `is_subtype`, runtime check uses nominal `type_name()` string comparison. They can disagree.
+
+- [x] Dispatch type-theorist + computer-scientist + eval-engine to audit TypeAssert static/runtime correspondence and report divergences
+
+**Audit results (computer-scientist, 2026-05-23):**
+
+- **Which types diverge?** Fn (annotation "Fn" vs type_name "Function"/"Builtin"), Unknown/Any/Top (should accept all, nominal rejects), Null (resolves to Record({}) but "Null" != "Dict"), Handle (Type::Handle accepts WriteHandle, nominal "Handle" != "WriteHandle"). Only Number has a special case. All other primitive names match.
+- **Record-type assertions:** NO LONGER no-ops. `validate_and_wrap_record` (src/eval.rs:779-863) performs shape checking and guard wrapping via `Cont::GuardedValidate`. Structural contracts are implemented per Findler & Felleisen (2002) / Strickland et al. (2012).
+- **`@Unknown`:** UNSOUND in RuntimeTypeCheck fallback — raises E011. Subsumed by TA1/TA2 fix tracked in review-blame-tracking.
+- **`@Handle[Readable]`:** Cannot be written — parser treats `[Readable]` as subscript, not type parameter.
+- **Can well-typed programs fail at runtime?** Only through `$include`/`$load` paths where TypeAnnotationTable is not wired, causing RuntimeTypeCheck fallback. A well-typed program evaluated directly cannot produce spurious E011.
+
+- [x] **TA1/TA2 SUBSUMED BY BT5** (review-blame-tracking, commit 5582932) — Fix RuntimeTypeCheck nominal fallback type name mismatches (Fn/"Function"/"Builtin", Unknown/Any/Top pass-through, Null/"Dict", Handle/"WriteHandle").
+- [x] **TA3 Fixed** — `Decimal`/`BigInt` added to `Type::Number` arm in `value_matches_type` (`src/eval.rs:642-646`) and to the nominal Number check in RuntimeTypeCheck fallback (`src/eval_materialize.rs:2432-2435`). Numeric tower now consistent between structural and nominal paths.
+- [x] **TA4 Fixed** — `doc/07-type-extensions.md` cardinality check removed from `[VM-RECORD-PROXY]` formal rule; added BAS width subtyping explanation paragraph clarifying that `ρ = Closed ⟹ string_keys(entries) = dom(fields)` was removed during BAS implementation.
+- [x] **TA5 KNOWN ISSUE** — `Handle` capability row not validated at runtime (`src/eval.rs:654-662`). `value_matches_type` accepts any `Handle`/`WriteHandle` regardless of capability row. `[@[Handle Readable] $writeHandle]` incorrectly passes. Comment added at the TODO site documenting the deferred implementation plan. Requires new continuation type for capability row structural validation.
+- [x] **TA6 KNOWN ISSUE** — `is:` predicate silently ignored in TypeAssert runtime (`src/eval_materialize.rs:2346-2390`). After type validation passes, the `is:` property is never evaluated. Detailed comment added at the implementation site documenting the full implementation plan (mirroring match guard logic, new PredicateCheck continuation). Requires integration into the iterative continuation loop.
+- [x] **TA7 Fixed** — W043 warning added for unrecognized annotation keys within Levenshtein distance 2 of known keys (`src/typecheck_annot.rs`). `[@[types: Int] $x]` now emits "unrecognized TypeAssert annotation key 'types' — did you mean 'type'?" Known-good keys expanded to `["type", "default", "repr", "is", "doc"]`. Short keys (< 3 chars) excluded from fuzzy matching to prevent false positives.
+
+**SOUND (verified):** `Int`/`Float`/`Bool`/`Str` primitives, `Number` (special-cased, now includes Decimal/BigInt), `Seq[T]` tag-only (documented), `Fn@T [U]` tag-only (documented), `Variant` tag-comparison matches static, `Union` (`any(members)` mirrors static), `Intersection` (`all(members)` mirrors static), `default:` compile-time validated + runtime lookup correct, guarded thunk lifecycle (all 4 paths), nested TypeAssert (independent per level), blame attribution (inner_span = producer per Findler & Felleisen 2002). Record-type assertions are **NOT** no-ops — `validate_and_wrap_record` performs shape checking and guard-wrapping via `Cont::GuardedValidate`.
+
+Commit: `review-typeassert-semantics: fix TA3/TA4/TA7 + document TA5/TA6 as KNOWN ISSUE`

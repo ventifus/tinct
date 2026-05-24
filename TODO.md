@@ -1012,42 +1012,6 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 In-depth formal audits for algorithms not yet reviewed. Each sprint dispatches specialist agents to read the relevant source, identify soundness holes, and produce TODO items for any bugs found. No implementation — findings only.
 
-### review-typeassert-semantics: Audit TypeAssert static vs runtime mismatch
-
-**Agents:** type-theorist, computer-scientist, eval-engine
-**Files:** `src/eval_materialize.rs` (`force_step` TypeAssert/RuntimeTypeCheck handling), `src/typecheck.rs` (TypeAssert elaboration, `[ASSERT-TYPE]` rule), `doc/05-type-annotations.md`
-
-Known issue (flagged 2026-04-21): static check uses structural `is_subtype`, runtime check uses nominal `type_name()` string comparison. They can disagree.
-
-Key questions:
-- Which types have matching static and runtime semantics, and which diverge?
-- For record-type assertions: the 2026-04-21 review noted "record-type assertions are no-ops at runtime" — is this still true? What does the user observe?
-- For `@[type: "Foo"]` parameterized assertions: does the runtime correctly dispatch to the right type check?
-- Is `@Unknown` correctly treated as a gradual no-op (never raises E011)?
-- For `@Handle[Readable]`: is the capability type check at runtime correct?
-- Can a well-typed program (no typecheck warnings) produce a TypeAssert failure at runtime? If so, this is a soundness gap.
-
-- [x] Dispatch type-theorist + computer-scientist + eval-engine to audit TypeAssert static/runtime correspondence and report divergences → findings go to TODO.md
-
-**Audit results (computer-scientist, 2026-05-23):**
-
-Answers to key questions:
-- **Which types diverge?** Fn (annotation "Fn" vs type_name "Function"/"Builtin"), Unknown/Any/Top (should accept all, nominal rejects), Null (resolves to Record({}) but "Null" != "Dict"), Handle (Type::Handle accepts WriteHandle, nominal "Handle" != "WriteHandle"). Only Number has a special case. All other primitive names match.
-- **Record-type assertions:** NO LONGER no-ops. `validate_and_wrap_record` (src/eval.rs:779-863) performs shape checking and guard wrapping via `Cont::GuardedValidate`. Structural contracts are implemented per Findler & Felleisen (2002) / Strickland et al. (2012).
-- **`@Unknown`:** UNSOUND in RuntimeTypeCheck fallback — raises E011. Already tracked at TODO line 719. Subsumed by the fix item below.
-- **`@Handle[Readable]`:** Cannot be written — parser treats `[Readable]` as subscript, not type parameter (tracked at TODO line 718).
-- **Can well-typed programs fail at runtime?** Only through `$include`/`$load` paths (TODO lines 736, 739) where TypeAnnotationTable is not wired, causing RuntimeTypeCheck fallback. A well-typed program evaluated directly cannot produce spurious E011 — the resolved_type path uses value_matches_type which is correct.
-
-- [ ] **TA1/TA2 UNSOUND — Fix RuntimeTypeCheck nominal fallback type name mismatches.** `src/eval_materialize.rs:2379-2383`. Five families diverge: `"Fn"` must match `"Function"`/`"Builtin"`, `"Unknown"`/`"Any"`/`"Top"` must accept all values (gradual pass-through), `"Null"` must match `"Dict"`, `"Handle"` must match both `"Handle"` and `"WriteHandle"`. Also: `$include`d files always hit RuntimeTypeCheck (TypeAnnotationTable not wired across include boundary — tracked separately at TODO lines 736/739), so these mismatches produce spurious E011 in included submodules. Subsumes TODO line 719 (`@Unknown` bug). Model: phase consistency (Milner 1978). [Major]
-- [ ] **TA3 GAP — `Decimal`/`BigInt` missing from `Type::Number` arm in `value_matches_type`.** `src/eval.rs:640`, `src/eval_materialize.rs:2379-2380`. If `is_subtype(Decimal, Number)` holds statically, `Value::Decimal` must also pass `[@Number $x]` at runtime. Verify static subtyping for numeric tower (Decimal/BigInt vs Number); update both the structural and nominal paths to match. [Minor]
-- [ ] **TA4 GAP (doc) — `doc/07-type-extensions.md:134` still shows closed-record cardinality check removed by BAS.** Formal rule `[VM-RECORD-PROXY]` shows `ρ = Closed ⟹ string_keys(entries) = dom(fields)`. BAS width subtyping removed this (`src/eval.rs:819-821`). Remove the cardinality condition from the doc rule. [Minor]
-- [ ] **TA5 GAP — `Handle` capability row not validated at runtime.** `src/eval.rs:654-662`. `value_matches_type` has a TODO and accepts any `Handle`/`WriteHandle` regardless of capability row. `[@[Handle Readable] $writeHandle]` incorrectly passes. Sprint item: implement capability-row structural validation distinguishing readable/writable handles. [Major]
-- [ ] **TA6 GAP — `is:` predicate silently ignored in TypeAssert runtime.** `src/eval_materialize.rs:2251`, `src/eval.rs:635`. `TypeAssertCheck` never invokes `get_property("is")`. A `[@[type: Int  is: positive?] $x]` assertion silently ignores the predicate. Spec (`doc/05-type-annotations.md:§18`) requires predicate to fire. Fix: after `value_matches_type` passes, evaluate `is:` predicate; fail assertion or use `default:` if falsy. [Major]
-- [ ] **TA7 GAP — Unknown annotation keys silently accepted; misspelled `[@[types: Int] $x]` becomes a structural record check.** `src/typecheck_annot.rs:1433-1435`. Static checker only recognizes `["type", "default", "repr"]`; `types:` (misspelled) is treated as a structural field, producing a shape check against `{types: Int}`. Add a diagnostic (warning or error) for unrecognized keys outside `["type", "default", "repr", "is", "doc"]` in TypeAssert `PropertyDict`. [Minor]
-
-**SOUND (verified):** `Int`/`Float`/`Bool`/`Str` primitives, `Number` (special-cased), `Seq[T]` tag-only (documented), `Fn@T [U]` tag-only (documented), `Variant` tag-comparison matches static, `Union` (`any(members)` mirrors static), `Intersection` (`all(members)` mirrors static), `default:` compile-time validated + runtime lookup correct, guarded thunk lifecycle (all 4 paths), nested TypeAssert (independent per level), blame attribution (inner_span = producer per Findler & Felleisen 2002). Record-type assertions are **NOT** no-ops — `validate_and_wrap_record` performs shape checking and guard-wrapping via `Cont::GuardedValidate`.
-
-
 ### review-chr-constraints: Audit CHR constraint solving and MPTC/FD soundness
 
 **Agents:** computer-scientist, type-theorist

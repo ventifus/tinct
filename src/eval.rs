@@ -642,7 +642,10 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::Unknown | Type::Top => true,
         Type::Int => matches!(value, Value::Int(_)),
         Type::Float => matches!(value, Value::Float(_)),
-        Type::Number => matches!(value, Value::Int(_) | Value::Float(_)),
+        Type::Number => matches!(
+            value,
+            Value::Int(_) | Value::Float(_) | Value::Decimal(_) | Value::BigInt(_)
+        ),
         Type::Str => matches!(value, Value::String { .. }),
         Type::Bool => matches!(value, Value::Bool(_)),
         Type::Bytes => matches!(value, Value::Bytes { .. }),
@@ -657,6 +660,8 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
         Type::DirCap => matches!(value, Value::DirCap { .. } | Value::RevocableDirCap { .. }),
         Type::NetCap => matches!(value, Value::NetCap(_)),
         Type::Handle(cap_row) => {
+            // KNOWN ISSUE: Runtime Handle capability validation not implemented
+            //
             // Runtime Handle capability validation strategy (gradual typing):
             // - If cap_row is Unknown → accept any handle (gradual escape hatch)
             // - If cap_row is concrete → STILL accept any handle for now

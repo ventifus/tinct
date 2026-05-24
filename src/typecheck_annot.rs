@@ -9,6 +9,60 @@ use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
 use crate::ast::{Annotation, Entry, Expr, Span, Spanned};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
+/// Find the closest match to `target` in `candidates` using Levenshtein distance.
+/// Returns `Some(closest)` if a candidate is within distance 2, otherwise `None`.
+///
+/// Only considers `target` strings of length ≥ 3 to avoid false positives for
+/// short field names like "x", "id", "y" that happen to be close to short
+/// annotation keywords like "is".
+fn find_closest_match<'a>(target: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    if target.chars().count() < 3 {
+        return None;
+    }
+    let mut best: Option<(&str, usize)> = None;
+    for &candidate in candidates {
+        let distance = levenshtein_distance(target, candidate);
+        if distance <= 2 {
+            if let Some((_, best_dist)) = best {
+                if distance < best_dist {
+                    best = Some((candidate, distance));
+                }
+            } else {
+                best = Some((candidate, distance));
+            }
+        }
+    }
+    best.map(|(s, _)| s)
+}
+
+/// Compute Levenshtein distance between two strings.
+fn levenshtein_distance(s1: &str, s2: &str) -> usize {
+    let len1 = s1.chars().count();
+    let len2 = s2.chars().count();
+    let mut matrix = vec![vec![0; len2 + 1]; len1 + 1];
+
+    for i in 0..=len1 {
+        matrix[i][0] = i;
+    }
+    for j in 0..=len2 {
+        matrix[0][j] = j;
+    }
+
+    let s1_chars: Vec<char> = s1.chars().collect();
+    let s2_chars: Vec<char> = s2.chars().collect();
+
+    for (i, &c1) in s1_chars.iter().enumerate() {
+        for (j, &c2) in s2_chars.iter().enumerate() {
+            let cost = if c1 == c2 { 0 } else { 1 };
+            matrix[i + 1][j + 1] = (matrix[i][j + 1] + 1) // deletion
+                .min(matrix[i + 1][j] + 1) // insertion
+                .min(matrix[i][j] + cost); // substitution
+        }
+    }
+
+    matrix[len1][len2]
+}
+
 pub(crate) fn expand_type_alias(
     inner: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
@@ -1481,9 +1535,9 @@ pub(crate) fn resolve_annotation(
             } else if let Some(type_val) = ann.get_property("type") {
                 // Check if this is a type expression shorthand (@[type: T default: V])
                 // or a record with a field named "type" (@[type: String id: Int]).
-                // Type expression shorthand only has keys: type, default, repr.
+                // Type expression shorthand only has keys: type, default, repr, is, doc.
                 // If there are other keys, it's a record type.
-                const ANNOTATION_PROPERTIES: &[&str] = &["type", "default", "repr"];
+                const ANNOTATION_PROPERTIES: &[&str] = &["type", "default", "repr", "is", "doc"];
                 let has_other_keys = entries.iter().any(|entry| {
                     if let Some(key_expr) = &entry.node.key {
                         if let Expr::Str(key_name) = &key_expr.node {
@@ -1495,6 +1549,29 @@ pub(crate) fn resolve_annotation(
 
                 if has_other_keys {
                     // Has non-annotation keys → treat as record type
+                    // But warn if any key looks like a typo of an annotation property
+                    for entry in entries.iter() {
+                        if let Some(key_expr) = &entry.node.key {
+                            if let Expr::Str(key_name) = &key_expr.node {
+                                if !ANNOTATION_PROPERTIES.contains(&key_name.as_str()) {
+                                    if let Some(closest) =
+                                        find_closest_match(key_name, ANNOTATION_PROPERTIES)
+                                    {
+                                        state.diagnostics.push(crate::error::TypeDiagnostic {
+                                            message: format!(
+                                                "unrecognized TypeAssert annotation key '{}' — did you mean '{}'? \
+                                                 (valid annotation keys: {})",
+                                                key_name, closest, ANNOTATION_PROPERTIES.join(", ")
+                                            ),
+                                            span: key_expr.span,
+                                            code: "W043",
+                                            level: crate::error::DiagnosticLevel::Warn,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
                     resolve_property_dict_as_record(
                         entries,
                         env,
@@ -1508,6 +1585,29 @@ pub(crate) fn resolve_annotation(
                     resolve_type_expr(type_val, env, state, ann_mapping, row_ann_mapping)
                 }
             } else {
+                // No "type" property → treat as record type
+                // But warn if any key looks like a typo of an annotation property
+                const ANNOTATION_PROPERTIES: &[&str] = &["type", "default", "repr", "is", "doc"];
+                for entry in entries.iter() {
+                    if let Some(key_expr) = &entry.node.key {
+                        if let Expr::Str(key_name) = &key_expr.node {
+                            if let Some(closest) =
+                                find_closest_match(key_name, ANNOTATION_PROPERTIES)
+                            {
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "unrecognized TypeAssert annotation key '{}' — did you mean '{}'? \
+                                         (valid annotation keys: {})",
+                                        key_name, closest, ANNOTATION_PROPERTIES.join(", ")
+                                    ),
+                                    span: key_expr.span,
+                                    code: "W043",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
+                            }
+                        }
+                    }
+                }
                 resolve_property_dict_as_record(
                     entries,
                     env,

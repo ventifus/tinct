@@ -2346,6 +2346,43 @@ pub(crate) async fn apply_cont(
                                 }
                             }
                         } else if value_matches_type(&value, &expected) {
+                            // KNOWN ISSUE: `is:` predicate validation not implemented
+                            //
+                            // After type validation passes, TypeAssert should check if the annotation
+                            // has an `is:` property and evaluate it as a predicate. For example:
+                            //   [@[type: Int  is: positive?] $x]
+                            // should call `positive?($x)` after verifying `$x` is an Int.
+                            //
+                            // Implementation requirements (mirroring match guard logic at eval.rs:1738-1764):
+                            // 1. Check if annotation.node.get_property("is") exists
+                            // 2. Evaluate the predicate expression in the current environment
+                            // 3. If the result is a Function/Builtin, invoke it with the value as argument
+                            // 4. Check if the result is truthy (Bool(true), non-empty Dict, or any non-Bool/non-Dict)
+                            // 5. If falsy:
+                            //    - If `default:` property exists, evaluate and return the default
+                            //    - Otherwise, fail with EvalError::type_assert_failed("_ (is: predicate failed)", ...)
+                            // 6. If truthy, return the value unchanged
+                            //
+                            // Challenges:
+                            // - Requires eval_core_expr and materialize calls, which need to be integrated
+                            //   into the iterative continuation loop (can't just call .await here)
+                            // - Need to create a new continuation type (e.g., PredicateCheck) to defer
+                            //   the predicate evaluation and result validation
+                            // - Need to handle errors from predicate evaluation (should propagate, not
+                            //   treat as "predicate failed")
+                            //
+                            // The match arm guard implementation (eval.rs:1733-1776) is the reference:
+                            // it evaluates the guard, checks if it's callable (then invokes it), and
+                            // checks truthiness. TypeAssert needs the same logic but with different
+                            // error handling (fail assertion vs skip arm).
+                            //
+                            // Test expectation: tests/corpus/eval/errors/typeassert_is_predicate_fails.llt-eval
+                            // expects [@[type: Int  is: [between 0 255]] 300] to fail with
+                            // "type assertion failed: expected _ (is: predicate failed), got Int"
+                            //
+                            // For now, the `is:` predicate is silently ignored when present.
+                            // The type checker does NOT validate `is:` predicates statically (they are
+                            // runtime-only contracts), so this gap means predicates have no effect.
                             Action::Continue(Ok(value))
                         } else if let Some(default_expr) =
                             annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
@@ -2392,7 +2429,10 @@ pub(crate) async fn apply_cont(
                         if let Some(expected) = expected_name {
                             let actual = value.type_name();
                             let matches = if expected == "Number" {
-                                actual == "Int" || actual == "Float"
+                                actual == "Int"
+                                    || actual == "Float"
+                                    || actual == "Decimal"
+                                    || actual == "BigInt"
                             } else if expected == "Unknown"
                                 || expected == "Top"
                                 || expected == "Any"

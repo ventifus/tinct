@@ -131,12 +131,13 @@ v ∈ α
 ```text
 v = Dict(entries),
 ∀(fᵢ: τᵢ) ∈ fields.  fᵢ ∈ string_keys(entries),
-ρ = Closed ⟹ string_keys(entries) = dom(fields),
 entries' = { fᵢ ↦ guard(entries[fᵢ], τᵢ, [fᵢ], span) | (fᵢ: τᵢ) ∈ fields }
           ∪ { k ↦ entries[k] | k ∉ dom(fields) }
 ────────────────────────────────────────────────────── [VM-RECORD-PROXY]
 [@τ v] ⟶ Dict(entries')
 ```
+
+**BAS width subtyping.** The cardinality check `ρ = Closed ⟹ string_keys(entries) = dom(fields)` formerly present in [VM-RECORD-PROXY] was removed during the BAS (Bounded Annotation Subtyping) implementation. Under BAS, a value with MORE fields always satisfies an annotation with FEWER fields — extra fields are never an error. The `ρ` (row tail) distinction between `Open` and `Closed` is retained for static type inference but does not affect runtime validation: all records are treated as width-subtype-compatible regardless of their row tail. This makes the closed-record cardinality condition vacuously true at runtime.
 
 Where `guard(thunk, τ, field_path, span)` creates a guarded thunk — a new `ThunkState::Guarded { inner, expected, field_path, guard_span }` variant in the thunk lifecycle. When materialized, a guarded thunk materializes the inner thunk, validates the result against τ via `v ∈ τ`, and either returns the value (on success) or raises a type assertion error with the field path (on failure). If τ is itself a `Record` type, validation applies [VM-RECORD-PROXY] recursively — the guarded thunk's materialized dict has its own fields wrapped in guards, composing field paths (e.g., `["user", "address", "zip"]`). Guards compose sequentially when nested TypeAsserts wrap the same value (Findler & Felleisen's "guardian stack" semantics).
 
