@@ -621,24 +621,39 @@ The `doc/whatif/completed/builtin-privacy.md` whatif is **accepted** (2026-05-11
 
 #### Phase 2 (implement) — [x] KNOWN ISSUE
 
-Attempted 2026-05-23. The naive fix (start `env` with `TypeEnv::new()` instead of `TypeEnv::with_builtins()` and use only prelude's own-frame bindings) causes 25+ corpus test failures:
+**Third attempt 2026-05-23 (after prelude-missing-wrappers sprint):** Changing `env` from `TypeEnv::with_builtins()` to `TypeEnv::new()` in `build_prelude_env_inner()` (`src/imports.rs:245`) now produces exactly **1 new unit test regression** (down from 25+ corpus failures in prior attempts):
 
-- `undefined variable: merge` — `merge` is in `with_builtins()` but NOT re-exported by prelude
-- `undefined variable: try` — `try` is a builtin, not re-exported by prelude
-- `undefined variable: type-of` — `type-of` is a builtin, not re-exported by prelude
-- `undefined variable: narrow` — `narrow` is a builtin (cap introspection), not in prelude
-- Nominal variant constructors (`Circle`, `Tag`, `Shape`, etc.) lost because class instances aren't seeded
-- `constraint_not_satisfied` and `proxy_named_arg` typecheck warning tests fail because `+` and named-arg inference depend on builtin type schemes being in scope
+- **`test_call_mono_lambda_arg_uses_check_expr`** (`src/typecheck.rs:10018`) — `cannot unify Int with Number`
 
-Root cause: many builtins (`merge`, `try`, `type-of`, `narrow`, `keys`, `append`, and many others) are exposed to user code via `TypeEnv::with_builtins()` but are NOT re-exported by prelude. Removing builtins from the user-facing TypeEnv without first migrating those builtins to prelude re-exports breaks tests.
+  Root cause: the prelude's `+` wrapper is `[fn@Number [let a@Number b@Number] [builtin-add a b]]`, which gives `+` the TypeScheme `Fn Number [Number Number]` — return type is always `Number`. The builtin's TypeScheme for `+` uses the `Addable(a,b,c)` functional-dependency constraint that specializes to `Int` when both args are `Int`. The test constructs a CALL-MONO scenario where `[+ $x 1]` must return `Int` (checked against `Fn@Int [Int]` expected type). With prelude-typed `+`, the return is `Number`, not `Int` — mismatch.
 
-**Prerequisites for Phase 2:**
-- `stdlib-builtin-wrappers-audit` sprint (below) must complete, ensuring ALL user-visible builtins are re-exported by prelude under stable names.
-- Corpus tests that call builtins directly in user code must be updated to call the prelude re-exports.
-- Only THEN can `TypeEnv::with_builtins()` be safely removed from the user-code path.
+  Fix required: the prelude's `+` wrapper must have an Addable-constrained TypeScheme, not a flat `Fn Number [Number Number]` scheme. Options:
+  1. Annotate the wrapper with the Addable class constraint in LLT syntax (depends on class-constraint annotation support in the type checker)
+  2. Register `+` in `with_builtins()` with the Addable constraint AND include it in the prelude output — but keep the builtin TypeScheme rather than overwriting with the prelude wrapper's inferred scheme. This requires `merge_env_bindings_into` to prefer the builtin scheme for operator names.
+  3. Implement `check_add` special-case in the type checker (mirrors existing `check_open`) that synthesizes Int+Int→Int when both args are known Int. This is a type-checker refinement, not a scheme change.
 
-- [ ] **Remove `TypeEnv::with_builtins()` from the user-code path.** Currently `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()` at `src/imports.rs:246`, which leaks all Rust builtins into user scope. Fix: use `TypeEnv::with_builtins()` only for prelude type-checking internally, then build the user-facing TypeEnv from the prelude's output types only — not from the raw builtin env. (`src/imports.rs:239-340`) **Blocked on stdlib-builtin-wrappers-audit completing prelude re-exports.**
+Pre-existing failures (NOT caused by Phase 2 change, already failing at baseline):
+- `test_get_concrete_string_key_on_record` — `undefined variable: get` (pre-existing, uses `doc_env_with_builtins` with builtins-only env, but `get` is a prelude function not in raw builtins)
+- `test_get_union_distribution` — same pre-existing failure
+
+**Phase 2 is blocked on resolving the `+` type precision issue.** The prelude-missing-wrappers prerequisite is now complete — the only remaining blocker is the arithmetic operator TypeScheme precision: the prelude's `+`/`-`/`*`/`/` wrappers lose the Addable/Subtractable/Multipliable/Divisible FD constraint, causing CALL-MONO Int precision failures. The sprint `builtin-privacy-arithmetic-fd` (below) must fix this before Phase 2 can land.
+
+- [ ] **Remove `TypeEnv::with_builtins()` from the user-code path.** Currently `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()` at `src/imports.rs:245`, which leaks all Rust builtins into user scope. Fix: use `TypeEnv::with_builtins()` only for prelude type-checking internally, then build the user-facing TypeEnv from the prelude's output types only — not from the raw builtin env. (`src/imports.rs:239-340`) **Blocked on arithmetic FD precision (see builtin-privacy-arithmetic-fd below).**
 - [ ] Change the evaluator's root env to mirror this: user code's root `Environment` should contain only prelude output, not the raw builtin registry. The `standard_builtins()` registry is used internally for dispatch but not exposed as variable bindings. (`src/imports.rs`, eval pipeline setup)
+
+#### builtin-privacy-arithmetic-fd: Preserve arithmetic operator FD precision through prelude wrapping
+
+**Prerequisite for Phase 2.** When `+` in user scope comes from the prelude wrapper `[fn@Number [let a@Number b@Number] [builtin-add a b]]` instead of `TypeEnv::with_builtins()`, it loses the Addable FD — `[+ 1 2]` returns `Number` not `Int`, breaking `test_call_mono_lambda_arg_uses_check_expr` and likely user programs that depend on `[+ Int Int] → Int` precision.
+
+Options (choose one):
+1. Add `check_add` / `check_sub` / `check_mul` / `check_div` special-case handlers in `src/typecheck.rs` that refine the return type when both args are statically known Int or Float (mirrors `check_open` pattern). Does not require changing the prelude or TypeScheme.
+2. Override the prelude wrapper's inferred scheme for `+`/`-`/`*`/`/` in `merge_env_bindings_into`: when the name is an arithmetic operator and `baseline_env` (builtins) has an Addable-constrained scheme, prefer the baseline scheme over the prelude wrapper's inferred scheme. Controlled by a list of "scheme-preserving names".
+
+Option 1 is preferred — it keeps type precision purely in the type checker where it belongs, without coupling `merge_env_bindings_into` to specific operator names.
+
+- [ ] Implement `check_add`/`check_sub`/`check_mul`/`check_div` special forms in `src/typecheck.rs` that refine return type to `Int` when both args are `Int` (or `Float` when either is `Float`). Mirror the `check_open` pattern at `src/typecheck.rs:4278-4350`.
+- [ ] Verify `test_call_mono_lambda_arg_uses_check_expr` passes with this fix applied.
+- [ ] Retry Phase 2 change (`TypeEnv::new()`) — should now land cleanly.
 
 #### Phase 3 (migrate + lint)
 
