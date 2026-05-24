@@ -9153,3 +9153,9 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 - [x] Fix desugar ordering in `src/imports.rs` — moved `desugar_surface_program` call to after expand step position, fixing `parse → expand → desugar → resolve → typecheck` invariant. [Critical]
 - [x] Filter `Span::origin()` frames from `EvalError::Display` — ALREADY DONE: `should_display_frame()` at `src/error.rs:1702`. [Critical]
 - [x] Unit test `test_origin_span_frames_filtered_from_display` — ALREADY DONE at `src/error.rs:3369`. [Major]
+
+### fix-stdlib-doc-counts: Update doc/11-stdlib.md stale counts
+
+- [x] Update `doc/11-stdlib.md:302,308` — changed "all 228 builtin functions" to "all 284 builtin functions". [Major]
+- [x] Update `doc/11-stdlib.md:314` — expanded stable alias list from "11 builtins" to complete list of 37 aliases with table. [Major]
+- [x] Update `doc/11-stdlib.md:358` — changed "184 Rust-native builtins" to "284 Rust-native builtins". [Major]

@@ -1313,14 +1313,6 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 
 ## Codebase Health Audit Findings (Cycle #216, 2026-05-23)
 
-### fix-stdlib-doc-counts: Update doc/11-stdlib.md stale counts
-
-**Sources:** stdlib-author (Cycle #216)
-
-- [ ] Update `doc/11-stdlib.md:302,308` — change "all 228 builtin functions" to "all 284 builtin functions" (verified via `standard_builtins_count()` test). [Major]
-- [ ] Update `doc/11-stdlib.md:314` — expand stable alias list from "11 builtins" to complete list of 29+ aliases with table. [Major]
-- [ ] Update `doc/11-stdlib.md:358` — change "184 Rust-native builtins" to "284 Rust-native builtins". [Major]
-
 ### fix-test-taxonomy: Fix test file misclassification and required dirs
 
 **Sources:** test-crafter (Cycle #216)
