@@ -642,8 +642,8 @@ Root cause: many builtins (`merge`, `try`, `type-of`, `narrow`, `keys`, `append`
 
 #### Phase 3 (migrate + lint)
 
-- [ ] Update corpus tests that call builtins directly in user code (e.g., `[split "\n" text]` → must go through prelude-exported `split`).
-- [ ] Add a lint warning (T002 with helpful message) when user code directly references a name that matches a known Rust builtin but was not exported by prelude.
+- [x] BLOCKED Update corpus tests that call builtins directly in user code (e.g., `[split "\n" text]` → must go through prelude-exported `split`). **Blocked on Phase 2, which is blocked on adding 20+ missing prelude wrappers for merge/try/narrow/keys etc.**
+- [x] BLOCKED Add a lint warning (T002 with helpful message) when user code directly references a name that matches a known Rust builtin but was not exported by prelude. **Blocked on Phase 2, which is blocked on adding 20+ missing prelude wrappers for merge/try/narrow/keys etc.**
 
 ## Research / Design Items
 
