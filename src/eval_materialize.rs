@@ -1612,6 +1612,7 @@ pub(crate) async fn apply_cont(
                                 inner_span,
                                 &guard_ctx,
                                 default.clone(),
+                                blame_label.clone(),
                             ) {
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict(new_entries);
@@ -2284,6 +2285,12 @@ pub(crate) async fn apply_cont(
                                             Arc::clone(&env),
                                         )
                                     });
+                                // Construct BlameLabel for TypeAssert boundary
+                                let blame_label = Some(crate::error::BlameLabel {
+                                    origin_span: thunk_span,  // where the value was produced
+                                    boundary_span: expr_span, // where the TypeAssert annotation is
+                                    polarity: crate::error::BlameParity::Positive,
+                                });
                                 match validate_and_wrap_record(
                                     entries,
                                     row.as_ref(),
@@ -2292,6 +2299,7 @@ pub(crate) async fn apply_cont(
                                     thunk_span,
                                     &ctx,
                                     default_opt.clone(),
+                                    blame_label,
                                 ) {
                                     Ok(new_entries) => {
                                         Action::Continue(Ok(Value::Dict(new_entries)))
@@ -2324,13 +2332,17 @@ pub(crate) async fn apply_cont(
                                         ctx: Arc::clone(&ctx),
                                     }
                                 } else {
-                                    Action::Continue(Err(EvalError::type_assert_failed(
+                                    let mut err = EvalError::type_assert_failed(
                                         &format_type_for_assert(&expected),
                                         value.type_name(),
                                         thunk_span,
                                     )
-                                    .with_materialization_span(expr_span)
-                                    .into()))
+                                    .with_materialization_span(expr_span);
+                                    if thunk_span != expr_span {
+                                        err = err
+                                            .with_secondary_span(thunk_span, "value produced here");
+                                    }
+                                    Action::Continue(Err(err.into()))
                                 }
                             }
                         } else if value_matches_type(&value, &expected) {
@@ -2346,13 +2358,16 @@ pub(crate) async fn apply_cont(
                                 ctx: Arc::clone(&ctx),
                             }
                         } else {
-                            Action::Continue(Err(EvalError::type_assert_failed(
+                            let mut err = EvalError::type_assert_failed(
                                 &format_type_for_assert(&expected),
                                 value.type_name(),
                                 thunk_span,
                             )
-                            .with_materialization_span(expr_span)
-                            .into()))
+                            .with_materialization_span(expr_span);
+                            if thunk_span != expr_span {
+                                err = err.with_secondary_span(thunk_span, "value produced here");
+                            }
+                            Action::Continue(Err(err.into()))
                         }
                     }
                     None => {
@@ -2378,9 +2393,22 @@ pub(crate) async fn apply_cont(
                             let actual = value.type_name();
                             let matches = if expected == "Number" {
                                 actual == "Int" || actual == "Float"
-                            } else if expected == "Unknown" || expected == "Top" {
-                                // Unknown and Top accept all values (gradual typing escape hatch)
+                            } else if expected == "Unknown"
+                                || expected == "Top"
+                                || expected == "Any"
+                            {
+                                // Unknown, Top, and Any accept all values (gradual typing escape hatch)
                                 true
+                            } else if expected == "Fn" {
+                                // Fn matches both Function and Builtin
+                                actual == "Function" || actual == "Builtin"
+                            } else if expected == "Handle" {
+                                // Handle matches both Handle and WriteHandle
+                                actual == "Handle" || actual == "WriteHandle"
+                            } else if expected == "Null" {
+                                // Null is represented as an empty Dict at runtime
+                                actual == "Dict"
+                                    && matches!(value, Value::Dict(ref entries) if entries.is_empty())
                             } else {
                                 actual == expected.as_str()
                             };
@@ -2398,11 +2426,14 @@ pub(crate) async fn apply_cont(
                                         ctx: Arc::clone(&ctx),
                                     };
                                 }
-                                return Action::Continue(Err(EvalError::type_assert_failed(
-                                    &expected, actual, thunk_span,
-                                )
-                                .with_materialization_span(expr_span)
-                                .into()));
+                                let mut err =
+                                    EvalError::type_assert_failed(&expected, actual, thunk_span)
+                                        .with_materialization_span(expr_span);
+                                if thunk_span != expr_span {
+                                    err =
+                                        err.with_secondary_span(thunk_span, "value produced here");
+                                }
+                                return Action::Continue(Err(err.into()));
                             }
                         } else if annotation_has_structural_fields(&annotation.node) {
                             // Structural record annotation without resolved_type — degrade
@@ -2425,11 +2456,14 @@ pub(crate) async fn apply_cont(
                                         ctx: Arc::clone(&ctx),
                                     };
                                 }
-                                return Action::Continue(Err(EvalError::type_assert_failed(
-                                    "Record", actual, thunk_span,
-                                )
-                                .with_materialization_span(expr_span)
-                                .into()));
+                                let mut err =
+                                    EvalError::type_assert_failed("Record", actual, thunk_span)
+                                        .with_materialization_span(expr_span);
+                                if thunk_span != expr_span {
+                                    err =
+                                        err.with_secondary_span(thunk_span, "value produced here");
+                                }
+                                return Action::Continue(Err(err.into()));
                             }
                         }
                         Action::Continue(Ok(value))

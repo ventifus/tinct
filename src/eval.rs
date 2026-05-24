@@ -810,6 +810,7 @@ pub(crate) fn validate_and_wrap_record(
     data_span: Span,
     ctx: &Arc<EvalContext>,
     default: Option<GuardDefault>,
+    blame_label: Option<crate::error::BlameLabel>,
 ) -> EvalResult<IndexMap<Key, ThunkId>> {
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
@@ -875,7 +876,7 @@ pub(crate) fn validate_and_wrap_record(
                 field_type.clone(),
                 nested_path,
                 guard_span,
-                None, // blame_label
+                blame_label.clone(),
                 default.clone(),
             ));
             let guarded_id = ctx.alloc_thunk(guarded);
@@ -2439,6 +2440,7 @@ pub fn materialize<'a>(
                                 inner_span,
                                 ctx,
                                 default.clone(),
+                                blame_label.clone(),
                             ) {
                                 Ok(new_entries) => {
                                     let guarded_value = Value::Dict(new_entries);
@@ -8092,6 +8094,7 @@ mod tests {
             data_span,
             &ctx,
             None,
+            None,
         );
 
         // Should error with field path prefix in the message
@@ -8158,6 +8161,7 @@ mod tests {
             data_span,
             &ctx,
             None,
+            None,
         );
 
         // BAS: should SUCCEED — extra fields accepted under width subtyping
@@ -8194,6 +8198,7 @@ mod tests {
             guard_span,
             data_span,
             &ctx,
+            None,
             None,
         );
 
@@ -8265,6 +8270,7 @@ mod tests {
             data_span,
             &ctx,
             None,
+            None,
         );
 
         // BAS: should SUCCEED — extra int-keyed fields accepted under width subtyping
@@ -8313,6 +8319,7 @@ mod tests {
             guard_span,
             data_span,
             &ctx,
+            None,
             None,
         );
 

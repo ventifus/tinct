@@ -9258,3 +9258,26 @@ Audit of `src/type_env.rs` found six builtins with over-broad Unknown/Union retu
 
 `just fmt && just build && just test-lib` — all pass (exit 0).
 Commit: `dependent-return-types: precise return types for connect/first/last/map/concat/tls-layer/cons`
+
+### review-blame-tracking: Audit blame tracking and chaperone semantics
+
+**Agents:** eval-engine, computer-scientist, type-theorist
+**Files:** `src/eval_materialize.rs` (Guarded thunk handling, blame attribution), `src/eval.rs` (TypeAssert wrapping, proxy contract creation), `doc/feature/structural-contracts.md`, `doc/05-type-annotations.md` §TypeAssert
+
+**Audit findings (computer-scientist, 2026-05-23):** Assessed against Findler & Felleisen (2002), Wadler & Findler (2009), Strickland et al. (2012).
+
+**SOUND:** First-order blame (TypeAssertCheck definition_span = value producer, materialization_span = assertion site). Structural contract composition (validate_and_wrap_record field_path threading, nested guard wrapping). Monotonicity (blame preserved through OnceCell caching and non-cacheable RestoreState restoration). Co-natural blame strategy (innermost label preserved).
+
+**GAP (documented):** Higher-order contracts (function/sequence wrapping) not implemented — tag-only checking at src/eval.rs:646. Completeness gap, not soundness.
+
+- [x] Dispatch eval-engine + computer-scientist + type-theorist to audit blame tracking correctness → findings go to TODO.md
+- [x] **BT1 UNSOUND — Field-level blame label dropped in `validate_and_wrap_record`.** Added `blame_label: Option<BlameLabel>` parameter (8th) to `validate_and_wrap_record`; passed to `new_guarded_full` for per-field guards; threaded from `GuardedValidate` and `TypeAssertCheck`. (`src/eval.rs:813`, `src/eval_materialize.rs:1615, 2302`) [Major]
+- [x] **BT2 GAP — `TypeAssertCheck` error missing secondary "value produced here" span.** Added `with_secondary_span(thunk_span, "value produced here")` on `thunk_span != expr_span` in all four `TypeAssertCheck` failure paths. (`src/eval_materialize.rs:2335-2345, 2361-2370, 2426-2436, 2456-2466`) [Minor]
+- [x] **BT3 GAP — `BlameLabel` always `None`; entire blame polarity infrastructure is dead.** Constructed `BlameLabel { origin_span: thunk_span, boundary_span: expr_span, polarity: BlameParity::Positive }` at `TypeAssertCheck` record boundary; passes to `validate_and_wrap_record`. (`src/eval_materialize.rs:2288-2293`) [Minor]
+- [x] **BT4 GAP — `PipelineBlame` infrastructure never instantiated.** Documented as KNOWN ISSUE in `PipelineBlame` struct doc comment with 4-step implementation roadmap. (`src/error.rs:68-76`) [Minor]
+- [x] **BT5 UNSOUND — RuntimeTypeCheck nominal fallback type name mismatches (subsumes TA1/TA2).** Added special cases for `"Any"`, `"Fn"`, `"Handle"`, `"Null"` in `--no-typecheck` nominal fallback path. (`src/eval_materialize.rs:2396-2411`) [Major]
+
+**SOUND (verified):** Guarded thunk escape (no bypass path — `take_guarded` atomically transitions before returning), first-order blame attribution (`inner_span` = value production site, `guard_span` = assertion site — correctly directed), nested/composed guards (two independent `TypeAssertCheck` continuations, no double-wrapping of `Guarded` state), structural contract composition (`validate_and_wrap_record` field_path threading), Guarded thunk sharing (OnceCell `set_materialized` on success — validation does not re-run), non-cacheable guard failure restoration (`RestoreState::Guarded` correctly restores thunk to Guarded state for retry), blame monotonicity (OnceCell first-set-wins preserves blame info).
+
+`just fmt && just build && just test-lib` — all pass (exit 0).
+Commit: `review-blame-tracking: fix BT1+BT5 UNSOUND + BT2-BT4 GAP blame attribution`

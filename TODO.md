@@ -1108,33 +1108,6 @@ Answers to key questions:
 
 **SOUND (verified):** `Int`/`Float`/`Bool`/`Str` primitives, `Number` (special-cased), `Seq[T]` tag-only (documented), `Fn@T [U]` tag-only (documented), `Variant` tag-comparison matches static, `Union` (`any(members)` mirrors static), `Intersection` (`all(members)` mirrors static), `default:` compile-time validated + runtime lookup correct, guarded thunk lifecycle (all 4 paths), nested TypeAssert (independent per level), blame attribution (inner_span = producer per Findler & Felleisen 2002). Record-type assertions are **NOT** no-ops — `validate_and_wrap_record` performs shape checking and guard-wrapping via `Cont::GuardedValidate`.
 
-### review-blame-tracking: Audit blame tracking and chaperone semantics
-
-**Agents:** eval-engine, computer-scientist, type-theorist
-**Files:** `src/eval_materialize.rs` (Guarded thunk handling, blame attribution), `src/eval.rs` (TypeAssert wrapping, proxy contract creation), `doc/feature/structural-contracts.md`, `doc/05-type-annotations.md` §TypeAssert
-
-Key questions:
-- Does blame assignment correctly identify the blaming party (call site vs definition site) in all scenarios?
-- Is the chaperone semantics (Strickland et al. 2012) correctly implemented: does wrapping a Guarded thunk compose correctly with nested TypeAssert wrappers?
-- For pipeline blame (`%@Type` input annotation): does the blame chain correctly trace back to the pipeline entry point?
-- Is there a scenario where a TypeAssert failure blames the wrong party — e.g., blames a correct caller instead of an incorrect producer?
-- Are Guarded thunks correctly forced/unwrapped at all access sites, or can a thunk escape the guard boundary undetected?
-
-- [x] Dispatch eval-engine + computer-scientist + type-theorist to audit blame tracking correctness → findings go to TODO.md
-
-**Audit findings (computer-scientist, 2026-05-23):** Assessed against Findler & Felleisen (2002), Wadler & Findler (2009), Strickland et al. (2012).
-
-**SOUND:** First-order blame (TypeAssertCheck definition_span = value producer, materialization_span = assertion site). Structural contract composition (validate_and_wrap_record field_path threading, nested guard wrapping). Monotonicity (blame preserved through OnceCell caching and non-cacheable RestoreState restoration). Co-natural blame strategy (innermost label preserved).
-
-**GAP (documented):** Higher-order contracts (function/sequence wrapping) not implemented — tag-only checking at src/eval.rs:646. Completeness gap, not soundness.
-
-- [ ] **BT1 UNSOUND — Field-level blame label dropped in `validate_and_wrap_record`.** `src/eval.rs:779,852`, `src/eval_materialize.rs:1607`. `validate_and_wrap_record` has no `blame_label` parameter. The `GuardedValidate` continuation carries a `blame_label` field (eval_materialize.rs:1573) but does not pass it through to `validate_and_wrap_record`. Per-field guards created for structural contracts carry `blame_label: None`. Concrete: a `%@[name: String  age: Int]` pipeline contract wraps `%` with a `BlameLabel` identifying the producing stage; when `age` is accessed and fails, the field-guard error has no blame label — the pipeline blame attribution is silently discarded. Fix: add `blame_label: Option<BlameLabel>` parameter to `validate_and_wrap_record`, pass it to `new_guarded_full` at line 852, and thread it from `GuardedValidate` (eval_materialize.rs:1607) and `TypeAssertCheck` (eval_materialize.rs:2287, pass `None`). [Major]
-- [ ] **BT2 GAP — `TypeAssertCheck` error missing secondary "value produced here" span.** `src/eval_materialize.rs:2327-2355`. `GuardedValidate` adds `with_secondary_span(inner_span, "value produced here")` when `inner_span != guard_span`. `TypeAssertCheck` does not. Error messages from direct `[@Type expr]` assertions are less informative than field-guard errors. Fix: add `with_secondary_span(thunk_span, "value produced here")` in `TypeAssertCheck` failure paths when `thunk_span != expr_span`. [Minor]
-- [ ] **BT3 GAP — `BlameLabel` always `None`; entire blame polarity infrastructure is dead.** `src/eval.rs:71,852`. Every call to `new_guarded_full` passes `None` for `blame_label`. `BlameLabel`, `BlameParity`, `with_blame`, co-natural composition exist but are never populated. Construct `BlameLabel { origin_span: thunk.span, boundary_span: span, polarity: BlameParity::Positive }` at creation sites. Model: Wadler & Findler (2009). [Minor]
-- [ ] **BT4 GAP — `PipelineBlame` infrastructure never instantiated.** `src/eval_pipeline.rs:195`. `PipelineBlame` struct and `with_pipeline_blame` method exist but are never called. `wrap_with_nominal_validation` produces a `RuntimeTypeCheck` thunk with no pipeline stage attribution. `doc/feature/structural-contracts.md:154` specifies that contract violations should identify the producing stage and consuming stage. Thread `PipelineBlame { producer: prev_stage_label, consumer: annotating_stage_label }` from `eval_file_with_input` where the document index is known. Model: Findler & Felleisen (2002). [Minor]
-- [ ] **BT5 UNSOUND — RuntimeTypeCheck nominal fallback type name mismatches (subsumes TA1/TA2).** `src/eval_materialize.rs:2384-2386`. String comparison `actual == expected.as_str()` fails for: `"Fn"` vs `"Function"`/`"Builtin"`, `"Handle"` vs `"WriteHandle"`, `"Null"` vs `"Dict"`, `"Any"` (should accept all). Add special cases analogous to existing `"Number"` and `"Unknown"`/`"Top"` cases. Counterexample: `[@Fn [fn [x] x]]` in `$include`'d file rejects a valid function. Model: Milner (1978) phase consistency. Subsumes TA1/TA2. [Major]
-
-**SOUND (verified):** Guarded thunk escape (no bypass path — `take_guarded` atomically transitions before returning), first-order blame attribution (`inner_span` = value production site, `guard_span` = assertion site — correctly directed), nested/composed guards (two independent `TypeAssertCheck` continuations, no double-wrapping of `Guarded` state), structural contract composition (`validate_and_wrap_record` field_path threading), Guarded thunk sharing (OnceCell `set_materialized` on success — validation does not re-run), non-cacheable guard failure restoration (`RestoreState::Guarded` correctly restores thunk to Guarded state for retry), blame monotonicity (OnceCell first-set-wins preserves blame info).
 
 ### review-chr-constraints: Audit CHR constraint solving and MPTC/FD soundness
 
