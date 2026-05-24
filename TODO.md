@@ -619,9 +619,25 @@ The `doc/whatif/completed/builtin-privacy.md` whatif is **accepted** (2026-05-11
 - [x] Wire `inject_builtin_aliases()` to be called ONLY during prelude type-checking (it is already, but verify no other call sites exist).
 - [x] Verify that all prelude stdlib functions that currently call canonical builtin names (`split`, `str`, etc.) have been migrated to `builtin-*` names — or that the canonical names are re-exported by prelude from the prelude dict.
 
-#### Phase 2 (implement)
+#### Phase 2 (implement) — [x] KNOWN ISSUE
 
-- [ ] **Remove `TypeEnv::with_builtins()` from the user-code path.** Currently `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()` at `src/imports.rs:241`, which leaks all Rust builtins into user scope. Fix: use `TypeEnv::with_builtins()` only for prelude type-checking internally, then build the user-facing TypeEnv from the prelude's output types only — not from the raw builtin env. (`src/imports.rs:239-340`)
+Attempted 2026-05-23. The naive fix (start `env` with `TypeEnv::new()` instead of `TypeEnv::with_builtins()` and use only prelude's own-frame bindings) causes 25+ corpus test failures:
+
+- `undefined variable: merge` — `merge` is in `with_builtins()` but NOT re-exported by prelude
+- `undefined variable: try` — `try` is a builtin, not re-exported by prelude
+- `undefined variable: type-of` — `type-of` is a builtin, not re-exported by prelude
+- `undefined variable: narrow` — `narrow` is a builtin (cap introspection), not in prelude
+- Nominal variant constructors (`Circle`, `Tag`, `Shape`, etc.) lost because class instances aren't seeded
+- `constraint_not_satisfied` and `proxy_named_arg` typecheck warning tests fail because `+` and named-arg inference depend on builtin type schemes being in scope
+
+Root cause: many builtins (`merge`, `try`, `type-of`, `narrow`, `keys`, `append`, and many others) are exposed to user code via `TypeEnv::with_builtins()` but are NOT re-exported by prelude. Removing builtins from the user-facing TypeEnv without first migrating those builtins to prelude re-exports breaks tests.
+
+**Prerequisites for Phase 2:**
+- `stdlib-builtin-wrappers-audit` sprint (below) must complete, ensuring ALL user-visible builtins are re-exported by prelude under stable names.
+- Corpus tests that call builtins directly in user code must be updated to call the prelude re-exports.
+- Only THEN can `TypeEnv::with_builtins()` be safely removed from the user-code path.
+
+- [ ] **Remove `TypeEnv::with_builtins()` from the user-code path.** Currently `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()` at `src/imports.rs:246`, which leaks all Rust builtins into user scope. Fix: use `TypeEnv::with_builtins()` only for prelude type-checking internally, then build the user-facing TypeEnv from the prelude's output types only — not from the raw builtin env. (`src/imports.rs:239-340`) **Blocked on stdlib-builtin-wrappers-audit completing prelude re-exports.**
 - [ ] Change the evaluator's root env to mirror this: user code's root `Environment` should contain only prelude output, not the raw builtin registry. The `standard_builtins()` registry is used internally for dispatch but not exposed as variable bindings. (`src/imports.rs`, eval pipeline setup)
 
 #### Phase 3 (migrate + lint)
