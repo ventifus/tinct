@@ -9479,3 +9479,10 @@ Commit: `parser-annotation-type-params: Handle ctor-app in resolve_annotation + 
 
 `just fmt && just build && just test-lib` — all pass (exit 0).
 Commit: `code-health-cycle316: mark capability/partialeq as KNOWN ISSUE + TypeAnnotationTable fix`
+
+### corpus-test-hang: `just test-corpus` runs extremely slowly or times out
+
+Investigation sprint (2026-05-23). Previous analysis suggested CHR test failures + container memory pressure. Actual finding: **not slow tests, but a genuine infinite loop** in one specific test.
+
+- [x] Identify which corpus tests are slow — **FINDING: `async_select_basic.llt-eval` (test 43/1233) causes an infinite busy-poll hang, blocking all subsequent tests.** Diagnostic batch runner with per-test file logging (`diag.log`) showed tests 1-42 completing in 50-100ms each; test 43 (`tests/corpus/eval/builtins/async_select_basic.llt-eval`) starts but never completes. Other corpus test runners (`test_valid_corpus`, `test_typecheck_corpus`, `test_typecheck_error_corpus_eval`, `test_typecheck_warnings_corpus`) all complete in <10s.
+- [x] Profile the slow tests — **ROOT CAUSE: `builtin_select_once` (`src/builtins_async.rs:584-694`) uses `loop { ... tokio::task::yield_now().await }` to busy-poll channels. The `async_rt::block_on_anywhere` spin-poll executor (`src/async_rt.rs:97-117`) re-polls immediately after `yield_now`, creating an infinite busy-spin.** The spin-poll executor's documented invariant ("no channel awaits on external data", `src/async_rt.rs:108-114`) is violated by `select-once`. Additionally, the test's `_: [send ch1 42]` binding may not be forced due to lazy evaluation of `_`, leaving channels permanently empty. **This is NOT related to CHR tests or container memory pressure.** Fix tracked as new sprint `select-once-hang` in TODO.md.
