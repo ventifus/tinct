@@ -177,6 +177,21 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `typecheck_file_with_types` made `#[cfg(test)]` (test-only); others made `fn` (private) [commit 98148cc]
 - [x] `just build` passes [commit 98148cc]
 
+### typecheck-surface-migration: Migrate type-checker to native SurfaceProgram
+
+**Goal:** Replace `typecheck_file()` internals with native SurfaceNode walking. Once complete, `surface_program_to_file()` bridge in typecheck can be deleted, unblocking all rv2-delete-old-ast items.
+
+**Scope:** ~50 match arms in typecheck.rs + typecheck_dict.rs + typecheck_annot.rs
+
+- [ ] Survey: count all `Expr::` and `Spanned<Expr>` match arms in typecheck.rs, typecheck_dict.rs, typecheck_annot.rs
+- [ ] Add `typecheck_surface_document_native(doc: &SurfaceDocument, state, ...)` that walks SurfaceItem::Expr and SurfaceItem::Decl natively
+- [ ] Migrate Pass 0c (pre-scan for ClassDecl, TypeAlias, InstanceDecl) to walk SurfaceDeclaration variants directly
+- [ ] Migrate Pass 1-3 dict inference in typecheck_dict.rs to walk SurfaceExpression variants
+- [ ] Migrate typecheck_annot.rs annotation elaboration to accept SurfaceNode
+- [ ] Delete `surface_program_to_file()` call from typecheck_surface_program_with_env
+- [ ] Delete `file_to_surface_program_with_types()` extraction step
+- [ ] `just build` passes; `just test` passes
+
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files — BLOCKED
 
 **Depends on:** rv2-migrate-ast-dict ✅(partial), rv2-migrate-repl ✅, rv2-migrate-lsp ✅, rv2-migrate-typecheck-api ✅
