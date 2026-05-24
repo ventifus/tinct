@@ -1515,6 +1515,34 @@ pub(crate) async fn apply_cont(
                         thunk.set_materialized(result_val.clone());
                         Action::Continue(Ok(result_val))
                     }
+                    // ADT constructor called with a single named arg: [Circle r: 5] where Circle = [variant "Circle"].
+                    // When a unit Variant is called with no positional args and exactly one named arg,
+                    // use the named arg's value as the payload. This supports single-field ADT constructors
+                    // declared via `[type Shape [Circle r: Int] ...]`.
+                    Value::Variant { tag, payload: None }
+                        if args.as_ref().is_some_and(|v| v.is_empty())
+                            && named
+                                .as_ref()
+                                .is_some_and(|m| m.as_ref().is_some_and(|b| b.len() == 1)) =>
+                    {
+                        let named_map = named
+                            .as_ref()
+                            .expect("checked Some above")
+                            .as_ref()
+                            .expect("checked Some above");
+                        let payload_thunk = named_map
+                            .values()
+                            .next()
+                            .expect("1 entry checked above")
+                            .clone();
+                        let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
+                        let result_val = Value::Variant {
+                            tag,
+                            payload: Some(payload_id),
+                        };
+                        thunk.set_materialized(result_val.clone());
+                        Action::Continue(Ok(result_val))
+                    }
                     other => {
                         let err = EvalError::type_mismatch(
                             "Function or Builtin",

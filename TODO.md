@@ -672,6 +672,50 @@ Pre-existing failures (NOT caused by Phase 2 change, already failing at baseline
 - [x] Update corpus tests that call builtins directly in user code — `just test-lib` passes with no new failures after Phase 2; existing corpus tests already use prelude-exported names. **DONE 2026-05-23.**
 - [x] Add T002 lint warning in `src/typecheck.rs` at both `undefined_variable` sites (plain VarRef and call-head VarRef): when the name is a known Rust builtin and `!state.in_prelude_load`, pushes a note onto the `TypeError` and a `TypeDiagnostic` with code `T002` into `state.diagnostics`. Helper `builtin_primary_names()` added to `src/builtins.rs`. Corpus test at `tests/corpus/typecheck/warnings/raw_builtin_t002.llt-eval`. **DONE 2026-05-23.**
 
+### include-libdir-stdlib-typecheck: %libdir includes type-checked in user context, not stdlib context
+
+`[include %libdir "net.llt"]` from user code causes net.llt to be type-checked using the restricted user TypeEnv (which lacks raw builtins). Net.llt uses raw builtins (`url`, `http-request`, `http2-session`, `connect`, etc.) directly, so they appear as "undefined variable" T002 errors → error nodes in the AST → E099 at runtime when any net.llt function is called.
+
+Root cause: the include/typecheck pipeline uses the same TypeEnv for included stdlib files as for user code. Stdlib files (in `%libdir`) should be type-checked with `in_prelude_load = true` and the full stdlib TypeEnv (with raw builtins), since they ARE part of the stdlib.
+
+**Symptom:** `just versions` fails with `[E099] syntax error at 79:50 (cannot evaluate error node)` — the error is at net.llt line 79, col 50 (the closing bracket of `fetch`'s `[fn@Dict ...]`).
+
+**Fix:** When the type-checker encounters `[include %libdir "..."]`, load the included file with the stdlib TypeEnv (or with `in_prelude_load = true`). This mirrors how `create_stdlib_env_inner()` already uses prelude-aware contexts for stdlib evaluation. Relevant files: `src/imports.rs`, `src/typecheck.rs` (include handling).
+
+- [ ] Fix include type-checking context for `%libdir` → use stdlib env, not user env
+- [ ] Verify `[include %libdir "net.llt"]` from user code works without E099 after fix
+- [ ] `just versions` passes after fix
+
+**Also:**
+- [ ] Migrate net.llt to use `builtin-*` stable aliases (defense in depth — makes net.llt work even if included in user context before the above fix)
+
+### builtin-privacy-missing-wrappers: Audit and add missing prelude wrappers + type alias propagation
+
+Follow-up from builtin-privacy Phase 3. Three issues discovered when making `samples/versions.llt` pass `just lint-file`:
+
+**Missing stable aliases + prelude wrappers (partially fixed 2026-05-24):**
+- [x] Add `builtin-trim` stable alias → `src/builtins.rs`
+- [x] Add `builtin-emit` stable alias → `src/builtins.rs`
+- [x] Add `builtin-env` stable alias → `src/builtins.rs`
+- [x] Add `trim`, `emit`, `env` wrappers to prelude "prelude-missing-wrappers" section → `stdlib/prelude.llt`
+
+**Type alias propagation (fixed 2026-05-24):**
+- [x] `@NetCap` / `@DirCap` / `@Handle` in user code fail with T002 "undefined type" after Phase 2 changed user TypeEnv to start from `TypeEnv::new()`. Fix: propagate type aliases from `builtins_env` into the user-facing env at end of `build_prelude_env_inner()` → `src/imports.rs`, `src/type_env.rs`
+
+**Audit remaining missing wrappers:**
+- [ ] Run `tinct lint --strict` on all samples/ files to find any remaining raw builtin references
+- [ ] Run `tinct lint --strict` on any user-facing example scripts to verify full coverage
+- [ ] Update `doc/11a-builtins.md` to document `builtin-trim`, `builtin-emit`, `builtin-env`
+- [ ] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3)
+
+**Also update `just lint-file` test for all samples:**
+- [ ] `just lint-file samples/versions.llt` — currently fails due to T010 at 0:0 (scan_type_quality span bug); T002/T003 are clean
+- [ ] `just lint-file samples/basic.llt` — verify not regressed
+- [ ] `just versions` — currently fails E099 (blocked on `include-libdir-stdlib-typecheck` above)
+- [ ] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env)
+
+---
+
 ## Research / Design Items
 
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class (`doc/whatif/filterable.md`)
@@ -886,8 +930,8 @@ T013 warnings currently report internal inference variable names like `_t86` ins
 **Group E — Equatable for Variant types (1 typecheck failure):**
 - [x] Fix `transport_typed.llt-eval` — FIXED: Added `Type::NominalVariant { .. }` to Equatable instances in `satisfies_constraint_inner` (`src/type_unify.rs:108`); Variant equality is runtime tag comparison (commit e07d63e)
 
-**Group F — Nominal variant match + instance Multipliable (1 typecheck failure) — KNOWN ISSUE:**
-- [ ] Fix `nominal_variant_exhaustive_match.llt-eval` — "undefined variable: Circle at 8:11-8:17": uses `[type Shape [Circle r: Int] [Square s: Int]]` with a named type and constructor syntax. `Circle` must be registered as a constructor function/value in scope; type alias registration alone is insufficient. Requires ADT constructor scoping in the evaluator. [KNOWN ISSUE]
+**Group F — Nominal variant match + instance Multipliable (1 typecheck failure) — FIXED:**
+- [x] Fix `nominal_variant_exhaustive_match.llt-eval` — FIXED: ADT constructor scoping implemented (adt-constructor-scoping sprint). `inject_adt_constructors_surface_program` in `desugar.rs` injects `CtorName: [variant "CtorName"]` entries into dict surface AST before the resolver runs (preserving slot alignment). `lower.rs` skips Decl entries at runtime. `eval_materialize.rs` and `eval.rs` extended to handle unit-variant called with single named arg: `[Circle r: 5]` → `Variant(Circle, Int(5))`. `typecheck_dict.rs` Pass 2 injects `inject_adt_constructor_schemes` with `Type::Unknown` for gradual typing acceptance. `typecheck_annot.rs` fixed: 3+ all-positional entries in nominal variant constructor position fall through to union path instead of erroring. Test updated: `area: Int(75)` is a keyed entry in the result dict.
 
 ---
 

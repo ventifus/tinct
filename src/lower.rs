@@ -80,16 +80,26 @@ fn lower_expr(
                 .collect(),
         ),
 
-        SurfaceExpression::Dict(entries) => CoreExpr::Dict(
-            entries
-                .iter()
-                .map(|se| {
-                    let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                    let value = Arc::new(lower(&se.node.value, res, types));
-                    Spanned::new(CoreEntry { key, value }, se.span)
-                })
-                .collect(),
-        ),
+        SurfaceExpression::Dict(entries) => {
+            let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
+            for se in entries {
+                // ADT constructor scoping: skip TypeAlias (and other Decl) entries at runtime.
+                // TypeAlias entries are compile-time declarations; forcing them as values
+                // produces a Placeholder error (E081). The constructors were already injected
+                // as real `CtorName: [variant "CtorName"]` surface entries by
+                // `desugar::inject_adt_constructors_surface_program` (runs before resolve),
+                // so skipping the Decl here is safe.
+                if let SurfaceExpression::Decl(_) = &se.node.value.expr {
+                    // Declaration form in dict value position: skip entirely at runtime.
+                    // Type checker handles it via Pass 0c (typecheck_dict.rs).
+                    continue;
+                }
+                let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                let value = Arc::new(lower(&se.node.value, res, types));
+                core_entries.push(Spanned::new(CoreEntry { key, value }, se.span));
+            }
+            CoreExpr::Dict(core_entries)
+        }
 
         SurfaceExpression::Call {
             func,

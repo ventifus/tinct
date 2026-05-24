@@ -3200,50 +3200,51 @@ pub(crate) fn resolve_type_dict(
                                     tag: tag.clone(),
                                     fields: Row { fields },
                                 });
-                            } else {
-                                return Err(TypeError::new(
-                                    "nominal variant constructor with positional payload must have exactly 1 or 2 entries ([Constructor] or [Constructor PayloadType])",
-                                    span,
-                                ));
                             }
-                        }
-                        // Case 2: Mixed positional+keyed — [Constructor field: Type ...]
-                        // First entry is tag, remaining are named fields
-                        let mut variant_fields = HashMap::new();
-                        for field_entry in &entries[1..] {
-                            match &field_entry.node.key {
-                                Some(k) => {
-                                    let field_name =
-                                        match &k.node {
+                            // 3+ all-positional entries: not a constructor with positional payload.
+                            // Fall through to the multi-entry union path below.
+                            // Example: `[type Shape [Circle r: Int] [Square s: Int]]` produces
+                            // body `[Shape [Circle r: Int] [Square s: Int]]` — all three are
+                            // union members, not a constructor tag + 2 payloads.
+                        } else {
+                            // Case 2: Mixed positional+keyed — [Constructor field: Type ...]
+                            // First entry is tag (positional), remaining are named fields (keyed).
+                            // Only reached when some of entries[1..] are keyed.
+                            let mut variant_fields = HashMap::new();
+                            for field_entry in &entries[1..] {
+                                match &field_entry.node.key {
+                                    Some(k) => {
+                                        let field_name = match &k.node {
                                             Expr::Str(s) => s.clone(),
                                             _ => return Err(TypeError::new(
                                                 "nominal variant field names must be bare words",
                                                 k.span,
                                             )),
                                         };
-                                    let field_ty = resolve_type_expr(
-                                        &field_entry.node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?;
-                                    variant_fields.insert(field_name, field_ty);
-                                }
-                                None => {
-                                    return Err(TypeError::new(
-                                        "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)",
-                                        field_entry.span,
-                                    ));
+                                        let field_ty = resolve_type_expr(
+                                            &field_entry.node.value,
+                                            env,
+                                            state,
+                                            ann_mapping,
+                                            row_ann_mapping,
+                                        )?;
+                                        variant_fields.insert(field_name, field_ty);
+                                    }
+                                    None => {
+                                        return Err(TypeError::new(
+                                            "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)",
+                                            field_entry.span,
+                                        ));
+                                    }
                                 }
                             }
+                            return Ok(Type::NominalVariant {
+                                tag: tag.clone(),
+                                fields: Row {
+                                    fields: variant_fields,
+                                },
+                            });
                         }
-                        return Ok(Type::NominalVariant {
-                            tag: tag.clone(),
-                            fields: Row {
-                                fields: variant_fields,
-                            },
-                        });
                     }
                 }
             }

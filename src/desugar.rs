@@ -24,8 +24,8 @@
 //! See doc/04-functions.md §`$_` Desugaring for the complete formal specification.
 
 use crate::ast::{
-    Annotation, Spanned, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem,
-    SurfaceNode, SurfaceParam, SurfaceProgram,
+    Annotation, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
+    SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
 use std::sync::Arc;
 
@@ -37,6 +37,258 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
     for doc_spanned in &mut program.documents {
         desugar_surface_document(&mut doc_spanned.node);
     }
+}
+
+/// Inject ADT constructor bindings into dicts that contain `[type ...]` declarations.
+///
+/// For each dict containing a `SurfaceExpression::Decl(TypeAlias)` entry, extracts the
+/// NominalVariant constructor names from the TypeAlias body and injects synthetic
+/// `CtorName: [variant "CtorName"]` entries at the BEGINNING of the dict. This runs
+/// BEFORE `resolve_surface_program`, so the resolver correctly assigns de Bruijn slots to
+/// the constructor names — making `$Circle` and `[Circle r: 5]` resolvable by slot.
+///
+/// The TypeAlias Decl entry itself is preserved so the type checker can still register it.
+/// At runtime, the Decl entry lowers to `CoreExpr::Placeholder` and is skipped via the
+/// `lower.rs` Dict arm (which already handles `SurfaceExpression::Decl` → skip).
+pub fn inject_adt_constructors_surface_program(program: &mut SurfaceProgram) {
+    for doc_spanned in &mut program.documents {
+        inject_adt_constructors_document(&mut doc_spanned.node);
+    }
+}
+
+fn inject_adt_constructors_document(doc: &mut SurfaceDocument) {
+    for item in &mut doc.items {
+        if let SurfaceItem::Expr(node_arc) = item {
+            let new_node = inject_adt_constructors_node(Arc::clone(node_arc));
+            *node_arc = new_node;
+        }
+    }
+}
+
+fn inject_adt_constructors_node(node: Arc<SurfaceNode>) -> Arc<SurfaceNode> {
+    let span = node.span;
+    let new_expr = inject_adt_constructors_expr(&node.expr, span);
+    if std::ptr::eq(&new_expr as *const _, &node.expr as *const _) {
+        // No change — return original Arc (avoids clone)
+        return node;
+    }
+    Arc::new(SurfaceNode {
+        expr: new_expr,
+        span,
+    })
+}
+
+fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> SurfaceExpression {
+    match expr {
+        SurfaceExpression::Dict(entries) => {
+            let syn_span = Span::origin();
+            let mut new_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
+            let mut has_injection = false;
+
+            for se in entries {
+                // Check if this entry's value is a TypeAlias Decl
+                if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
+                    if let SurfaceDeclaration::TypeAlias { body, .. } = decl.as_ref() {
+                        let ctor_names = extract_surface_adt_ctor_names_from_expr(&body.expr);
+                        if !ctor_names.is_empty() {
+                            has_injection = true;
+                            // Inject synthetic entries: CtorName: [variant "CtorName"]
+                            for ctor_name in ctor_names {
+                                let key_node = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Str(ctor_name.clone()),
+                                    span: syn_span,
+                                });
+                                // Build [variant "CtorName"] as a Call expression
+                                let variant_fn = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::VarRef {
+                                        name: "variant".to_string(),
+                                        escaped: false,
+                                    },
+                                    span: syn_span,
+                                });
+                                let tag_arg = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Str(ctor_name),
+                                    span: syn_span,
+                                });
+                                let call_expr = SurfaceExpression::Call {
+                                    func: Arc::clone(&variant_fn),
+                                    args: vec![Arc::clone(&tag_arg)],
+                                    named_args: vec![],
+                                    implied: false,
+                                };
+                                let value_node = Arc::new(SurfaceNode {
+                                    expr: call_expr,
+                                    span: syn_span,
+                                });
+                                new_entries.push(Spanned::new(
+                                    SurfaceEntry {
+                                        key: Some(key_node),
+                                        value: value_node,
+                                    },
+                                    syn_span,
+                                ));
+                            }
+                        }
+                    }
+                }
+                // Always include the original entry (TypeAlias Decl is preserved for type checker)
+                // Recurse into the entry's value to handle nested dicts
+                let new_value = inject_adt_constructors_node(Arc::clone(&se.node.value));
+                let new_key = se
+                    .node
+                    .key
+                    .as_ref()
+                    .map(|k| inject_adt_constructors_node(Arc::clone(k)));
+                new_entries.push(Spanned::new(
+                    SurfaceEntry {
+                        key: new_key,
+                        value: new_value,
+                    },
+                    se.span,
+                ));
+            }
+
+            if has_injection {
+                SurfaceExpression::Dict(new_entries)
+            } else {
+                // No injections: reconstruct only if children changed (propagate recursion)
+                let changed = new_entries.iter().zip(entries.iter()).any(|(new, old)| {
+                    !Arc::ptr_eq(&new.node.value, &old.node.value)
+                        || new
+                            .node
+                            .key
+                            .as_ref()
+                            .zip(old.node.key.as_ref())
+                            .is_some_and(|(a, b)| !Arc::ptr_eq(a, b))
+                });
+                if changed {
+                    SurfaceExpression::Dict(new_entries)
+                } else {
+                    expr.clone()
+                }
+            }
+        }
+        // Recurse into other expression types that can contain dicts
+        SurfaceExpression::Sequential(exprs) => {
+            let new_exprs: Vec<Arc<SurfaceNode>> = exprs
+                .iter()
+                .map(|e| inject_adt_constructors_node(Arc::clone(e)))
+                .collect();
+            let changed = new_exprs
+                .iter()
+                .zip(exprs.iter())
+                .any(|(a, b)| !Arc::ptr_eq(a, b));
+            if changed {
+                SurfaceExpression::Sequential(new_exprs)
+            } else {
+                expr.clone()
+            }
+        }
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => {
+            let new_func = inject_adt_constructors_node(Arc::clone(func));
+            let new_args: Vec<Arc<SurfaceNode>> = args
+                .iter()
+                .map(|a| inject_adt_constructors_node(Arc::clone(a)))
+                .collect();
+            let new_named: Vec<Spanned<SurfaceNamedArg>> = named_args
+                .iter()
+                .map(|na| {
+                    let new_val = inject_adt_constructors_node(Arc::clone(&na.node.value));
+                    Spanned::new(
+                        SurfaceNamedArg {
+                            name: na.node.name.clone(),
+                            value: new_val,
+                        },
+                        na.span,
+                    )
+                })
+                .collect();
+            let changed = !Arc::ptr_eq(&new_func, func)
+                || new_args
+                    .iter()
+                    .zip(args.iter())
+                    .any(|(a, b)| !Arc::ptr_eq(a, b))
+                || new_named
+                    .iter()
+                    .zip(named_args.iter())
+                    .any(|(a, b)| !Arc::ptr_eq(&a.node.value, &b.node.value));
+            if changed {
+                SurfaceExpression::Call {
+                    func: new_func,
+                    args: new_args,
+                    named_args: new_named,
+                    implied: *implied,
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => {
+            let new_body = inject_adt_constructors_node(Arc::clone(body));
+            if Arc::ptr_eq(&new_body, body) {
+                expr.clone()
+            } else {
+                SurfaceExpression::Fn {
+                    return_ann: return_ann.clone(),
+                    params: params.clone(),
+                    body: new_body,
+                    desugared: *desugared,
+                }
+            }
+        }
+        // Leaf / non-recursive forms: return unchanged
+        _ => expr.clone(),
+    }
+}
+
+/// Extract ADT constructor names from a surface TypeAlias body expression.
+///
+/// A TypeAlias body that is `[Shape [Circle r: Int] [Square s: Int]]` (all-positional Dict)
+/// has each positional entry as a union member. Uppercase VarRef entries are unit constructors;
+/// Call entries whose func is an uppercase VarRef are named-field constructors.
+fn extract_surface_adt_ctor_names_from_expr(body: &SurfaceExpression) -> Vec<String> {
+    let mut names = Vec::new();
+
+    fn try_extract_surface(expr: &SurfaceExpression, names: &mut Vec<String>) {
+        match expr {
+            SurfaceExpression::VarRef { name, .. } if crate::eval::is_constructor_name(name) => {
+                names.push(name.clone());
+            }
+            SurfaceExpression::Call { func, .. } => {
+                if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                    if crate::eval::is_constructor_name(name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match body {
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                if entry.node.key.is_none() {
+                    try_extract_surface(&entry.node.value.expr, &mut names);
+                }
+            }
+        }
+        other => {
+            try_extract_surface(other, &mut names);
+        }
+    }
+
+    names
 }
 
 /// Desugar a single SurfaceDocument (all expression items).

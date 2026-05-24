@@ -2388,6 +2388,27 @@ pub fn materialize<'a>(
                     thunk.set_materialized(result_val.clone());
                     Ok(result_val)
                 }
+                // ADT constructor called with a single named arg: [Circle r: 5] where Circle = [variant "Circle"].
+                // When a unit Variant is called with no positional args and exactly one named arg,
+                // use the named arg's value as the payload. This supports single-field ADT constructors
+                // declared via `[type Shape [Circle r: Int] ...]`.
+                // Pattern `[Circle binding]` then matches and binds `binding` to the payload value.
+                Value::Variant { tag, payload: None }
+                    if args.is_empty() && named.as_ref().is_some_and(|m| m.len() == 1) =>
+                {
+                    let named_map = named.expect("checked is_some above");
+                    let payload_thunk = named_map
+                        .into_values()
+                        .next()
+                        .expect("1 entry checked above");
+                    let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
+                    let result_val = Value::Variant {
+                        tag,
+                        payload: Some(payload_id),
+                    };
+                    thunk.set_materialized(result_val.clone());
+                    Ok(result_val)
+                }
                 other => {
                     let err = EvalError::type_mismatch(
                         "Function or Builtin",
@@ -5215,6 +5236,30 @@ mod tests {
             err
         );
         assert!(err.to_string().contains("got Float"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_adt_constructor_scoping_eval() {
+        // ADT constructor scoping: nominal_variant_exhaustive_match corpus test.
+        // [type Shape [Circle r: Int] [Square s: Int]] injects constructors into scope.
+        // [Circle r: 5] creates Variant(Circle, 5). Match extracts payload r=5. area = 3*5*5=75.
+        let src = concat!(
+            "[\n",
+            "  [type Shape [Circle r: Int] [Square s: Int]]\n",
+            "  shape: [Circle r: 5]\n",
+            "  area: [match shape [Circle r]: [* 3 [* r r]] [Square s]: [* s s]]\n",
+            "]"
+        );
+        let result = crate::eval_source(src).expect("eval failed");
+        // Dict includes injected constructor bindings and the area: Int(75) field
+        assert!(
+            result.contains("\"area\": Int(75)"),
+            "expected area: Int(75) in {result}"
+        );
+        assert!(
+            result.contains("Variant(Circle, Int(5))"),
+            "expected Variant(Circle, Int(5)) in {result}"
+        );
     }
 
     #[test]

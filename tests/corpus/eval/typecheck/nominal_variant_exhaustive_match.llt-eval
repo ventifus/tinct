@@ -1,5 +1,9 @@
 # Exhaustive match on nominal variant type produces zero warnings
-# This is the happy path — all constructors are covered
+# This is the happy path — all constructors are covered.
+# ADT constructor scoping: [type Shape [Circle r: Int] [Square s: Int]] injects
+# Circle, Square, and Shape as callable unit-variant constructors.
+# [Circle r: 5] creates Variant(Circle, Int(5)); match extracts r=5; area = 3*5*5 = 75.
+# The outer dict result includes the injected constructor bindings and the area: Int(75) field.
 [
   [type Shape
     [Circle r: Int]
@@ -12,8 +16,6 @@
     [Circle r]: [* 3 [* r r]]
     [Square s]: [* s s]
   ]
-
-  area
 ]
 === out
-Int(75)
+Dict({"Shape": Variant(Shape, Null), "Circle": Variant(Circle, Null), "Square": Variant(Square, Null), "shape": Variant(Circle, Int(5)), "area": Int(75)})
