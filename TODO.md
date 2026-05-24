@@ -116,7 +116,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Delete `pub async fn eval_file_with_input(...)` from `src/eval_pipeline.rs`
 - [x] Remove re-exports of `eval_file`, `eval_file_with_input` from `src/lib.rs`
 - [x] Remove unused imports: `Document`, `File`, `use std::rc::Rc`, `eval` from eval_pipeline.rs
-- [ ] `just build` passes; `just test-lib` passes
+- [x] `just build` passes; `just test-lib` passes
 
 ### rv2-rewrite-ast-dict: Full SurfaceNode-native rewrite of ast_dict.rs
 
@@ -568,7 +568,7 @@ Discovered via `just versions` (2026-05-23). When `http-request` / `http2-sessio
 
 This makes `just versions` (which uses `http-request` + `http2-session`) non-functional in the current build.
 
-- [ ] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
+- [x] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
 
 ### typecheck-handle-annotation-bug: `@[Handle Readable]` TypeAssert triggers T000 internal error
 
@@ -583,13 +583,13 @@ Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle R
 
 Discovered via `samples/versions.llt` (2026-05-23). Writing `rust-version: [@String [env "RUST_VERSION"]]` should make `rust-version` have type `String` at call sites. But the type checker still infers `String | []` (the underlying type of `env`), causing T003 errors when passing `rust-version` to a function expecting `String`. The TypeAssert is validated at runtime but the type checker doesn't use it to narrow the inferred type for downstream uses.
 
-- [ ] When a dict entry has a TypeAssert annotation `[@T expr]`, the entry's inferred type for callers should be `T` (the asserted type), not the underlying expression type. Fix the type annotation propagation in dict entry type inference. (`src/typecheck_dict.rs` or `src/typecheck.rs`)
+- [x] When a dict entry has a TypeAssert annotation `[@T expr]`, the entry's inferred type for callers should be `T` (the asserted type), not the underlying expression type. Fix the type annotation propagation in dict entry type inference. (`src/typecheck_dict.rs` or `src/typecheck.rs`)
 
 ### fmt-panic-seq-materialized: `just fmt-llt-check` panics with "seq should be materialized"
 
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Running `tinct fmt --check` on a file containing `[do result ...]` macro expansion causes a panic in `src/builtins_seq_reduce.rs:226:14` with message "seq should be materialized". The formatter is triggering a reduce operation on an unmaterialized Seq. Likely caused by the `do` macro expanding to `[and-then ...]` chains that the formatter tries to evaluate or partially execute.
 
-- [ ] Reproduce with a minimal `[do result [x: [Ok 1]] [Ok x]]` file; find why the formatter forces the Seq; fix the formatter to avoid materializing or add a graceful error path. (`src/builtins_seq_reduce.rs:226`, `src/formatter.rs`)
+- [x] Reproduce with a minimal `[do result [x: [Ok 1]] [Ok x]]` file; find why the formatter forces the Seq; fix the formatter to avoid materializing or add a graceful error path. (`src/builtins_seq_reduce.rs:226`, `src/formatter.rs`)
 
 ### lint-clippy-hotfix: Fix 4 new clippy errors from eval-hot-path-fixes (2026-05-23)
 
