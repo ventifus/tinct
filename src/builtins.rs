@@ -2124,7 +2124,7 @@ fn load_stdlib_module(
         crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
     })?;
 
-    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+    // Desugar $_ implicit lambdas on SurfaceProgram.
     let mut program = parsed.program.clone();
     crate::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -2332,12 +2332,12 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
         )
     })?;
 
-    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+    // Desugar $_ implicit lambdas on SurfaceProgram.
     let mut program = parsed.program.clone();
     crate::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = crate::resolve::resolve_surface_program(&program);
-    let file = crate::ast_convert::surface_program_to_file(&program);
+    let resolution_table = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
+    let empty_types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
 
     // Create minimal bootstrap env with all builtins
     let bootstrap_env = create_root_env();
@@ -2353,13 +2353,15 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     ))));
 
     // Filter to only stage: type documents and evaluate them
-    for doc in &file.node.documents {
+    for doc in &program.documents {
         if doc.node.stage == Some(crate::ast::Stage::Type) {
-            // Evaluate this type-stage document
-            let result = crate::async_rt::block_on_anywhere(crate::eval::eval_document(
+            // Evaluate this type-stage document via the surface pipeline
+            let result = crate::async_rt::block_on_anywhere(crate::eval::eval_surface_document(
                 doc,
                 Arc::clone(&type_stage_env),
                 &bootstrap_ctx,
+                &resolution_table,
+                &empty_types,
             ))?;
 
             // Materialize and extract bindings

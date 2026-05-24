@@ -1085,7 +1085,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
 | **Document Pipeline** | | |
 | `%` (document pipeline) | Bound as `Unevaluated` thunk across `---` boundary | `---` is not a materialization point — laziness is preserved across documents |
-| Document scope chain (`eval_document`) | Named binding keys extracted eagerly; values remain lazy thunks | Scope chain construction requires knowing dict keys, but values are inserted as lazy thunks and forced only on access. Dead bindings remain unevaluated. (`eval_pipeline.rs:138-154`) |
+| Document scope chain (`eval_surface_document`) | Named binding keys extracted eagerly; values remain lazy thunks | Scope chain construction requires knowing dict keys, but values are inserted as lazy thunks and forced only on access. Dead bindings remain unevaluated. (`eval_pipeline.rs`) |
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
@@ -1512,7 +1512,7 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 | `eval_call()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::CallForceFunc` |
 | `eval_dot_access()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DotAccessForce` |
 | `eval_dict()` → computed key materialization | `Action::Eval` + `Cont::DictBuildKey` |
-| `eval_document()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DocumentScope` (`%` bound as `Unevaluated` thunk, never materialized) |
+| `eval_surface_document()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DocumentScope` (`%` bound as `Unevaluated` thunk, never materialized) |
 | `bind_args_thunks()` → default eval | `Action::Eval` + `Cont::BindArgDefault` |
 | `materialize()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::Memoize` |
 | `materialize()` → builtin call + `materialize()` | Builtin dispatch + `Cont::PendingBuiltinForceResult` |

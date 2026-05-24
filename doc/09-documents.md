@@ -400,8 +400,8 @@ The formal rules map directly to the implementation:
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
 | DICT-SCOPE | `eval_dict()` | `eval.rs:309-352` |
-| SEQ-SCOPE | `eval_document()` | `eval_pipeline.rs:33` |
-| DOC-PIPELINE | `eval_file_with_input()` (binds `%` + `%name`) | `eval_pipeline.rs:256` |
+| SEQ-SCOPE | `eval_surface_document()` | `eval_pipeline.rs` |
+| DOC-PIPELINE | `eval_surface_file_with_input()` (binds `%` + `%name`) | `eval_pipeline.rs` |
 | DOC-PIPELINE Σ accumulation | Named-section map `named: IndexMap<String, Rc<Thunk>>` | `eval.rs:830, 842-846, 851-853` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
 | Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
@@ -888,8 +888,8 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
-| DOC-PIPELINE (cross-ref) | `eval_file_with_input` (`eval_pipeline.rs:256`) |
-| SEQ-SCOPE (cross-ref) | `eval_document` (`eval_pipeline.rs:33`) |
+| DOC-PIPELINE (cross-ref) | `eval_surface_file_with_input` (`eval_pipeline.rs`) |
+| SEQ-SCOPE (cross-ref) | `eval_surface_document` (`eval_pipeline.rs`) |
 
 ## Pure Language, CLI Handles I/O
 

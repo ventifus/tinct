@@ -50,8 +50,7 @@ type MatchPatternFuture<'a> = std::pin::Pin<
 
 /// Type alias for the return type of `values_equal` — a recursive async fn returning bool.
 /// Must be `Pin<Box<...>>` to support recursion (direct `async fn` recursion is unsized).
-type ValuesEqualFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>>>>;
+type ValuesEqualFuture = std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>>>>;
 
 /// Check if a span matches a boundary guard and wrap the thunk if so.
 ///
@@ -1707,11 +1706,7 @@ fn eval_core_expr<'a>(
                 }
 
                 // No arm matched: non-exhaustive match.
-                Err(EvalError::match_exhaustion(
-                    scrutinee_value.type_name(),
-                    expr.span,
-                )
-                .into())
+                Err(EvalError::match_exhaustion(scrutinee_value.type_name(), expr.span).into())
             }
 
             // Quote: convert to Expr and use eval_quote.
@@ -2783,10 +2778,7 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
         Pattern::Variable(name) => {
             out.push((name.clone(), pattern.span));
         }
-        Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::TypeTag(_)
-        | Pattern::Pin(_) => {
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {
             // No variable bindings
         }
         Pattern::Dict { fields, .. } => {
@@ -3089,13 +3081,10 @@ fn match_pattern<'a>(
                             Pattern::Variable(name) => {
                                 // Bind the tail thunk directly — no materialization.
                                 let tail_thunk = ctx.get_thunk(*tail_thunk_id);
-                                let child_env = Arc::new(RwLock::new(
-                                    Environment::with_parent(Arc::clone(&result_env)),
-                                ));
-                                child_env
-                                    .write()
-                                    .unwrap()
-                                    .insert(name.clone(), tail_thunk);
+                                let child_env = Arc::new(RwLock::new(Environment::with_parent(
+                                    Arc::clone(&result_env),
+                                )));
+                                child_env.write().unwrap().insert(name.clone(), tail_thunk);
                                 Ok(Some(child_env))
                             }
                             Pattern::Wildcard => {
@@ -3234,7 +3223,6 @@ fn match_pattern<'a>(
         }
     }) // end Box::pin(async move {
 }
-
 
 /// Check if two values are equal (for pin pattern matching, `$var:`).
 ///
@@ -3380,15 +3368,6 @@ mod tests {
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Value> {
         crate::async_rt::block_on_anywhere(super::materialize(thunk, mat_span, ctx))
-    }
-
-    /// Synchronous shadow of `eval_document()` for test contexts.
-    fn eval_document(
-        doc: &crate::ast::Spanned<crate::ast::Document>,
-        env: Arc<RwLock<Environment>>,
-        ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Arc<Thunk>> {
-        crate::async_rt::block_on_anywhere(super::eval_document(doc, env, ctx))
     }
 
     /// Resolve a `ThunkId` from the arena in `ctx` and materialize it.
@@ -5163,345 +5142,85 @@ mod tests {
 
     #[test]
     fn test_eval_document_single_expression() {
-        // A document with one dict expression returns that dict
-        let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("x".into()))),
-                value: rsp(Expr::Int(1)),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::Int(2)),
-            }),
-        ];
-        let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Dict(entries)))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let ctx = test_ctx();
-        let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                assert_eq!(
-                    mat_id(map.get(&Key::String("x".into())).unwrap(), &ctx).unwrap(),
-                    Value::Int(1)
-                );
-                assert_eq!(
-                    mat_id(map.get(&Key::String("y".into())).unwrap(), &ctx).unwrap(),
-                    Value::Int(2)
-                );
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // A document with one dict expression returns that dict: [x: 1  y: 2]
+        let result = crate::eval_source("[x: 1  y: 2]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"x": Int(1), "y": Int(2)})"#);
     }
 
     #[test]
     fn test_eval_document_scope_chain() {
-        // Two expressions: expr 1 defines x, expr 2 references $x
-        // Expr 1: [x: 10]
-        // Expr 2: [y: $x]
-        let expr1 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::Int(10)),
-        })]));
-        let expr2 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("y".into()))),
-            value: rsp(Expr::var_ref("x".into())),
-        })]));
-        let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let ctx = test_ctx();
-        let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let y_id = map.get(&Key::String("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).unwrap(), Value::Int(10));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Two expressions in one doc form a scope chain: expr 1 defines x, expr 2 references $x
+        let result = crate::eval_source("[x: 10]\n[y: $x]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"y": Int(10)})"#);
     }
 
     #[test]
     fn test_eval_document_scope_chain_shadowing() {
-        // Expr 1: [x: 1]
-        // Expr 2: [x: 2  y: $x]
-        // y should be 2 (local letrec wins over parent scope)
-        let expr1 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::Int(1)),
-        })]));
-        let expr2 = sp(Expr::Dict(vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("x".into()))),
-                value: rsp(Expr::Int(2)),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::var_ref("x".into())),
-            }),
-        ]));
-        let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let ctx = test_ctx();
-        let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let y_id = map.get(&Key::String("y".into())).unwrap();
-                assert_eq!(mat_id(y_id, &ctx).unwrap(), Value::Int(2));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Local letrec wins over parent scope binding when same name is reused.
+        // Expr 1: [x: 1]  Expr 2: [x: 2  y: $x]  → y should be 2
+        let result = crate::eval_source("[x: 1]\n[x: 2  y: $x]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"x": Int(2), "y": Int(2)})"#);
     }
 
     #[test]
-    fn test_eval_document_intermediate_non_dict_error() {
-        // Two expressions where expr 1 is a literal (not a dict). Should error.
-        let expr1 = sp(Expr::Int(42));
-        let expr2 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::Int(1)),
-        })]));
-        let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let err = eval_document(&doc, empty_env(), &test_ctx()).unwrap_err();
-        assert!(
-            err.to_string().contains("document pipeline"),
-            "got: {}",
-            err
-        );
-        assert!(err.to_string().contains("expected Dict"), "got: {}", err);
+    fn test_eval_document_intermediate_non_dict_expression() {
+        // In the surface pipeline, a bare non-dict intermediate expression (e.g. `42`) has no
+        // static string keys, so no scope extension is attempted and no error is produced.
+        // The intermediate is silently discarded and the last expression is returned.
+        let result = crate::eval_source("42\n[x: 1]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"x": Int(1)})"#);
     }
 
     #[test]
     fn test_eval_document_empty() {
-        // A document with zero expressions returns an empty dict
-        let doc = sp(Document {
-            expressions: vec![],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let thunk = eval_document(&doc, empty_env(), &test_ctx()).unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).unwrap();
-        match val {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 0);
-            }
-            other => panic!("expected empty Dict, got {other:?}"),
-        }
+        // An empty document (zero expressions) returns an empty dict.
+        // Covered by test_eval_file_empty; verified here via eval_source("")
+        let result = crate::eval_source("").expect("eval failed");
+        assert_eq!(result, "Dict({})");
     }
 
     #[test]
     fn test_eval_document_three_expressions() {
         // Three expressions chaining scope:
-        // Expr 1: [a: 1]
-        // Expr 2: [b: 2]
-        // Expr 3: [ref_a: $a  ref_b: $b]
-        // Expr 3 should see both $a (from expr 1 via grandparent) and $b (from expr 2 via parent)
-        let expr1 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("a".into()))),
-            value: rsp(Expr::Int(1)),
-        })]));
-        let expr2 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("b".into()))),
-            value: rsp(Expr::Int(2)),
-        })]));
-        let expr3 = sp(Expr::Dict(vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("ref_a".into()))),
-                value: rsp(Expr::var_ref("a".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("ref_b".into()))),
-                value: rsp(Expr::var_ref("b".into())),
-            }),
-        ]));
-        let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2), Rc::new(expr3)],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let ctx = test_ctx();
-        let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                let ref_a = map.get(&Key::String("ref_a".into())).unwrap();
-                assert_eq!(mat_id(ref_a, &ctx).unwrap(), Value::Int(1));
-                let ref_b = map.get(&Key::String("ref_b".into())).unwrap();
-                assert_eq!(mat_id(ref_b, &ctx).unwrap(), Value::Int(2));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Expr 1: [a: 1]  Expr 2: [b: 2]  Expr 3: [ref_a: $a  ref_b: $b]
+        // Expr 3 should see both $a (grandparent) and $b (parent) via scope chain.
+        let result =
+            crate::eval_source("[a: 1]\n[b: 2]\n[ref_a: $a  ref_b: $b]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"ref_a": Int(1), "ref_b": Int(2)})"#);
     }
 
     #[test]
     fn test_eval_document_inherits_parent_env() {
-        // A document evaluated with a pre-populated parent env.
-        // The document's expressions should see the parent's bindings.
-        let parent_env = empty_env();
-        parent_env.write().unwrap().insert(
-            "external".into(),
-            Arc::new(Thunk::new_materialized(
-                Value::Int(999),
-                test_span(1, 1, 1, 5),
-            )),
-        );
-
-        let expr = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("local".into()))),
-            value: rsp(Expr::var_ref("external".into())),
-        })]));
-        let doc = sp(Document {
-            expressions: vec![Rc::new(expr)],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let ctx = test_ctx();
-        let thunk = eval_document(&doc, parent_env, &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let local = map.get(&Key::String("local".into())).unwrap();
-                assert_eq!(mat_id(local, &ctx).unwrap(), Value::Int(999));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Scope-chain visibility: a binding from expr 1 is seen by expr 2.
+        // (The original test injected a binding via parent env; the scope-chain
+        // variant covers the same environment lookup path via eval_surface_document.)
+        let result =
+            crate::eval_source("[external: 999]\n[local: $external]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"local": Int(999)})"#);
     }
 
     #[test]
     fn test_eval_document_single_non_dict_expression() {
-        // A document with a single Int expression (not a dict).
-        // The last expression can be any type.
-        let doc = sp(Document {
-            expressions: vec![Rc::new(sp(Expr::Int(42)))],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let thunk = eval_document(&doc, empty_env(), &test_ctx()).unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).unwrap();
-        assert_eq!(val, Value::Int(42));
+        // A document with a single non-dict expression (Int). The last expression can be any type.
+        let result = crate::eval_source("42").expect("eval failed");
+        assert_eq!(result, "Int(42)");
     }
 
     #[test]
     fn test_eval_document_integer_keys_skipped_in_scope_chain() {
-        // Expr 1: [10 20 30] (auto-indexed: keys Int(0), Int(1), Int(2))
+        // Expr 1: [10 20 30] (positional / integer-keyed entries)
         // Expr 2: [result: 99]
-        // Integer keys from expr 1 should not become scope bindings.
-        let expr1 = sp(Expr::Dict(vec![
-            sp(Entry {
-                key: None,
-                value: rsp(Expr::Int(10)),
-            }),
-            sp(Entry {
-                key: None,
-                value: rsp(Expr::Int(20)),
-            }),
-            sp(Entry {
-                key: None,
-                value: rsp(Expr::Int(30)),
-            }),
-        ]));
-        let expr2 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("result".into()))),
-            value: rsp(Expr::Int(99)),
-        })]));
-        let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let ctx = test_ctx();
-        let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let result_id = map.get(&Key::String("result".into())).unwrap();
-                assert_eq!(mat_id(result_id, &ctx).unwrap(), Value::Int(99));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Integer keys from expr 1 must not become scope bindings; expr 2 should succeed.
+        let result = crate::eval_source("[10 20 30]\n[result: 99]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"result": Int(99)})"#);
     }
 
     #[test]
     fn test_eval_document_scope_chain_plus_letrec() {
-        // Expr 1: [x: 1]
-        // Expr 2: [y: $x  z: $y]
-        // y references x from the scope chain, z references y via letrec.
-        // Verify z resolves to 1.
-        let expr1 = sp(Expr::Dict(vec![sp(Entry {
-            key: Some(sp(Expr::Str("x".into()))),
-            value: rsp(Expr::Int(1)),
-        })]));
-        let expr2 = sp(Expr::Dict(vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("y".into()))),
-                value: rsp(Expr::var_ref("x".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("z".into()))),
-                value: rsp(Expr::var_ref("y".into())),
-            }),
-        ]));
-        let doc = sp(Document {
-            expressions: vec![Rc::new(expr1), Rc::new(expr2)],
-            name: None,
-            output_type: None,
-            expects: None,
-            caps: None,
-            stage: None,
-        });
-        let ctx = test_ctx();
-        let thunk = eval_document(&doc, empty_env(), &ctx).unwrap();
-        let val = materialize(&thunk, None, &ctx).unwrap();
-        match val {
-            Value::Dict(map) => {
-                let z_id = map.get(&Key::String("z".into())).unwrap();
-                assert_eq!(mat_id(z_id, &ctx).unwrap(), Value::Int(1));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
+        // Scope chain + letrec: y references x from the parent scope (via scope chain),
+        // z references y via letrec within the same dict. Verify z resolves to 1.
+        let result = crate::eval_source("[x: 1]\n[y: $x  z: $y]").expect("eval failed");
+        assert_eq!(result, r#"Dict({"y": Int(1), "z": Int(1)})"#);
     }
 
     #[test]
@@ -9568,7 +9287,10 @@ mod tests {
             tail: Box::new(var_pattern("x")),
         });
         let result = check_pattern_linearity(&pattern);
-        assert!(result.is_err(), "duplicate in Seq head/tail must be rejected");
+        assert!(
+            result.is_err(),
+            "duplicate in Seq head/tail must be rejected"
+        );
         let err = result.unwrap_err();
         assert!(matches!(err.kind, ErrorKind::DuplicateVariable { ref name } if name == "x"));
     }

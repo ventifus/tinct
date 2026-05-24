@@ -63,12 +63,12 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Part E — Evaluator cutover + delete old types:**
 ✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: typecheck/formatter/repl/LSP/builtins_meta.rs/main.rs still consume File; old eval_document/eval_file kept for those paths; must migrate remaining callers first
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: typecheck/formatter/repl/LSP/builtins_meta.rs/main.rs still consume File; must migrate remaining callers first (eval_document/eval_file now deleted — partial unblock)
 - [x] **MAJOR MILESTONE**: UnevaluatedState::Expr DELETED (commit 18711a0) — evaluator fully CoreExpr-based
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted; force_step handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; eval_step deleted; Action::EvalCore added
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; file deleted ✓ (commit 92ff2fc)
 - [x] Migrate eval_pipeline.rs to SurfaceProgram — added eval_surface_document/eval_surface_file/eval_surface_file_with_input; lib.rs callers (eval_source_with_config, eval_source_with_cap_net) now call eval_surface_file; resolution_table kept (no longer discarded); TODO(surface-typecheck): wire TypeAnnotationTable from surface typecheck path so TypeAssert nodes get statically-resolved types (currently empty table → RuntimeTypeCheck fallback)
-- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **BLOCKED**: old eval_document/eval_file/eval_file_with_input still present (public API, main.rs callers not yet migrated); Expr/File/Document still used by typecheck, builtins_meta.rs include cache, formatter, repl, LSP
+- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **PARTIALLY UNBLOCKED**: eval_document/eval_file/eval_file_with_input now deleted from eval_pipeline.rs; eval_pipeline.rs itself still needed for eval_surface_*; Expr/File/Document still used by typecheck, builtins_meta.rs include cache, formatter, repl, LSP
 - [x] Update `IncludeCacheEntry::Cached` — **DONE**
 - [x] Rc→Arc migration — **DONE (commit b0aa803)**: 34 files, 2450 ins, 2437 del
 - [x] **`cargo check` clean** — `just build` passes with -D warnings ✓ (commit 18711a0)
@@ -112,19 +112,19 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Remove `use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts}` import from expand.rs; add appropriate Surface bridge imports
 - [ ] `just build` passes; run macro expansion corpus tests to verify
 
-### rv2-delete-eval-pipeline-old: Delete old eval_document/eval_file from eval_pipeline.rs
+### rv2-delete-eval-pipeline-old: Delete old eval_document/eval_file from eval_pipeline.rs ✅
 
 **Goal:** Remove the old Expr-based `eval_document`, `eval_file`, `eval_file_with_input` functions from `src/eval_pipeline.rs`. These are the last callers of the old File/Expr eval path.
 
-**Current state:** `src/main.rs` already uses `eval_surface_file_with_input` and `eval_surface_file` (verified by grep). The old functions in eval_pipeline.rs still exist as public API but have no external callers in main.rs.
-
-**Survey:** Grep for `eval_file\b`, `eval_document`, `eval_file_with_input` (not `eval_surface_*`) across all src/ files to confirm no remaining callers.
-
-- [ ] Grep for remaining callers of old `eval_file`, `eval_document`, `eval_file_with_input` across src/, tests/, scripts/. If any found, migrate them to `eval_surface_*` equivalents.
-- [ ] Delete `pub async fn eval_document(...)` from `src/eval_pipeline.rs`
-- [ ] Delete `pub async fn eval_file(...)` from `src/eval_pipeline.rs`
-- [ ] Delete `pub async fn eval_file_with_input(...)` from `src/eval_pipeline.rs`
-- [ ] Remove any re-exports of these functions from `src/lib.rs` (if they exist)
+**DONE (2026-05-23):**
+- [x] Grep for remaining callers of old `eval_file`, `eval_document`, `eval_file_with_input` across src/, tests/, scripts/. Found: eval.rs tests, builtins.rs:create_type_stage_env, lib.rs re-exports.
+- [x] Migrated `builtins.rs:create_type_stage_env` to use `eval_surface_document` + `resolution_table` (iterates `program.documents` instead of `file.node.documents`; dropped `surface_program_to_file` call)
+- [x] Migrated 9 `test_eval_document_*` tests in `eval.rs` to use `crate::eval_source` (surface pipeline); removed local `eval_document` test helper
+- [x] Delete `pub async fn eval_document(...)` from `src/eval_pipeline.rs`
+- [x] Delete `pub async fn eval_file(...)` from `src/eval_pipeline.rs`
+- [x] Delete `pub async fn eval_file_with_input(...)` from `src/eval_pipeline.rs`
+- [x] Remove re-exports of `eval_file`, `eval_file_with_input` from `src/lib.rs`
+- [x] Remove unused imports: `Document`, `File`, `use std::rc::Rc`, `eval` from eval_pipeline.rs
 - [ ] `just build` passes; `just test-lib` passes
 
 ### rv2-rewrite-ast-dict: Full SurfaceNode-native rewrite of ast_dict.rs
@@ -182,12 +182,11 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - `src/expand.rs:1661,1694,1802` — 3 calls to `ast_to_dict_expr` / `dict_to_ast` in macro expansion (converts macro args to dict, reconstructs AST from transformer output)
 - `src/eval.rs:992,1004` — 2 calls to `dict_to_ast` in unquote handling (Expr::Unquote, Expr::UnquoteSplice)
 - `src/typecheck.rs` internal bridge — `typecheck_surface_program` still converts via `surface_program_to_file` internally; old `typecheck_file_*` functions still exist as private (can delete after bridge is removed)
-- `src/eval_pipeline.rs` — old `eval_document`/`eval_file`/`eval_file_with_input` still present (main.rs path not yet cut over)
+- ~~`src/eval_pipeline.rs`~~ — ✅ old `eval_document`/`eval_file`/`eval_file_with_input` DELETED (2026-05-23)
 
 **Once ALL above are migrated:**
 - [ ] Delete `src/desugar.rs` — `desugar_surface_program` is the live path; old `desugar_file` no longer called
 - [ ] Delete `src/ast_convert.rs` — `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers all migrated
-- [ ] Delete old `eval_document`/`eval_file`/`eval_file_with_input` from `src/eval_pipeline.rs` (keep `eval_surface_*` variants)
 - [ ] Delete `src/ast_dict.rs` old Expr-based functions (replaced by rv2-migrate-ast-dict surface wrappers)
 - [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
 - [ ] `just build` passes; `just test` passes

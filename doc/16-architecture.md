@@ -50,7 +50,7 @@
 - AST coverage: every `Expr` variant requires both an `eval` handler (src/eval.rs) and a `typecheck` handler (src/typecheck.rs)
 - Builtin registration: all builtins must appear in `standard_builtins()` (src/builtins.rs) — this is the authoritative list
 - Environment chain: builtins → stdlib → user code (root env contains Rust-native builtins; stdlib env wraps root and loads prelude.llt; user code inherits from stdlib)
-- Desugar ordering: `desugar_file()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_file_with_input, CLI, REPL, stdlib loading, lsp/document.rs::update_document)
+- Desugar ordering: `desugar_surface_program()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_surface_file_with_input, CLI, REPL, stdlib loading, lsp/document.rs::update_document)
 
 **Cross-module coupling:**
 
@@ -196,11 +196,11 @@ struct EvalContext {
 
 **BuiltinArgs:** Carries `ctx: Arc<EvalContext>` (was `Rc<EvalContext>` before the runtime-v2 sprint). Data is owned (not borrowed) so the struct can be moved into `Box<dyn Future>` (which has an implicit `'static` bound). Most builtins ignore ctx; `$include` and I/O builtins use it for include resolution and sandboxing. There is no `depth` field — the iterative CEK machine (see §Iterative Evaluator) uses heap-allocated continuations rather than tracking recursion depth.
 
-**Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_file()`. Include context is passed as a parameter — no global set/clear functions.
+**Public API:** `EvalContext`, `EvalConfig`, and `EvalState` are public. Callers construct an EvalContext and pass it to `eval_surface_file()`. Include context is passed as a parameter — no global set/clear functions.
 
 **Per-caller patterns:**
 
-- **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_file.
+- **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_surface_file.
 - **LSP:** Each DocumentState gets its own EvalContext. DocumentStore extracts base_dir from document URI. Config (stdlib_env) is shared across documents; state is per-document.
 - **REPL:** Single EvalContext per session. Include state (guard, cache) persists across eval_input() calls. Session env accumulates bindings across commands. **Limitation:** `eval_input()` calls `parse_expression()` which returns the last expression of the FIRST document only; `---`-separated multi-doc input silently discards all documents after the first.
 

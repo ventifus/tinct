@@ -5,8 +5,7 @@
 //! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 //!
 //! Additional public API:
-//! - [`eval_surface_file`] / [`eval_surface_file_with_input`] -- evaluate a `SurfaceProgram` with optional stdin input (runtime-v2 path; requires prior `desugar` + `resolve` passes)
-//! - [`eval_file`] / [`eval_file_with_input`] -- evaluate a parsed `File` AST (legacy bridge; prefer `eval_surface_file`)
+//! - [`eval_surface_file`] / [`eval_surface_file_with_input`] -- evaluate a `SurfaceProgram` with optional stdin input (requires prior `expand` + `desugar` + `resolve` passes)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
@@ -113,8 +112,8 @@ pub use parser::{format_parse_error, parse, parse_expression, ParseError, ParseO
 pub use eval::deep_materialize;
 /// Evaluation functions.
 pub use eval::{
-    eval_file, eval_file_with_input, eval_surface_file, eval_surface_file_with_input, materialize,
-    materialize_sync, EvalConfig, EvalContext, EvalState,
+    eval_surface_file, eval_surface_file_with_input, materialize, materialize_sync, EvalConfig,
+    EvalContext, EvalState,
 };
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
@@ -2399,7 +2398,7 @@ mod tests {
 
     /// Regression test for the formatter arity bug:
     /// A function defined in an intermediate dict should be callable with the correct arity.
-    /// This test exercises the eval_document strict-forcing path for intermediate dict values.
+    /// This test exercises the scope-chain strict-forcing path for intermediate dict values.
     #[test]
     fn test_eval_document_dict_function_arity() {
         // Simulates the compact.llt pattern:
