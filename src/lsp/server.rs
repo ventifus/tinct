@@ -188,27 +188,32 @@ fn handle_request(
             let location = if let Some(doc) = store.get(&uri) {
                 // Document is open in editor: use cached state
                 lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                    definition_at(doc, &uri, offset, &store.include_graph, store.prelude_surface()).map(
-                        |(target_uri, span)| {
-                            // Determine source text for converting span to range:
-                            // - Document-local: use doc.text
-                            // - Included file: read from include_graph
-                            // - Prelude: read from embedded source
-                            let source_text: String = if target_uri == uri {
-                                doc.text.clone()
-                            } else if let Some(node) = store.include_graph.get(&target_uri) {
-                                // Included file: read from include_graph
-                                node.state.text.clone()
-                            } else {
-                                // Prelude: read from embedded source
-                                include_str!("../../stdlib/prelude.llt").to_string()
-                            };
-                            Location {
-                                uri: target_uri,
-                                range: llt_span_to_lsp_range(&span, &source_text),
-                            }
-                        },
+                    definition_at(
+                        doc,
+                        &uri,
+                        offset,
+                        &store.include_graph,
+                        store.prelude_surface(),
                     )
+                    .map(|(target_uri, span)| {
+                        // Determine source text for converting span to range:
+                        // - Document-local: use doc.text
+                        // - Included file: read from include_graph
+                        // - Prelude: read from embedded source
+                        let source_text: String = if target_uri == uri {
+                            doc.text.clone()
+                        } else if let Some(node) = store.include_graph.get(&target_uri) {
+                            // Included file: read from include_graph
+                            node.state.text.clone()
+                        } else {
+                            // Prelude: read from embedded source
+                            include_str!("../../stdlib/prelude.llt").to_string()
+                        };
+                        Location {
+                            uri: target_uri,
+                            range: llt_span_to_lsp_range(&span, &source_text),
+                        }
+                    })
                 })
             } else {
                 // Document is not open: load from URI and analyze

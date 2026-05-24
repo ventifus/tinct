@@ -258,6 +258,12 @@ pub enum ErrorKind {
     MatchExhaustion {
         scrutinee_type: String,
     },
+    /// A variable name appears more than once in a single pattern.
+    /// ML-family semantics require each variable to bind at most once per arm.
+    /// E.g., `[a: x  b: x  ...]:` is illegal because `x` appears twice.
+    DuplicateVariable {
+        name: String,
+    },
 
     /// User-generated (E080-E089)
     UserError {
@@ -530,6 +536,9 @@ impl PartialEq for ErrorKind {
                     scrutinee_type: t2,
                 },
             ) => t1 == t2,
+            (Self::DuplicateVariable { name: n1 }, Self::DuplicateVariable { name: n2 }) => {
+                n1 == n2
+            }
 
             // Different variants are never equal
             _ => false,
@@ -577,6 +586,7 @@ impl ErrorKind {
             Self::UriParseError { .. } => "E063",
             Self::CircularDependency { .. } => "E070",
             Self::MatchExhaustion { .. } => "E071",
+            Self::DuplicateVariable { .. } => "E072",
             Self::UserError { .. } => "E080",
             Self::Unimplemented { .. } => "E081",
             Self::BuilderFinished { .. } => "E082",
@@ -911,6 +921,12 @@ impl fmt::Display for ErrorKind {
                     "non-exhaustive match: no pattern matched the {scrutinee_type} value"
                 )
             }
+            Self::DuplicateVariable { name } => {
+                write!(
+                    f,
+                    "duplicate variable in pattern: '{name}' appears more than once"
+                )
+            }
             Self::UserError { message } => write!(f, "{message}"),
             Self::Unimplemented { message } => write!(f, "{message}"),
             Self::BuilderFinished { op } => {
@@ -1134,6 +1150,21 @@ impl EvalError {
         Self {
             kind: ErrorKind::MatchExhaustion {
                 scrutinee_type: scrutinee_type.to_string(),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
+    pub fn duplicate_variable_in_pattern(name: &str, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::DuplicateVariable {
+                name: name.to_string(),
             },
             definition_span,
             materialization_span: None,
@@ -2433,8 +2464,27 @@ mod tests {
                 name: "x".to_string(),
                 cycle_path: Vec::new(),
             },
+            ErrorKind::MatchExhaustion {
+                scrutinee_type: "Int".to_string(),
+            },
+            ErrorKind::DuplicateVariable {
+                name: "x".to_string(),
+            },
             ErrorKind::UserError {
                 message: "test".to_string(),
+            },
+            ErrorKind::Unimplemented {
+                message: "...".to_string(),
+            },
+            ErrorKind::BuilderFinished {
+                op: "set".to_string(),
+            },
+            ErrorKind::NoInstance {
+                class_name: "Eq".to_string(),
+                type_tags: vec!["Function".to_string()],
+            },
+            ErrorKind::MacroError {
+                message: "bad splice".to_string(),
             },
             ErrorKind::SchemaViolation {
                 violations: vec![("field".to_string(), "error".to_string())],
@@ -4502,6 +4552,8 @@ mod tests {
                 ErrorKind::JsonRange => "E062",
                 ErrorKind::UriParseError { .. } => "E063",
                 ErrorKind::CircularDependency { .. } => "E070",
+                ErrorKind::MatchExhaustion { .. } => "E071",
+                ErrorKind::DuplicateVariable { .. } => "E072",
                 ErrorKind::UserError { .. } => "E080",
                 ErrorKind::Unimplemented { .. } => "E081",
                 ErrorKind::BuilderFinished { .. } => "E082",

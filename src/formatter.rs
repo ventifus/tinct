@@ -126,12 +126,8 @@ pub fn format_source_tinct_with_dir(
             }),
         }
     };
-    let ast_thunk = surface_program_to_dict(
-        &parse_output.program,
-        &opts,
-        &ctx,
-    )
-    .map_err(|e| format!("{e}"))?;
+    let ast_thunk =
+        surface_program_to_dict(&parse_output.program, &opts, &ctx).map_err(|e| format!("{e}"))?;
 
     // Evaluate formatter with AST as % (pipeline input).
     let formatter_thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file_with_input(

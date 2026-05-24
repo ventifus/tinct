@@ -2258,14 +2258,18 @@ mod tests {
 
         // Parse the prelude Surface AST
         let prelude_source = include_str!("../../stdlib/prelude.llt");
-        let prelude_surface = crate::parser::parse(prelude_source)
-            .ok()
-            .map(|o| o.program);
+        let prelude_surface = crate::parser::parse(prelude_source).ok().map(|o| o.program);
 
         // Offset 6 is on '$map'
         // "[call $map [fn [let x] x] [1 2 3]]"
         //  0123456789...
-        let def_result = definition_at(&doc, &uri, 6, &test_include_graph(), prelude_surface.as_ref());
+        let def_result = definition_at(
+            &doc,
+            &uri,
+            6,
+            &test_include_graph(),
+            prelude_surface.as_ref(),
+        );
 
         // Should find the definition in the prelude
         assert!(

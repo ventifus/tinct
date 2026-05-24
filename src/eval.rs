@@ -1629,6 +1629,12 @@ fn eval_core_expr<'a>(
 
                 // Try each arm in order.
                 for arm in arms {
+                    // PM3: Reject non-linear patterns before attempting to match.
+                    // A non-linear pattern like `[a: x  b: x  ...]:` would silently
+                    // rebind `x` to the last matched field. ML semantics require each
+                    // variable to appear at most once per arm.
+                    check_pattern_linearity(&arm.pattern).map_err(Box::new)?;
+
                     // Try the pattern.
                     let matched_env = match_pattern(
                         &arm.pattern.node,
@@ -2753,6 +2759,74 @@ pub fn materialize_sync(
     crate::async_rt::block_on_anywhere(materialize(thunk, mat_span, ctx))
 }
 
+/// Collect all variable names bound by a pattern, recursing into sub-patterns.
+///
+/// Returns a list of `(name, span)` pairs — one entry per `Pattern::Variable` leaf.
+/// Duplicate names in the returned list indicate a non-linear pattern.
+///
+/// Or-pattern branches are walked independently; the function collects from ALL branches
+/// so that a duplicate that appears within a single branch is still caught.  A duplicate
+/// that straddles two Or-pattern branches (same name in branch A and branch B) is a
+/// separate semantic concern (the "or-pattern completeness" invariant) and is NOT reported
+/// here — only intra-branch duplicates matter for linearity.
+fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(String, Span)>) {
+    match &pattern.node {
+        Pattern::Variable(name) => {
+            out.push((name.clone(), pattern.span));
+        }
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::TypeTag(_)
+        | Pattern::Pin(_) => {
+            // No variable bindings
+        }
+        Pattern::Dict { fields, .. } => {
+            for (_key, field_pattern) in fields {
+                collect_pattern_variable_names(field_pattern, out);
+            }
+        }
+        Pattern::Seq { head, tail } => {
+            collect_pattern_variable_names(head, out);
+            collect_pattern_variable_names(tail, out);
+        }
+        Pattern::Constructor { binding, .. } => {
+            if let Some(payload_pattern) = binding {
+                collect_pattern_variable_names(payload_pattern, out);
+            }
+        }
+        Pattern::Or(branches) => {
+            // Check each branch independently — a duplicate within a single branch
+            // is still a linearity violation even inside an or-pattern.
+            for branch in branches {
+                collect_pattern_variable_names(branch, out);
+            }
+        }
+    }
+}
+
+/// Check that a pattern is linear — every variable name appears at most once.
+///
+/// Returns `Err` with E072 if a variable is bound more than once, using the span
+/// of the duplicate occurrence as the definition site.  Returns `Ok(())` if the
+/// pattern is linear.
+///
+/// This is called once per match arm before `match_pattern` recurses into the arm,
+/// so the cost is O(|pattern|) per arm and only on the hot path (match expression
+/// evaluation).  The check does NOT fire on sub-pattern recursive calls inside
+/// `match_pattern` itself — the top-level site is sufficient.
+fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> {
+    let mut names: Vec<(String, Span)> = Vec::new();
+    collect_pattern_variable_names(pattern, &mut names);
+
+    let mut seen: HashSet<&str> = HashSet::with_capacity(names.len());
+    for (name, span) in &names {
+        if !seen.insert(name.as_str()) {
+            return Err(EvalError::duplicate_variable_in_pattern(name, *span));
+        }
+    }
+    Ok(())
+}
+
 /// Match a pattern against a value, returning the extended environment if the pattern matches.
 ///
 /// Returns Ok(Some(env)) if the pattern matches (env contains any bindings from the pattern).
@@ -3139,6 +3213,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 mod tests {
     use super::*;
     use crate::ast::*;
+    use crate::error::ErrorKind;
     use crate::test_util::{rsp, sp, test_span};
     use crate::value::*;
     use std::cell::RefCell;
@@ -9272,6 +9347,248 @@ mod tests {
             matches!(val, Value::Dict(ref m) if m.is_empty()),
             "expected empty dict from builtin_keys on empty dict, got {:?}",
             val
+        );
+    }
+
+    // ── PM3: pattern linearity tests ─────────────────────────────────────────
+
+    /// Helper: build a variable pattern Spanned<Pattern> at the default test span.
+    fn var_pattern(name: &str) -> Spanned<Pattern> {
+        sp(Pattern::Variable(name.to_string()))
+    }
+
+    /// Helper: build a wildcard pattern Spanned<Pattern> at the default test span.
+    fn wildcard_pattern() -> Spanned<Pattern> {
+        sp(Pattern::Wildcard)
+    }
+
+    #[test]
+    fn test_check_pattern_linearity_linear_is_ok() {
+        // A pattern with all distinct variables must pass linearity check.
+        let pattern = sp(Pattern::Dict {
+            fields: vec![
+                ("a".to_string(), var_pattern("x")),
+                ("b".to_string(), var_pattern("y")),
+                ("c".to_string(), var_pattern("z")),
+            ],
+            rest: true,
+        });
+        assert!(
+            check_pattern_linearity(&pattern).is_ok(),
+            "distinct variable names must pass"
+        );
+    }
+
+    #[test]
+    fn test_check_pattern_linearity_wildcard_is_ok() {
+        // Wildcards do not bind names; multiple wildcards are always linear.
+        let pattern = sp(Pattern::Dict {
+            fields: vec![
+                ("a".to_string(), wildcard_pattern()),
+                ("b".to_string(), wildcard_pattern()),
+            ],
+            rest: true,
+        });
+        assert!(
+            check_pattern_linearity(&pattern).is_ok(),
+            "multiple wildcards must not trigger linearity error"
+        );
+    }
+
+    #[test]
+    fn test_check_pattern_linearity_single_variable_is_ok() {
+        // A single variable binding is always linear.
+        let pattern = var_pattern("x");
+        assert!(check_pattern_linearity(&pattern).is_ok());
+    }
+
+    #[test]
+    fn test_check_pattern_linearity_duplicate_in_dict_rejected() {
+        // `[a: x  b: x  ...]:` — `x` appears twice in the same arm.
+        let pattern = sp(Pattern::Dict {
+            fields: vec![
+                ("a".to_string(), var_pattern("x")),
+                ("b".to_string(), var_pattern("x")),
+            ],
+            rest: true,
+        });
+        let result = check_pattern_linearity(&pattern);
+        assert!(result.is_err(), "duplicate variable must be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::DuplicateVariable { ref name } if name == "x"),
+            "expected DuplicateVariable(\"x\"), got: {:?}",
+            err.kind
+        );
+        assert!(
+            err.to_string()
+                .contains("duplicate variable in pattern: 'x' appears more than once"),
+            "error message should name the duplicate variable, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_check_pattern_linearity_duplicate_in_seq_rejected() {
+        // `[seq x x]:` — `x` appears in both head and tail.
+        let pattern = sp(Pattern::Seq {
+            head: Box::new(var_pattern("x")),
+            tail: Box::new(var_pattern("x")),
+        });
+        let result = check_pattern_linearity(&pattern);
+        assert!(result.is_err(), "duplicate in Seq head/tail must be rejected");
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::DuplicateVariable { ref name } if name == "x"));
+    }
+
+    #[test]
+    fn test_check_pattern_linearity_distinct_in_seq_is_ok() {
+        // `[seq h t]:` — distinct variables are fine.
+        let pattern = sp(Pattern::Seq {
+            head: Box::new(var_pattern("h")),
+            tail: Box::new(var_pattern("t")),
+        });
+        assert!(check_pattern_linearity(&pattern).is_ok());
+    }
+
+    #[test]
+    fn test_check_pattern_linearity_constructor_payload_duplicate_rejected() {
+        // `[Some x]:` body pattern with duplicate inside payload dict:
+        // `[Some [a: x  b: x]]:` — x appears twice inside Constructor payload.
+        let payload = sp(Pattern::Dict {
+            fields: vec![
+                ("a".to_string(), var_pattern("x")),
+                ("b".to_string(), var_pattern("x")),
+            ],
+            rest: true,
+        });
+        let pattern = sp(Pattern::Constructor {
+            tag: "Some".to_string(),
+            binding: Some(Box::new(payload)),
+        });
+        let result = check_pattern_linearity(&pattern);
+        assert!(
+            result.is_err(),
+            "duplicate inside Constructor payload must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_pm3_match_expr_duplicate_dict_field_errors() {
+        // Integration test: eval a Match expression whose arm has a non-linear
+        // Dict pattern. The error should fire at match-evaluation time.
+        //
+        // match [a: 1  b: 2]
+        //   [a: x  b: x  ...]: x
+        //
+        // The arm is non-linear (x appears twice), so evaluation must return E072.
+        let scrutinee = sp(Expr::Dict(vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("a".into()))),
+                value: rsp(Expr::Int(1)),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("b".into()))),
+                value: rsp(Expr::Int(2)),
+            }),
+        ]));
+        let arm = MatchArm {
+            pattern: sp(Pattern::Dict {
+                fields: vec![
+                    ("a".to_string(), var_pattern("x")),
+                    ("b".to_string(), var_pattern("x")),
+                ],
+                rest: true,
+            }),
+            guard: None,
+            body: Box::new(sp(Expr::var_ref("x".into()))),
+        };
+        let match_expr = sp(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![arm],
+        });
+        let thunk = eval(Rc::new(match_expr), empty_env(), &test_ctx()).unwrap();
+        let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::DuplicateVariable { ref name } if name == "x"),
+            "expected DuplicateVariable(\"x\"), got: {:?}",
+            err.kind
+        );
+        assert_eq!(
+            err.kind.code(),
+            "E072",
+            "DuplicateVariable must be code E072"
+        );
+    }
+
+    #[test]
+    fn test_pm3_match_expr_linear_dict_pattern_succeeds() {
+        // Integration test: linear Dict pattern must succeed normally.
+        //
+        // match [a: 1  b: 2]
+        //   [a: x  b: y  ...]: x
+        //
+        // The arm is linear; x should bind to 1.
+        let scrutinee = sp(Expr::Dict(vec![
+            sp(Entry {
+                key: Some(sp(Expr::Str("a".into()))),
+                value: rsp(Expr::Int(1)),
+            }),
+            sp(Entry {
+                key: Some(sp(Expr::Str("b".into()))),
+                value: rsp(Expr::Int(2)),
+            }),
+        ]));
+        let arm = MatchArm {
+            pattern: sp(Pattern::Dict {
+                fields: vec![
+                    ("a".to_string(), var_pattern("x")),
+                    ("b".to_string(), var_pattern("y")),
+                ],
+                rest: true,
+            }),
+            guard: None,
+            body: Box::new(sp(Expr::var_ref("x".into()))),
+        };
+        let match_expr = sp(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![arm],
+        });
+        let env = empty_env();
+        let thunk = eval(Rc::new(match_expr), Arc::clone(&env), &test_ctx()).unwrap();
+        let val = materialize(&thunk, None, &test_ctx()).unwrap();
+        assert_eq!(val, Value::Int(1), "linear pattern should bind x to 1");
+    }
+
+    #[test]
+    fn test_pm3_same_name_in_different_arms_is_ok() {
+        // The same variable name used in different arms is fine — each arm is a
+        // separate linear scope. Only duplicate within a single arm is rejected.
+        //
+        // match 42
+        //   x:  x       <- x in arm 1
+        //   _:  0       <- no x in arm 2
+        let scrutinee = sp(Expr::Int(42));
+        let arm1 = MatchArm {
+            pattern: var_pattern("x"),
+            guard: None,
+            body: Box::new(sp(Expr::var_ref("x".into()))),
+        };
+        let arm2 = MatchArm {
+            pattern: wildcard_pattern(),
+            guard: None,
+            body: Box::new(sp(Expr::Int(0))),
+        };
+        let match_expr = sp(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![arm1, arm2],
+        });
+        let thunk = eval(Rc::new(match_expr), empty_env(), &test_ctx()).unwrap();
+        let val = materialize(&thunk, None, &test_ctx()).unwrap();
+        assert_eq!(
+            val,
+            Value::Int(42),
+            "same name in different arms must be accepted"
         );
     }
 }
