@@ -9145,3 +9145,11 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 
 - [x] Fix `Key::clone()` in `eval_dict.rs:183` — moved owned key into `dict_map.insert(key, thunk_id)` instead of cloning. Eliminates 1 `Rc::from()` per dict entry. Added `CoreExpr::Annotated` case to key reconstruction for duplicate key error messages. [Critical]
 - [x] Guard `env_id` allocation with `has_non_literal` in `eval_dict.rs:108` — ALREADY DONE (verified; code already checks `if has_non_literal` before allocation). [Major]
+
+### fix-desugar-span-errors: Fix desugar ordering and Span::origin filtering
+
+**Sources:** integration-verifier (Cycle #216)
+
+- [x] Fix desugar ordering in `src/imports.rs` — moved `desugar_surface_program` call to after expand step position, fixing `parse → expand → desugar → resolve → typecheck` invariant. [Critical]
+- [x] Filter `Span::origin()` frames from `EvalError::Display` — ALREADY DONE: `should_display_frame()` at `src/error.rs:1702`. [Critical]
+- [x] Unit test `test_origin_span_frames_filtered_from_display` — ALREADY DONE at `src/error.rs:3369`. [Major]

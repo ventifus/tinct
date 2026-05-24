@@ -86,14 +86,9 @@ fn typecheck_and_merge_stdlib_module(
     _source_path: Option<&str>,
 ) -> Result<InferState, ()> {
     // Parse the module source
-    let program = {
+    let mut program = {
         let parsed = parser::parse(source).map_err(|_| ())?;
-        let mut program = parsed.program.clone();
-        // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
-        desugar::desugar_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _res_table = resolve::resolve_surface_program(&program);
-        program
+        parsed.program.clone()
     };
 
     // Skip macro expansion for stdlib modules.
@@ -107,6 +102,15 @@ fn typecheck_and_merge_stdlib_module(
     //
     // The previous code called expand::expand_surface_program(file, true) here, which
     // recursively built the stdlib just to check for macros that don't exist.
+
+    // Desugar $_ implicit lambdas on SurfaceProgram (after expansion, before resolve).
+    // Correct pipeline order: parse → expand → desugar → resolve → typecheck.
+    // Currently expansion is skipped for stdlib modules (see rationale above), but desugar
+    // must still come after the expand step position to maintain correct ordering.
+    desugar::desugar_surface_program(&mut program);
+
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _res_table = resolve::resolve_surface_program(&program);
 
     // Type-check with the parent environment (builtins + prelude), capturing InferState
     // and the final TypeEnv (which holds properly generalized TypeSchemes for all prelude

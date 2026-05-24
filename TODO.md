@@ -1313,14 +1313,6 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 
 ## Codebase Health Audit Findings (Cycle #216, 2026-05-23)
 
-### fix-desugar-span-errors: Fix desugar ordering and Span::origin filtering
-
-**Sources:** integration-verifier (Cycle #216)
-
-- [ ] Fix desugar ordering in `src/imports.rs:93` — `desugar_surface_program` is called BEFORE `expand_surface_program` (line 96), violating the `parse → expand → desugar → resolve → typecheck → eval` invariant. Move desugar call to after the expand comment block. [Critical]
-- [ ] Filter `Span::origin()` frames from `EvalError::Display` — add `if frame.span == Span::origin() { continue; }` before the suffix filter loop in `src/error.rs:889-907`. Eliminates stdlib/synthetic spans from user-facing stack traces. [Critical]
-- [ ] Add unit test: construct `EvalError` with `Span::origin()` frame; verify it's absent from Display output. [Major]
-
 ### fix-stdlib-doc-counts: Update doc/11-stdlib.md stale counts
 
 **Sources:** stdlib-author (Cycle #216)
