@@ -28,7 +28,7 @@ Seven orthogonal capabilities apply to a directory tree:
 | `Readable` | `r` on files | Open files for reading: `open`, `slurp`, `lines` |
 | `Statable` | `r` on dirs / `stat(2)` | Read file metadata: name, type, size, mtime via `list-dir`; does NOT require reading file content |
 | `Listable` | `r` on dirs | Enumerate directory entries: `list-dir`; implies `Statable` |
-| `Writable` | `w` on files + dir | Write/overwrite files and create new files: `open "w"`, `write-file`, `write-file-atomic` |
+| `Writable` | `w` on files + dir | Write/overwrite files and create new files: `open ... Writable`, `write-file`, `write-file-atomic` |
 | `Appendable` | `a` flag | Open files in append mode: no read, no truncate |
 | `Deletable` | `w` + `x` on dir | Remove files and directories: `delete-file` |
 | `Renameable` | `w` + `x` on dir | Rename or move files within the tree: `rename-file` |
@@ -107,9 +107,10 @@ binary vs. text is a property of the opened `Handle`, not of the directory grant
 **Row-polymorphic builtin signatures:**
 
 ```tinct
-open      [cap@[DirCap [Readable ...]]   path@String "r"] → Handle@[Readable ...]
-open      [cap@[DirCap [Writable ...]]   path@String "w"] → Handle@[Writable ...]
-open      [cap@[DirCap [Appendable ...]] path@String "a"] → Handle@[Appendable ...]
+open      [cap@[DirCap [Readable ...]]   path@String Readable]           → Handle@[Readable ...]
+open      [cap@[DirCap [Writable ...]]   path@String Writable]           → Handle@[Writable ...]
+open      [cap@[DirCap [Appendable ...]] path@String Writable Appendable] → Handle@[Appendable ...]
+open      [cap@[DirCap [Readable Writable ...]] path@String Readable Writable] → Handle@[Readable Writable ...]
 list-dir  [cap@[DirCap [Listable ...]]   path@String]     → [Seq Dict]
 stat-file [cap@[DirCap [Statable ...]]   path@String]     → Dict               # future builtin
 write-file        [cap@[DirCap [Writable ...]]   path@String content@String]

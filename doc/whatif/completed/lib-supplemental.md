@@ -425,40 +425,26 @@ the right default for configuration output. But scripts that build
 output incrementally — writing lines one at a time to a log or report
 file — need a split open/write/close model.
 
-**The current `Handle` is read-only.** `Value::Handle` is
-`Box<dyn BufRead>`; `open cap path "r"` gives you a readable handle
-and nothing else. Writing to a file handle requires a new value type.
+**Note:** This section describes an early draft. The final `open` API uses capability flag types instead of string modes — see §Streaming File I/O Final Design below.
 
-**New value type: `Value::WriteHandle`** — wraps `Box<dyn Write>` (a
-`BufWriter<File>`). Returned by `open` when mode is `"w"` (truncate)
-or `"a"` (append). The type system exposes this as `WriteHandle`.
+**`open`** takes capability flag types as positional arguments after the path. `[open cap path]` with no flags is a type error — intent must be explicit.
 
-**New Rust builtins:**
-
-**`write wh str`** — writes `str` to the `WriteHandle`, returns the
-`WriteHandle` for chaining. Does not flush.
-
-**`flush wh`** — flushes the `WriteHandle`'s buffer to the OS, returns
-`wh`. Use before reading the file in the same script.
-
-**`close wh`** — flushes and closes the `WriteHandle`, returns `null`.
-After `close`, the `WriteHandle` is invalid; further writes are errors.
-
-**`open`** already exists and returns `Handle` for `"r"` mode. It is
-extended to return `WriteHandle` for `"w"` and `"a"` modes. The
-returned type differs by mode — the type checker can enforce this
-statically once `Type::WriteHandle` is added.
+```tinct
+[open cap path Readable]           # Read handle — Handle[Text Readable Seekable]
+[open cap path Writable]           # Write handle (truncate) — Handle[Text Writable Seekable]
+[open cap path Writable Appendable] # Append handle — Handle[Text Writable Appendable Seekable]
+```
 
 **`stdlib/io.llt` additions:**
 
 ```tinct
 # Open a file for writing (truncates existing content).
-open-write: [fn@WriteHandle [cap@DirCap path@String]
-  [open cap path "w"]]
+open-write: [fn@[Handle [Writable]] [cap@DirCap path@String]
+  [open cap path Writable]]
 
 # Open a file for appending.
-open-append: [fn@WriteHandle [cap@DirCap path@String]
-  [open cap path "a"]]
+open-append: [fn@[Handle [Writable Appendable]] [cap@DirCap path@String]
+  [open cap path Writable Appendable]]
 
 # Write a string followed by a newline.
 write-line: [fn@WriteHandle [wh@WriteHandle s@String]
