@@ -35,7 +35,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::ast::{Document, Entry, Expr, MatchArm, NamedArg, Param, Span, Spanned};
+use crate::ast::{Entry, Expr, MatchArm, NamedArg, Param, Span, Spanned};
 use crate::ast_convert::{expr_to_surface_node, surface_node_to_expr};
 use crate::ast_dict::{dict_to_surface_node, surface_node_to_dict, AstToDictOpts}; // TODO(parts-e): remove when macro expander is rewritten on SurfaceExpression (blocked on E3e expander cutover)
 use crate::builtins;
@@ -522,17 +522,251 @@ pub fn expand_surface_program(
     })
 }
 
-/// Pre-scan a Document to collect MacroDecl and SyntaxClass nodes.
-fn pre_scan_document(
-    doc: &Document,
+/// Pre-scan a SurfaceDocument to collect MacroDecl, DefMacro, and SyntaxClass declarations.
+///
+/// Walks `doc.items` directly — no bridge to old `File`/`Document` types needed.
+/// Declaration items (DefMacro, MacroDecl, SyntaxClass) are registered via the existing
+/// `pre_scan_expr_spanned` bridge so that the transformer evaluation logic is shared.
+/// Expression items are recursed into via `pre_scan_surface_expr`.
+fn pre_scan_surface_document(
+    doc: &crate::ast::SurfaceDocument,
     env: &mut MacroEnv,
     ctx: &Arc<EvalContext>,
     stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<()> {
-    for expr in &doc.expressions {
-        pre_scan_expr(expr, env, ctx, stdlib_env)?;
+    for item in &doc.items {
+        match item {
+            crate::ast::SurfaceItem::Decl(decl_spanned) => {
+                match &decl_spanned.node {
+                    crate::ast::SurfaceDeclaration::DefMacro { name, params, body } => {
+                        let params_expr = surface_node_to_expr(params);
+                        let body_expr = surface_node_to_expr(body);
+                        let defmacro_expr = Spanned::new(
+                            Expr::DefMacro {
+                                name: name.clone(),
+                                params: Rc::new(params_expr),
+                                body: Rc::new(body_expr),
+                            },
+                            decl_spanned.span,
+                        );
+                        pre_scan_expr_spanned(&defmacro_expr, env, ctx, stdlib_env)?;
+                    }
+                    crate::ast::SurfaceDeclaration::MacroDecl { name, params, body } => {
+                        let params_expr = surface_node_to_expr(params);
+                        let body_expr = surface_node_to_expr(body);
+                        let macrodecl_expr = Spanned::new(
+                            Expr::MacroDecl {
+                                name: name.clone(),
+                                params: Box::new(params_expr),
+                                body: Box::new(body_expr),
+                            },
+                            decl_spanned.span,
+                        );
+                        pre_scan_expr_spanned(&macrodecl_expr, env, ctx, stdlib_env)?;
+                    }
+                    crate::ast::SurfaceDeclaration::SyntaxClass {
+                        name,
+                        pattern,
+                        message,
+                    } => {
+                        let pattern_expr = surface_node_to_expr(pattern);
+                        let syntaxclass_expr = Spanned::new(
+                            Expr::SyntaxClass {
+                                name: name.clone(),
+                                pattern: Box::new(pattern_expr),
+                                message: message.clone(),
+                            },
+                            decl_spanned.span,
+                        );
+                        pre_scan_expr_spanned(&syntaxclass_expr, env, ctx, stdlib_env)?;
+                    }
+                    _ => {
+                        // TypeAlias, ClassDecl, InstanceDecl, Splice — no macros to register
+                    }
+                }
+            }
+            crate::ast::SurfaceItem::Expr(node) => {
+                pre_scan_surface_expr(node, env, ctx, stdlib_env)?;
+            }
+        }
     }
     Ok(())
+}
+
+/// Pre-scan a SurfaceNode expression to discover nested macro definitions and follow includes.
+///
+/// Handles:
+/// - `SurfaceExpression::Call` to `[include %libdir "file.llt"]` → follow include
+/// - `SurfaceExpression::Decl(Box<SurfaceDeclaration>)` → register embedded macro/syntax-class
+/// - All compound expression variants → recurse into children
+fn pre_scan_surface_expr(
+    node: &Arc<crate::ast::SurfaceNode>,
+    env: &mut MacroEnv,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
+) -> EvalResult<()> {
+    use crate::ast::SurfaceExpression;
+
+    match &node.expr {
+        // Follow includes to discover macros declared inside included stdlib files.
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                if name == "include" && named_args.is_empty() && args.len() == 2 {
+                    if let (
+                        SurfaceExpression::VarRef { name: cap_name, .. },
+                        SurfaceExpression::Str(file_name),
+                    ) = (&args[0].expr, &args[1].expr)
+                    {
+                        if cap_name == "%libdir" {
+                            pre_scan_follow_libdir_include(
+                                file_name, env, ctx, stdlib_env, node.span,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Recurse into children
+            pre_scan_surface_expr(func, env, ctx, stdlib_env)?;
+            for arg in args {
+                pre_scan_surface_expr(arg, env, ctx, stdlib_env)?;
+            }
+            for named_arg in named_args {
+                pre_scan_surface_expr(&named_arg.node.value, env, ctx, stdlib_env)?;
+            }
+            Ok(())
+        }
+
+        // Embedded declaration inside an expression context — register if it is a macro/syntax-class
+        SurfaceExpression::Decl(decl) => match decl.as_ref() {
+            crate::ast::SurfaceDeclaration::DefMacro { name, params, body } => {
+                let params_expr = surface_node_to_expr(params);
+                let body_expr = surface_node_to_expr(body);
+                let defmacro_expr = Spanned::new(
+                    Expr::DefMacro {
+                        name: name.clone(),
+                        params: Rc::new(params_expr),
+                        body: Rc::new(body_expr),
+                    },
+                    node.span,
+                );
+                pre_scan_expr_spanned(&defmacro_expr, env, ctx, stdlib_env)
+            }
+            crate::ast::SurfaceDeclaration::MacroDecl { name, params, body } => {
+                let params_expr = surface_node_to_expr(params);
+                let body_expr = surface_node_to_expr(body);
+                let macrodecl_expr = Spanned::new(
+                    Expr::MacroDecl {
+                        name: name.clone(),
+                        params: Box::new(params_expr),
+                        body: Box::new(body_expr),
+                    },
+                    node.span,
+                );
+                pre_scan_expr_spanned(&macrodecl_expr, env, ctx, stdlib_env)
+            }
+            crate::ast::SurfaceDeclaration::SyntaxClass {
+                name,
+                pattern,
+                message,
+            } => {
+                let pattern_expr = surface_node_to_expr(pattern);
+                let syntaxclass_expr = Spanned::new(
+                    Expr::SyntaxClass {
+                        name: name.clone(),
+                        pattern: Box::new(pattern_expr),
+                        message: message.clone(),
+                    },
+                    node.span,
+                );
+                pre_scan_expr_spanned(&syntaxclass_expr, env, ctx, stdlib_env)
+            }
+            _ => Ok(()),
+        },
+
+        // Compound expressions — recurse into children
+        SurfaceExpression::DotAccess { expr, .. } => {
+            pre_scan_surface_expr(expr, env, ctx, stdlib_env)
+        }
+
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            pre_scan_surface_expr(lhs, env, ctx, stdlib_env)?;
+            pre_scan_surface_expr(rhs, env, ctx, stdlib_env)
+        }
+
+        SurfaceExpression::Sequential(exprs) => {
+            for expr in exprs {
+                pre_scan_surface_expr(expr, env, ctx, stdlib_env)?;
+            }
+            Ok(())
+        }
+
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                if let Some(key) = &entry.node.key {
+                    pre_scan_surface_expr(key, env, ctx, stdlib_env)?;
+                }
+                pre_scan_surface_expr(&entry.node.value, env, ctx, stdlib_env)?;
+            }
+            Ok(())
+        }
+
+        SurfaceExpression::Fn { body, .. } => pre_scan_surface_expr(body, env, ctx, stdlib_env),
+
+        SurfaceExpression::TypeAssert { expr, .. } => {
+            pre_scan_surface_expr(expr, env, ctx, stdlib_env)
+        }
+
+        SurfaceExpression::Match { scrutinee, arms } => {
+            pre_scan_surface_expr(scrutinee, env, ctx, stdlib_env)?;
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    pre_scan_surface_expr(guard, env, ctx, stdlib_env)?;
+                }
+                pre_scan_surface_expr(&arm.body, env, ctx, stdlib_env)?;
+            }
+            Ok(())
+        }
+
+        SurfaceExpression::Quote(inner)
+        | SurfaceExpression::Unquote(inner)
+        | SurfaceExpression::UnquoteSplice(inner) => {
+            pre_scan_surface_expr(inner, env, ctx, stdlib_env)
+        }
+
+        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            for binding in bindings {
+                pre_scan_surface_expr(binding, env, ctx, stdlib_env)?;
+            }
+            Ok(())
+        }
+
+        SurfaceExpression::CaseArm { pattern, body } => {
+            pre_scan_surface_expr(pattern, env, ctx, stdlib_env)?;
+            pre_scan_surface_expr(body, env, ctx, stdlib_env)
+        }
+
+        SurfaceExpression::TypeApp { func, arg } => {
+            pre_scan_surface_expr(func, env, ctx, stdlib_env)?;
+            pre_scan_surface_expr(arg, env, ctx, stdlib_env)
+        }
+
+        // Leaf nodes — no children to scan
+        SurfaceExpression::Int(_)
+        | SurfaceExpression::Float(_)
+        | SurfaceExpression::Bool(_)
+        | SurfaceExpression::Str(_)
+        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::Annotated { .. }
+        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Placeholder
+        | SurfaceExpression::Error(_) => Ok(()),
+    }
 }
 
 /// Follow a `[include %libdir "file.llt"]` call during pre-scan to discover macros
@@ -602,10 +836,9 @@ fn pre_scan_follow_libdir_include(
     // Push this file onto the recursion guard before scanning
     PRESCAN_INCLUDE_STACK.with(|s| s.borrow_mut().insert(file_name.to_string()));
 
-    // Pre-scan all documents in the parsed file
-    let parsed_file = crate::ast_convert::surface_program_to_file(&parsed.program);
-    for doc in &parsed_file.node.documents {
-        let _ = pre_scan_document(&doc.node, env, ctx, stdlib_env);
+    // Pre-scan all documents in the parsed file — walk SurfaceProgram directly
+    for doc in &parsed.program.documents {
+        let _ = pre_scan_surface_document(&doc.node, env, ctx, stdlib_env);
     }
 
     // Pop the recursion guard
