@@ -1,0 +1,8 @@
+# PM11: Seq tail bound to Variable should not be forced.
+# The tail contains a raise — if the tail were forced eagerly, this would error.
+# Instead, the tail stays as a lazy thunk and the match body never touches it.
+[match [seq 1 [raise "tail must not be forced"]]
+    [seq h t]:  h
+    _:          0]
+=== out
+Int(1)

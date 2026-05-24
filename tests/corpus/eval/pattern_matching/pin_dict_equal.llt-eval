@@ -1,0 +1,7 @@
+# PM9: Pin pattern with Dict — structural equality matches identical dicts.
+[
+  d: [x: 1  y: 2]
+  r: [match [x: 1  y: 2]  $d: "matched"  _: "no"]
+]
+=== out
+Dict({"d": Dict({"x": Int(1), "y": Int(2)}), "r": String("matched")})

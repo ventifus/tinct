@@ -48,6 +48,11 @@ type MatchPatternFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Environment>>>>> + 'a>,
 >;
 
+/// Type alias for the return type of `values_equal` — a recursive async fn returning bool.
+/// Must be `Pin<Box<...>>` to support recursion (direct `async fn` recursion is unsized).
+type ValuesEqualFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>>>>;
+
 /// Check if a span matches a boundary guard and wrap the thunk if so.
 ///
 /// Called at the end of `eval()` to automatically insert runtime guards for
@@ -2938,8 +2943,10 @@ fn match_pattern<'a>(
                     .ok_or_else(|| EvalError::undefined_variable(name.clone(), *value_span))?;
                 let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
 
-                // Compare values for equality
-                let matches = values_equal(&var_value, value);
+                // Compare values for equality. Dict and Seq require materialization of
+                // their contents, so this is an async operation.
+                let matches =
+                    values_equal(var_value, value.clone(), *value_span, Arc::clone(ctx)).await?;
                 if matches {
                     Ok(Some(Arc::clone(env)))
                 } else {
@@ -3042,7 +3049,7 @@ fn match_pattern<'a>(
                 }
             }
             Pattern::Seq { head, tail } => {
-                // Seq pattern: match Value::Seq, force head, bind tail
+                // Seq pattern: match Value::Seq, force head, lazily bind tail
                 match value {
                     Value::Seq {
                         head: head_thunk_id,
@@ -3067,14 +3074,48 @@ fn match_pattern<'a>(
                             }
                         }
 
-                        // Force the tail value and match against the tail pattern
-                        let tail_thunk = ctx.get_thunk(*tail_thunk_id);
-                        let tail_value = materialize(&tail_thunk, Some(value_span), ctx).await?;
-                        match match_pattern(&tail.node, &tail_value, &result_env, &tail.span, ctx)
-                            .await?
-                        {
-                            Some(new_env) => Ok(Some(new_env)),
-                            None => Ok(None),
+                        // Handle the tail pattern. Preserve laziness when possible:
+                        // - Variable: bind the tail thunk directly without materializing it.
+                        //   The tail is a lazy sequence and should stay unevaluated until
+                        //   the binding is actually used.
+                        // - Wildcard: discard the tail entirely — no binding, no forcing.
+                        // - Anything else (TypeTag, Constructor, Dict, Literal, Seq, Pin):
+                        //   materialize the tail and recurse into match_pattern as before.
+                        match &tail.node {
+                            Pattern::Variable(name) => {
+                                // Bind the tail thunk directly — no materialization.
+                                let tail_thunk = ctx.get_thunk(*tail_thunk_id);
+                                let child_env = Arc::new(RwLock::new(
+                                    Environment::with_parent(Arc::clone(&result_env)),
+                                ));
+                                child_env
+                                    .write()
+                                    .unwrap()
+                                    .insert(name.clone(), tail_thunk);
+                                Ok(Some(child_env))
+                            }
+                            Pattern::Wildcard => {
+                                // Tail is discarded — no binding, no forcing.
+                                Ok(Some(result_env))
+                            }
+                            _ => {
+                                // Structural tail pattern: materialize and recurse.
+                                let tail_thunk = ctx.get_thunk(*tail_thunk_id);
+                                let tail_value =
+                                    materialize(&tail_thunk, Some(value_span), ctx).await?;
+                                match match_pattern(
+                                    &tail.node,
+                                    &tail_value,
+                                    &result_env,
+                                    &tail.span,
+                                    ctx,
+                                )
+                                .await?
+                                {
+                                    Some(new_env) => Ok(Some(new_env)),
+                                    None => Ok(None),
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -3191,39 +3232,106 @@ fn match_pattern<'a>(
 }
 
 
-/// Check if two values are equal (for pattern matching).
-/// This is a simple structural equality check.
-fn values_equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (
-            Value::String {
-                source: s1,
-                start: start1,
-                end: end1,
-            },
-            Value::String {
-                source: s2,
-                start: start2,
-                end: end2,
-            },
-        ) => s1[*start1..*end1] == s2[*start2..*end2],
-        (Value::Dict(_), Value::Dict(_)) => false, // Dict equality is complex, not supported for now
-        // Nullary variants compare by tag equality
-        (
-            Value::Variant {
-                tag: tag1,
-                payload: None,
-            },
-            Value::Variant {
-                tag: tag2,
-                payload: None,
-            },
-        ) => tag1 == tag2,
-        _ => false,
-    }
+/// Check if two values are equal (for pin pattern matching, `$var:`).
+///
+/// Primitive types compare by value. Dict and Seq require deep structural
+/// equality: all field values and sequence elements must be materialized and
+/// compared recursively. This is a strictness point — `$dict_var:` in a
+/// pin pattern will force evaluation of every reachable value in the dict/seq.
+///
+/// # Strictness
+/// - `Int`, `Float`, `Bool`, `String`: compare without any materialization.
+/// - `Dict(a)` vs `Dict(b)`: same key set required; then each value pair is
+///   materialized and compared recursively. This forces all values in both
+///   dicts.
+/// - `Seq` vs `Seq`: head elements materialized and compared, then tails
+///   materialized and compared recursively.
+/// - All other combinations return `false`.
+///
+/// Uses `Pin<Box<...>>` to support recursion (direct `async fn` recursion is unsized).
+/// Takes owned `Value` and copies `Span` to avoid self-referential lifetime issues in
+/// the recursive calls inside the pinned future.
+fn values_equal(a: Value, b: Value, span: Span, ctx: Arc<EvalContext>) -> ValuesEqualFuture {
+    Box::pin(async move {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Ok(x == y),
+            (Value::Float(x), Value::Float(y)) => Ok(x == y),
+            (Value::Bool(x), Value::Bool(y)) => Ok(x == y),
+            (
+                Value::String {
+                    source: s1,
+                    start: start1,
+                    end: end1,
+                },
+                Value::String {
+                    source: s2,
+                    start: start2,
+                    end: end2,
+                },
+            ) => Ok(s1[start1..end1] == s2[start2..end2]),
+            // Nullary variants compare by tag equality
+            (
+                Value::Variant {
+                    tag: tag1,
+                    payload: None,
+                },
+                Value::Variant {
+                    tag: tag2,
+                    payload: None,
+                },
+            ) => Ok(tag1 == tag2),
+            // Dict structural equality: same keys, then compare each value pair.
+            // Deep equality requires materializing all field values in both dicts.
+            (Value::Dict(map_a), Value::Dict(map_b)) => {
+                if map_a.len() != map_b.len() {
+                    return Ok(false);
+                }
+                // Keys must be identical (same set; insertion order is not required
+                // for equality — only that every key in a exists in b with the same value).
+                for (key, id_a) in &map_a {
+                    let id_b = match map_b.get(key) {
+                        Some(id) => *id,
+                        None => return Ok(false),
+                    };
+                    let thunk_a = ctx.get_thunk(*id_a);
+                    let thunk_b = ctx.get_thunk(id_b);
+                    let val_a = materialize(&thunk_a, Some(&span), &ctx).await?;
+                    let val_b = materialize(&thunk_b, Some(&span), &ctx).await?;
+                    if !values_equal(val_a, val_b, span, Arc::clone(&ctx)).await? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            // Seq structural equality: materialize head and tail, compare element by element.
+            // The nil sentinel is an empty Dict, so an exhausted Seq on both sides compares
+            // equal via the Dict arm above (both are Dict({})).
+            (
+                Value::Seq {
+                    head: head_a,
+                    tail: tail_a,
+                },
+                Value::Seq {
+                    head: head_b,
+                    tail: tail_b,
+                },
+            ) => {
+                let thunk_ha = ctx.get_thunk(head_a);
+                let thunk_hb = ctx.get_thunk(head_b);
+                let val_ha = materialize(&thunk_ha, Some(&span), &ctx).await?;
+                let val_hb = materialize(&thunk_hb, Some(&span), &ctx).await?;
+                if !values_equal(val_ha, val_hb, span, Arc::clone(&ctx)).await? {
+                    return Ok(false);
+                }
+                let thunk_ta = ctx.get_thunk(tail_a);
+                let thunk_tb = ctx.get_thunk(tail_b);
+                let val_ta = materialize(&thunk_ta, Some(&span), &ctx).await?;
+                let val_tb = materialize(&thunk_tb, Some(&span), &ctx).await?;
+                values_equal(val_ta, val_tb, span, ctx).await
+            }
+            _ => Ok(false),
+        }
+    })
 }
 
 #[cfg(test)]
