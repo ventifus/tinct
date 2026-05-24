@@ -81,9 +81,54 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 - [x] Add Surface bridge functions — `surface_node_to_dict`, `dict_to_surface_node`, `surface_program_to_dict`, `dict_to_surface_program` in `ast_dict.rs` (bridge via ast_convert.rs) [commit 9849c61]
 - [x] Migrate `formatter.rs` caller — eliminates SurfaceProgram→File→dict conversion [commit 9849c61]
-- [ ] Migrate `builtins_meta.rs` callers — deferred (operates on Expr for macro AST; migrate when builtins_meta migrates to Surface)
-- [ ] Migrate `expand.rs:1802` caller — deferred (macro expansion uses Expr; migrate with expander)
+- [ ] Migrate `builtins_meta.rs` callers — see `rv2-migrate-builtins-meta` sprint below
+- [ ] Migrate `expand.rs:1802` caller — see `rv2-migrate-expand-macro` sprint below
 - [x] `just build` passes [commit 9849c61]
+
+### rv2-migrate-builtins-meta: Migrate builtins_meta.rs ast_dict callers to Surface API
+
+**Goal:** Replace `ast_to_dict_expr` / `dict_to_ast` calls in `builtins_meta.rs` with the Surface bridge functions (`surface_node_to_dict`, `dict_to_surface_node`). This unblocks deleting the old Expr-based ast_dict functions.
+
+**Context:** `builtins_meta.rs` uses ast_dict for `ast-of` builtin (AST-as-dict representation) and `load`/`builtin_load` (parse source to AST dict). Lines ~1619-1802 of builtins_meta.rs.
+
+**Survey:** Read `src/builtins_meta.rs` and grep for `ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`. Count and document exact call sites with line numbers.
+
+- [ ] Survey `src/builtins_meta.rs`: find all `ast_to_dict*`/`dict_to_ast` call sites with line numbers. The input to each call is likely a parsed/desugared program (→ use `surface_program_to_dict`) or a single expression (→ use `surface_node_to_dict`). Document which applies to each site.
+- [ ] Update each call site to use the Surface bridge API. For `ast_to_dict(file, ...)` calls: use `surface_program_to_dict(&program)`. For `ast_to_dict_expr(expr, ...)` calls: convert expr to SurfaceNode via `expr_to_surface_node` then `surface_node_to_dict`. For `dict_to_ast(...)` calls: use `dict_to_surface_node` then keep the result as SurfaceNode (or bridge back via `surface_node_to_expr` if needed for the current eval path).
+- [ ] Remove the import of `ast_to_dict_expr`/`dict_to_ast` from `builtins_meta.rs` (see existing TODO comment at line 40 of expand.rs: "remove when macro expander is rewritten on SurfaceExpression")
+- [ ] `just build` passes; run `tinct describe` and `ast-of` manually to verify output format unchanged
+
+### rv2-migrate-expand-macro: Migrate expand.rs macro expansion to Surface ast_dict API
+
+**Goal:** Replace 3 `ast_to_dict_expr`/`dict_to_ast` calls in `src/expand.rs` with Surface bridge functions. This + rv2-migrate-builtins-meta removes all external callers of old ast_dict functions.
+
+**Exact call sites (from grep):**
+- `src/expand.rs:1661` — `ast_to_dict_expr(arg, &opts, ctx)?` — converts macro argument to dict for transformer
+- `src/expand.rs:1694` — `ast_to_dict_expr(&binding_rc, &opts, ctx)?` — converts binding to dict
+- `src/expand.rs:1802` — `dict_to_ast(&deep_result, ctx)` — reconstructs AST from transformer output
+
+**Note:** Lines 1661 and 1694 take `Spanned<Expr>` inputs. These come from `eval_recursive`/`expand_macros` which work on old Expr AST. Convert to SurfaceNode via `expr_to_surface_node()` from ast_convert.rs before calling `surface_node_to_dict`. For line 1802, the result dict → SurfaceNode via `dict_to_surface_node`, then back to Expr via `surface_node_to_expr` if the rest of the expander still needs Expr output.
+
+- [ ] Update `expand.rs:1661`: `ast_to_dict_expr(arg, &opts, ctx)` → `surface_node_to_dict(&expr_to_surface_node(arg), &opts, ctx)` (or equivalent wrapper)
+- [ ] Update `expand.rs:1694`: same pattern for binding_rc
+- [ ] Update `expand.rs:1802`: `dict_to_ast(&deep_result, ctx)` → `dict_to_surface_node(&deep_result, ctx)` then convert result to Expr via `surface_node_to_expr` for the rest of the expander chain
+- [ ] Remove `use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts}` import from expand.rs; add appropriate Surface bridge imports
+- [ ] `just build` passes; run macro expansion corpus tests to verify
+
+### rv2-delete-eval-pipeline-old: Delete old eval_document/eval_file from eval_pipeline.rs
+
+**Goal:** Remove the old Expr-based `eval_document`, `eval_file`, `eval_file_with_input` functions from `src/eval_pipeline.rs`. These are the last callers of the old File/Expr eval path.
+
+**Current state:** `src/main.rs` already uses `eval_surface_file_with_input` and `eval_surface_file` (verified by grep). The old functions in eval_pipeline.rs still exist as public API but have no external callers in main.rs.
+
+**Survey:** Grep for `eval_file\b`, `eval_document`, `eval_file_with_input` (not `eval_surface_*`) across all src/ files to confirm no remaining callers.
+
+- [ ] Grep for remaining callers of old `eval_file`, `eval_document`, `eval_file_with_input` across src/, tests/, scripts/. If any found, migrate them to `eval_surface_*` equivalents.
+- [ ] Delete `pub async fn eval_document(...)` from `src/eval_pipeline.rs`
+- [ ] Delete `pub async fn eval_file(...)` from `src/eval_pipeline.rs`
+- [ ] Delete `pub async fn eval_file_with_input(...)` from `src/eval_pipeline.rs`
+- [ ] Remove any re-exports of these functions from `src/lib.rs` (if they exist)
+- [ ] `just build` passes; `just test-lib` passes
 
 ### rv2-rewrite-ast-dict: Full SurfaceNode-native rewrite of ast_dict.rs
 
