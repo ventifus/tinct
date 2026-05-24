@@ -85,6 +85,34 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Migrate `expand.rs:1802` caller — deferred (macro expansion uses Expr; migrate with expander)
 - [x] `just build` passes [commit 9849c61]
 
+### rv2-rewrite-ast-dict: Full SurfaceNode-native rewrite of ast_dict.rs
+
+**Goal:** Replace the 1500-line Expr-walking `ast_to_dict`/`dict_to_ast` with native SurfaceNode equivalents so `ast_convert.rs` bridge can eventually be deleted. The bridge functions added in rv2-migrate-ast-dict serve as the API; this sprint changes the internals.
+
+**Prerequisite:** rv2-migrate-ast-dict ✅ (bridge API exists) + builtins_meta.rs + expand.rs callers migrated (currently deferred above)
+
+**Decomposed tasks (order matters — each step must compile):**
+
+**Phase 1 — Survey + map SurfaceExpression variants to Expr equivalents:**
+- [ ] Read `src/ast_dict.rs:70-1500` in full; catalog every `Expr::*` variant handled in `ast_to_dict_expr`; map each to its `SurfaceExpression::*` equivalent. Some variants don't exist in Surface (e.g., `Expr::Let` is desugared; `Expr::Desugar` is internal). Document gaps.
+- [ ] Identify which Surface variants exist in `src/ast.rs` vs. which need new handling. Some dict keys (like `rest`, `decl`) may need special casing.
+
+**Phase 2 — Rewrite ast_to_dict_expr → surface_node_to_dict_inner:**
+- [ ] In `ast_dict.rs`, add `fn surface_node_to_dict_inner(node: &Arc<SurfaceNode>, depth: u32) -> Value` that walks `SurfaceExpression` variants natively. Start with the most common: `Dict`, `Fn`, `Call`, `VarRef`, `Str`, `Int`, `Float`, `Bool`. Use `todo!()` for less-common variants initially.
+- [ ] Update `surface_node_to_dict()` (already exists as bridge) to call `surface_node_to_dict_inner` instead of going via `surface_node_to_expr + ast_to_dict_expr`
+
+**Phase 3 — Rewrite dict_to_ast → dict_to_surface_node_inner:**
+- [ ] In `ast_dict.rs`, add `fn dict_to_surface_node_inner(dict: &IndexMap<Key, ThunkId>, span: Span, ctx: &EvalContext) -> Arc<SurfaceNode>` that reconstructs SurfaceNode from a dict representation. Handle the "node" key for dispatch.
+- [ ] Update `dict_to_surface_node()` bridge to call inner function directly
+
+**Phase 4 — Migrate callers:**
+- [ ] Update `builtins_meta.rs` to use `surface_node_to_dict`/`dict_to_surface_node` (unblocks these callers from deferred state above)
+- [ ] Update `expand.rs:1802` to use `dict_to_surface_node`
+
+**Phase 5 — Delete bridge layer:**
+- [ ] Once all callers use Surface API: delete the old `ast_to_dict(file, ...)`, `ast_to_dict_expr(expr, ...)`, `dict_to_ast(...)`, `dict_to_file(...)` from `ast_dict.rs`
+- [ ] Delete the `surface_node_to_expr`/`expr_to_surface_node` bridge calls from the Surface wrapper functions
+
 ### rv2-migrate-repl: Migrate REPL to Surface eval path (small, independent)
 
 - [x] Replace `repl.rs` call — REPL was already on Surface path; removed stale surface_program_to_file conversion [commit 7b0033d]
