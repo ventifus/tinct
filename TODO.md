@@ -106,12 +106,19 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
-**Depends on:** rv2-migrate-ast-dict, rv2-migrate-repl, rv2-migrate-lsp, rv2-migrate-typecheck-api
+**Depends on:** rv2-migrate-ast-dict ✅(partial), rv2-migrate-repl ✅, rv2-migrate-lsp ✅, rv2-migrate-typecheck-api ✅
 
+**Still BLOCKED on (these callers must be migrated first):**
+- `src/builtins_meta.rs` — still calls `ast_to_dict_expr` / `dict_to_ast` (Expr-based macro AST path)
+- `src/expand.rs:1802` — `dict_to_ast` call in macro expansion (returns Expr, not SurfaceNode)
+- `src/typecheck.rs` internal bridge — `typecheck_surface_program` still converts via `surface_program_to_file` internally; old `typecheck_file_*` functions still exist as private (can delete after bridge is removed)
+- `src/eval_pipeline.rs` — old `eval_document`/`eval_file`/`eval_file_with_input` still present (main.rs path not yet cut over)
+
+**Once ALL above are migrated:**
 - [ ] Delete `src/desugar.rs` — `desugar_surface_program` is the live path; old `desugar_file` no longer called
 - [ ] Delete `src/ast_convert.rs` — `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers all migrated
 - [ ] Delete old `eval_document`/`eval_file`/`eval_file_with_input` from `src/eval_pipeline.rs` (keep `eval_surface_*` variants)
-- [ ] Delete `src/ast_dict.rs` old Expr-based functions (replaced by rv2-migrate-ast-dict)
+- [ ] Delete `src/ast_dict.rs` old Expr-based functions (replaced by rv2-migrate-ast-dict surface wrappers)
 - [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
 - [ ] `just build` passes; `just test` passes
 
@@ -796,16 +803,16 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Handle capability row validation — documented gradual typing semantics at `eval.rs:654-690`; Unknown=accept; concrete cap row=accept with comment (runtime lacks capability descriptors needed for validation; type checker handles statically) (2026-05-23)
 - [x] Audit 18 `Type::Unknown` in Handle signatures — 3 made precise (`connect`→readable+writable, `quic-open-stream`→readable+writable, `raw-create`→writable); 9 Unknown justified with inline comments; remaining Unknown documented (`src/type_env.rs`) (2026-05-23)
 - [x] `Type::Handle` PartialEq — documented limitation: structural equality fails for TypeVar-containing rows; TODO comment at `src/type_def.rs:243`; does NOT affect soundness (type checker uses unify(), not PartialEq) (2026-05-23)
-- [ ] Add `cap_flags(flags: &[&str]) -> Type` multi-flag helper next to `cap_flag` in `src/type_env.rs:1974` — eliminate duplicated 14-line inline blocks in `connect` (~line 2124) and `quic-open-stream` (~line 2226); replace with `cap_flags(&["readable", "writable"])`. No behavioral change. [Minor]
-- [ ] Add inline comment at `src/builtins_meta.rs:1724` and `src/builtins_meta.rs:1786` explaining why `_annotation_errors` is discarded — "Type errors are advisory — eval proceeds regardless. Callers that care about type errors use `builtin_eval_types`." Consistent with existing call sites in `lib.rs`, `repl.rs`, `main.rs`. [Nit]
+- [x] Add `cap_flags(&["readable","writable"]) -> Type` helper; replaced 2 duplicated 14-line blocks in connect + quic-open-stream [Minor]
+- [x] Added `_annotation_errors` advisory comment at builtins_meta.rs:1722, 1784 [Nit]
 - [ ] Implement `capability-runtime-validation`: when `Value::Handle` gains a type-level capability descriptor field, implement `Type::is_subtype(&handle.caps, cap_row)` in `value_matches_type` at `src/eval.rs:654`. Currently both Unknown and concrete cap_row cases accept any handle (gradual typing). See TODO(capability-runtime-validation) comment at `eval.rs:677`. [Minor]
 - [ ] Fix `handle-partialeq-limitation`: `Type::Handle` PartialEq uses structural equality on capability rows, failing for TypeVar-containing rows (e.g., `Handle(TypeVar("a",0)) != Handle(TypeVar("b",0))` even if unifiable). Proper fix requires bidirectional subtyping with unification engine access. Affects normalization dedup and HashMap lookups (false negatives are safe/conservative). See TODO(handle-partialeq-limitation) at `src/type_def.rs:243`. [Minor]
 - [ ] Add `Handle` as a recognized type name in `resolve_type_name` (`src/typecheck_annot.rs`) to enable `h@Handle[@Readable]` annotations in user code — currently `Handle` is not in the match arm list, so any capability-annotated Handle type in user annotations resolves as an undefined type variable. Prerequisite for re-adding the `handle_capability_mismatch` corpus test deleted in code-health-cycle316. [Major]
 
 **Health review #321 findings:**
 - [ ] Fix TypeAnnotationTable population in `typecheck_file` — currently TypeAssert resolution writes to `Expr::TypeAssert.resolved_type: RefCell<Option<Type>>` fields (old bridge path), NOT directly to the `TypeAnnotationTable`. Table is populated by a subsequent extraction step from RefCell. This roundtrip breaks if TypeAssert nodes bypass the File representation. Fix: add `&mut TypeAnnotationTable` parameter to `typecheck_file()` at `typecheck.rs:206`, insert resolved types directly during TypeAssert inference, delete `file_to_surface_program_with_types()` extraction step. Update 6 call sites (`lib.rs`, `main.rs`). (type-theorist review #321) [Major]
-- [ ] Add module-level comment at `src/type_env.rs:2010` (I/O builtins section) explaining Handle Unknown gradual typing policy: "When runtime mode determines caps (open) or caps are passed through unchanged (flush/seek), use Handle(Unknown) with inline justification. See doc/05-type-annotations.md §20." — currently justifications are scattered across 9 separate inline comments (type-theorist review #321) [Minor]
-- [ ] Add regression test `test_handle_capability_partialeq_limitation` to `src/types.rs` — verify `unify(Handle(α), Handle(β))` succeeds via `unify()` while `Handle(α) != Handle(β)` via PartialEq; comment: "Known-safe: unify() drives type checking, PartialEq only affects HashMap lookups (false negatives conservative)" (type-theorist review #321) [Minor]
+- [x] Added module-level Handle Unknown policy comment at type_env.rs:2026-2030 [Minor]
+- [x] Added `test_handle_capability_partialeq_limitation` in type_unify_tests.rs — PartialEq structural inequality + unify() succeeds [Minor]
 
 **Misc (Minor):**
 - [x] Verify `Span::origin()` frame filtering in `EvalError::Display` — CONFIRMED: `should_display_frame()` at `src/error.rs:1640` filters frames with `Span::origin()` (0:0-0:0 synthetic spans) from user-facing output; test coverage at `error.rs:3261` (test_origin_span_frames_filtered_from_display). Implementation complete. (2026-05-23)
