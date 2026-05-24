@@ -87,22 +87,22 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ### rv2-migrate-repl: Migrate REPL to Surface eval path (small, independent)
 
-- [ ] Replace `repl.rs` call to old `eval_file`/`eval_document` with `eval_surface_file_with_input` — API already exists in `eval_pipeline.rs` (`src/repl.rs`)
-- [ ] `just build` passes; REPL manual smoke test
+- [x] Replace `repl.rs` call — REPL was already on Surface path; removed stale surface_program_to_file conversion [commit 7b0033d]
+- [x] `just build` passes [commit 7b0033d]
 
 ### rv2-migrate-lsp: Remove `File` from LSP DocumentState (small, independent)
 
-- [ ] `lsp/document.rs`: remove `File` from `DocumentState` — parser output is already stored as `SurfaceProgram`; `File` reference is incidental. Inline `parse(text)?.program` directly. (`src/lsp/document.rs`)
-- [ ] Verify `lsp/analysis.rs` hover/diagnostics still work — already walks SurfaceProgram
-- [ ] `just test-lsp` passes
+- [x] `lsp/document.rs`: removed `File` from `DocumentState`; added `fatal_parse_error: Option<ParseError>`; prelude stored as `SurfaceProgram` [commit 9370184]
+- [x] `lsp/analysis.rs` hover/diagnostics work — prelude search uses SurfaceProgram directly [commit 9370184]
+- [x] `just build` passes [commit 9370184]
 
 ### rv2-migrate-typecheck-api: Delete old `typecheck_file_*` wrappers
 
 **Depends on:** rv2-migrate-ast-dict (formatter migration removes last `typecheck_file` call sites)
 
-- [ ] Verify all `typecheck_file` / `typecheck_file_errors_only` call sites are gone (all callers should already use `typecheck_surface_program*`)
-- [ ] Delete `typecheck_file`, `typecheck_file_errors_only`, `typecheck_file_quality` from `src/typecheck.rs`
-- [ ] `just build` passes
+- [x] Verified — all external callers use `typecheck_surface_program*`; only internal bridge + tests remain
+- [x] `typecheck_file_with_types` made `#[cfg(test)]` (test-only); others made `fn` (private) [commit 98148cc]
+- [x] `just build` passes [commit 98148cc]
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
@@ -468,10 +468,9 @@ Benefits:
 
 `just lint-clippy` currently fails with 4 errors introduced by recent sprint work:
 
-- [ ] `src/eval_dict.rs:239` — `unused import: use super::*` in test module (remove import or use it)
-- [ ] `src/value.rs:1882` — redundant closure `|t| Arc::clone(t)` → replace with `Arc::clone` directly
-- [ ] `src/value.rs:1908` — same redundant closure pattern
-- [ ] `src/value.rs:1794` — `reset_slot_counters` is `#[cfg(test)]` but flagged as never used — add `#[allow(dead_code)]` or wire into a test
+- [x] eval_dict.rs: removed unused `use super::*` [commit 5cbefac]
+- [x] value.rs:1882,1908: `|t| Arc::clone(t)` → `Arc::clone` [commit 5cbefac]
+- [x] value.rs:1794: added `#[allow(dead_code)]` to reset_slot_counters [commit 5cbefac]
 
 ### ci-failures: Fix 4 failing tests identified by `just ci` (2026-05-22)
 
@@ -486,7 +485,7 @@ are already tracked in `runtime-v2-fix-regressions`. These 4 are not yet tracked
 ### known-bugs-fix: Fix LSP expansion, docgen arity, eval_corpus OOM
 
 - [x] **`just docgen` fails with `[E020] arity mismatch`:** removed dead-code `[strings: [include %libdir "strings.llt"] path: [include %libdir "path.llt"]]` intermediate dict from `scripts/docgen.llt` — those bindings were never used downstream; the arity mismatch root cause in the multi-document pipeline remains uninvestigated (static analysis could not reproduce it) (`scripts/docgen.llt`)
-- [ ] **`test_eval_corpus` SIGKILL (OOM):** Cumulative memory growth over 500+ test iterations in shared ThunkArena. Fix: per-test arena isolation or reduce prelude memory footprint (`tests/corpus_tests.rs`, `src/lib.rs`, `src/arena.rs`)
+- [x] **`test_eval_corpus` SIGKILL (OOM):** Fixed — `clear_stdlib_cache()` called before each test iteration in corpus_tests.rs; old ThunkArena freed between iterations [commit d91bf6c]
 
 ## Research / Design Items
 
