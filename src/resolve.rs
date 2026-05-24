@@ -233,11 +233,13 @@ impl SurfaceResolver {
     fn walk_surface_annotation(&mut self, ann: &Spanned<crate::ast::Annotation>) {
         match &ann.node {
             crate::ast::Annotation::Simple(_) => {}
-            crate::ast::Annotation::PropertyDict(_entries) => {
-                // PropertyDict entries contain old Expr nodes (pre-migration).
-                // In the fully migrated system, Annotation will use Arc<SurfaceNode>.
-                // Until then, skip resolution of PropertyDict entry expressions —
-                // they will fall back to FreeVar (name-based lookup) at runtime.
+            crate::ast::Annotation::PropertyDict(entries) => {
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        self.walk_surface_node(key);
+                    }
+                    self.walk_surface_node(&entry.node.value);
+                }
             }
             crate::ast::Annotation::Annotated(_, inner) => {
                 let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span);

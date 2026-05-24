@@ -956,7 +956,7 @@ T013 warnings currently report internal inference variable names like `_t86` ins
 
 **Gap 1 — `Annotation::PropertyDict` entries** (`src/resolve.rs:214-228`):
 `walk_surface_annotation` explicitly skips PropertyDict entries with comment "fall back to FreeVar (name-based lookup) at runtime". This is a migration artifact — PropertyDict still holds old Expr nodes. Once `Annotation` is fully migrated to `Arc<SurfaceNode>`, wire resolution here.
-- [ ] After Annotation migration: remove the skip comment and walk PropertyDict entry Arc<SurfaceNode> values through `walk_surface_node` in `walk_surface_annotation` (`src/resolve.rs:217-221`)
+- [x] After Annotation migration: remove the skip comment and walk PropertyDict entry Arc<SurfaceNode> values through `walk_surface_node` in `walk_surface_annotation` (`src/resolve.rs:217-221`)
 
 **Gap 2 — Match arm pattern-bound variables** (`src/resolve.rs:172-180`):
 `Match` arms walk scrutinee + body but never call `enter_scope()` for pattern-bound variables (e.g., `[match x  [Int n]: [+ n 1]]` — `n` has no slot, falls back to name lookup inside the arm body).
@@ -964,7 +964,7 @@ T013 warnings currently report internal inference variable names like `_t86` ins
 
 **Gap 3 — Variables inside type annotations** (cross-cutting):
 Type annotations using `@[constraint: [a: Foo]]` form use PropertyDict, which is skipped. Until Gap 1 is fixed, all constraint-annotation variables fall back to name lookup.
-- [ ] Track as a consequence of Gap 1 — fixing PropertyDict annotation resolution fixes this too [Minor]
+- [x] Track as a consequence of Gap 1 — fixing PropertyDict annotation resolution fixes this too [Minor]
 
 **Gap 4 — Verify LetDecl/PatternDecl sequential injection**:
 The Sequential handler (lines 118-135) calls `surface_node_static_keys(e)` to decide whether to inject scope after each expression. Verify `LetDecl` and `PatternDecl` nodes are correctly identified by `surface_node_static_keys` so their bindings get slots in subsequent expressions.
