@@ -595,7 +595,7 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle Readable] expr]` causes the type checker to panic with `[T000]: resolved_type written twice — elaboration invariant violated`. The TypeAssert elaboration is writing to the same AST node's resolved_type slot twice. Workaround: remove the annotation; the Handle type mismatch (T003) is then reported as a non-fatal warning instead.
 
 - [x] Find the double-write in `src/typecheck_annot.rs` or `src/typecheck.rs` — specifically the TypeAssert elaboration for parameterized Handle types like `Handle[Readable]`; add guard to prevent double-write or fix the root cause (`src/typecheck.rs`, `src/typecheck_annot.rs`)
-- [ ] Verify `[@[Handle Readable] [open %cwd "file.txt" Readable]]` type-checks cleanly after fix
+- [ ] Verify `[@[Handle Readable] [open %cwd "file.txt" Readable]]` type-checks cleanly after fix — **BLOCKED on `parser-annotation-type-params`**: parser produces PropertyDict but `resolve_annotation` treats `@[Handle Readable]` as union `Handle | Readable` instead of `Handle(Readable)` — needs `Handle` added to built-in ctor-app match in `resolve_type_dict` (~line 1482 of `src/typecheck_annot.rs`)
 - [x] `open` builtin TypeEnv signature is stale: runtime now accepts Variant flags (`Readable`, `Writable`) not String modes (`"r"`, `"w"`), but the type checker still says mode is `String`. This causes T003 when passing `Readable`. Update `open` TypeEnv signature. (`src/type_env.rs`) [Major]
 - [x] `open` return type should be parameterized: `Readable` → `Handle[Readable]`, `Writable` → `Handle[Writable]` — implemented via `check_open` special case in `src/typecheck.rs` that synthesizes `Handle(cap_row)` from statically-known flag VarRefs
 
@@ -615,8 +615,9 @@ Discovered via `samples/versions.llt` rewrite (2026-05-23). Running `tinct fmt -
 
 The parser treats `[Readable]` in `@[Handle [Readable]]` as a subscript/function-call expression, not a type parameter. This prevents writing `Handle[Readable]` annotations in user code. Blocks: `handle_capability_mismatch` corpus test (test-coverage-cycle311), capability type checking in annotations.
 
-- [ ] Fix parser to recognize type parameters inside `@annotation` context — `@[Handle Readable]` or `@[Handle [Readable Writable]]` should parse as a parameterized type, not a subscript. (`src/parser.rs`, annotation parsing)
+- [ ] Fix parser to recognize type parameters inside `@annotation` context — `@[Handle Readable]` or `@[Handle [Readable Writable]]` should parse as a parameterized type, not a subscript. (`src/parser.rs`, annotation parsing). NOTE: `@[Handle Readable]` already parses to PropertyDict with auto-indexed entries via implied-call-to-PropertyDict conversion (parser.rs ~line 752); the real gap is in `resolve_annotation`'s PropertyDict handler — `Handle` is missing from the built-in ctor-app match alongside `Seq`/`Map` (~line 1482 of `src/typecheck_annot.rs`)
 - [ ] Re-add `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval` corpus test once the parser supports this syntax
+- [ ] Unblock `typecheck-handle-annotation-bug` verify item once Handle ctor-app is resolved
 
 ### lint-clippy-hotfix: Fix 4 new clippy errors from eval-hot-path-fixes (2026-05-23)
 
