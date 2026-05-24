@@ -645,6 +645,40 @@ Root cause: many builtins (`merge`, `try`, `type-of`, `narrow`, `keys`, `append`
 - [x] BLOCKED Update corpus tests that call builtins directly in user code (e.g., `[split "\n" text]` → must go through prelude-exported `split`). **Blocked on Phase 2, which is blocked on adding 20+ missing prelude wrappers for merge/try/narrow/keys etc.**
 - [x] BLOCKED Add a lint warning (T002 with helpful message) when user code directly references a name that matches a known Rust builtin but was not exported by prelude. **Blocked on Phase 2, which is blocked on adding 20+ missing prelude wrappers for merge/try/narrow/keys etc.**
 
+### prelude-missing-wrappers: Add prelude re-exports for user-visible builtins
+
+**Prerequisite for builtin-privacy Phase 2.** Phase 2 (`src/imports.rs:243-313`) cannot safely drop `TypeEnv::with_builtins()` from the user-code path until every builtin that user code legitimately calls is re-exported by the prelude under a stable name.
+
+**Discovery:** Second attempt at Phase 2 (2026-05-23, reverted) caused 25+ corpus test failures because these builtins are accessed directly in user code but are NOT re-exported by the prelude dict:
+
+| Builtin | Why missing | Fix |
+|---------|-------------|-----|
+| `merge` | Prelude uses internally but never re-exports | Add `merge: builtin-merge` wrapper |
+| `try` | Only wrapped in `try-or` and `has?`; raw `try` not exported | Add `try: builtin-try` wrapper |
+| `type-of` | Used in `contains?` internally; not exported | Add `type-of: builtin-type-of` wrapper |
+| `narrow` | Capability operation; not exported | Add `narrow: builtin-narrow` wrapper |
+| `keys` | Used internally everywhere; not in prelude output | Add `keys: builtin-keys` wrapper |
+| `to-float` | String→Float conversion; not exported | Add `to-float: builtin-to-float` wrapper |
+| `floor` | In `stdlib/math.llt` but not prelude; corpus tests use directly | Add `floor: builtin-floor` wrapper |
+| `round` | Same as floor | Add `round: builtin-round` wrapper |
+| `from-json` | JSON parsing; not exported | Add `from-json: builtin-from-json` wrapper |
+| `apply` | Function application; not exported | Add `apply: builtin-apply` wrapper |
+| `each` | Dict iteration primitive; not exported | Add `each: builtin-each` wrapper |
+| `each-key` | Dict iteration primitive; not exported | Add `each-key: builtin-each-key` wrapper |
+| `each-kv` | Dict iteration primitive; not exported | Add `each-kv: builtin-each-kv` wrapper |
+| `build-dict` | Dict builder primitive; not exported | Add `build-dict: builtin-build-dict` wrapper |
+
+**Additional failures from class instance loss**: `constraint_not_satisfied` and `proxy_named_arg` type-checker tests rely on `+` and named-arg inference having builtin type schemes in scope. These may require seeding the user TypeEnv from the prelude's class/instance environment rather than from `with_builtins()`.
+
+**Approach:**
+1. Audit all corpus test files: find every builtin name used directly in user code (not via a prelude wrapper). Each is a missing re-export.
+2. Add `builtin-*` stable aliases for any missing builtins (if not already registered in `create_root_env()`).
+3. Add re-export entries to the "Shadowable Operator Wrappers" section of `stdlib/prelude.llt` for each missing builtin.
+4. Run `just test-lib` — all tests must pass with only prelude-visible names in user scope.
+5. Only after all tests pass: proceed to Phase 2 (`imports.rs`: change `env` from `TypeEnv::with_builtins()` to `TypeEnv::new()` and filter to prelude-only bindings).
+
+**Files:** `stdlib/prelude.llt` (add wrappers), `src/builtins.rs` (add `builtin-*` aliases if missing), `src/imports.rs` (Phase 2 switch, last step only).
+
 ## Research / Design Items
 
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class (`doc/whatif/filterable.md`)
