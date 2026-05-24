@@ -1313,20 +1313,42 @@ pub(crate) fn resolve_annotation(
             //
             // Check for the "type:" key using SurfaceEntry directly (avoids allocation when
             // the key is present and we only need the value node).
-            let type_value_node = surface_entries.iter().find_map(|se| {
-                let key_node = se.node.key.as_ref()?;
-                match &key_node.expr {
-                    SurfaceExpression::Str(s) if s == "type" => Some(&se.node.value),
-                    _ => None,
+            //
+            // The "type:" shorthand ONLY applies when all keys are annotation metadata
+            // (type:, default:, repr:, doc:). If there are non-metadata keys like "id:", "name:",
+            // etc., the annotation must be a structural record type — "type:" is a field name.
+            // E.g.: @[type: String] → Type::Str (shorthand)
+            //       @[type: String id: Int] → Record{type: Str, id: Int} (structural)
+            let metadata_keys = ["type", "default", "repr", "doc"];
+            let has_non_metadata_key = surface_entries.iter().any(|se| {
+                if let Some(ref k) = se.node.key {
+                    match &k.expr {
+                        SurfaceExpression::Str(s) => !metadata_keys.contains(&s.as_str()),
+                        _ => true, // non-string key → non-metadata
+                    }
+                } else {
+                    true // positional entry → non-metadata
                 }
             });
+
+            let type_value_node = if !has_non_metadata_key {
+                surface_entries.iter().find_map(|se| {
+                    let key_node = se.node.key.as_ref()?;
+                    match &key_node.expr {
+                        SurfaceExpression::Str(s) if s == "type" => Some(&se.node.value),
+                        _ => None,
+                    }
+                })
+            } else {
+                None
+            };
 
             if let Some(type_node) = type_value_node {
                 // @[type: T ...] shorthand — resolve the type: value as a type expression.
                 let expr = crate::ast_convert::surface_node_to_expr(type_node);
                 resolve_type_expr(&expr, env, state, ann_mapping, row_ann_mapping)
             } else {
-                // No "type:" key — treat as a structural type expression or metadata annotation.
+                // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
                 let entries = surface_entries_to_entries(surface_entries);
                 resolve_property_dict_as_record(
                     &entries,
@@ -1585,6 +1607,36 @@ pub(crate) fn resolve_type_name_with_guard(
     } else {
         Err(TypeError::undefined_type(name, span))
     }
+}
+
+/// Returns true if `name` is a builtin type name that should NOT be treated as a
+/// NominalVariant constructor even though it starts with an uppercase letter.
+/// Used in `resolve_type_dict` and VarRef handling to distinguish `Int`, `Float`, etc.
+/// from user-defined ADT constructor names like `Ok`, `None`, `Circle`.
+fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Int"
+            | "Float"
+            | "String"
+            | "Bool"
+            | "Number"
+            | "Any"
+            | "Seq"
+            | "Handle"
+            | "Null"
+            | "Dict"
+            | "Map"
+            | "Record"
+            | "Tuple"
+            | "Fn"
+            | "Never"
+            | "Top"
+            | "Unknown"
+            | "Operator"
+            | "Label"
+            | "Str"
+    )
 }
 
 pub(crate) fn resolve_type_name(
@@ -2511,8 +2563,9 @@ pub(crate) fn resolve_type_expr(
 
             // Nominal constructor: [ConstructorName field1: T1 field2: T2 ...]
             // Check if func is an uppercase VarRef (nominal constructor name).
+            // Builtin type names (Int, Float, etc.) must NOT be treated as NominalVariant.
             if let Expr::VarRef { name, .. } = &func.node {
-                if crate::eval::is_constructor_name(name) {
+                if crate::eval::is_constructor_name(name) && !is_builtin_type_name(name) {
                     // This is a nominal variant constructor with named fields.
                     // args is empty, named_args contains the field types.
                     // We need to resolve each field type and build a NominalVariant.
@@ -2840,8 +2893,20 @@ pub(crate) fn resolve_type_dict(
             // Check if first entry is positional (auto-indexed)
             if first.node.key.is_none() {
                 if let Expr::VarRef { name: tag, .. } = &first.node.value.node {
-                    // Check if tag is uppercase (constructor name)
-                    if crate::eval::is_constructor_name(tag) {
+                    // Check if tag is uppercase (constructor name).
+                    // BUT: builtin type names (Int, Float, String, Bool, Number, etc.) also
+                    // start with uppercase and must NOT be treated as NominalVariant.
+                    // Resolve builtin type names through resolve_type_name first.
+                    let is_builtin_type = is_builtin_type_name(tag);
+                    if is_builtin_type && entries.len() == 1 && first.node.key.is_none() {
+                        // Single positional entry that is a builtin type name: [Int] → Type::Int.
+                        // This handles annotations like @[Int] which should resolve to Int,
+                        // not to NominalVariant { tag: "Int" }.
+                        let row_ref: Option<&HashMap<String, String>> =
+                            row_ann_mapping.as_ref().map(|m| &**m);
+                        return resolve_type_name(tag, env, span, state, ann_mapping, &row_ref);
+                    }
+                    if crate::eval::is_constructor_name(tag) && !is_builtin_type {
                         // Case 1: Pure positional — [Constructor] or [Constructor PayloadType]
                         let all_remaining_positional =
                             entries[1..].iter().all(|e| e.node.key.is_none());
@@ -2921,6 +2986,27 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
+    // Single positional entry that is NOT a VarRef: delegate to resolve_type_expr.
+    // This handles complex type expressions like [all [x: Int ...] [y: String ...]], [or A B],
+    // and [Seq Int] when they appear as the sole positional entry in a type dict.
+    // resolve_type_expr handles Expr::Call (implied calls) and Expr::Dict forms which are
+    // not handled by the VarRef-specific paths above.
+    if all_positional && entries.len() == 1 {
+        if let Some(first) = entries.first() {
+            if first.node.key.is_none() {
+                if !matches!(&first.node.value.node, Expr::VarRef { .. }) {
+                    return resolve_type_expr(
+                        &first.node.value,
+                        env,
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    );
+                }
+            }
+        }
+    }
+
     // Multi-entry union type from `[type T1 T2 ...]` declarations.
     // When ALL entries are auto-indexed (no keys) and there are 2+ entries,
     // this is a union of type expressions (not a record type).
@@ -2936,6 +3022,38 @@ pub(crate) fn resolve_type_dict(
             members.push(member_ty);
         }
         return Ok(Type::normalize_union(members));
+    }
+
+    // Mixed positional + metadata-keyed annotation: [Int String default: 0]
+    // Positional entries are union type members; metadata keys (default, repr, doc) are ignored.
+    // E.g.: @[Int String default: 0] → Union(Int, Str) (default: 0 is runtime metadata, not a type).
+    {
+        const METADATA_KEYS: &[&str] = &["default", "repr", "doc"];
+        let positional_entries: Vec<_> = entries.iter().filter(|e| e.node.key.is_none()).collect();
+        let has_only_metadata_non_positional = entries.iter().all(|e| {
+            e.node.key.is_none()
+                || e.node.key.as_ref().map_or(false, |k| {
+                    if let Expr::Str(s) = &k.node {
+                        METADATA_KEYS.contains(&s.as_str())
+                    } else {
+                        false
+                    }
+                })
+        });
+        if !positional_entries.is_empty()
+            && positional_entries.len() >= 1
+            && has_only_metadata_non_positional
+            && !all_positional
+        // only if there are SOME keyed entries (otherwise all_positional path handles it)
+        {
+            let mut members = Vec::new();
+            for entry in &positional_entries {
+                let member_ty =
+                    resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                members.push(member_ty);
+            }
+            return Ok(Type::normalize_union(members));
+        }
     }
 
     let mut fields: HashMap<String, Type> = HashMap::new();

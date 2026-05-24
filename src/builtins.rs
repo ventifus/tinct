@@ -1392,6 +1392,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             3
         ),
         builtin!("trim", builtin_trim, [Strictness::Seq], 1),
+        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1), // Stable alias
         builtin!("str-length", builtin_str_length, [Strictness::Seq], 1),
         builtin!(
             "builtin-str-length",
@@ -1570,7 +1571,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         // I/O
         builtin!("emit", builtin_emit, [Strictness::Seq]),
+        builtin!("builtin-emit", builtin_emit, [Strictness::Seq]), // Stable alias
         builtin!("env", builtin_env, [Strictness::Seq]),
+        builtin!("builtin-env", builtin_env, [Strictness::Seq]), // Stable alias
         builtin!(
             "open",
             builtin_open,
@@ -6919,8 +6922,10 @@ mod tests {
         //   builtin-keys, builtin-merge, builtin-each, builtin-each-key, builtin-each-kv,
         //   builtin-build-dict, builtin-floor, builtin-round, builtin-to-float, builtin-try,
         //   builtin-apply, builtin-type-of, builtin-narrow, builtin-from-json
+        // Added 3 stable aliases for annotation-migration sprint (298 → 301):
+        //   builtin-trim, builtin-emit, builtin-env
         assert_eq!(
-            count, 298,
+            count, 301,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -7205,10 +7210,13 @@ mod tests {
             names.contains(&"builtin-from-json"),
             "missing builtin-from-json"
         );
+        assert!(names.contains(&"builtin-trim"), "missing builtin-trim");
+        assert!(names.contains(&"builtin-emit"), "missing builtin-emit");
+        assert!(names.contains(&"builtin-env"), "missing builtin-env");
         assert_eq!(
             names.len(),
-            298,
-            "expected 298 builtins, got {} — update this assertion if adding/removing builtins",
+            301,
+            "expected 301 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

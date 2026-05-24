@@ -20,7 +20,7 @@ use crate::expand;
 use crate::parser;
 use crate::resolve;
 use crate::typecheck::{typecheck_surface_program, typecheck_surface_program_with_env, TypeMap};
-use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeEnv};
+use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeAlias, TypeEnv};
 
 /// Type alias for include bindings map: span → list of (name, type) pairs
 type IncludeBindings = HashMap<Span, Vec<(String, Type)>>;
@@ -361,16 +361,32 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     //
     // Note: if the prelude scheme IS polymorphic (has type_vars), it is kept as-is,
     // since it may carry additional information (doc strings, tighter return type, etc.).
+    // The "==" and "<" operators require Equatable/Comparable constraints.
+    // A degraded scheme is one that either has no type_vars OR has type_vars but no constraints
+    // (the constraints were lost when the prelude dict had type errors and the scheme was
+    // inferred without constraint propagation).
     for name in &["=", "<"] {
         let is_degraded = env
             .get_own(name)
-            .map(|s| s.type_vars.is_empty())
+            .map(|s| s.type_vars.is_empty() || s.constraints.is_empty())
             .unwrap_or(true); // missing from env → definitely degraded
         if is_degraded {
             if let Some(builtin_scheme) = builtins_env.get(name) {
                 env.insert_scheme((*name).to_string(), builtin_scheme.clone());
             }
         }
+    }
+
+    // Propagate capability type aliases from the builtins env to the user-facing env.
+    // These are registered in TypeEnv::with_builtins() (e.g. NetCap, DirCap, Handle, Url)
+    // and must be available for @NetCap / @DirCap / @Handle annotations in user code.
+    // merge_env_bindings_into only copies value bindings; type aliases require this pass.
+    let aliases: Vec<(String, TypeAlias)> = builtins_env
+        .own_type_aliases()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
+    for (name, alias) in aliases {
+        env.insert_type_alias(name, alias);
     }
 
     Rc::new(env)

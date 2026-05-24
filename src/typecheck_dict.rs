@@ -284,7 +284,7 @@ pub(crate) fn infer_dict(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
     span: Span,
-) -> Result<(Type, HashMap<String, TypeScheme>), Vec<TypeError>> {
+) -> (Type, HashMap<String, TypeScheme>, Vec<TypeError>) {
     // Level management: save enclosing level, increment for dict body
     let enclosing_level = state.level;
     state.level += 1;
@@ -506,16 +506,15 @@ pub(crate) fn infer_dict(
                 // Special case: if the value is a Dict, call infer_dict directly to capture schemes
                 let (value_ty, nested_schemes_opt) =
                     if let Expr::Dict(nested_entries) = &entry.node.value.node {
-                        match infer_dict(
+                        let (ty, schemes, mut nested_errs) = infer_dict(
                             nested_entries,
                             &dict_env_rc,
                             state,
                             type_map,
                             entry.node.value.span,
-                        ) {
-                            Ok((ty, schemes)) => (Ok(ty), Some(schemes)),
-                            Err(errs) => (Err(errs), None),
-                        }
+                        );
+                        errors.append(&mut nested_errs);
+                        (Ok(ty), Some(schemes))
                     } else {
                         (
                             infer_expr(&entry.node.value, &dict_env_rc, state, type_map),
@@ -745,7 +744,9 @@ pub(crate) fn infer_dict(
             .borrow_mut()
             .insert(k.clone(), v.clone());
     }
-    state.subst.check_size(span).map_err(|e| vec![e])?;
+    if let Err(e) = state.subst.check_size(span) {
+        errors.push(e);
+    }
 
     // Build final schemes map from dict_env
     let mut schemes = HashMap::with_capacity(field_types.len());
@@ -768,11 +769,11 @@ pub(crate) fn infer_dict(
         fields: field_types,
     });
 
-    if errors.is_empty() {
-        Ok((record_type, schemes))
-    } else {
-        Err(errors)
-    }
+    // Always return best-effort results along with any errors.
+    // The schemes collected in dict_env are correct for entries that succeeded; failed
+    // entries have Type::Unknown (or the TypeAssert fallback) in record_type and are
+    // marked in state.failed_bindings. Callers propagate errors via the third element.
+    (record_type, schemes, errors)
 }
 
 /// Surface entry point for dict type inference.
@@ -790,7 +791,7 @@ pub(crate) fn infer_surface_dict(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
     span: Span,
-) -> Result<(Type, HashMap<String, TypeScheme>), Vec<TypeError>> {
+) -> (Type, HashMap<String, TypeScheme>, Vec<TypeError>) {
     // Convert each SurfaceEntry to the Expr-based Entry expected by infer_dict.
     let expr_entries: Vec<Spanned<Entry>> = entries
         .iter()

@@ -448,27 +448,24 @@ pub fn typecheck_surface_program_annotation_table(
             continue;
         }
 
-        match typecheck_surface_document(
+        let (new_env, doc_output_type, mut doc_errors) = typecheck_surface_document(
             doc,
             &env,
             &mut state,
             &mut table,
+            &mut None, // annotation_table path — no span TypeMap needed
             &pipeline_type,
             &named_types,
-        ) {
-            Ok((new_env, doc_output_type, mut advisory)) => {
-                env = new_env;
-                // Report advisory errors (expects:/output_type) without blocking propagation.
-                errors.append(&mut advisory);
-                // Store named section type if this document has a name
-                if let Some(ref name) = doc.name {
-                    named_types.insert(name.clone(), doc_output_type.clone());
-                }
-                // Update pipeline type for next document
-                pipeline_type = doc_output_type;
-            }
-            Err(mut doc_errors) => errors.append(&mut doc_errors),
+        );
+        env = new_env;
+        // Collect all errors (type errors + advisory) without blocking propagation.
+        errors.append(&mut doc_errors);
+        // Store named section type if this document has a name
+        if let Some(ref name) = doc.name {
+            named_types.insert(name.clone(), doc_output_type.clone());
         }
+        // Update pipeline type for next document
+        pipeline_type = doc_output_type;
     }
 
     (errors, table)
@@ -487,8 +484,10 @@ pub fn typecheck_surface_program_annotation_table(
 ///
 /// `(errors, type_map, doc_map, scheme_map, diagnostics)`
 ///
-/// `type_map` is always empty. Use [`typecheck_surface_program_with_env`] to obtain a
-/// `TypeAnnotationTable` keyed by `NodeId`.
+/// The returned [`TypeMap`] is span-keyed and built from the `TypeAnnotationTable` produced
+/// during inference (populated per-node by `typecheck_surface_document`). Only top-level
+/// expression nodes are inserted in the table; inner sub-expressions are included via the
+/// recursive `collect_type_map_from_node` walk.
 pub fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Rc<TypeEnv>,
@@ -501,6 +500,7 @@ pub fn typecheck_surface_program(
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
         typecheck_surface_program_with_env(program, parent_env, true, false);
+    // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
 
@@ -555,6 +555,9 @@ pub fn typecheck_surface_program_with_env(
     }
 
     let mut annotation_table = TypeAnnotationTable::new();
+    // type_map_inner accumulates span→type for all sub-expressions (for LSP hover).
+    // Populated when enable_scheme_map is true (i.e., LSP path), empty otherwise.
+    let mut type_map_inner = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
@@ -568,27 +571,30 @@ pub fn typecheck_surface_program_with_env(
             continue;
         }
 
-        match typecheck_surface_document(
+        let mut type_map_ref: Option<&mut TypeMap> = if enable_scheme_map {
+            Some(&mut type_map_inner)
+        } else {
+            None
+        };
+
+        let (new_env, doc_output_type, mut doc_errors) = typecheck_surface_document(
             doc,
             &env,
             &mut state,
             &mut annotation_table,
+            &mut type_map_ref,
             &pipeline_type,
             &named_types,
-        ) {
-            Ok((new_env, doc_output_type, mut advisory)) => {
-                env = new_env;
-                // Advisory errors (expects:/output_type) are reported without blocking propagation.
-                errors.append(&mut advisory);
-                // Store named section type if this document has a name.
-                if let Some(ref name) = doc.name {
-                    named_types.insert(name.clone(), doc_output_type.clone());
-                }
-                // Update pipeline type for next document.
-                pipeline_type = doc_output_type;
-            }
-            Err(mut doc_errors) => errors.append(&mut doc_errors),
+        );
+        env = new_env;
+        // Collect all errors (type errors + advisory) without blocking env propagation.
+        errors.append(&mut doc_errors);
+        // Store named section type if this document has a name.
+        if let Some(ref name) = doc.name {
+            named_types.insert(name.clone(), doc_output_type.clone());
         }
+        // Update pipeline type for next document.
+        pipeline_type = doc_output_type;
     }
 
     // Extract scheme_map from state (populated during VarRef inference).
@@ -597,10 +603,20 @@ pub fn typecheck_surface_program_with_env(
     // Collect diagnostics from state (e.g., T013 ambiguous constraints).
     diagnostics.append(&mut state.diagnostics);
 
+    // Extract doc strings from the Surface AST (equivalent to extract_doc_strings on File AST).
+    // Only needed when enable_scheme_map is true (i.e., LSP path — doc_map is for hover).
+    let doc_map = if enable_scheme_map {
+        let mut doc_map = DocMap::new();
+        extract_doc_strings_surface(program, &mut doc_map);
+        doc_map
+    } else {
+        DocMap::new()
+    };
+
     (
         errors,
-        TypeMap::new(),
-        DocMap::new(),
+        type_map_inner,
+        doc_map,
         scheme_map,
         diagnostics,
         state,
@@ -618,9 +634,10 @@ fn typecheck_surface_document(
     parent_env: &Rc<TypeEnv>,
     state: &mut InferState,
     table: &mut TypeAnnotationTable,
+    type_map: &mut Option<&mut TypeMap>,
     pipeline_type: &Type,
     named_types: &HashMap<String, Type>,
-) -> Result<(Rc<TypeEnv>, Type, Vec<TypeError>), Vec<TypeError>> {
+) -> (Rc<TypeEnv>, Type, Vec<TypeError>) {
     let mut errors = Vec::new();
     let mut advisory_errors: Vec<TypeError> = Vec::new();
 
@@ -861,11 +878,9 @@ fn typecheck_surface_document(
         let mut result_env = TypeEnv::with_parent(&env);
         result_env.insert("%".to_string(), result_type.clone());
 
-        if errors.is_empty() {
-            return Ok((Rc::new(result_env), result_type, advisory_errors));
-        } else {
-            return Err(errors);
-        }
+        // Always return Ok with the partial env so callers always propagate env.
+        advisory_errors.append(&mut errors);
+        return (Rc::new(result_env), result_type, advisory_errors);
     }
 
     // Tracks schemes from the last dict expression so they can be threaded into result_env.
@@ -885,25 +900,23 @@ fn typecheck_surface_document(
         if let Expr::Dict(entries) = &expr.node {
             // Dict expression: use infer_dict to get per-entry schemes for cross-document scoping.
             // This mirrors typecheck_document which calls infer_dict directly for dict exprs.
-            match infer_dict(entries, &env, state, &mut None, expr.span) {
-                Ok((dict_ty, schemes)) => {
-                    table.insert(node_id(surface_node), dict_ty.clone());
-                    if is_last {
-                        result_type = dict_ty;
-                        last_dict_schemes = Some(schemes);
-                        last_expr = Some(expr);
-                    } else {
-                        let mut new_env = TypeEnv::with_parent(&env);
-                        for (name, scheme) in &schemes {
-                            new_env.insert_scheme(name.clone(), scheme.clone());
-                        }
-                        let mut alias_errs =
-                            register_type_aliases(&expr, &mut new_env, &env, state);
-                        errors.append(&mut alias_errs);
-                        env = Rc::new(new_env);
-                    }
+            // infer_dict always returns Ok with best-effort schemes; errors are in the third element.
+            let (dict_ty, schemes, mut dict_errs) =
+                infer_dict(entries, &env, state, type_map, expr.span);
+            errors.append(&mut dict_errs);
+            table.insert(node_id(surface_node), dict_ty.clone());
+            if is_last {
+                result_type = dict_ty;
+                last_dict_schemes = Some(schemes);
+                last_expr = Some(expr);
+            } else {
+                let mut new_env = TypeEnv::with_parent(&env);
+                for (name, scheme) in &schemes {
+                    new_env.insert_scheme(name.clone(), scheme.clone());
                 }
-                Err(mut errs) => errors.append(&mut errs),
+                let mut alias_errs = register_type_aliases(&expr, &mut new_env, &env, state);
+                errors.append(&mut alias_errs);
+                env = Rc::new(new_env);
             }
         } else {
             // Non-dict expression: infer at incremented level so type variables can be
@@ -912,7 +925,7 @@ fn typecheck_surface_document(
             let enclosing_level = state.level;
             state.level += 1;
 
-            match infer_expr(&expr, &env, state, &mut None) {
+            match infer_expr(&expr, &env, state, type_map) {
                 Ok(ty) => {
                     state.level = enclosing_level;
                     table.insert(node_id(surface_node), ty.clone());
@@ -1009,11 +1022,15 @@ fn typecheck_surface_document(
     }
     result_env.insert("%".to_string(), result_type.clone());
 
-    if errors.is_empty() {
-        Ok((Rc::new(result_env), result_type, advisory_errors))
-    } else {
-        Err(errors)
-    }
+    // Always return the partial env — even if there are type errors.
+    // This mirrors the pre-surface-migration behavior: the bridge path (typecheck_document)
+    // always returned an env and propagated errors separately. Returning Err here caused
+    // `typecheck_surface_program_with_env` to skip updating the accumulated env, which meant
+    // the prelude's bindings (map, filter, keys, …) were never inserted into final_env.
+    // Non-advisory errors are merged into advisory_errors so callers still collect them via
+    // the third tuple element.
+    advisory_errors.append(&mut errors);
+    (Rc::new(result_env), result_type, advisory_errors)
 }
 
 /// Type-check a single [`SurfaceDocument`] using the native Surface path.
@@ -1045,16 +1062,19 @@ pub(crate) fn typecheck_surface_document_native(
     });
     let named_types = HashMap::new();
 
-    match typecheck_surface_document(
+    let (_env, _ty, errors) = typecheck_surface_document(
         doc,
         &parent_env,
         state,
         type_map,
+        &mut None, // no span TypeMap for this entry point
         &pipeline_type,
         &named_types,
-    ) {
-        Ok(_) => Ok(()),
-        Err(errs) => Err(errs),
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 
@@ -1160,6 +1180,109 @@ fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap, binding_name: Option
             extract_doc_from_expr(&rhs.node, doc_map, None);
         }
         // Literals and VarRef have no children to recurse into
+        _ => {}
+    }
+}
+
+/// Extract documentation strings from a SurfaceProgram.
+///
+/// Walks the Surface AST looking for `doc:` properties in `@[...]` annotations on
+/// function parameters and return annotations. Populates the doc_map the same way
+/// as `extract_doc_strings` does for the File AST.
+fn extract_doc_strings_surface(program: &SurfaceProgram, doc_map: &mut DocMap) {
+    for doc_spanned in &program.documents {
+        for item in &doc_spanned.node.items {
+            if let SurfaceItem::Expr(node) = item {
+                extract_doc_from_surface_node(node, doc_map, None);
+            }
+        }
+    }
+}
+
+/// Recursively extract doc strings from a SurfaceNode.
+fn extract_doc_from_surface_node(
+    node: &std::sync::Arc<crate::ast::SurfaceNode>,
+    doc_map: &mut DocMap,
+    binding_name: Option<&str>,
+) {
+    use crate::ast::SurfaceExpression;
+    match &node.expr {
+        SurfaceExpression::Fn {
+            params,
+            body,
+            return_ann,
+            ..
+        } => {
+            // Extract doc from return annotation (fn@[doc: "..."])
+            if let Some(ann) = return_ann {
+                if let Some(doc_node) = ann.node.get_property("doc") {
+                    if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                        if let Some(name) = binding_name {
+                            doc_map.insert(name.to_string(), doc_string.clone());
+                        }
+                    }
+                }
+            }
+            // Extract doc from each parameter annotation
+            for param_spanned in params {
+                if let Some(ref ann) = param_spanned.node.annotation {
+                    if let Some(doc_node) = ann.node.get_property("doc") {
+                        if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                            doc_map.insert(param_spanned.node.name.clone(), doc_string.clone());
+                        }
+                    }
+                }
+            }
+            extract_doc_from_surface_node(body, doc_map, None);
+        }
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                let key_name: Option<String> =
+                    entry.node.key.as_ref().and_then(|k| match &k.expr {
+                        SurfaceExpression::Annotated { name, annotation } => {
+                            if let Some(doc_node) = annotation.node.get_property("doc") {
+                                if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                                    doc_map.insert(name.clone(), doc_string.clone());
+                                }
+                            }
+                            Some(name.clone())
+                        }
+                        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                        SurfaceExpression::Str(s) => Some(s.clone()),
+                        _ => None,
+                    });
+                extract_doc_from_surface_node(&entry.node.value, doc_map, key_name.as_deref());
+            }
+        }
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            extract_doc_from_surface_node(func, doc_map, None);
+            for a in args {
+                extract_doc_from_surface_node(a, doc_map, None);
+            }
+            for na in named_args {
+                extract_doc_from_surface_node(&na.node.value, doc_map, None);
+            }
+        }
+        SurfaceExpression::TypeAssert { expr, .. } => {
+            extract_doc_from_surface_node(expr, doc_map, None);
+        }
+        SurfaceExpression::DotAccess { expr, .. } => {
+            extract_doc_from_surface_node(expr, doc_map, None);
+        }
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            extract_doc_from_surface_node(lhs, doc_map, None);
+            extract_doc_from_surface_node(rhs, doc_map, None);
+        }
+        SurfaceExpression::Sequential(nodes) => {
+            for n in nodes {
+                extract_doc_from_surface_node(n, doc_map, None);
+            }
+        }
         _ => {}
     }
 }
@@ -1360,32 +1483,30 @@ fn typecheck_document(
 
         // Special handling for Dict expressions at document level to preserve schemes
         if let Expr::Dict(entries) = &expr.node {
-            match infer_dict(entries, &env, state, type_map, expr.span) {
-                Ok((ty, schemes)) => {
-                    if is_last {
-                        result_type = ty;
-                        last_dict_schemes = Some(schemes);
-                        last_expr = Some(expr);
-                    } else {
-                        // Record the inferred dict type in type_map so LSP hover works
-                        // for non-last Dict positions in a document. infer_dict is called
-                        // directly here (bypassing infer_expr), so type_map insertion
-                        // must be done explicitly — infer_expr's auto-insert at line 522
-                        // is not reached for this code path.
-                        if let Some(ref mut map) = type_map {
-                            let key = (expr.span.start.offset, expr.span.end.offset);
-                            map.insert(key, ty.clone());
-                        }
-                        let mut new_env = TypeEnv::with_parent(&env);
-                        for (name, scheme) in &schemes {
-                            new_env.insert_scheme(name.clone(), scheme.clone());
-                        }
-                        let mut alias_errs = register_type_aliases(expr, &mut new_env, &env, state);
-                        errors.append(&mut alias_errs);
-                        env = Rc::new(new_env);
-                    }
+            let (ty, schemes, mut dict_errs) =
+                infer_dict(entries, &env, state, type_map, expr.span);
+            errors.append(&mut dict_errs);
+            if is_last {
+                result_type = ty;
+                last_dict_schemes = Some(schemes);
+                last_expr = Some(expr);
+            } else {
+                // Record the inferred dict type in type_map so LSP hover works
+                // for non-last Dict positions in a document. infer_dict is called
+                // directly here (bypassing infer_expr), so type_map insertion
+                // must be done explicitly — infer_expr's auto-insert at line 522
+                // is not reached for this code path.
+                if let Some(ref mut map) = type_map {
+                    let key = (expr.span.start.offset, expr.span.end.offset);
+                    map.insert(key, ty.clone());
                 }
-                Err(mut errs) => errors.append(&mut errs),
+                let mut new_env = TypeEnv::with_parent(&env);
+                for (name, scheme) in &schemes {
+                    new_env.insert_scheme(name.clone(), scheme.clone());
+                }
+                let mut alias_errs = register_type_aliases(expr, &mut new_env, &env, state);
+                errors.append(&mut alias_errs);
+                env = Rc::new(new_env);
             }
         } else {
             if is_last {
@@ -2599,7 +2720,12 @@ fn infer_expr(
         }
 
         Expr::Dict(entries) => {
-            infer_dict(entries, env, state, type_map, expr.span).map(|(ty, _schemes)| ty)
+            let (ty, _schemes, errs) = infer_dict(entries, env, state, type_map, expr.span);
+            if errs.is_empty() {
+                Ok(ty)
+            } else {
+                Err(errs)
+            }
         }
 
         Expr::DotAccess {
@@ -6416,21 +6542,44 @@ fn infer_fn(
             // Check if this is a metadata dict annotation: @[return: Type doc: "..." constraint: ...]
             let actual_ann = match &ann.node {
                 Annotation::PropertyDict(surface_entries) => {
+                    // Dispatch based on whether the PropertyDict contains function metadata keys.
                     // Function metadata dict: @[return: Type doc: "..." constraint: ...]
-                    // Convert surface entries to Entry form and delegate to resolve_fn_metadata
-                    // which knows how to extract the return: key and process constraint:, doc:,
-                    // bind:, kinds: keys. Ignore the doc string (not used at typecheck time).
+                    //   → call resolve_fn_metadata which extracts return:, constraint:, doc:, bind:, kinds:
+                    // Pure positional/structural annotation: @[Int Null] (union type), @[x: Int] (record type)
+                    //   → call resolve_annotation which delegates to resolve_type_dict
                     let entries = surface_entries_to_entries(surface_entries);
-                    let (ret, _doc) = resolve_fn_metadata(
-                        &entries,
-                        env,
-                        ann.span,
-                        state,
-                        &mut ann_mapping_opt,
-                        &mut row_ann_mapping_opt,
-                    )
-                    .map_err(|e| vec![e])?;
-                    ret
+                    let has_fn_key = entries.iter().any(|e| {
+                        if let Some(ref key) = e.node.key {
+                            matches!(&key.node, Expr::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
+                        } else {
+                            false
+                        }
+                    });
+                    if has_fn_key {
+                        // Function metadata dict: extract return type from return: key.
+                        let (ret, _doc) = resolve_fn_metadata(
+                            &entries,
+                            env,
+                            ann.span,
+                            state,
+                            &mut ann_mapping_opt,
+                            &mut row_ann_mapping_opt,
+                        )
+                        .map_err(|e| vec![e])?;
+                        ret
+                    } else {
+                        // Structural/union type dict: @[Int Null], @[x: Type], etc.
+                        // Delegate to resolve_annotation which calls resolve_type_dict.
+                        resolve_annotation(
+                            &ann.node,
+                            env,
+                            ann.span,
+                            state,
+                            &mut ann_mapping_opt,
+                            &mut row_ann_mapping_opt,
+                        )
+                        .map_err(|e| vec![e])?
+                    }
                 }
                 _ => {
                     // Simple annotation - resolve normally
