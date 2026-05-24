@@ -73,6 +73,9 @@ tmpl-str-node: [fn [let text]
   [builtin-variant "Literal" [kind: "str"  value: text  bare: false]]]
 
 # Build a var reference AST Variant node.
+# KNOWN ISSUE (MH11): VarRef nodes emitted here have synthetic spans.
+# Undefined $name variables produce errors pointing to origin (0:0),
+# not to the $name position in the template string.
 tmpl-var-node: [fn [let var-name]
   [builtin-variant "VarRef" [name: var-name]]]
 
@@ -269,9 +272,9 @@ do-is-inferred-form: [fn [let first-arg]
 # For old Variant: step.entries[0].key is Variant("Literal", {value: name}).
 do-binding-name: [fn [let step]
   [entry-key: [get "key" [get 0 [get "entries" step]]]]
-  [if [= [tag-of entry-key] "StrLiteral"]
+  [if [= [tag-of entry-key] "Literal"]
     [get "value" entry-key]
-    [get "value" entry-key]]]
+    [get "name" entry-key]]]
 
 # Extract the bound expression AST from a binding step.
 # For Value::Expression(Dict): step.entries[0].value is the value expr.

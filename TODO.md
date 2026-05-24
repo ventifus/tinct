@@ -1136,43 +1136,6 @@ Answers to key questions:
 
 **SOUND (verified):** `Int`/`Float`/`Bool`/`Str` primitives, `Number` (special-cased), `Seq[T]` tag-only (documented), `Fn@T [U]` tag-only (documented), `Variant` tag-comparison matches static, `Union` (`any(members)` mirrors static), `Intersection` (`all(members)` mirrors static), `default:` compile-time validated + runtime lookup correct, guarded thunk lifecycle (all 4 paths), nested TypeAssert (independent per level), blame attribution (inner_span = producer per Findler & Felleisen 2002). Record-type assertions are **NOT** no-ops — `validate_and_wrap_record` performs shape checking and guard-wrapping via `Cont::GuardedValidate`.
 
-### review-macro-hygiene: Audit macro expansion and quasiquote hygiene
-
-**Agents:** grammar-architect, eval-engine, computer-scientist
-**Files:** `src/expand.rs` (`expand_macros`, `expand_surface_program`), `src/eval.rs` (macro invocation, `eval_defmacro`), `stdlib/prelude.llt` (`defmacro`, `tmpl`, `begin`, `do`, `gensym`), `doc/feature/macros.md`
-
-Key questions:
-- Is macro expansion hygienic? Can a macro-introduced variable name capture a user variable of the same name?
-- Does `gensym` guarantee freshness across all expansion contexts, including nested macro calls?
-- Does quasiquote (`[quote ...]`) + unquote (`[unquote ...]`) correctly reconstruct AST structure? Can unquote-splicing produce malformed AST nodes?
-- Are macro-generated spans correct — do error messages from macro-expanded code point to the right source location?
-- Is `[defmacro]` expansion idempotent? Can a macro expand into another macro call that then re-expands incorrectly?
-- Does the macro expansion boundary prevent infinite expansion (cycle detection)?
-
-- [x] Dispatch grammar-architect + eval-engine + computer-scientist to audit macro hygiene and quasiquote correctness → findings go to TODO.md
-
-**Audit findings (2026-05-23). 4 UNSOUND + 1 CRITICAL + 6 GAP findings.**
-
-**CRITICAL:**
-- [ ] **MH0 CRITICAL — `leave_expansion` not called on any error path.** `src/expand.rs:1602`. Between `enter_expansion` and the successful `leave_expansion` at line 1828, every error return path leaks `self.depth` and `self.in_progress`. Any macro expansion error leaves the depth counter incremented and the call-site blackhole set populated, causing all subsequent calls to the same macro to trigger "recursive macro expansion detected" spuriously. Fix: add a RAII expansion guard (`struct ExpansionGuard`) that calls `leave_expansion` on drop, or explicitly call `leave_expansion` in every `map_err` / `?` return path.
-
-**UNSOUND:**
-- [ ] **MH1 UNSOUND — Hygiene is opt-in only; module comment falsely claims alpha-renaming is active.** `src/expand.rs:16-25, 1816`. `ScopeId::fresh()` is called and immediately discarded (`let _scope_id = ...`). The `name:scope:N` renaming described in the module comment is not implemented. A macro that introduces a literal binding name (e.g. `x`) will capture any user variable of the same name in scope at the call site. Doc (macros.md) correctly describes hygiene as opt-in via `gensym`, but the module comment contradicts this. Fix: either (a) delete `ScopeId`/`SCOPE_COUNTER` dead infrastructure and correct the module comment, or (b) implement scope-set alpha-renaming (Phase 2). Concrete example: `[macro swap [let a b] [quote [let [x: [unquote a]  y: [unquote b]] ...]]]` — the macro's `x`/`y` capture any user-defined `x` or `y` at the call site.
-- [ ] **MH2 UNSOUND — `[unquote-splicing ...]` in quoted call argument position raises internal error instead of splicing.** `src/eval.rs:1028-1036, 1065-1100`. `eval_quote_preprocess` errors on `Expr::UnquoteSplice` in any position not explicitly handled by a parent case. The `Call` arm iterates args and recursively processes each — when an arg is `UnquoteSplice`, it hits the error arm. Fix: in the `Call` arm, detect `Expr::UnquoteSplice` args, evaluate the inner expression, assert it is a sequence, and extend `processed_args` with the resulting elements. Same fix needed in the `Dict` arm for entry splicing.
-- [ ] **MH3 UNSOUND — Named args to macros silently dropped.** `src/expand.rs:1580`. `expand_macro_call` takes `_named_args: &[Spanned<NamedArg>]` (underscore = intentionally unused). Named args in macro calls are silently lost with no error or warning. Fix: either (a) error at expansion time if `!named_args.is_empty()` ("macro does not accept named arguments"), or (b) thread named args to the transformer.
-- [ ] **MH4 UNSOUND — `@LetDecl` syntax class annotation always fails validation.** `src/expand.rs:1904`. `SINGLE_VARIANT_NAMES` contains `"LetDecl"` but the match arm returns `"Let"` for `Expr::LetDecl`. The comparison `"LetDecl" != "Let"` always fails — any macro with `params@LetDecl` rejects all calls. Fix: change `Expr::LetDecl { .. } => "Let"` to `=> "LetDecl"` in both `validate_syntax_class` (line 1904) and `validate_against_pattern` (line 1965).
-- [ ] **MH5 UNSOUND — `do-binding-name` else branch uses wrong field name for VarRef keys.** `stdlib/macros.llt:270-274`. Both the `"StrLiteral"` branch and the else branch call `[get "value" entry-key]`. For bare-word binding keys (encoded as VarRef), the correct field is `"name"` not `"value"`. When `[do monad x: expr ...]` uses a bare-word binding name `x`, the `VarRef` dict has no `"value"` field, causing a runtime "key not found" error during macro expansion. Fix: change the else branch to `[get "name" entry-key]`.
-
-**GAP:**
-- [ ] **MH6 GAP — `format_provenance` has no callers; provenance map is dead infrastructure.** `src/expand.rs:1998`. `format_provenance` is defined but never called from any error formatter. The "in expansion of `foo` at line N" diagnostic is not wired. Track as a sprint: wire `ProvenanceMap` into error display.
-- [ ] **MH7 GAP — Span correctness: macro-expanded child nodes retain macro-definition-file spans.** `src/expand.rs:1809-1812`. Only the top-level expanded node's span is replaced with `call_span` when the returned span is `Span::origin()`. Sub-nodes of the expanded result retain spans from the macro definition source file (or synthetic `Span::origin()`). Users see error messages pointing into stdlib, not their call site. Long-term fix: translate all spans in the expanded tree to use the call site span as origin.
-- [ ] **MH8 GAP — `CallSiteId` file_id hardcoded to 0; multi-file blackhole detection incorrect.** `src/expand.rs:1594-1598`. Two different source files with a macro call at the same byte offset share a `CallSiteId`, causing the second to falsely trigger "recursive macro expansion detected". Fix: use an actual file identifier (e.g. hash of the file path) once multi-file expansion is tracked.
-- [ ] **MH9 GAP — Bare `[include "file.llt"]` not followed during macro pre-scan.** `src/expand.rs:789`. Only `[include %libdir "..."]` (2-arg libdir form) is followed. `doc/feature/macros.md:163-164` incorrectly claims macros in included files are always available to the includer. Fix: update doc to state that bare includes do not propagate macros; optionally implement bare-include pre-scan.
-- [ ] **MH10 GAP — `dict_to_ast` error wrapping loses `AstError.field_path`.** `src/expand.rs:1803-1806`. The field path from `AstError` (which field was missing/wrong in the macro's returned AST dict) is discarded in the error message. Fix: include `e.field_path` in the formatted message so macro authors know which AST field their transformer produced incorrectly.
-- [ ] **MH11 GAP — `tmpl-var-node` emits VarRef with no source span.** `stdlib/macros.llt:76-77`. Undefined `$name` interpolation variables produce eval-time "undefined variable" errors pointing to synthetic spans, not to the `$name` character position in the template string. Fix: propagate the character offset of `$name` in the template as a span on the emitted VarRef node.
-
-**SOUND (verified):** gensym freshness (`AtomicU64` fetch_add is globally unique, `:prefix:N` format cannot collide with user identifiers), infinite expansion detection (depth limit 100, node count 100K, per-call-site blackhole), expansion order (parse → expand → desugar → resolve → typecheck → eval), splice zero-items (no-op in both declaration and dict contexts), arity mismatch detection (propagated as macro expansion error with call site span), `do` macro final-expression semantics (last step returned as-is), `tmpl` defined-variable interpolation.
-
 ### review-blame-tracking: Audit blame tracking and chaperone semantics
 
 **Agents:** eval-engine, computer-scientist, type-theorist

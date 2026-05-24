@@ -1,0 +1,8 @@
+# Test: named arguments to macros must produce an error (MH3)
+# Macros do not accept named arguments; attempting to pass one should error.
+[macro my-macro [let x]
+  [quote [unquote x]]]
+
+[my-macro foo: 1]
+=== error
+[E080] macros do not accept named arguments

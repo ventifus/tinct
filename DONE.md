@@ -9190,3 +9190,29 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 ### fix-doc06-predicate-names: Fix `has_type_vars` predicate name in doc/06-type-inference.md
 
 - [x] Replaced all 7 occurrences of `has_type_vars` with `has_inference_vars` in doc/06-type-inference.md (lines 140, 156, 160, 166, 185, 196, 380). Code uses `has_inference_vars()` which also covers `Type::Operator(_)`.
+
+### review-macro-hygiene: Audit macro expansion and quasiquote hygiene
+
+**Agents:** grammar-architect, eval-engine, computer-scientist
+**Audit (2026-05-23):** 1 CRITICAL + 4 UNSOUND + 6 GAP findings. 1900+ tests pass, 0 failures. Sprint panel APPROVED on 3rd pass.
+
+**CRITICAL:**
+- [x] **MH0** `leave_expansion` not called on any error path (`src/expand.rs:1602`). Fixed: `ExpansionGuard` RAII struct added at `src/expand.rs:1537-1547`; `drop(guard)` before fixpoint re-expansion at line 1852.
+
+**UNSOUND:**
+- [x] **MH1** Dead `ScopeId`/`SCOPE_COUNTER` infrastructure deleted; module comment corrected to describe opt-in gensym hygiene.
+- [x] **MH2** `[unquote-splicing ...]` in Call argument position: `collect_seq_elements` helper added in `eval_quote_preprocess` Call arm (`src/eval.rs`). Corpus test: `macro_unquote_splice_call.llt-eval` (two-element splice → Int(30)). Dict-position splice (MH2b) tracked separately.
+- [x] **MH3** Named args to macros silently dropped: expansion-time error raised when named args are passed to a macro call.
+- [x] **MH4** `@LetDecl` syntax class always failing: `"Let"` → `"LetDecl"` corrected at both `validate_syntax_class` and `validate_against_pattern`. Corpus test: `syntax_class_letdecl_accept.llt-eval`.
+- [x] **MH5** `do-binding-name` wrong tag (`"StrLiteral"` → `"Literal"`) and wrong field (`"value"` → `"name"` for VarRef nodes) in `stdlib/macros.llt:275`.
+
+**GAP (documented with KNOWN ISSUE comments):**
+- [x] **MH6** `format_provenance` deleted (dead code); ProvenanceMap populated but never read during error display. Known issue noted.
+- [x] **MH7** Macro-expanded child nodes retain macro-definition-file spans. Known issue noted.
+- [x] **MH8** `CallSiteId` file_id hardcoded to 0; multi-file blackhole detection incorrect. Known issue noted.
+- [x] **MH9** Bare `[include "file.llt"]` not followed during macro pre-scan. Doc updated: `doc/feature/macros.md:164` now states bare includes do not propagate macros.
+- [x] **MH10** `dict_to_ast` error wrapping loses `AstError.field_path`. Fixed: `e.field_path` included via `format!(" (at field {})", e.field_path.join("."))` at `src/expand.rs:1814-1825`.
+- [x] **MH11** `tmpl-var-node` emits VarRef with no source span. Known issue noted.
+- [x] **GAP** Zero-element unquote-splicing path needs corpus regression test. Known issue noted.
+
+**New corpus tests:** `macro_unquote_splice_call.llt-eval`, `macro_named_arg_error.llt-eval`, `syntax_class_letdecl_accept.llt-eval`, `syntax_class_letdecl_reject.llt-eval`. Doc: `doc/feature/macros.md` §Interaction with include corrected. Key lesson: sequence nil sentinel in LLT is `Value::Dict(empty map)`, not `Value::Variant { tag: "[]" }`.

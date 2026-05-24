@@ -1,0 +1,8 @@
+# Test: @LetDecl syntax class annotation accepts a [let ...] argument (MH4)
+# A macro param annotated @LetDecl should accept any [let ...] binding form.
+[macro accepts-let [let binding@LetDecl]
+  [quote 42]]
+
+[accepts-let [let x 1]]
+=== out
+Int(42)

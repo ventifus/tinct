@@ -1032,6 +1032,41 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResul
     }
 }
 
+/// Collect all elements from a sequence value into a Vec.
+/// Returns an error if the value is not a sequence.
+async fn collect_seq_elements(
+    value: &Value,
+    span: Span,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Vec<Value>> {
+    let mut elements = Vec::new();
+    let mut current = value.clone();
+
+    loop {
+        match current {
+            Value::Seq { head, tail } => {
+                // Materialize the head element
+                let head_thunk = ctx.get_thunk(head);
+                let head_value = materialize(&head_thunk, Some(&span), ctx).await?;
+                elements.push(head_value);
+
+                // Materialize and move to the tail
+                let tail_thunk = ctx.get_thunk(tail);
+                current = materialize(&tail_thunk, Some(&span), ctx).await?;
+            }
+            Value::Dict(ref map) if map.is_empty() => {
+                // Empty sequence (nil sentinel is an empty dict) - we're done
+                break;
+            }
+            _ => {
+                return Err(EvalError::type_mismatch("Seq", &current.type_name(), span).into());
+            }
+        }
+    }
+
+    Ok(elements)
+}
+
 /// Recursively preprocess a quoted expression tree to handle nested unquotes.
 ///
 /// This walks the entire AST and:
@@ -1055,9 +1090,12 @@ fn eval_quote_preprocess<'a>(
                 value_to_expr(&value, inner.span, ctx)
             }
             Expr::UnquoteSplice(_) => {
-                // UnquoteSplice at non-list position is an error
-                Err(EvalError::internal(
-                    "unquote-splice must be in a list position (inside call args or dict entries)"
+                // UnquoteSplice at non-list position is an error.
+                // Note: Call args handle UnquoteSplice in their own loop.
+                // This arm catches UnquoteSplice appearing at top level or in other invalid positions
+                // (e.g., as a dict key, as a function body, etc.)
+                Err(EvalError::unimplemented(
+                    "unquote-splice must be in a list position (inside call args); dict entry splicing is not yet implemented"
                         .to_string(),
                     span,
                 )
@@ -1098,11 +1136,29 @@ fn eval_quote_preprocess<'a>(
                 implied,
             } => {
                 let processed_func = eval_quote_preprocess(&func.node, func.span, env, ctx).await?;
-                let mut processed_args = Vec::with_capacity(args.len());
+                let mut processed_args = Vec::new();
                 for arg in args {
-                    processed_args.push(Rc::new(
-                        eval_quote_preprocess(&arg.node, arg.span, env, ctx).await?,
-                    ));
+                    // Handle unquote-splicing in call argument position
+                    if let Expr::UnquoteSplice(inner) = &arg.node {
+                        // Evaluate the unquote-splice expression
+                        let thunk =
+                            eval_recursive(Rc::new((**inner).clone()), env.clone(), ctx).await?;
+                        let value = materialize(&thunk, Some(&inner.span), ctx).await?;
+
+                        // Extract elements from the sequence
+                        let elements = collect_seq_elements(&value, inner.span, ctx).await?;
+
+                        // Convert each element to AST and add to processed_args
+                        for elem_value in elements {
+                            let elem_expr = value_to_expr(&elem_value, inner.span, ctx)?;
+                            processed_args.push(Rc::new(elem_expr));
+                        }
+                    } else {
+                        // Regular argument - recursively process
+                        processed_args.push(Rc::new(
+                            eval_quote_preprocess(&arg.node, arg.span, env, ctx).await?,
+                        ));
+                    }
                 }
                 let mut processed_named_args = Vec::with_capacity(named_args.len());
                 for na in named_args {

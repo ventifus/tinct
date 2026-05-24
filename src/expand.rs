@@ -13,16 +13,15 @@
 //!    - Re-expand the result (fixpoint)
 //! 4. Track in-progress expansions to detect infinite recursion
 //!
-//! ## Hygiene (Flatt 2016 — simplified scope sets)
+//! ## Hygiene (opt-in via gensym)
 //!
-//! Each macro invocation gets a fresh `ScopeId(u32)`. Variables introduced by the
-//! macro body (bindings in fn params, dict keys) are renamed to `name:scope:N` where
-//! N is the scope ID. This ensures macro-introduced names are structurally distinct
-//! from user-code names (`:` is forbidden in bare-word identifiers).
+//! Hygiene is **opt-in** via the `gensym` builtin. Macros must explicitly call `gensym`
+//! to generate fresh variable names. By default, macro-introduced bindings can capture
+//! user variables (MH1).
 //!
-//! This is a simplification of Flatt's full biggest-subset binding resolution rule,
-//! sufficient for non-recursive macros. Call-site variables pass through unchanged;
-//! only bindings introduced *by the macro template itself* get scope-qualified.
+//! Full scope-set hygiene (Flatt 2016) is not yet implemented; the ScopeId
+//! infrastructure was removed. A `gensym`-based approach is the only hygiene
+//! mechanism available.
 //!
 //! ## Dual-span provenance (Pombrio & Krishnamurthi 2015)
 //!
@@ -33,7 +32,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Document, Entry, Expr, MatchArm, NamedArg, Param, Span, Spanned};
@@ -43,25 +42,6 @@ use crate::builtins;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
 use crate::value::{Environment, Thunk, Value};
-
-/// Global scope ID counter — monotonically increasing across all expansions.
-/// Each macro invocation gets a fresh scope ID.
-static SCOPE_COUNTER: AtomicU32 = AtomicU32::new(1);
-
-/// A scope identifier assigned to each macro invocation.
-/// Scope 0 is reserved for user code (never assigned to a macro).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ScopeId(pub u32);
-
-impl ScopeId {
-    /// The user-code scope — variables written by the user, not introduced by macros.
-    pub const USER: ScopeId = ScopeId(0);
-
-    /// Allocate a fresh scope ID for a new macro invocation.
-    fn fresh() -> Self {
-        ScopeId(SCOPE_COUNTER.fetch_add(1, Ordering::SeqCst))
-    }
-}
 
 /// Provenance information for a macro-generated AST node.
 /// Used for dual-span error reporting per Pombrio & Krishnamurthi (2015).
@@ -1556,6 +1536,18 @@ fn expand_expr_inner(
     }
 }
 
+/// RAII guard for macro expansion — ensures leave_expansion is called on all exit paths.
+struct ExpansionGuard<'a> {
+    expander: &'a mut MacroEnv,
+    call_site_id: CallSiteId,
+}
+
+impl Drop for ExpansionGuard<'_> {
+    fn drop(&mut self) {
+        self.expander.leave_expansion(self.call_site_id);
+    }
+}
+
 /// Expand a macro call by matching arguments against the macro's params pattern.
 ///
 /// The transformer receives arguments bound according to the [let ...] pattern in the macro's
@@ -1577,7 +1569,7 @@ fn expand_expr_inner(
 fn expand_macro_call(
     macro_name: &str,
     args: &[Rc<Spanned<Expr>>],
-    _named_args: &[Spanned<NamedArg>],
+    named_args: &[Spanned<NamedArg>],
     call_span: Span,
     // dict_key: the key under which this macro call appears (for inject: threading).
     // None when in expression position.
@@ -1586,28 +1578,44 @@ fn expand_macro_call(
     ctx: &Arc<EvalContext>,
     stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<Spanned<Expr>> {
+    // MH3: error on named args to macros
+    if !named_args.is_empty() {
+        return Err(EvalError::user_error(
+            "macros do not accept named arguments".to_string(),
+            call_span,
+        )
+        .into());
+    }
     // Determine call site ID for blackhole detection
     let call_site_id = if call_span == Span::origin() {
         // Synthetic span (origin) — generated code
         CallSiteId::Synthetic(next_synthetic_id())
     } else {
         // Source span — use file_id=0 (single-file assumption for now)
+        // KNOWN ISSUE (MH8): file_id is 0 for all files — multi-file expansion not yet tracked.
+        // Two different files with a macro call at the same byte offset may share a CallSiteId,
+        // causing false 'recursive macro expansion' errors. See TODO.md review-macro-hygiene MH8.
         CallSiteId::Source {
             file_id: 0,
             offset: call_span.start.offset,
         }
     };
 
-    // Enter expansion (depth check + blackhole detection)
-    env.enter_expansion(call_site_id, call_span)?;
-
-    // Clone out what we need from macro_metadata before taking mutable references to env.
+    // Clone out what we need from macro_metadata before the guard takes the mutable borrow.
     let macro_metadata = env
         .get_macro(macro_name)
         .expect("macro name verified before call");
     let transformer = macro_metadata.transformer.clone();
     let params_pattern = macro_metadata.params.clone();
     let inject_default = macro_metadata.inject_default.clone();
+
+    // Enter expansion (depth check + blackhole detection)
+    // MH0: RAII guard ensures leave_expansion is called on all exit paths (success and error)
+    env.enter_expansion(call_site_id, call_span)?;
+    let guard = ExpansionGuard {
+        expander: env,
+        call_site_id,
+    };
 
     let opts = AstToDictOpts::default();
 
@@ -1639,7 +1647,7 @@ fn expand_macro_call(
                         param_name,
                         macro_name,
                         call_span,
-                        env,
+                        guard.expander,
                         ctx,
                     )?;
                 }
@@ -1757,7 +1765,6 @@ fn expand_macro_call(
             })?
         }
         other => {
-            env.leave_expansion(call_site_id);
             return Err(EvalError::user_error(
                 format!(
                     "macro '{}' transformer must be a function, got {}",
@@ -1805,22 +1812,30 @@ fn expand_macro_call(
         .map(|node| surface_node_to_expr(&node))
         .map_err(|e| {
             EvalError::user_error(
-                format!("macro '{}' returned invalid AST dict: {}", macro_name, e),
+                format!(
+                    "macro '{}' returned invalid AST{}: {}",
+                    macro_name,
+                    if e.field_path.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (at field {})", e.field_path.join("."))
+                    },
+                    e.message
+                ),
                 call_span,
             )
         })?;
 
-    // Set the expanded AST's top-level span to the call site span.
+    // KNOWN ISSUE (MH7): Only the top-level expanded node's span is replaced
+    // with call_span. Sub-nodes retain spans from the macro definition file.
+    // Fix requires walking the entire expanded tree and translating all spans.
+    // See TODO.md review-macro-hygiene MH7.
     if expanded_ast.span == Span::origin() {
         expanded_ast.span = call_span;
     }
 
-    // Phase 1: allocate a fresh scope ID for hygiene provenance tracking.
-    // Phase 2 (future): apply scope-based alpha-renaming to macro-template bindings.
-    let _scope_id = ScopeId::fresh();
-
     // Record provenance for this expansion (dual-span tracking)
-    env.provenance.insert(
+    guard.expander.provenance.insert(
         SpanKey::from(call_span),
         MacroProvenance {
             macro_name: macro_name.to_string(),
@@ -1828,15 +1843,15 @@ fn expand_macro_call(
         },
     );
 
-    // Leave expansion
-    env.leave_expansion(call_site_id);
-
     // Task 2: Splice handling — if the expansion returns Expr::Splice, return it as-is.
     // The caller (expand_document or expand_expr_inner for Dict context) will handle injection.
     // In expression position, Expr::Splice is an expansion-time error (checked in expand_expr_inner).
     if matches!(expanded_ast.node, Expr::Splice(_)) {
         return Ok(expanded_ast);
     }
+
+    // Drop the guard (triggers leave_expansion) before re-expanding, so env is available again.
+    drop(guard);
 
     // Re-expand the result (fixpoint)
     expand_expr(expanded_ast, env, ctx, stdlib_env)
@@ -1905,7 +1920,7 @@ fn validate_syntax_class(
                 Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) => "Literal",
                 Expr::Call { .. } => "Call",
                 Expr::Dict(_) => "Dict",
-                Expr::LetDecl { .. } => "Let",
+                Expr::LetDecl { .. } => "LetDecl",
                 Expr::Fn { .. } => "Fn",
                 Expr::Sequential(_) => "Seq",
                 Expr::Annotated { .. } => "Annotated",
@@ -1966,7 +1981,7 @@ fn validate_against_pattern(
                         Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) => "Literal",
                         Expr::Call { .. } => "Call",
                         Expr::Dict(_) => "Dict",
-                        Expr::LetDecl { .. } => "Let",
+                        Expr::LetDecl { .. } => "LetDecl",
                         Expr::Fn { .. } => "Fn",
                         Expr::Sequential(_) => "Seq",
                         Expr::Annotated { .. } => "Annotated",
@@ -1996,17 +2011,6 @@ fn validate_against_pattern(
     // Fallback: if we can't extract a simple type constraint, accept any argument
     // (more complex pattern matching can be added in future versions)
     Ok(())
-}
-
-/// Look up provenance for a span and format an "in expansion of" note.
-pub fn format_provenance(provenance: &ProvenanceMap, span: Span) -> Option<String> {
-    let key = SpanKey::from(span);
-    provenance.get(&key).map(|prov| {
-        format!(
-            "in expansion of `{}` at {}:{}",
-            prov.macro_name, prov.call_site_span.start.line, prov.call_site_span.start.column,
-        )
-    })
 }
 
 /// Debug assertion helper: check that all thunks in a value tree are materialized.

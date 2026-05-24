@@ -1,0 +1,8 @@
+# Test: @LetDecl syntax class annotation rejects non-LetDecl arguments (MH4)
+# Passing a non-let argument (e.g. a literal) where @LetDecl is expected must error.
+[macro accepts-let [let binding@LetDecl]
+  [quote 42]]
+
+[accepts-let 99]
+=== error
+[E012] macro expansion error: macro 'accepts-let': argument 'binding' expected LetDecl, got Literal

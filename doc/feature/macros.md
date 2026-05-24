@@ -132,7 +132,9 @@ source → parse → expand_surface_program → desugar → resolve → typechec
 
 `gensym` names use a prefix containing `:` (a character forbidden in bare words), making collision structurally impossible: a user cannot write `:gensym:0` as a bare-word identifier in source. Names have the form `:gensym:N` where N is a monotonically increasing integer. The names are unique but not stable across evaluation orders (lazy forcing may invoke `gensym` in any sequence); this is intentional — `gensym` guarantees uniqueness, not reproducibility.
 
-Tinct's macro hygiene is complete without scope sets. Every name in a macro body is either (a) pattern-bound from user input via `[let ...]` — inherently in user scope, never capturing anything from the macro body — or (b) gensym'd with `:prefix:N` naming, which is syntactically unforgeable (colon-prefixed identifiers cannot be written in source). No third category exists where a macro could accidentally introduce a name that captures user scope. Scope sets (Flatt 2016) address that third category; tinct's design eliminates it.
+For macros that follow the gensym convention — using `gensym` for every introduced binding — hygiene is complete without scope sets. In such macros, every name in the body is either (a) pattern-bound from user input via `[let ...]` — inherently in user scope, never capturing anything from the macro body — or (b) gensym'd with `:prefix:N` naming, which is syntactically unforgeable (colon-prefixed identifiers cannot be written in source). No third category exists where such a macro could accidentally capture user scope. Scope sets (Flatt 2016) address that third category; the gensym convention eliminates it.
+
+Macros that introduce literal binding names (e.g. `[quote [let [x: ...] ...]]` with a literal `x`) are **not** hygienic: the literal name `x` will capture any user variable of the same name in scope at the call site. The `inject:` escape hatch is the intentional form of this pattern — it deliberately introduces names into the caller's scope by convention, documented via `macro-injects`.
 
 `inject:` provides a controlled anaphoric escape hatch: `inject: it: default-expr` deliberately introduces `it` into the caller's scope by convention. The `macro-injects` builtin lets callers reflect on which bindings a macro will inject.
 
@@ -161,7 +163,7 @@ Macro-generated AST nodes carry both the expansion source span and the original 
 
 ### Interaction with `include`
 
-Macros defined in an included file are available to the includer. This works because `include` evaluates the file (making macro definitions available) before the includer's expansion phase. This is the same ordering Racket uses: `require` runs the required module's compile-time code before expanding the requiring module.
+Macros defined in an included file are available to the includer **only when using the two-argument libdir form** `[include %libdir "..."]`. The macro pre-scan follows libdir includes to discover macros. Bare single-argument includes `[include "file.llt"]` do **not** propagate macros to the includer — they are evaluated at runtime, after macro expansion is complete.
 
 ## Implementation
 
