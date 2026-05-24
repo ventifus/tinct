@@ -68,7 +68,13 @@ pub struct CommentMaps<'a> {
 /// Converts a full File AST to a tinct thunk matching the canonical schema.
 ///
 /// The root dict carries `schema-version: 1` and wraps documents as a list.
-pub fn ast_to_dict(
+///
+/// # Visibility
+/// Not part of the public API — callers should use `surface_program_to_dict` instead.
+/// Retained for `#[cfg(test)]` usage and the `ast_to_dict_expr` fallback path.
+#[doc(hidden)]
+#[allow(dead_code)]
+fn ast_to_dict(
     file: &File,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -108,7 +114,12 @@ pub fn ast_to_dict(
 }
 
 /// Converts a single expression to a thunk. Used by quasiquoting.
-pub fn ast_to_dict_expr(
+///
+/// # Visibility
+/// Not part of the public API — callers should use `surface_node_to_dict` instead.
+/// Retained for the `annotation_to_thunk_id` fallback path and `#[cfg(test)]` usage.
+#[doc(hidden)]
+fn ast_to_dict_expr(
     expr: &Spanned<Expr>,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -117,17 +128,20 @@ pub fn ast_to_dict_expr(
 }
 
 // ============================================================================
-// Surface AST Functions (Phases 2-4 — native SurfaceExpression/SurfaceDeclaration path)
+// Surface AST Functions (Phases 2-5 — native SurfaceExpression/SurfaceDeclaration path)
 // ============================================================================
 //
 // Phase 2: `surface_node_to_thunk_id` walks `SurfaceExpression` natively for all variants.
 // Phase 3: `surface_decl_to_thunk_id` walks `SurfaceDeclaration` natively.
 //          `surface_document_to_thunk_id` iterates `SurfaceDocument::items` natively.
 // Phase 4: `surface_program_to_dict` rewritten to use native SurfaceDocument iteration.
-//          `dict_to_surface_node` still bridges through the old Expr-based `dict_to_ast`
-//          path (the reverse direction is unchanged — see Steps 6-9 of the migration plan
-//          in doc/whatif/plans/ast-dict-surface-migration-notes.md).
+// Phase 5: `dict_to_surface_node` rewrites the reverse (dict→Surface) direction natively
+//          for the 10 most common variants (VarRef, Literal, DotAccess, Pipe, Dict, Call,
+//          Fn). Less common variants fall back to `dict_to_ast` + `expr_to_surface_node`.
 //          `dict_to_surface_program` still bridges through the old File-based `dict_to_file`.
+//          Old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`,
+//          `dict_to_file`) are made non-public (#[doc(hidden)] fn). They are retained as
+//          fallback paths and for `#[cfg(test)]` usage.
 
 /// Convert a SurfaceNode to a dict representation.
 ///
@@ -1171,15 +1185,305 @@ pub fn surface_program_to_dict(
 
 /// Convert a dict representation back to a SurfaceNode.
 ///
-/// Bridges through the old Expr-based `dict_to_ast` path. The reverse (dict→Surface)
-/// native rewrite is Step 6 of the migration plan in
-/// `doc/whatif/plans/ast-dict-surface-migration-notes.md`.
+/// Phase 5a native path: reads the Variant tag or `type:` field and dispatches directly
+/// to `SurfaceExpression` construction for the 10 most common variants. Less common
+/// variants fall back to the old Expr-based bridge path via `dict_to_ast` + `expr_to_surface_node`.
 pub fn dict_to_surface_node(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
-    let expr = dict_to_ast(val, ctx)?;
-    Ok(crate::ast_convert::expr_to_surface_node(&expr))
+    dict_to_surface_node_inner(val, ctx)
+}
+
+/// Inner implementation of `dict_to_surface_node`.
+///
+/// Extracts the Variant tag (or legacy `type:` string), dispatches to the native
+/// `SurfaceExpression` constructor for the 10 most common variants, and falls back
+/// to the old `dict_to_ast` + `expr_to_surface_node` bridge for the remainder.
+///
+/// The 10 native variants handled here:
+/// - `"VarRef"`, `"Literal"` (Int/Float/Bool/Str), `"Dict"`, `"Fn"`,
+///   `"Call"`, `"DotAccess"`, `"Pipe"`
+fn dict_to_surface_node_inner(
+    val: &Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Arc<SurfaceNode>, AstError> {
+    // Accept both Variant (canonical form from surface_node_to_thunk_id) and
+    // Dict (legacy form with type: field).
+    let (tag, dict) = match val {
+        Value::Variant { tag, payload } => {
+            let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
+                message: format!("Expr variant {} has no payload", tag),
+                field_path: vec![],
+            })?;
+            let payload_val = ctx
+                .get_thunk(*payload_thunk)
+                .try_get_materialized()
+                .ok_or_else(|| AstError {
+                    message: "variant payload is not materialized".into(),
+                    field_path: vec![],
+                })?;
+            match payload_val {
+                Value::Dict(d) => (tag.clone(), d),
+                _ => {
+                    return Err(AstError {
+                        message: format!(
+                            "Expr variant payload must be Dict, got {}",
+                            payload_val.type_name()
+                        ),
+                        field_path: vec![],
+                    })
+                }
+            }
+        }
+        Value::Dict(d) => {
+            let type_str = get_string_field(d, "type", &[], ctx)?;
+            (type_str, d.clone())
+        }
+        _ => {
+            return Err(AstError {
+                message: "expected Variant or Dict".into(),
+                field_path: vec![],
+            })
+        }
+    };
+
+    let span = extract_span(&dict, ctx).unwrap_or_else(Span::origin);
+
+    let expr = match tag.as_str() {
+        // ---- Literals (Int, Float, Bool, Str) ----
+        "literal" | "Literal" => {
+            let kind = get_string_field(&dict, "kind", &["type"], ctx)?;
+            match kind.as_str() {
+                "int" => {
+                    let value = get_int_field(&dict, "value", &["kind"], ctx)?;
+                    SurfaceExpression::Int(value)
+                }
+                "float" => {
+                    let value = get_float_field(&dict, "value", &["kind"], ctx)?;
+                    SurfaceExpression::Float(value)
+                }
+                "bool" => {
+                    let value = get_bool_field(&dict, "value", &["kind"], ctx)?;
+                    SurfaceExpression::Bool(value)
+                }
+                "str" => {
+                    let value = get_string_field(&dict, "value", &["kind"], ctx)?;
+                    SurfaceExpression::Str(value)
+                }
+                _ => {
+                    return Err(AstError {
+                        message: format!("unknown literal kind: {}", kind),
+                        field_path: vec!["kind".into()],
+                    })
+                }
+            }
+        }
+
+        // ---- VarRef ----
+        "var" | "VarRef" => {
+            let name = get_string_field(&dict, "name", &["type"], ctx)?;
+            SurfaceExpression::VarRef { name, escaped: false }
+        }
+
+        // ---- DotAccess ----
+        "dot-access" | "DotAccess" => {
+            let target_val = get_dict_field(&dict, "target", &["type"], ctx)?;
+            let target = dict_to_surface_node_inner(&target_val, ctx)?;
+            let field_val = get_field(&dict, "field", &["type"], ctx)?;
+            let field = match field_val {
+                Value::String { ref source, start, end } => {
+                    DotKey::Ident(source[start..end].to_string())
+                }
+                Value::Int(n) => DotKey::Int(n),
+                _ => {
+                    return Err(AstError {
+                        message: "field must be String or Int".into(),
+                        field_path: vec!["field".into()],
+                    })
+                }
+            };
+            SurfaceExpression::DotAccess { expr: target, field }
+        }
+
+        // ---- Pipe ----
+        "pipe" | "Pipe" => {
+            let lhs_val = get_dict_field(&dict, "lhs", &["type"], ctx)?;
+            let rhs_val = get_dict_field(&dict, "rhs", &["type"], ctx)?;
+            SurfaceExpression::Pipe {
+                lhs: dict_to_surface_node_inner(&lhs_val, ctx)?,
+                rhs: dict_to_surface_node_inner(&rhs_val, ctx)?,
+            }
+        }
+
+        // ---- Dict ----
+        "dict" | "Dict" => {
+            let entries_val = get_dict_field(&dict, "entries", &["type"], ctx)?;
+            let entries_list = extract_list(&entries_val, &["entries"], ctx)?;
+            let mut entries = Vec::new();
+            for (i, entry_val) in entries_list.into_iter().enumerate() {
+                let i_str = i.to_string();
+                let entry = dict_to_surface_entry(&entry_val, &["entries", &i_str], ctx)?;
+                entries.push(entry);
+            }
+            SurfaceExpression::Dict(entries)
+        }
+
+        // ---- Call ----
+        "call" | "Call" => {
+            let fn_val = get_dict_field(&dict, "fn", &["type"], ctx)?;
+            let func = dict_to_surface_node_inner(&fn_val, ctx)?;
+
+            let args_val = get_dict_field(&dict, "args", &["type"], ctx)?;
+            let args_list = extract_list(&args_val, &["args"], ctx)?;
+            let mut args = Vec::new();
+            for arg_val in args_list {
+                args.push(dict_to_surface_node_inner(&arg_val, ctx)?);
+            }
+
+            let named_args_val = get_dict_field(&dict, "named-args", &["type"], ctx)?;
+            let named_args_list = extract_list(&named_args_val, &["named-args"], ctx)?;
+            let mut named_args = Vec::new();
+            for (i, na_val) in named_args_list.into_iter().enumerate() {
+                let i_str = i.to_string();
+                named_args
+                    .push(dict_to_surface_named_arg(&na_val, &["named-args", &i_str], ctx)?);
+            }
+
+            let implied = get_bool_field(&dict, "implied", &["type"], ctx)?;
+
+            SurfaceExpression::Call { func, args, named_args, implied }
+        }
+
+        // ---- Fn ----
+        "fn" | "Fn" => {
+            let params_val = get_dict_field(&dict, "params", &["type"], ctx)?;
+            let params_list = extract_list(&params_val, &["params"], ctx)?;
+            let mut params = Vec::new();
+            for (i, param_val) in params_list.into_iter().enumerate() {
+                let i_str = i.to_string();
+                params.push(dict_to_surface_param(&param_val, &["params", &i_str], ctx)?);
+            }
+
+            let return_ann = match get_optional_dict_field(&dict, "return-ann", ctx)? {
+                Some(ann_val) if !is_empty_dict(&ann_val) => {
+                    Some(dict_to_annotation(&ann_val, &["return-ann"], ctx)?)
+                }
+                _ => None,
+            };
+
+            let body_val = get_dict_field(&dict, "body", &["type"], ctx)?;
+            let body = dict_to_surface_node_inner(&body_val, ctx)?;
+
+            let desugared = get_bool_field(&dict, "desugared", &["type"], ctx)?;
+
+            SurfaceExpression::Fn { return_ann, params, body, desugared }
+        }
+
+        // ---- All other variants: fall back to old Expr-based bridge ----
+        _ => {
+            let spanned_expr = dict_to_ast(val, ctx)?;
+            return Ok(crate::ast_convert::expr_to_surface_node(&spanned_expr));
+        }
+    };
+
+    Ok(Arc::new(SurfaceNode { expr, span }))
+}
+
+/// Convert a dict to a `Spanned<SurfaceEntry>`.
+///
+/// Surface-native reverse for `surface_entry_to_thunk_id`.
+fn dict_to_surface_entry(
+    val: &Value,
+    path: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Spanned<SurfaceEntry>, AstError> {
+    let dict = match val {
+        Value::Dict(d) => d,
+        _ => {
+            return Err(AstError {
+                message: "entry must be Dict".into(),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            })
+        }
+    };
+
+    let key_val = get_dict_field(dict, "key", path, ctx)?;
+    let key: Option<Arc<SurfaceNode>> = match &key_val {
+        Value::Dict(d) if d.is_empty() => None,
+        _ => Some(dict_to_surface_node_inner(&key_val, ctx)?),
+    };
+
+    let value_val = get_dict_field(dict, "value", path, ctx)?;
+    let value = dict_to_surface_node_inner(&value_val, ctx)?;
+
+    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+
+    Ok(Spanned::new(SurfaceEntry { key, value }, span))
+}
+
+/// Convert a dict to a `Spanned<SurfaceNamedArg>`.
+///
+/// Surface-native reverse for `surface_named_arg_to_thunk_id`.
+fn dict_to_surface_named_arg(
+    val: &Value,
+    path: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Spanned<SurfaceNamedArg>, AstError> {
+    let dict = match val {
+        Value::Dict(d) => d,
+        _ => {
+            return Err(AstError {
+                message: "named-arg must be Dict".into(),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            })
+        }
+    };
+
+    let name = get_string_field(dict, "name", path, ctx)?;
+    let value_val = get_dict_field(dict, "value", path, ctx)?;
+    let value = dict_to_surface_node_inner(&value_val, ctx)?;
+
+    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+
+    Ok(Spanned::new(SurfaceNamedArg { name, value }, span))
+}
+
+/// Convert a dict to a `Spanned<SurfaceParam>`.
+///
+/// Surface-native reverse for `surface_param_to_thunk_id`.
+fn dict_to_surface_param(
+    val: &Value,
+    path: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Spanned<SurfaceParam>, AstError> {
+    let dict = match val {
+        Value::Dict(d) => d,
+        _ => {
+            return Err(AstError {
+                message: "param must be Dict".into(),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            })
+        }
+    };
+
+    let name = get_string_field(dict, "name", path, ctx)?;
+
+    let annotation = match get_optional_dict_field(dict, "annotation", ctx)? {
+        Some(ann_val) if !is_empty_dict(&ann_val) => {
+            let mut new_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+            new_path.push("annotation".to_string());
+            let path_refs: Vec<&str> = new_path.iter().map(|s| s.as_str()).collect();
+            Some(dict_to_annotation(&ann_val, &path_refs, ctx)?)
+        }
+        _ => None,
+    };
+
+    let variadic = get_bool_field(dict, "variadic", path, ctx)?;
+
+    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+
+    Ok(Spanned::new(SurfaceParam { name, annotation, variadic }, span))
 }
 
 /// Convert a dict representation back to a SurfaceProgram.
@@ -1199,6 +1503,7 @@ pub fn dict_to_surface_program(
 // Internal Implementation (old Expr-based)
 // ============================================================================
 
+#[allow(dead_code)]
 fn document_to_dict(
     doc: &Document,
     span: Span,
@@ -2582,7 +2887,13 @@ fn list_to_thunk_id(
 /// AST nodes produced by `ast_to_dict` use `Thunk::new_materialized` so the round-trip
 /// is safe. User code constructing Variant-form AST nodes must call `deep_materialize`
 /// on the variant before passing it to this function.
-pub fn dict_to_ast(
+///
+/// # Visibility
+/// Not part of the public API — callers should use `dict_to_surface_node` instead.
+/// Retained as the fallback path in `dict_to_surface_node_inner` for uncommon variants,
+/// and for `#[cfg(test)]` usage.
+#[doc(hidden)]
+fn dict_to_ast(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Expr>, AstError> {
@@ -2992,6 +3303,215 @@ fn dict_to_ast_from_dict(
             }
         }
 
+        // ---- Gap fills: variants emitted by expr_to_thunk_id but previously missing here ----
+
+        "match" | "Match" => {
+            let scrutinee_val = get_dict_field(dict, "scrutinee", &["type"], ctx)?;
+            let scrutinee = Box::new(dict_to_ast(&scrutinee_val, ctx)?);
+            let arms_val = get_dict_field(dict, "arms", &["type"], ctx)?;
+            let arms_list = extract_list(&arms_val, &["arms"], ctx)?;
+            let mut arms = Vec::new();
+            for arm_val in arms_list {
+                let arm_dict = match &arm_val {
+                    Value::Dict(d) => d.clone(),
+                    _ => {
+                        return Err(AstError {
+                            message: "match arm must be Dict".into(),
+                            field_path: vec!["arms".into()],
+                        })
+                    }
+                };
+                let pattern_val = get_dict_field(&arm_dict, "pattern", &["arms"], ctx)?;
+                let pattern_spanned = {
+                    // pattern_to_thunk_id emits a plain Dict (not a Variant) with a
+                    // "type" field. Reconstruct the Pattern using dict_to_pattern.
+                    let pat_dict = match &pattern_val {
+                        Value::Dict(d) => d,
+                        _ => {
+                            return Err(AstError {
+                                message: "pattern must be Dict".into(),
+                                field_path: vec!["arms".into(), "pattern".into()],
+                            })
+                        }
+                    };
+                    let pat_span = extract_span(pat_dict, ctx).unwrap_or_else(Span::origin);
+                    let pat = dict_to_pattern(pat_dict, &["arms", "pattern"], ctx)?;
+                    Spanned::new(pat, pat_span)
+                };
+                let guard = if arm_dict.contains_key(&Key::String("guard".into())) {
+                    let guard_val = get_dict_field(&arm_dict, "guard", &["arms"], ctx)?;
+                    Some(Box::new(dict_to_ast(&guard_val, ctx)?))
+                } else {
+                    None
+                };
+                let body_val = get_dict_field(&arm_dict, "body", &["arms"], ctx)?;
+                let body = Box::new(dict_to_ast(&body_val, ctx)?);
+                arms.push(crate::ast::MatchArm {
+                    pattern: pattern_spanned,
+                    guard,
+                    body,
+                });
+            }
+            Expr::Match { scrutinee, arms }
+        }
+
+        "class-decl" | "ClassDecl" => {
+            let name = get_string_field(dict, "name", &["type"], ctx)?;
+            // params: integer-keyed dict of param name strings
+            let params = match get_optional_dict_field(dict, "params", ctx)? {
+                Some(Value::Dict(params_dict)) => {
+                    let mut param_names = Vec::new();
+                    let mut i = 0i64;
+                    while let Some(thunk_id) = params_dict.get(&Key::Int(i)) {
+                        let thunk = ctx.get_thunk(*thunk_id);
+                        let val = thunk.try_get_materialized().ok_or_else(|| AstError {
+                            message: format!("ClassDecl param {} is not materialized", i),
+                            field_path: vec!["params".to_string(), i.to_string()],
+                        })?;
+                        match val {
+                            Value::String { ref source, start, end } => {
+                                param_names.push(source[start..end].to_string())
+                            }
+                            _ => {
+                                return Err(AstError {
+                                    message: format!("ClassDecl param {} must be String", i),
+                                    field_path: vec!["params".to_string(), i.to_string()],
+                                });
+                            }
+                        }
+                        i += 1;
+                    }
+                    param_names
+                }
+                _ => Vec::new(),
+            };
+            // methods: string-keyed dict — reconstruct as Vec<Spanned<Entry>>
+            let methods = match get_optional_dict_field(dict, "methods", ctx)? {
+                Some(Value::Dict(methods_dict)) => {
+                    let mut method_entries = Vec::new();
+                    for (key, thunk_id) in &methods_dict {
+                        if let Key::String(method_name) = key {
+                            let thunk = ctx.get_thunk(*thunk_id);
+                            let val = thunk.try_get_materialized().ok_or_else(|| AstError {
+                                message: format!(
+                                    "ClassDecl method {} value is not materialized",
+                                    method_name
+                                ),
+                                field_path: vec!["methods".to_string()],
+                            })?;
+                            let value_expr = dict_to_ast(&val, ctx)?;
+                            let entry_span = value_expr.span;
+                            let key_expr =
+                                Spanned::new(Expr::Str(method_name.clone()), entry_span);
+                            method_entries.push(Spanned::new(
+                                crate::ast::Entry {
+                                    key: Some(key_expr),
+                                    value: std::rc::Rc::new(value_expr),
+                                },
+                                entry_span,
+                            ));
+                        }
+                    }
+                    method_entries
+                }
+                _ => Vec::new(),
+            };
+            // determines: integer-keyed dict of expression dicts
+            let determines = match get_optional_dict_field(dict, "determines", ctx)? {
+                Some(val) => {
+                    let determines_list = extract_list(&val, &["determines"], ctx)?;
+                    let mut result = Vec::new();
+                    for det_val in determines_list {
+                        result.push(dict_to_ast(&det_val, ctx)?);
+                    }
+                    result
+                }
+                None => Vec::new(),
+            };
+            // resolver: optional expression dict (Expr::ClassDecl.resolver is Box<Spanned<Expr>>)
+            let resolver = match get_optional_dict_field(dict, "resolver", ctx)? {
+                Some(res_val) => Some(Box::new(dict_to_ast(&res_val, ctx)?)),
+                None => None,
+            };
+            // injective: optional bool (absent = false)
+            let resolver_injective =
+                get_optional_dict_field(dict, "injective", ctx)?.map_or(false, |v| {
+                    matches!(v, Value::Bool(true))
+                });
+            Expr::ClassDecl {
+                name,
+                params,
+                superclasses: Vec::new(), // not serialized — see grammar-doc-polish TODO
+                methods,
+                determines,
+                resolver,
+                resolver_injective,
+            }
+        }
+
+        "instance-decl" | "InstanceDecl" => {
+            let class_name = get_string_field(dict, "class", &["type"], ctx)?;
+            let arms_val = get_dict_field(dict, "arms", &["type"], ctx)?;
+            let arms_list = extract_list(&arms_val, &["arms"], ctx)?;
+            let mut arms = Vec::new();
+            for arm_val in arms_list {
+                let arm_dict = match &arm_val {
+                    Value::Dict(d) => d.clone(),
+                    _ => {
+                        return Err(AstError {
+                            message: "instance arm must be Dict".into(),
+                            field_path: vec!["arms".into()],
+                        })
+                    }
+                };
+                let pattern_val = get_dict_field(&arm_dict, "pattern", &["arms"], ctx)?;
+                let pattern_expr = dict_to_ast(&pattern_val, ctx)?;
+                // methods: string-keyed dict — reconstruct as Vec<Spanned<Entry>>
+                let methods = match get_optional_dict_field(&arm_dict, "methods", ctx)? {
+                    Some(Value::Dict(methods_dict)) => {
+                        let mut method_entries = Vec::new();
+                        for (key, thunk_id) in &methods_dict {
+                            if let Key::String(method_name) = key {
+                                let thunk = ctx.get_thunk(*thunk_id);
+                                let val = thunk.try_get_materialized().ok_or_else(|| AstError {
+                                    message: format!(
+                                        "InstanceDecl method {} value is not materialized",
+                                        method_name
+                                    ),
+                                    field_path: vec!["arms".to_string(), "methods".to_string()],
+                                })?;
+                                let value_expr = dict_to_ast(&val, ctx)?;
+                                let entry_span = value_expr.span;
+                                let key_expr =
+                                    Spanned::new(Expr::Str(method_name.clone()), entry_span);
+                                method_entries.push(Spanned::new(
+                                    crate::ast::Entry {
+                                        key: Some(key_expr),
+                                        value: std::rc::Rc::new(value_expr),
+                                    },
+                                    entry_span,
+                                ));
+                            }
+                        }
+                        method_entries
+                    }
+                    _ => Vec::new(),
+                };
+                arms.push((pattern_expr, methods));
+            }
+            Expr::InstanceDecl { class_name, arms }
+        }
+
+        "pattern-decl" | "PatternDecl" => {
+            let bindings_val = get_dict_field(dict, "bindings", &["type"], ctx)?;
+            let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
+            let mut bindings = Vec::new();
+            for binding_val in bindings_list {
+                bindings.push(dict_to_ast(&binding_val, ctx)?);
+            }
+            Expr::PatternDecl { bindings }
+        }
+
         "placeholder" | "Placeholder" => Expr::Placeholder,
 
         "error" | "AstError" => {
@@ -3373,6 +3893,193 @@ fn dict_to_annotation(
     Ok(Spanned::new(ann, span))
 }
 
+/// Deserialize a `Pattern` from the dict schema emitted by `pattern_to_thunk_id`.
+///
+/// Patterns are encoded as plain `Value::Dict` (not Variant) with a `type:` field.
+/// Called from the `"Match"` arm of `dict_to_ast_from_dict`.
+fn dict_to_pattern(
+    dict: &IndexMap<Key, ThunkId>,
+    path: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<crate::ast::Pattern, AstError> {
+    use crate::ast::{LiteralPattern, Pattern};
+    let type_str = get_string_field(dict, "type", path, ctx)?;
+    match type_str.as_str() {
+        "wildcard" => Ok(Pattern::Wildcard),
+        "variable" => {
+            let name = get_string_field(dict, "name", path, ctx)?;
+            Ok(Pattern::Variable(name))
+        }
+        "type_tag" => {
+            let tag = get_string_field(dict, "tag", path, ctx)?;
+            Ok(Pattern::TypeTag(tag))
+        }
+        "pin" => {
+            let name = get_string_field(dict, "name", path, ctx)?;
+            Ok(Pattern::Pin(name))
+        }
+        "literal" => {
+            let val = get_field(dict, "value", path, ctx)?;
+            let lit = match val {
+                Value::Int(n) => LiteralPattern::Int(n),
+                Value::Float(f) => LiteralPattern::Float(f),
+                Value::Bool(b) => LiteralPattern::Bool(b),
+                Value::String { ref source, start, end } => {
+                    LiteralPattern::Str(source[start..end].to_string())
+                }
+                _ => {
+                    return Err(AstError {
+                        message: "literal pattern value must be Int, Float, Bool, or String".into(),
+                        field_path: path.iter().map(|s| s.to_string()).collect(),
+                    })
+                }
+            };
+            Ok(Pattern::Literal(lit))
+        }
+        "dict" => {
+            let fields_val = get_field(dict, "fields", path, ctx)?;
+            let fields_dict = match fields_val {
+                Value::Dict(d) => d,
+                _ => {
+                    return Err(AstError {
+                        message: "dict pattern fields must be Dict".into(),
+                        field_path: path.iter().map(|s| s.to_string()).collect(),
+                    })
+                }
+            };
+            let rest = get_bool_field(dict, "rest", path, ctx)?;
+            // Iterate integer-keyed fields in order
+            let mut fields = Vec::new();
+            let mut i = 0i64;
+            while let Some(field_thunk_id) = fields_dict.get(&Key::String(i.to_string())) {
+                let field_thunk = ctx.get_thunk(*field_thunk_id);
+                let field_val = field_thunk.try_get_materialized().ok_or_else(|| AstError {
+                    message: format!("dict pattern field {} is not materialized", i),
+                    field_path: path.iter().map(|s| s.to_string()).collect(),
+                })?;
+                let field_dict = match field_val {
+                    Value::Dict(d) => d,
+                    _ => {
+                        return Err(AstError {
+                            message: "dict pattern field must be Dict".into(),
+                            field_path: path.iter().map(|s| s.to_string()).collect(),
+                        })
+                    }
+                };
+                let key = get_string_field(&field_dict, "key", path, ctx)?;
+                let pattern_val_inner = get_field(&field_dict, "pattern", path, ctx)?;
+                let inner_dict = match pattern_val_inner {
+                    Value::Dict(d) => d,
+                    _ => {
+                        return Err(AstError {
+                            message: "dict pattern field pattern must be Dict".into(),
+                            field_path: path.iter().map(|s| s.to_string()).collect(),
+                        })
+                    }
+                };
+                let inner_span =
+                    extract_span(&inner_dict, ctx).unwrap_or_else(Span::origin);
+                let inner_pat = dict_to_pattern(&inner_dict, path, ctx)?;
+                fields.push((key, Spanned::new(inner_pat, inner_span)));
+                i += 1;
+            }
+            Ok(Pattern::Dict { fields, rest })
+        }
+        "seq" => {
+            let head_val = get_field(dict, "head", path, ctx)?;
+            let head_dict = match head_val {
+                Value::Dict(d) => d,
+                _ => {
+                    return Err(AstError {
+                        message: "seq head must be Dict".into(),
+                        field_path: path.iter().map(|s| s.to_string()).collect(),
+                    })
+                }
+            };
+            let head_span = extract_span(&head_dict, ctx).unwrap_or_else(Span::origin);
+            let head_pat = dict_to_pattern(&head_dict, path, ctx)?;
+
+            let tail_val = get_field(dict, "tail", path, ctx)?;
+            let tail_dict = match tail_val {
+                Value::Dict(d) => d,
+                _ => {
+                    return Err(AstError {
+                        message: "seq tail must be Dict".into(),
+                        field_path: path.iter().map(|s| s.to_string()).collect(),
+                    })
+                }
+            };
+            let tail_span = extract_span(&tail_dict, ctx).unwrap_or_else(Span::origin);
+            let tail_pat = dict_to_pattern(&tail_dict, path, ctx)?;
+
+            Ok(Pattern::Seq {
+                head: Box::new(Spanned::new(head_pat, head_span)),
+                tail: Box::new(Spanned::new(tail_pat, tail_span)),
+            })
+        }
+        "constructor" => {
+            let tag = get_string_field(dict, "tag", path, ctx)?;
+            let binding = if dict.contains_key(&Key::String("binding".into())) {
+                let binding_val = get_field(dict, "binding", path, ctx)?;
+                let binding_dict = match binding_val {
+                    Value::Dict(d) => d,
+                    _ => {
+                        return Err(AstError {
+                            message: "constructor binding must be Dict".into(),
+                            field_path: path.iter().map(|s| s.to_string()).collect(),
+                        })
+                    }
+                };
+                let binding_span = extract_span(&binding_dict, ctx).unwrap_or_else(Span::origin);
+                let binding_pat = dict_to_pattern(&binding_dict, path, ctx)?;
+                Some(Box::new(Spanned::new(binding_pat, binding_span)))
+            } else {
+                None
+            };
+            Ok(Pattern::Constructor { tag, binding })
+        }
+        "or" => {
+            let patterns_val = get_field(dict, "patterns", path, ctx)?;
+            let patterns_dict = match patterns_val {
+                Value::Dict(d) => d,
+                _ => {
+                    return Err(AstError {
+                        message: "or pattern patterns must be Dict".into(),
+                        field_path: path.iter().map(|s| s.to_string()).collect(),
+                    })
+                }
+            };
+            let mut patterns = Vec::new();
+            let mut i = 0i64;
+            while let Some(pat_thunk_id) = patterns_dict.get(&Key::Int(i)) {
+                let pat_thunk = ctx.get_thunk(*pat_thunk_id);
+                let pat_val = pat_thunk.try_get_materialized().ok_or_else(|| AstError {
+                    message: format!("or pattern element {} is not materialized", i),
+                    field_path: path.iter().map(|s| s.to_string()).collect(),
+                })?;
+                let pat_dict = match pat_val {
+                    Value::Dict(d) => d,
+                    _ => {
+                        return Err(AstError {
+                            message: "or pattern element must be Dict".into(),
+                            field_path: path.iter().map(|s| s.to_string()).collect(),
+                        })
+                    }
+                };
+                let pat_span = extract_span(&pat_dict, ctx).unwrap_or_else(Span::origin);
+                let pat = dict_to_pattern(&pat_dict, path, ctx)?;
+                patterns.push(Spanned::new(pat, pat_span));
+                i += 1;
+            }
+            Ok(Pattern::Or(patterns))
+        }
+        _ => Err(AstError {
+            message: format!("unknown pattern type: {}", type_str),
+            field_path: path.iter().map(|s| s.to_string()).collect(),
+        }),
+    }
+}
+
 /// Converts a dict (from `ast_to_dict`) back to a File AST.
 ///
 /// This is the file-level inverse of `ast_to_dict`. It reconstructs a `File` struct
@@ -3385,13 +4092,18 @@ fn dict_to_annotation(
 /// - `caps`: always `None` (not serialized by `document_to_dict`)
 /// - Spans recovered from each node's `span:` field via `extract_span`
 ///
-/// Used internally by the `expand` builtin for the Dict → File round-trip.
+/// Used internally by `dict_to_surface_program` via the old File bridge.
 ///
 /// **Root type constraint**: `dict_to_file` requires a `Value::Dict` root (the full file schema).
 /// Unlike `dict_to_ast` which accepts both `Dict` and `Variant`, the file root must be a `Dict`
 /// with a `documents` field. This asymmetry is correct: `ast_to_dict` always emits `Dict` for
 /// file roots, never `Variant`, so the round-trip is consistent.
-pub fn dict_to_file(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Result<File, AstError> {
+///
+/// # Visibility
+/// Not part of the public API — callers should use `dict_to_surface_program` instead.
+/// Retained as the implementation backing `dict_to_surface_program` and for `#[cfg(test)]` usage.
+#[doc(hidden)]
+fn dict_to_file(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Result<File, AstError> {
     let dict = match val {
         Value::Dict(d) => d,
         _ => {
