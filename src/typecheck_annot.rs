@@ -196,6 +196,29 @@ pub(crate) fn resolve_annotated(
         let ty = Type::Seq(Box::new(elem));
         crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
         Ok(ty)
+    } else if name == "Handle" {
+        // Handle@[Readable] or Handle@SomeCapType — subscript form for capability row.
+        //
+        // The inner annotation is interpreted as the capability row argument.
+        // Example: `h@Handle@[Readable]` → Handle(Record { readable: {} })
+        //          `h@Handle@[Readable Writable]` → Handle(Record { readable: {}, writable: {} })
+        //
+        // TODO: when parser supports Handle[cap_row] in annotation position (tracked
+        // in test-coverage-cycle311), update this to resolve the cap_row from the
+        // argument instead of falling back to Unknown for unrecognized annotation forms.
+        //
+        // For now, resolve the inner annotation as a type. If the inner type is a
+        // Record or type alias that represents capabilities, it is used directly as
+        // the capability row.
+        let cap_type = resolve_annotation(
+            &annotation.node,
+            env,
+            span,
+            state,
+            ann_mapping,
+            row_ann_mapping,
+        )?;
+        Ok(Type::Handle(Box::new(cap_type)))
     } else {
         resolve_annotation(
             &annotation.node,
@@ -1153,6 +1176,22 @@ pub(crate) fn resolve_annotation(
                         }
                     }
                 }
+                "Handle" => {
+                    // @Handle@[Readable] or @Handle@CapType — parameterized handle type.
+                    //
+                    // The inner annotation is the capability row argument. Examples:
+                    //   @Handle@[Readable]        → Handle(Record { readable: {} })
+                    //   @Handle@[Readable Writable] → Handle(Record { readable: {}, writable: {} })
+                    //   @Handle@Unknown           → Handle(Unknown)  (gradual handle)
+                    //
+                    // Resolve the inner annotation as a capability type and wrap in Handle.
+                    //
+                    // TODO: when parser supports Handle[cap_row] in annotation position (tracked
+                    // in test-coverage-cycle311), update to synthesize cap_row from the argument.
+                    let cap_type =
+                        resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                    Ok(Type::Handle(Box::new(cap_type)))
+                }
                 _ => {
                     // Unknown parameterized type — could be a type alias or error
                     Err(TypeError::new(
@@ -1650,6 +1689,7 @@ pub(crate) fn resolve_type_name_with_guard(
                 | "Number"
                 | "Any"
                 | "Seq"
+                | "Handle"
                 | "Null"
                 | "Dict"
                 | "Map"
@@ -1747,6 +1787,15 @@ pub(crate) fn resolve_type_name(
             Ok(Type::TypeVar(fresh, state.level))
         }
         "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
+        // Bare @Handle — no capability row argument. Resolves to Handle(Unknown),
+        // which is the gradual "any handle" type. This is correct for unannotated
+        // handle parameters where the caller doesn't know (or care about) the
+        // capability row.
+        //
+        // TODO: when parser supports Handle[cap_row] in annotation position (tracked
+        // in test-coverage-cycle311), update resolve_annotated to synthesize cap_row
+        // from the argument instead of defaulting to Unknown here.
+        "Handle" => Ok(Type::Handle(Box::new(Type::Unknown))),
         "Null" => Ok(Type::Record(Row {
             fields: HashMap::new(),
         })),
