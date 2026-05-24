@@ -2553,6 +2553,20 @@ fn infer_expr(
                 if name == "get-in" && named_args.is_empty() {
                     return check_get_in(args, named_args, env, expr.span, state, type_map);
                 }
+
+                // Special case: `open` synthesizes a precise Handle(cap_row) return type when
+                // capability flag arguments are statically known VarRefs (e.g., Readable, Writable).
+                //
+                // The static TypeEnv signature for `open` uses Handle(Unknown) as a fallback.
+                // This special case inspects the flag argument ASTs to extract known flag names
+                // and builds a precise cap row: Handle[__cap_flag_readable __cap_flag_writable ...].
+                //
+                // This is syntactic (AST-level) rather than semantic (type-level) because the prelude
+                // defines Readable/Writable as `[variant "Name"]` which types as Unknown — semantic
+                // inspection of argument types would always see Unknown and produce no precision.
+                if name == "open" && named_args.is_empty() && args.len() >= 2 {
+                    return check_open(args, env, expr.span, state, type_map);
+                }
             }
 
             // Special case: do-infer sentinel — inferred [do] form monad resolution.
@@ -4073,6 +4087,147 @@ fn check_get(
         ),
         span,
     )])
+}
+
+/// Type check `open dir-cap path flag...` — synthesize Handle(cap_row) from flag arguments.
+///
+/// The `open` builtin accepts a DirCap, a path string, and variadic capability flag arguments:
+///   `Readable`, `Writable`, `Appendable`, `Binary`, `Text`, `Seekable`
+///
+/// These flags are registered in the prelude as `[variant "Name"]` which returns `Unknown`.
+/// Static type inspection of the arguments would always see `Unknown` and produce no precision.
+/// Instead, this function inspects the **AST** of each flag argument to extract the flag name
+/// when the argument is a bare VarRef (the common case: `[open cap path Readable Text]`).
+///
+/// Synthesized return types:
+/// - Flags `Readable`, `Writable`, `Appendable`, `Binary`, `Text`, `Seekable` each contribute
+///   a `__cap_flag_<name>` field to the capability row of the returned Handle.
+/// - Example: `[open cap path Readable Text]` → `Handle[__cap_flag_readable __cap_flag_text]`
+/// - Unknown flags or runtime-computed flag variables → `Handle(Unknown)` (gradual fallback)
+///
+/// The capability row structure matches the singleton records registered in TypeEnv::with_builtins():
+/// each flag name maps to an empty record `Type::Record(Row { fields: {} })` keyed by
+/// `"__cap_flag_<name>"`. This matches the `cap_flag(name)` helper in type_env.rs.
+///
+/// Argument checking:
+/// - arg[0]: DirCap — type-checked against `Type::DirCap`
+/// - arg[1]: Str (path) — type-checked against `Type::Str`
+/// - arg[2..]: flag args — inferred (for type map population); not type-checked against a
+///   concrete type because their static type is Unknown (prelude-defined unit variants)
+///
+/// Runtime validation (at least one of Readable/Writable/Appendable required) is enforced
+/// by the builtin at runtime, not statically here. Static arity check: at least 3 args
+/// (DirCap + path + 1 flag). This matches the runtime's minimum: `open: requires >= 3 args`.
+#[allow(clippy::too_many_arguments)]
+fn check_open(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity check: require at least 3 args (DirCap, path, at least one flag).
+    // Matches builtin_open's runtime check: `if args.len() < 3`.
+    if args.len() < 3 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `open` requires at least 3 arguments (DirCap, path, flag...), got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    let mut errors = Vec::new();
+
+    // Check arg[0]: DirCap
+    if let Err(mut errs) = check_expr(&args[0], &Type::DirCap, env, state, type_map) {
+        errors.append(&mut errs);
+    }
+
+    // Check arg[1]: Str (path)
+    if let Err(mut errs) = check_expr(&args[1], &Type::Str, env, state, type_map) {
+        errors.append(&mut errs);
+    }
+
+    // The set of known open flag names and their canonical cap_row field names.
+    // Matches the flags accepted by builtin_open in src/builtins_io.rs and the
+    // prelude's [type [Readable] [Writable] [Binary] [Text] [Seekable]] OpenFlag declaration.
+    // Appendable is missing from the prelude's Readable re-exports (name conflict with
+    // the Appendable typeclass) but IS accepted by the builtin.
+    const KNOWN_FLAGS: &[(&str, &str)] = &[
+        ("Readable", "readable"),
+        ("Writable", "writable"),
+        ("Appendable", "appendable"),
+        ("Binary", "binary"),
+        ("Text", "text"),
+        ("Seekable", "seekable"),
+    ];
+
+    // Inspect flag arguments (arg[2..]) by AST to extract flag names.
+    // We inspect AST rather than inferred types because the prelude registers Readable etc.
+    // as `[variant "Readable"]` which types as Unknown — type-level inspection provides no info.
+    let mut cap_fields: HashMap<String, Type> = HashMap::new();
+    let mut all_flags_known = true;
+
+    for flag_arg in args.iter().skip(2) {
+        // Infer the flag arg for type map population (side effect: records hover type for LSP).
+        if let Ok(_flag_ty) = infer_expr(flag_arg, env, state, type_map) {
+            // Type map already populated by infer_expr above.
+        }
+
+        // Inspect AST: if the arg is a bare VarRef with a known flag name, collect it.
+        let flag_name = match &flag_arg.node {
+            Expr::VarRef { name, escaped: false, .. } => {
+                // Un-escaped VarRef (bare identifier, not $name). Check if it's a known flag.
+                KNOWN_FLAGS.iter().find_map(|(flag, canonical)| {
+                    if name == flag {
+                        Some(*canonical)
+                    } else {
+                        None
+                    }
+                })
+            }
+            _ => None,
+        };
+
+        match flag_name {
+            Some(canonical) => {
+                // Known flag: add to cap row as __cap_flag_<canonical> → empty Record
+                cap_fields.insert(
+                    format!("__cap_flag_{}", canonical),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                );
+            }
+            None => {
+                // Unknown or runtime-computed flag: cannot determine cap row statically.
+                // Fall through to Handle(Unknown) gradual fallback below.
+                all_flags_known = false;
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Synthesize the return type:
+    // - If all flags are statically known VarRefs: precise Handle(cap_row)
+    // - If any flag is a runtime-computed expression: Handle(Unknown) (gradual fallback)
+    //
+    // Note: even when some flags are known and some are not, we fall back to Handle(Unknown)
+    // rather than a partial cap row. A partial row would be misleading — it would claim
+    // specific capabilities without being certain that all capabilities are accounted for.
+    // The gradual Handle(Unknown) is conservative and correct: it accepts any Handle consumer.
+    let cap_type = if all_flags_known && !cap_fields.is_empty() {
+        Type::Record(Row { fields: cap_fields })
+    } else {
+        Type::Unknown
+    };
+
+    Ok(Type::Handle(Box::new(cap_type)))
 }
 
 /// Type check `get-in` — chained field access.

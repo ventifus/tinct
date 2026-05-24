@@ -2024,20 +2024,33 @@ impl TypeEnv {
             },
         );
         // Handle capability type policy (gradual typing):
-        // When runtime mode determines capabilities (e.g., `open` — mode flag decides read/write),
-        // or when capabilities are passed through unchanged (e.g., `flush`, `seek`, `tls-layer`),
+        // When capabilities are passed through unchanged (e.g., `flush`, `seek`, `tls-layer`),
         // use Handle(Unknown) with an inline justification at the call site.
         // See doc/05-type-annotations.md §20 for the capability type specification.
+        //
+        // `open` is SPECIAL-CASED in the type checker (typecheck.rs `infer_open_return_type`):
+        // when flag arguments are statically known VarRefs (e.g., Readable, Writable, Binary),
+        // the type checker synthesizes a precise Handle(cap_row) return type. This static return
+        // type is the fallback used only when flag argument names cannot be determined at
+        // compile time (e.g., flags computed at runtime or passed via a variable).
+        //
+        // Signature: (DirCap, Str, OpenFlag...) → Handle(cap_row)
+        //   - DirCap: filesystem capability (must be a DirCap or RevocableDirCap)
+        //   - Str: path relative to DirCap
+        //   - OpenFlag...: variadic capability flags (Readable, Writable, Appendable,
+        //     Binary, Text, Seekable) registered in the prelude as unit variants
+        //
+        // At least one of Readable, Writable, or Appendable is required at runtime.
+        // Binary and Text are mutually exclusive. Seekable is orthogonal.
         env.insert(
             "open".to_string(),
             Type::Function {
-                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-                // Legitimately Unknown: mode string (3rd param) determines capabilities at runtime.
-                // "r" → readable, "w" → writable, "rw" → both, "rb" → readable+binary, etc.
-                // No way to statically determine capability row from string literal analysis
-                // without dependent types or refinement types.
+                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Top)],
+                // Fallback: Handle(Unknown) for cases where flag names are not statically known.
+                // The type checker special-case (infer_open_return_type) overrides this with a
+                // precise Handle(cap_row) when flags are literal VarRef names like Readable/Writable.
                 ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
-                variadic: false,
+                variadic: true,
             },
         );
         env.insert(

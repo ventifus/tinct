@@ -532,6 +532,17 @@ Benefits:
 - [x] Add `test_caps()` with `OnceLock<TestCaps>` pattern — all test ambient opens replaced across 11 files
 - [x] All test `open_ambient_dir` calls → `test_caps().root` / `test_caps().stdlib`
 
+### rename-pwd-to-cwd: Replace `%pwd` with `%cwd` (process working directory)
+
+`src/main.rs:1321-1353`. `%pwd` ("print working directory") is a misnomer — it's set to the script's parent directory, not the process CWD. The name is confusing and the semantics are wrong for programs that need to access files relative to where tinct was invoked.
+
+Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where tinct was run from). Scripts needing sibling-relative resolution can construct the path themselves or use `[include %libdir ...]` for stdlib.
+
+- [ ] Rename `%pwd` → `%cwd` throughout: `src/main.rs` (injection and `--no-pwd` flag → `--no-cwd`), `src/imports.rs` (TypeEnv seeding), all corpus tests and stdlib files that reference `%pwd`. (`src/main.rs:1321-1353`, `src/imports.rs:238,258,1025`) [Major]
+- [ ] Change the injected value from script-parent-dir to `std::env::current_dir()` — the actual process CWD at invocation time.
+- [ ] Update `samples/versions.llt` to use `%cwd` and remove the `--no-pwd --cap-fs pwd=.:r` workaround from `just versions` once this lands.
+- [ ] Grep for all `%pwd` uses in corpus tests and stdlib to update them.
+
 ### user-include-rust-modules: `[include %libdir "net.llt"]` fails from user scripts with `%rust` undefined
 
 Discovered via `just versions` (2026-05-23). `net.llt` uses `[include %rust "net"]` / `[include %rust "io"]` to load Rust-native builtins during stdlib bootstrap. These work during prelude loading (where `%rust` is injected into the bootstrap environment), but fail when `net.llt` is included from a user script — `%rust` is not in the user evaluation environment. The include cache would prevent re-evaluation if net.llt were already cached by the prelude, but the prelude doesn't load net.llt, so every user-script inclusion triggers a fresh evaluation that fails. `strings.llt` works because the prelude caches `%rust "string"` via its own string builtins.
@@ -539,13 +550,22 @@ Discovered via `just versions` (2026-05-23). `net.llt` uses `[include %rust "net
 - [ ] Fix: inject `%rust` into the include evaluation environment for all stdlib includes, not just prelude bootstrap. (`src/imports.rs` or `src/eval_pipeline.rs`) [Major]
 - [ ] Alternative: pre-warm the include cache for all stdlib files during prelude loading [Alternative]
 
+### http2-session-async-drop-panic: Dropping http2-session inside async evaluator context panics
+
+Discovered via `just versions` (2026-05-23). When `http-request` / `http2-session` builtins are called from within tinct's async evaluator (after Rc→Arc + async CEK migration), dropping the reqwest HTTP/2 session panics with: `Cannot drop a runtime in a context where blocking is not allowed. This happens when a runtime is dropped from within an asynchronous context.` (tokio-1.52.3/runtime/blocking/shutdown.rs:51). The reqwest client contains an internal tokio Runtime; dropping it inside the async CEK evaluator's tokio context triggers the panic.
+
+This makes `just versions` (which uses `http-request` + `http2-session`) non-functional in the current build.
+
+- [ ] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
+
 ### typecheck-handle-annotation-bug: `@[Handle Readable]` TypeAssert triggers T000 internal error
 
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle Readable] expr]` causes the type checker to panic with `[T000]: resolved_type written twice — elaboration invariant violated`. The TypeAssert elaboration is writing to the same AST node's resolved_type slot twice. Workaround: remove the annotation; the Handle type mismatch (T003) is then reported as a non-fatal warning instead.
 
 - [ ] Find the double-write in `src/typecheck_annot.rs` or `src/typecheck.rs` — specifically the TypeAssert elaboration for parameterized Handle types like `Handle[Readable]`; add guard to prevent double-write or fix the root cause (`src/typecheck.rs`, `src/typecheck_annot.rs`)
 - [ ] Verify `[@[Handle Readable] [open %pwd "file.txt" Readable]]` type-checks cleanly after fix
-- [ ] `open` builtin's return type is not parameterized by capability flags (`Readable` → `Handle[Readable]`) — track as a separate type precision improvement once the above bug is fixed (tracked in open-api-migration)
+- [ ] `open` builtin TypeEnv signature is stale: runtime now accepts Variant flags (`Readable`, `Writable`) not String modes (`"r"`, `"w"`), but the type checker still says mode is `String`. This causes T003 when passing `Readable`. Update `open` TypeEnv signature. (`src/type_env.rs`) [Major]
+- [ ] `open` return type should be parameterized: `Readable` → `Handle[Readable]`, `Writable` → `Handle[Writable]` — once TypeEnv is updated
 
 ### typecheck-typeassert-no-narrowing: `[@String expr]` TypeAssert doesn't narrow inferred type at call sites
 

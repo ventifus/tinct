@@ -319,8 +319,8 @@ lines one at a time to a log or report file — use a split open/write/close
 model.
 
 **New value type: `Value::WriteHandle`** — wraps `Box<dyn Write>` (a
-`BufWriter<File>`). Returned by `open` when mode is `"w"` (truncate)
-or `"a"` (append). The type system exposes this as `WriteHandle`.
+`BufWriter<File>`). Returned by `open` with the `Writable` flag (truncate)
+or `Writable Appendable` flags (append). The type system exposes this as `WriteHandle`.
 
 **New Rust builtins:**
 
@@ -333,9 +333,9 @@ or `"a"` (append). The type system exposes this as `WriteHandle`.
 **`close wh`** — flushes and closes the `WriteHandle`, returns `null`.
 After `close`, the `WriteHandle` is invalid; further writes are errors.
 
-**`open`** already exists and returns `Handle` for `"r"` mode. It is
-extended to return `WriteHandle` for `"w"` and `"a"` modes. The
-returned type differs by mode — the type checker enforces this
+**`open`** already exists and returns `Handle` for the `Readable` flag. It is
+extended to return `WriteHandle` for the `Writable` and `Appendable` flags. The
+returned type differs by flags — the type checker enforces this
 statically once `Type::WriteHandle` is added.
 
 **`stdlib/io.llt` additions:**
@@ -343,11 +343,11 @@ statically once `Type::WriteHandle` is added.
 ```tinct
 # Open a file for writing (truncates existing content).
 open-write: [fn@WriteHandle [cap@DirCap path@String]
-  [open cap path "w"]]
+  [open cap path Writable]]
 
 # Open a file for appending.
 open-append: [fn@WriteHandle [cap@DirCap path@String]
-  [open cap path "a"]]
+  [open cap path Writable Appendable]]
 
 # Write a string followed by a newline.
 write-line: [fn@WriteHandle [wh@WriteHandle s@String]

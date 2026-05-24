@@ -264,7 +264,7 @@ version:
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --strict --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --no-pwd --cap-fs pwd=.:r --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.

@@ -529,12 +529,8 @@ impl PartialEq for ErrorKind {
             ) => e1 == e2 && g1 == g2,
             (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
             (
-                Self::MatchExhaustion {
-                    scrutinee_type: t1,
-                },
-                Self::MatchExhaustion {
-                    scrutinee_type: t2,
-                },
+                Self::MatchExhaustion { scrutinee_type: t1 },
+                Self::MatchExhaustion { scrutinee_type: t2 },
             ) => t1 == t2,
             (Self::DuplicateVariable { name: n1 }, Self::DuplicateVariable { name: n2 }) => {
                 n1 == n2
