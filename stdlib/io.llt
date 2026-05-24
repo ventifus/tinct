@@ -1,8 +1,6 @@
 # I/O utilities — depends on io-phase1 builtins
 # Requires: open, slurp, lines, emit, str (all Rust builtins)
-#
-# Phase 2 (bootstrap env): import the Rust I/O primitives explicitly.
-[include %rust "io"]
+
 [
 # Read an entire file as a string.
 # cap: DirCap, path: String

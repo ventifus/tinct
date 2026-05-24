@@ -9181,3 +9181,8 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 - [x] Coverage nested variant payload: KNOWN ISSUE documented — requires AST+parser+coverage coordinated fix.
 - [x] `generalize_with_doc` constraint save/restore contract docstring added to `src/type_env.rs`.
 - [x] `doc/06-type-inference.md` formal [CALL-MONO] rule updated with split-dispatch premises.
+
+### user-include-rust-modules: Remove `[include %rust ...]` from stdlib files
+
+- [x] Injected `%rust` into include environment for all stdlib includes (prior sprint).
+- [x] Removed all `[include %rust "..."]` from 5 stdlib files: net.llt (3 lines), io.llt (1), datetime.llt (1), encoding.llt (3), math.llt (1). All builtins are globally available via `standard_builtins()`. `[include %rust ...]` is now prelude-only bootstrap.

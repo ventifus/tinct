@@ -542,20 +542,6 @@ Benefits:
 - [x] Add `test_caps()` with `OnceLock<TestCaps>` pattern — all test ambient opens replaced across 11 files
 - [x] All test `open_ambient_dir` calls → `test_caps().root` / `test_caps().stdlib`
 
-### user-include-rust-modules: `[include %libdir "net.llt"]` fails from user scripts with `%rust` undefined
-
-Discovered via `just versions` (2026-05-23). `net.llt` uses `[include %rust "net"]` / `[include %rust "io"]` to load Rust-native builtins during stdlib bootstrap. These work during prelude loading (where `%rust` is injected into the bootstrap environment), but fail when `net.llt` is included from a user script — `%rust` is not in the user evaluation environment. The include cache would prevent re-evaluation if net.llt were already cached by the prelude, but the prelude doesn't load net.llt, so every user-script inclusion triggers a fresh evaluation that fails. `strings.llt` works because the prelude caches `%rust "string"` via its own string builtins.
-
-- [x] Fix: inject `%rust` into the include evaluation environment for all stdlib includes, not just prelude bootstrap. (`src/imports.rs` — added to `build_type_env_with_cap`) [Major]
-- [ ] **Real fix — stdlib-drop-rust-includes**: Remove all `[include %rust "..."]` calls from stdlib files — these builtins are registered in the builtin registry and available by name everywhere. `[include %rust ...]` is a prelude-only bootstrap mechanism; stdlib files should not use it. Audit note: `strings.llt` is already clean (explicit comment says not to add them); `macros.llt` only references them in comments; `prelude.llt` only mentions them in comments. Five files need fixing:
-  - `stdlib/net.llt:16-18` — remove `[include %rust "net"]`, `[include %rust "io"]`, `[include %rust "string"]`; builtins provided: `connect`, `http2-session`, `http-request`, `url`, `slurp`, `write-handle`, `str-bytes`, `bytes-str`
-  - `stdlib/io.llt:5` — remove `[include %rust "io"]`; builtins provided: `open`, `slurp`, `lines`, `emit` (all already globally available)
-  - `stdlib/datetime.llt:3` — remove `[include %rust "datetime"]`; builtins provided: `timestamp-diff`, `duration->seconds`, `timestamp-year`, `timestamp-month`, etc.
-  - `stdlib/encoding.llt:28-30` — remove `[include %rust "core"]`, `[include %rust "string"]`, `[include %rust "math"]`; builtins provided: `builtin-if`/`builtin-lt`/`builtin-eq`/`builtin-add`/etc., `str-slice`/`char-code`/`chr`/`length`, `bxor`
-  - `stdlib/math.llt:16` — remove `[include %rust "math"]`; builtins provided: `pow`, `sqrt`, `log`, `sin`, `cos`, `tan`, `atan2`, `nan?`, `inf?`, `finite?`
-  
-  After this sprint, all stdlib files are includable from user scripts. [Minor]
-
 ### http2-session-async-drop-panic: Dropping http2-session inside async evaluator context panics
 
 Discovered via `just versions` (2026-05-23). When `http-request` / `http2-session` builtins are called from within tinct's async evaluator (after Rc→Arc + async CEK migration), dropping the reqwest HTTP/2 session panics with: `Cannot drop a runtime in a context where blocking is not allowed. This happens when a runtime is dropped from within an asynchronous context.` (tokio-1.52.3/runtime/blocking/shutdown.rs:51). The reqwest client contains an internal tokio Runtime; dropping it inside the async CEK evaluator's tokio context triggers the panic.

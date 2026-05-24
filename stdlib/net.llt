@@ -12,11 +12,6 @@
 #   http-get              — url-based HTTP GET (dispatches on url.scheme)
 #   fetch                 — url + http-get (http) or http2-session (https)
 #
-# Phase 2 (bootstrap env): import the Rust primitives needed by this module.
-[include %rust "net"]
-[include %rust "io"]
-[include %rust "string"]
-
 # Internal helpers — not exported
 [
   # Recursively parse header lines into accumulator dict.
