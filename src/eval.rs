@@ -976,7 +976,7 @@ async fn eval_quote_walk(
 
 /// Convert a runtime Value back to an Expr AST node for unquoting.
 ///
-/// If the value is a Dict with a `type` field, treat it as an AST dict and use `dict_to_ast`.
+/// If the value is a Dict with a `type` field, treat it as an AST dict and use `dict_to_surface_node`.
 /// Otherwise, convert the value to its literal Expr representation.
 fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResult<Spanned<Expr>> {
     match value {
@@ -988,26 +988,30 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResul
             span,
         )),
         Value::Variant { .. } => {
-            // Variant form of an AST node — use dict_to_ast directly
-            crate::ast_dict::dict_to_ast(value, ctx).map_err(|err| {
-                EvalError::internal(
-                    format!("unquote result Variant is not a valid AST: {}", err),
-                    span,
-                )
-                .into()
-            })
-        }
-        Value::Dict(dict) => {
-            // Check if this is an AST dict (has a "type" field)
-            if dict.contains_key(&Key::String("type".to_string())) {
-                // It's an AST dict — use dict_to_ast
-                crate::ast_dict::dict_to_ast(value, ctx).map_err(|err| {
+            // Variant form of an AST node — convert via surface bridge
+            crate::ast_dict::dict_to_surface_node(value, ctx)
+                .map(|node| crate::ast_convert::surface_node_to_expr(&node))
+                .map_err(|err| {
                     EvalError::internal(
-                        format!("unquote result dict is not a valid AST: {}", err),
+                        format!("unquote result Variant is not a valid AST: {}", err),
                         span,
                     )
                     .into()
                 })
+        }
+        Value::Dict(dict) => {
+            // Check if this is an AST dict (has a "type" field)
+            if dict.contains_key(&Key::String("type".to_string())) {
+                // It's an AST dict — convert via surface bridge
+                crate::ast_dict::dict_to_surface_node(value, ctx)
+                    .map(|node| crate::ast_convert::surface_node_to_expr(&node))
+                    .map_err(|err| {
+                        EvalError::internal(
+                            format!("unquote result dict is not a valid AST: {}", err),
+                            span,
+                        )
+                        .into()
+                    })
             } else {
                 // It's a regular dict — convert to Expr::Dict
                 // This is trickier because dict values are thunk IDs

@@ -6,9 +6,9 @@
 //! 1. Walk the AST top-down
 //! 2. Register `DefMacro` nodes by evaluating their transformer in a fresh context
 //! 3. Expand `Call` nodes if the function name matches a registered macro:
-//!    - Quote arguments via `ast_to_dict_expr`
+//!    - Quote arguments via `surface_node_to_dict` (through surface bridge)
 //!    - Call the macro transformer with the quoted args
-//!    - Convert the result back to AST via `dict_to_ast`
+//!    - Convert the result back to AST via `dict_to_surface_node` (through surface bridge)
 //!    - Replace the Call node with the expansion
 //!    - Re-expand the result (fixpoint)
 //! 4. Track in-progress expansions to detect infinite recursion
@@ -37,7 +37,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Document, Entry, Expr, MatchArm, NamedArg, Param, Span, Spanned};
-use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts}; // TODO(parts-e): remove when macro expander is rewritten on SurfaceExpression (blocked on E3e expander cutover)
+use crate::ast_convert::{expr_to_surface_node, surface_node_to_expr};
+use crate::ast_dict::{dict_to_surface_node, surface_node_to_dict, AstToDictOpts}; // TODO(parts-e): remove when macro expander is rewritten on SurfaceExpression (blocked on E3e expander cutover)
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
@@ -383,7 +384,6 @@ pub fn expand_surface_program(
     base_dir: &cap_std::fs::Dir,
 ) -> EvalResult<ExpandSurfaceResult> {
     use crate::ast::{SurfaceDeclaration, SurfaceItem};
-    use crate::ast_convert::{expr_to_surface_node, surface_node_to_expr};
 
     // Detect infinite recursion
     let em_depth = EXPAND_MACROS_DEPTH.get();
@@ -1658,7 +1658,8 @@ fn expand_macro_call(
     // Each quoted arg becomes a separate positional thunk for invoke_function.
     let mut positional_thunks: Vec<Arc<Thunk>> = Vec::with_capacity(args.len());
     for arg in args {
-        let dict_thunk = ast_to_dict_expr(arg, &opts, ctx)?;
+        let arg_node = expr_to_surface_node(arg);
+        let dict_thunk = surface_node_to_dict(&arg_node, &opts, ctx)?;
         // ARENA BOUNDARY: deep-materialize before crossing
         let arg_val = eval::materialize_sync(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
             EvalError::user_error(
@@ -1691,7 +1692,8 @@ fn expand_macro_call(
         // Build a VarRef AST node for the binding name
         let binding_expr = Spanned::new(Expr::var_ref(binding_name.clone()), call_span);
         let binding_rc = Rc::new(binding_expr);
-        let binding_thunk = ast_to_dict_expr(&binding_rc, &opts, ctx)?;
+        let binding_node = expr_to_surface_node(&binding_rc);
+        let binding_thunk = surface_node_to_dict(&binding_node, &opts, ctx)?;
         let binding_val =
             eval::materialize_sync(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
                 EvalError::user_error(
@@ -1786,7 +1788,7 @@ fn expand_macro_call(
         err
     })?;
 
-    // Deep-materialize the result dict so dict_to_ast can inspect all fields
+    // Deep-materialize the result dict so dict_to_surface_node can inspect all fields
     let deep_result = eval::deep_materialize(&result_val, ctx, None).map_err(|mut e| {
         e.push_frame(format!("in expansion of `{}`", macro_name), call_span);
         e
@@ -1799,12 +1801,14 @@ fn expand_macro_call(
     );
 
     // Convert the result dict back to AST
-    let mut expanded_ast = dict_to_ast(&deep_result, ctx).map_err(|e| {
-        EvalError::user_error(
-            format!("macro '{}' returned invalid AST dict: {}", macro_name, e),
-            call_span,
-        )
-    })?;
+    let mut expanded_ast = dict_to_surface_node(&deep_result, ctx)
+        .map(|node| surface_node_to_expr(&node))
+        .map_err(|e| {
+            EvalError::user_error(
+                format!("macro '{}' returned invalid AST dict: {}", macro_name, e),
+                call_span,
+            )
+        })?;
 
     // Set the expanded AST's top-level span to the call site span.
     if expanded_ast.span == Span::origin() {
