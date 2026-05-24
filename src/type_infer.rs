@@ -277,6 +277,77 @@ impl InferState {
             resolver_injective: false,
         });
 
+        // Indexable: 3-parameter type class with functional dependency (container, key) → value
+        // Built-in instances registered below for Map, Seq, and Record
+        class_env.insert(ClassDecl {
+            name: "Indexable".to_string(),
+            params: vec![
+                ("container".to_string(), Kind::Type),
+                ("key".to_string(), Kind::Type),
+                ("value".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (container, key) → value
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        let mut instance_env = InstanceEnv::new();
+
+        // Register built-in Indexable instances for Map, Seq, and Record.
+        // These instances enable FD improvement: given container and key types,
+        // the value type is determined automatically.
+        use crate::type_class::InstanceDecl;
+        use crate::types::Row;
+
+        // Indexable Map[K V] K V
+        // For a Map with key type K and value type V, indexing by K returns V.
+        let map_k_var = Type::TypeVar("K".to_string(), 0);
+        let map_v_var = Type::TypeVar("V".to_string(), 0);
+        let map_instance = InstanceDecl {
+            class_name: "Indexable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = HashMap::new();
+                    fields.insert(
+                        "0".to_string(),
+                        Type::Map(Box::new(map_k_var.clone()), Box::new(map_v_var.clone())),
+                    );
+                    fields.insert("1".to_string(), map_k_var.clone());
+                    fields.insert("2".to_string(), map_v_var.clone());
+                    fields
+                },
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(map_instance).unwrap();
+
+        // Indexable Seq[T] Int T
+        // For a Seq with element type T, indexing by Int returns T.
+        let seq_t_var = Type::TypeVar("T".to_string(), 0);
+        let seq_instance = InstanceDecl {
+            class_name: "Indexable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = HashMap::new();
+                    fields.insert("0".to_string(), Type::Seq(Box::new(seq_t_var.clone())));
+                    fields.insert("1".to_string(), Type::Int);
+                    fields.insert("2".to_string(), seq_t_var.clone());
+                    fields
+                },
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(seq_instance).unwrap();
+
+        // KNOWN ISSUE: Record instance for Indexable is complex because the value type
+        // depends on the specific field accessed, which requires HasField-style resolution.
+        // For now, we rely on check_get special-case handling for Record types until
+        // the HasField constraint can be integrated with Indexable FD improvement.
+        // TODO: Wire Record case through resolve_has_field in type_unify.rs FD improvement.
+
         Self {
             name_counter: 0,
             level: 0,
@@ -285,7 +356,7 @@ impl InferState {
             constraints: Vec::new(),
             kind_env: HashMap::new(),
             class_env,
-            instance_env: InstanceEnv::new(),
+            instance_env,
             failed_bindings: HashMap::new(),
             scheme_map: None,
             current_function: None,

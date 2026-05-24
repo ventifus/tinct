@@ -1187,6 +1187,19 @@ impl TypeEnv {
             resolver_injective: false,
         });
 
+        let indexable_class = Arc::new(ClassDecl {
+            name: "Indexable".to_string(),
+            params: vec![
+                ("container".to_string(), Kind::Type),
+                ("key".to_string(), Kind::Type),
+                ("value".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (container, key) → value
+            resolver: None,
+            resolver_injective: false,
+        });
+
         // Addition: Addable a b c => a -> b -> c
         // Multi-parameter type class with functional dependency (a,b) → c
         env.insert_scheme(
@@ -3060,31 +3073,24 @@ impl TypeEnv {
             );
         }
 
-        // builtin-get: registered directly. 'get' is a prelude wrapper (not a Rust builtin
-        // type), so it is absent from this env when the alias loop below runs. Registering
-        // builtin-get here gives the type checker enough information to avoid false
-        // "undefined variable" errors in stdlib/prelude.llt.
-        //
-        // NOTE: A Label-polymorphic scheme ∀(l:Label) d a. HasField l d a ⇒ l → d → a would be
-        // more precise, but causes O(N²) blowup in prelude type-checking: the prelude's private dict
-        // has ~35 direct `builtin-get` calls (for integer and string key access), each generating 3
-        // fresh TypeVars + 1 HasField constraint. With ~100 TypeVar entries added to state.subst and
-        // the O(N²) merge loop in typecheck_dict.rs, the prelude type-check hangs.
-        //
-        // Precision is preserved for `get` and `get?` via the `check_get` special-form dispatcher
-        // (typecheck.rs:1476-1488), which intercepts `name == "get"` or `"get?"` calls and handles
-        // label TypeVars directly via `resolve_has_field`. The `check_get` dispatcher is also applied
-        // to `builtin-get` calls (typecheck.rs) to handle label TypeVar keys in prelude wrappers.
+        // builtin-get: Indexable c k v => k -> c -> v
+        // Uses the Indexable typeclass with functional dependency (c, k) → v.
+        // The FD improvement machinery in src/type_unify.rs resolves the value type
+        // based on registered instances for Map, Seq, and Record.
         env.insert_scheme(
             "builtin-get".to_string(),
             TypeScheme {
-                type_vars: vec![],
-                constraints: vec![],
+                type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                constraints: vec![Constraint::Class {
+                    class: Arc::clone(&indexable_class),
+                    vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                }],
                 body: Type::Function {
-                    // Genuinely unknown: conservative fallback signature (any dict-like, any key, any result).
-                    // The type checker special-cases get calls for precise Map/Record typing.
-                    params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-                    ret: Box::new(Type::Unknown),
+                    params: vec![
+                        (None, Type::TypeVar("k".to_string(), 0)),
+                        (None, Type::TypeVar("c".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::TypeVar("v".to_string(), 0)),
                     variadic: false,
                 },
                 label_vars: vec![],
@@ -3093,20 +3099,24 @@ impl TypeEnv {
             },
         );
 
-        // get?: registered directly. It is a Rust builtin (builtin_get_optional) that returns
-        // the value at the key or Null (empty dict) if missing. The type checker special-cases get?
-        // for Map and Record args to produce precise Union(V|Null) return types.
+        // get?: Indexable c k v => k -> c -> v | Null
+        // Uses the Indexable typeclass with functional dependency (c, k) → v.
+        // Returns v | Null (empty dict) when the key is missing.
         env.insert_scheme(
             "get?".to_string(),
             TypeScheme {
-                type_vars: vec![],
-                constraints: vec![],
+                type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                constraints: vec![Constraint::Class {
+                    class: Arc::clone(&indexable_class),
+                    vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                }],
                 body: Type::Function {
-                    // Genuinely unknown: conservative fallback signature Unknown → Unknown → Union(Unknown, Null).
-                    // The type checker special-cases get? calls for precise Map/Record typing.
-                    params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+                    params: vec![
+                        (None, Type::TypeVar("k".to_string(), 0)),
+                        (None, Type::TypeVar("c".to_string(), 0)),
+                    ],
                     ret: Box::new(Type::normalize_union(vec![
-                        Type::Unknown,
+                        Type::TypeVar("v".to_string(), 0),
                         Type::Record(Row {
                             fields: HashMap::new(),
                         }),

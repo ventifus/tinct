@@ -296,28 +296,6 @@ impl InstanceEnv {
                 continue;
             }
 
-            // Extract the determining types from the instance pattern.
-            // For multi-param instances, instance_type is a Record with numbered fields.
-            let instance_det_types: Vec<Type> = if inst.det_positions.is_empty() {
-                // Single-parameter class: the entire instance_type is the determining type
-                vec![inst.instance_type.clone()]
-            } else {
-                // Multi-parameter class: extract types at determining positions
-                match &inst.instance_type {
-                    Type::Record(row) => inst
-                        .det_positions
-                        .iter()
-                        .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
-                        .collect(),
-                    _ => continue, // Malformed instance, skip
-                }
-            };
-
-            // Check arity
-            if instance_det_types.len() != determining_types.len() {
-                continue;
-            }
-
             // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
             // unify() mutates state.levels, state.constraints, state.kind_env, state.deferred_equalities,
             // and state.name_counter (via instantiate_at_level). Failed candidates must not leak these.
@@ -327,24 +305,54 @@ impl InstanceEnv {
             let saved_deferred = state.deferred_equalities.clone();
             let saved_name_counter = state.name_counter;
 
+            // Freshen the ENTIRE instance_type at once so that shared type variables
+            // (e.g. `K` in both `Map[K V]` and the standalone `K` position) map to the
+            // same fresh name. Freshening each position independently would create
+            // unrelated fresh vars, breaking determined-type resolution.
+            let freshened_instance_type = instantiate_at_level(&inst.instance_type, state);
+
+            // Extract the determining types from the freshened instance pattern.
+            // For multi-param instances, instance_type is a Record with numbered fields.
+            let instance_det_types: Vec<Type> = if inst.det_positions.is_empty() {
+                // Single-parameter class: the entire instance_type is the determining type
+                vec![freshened_instance_type.clone()]
+            } else {
+                // Multi-parameter class: extract types at determining positions
+                match &freshened_instance_type {
+                    Type::Record(row) => inst
+                        .det_positions
+                        .iter()
+                        .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
+                        .collect(),
+                    _ => {
+                        // Malformed instance, skip — restore state first
+                        state.levels = saved_levels;
+                        state.constraints = saved_constraints;
+                        state.kind_env = saved_kind_env;
+                        state.deferred_equalities = saved_deferred;
+                        state.name_counter = saved_name_counter;
+                        continue;
+                    }
+                }
+            };
+
+            // Check arity
+            if instance_det_types.len() != determining_types.len() {
+                state.levels = saved_levels;
+                state.constraints = saved_constraints;
+                state.kind_env = saved_kind_env;
+                state.deferred_equalities = saved_deferred;
+                state.name_counter = saved_name_counter;
+                continue;
+            }
+
             // Attempt unification of all determining positions.
             // Use a temporary substitution to avoid polluting the global state.
             let mut temp_subst = state.subst.clone();
             let mut all_match = true;
 
             for (inst_ty, query_ty) in instance_det_types.iter().zip(determining_types.iter()) {
-                // Freshen the instance type to get fresh type variables
-                let freshened_inst_ty = instantiate_at_level(inst_ty, state);
-
-                if unify(
-                    &freshened_inst_ty,
-                    query_ty,
-                    &mut temp_subst,
-                    state,
-                    Span::origin(),
-                )
-                .is_err()
-                {
+                if unify(inst_ty, query_ty, &mut temp_subst, state, Span::origin()).is_err() {
                     all_match = false;
                     break;
                 }
@@ -360,8 +368,15 @@ impl InstanceEnv {
                 state.deferred_equalities = saved_deferred;
                 state.name_counter = saved_name_counter;
 
-                // Found a matching instance - return a clone
-                return Some(inst.clone());
+                // Return the freshened instance_type with temp_subst applied so that
+                // determined positions resolve to concrete types (not raw instance TypeVars).
+                let resolved_instance_type = temp_subst.apply(&freshened_instance_type);
+                return Some(InstanceDecl {
+                    class_name: inst.class_name.clone(),
+                    instance_type: resolved_instance_type,
+                    det_positions: inst.det_positions.clone(),
+                    method_types: inst.method_types.clone(),
+                });
             } else {
                 // F1 FIX: Restore state after failed probe (discard leaked mutations).
                 state.levels = saved_levels;

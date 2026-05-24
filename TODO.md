@@ -551,30 +551,12 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 - [x] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
 
 
-### indexable-typeclass: Replace `get`/`get?` special case with `Indexable` MPTC
+### indexable-map-fd: Fix Map/Seq FD improvement via lookup_mptc (F2 dual substitution issue)
 
-`src/typecheck.rs:1476-1488` special-cases `get`/`get?` calls, intercepting them and routing through `resolve_has_field` to produce precise return types. This can be replaced with a built-in `Indexable` typeclass using the existing MPTC/FD mechanism, eliminating the special case and making `get` extensible to user-defined types.
+After `indexable-typeclass` sprint, `[builtin-get "key" map]` where `map : Map[Str Int]` returns Unknown instead of `Int`. Root cause is F2 (dual substitution inconsistency in `improve_functional_dependency_inner`): `lookup_mptc` uses `state.subst.clone()` as its temp_subst, but the active local subst (from `check_call_with_scheme`) is separate. The resolved determined type (`Int`) is extracted from the instance but not threaded back to the constraint var. The `ded_type_var` unification at line 679 uses `state.subst` (via `mem::take`) not the probe's temp_subst. Record case bypasses this via HasField special case.
 
-**Design:**
-```tinct
-[class [Indexable container key value]
-  fundeps: [[container key] → value]
-  get: [fn@value [key@key container@container]]]
-```
-
-**Built-in instances:**
-- `Indexable Map[K V] K V` — FD improvement: given `Map[K V]` and key `K`, resolve value `V`
-- `Indexable Seq[T] Int T` — FD improvement: given `Seq[T]` and key `Int`, resolve `T`
-- `Indexable Record[{label: T, ...}] String T` — routes through existing `HasField` constraint internally; label must be a statically-known string literal
-
-**Result:** `get` typed as `Indexable[C K V] => K → C → V` in the TypeEnv. FD improvement resolves `V` at call sites. `typecheck.rs:1476-1488` special case deleted. `get?` follows same pattern with `V | Null` return.
-
-- [ ] Define `Indexable` built-in typeclass with FD `(container, key) → value` in `src/type_class.rs` or `src/type_env.rs`
-- [ ] Register built-in instances for Map, Seq, Record in `src/type_env.rs`
-- [ ] Update `get`/`get?` TypeEnv entries to use `Indexable` scheme instead of `Unknown → Unknown → Unknown`
-- [ ] Wire `Indexable` FD improvement in `src/type_unify.rs` — including routing Record case through `resolve_has_field`
-- [ ] Remove `check_get` dispatcher from `src/typecheck.rs:1476-1488`
-- [ ] Verify `builtin-get` alias also works via the new scheme
+- [ ] Fix F2: thread the active local `subst` into `improve_functional_dependency_inner` so `lookup_mptc` can use it as its initial temp_subst, OR eliminate the mem::take pattern and use a single substitution throughout FD improvement. (`src/type_unify.rs:669`, `src/type_class.rs:lookup_mptc`)
+- [ ] After fix: un-ignore `test_check_get_map_returns_value_type` and `test_check_get_optional_map_returns_value_or_null` in `src/typecheck.rs`
 
 ### rnd-typecheck-runtime-unification: Accept typecheck-runtime-unification whatif
 

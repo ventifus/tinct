@@ -528,12 +528,36 @@ fn improve_functional_dependency_inner(
         }
 
         // All determining positions are ground - look up the instance.
-        // Two paths:
-        // 1. EXISTING PATH: hardcoded lookup_arithmetic_instance for Addable/Subtractable/Multipliable/Divisible
-        // 2. NEW PATH (additive): resolver-based lookup for classes with resolver names
+        // Multiple paths:
+        // 1. Indexable + Record: special case for HasField-style resolution
+        // 2. Arithmetic classes: hardcoded lookup_arithmetic_instance
+        // 3. Resolver classes: type-stage function normalization
+        // 4. General MPTC: InstanceEnv lookup
 
-        // Check if this is a hardcoded arithmetic class (Addable, Subtractable, Multipliable, Divisible)
-        let result_type = if matches!(
+        // Special case: Indexable on Record types uses direct field lookup
+        // instead of instance registration (records are structural, not nominal).
+        let indexable_record_result = if class == "Indexable" && det_types.len() == 2 {
+            let container_ty = &det_types[0].2;
+            let key_ty = &det_types[1].2;
+
+            match (container_ty, key_ty) {
+                (Type::Record(row), Type::StringLiteral(field_name)) => {
+                    // Direct field lookup for Record + StringLiteral key
+                    Some(row.fields.get(field_name).cloned().unwrap_or(Type::Unknown))
+                }
+                (Type::Record(_), Type::Str) => {
+                    // Str key (from promoted StringLiteral) — can't resolve statically
+                    Some(Type::Unknown)
+                }
+                _ => None, // Not a Record case — fall through to general logic
+            }
+        } else {
+            None
+        };
+
+        let result_type = if let Some(ty) = indexable_record_result {
+            ty
+        } else if matches!(
             class,
             "Addable" | "Subtractable" | "Multipliable" | "Divisible"
         ) {
@@ -625,6 +649,15 @@ fn improve_functional_dependency_inner(
                         }
                     }
                     None => {
+                        // KNOWN ISSUE: Indexable falls back to Unknown when no instance matches
+                        // (e.g., unknown container type or TypeVar container). The old check_get
+                        // returned Unknown in these cases; restoring that behavior here prevents
+                        // false-positive "no instance for Indexable" errors for unresolvable
+                        // containers. Determined TypeVar remains unbound → resolves to Unknown.
+                        // Non-Indexable MPTC classes still report errors on lookup failure.
+                        if class == "Indexable" {
+                            continue;
+                        }
                         return Err(TypeError::new(format!("no instance for {}", class), span));
                     }
                 }
