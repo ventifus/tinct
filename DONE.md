@@ -2,6 +2,39 @@
 
 Completed milestones and sprints, moved from TODO.md.
 
+## runtime-v2 Migration
+
+### rv2-migrate-annotation Phases 3-5: Complete annotation migration, delete surface_program_to_file from parser (2026-05-23)
+
+**Commits:** b39ea8d (Phase 2), then this sprint's commit for Phases 3-5.
+
+**Phases 1-2 recap:**
+- Phase 1 (98e5619): Changed `Annotation::PropertyDict` from `Vec<Spanned<Entry>>` to `Vec<Spanned<SurfaceEntry>>`. 14 files had `todo!()` stubs.
+- Phase 2 (b39ea8d): Replaced 6 `todo!()` stubs in `typecheck_annot.rs` + 1 stub in `typecheck.rs` using a `surface_entries_to_entries()` bridge helper.
+
+**Phase 3 — eval.rs stubs:**
+- Removed `TODO(rv2-migrate-annotation Phase 5)` comment from `annotation_has_structural_fields` (already implemented correctly with `SurfaceExpression::Str` matching).
+- Restored doc-string extraction in `CoreExpr::Fn` eval path (was stubbed as `None` for all `PropertyDict`). Now uses `ann_spanned.node.get_property("doc")` + `SurfaceExpression::Str` match — identical to the pattern in `typecheck.rs`/`typecheck_dict.rs`.
+- Updated doc comment to say `SurfaceExpression::Str` instead of the stale `Expr::Str`.
+
+**Phase 4 — parser.rs bridge call deleted:**
+- Replaced `surface_program_to_file(&sub_output.program)` + `Expr::Dict` / `Expr::Call` matching with direct `SurfaceExpression::Dict` / `SurfaceExpression::Call` matching on `sub_output.program.documents[0].node.expressions().next()`.
+- `Expr::Dict` arm: now calls `adjust_surface_entries(entries.clone(), base)` directly — no `adjust_entries` + `entry_to_surface` round-trip.
+- `Expr::Call { implied: true, func, args }` arm: builds `Vec<Spanned<SurfaceEntry>>` directly from `Arc<SurfaceNode>` func/args, adjusting spans with `adjust_span`.
+- `other` arm: uses `SurfaceExpression` Display (via `SurfaceNode: Display`) for the error message.
+
+**Phase 5 — dead code deleted:**
+- Deleted `adjust_spanned_expr`, `adjust_expr`, `adjust_annotation`, `adjust_entries` from `src/parser.rs` — all four were exclusively used by the old annotation bridge path.
+- Moved `use std::rc::Rc;` from module-level import into `#[cfg(test)]` module (only used in test helpers).
+- `entry_to_surface` is no longer called from `src/parser.rs` (still needed in `ast_convert.rs` and `ast_dict.rs` for other callers).
+
+**surface_program_to_file status after this sprint:**
+- `src/parser.rs`: zero production callers ✅
+- `src/typecheck.rs:497`: ONE production caller remains (`typecheck_surface_program_with_types_and_env` bridge). NOT yet deletable — tracked in rv2-delete-old-ast.
+- All other callers are `#[cfg(test)]` test helpers or comments.
+
+**Build:** `just fmt && just build && just test-lib` — exit 0, all tests pass.
+
 ## Type System
 
 ### adt-constructor-scoping: Inject nominal variant constructors into scope

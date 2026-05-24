@@ -177,6 +177,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `typecheck_file_with_types` made `#[cfg(test)]` (test-only); others made `fn` (private) [commit 98148cc]
 - [x] `just build` passes [commit 98148cc]
 
+### rv2-migrate-annotation: Migrate `Annotation::PropertyDict` from `Vec<Spanned<Entry>>` to `Vec<Spanned<SurfaceEntry>>` ✅ DONE (2026-05-23, Phases 1-5)
+
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files — BLOCKED
 
 **Depends on:** rv2-migrate-ast-dict ✅(partial), rv2-migrate-repl ✅, rv2-migrate-lsp ✅, rv2-migrate-typecheck-api ✅
@@ -186,6 +188,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - ~~`src/eval.rs:992,1004`~~ — ✅ DONE (Part G): unquote handling migrated to `Value::Expression` path
 - ~~`src/typecheck.rs` internal bridge~~ — ✅ DONE (2026-05-24, typecheck-surface-migration tasks 6-8): `typecheck_surface_program_with_env` now walks `program.documents` directly via `typecheck_surface_document`; `surface_program_to_file()` bridge deleted from the hot path. `typecheck_surface_program` still uses the bridge (span-keyed TypeMap path); old `typecheck_file_*` functions remain private for tests.
 - ~~`src/eval_pipeline.rs`~~ — ✅ old `eval_document`/`eval_file`/`eval_file_with_input` DELETED (2026-05-23)
+- ~~`src/parser.rs:725`~~ — ✅ DONE (2026-05-23, rv2-migrate-annotation Phases 3-5): `surface_program_to_file` call replaced with direct `SurfaceExpression` matching; `adjust_entries`/`adjust_expr`/`adjust_spanned_expr`/`adjust_annotation` helpers deleted; `entry_to_surface` no longer called from parser
+- `src/typecheck.rs:497` — `typecheck_surface_program_with_types_and_env` still calls `surface_program_to_file` internally (the span-keyed TypeMap path); not yet migrated to a native SurfaceProgram walk
 
 **Once ALL above are migrated:**
 - [ ] Delete `src/ast_convert.rs` dead code DONE (2026-05-23): deleted `file_to_surface_program_with_types` + 4 private helpers; remaining live functions (`file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr`, etc.) still needed
@@ -673,6 +677,15 @@ Root cause: the include/typecheck pipeline uses the same TypeEnv for included st
 
 **Also:**
 - [ ] Migrate net.llt to use `builtin-*` stable aliases (defense in depth — makes net.llt work even if included in user context before the above fix)
+
+### annotation-propertydict-migration: Complete Annotation::PropertyDict SurfaceEntry migration
+
+`src/ast.rs` (uncommitted) changed `Annotation::PropertyDict` from `Vec<Spanned<Entry>>` to `Vec<Spanned<SurfaceEntry>>` and `get_property` now returns `Option<&Arc<SurfaceNode>>`, but call sites weren't updated. Build is broken (`cargo build` fails with ~60 errors).
+
+**Affected call sites:** `src/parser.rs` (PropertyDict construction), `src/formatter.rs` (annotation dict methods), `src/typecheck_annot.rs` (`resolve_type_expr`, `resolve_property_dict_as_record`), `src/typecheck.rs`, `src/typecheck_dict.rs` (`.expr` not `.node` on SurfaceNode), `src/eval_call.rs`, `src/eval_materialize.rs`, `src/ast_dict.rs`, `src/ast_convert.rs`.
+
+- [ ] Update all call sites to use `Vec<Spanned<SurfaceEntry>>` / `Arc<SurfaceNode>` types
+- [ ] `cargo build` passes
 
 ### builtin-privacy-missing-wrappers: Audit and add missing prelude wrappers + type alias propagation
 

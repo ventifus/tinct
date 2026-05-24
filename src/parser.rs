@@ -11,7 +11,6 @@
 //! uses an explicit stack for bracket nesting, making it safe for deeply nested inputs.
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::*;
@@ -290,263 +289,8 @@ fn adjust_span(span: Span, base: Position) -> Span {
     }
 }
 
-/// Recursively adjust all spans in a `Spanned<Expr>` from sub-source to absolute coordinates.
-fn adjust_spanned_expr(se: Spanned<Expr>, base: Position) -> Spanned<Expr> {
-    Spanned {
-        span: adjust_span(se.span, base),
-        node: adjust_expr(se.node, base),
-    }
-}
-
-/// Recursively adjust all spans in an `Expr`.
-fn adjust_expr(expr: Expr, base: Position) -> Expr {
-    match expr {
-        // Leaf nodes — no nested spans
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Str(_)
-        | Expr::VarRef { .. }
-        | Expr::Rest(_) => expr,
-
-        // Error nodes contain a span that needs adjustment
-        Expr::Error(span) => Expr::Error(adjust_span(span, base)),
-
-        Expr::DotAccess { expr, field } => Expr::DotAccess {
-            expr: Box::new(adjust_spanned_expr(*expr, base)),
-            field,
-        },
-        Expr::Dict(entries) => Expr::Dict(adjust_entries(entries, base)),
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            implied,
-        } => Expr::Call {
-            func: Box::new(adjust_spanned_expr(*func, base)),
-            args: args
-                .into_iter()
-                .map(|a| {
-                    Rc::new(adjust_spanned_expr(
-                        Rc::try_unwrap(a).unwrap_or_else(|rc| (*rc).clone()),
-                        base,
-                    ))
-                })
-                .collect(),
-            named_args: named_args
-                .into_iter()
-                .map(|na| Spanned {
-                    span: adjust_span(na.span, base),
-                    node: crate::ast::NamedArg {
-                        name: na.node.name,
-                        value: Rc::new(adjust_spanned_expr(
-                            Rc::try_unwrap(na.node.value).unwrap_or_else(|rc| (*rc).clone()),
-                            base,
-                        )),
-                    },
-                })
-                .collect(),
-            implied,
-        },
-        Expr::Fn {
-            return_ann,
-            params,
-            body,
-            desugared,
-        } => Expr::Fn {
-            return_ann: return_ann.map(|ra| Spanned {
-                span: adjust_span(ra.span, base),
-                node: adjust_annotation(ra.node, base),
-            }),
-            params: params
-                .into_iter()
-                .map(|p| Spanned {
-                    span: adjust_span(p.span, base),
-                    node: crate::ast::Param {
-                        name: p.node.name,
-                        annotation: p.node.annotation.map(|ann| Spanned {
-                            span: adjust_span(ann.span, base),
-                            node: adjust_annotation(ann.node, base),
-                        }),
-                        variadic: p.node.variadic,
-                    },
-                })
-                .collect(),
-            body: Rc::new(adjust_spanned_expr((*body).clone(), base)),
-            desugared,
-        },
-        Expr::TypeAlias { params, body } => Expr::TypeAlias {
-            params: params.clone(),
-            body: Box::new(adjust_spanned_expr(*body, base)),
-        },
-        Expr::Pipe { lhs, rhs } => Expr::Pipe {
-            lhs: Box::new(adjust_spanned_expr(*lhs, base)),
-            rhs: Box::new(adjust_spanned_expr(*rhs, base)),
-        },
-        Expr::Sequential(exprs) => Expr::Sequential(
-            exprs
-                .into_iter()
-                .map(|e| {
-                    Rc::new(adjust_spanned_expr(
-                        Rc::try_unwrap(e).unwrap_or_else(|rc| (*rc).clone()),
-                        base,
-                    ))
-                })
-                .collect(),
-        ),
-        Expr::TypeAssert {
-            annotation,
-            expr,
-            resolved_type,
-        } => Expr::TypeAssert {
-            annotation: Spanned {
-                span: adjust_span(annotation.span, base),
-                node: adjust_annotation(annotation.node, base),
-            },
-            expr: Box::new(adjust_spanned_expr(*expr, base)),
-            resolved_type,
-        },
-        Expr::Annotated { name, annotation } => Expr::Annotated {
-            name,
-            annotation: Spanned {
-                span: adjust_span(annotation.span, base),
-                node: adjust_annotation(annotation.node, base),
-            },
-        },
-        Expr::Quote(inner) => Expr::Quote(Box::new(adjust_spanned_expr(*inner, base))),
-        Expr::Unquote(inner) => Expr::Unquote(Box::new(adjust_spanned_expr(*inner, base))),
-        Expr::UnquoteSplice(inner) => {
-            Expr::UnquoteSplice(Box::new(adjust_spanned_expr(*inner, base)))
-        }
-        Expr::DefMacro { name, params, body } => Expr::DefMacro {
-            name,
-            params,
-            body: Rc::new(adjust_spanned_expr((*body).clone(), base)),
-        },
-        Expr::Match { scrutinee, arms } => Expr::Match {
-            scrutinee: Box::new(adjust_spanned_expr(*scrutinee, base)),
-            arms: arms
-                .into_iter()
-                .map(|arm| crate::ast::MatchArm {
-                    pattern: Spanned {
-                        span: adjust_span(arm.pattern.span, base),
-                        node: arm.pattern.node,
-                    },
-                    guard: arm.guard.map(|g| Box::new(adjust_spanned_expr(*g, base))),
-                    body: Box::new(adjust_spanned_expr(*arm.body, base)),
-                })
-                .collect(),
-        },
-        Expr::ClassDecl {
-            name,
-            params,
-            superclasses,
-            methods,
-            determines,
-            resolver,
-            resolver_injective,
-        } => Expr::ClassDecl {
-            name,
-            params,
-            superclasses,
-            methods: adjust_entries(methods, base),
-            determines,
-            resolver,
-            resolver_injective,
-        },
-        Expr::InstanceDecl { class_name, arms } => Expr::InstanceDecl {
-            class_name,
-            arms: arms
-                .into_iter()
-                .map(|(pattern_expr, methods)| {
-                    (
-                        adjust_spanned_expr(pattern_expr, base),
-                        adjust_entries(methods, base),
-                    )
-                })
-                .collect(),
-        },
-        Expr::PatternDecl { bindings } => Expr::PatternDecl {
-            bindings: bindings
-                .into_iter()
-                .map(|b| adjust_spanned_expr(b, base))
-                .collect(),
-        },
-        Expr::LetDecl { bindings } => Expr::LetDecl {
-            bindings: bindings
-                .into_iter()
-                .map(|b| adjust_spanned_expr(b, base))
-                .collect(),
-        },
-        Expr::CaseArm { pattern, body } => Expr::CaseArm {
-            pattern: Box::new(adjust_spanned_expr(*pattern, base)),
-            body: Box::new(adjust_spanned_expr(*body, base)),
-        },
-        Expr::Placeholder => Expr::Placeholder,
-        Expr::TypeApp { func, arg } => Expr::TypeApp {
-            func: Box::new(adjust_spanned_expr(*func, base)),
-            arg: Box::new(adjust_spanned_expr(*arg, base)),
-        },
-        Expr::MacroDecl { params, body, name } => Expr::MacroDecl {
-            name,
-            params: Box::new(adjust_spanned_expr(*params, base)),
-            body: Box::new(adjust_spanned_expr(*body, base)),
-        },
-        Expr::Splice(forms) => Expr::Splice(
-            forms
-                .into_iter()
-                .map(|f| adjust_spanned_expr(f, base))
-                .collect(),
-        ),
-        Expr::SyntaxClass {
-            pattern,
-            name,
-            message,
-        } => Expr::SyntaxClass {
-            name,
-            pattern: Box::new(adjust_spanned_expr(*pattern, base)),
-            message,
-        },
-    }
-}
-
-/// Recursively adjust all spans in an `Annotation`.
-fn adjust_annotation(ann: Annotation, base: Position) -> Annotation {
-    match ann {
-        Annotation::Simple(_) => ann,
-        Annotation::PropertyDict(entries) => {
-            Annotation::PropertyDict(adjust_surface_entries(entries, base))
-        }
-        Annotation::Annotated(name, inner) => {
-            Annotation::Annotated(name, Box::new(adjust_annotation(*inner, base)))
-        }
-    }
-}
-
-/// Adjust all spans in a list of `Spanned<Entry>` from sub-source to absolute coordinates.
-fn adjust_entries(
-    entries: Vec<crate::ast::Spanned<crate::ast::Entry>>,
-    base: Position,
-) -> Vec<crate::ast::Spanned<crate::ast::Entry>> {
-    use crate::ast::Entry;
-    use std::rc::Rc;
-    entries
-        .into_iter()
-        .map(|se| Spanned {
-            span: adjust_span(se.span, base),
-            node: Entry {
-                key: se.node.key.map(|k| adjust_spanned_expr(k, base)),
-                value: Rc::new(adjust_spanned_expr(
-                    Rc::try_unwrap(se.node.value).unwrap_or_else(|rc| (*rc).clone()),
-                    base,
-                )),
-            },
-        })
-        .collect()
-}
-
 /// Adjust all spans in a list of `Spanned<SurfaceEntry>` from sub-source to absolute coordinates.
-/// Used by `adjust_annotation` for `Annotation::PropertyDict` after migration to `SurfaceEntry`.
+/// Used when building `Annotation::PropertyDict` entries from a re-parsed sub-expression.
 fn adjust_surface_entries(
     entries: Vec<Spanned<crate::ast::SurfaceEntry>>,
     base: Position,
@@ -747,30 +491,22 @@ fn parse_annotation(
                 }
             }
 
-            // Extract the first expression from the first document.
-            // Convert the SurfaceProgram back to old AST types for Annotation::PropertyDict.
-            let spanned_file = crate::ast_convert::surface_program_to_file(&sub_output.program);
-            let first_expr = spanned_file
-                .node
+            // Extract the first expression directly from the parsed SurfaceProgram.
+            // No round-trip through surface_program_to_file — match on SurfaceExpression directly.
+            let first_node = sub_output
+                .program
                 .documents
-                .into_iter()
-                .next()
-                .and_then(|doc| doc.node.expressions.into_iter().next());
+                .first()
+                .and_then(|doc| doc.node.expressions().next())
+                .cloned();
 
-            match first_expr {
-                Some(spanned_expr_rc) => match &spanned_expr_rc.node {
-                    Expr::Dict(entries) => {
+            match first_node {
+                Some(node) => match &node.expr {
+                    SurfaceExpression::Dict(entries) => {
                         // The sub-parse produced spans relative to sub_source (offset 0 = `[`).
                         // Adjust all entry spans back to the original file's coordinate space.
                         let base = bracket_start_span.start;
-                        let adjusted_old = adjust_entries(entries.clone(), base);
-                        // Bridge to SurfaceEntry for Annotation::PropertyDict (Phase 1 stub).
-                        // TODO(rv2-migrate-annotation Phase 2): extract SurfaceEntry directly from
-                        // sub_output.program without going through surface_program_to_file.
-                        let adjusted: Vec<Spanned<SurfaceEntry>> = adjusted_old
-                            .into_iter()
-                            .map(|e| Spanned::new(crate::ast_convert::entry_to_surface(&e.node), e.span))
-                            .collect();
+                        let adjusted = adjust_surface_entries(entries.clone(), base);
                         Ok((
                             Spanned::new(Annotation::PropertyDict(adjusted), ann_span),
                             end_i + 1,
@@ -783,44 +519,42 @@ fn parse_annotation(
                     // Applies to any implied call whose func is a VarRef (uppercase or lowercase).
                     // Uppercase: parameterized type alias applications.
                     // Lowercase: type variable names in union return type syntax (fn@[a Null]).
-                    Expr::Call {
+                    SurfaceExpression::Call {
                         implied: true,
                         func,
                         args,
                         ..
-                    } if matches!(&func.node, Expr::VarRef { .. }) => {
+                    } if matches!(&func.expr, SurfaceExpression::VarRef { .. }) => {
                         let base = bracket_start_span.start;
-                        let mut old_entries: Vec<Spanned<Entry>> = Vec::new();
+                        let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
                         // func as first auto-indexed entry
-                        let adjusted_func = adjust_spanned_expr((**func).clone(), base);
-                        let func_span = adjusted_func.span;
-                        let func_entry = Spanned::new(
-                            Entry {
+                        let adjusted_func_span = adjust_span(func.span, base);
+                        let func_node = Arc::new(SurfaceNode {
+                            span: adjusted_func_span,
+                            expr: func.expr.clone(),
+                        });
+                        entries.push(Spanned::new(
+                            SurfaceEntry {
                                 key: None,
-                                value: Rc::new(adjusted_func),
+                                value: func_node,
                             },
-                            func_span,
-                        );
-                        old_entries.push(func_entry);
+                            adjusted_func_span,
+                        ));
                         // args as subsequent auto-indexed entries
                         for arg in args {
-                            let adjusted_arg = adjust_spanned_expr(arg.as_ref().clone(), base);
-                            let arg_span = adjusted_arg.span;
-                            let arg_entry = Spanned::new(
-                                Entry {
+                            let adjusted_arg_span = adjust_span(arg.span, base);
+                            let arg_node = Arc::new(SurfaceNode {
+                                span: adjusted_arg_span,
+                                expr: arg.expr.clone(),
+                            });
+                            entries.push(Spanned::new(
+                                SurfaceEntry {
                                     key: None,
-                                    value: Rc::new(adjusted_arg),
+                                    value: arg_node,
                                 },
-                                arg_span,
-                            );
-                            old_entries.push(arg_entry);
+                                adjusted_arg_span,
+                            ));
                         }
-                        // Bridge to SurfaceEntry for Annotation::PropertyDict (Phase 1 stub).
-                        // TODO(rv2-migrate-annotation Phase 2): build SurfaceEntry directly.
-                        let entries: Vec<Spanned<SurfaceEntry>> = old_entries
-                            .into_iter()
-                            .map(|e| Spanned::new(crate::ast_convert::entry_to_surface(&e.node), e.span))
-                            .collect();
                         Ok((
                             Spanned::new(Annotation::PropertyDict(entries), ann_span),
                             end_i + 1,
@@ -6152,6 +5886,7 @@ pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::rc::Rc;
 
     /// Helper: parse successfully and return the first expression from the first document.
     /// Uses the ast_convert bridge to return old Expr AST for backward compat with tests.

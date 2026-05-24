@@ -108,10 +108,9 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 /// (which should enforce a Dict tag check per doc/07-type-extensions.md §--no-typecheck mode)
 /// from metadata-only annotations (which have nothing to validate against).
 ///
-/// **Parser guarantee:** PropertyDict entries always have `Expr::Str` keys; non-`Expr::Str`
+/// **Parser guarantee:** PropertyDict entries always have `SurfaceExpression::Str` keys; non-`SurfaceExpression::Str`
 /// keys are treated as non-structural (the `_ => None` arm will never match in well-formed ASTs).
 pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool {
-    // TODO(rv2-migrate-annotation Phase 5): rewrite to use SurfaceExpression::Str on SurfaceEntry keys.
     match annotation {
         Annotation::Simple(_) => false,
         Annotation::PropertyDict(entries) => entries.iter().any(|entry| {
@@ -1635,17 +1634,17 @@ fn eval_core_expr<'a>(
                     })
                     .collect();
 
-                // Extract doc string from annotation if present
-                // TODO(rv2-migrate-annotation Phase 5): restore PropertyDict doc extraction with SurfaceEntry
-                #[allow(unused_variables)]
+                // Extract doc string from annotation if present.
+                // Uses get_property("doc") which works directly on SurfaceEntry via SurfaceExpression::Str keys.
                 let annotation = return_ann.as_ref().and_then(|ann_spanned| {
-                    // Stub: PropertyDict doc extraction deferred to Phase 5 of rv2-migrate-annotation.
-                    // Previously extracted "doc" string key from Expr::Str entries;
-                    // will be rewritten to use SurfaceExpression::Str on SurfaceEntry entries.
-                    let doc: Option<String> = match &ann_spanned.node {
-                        Annotation::PropertyDict(_entries) => None, // STUB: Phase 5
-                        _ => None,
-                    };
+                    let doc: Option<String> =
+                        ann_spanned.node.get_property("doc").and_then(|doc_node| {
+                            if let crate::ast::SurfaceExpression::Str(s) = &doc_node.expr {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        });
 
                     doc.map(|doc_str| {
                         Box::new(crate::value::FnAnnotation {
