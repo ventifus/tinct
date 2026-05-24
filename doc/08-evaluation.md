@@ -70,6 +70,65 @@ The `Environment` struct's `parent` field implements this: each nested dict gets
 
 For the formal specification of scope chains across sequential expressions (the `---` pipeline and multi-expression documents), see [Documents & Pipelines](09-documents.md) §Scope Chain Semantics.
 
+## Runtime-Injected Capability Bindings
+
+The tinct runtime automatically injects **capability bindings** into the root environment before evaluation begins. These variables provide controlled access to system resources and are distinguished from user-defined variables by the `%` sigil.
+
+**Standard capability bindings:**
+
+| Binding | Type | Description | Suppression Flag |
+|---------|------|-------------|------------------|
+| `%cwd` | `DirCap` | Process working directory at invocation time | `--no-cwd` |
+| `%libdir` | `DirCap` | Standard library directory for `[include %libdir "module.llt"]` | `--no-libdir` |
+| `%stdin` | `Handle[Readable Text]` | Standard input stream handle | Only injected when `-i` flag is present |
+
+**Injection mechanism:**
+
+These bindings are added to the root environment by the CLI before the first expression in the user's program evaluates. They are not declared by the user — they appear as pre-existing bindings visible to all top-level expressions.
+
+```tinct
+# User code can reference capability bindings directly
+config: [include %libdir "config.llt"]
+project-files: [list %cwd]
+user-input: [slurp %stdin]  # Only if -i flag was used
+```
+
+**The `%` sigil convention:**
+
+User-defined variables use the `$` sigil (`$x`, `$config`, `$result`). Runtime-injected capabilities use `%` to signal that these bindings come from the execution environment, not the program source. This distinction makes it clear at a glance which variables are under user control and which are provided by the runtime.
+
+**Suppression flags:**
+
+Each capability binding can be suppressed via CLI flags:
+
+- `--no-cwd` — suppresses `%cwd` injection. Any attempt to reference `%cwd` produces an "undefined variable" error.
+- `--no-libdir` — suppresses `%libdir` injection. Standard library `include` directives will fail unless using absolute paths or user-injected capabilities.
+- `-i` flag absence — `%stdin` is only injected when the `-i` (interactive input) flag is present. Without `-i`, referencing `%stdin` produces an "undefined variable" error.
+
+**Fully sandboxed invocation:**
+
+```bash
+llt eval --no-cwd --no-libdir script.llt
+# %cwd and %libdir unavailable
+# %stdin also unavailable (no -i flag)
+# Only builtins and user-defined bindings accessible
+```
+
+**User-injected capabilities:**
+
+In addition to the standard capability bindings, users can inject custom directory and network capabilities via `--cap-fs` and `--cap-net` flags:
+
+```bash
+llt eval --cap-fs pkg=/var/lib/plugins --cap-net api=schema.internal script.llt
+# Injects %pkg (DirCap) and %api (NetCap) into root environment
+```
+
+These user-injected capabilities also use the `%` sigil and follow the same scoping rules as standard capability bindings.
+
+**Type checking:**
+
+The type checker pre-seeds the type environment with capability variable types so that references to `%cwd`, `%libdir`, and `%stdin` (when `-i` is present) do not produce "undefined variable" warnings during type inference. This seeding occurs in `build_prelude_env_inner()` and `build_type_env()` in `src/imports.rs`.
+
 ## Sequences and Lazy Computation
 
 **Sequences are lazy computations, not data.** Dicts are data (finite, random-access, known keys). Sequences are suspended computations that produce elements on demand (possibly infinite, sequential access, unknown structure).

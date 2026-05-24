@@ -583,11 +583,6 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 - [ ] Identify which corpus tests are slow — run `cargo test --test corpus_tests -- --test-threads=1 -v 2>&1` with timestamps to find the slowest tests
 - [ ] Profile the slow tests — likely CHR-related evaluation tests that explore large search spaces or hit memory constraints in containerized CI
 
-### doc-cwd-runtime-bindings: Document runtime-injected bindings in doc/08-evaluation.md
-
-`doc/08-evaluation.md` has no mention of runtime-injected capability bindings (`%cwd`, `%libdir`, `%stdin`). These appear to user programs as variables but are not declared by the user — the spec should explain where they come from.
-
-- [ ] Add a section to `doc/08-evaluation.md` documenting `%cwd`, `%libdir`, `%stdin` as runtime-injected bindings; explain `--no-cwd`, `--no-libdir` flags that suppress them
 
 ### rnd-typecheck-runtime-unification: Accept typecheck-runtime-unification whatif
 

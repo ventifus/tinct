@@ -984,6 +984,12 @@ Uses the hand-written lexer's token stream (comment-preserving, unlike pest). Se
 
 - [x] **CLAUDE.md references "Phase 6" for hand-written parser, should be Phase 7** — STALE: CLAUDE.md simplified, no longer contains phase references. [Resolved, grammar-architect]
 
+### doc-cwd-runtime-bindings: Document runtime-injected bindings in doc/08-evaluation.md
+
+`doc/08-evaluation.md` had no mention of runtime-injected capability bindings (`%cwd`, `%libdir`, `%stdin`). These appear to user programs as variables but are not declared by the user — the spec should explain where they come from.
+
+- [x] Add a section to `doc/08-evaluation.md` documenting `%cwd`, `%libdir`, `%stdin` as runtime-injected bindings; explain `--no-cwd`, `--no-libdir` flags that suppress them, `-i` flag for stdin injection, user-injected capabilities via `--cap-fs`/`--cap-net`, and type checker pre-seeding of capability variable types
+
 ### seq-resource-safety: Sequence Resource Safety
 
 Resource safety gaps in sequence combinators. Found by computer-scientist codebase review (2026-04-22).
