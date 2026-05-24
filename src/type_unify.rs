@@ -534,7 +534,7 @@ fn improve_functional_dependency_inner(
         // 3. Resolver classes: type-stage function normalization
         // 4. General MPTC: InstanceEnv lookup
 
-        // Special case: Indexable on Record types uses direct field lookup
+        // Special case: Indexable on Record/Union types uses direct field lookup
         // instead of instance registration (records are structural, not nominal).
         let indexable_record_result = if class == "Indexable" && det_types.len() == 2 {
             let container_ty = &det_types[0].2;
@@ -549,7 +549,23 @@ fn improve_functional_dependency_inner(
                     // Str key (from promoted StringLiteral) — can't resolve statically
                     Some(Type::Unknown)
                 }
-                _ => None, // Not a Record case — fall through to general logic
+                (Type::Union(members), Type::StringLiteral(field_name)) => {
+                    // [HAS-FIELD-UNION]: distribute field lookup across union members.
+                    // [get key (A | B)] → get(key, A) | get(key, B)
+                    // Each member that has the field contributes its field type.
+                    // Members without the field contribute Unknown (graceful degradation).
+                    let field_types: Vec<Type> = members
+                        .iter()
+                        .map(|member| match member {
+                            Type::Record(row) => {
+                                row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)
+                            }
+                            _ => Type::Unknown,
+                        })
+                        .collect();
+                    Some(Type::normalize_union(field_types))
+                }
+                _ => None, // Not a Record/Union case — fall through to general logic
             }
         } else {
             None

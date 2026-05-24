@@ -1085,6 +1085,10 @@ impl TypeEnv {
     ///
     /// Used by `imports::collect_names_above_baseline` to identify names introduced
     /// by the prelude (rather than inherited from the builtin baseline).
+    pub fn own_type_aliases(&self) -> impl Iterator<Item = (&str, &TypeAlias)> {
+        self.type_aliases.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     pub fn collect_own_names(&self, names: &mut std::collections::HashSet<String>) {
         for name in self.bindings.keys() {
             names.insert(name.clone());
@@ -3091,31 +3095,35 @@ impl TypeEnv {
             );
         }
 
-        // builtin-get: Indexable c k v => k -> c -> v
+        // builtin-get / get: Indexable c k v => k -> c -> v
         // Uses the Indexable typeclass with functional dependency (c, k) → v.
         // The FD improvement machinery in src/type_unify.rs resolves the value type
         // based on registered instances for Map, Seq, and Record.
-        env.insert_scheme(
-            "builtin-get".to_string(),
-            TypeScheme {
-                type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
-                constraints: vec![Constraint::Class {
-                    class: Arc::clone(&indexable_class),
-                    vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
-                }],
-                body: Type::Function {
-                    params: vec![
-                        (None, Type::TypeVar("k".to_string(), 0)),
-                        (None, Type::TypeVar("c".to_string(), 0)),
-                    ],
-                    ret: Box::new(Type::TypeVar("v".to_string(), 0)),
-                    variadic: false,
+        // `get` is the prelude-exported alias for `builtin-get` and has the same type.
+        // Both are registered here so tests using TypeEnv::with_builtins() can call either.
+        for get_name in ["builtin-get", "get"] {
+            env.insert_scheme(
+                get_name.to_string(),
+                TypeScheme {
+                    type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                    constraints: vec![Constraint::Class {
+                        class: Arc::clone(&indexable_class),
+                        vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                    }],
+                    body: Type::Function {
+                        params: vec![
+                            (None, Type::TypeVar("k".to_string(), 0)),
+                            (None, Type::TypeVar("c".to_string(), 0)),
+                        ],
+                        ret: Box::new(Type::TypeVar("v".to_string(), 0)),
+                        variadic: false,
+                    },
+                    label_vars: vec![],
+                    doc: None,
+                    inner_schemes: None,
                 },
-                label_vars: vec![],
-                doc: None,
-                inner_schemes: None,
-            },
-        );
+            );
+        }
 
         // get?: Indexable c k v => k -> c -> v | Null
         // Uses the Indexable typeclass with functional dependency (c, k) → v.
