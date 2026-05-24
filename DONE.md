@@ -9767,3 +9767,100 @@ Pre-existing failures discovered during builtin-privacy Phase 3 work; fixed in s
 - [x] `handle_capability_mismatch.llt-eval`: Replaced broken test content (used `---` inside `[ ]`, rejected by parser; also required filesystem access for `$slurp`/`$open`). Rewritten as a pure function-body test: `[f: [fn [let h@[Handle Readable]] [@[Handle Writable] h]]]`. The `@[Handle Readable]` param annotation gives `h` type `Handle[__cap_flag_readable: ...]`; the `@[Handle Writable]` body annotation triggers T003 "cannot unify Handle[__cap_flag_readable: ...] with Handle[__cap_flag_writable: ...]". Eval succeeds (function never called). `=== warn` uses substring `cannot unify Handle[`.
 - [x] `proxy_named_arg.llt-eval`: The "unknown named argument: function has no parameter named 'handler'" warning does not fire because the prelude exports `proxy` with a `handler` parameter — the named arg `handler:` matches correctly at both the typecheck and runtime level. In the corpus pipeline, `$proxy` resolves through the letrec TypeVar path and returns Unknown, so T010 fires instead. Updated `=== warn` to `inferred type is Unknown`. Updated comment to explain the TypeVar-resolution behaviour.
 - [x] `test_typecheck_warnings_corpus` passes (1 passed; 0 failed)
+
+## Evaluator Correctness + Performance (Health Review #311)
+
+
+### resolver-slot-coverage: Extend slot assignment to all variable types
+
+**Goal:** Eliminate name-lookup fallback by giving every resolvable variable a slot. Currently `get_by_slot()` is the fast path but several constructs force `get(name)` fallback.
+
+**Gap 1 — `Annotation::PropertyDict` entries** (`src/resolve.rs:214-228`):
+`walk_surface_annotation` explicitly skips PropertyDict entries with comment "fall back to FreeVar (name-based lookup) at runtime". This is a migration artifact — PropertyDict still holds old Expr nodes. Once `Annotation` is fully migrated to `Arc<SurfaceNode>`, wire resolution here.
+- [x] After Annotation migration: remove the skip comment and walk PropertyDict entry Arc<SurfaceNode> values through `walk_surface_node` in `walk_surface_annotation` (`src/resolve.rs:217-221`)
+
+**Gap 2 — Match arm pattern-bound variables** (`src/resolve.rs:172-180`):
+`Match` arms walk scrutinee + body but never call `enter_scope()` for pattern-bound variables (e.g., `[match x  [Int n]: [+ n 1]]` — `n` has no slot, falls back to name lookup inside the arm body).
+- [x] Extend `walk_surface_expr` for `SurfaceExpression::Match`: extract bound variable names from each arm's pattern via `extract_pattern_bindings()`/`collect_pattern_bindings()`; `enter_scope(bound_names)` before guard + body, `exit_scope()` after; guarded by `has_bindings` to skip empty-scope allocation for Wildcard/Literal/etc. (`src/resolve.rs:172-196`) [Major]
+
+**Gap 3 — Variables inside type annotations** (cross-cutting):
+Type annotations using `@[constraint: [a: Foo]]` form use PropertyDict, which is skipped. Until Gap 1 is fixed, all constraint-annotation variables fall back to name lookup.
+- [x] Track as a consequence of Gap 1 — fixing PropertyDict annotation resolution fixes this too [Minor]
+
+**Gap 4 — Verify LetDecl/PatternDecl sequential injection**:
+The Sequential handler (lines 118-135) calls `surface_node_static_keys(e)` to decide whether to inject scope after each expression. Verify `LetDecl` and `PatternDecl` nodes are correctly identified by `surface_node_static_keys` so their bindings get slots in subsequent expressions.
+- [x] Audit `surface_node_static_keys` — confirmed correct: only handles `SurfaceExpression::Dict`; LetDecl/PatternDecl are binding declarations (not scope creators) so no changes needed [Minor]
+- [x] Fix stale comment at `value.rs:1775` — says "future slot-based O(1) lookup (Phase 2)" but slot lookup is already active (`eval.rs:1344`; IndexMap+slots confirmed correct design) [Minor]
+- [x] Profile slot hit rate — added `SLOT_HIT_COUNT`/`SLOT_MISS_COUNT` `#[cfg(test)]` counters to `get_by_slot()` + `reset_slot_counters()` in `value.rs` [Minor]
+- [x] Start W1 strictness scan at `force_count` via `.skip(force_count)` in initial PendingBuiltin dispatch (`eval_materialize.rs`) — avoids rescanning already-forced positions [Minor]
+
+
+### resolver-slot-soundness: Fix computed-string key slot-shift and add get_by_slot name verification
+
+**Source:** eval-engine + computer-scientist audit (2026-05-23)
+
+**Root cause:** The resolver counts only `Str`/`Annotated` (statically-string) keys when building scope slot indices (`surface_dict_static_keys`, `surface_node_static_keys`). At runtime, `eval_dict_core` and the Sequential handler insert **all** evaluated `Key::String` entries into `dict_env`/`child_env` — including computed-string keys whose value is a VarRef or expression that produces a string at runtime. Because `IndexMap` preserves insertion order, a computed-string key inserted at position K shifts all static keys after it by 1, causing `get_by_slot(level, slot)` to return the wrong thunk with no error (the slot is in bounds; the wrong value is silently used).
+
+**Critical: silent wrong-value bug** — the fallback to name-based lookup only fires on `None`; a mismatched-but-valid slot result is never detected.
+
+**Concrete counterexample:**
+```
+[k: "z"]
+[result: [$k: 1  x: 2  y: $x]]
+```
+Resolver assigns `$x` → slot 0 (counts only `x`, `y`). Runtime inserts `z` at index 0, `x` at index 1. `get_by_slot(0, 0)` → returns `1` (the value for `z`). `y` silently gets the wrong value.
+
+Same bug in Sequential/document pipelines:
+```
+[k: "z"]
+[$k: 1  x: 2]
+$x
+```
+Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_slot(0, 0)` → `1`.
+
+**Fixes:**
+
+- [x] **[Critical]** Add name verification to `get_by_slot` fast path — compare returned entry's key against the expected variable name; on mismatch, fall back to name-based `get()` instead of silently returning the wrong thunk. This converts the silent-wrong-value bug into a correct fallback. (`src/value.rs:1843`, `src/eval.rs:1341-1345`)
+- [x] **[Critical]** Fix dict slot-shift: in `eval_dict_core`, track a separate `string_key_insertion_count` and verify it matches the resolver's static-key count for the scope, OR exclude computed-string keys from `dict_env` slot assignment (insert them into the output dict only, not the scope env). (`src/eval_dict.rs:142-148`, `src/resolve.rs:352-367`)
+- [x] **[Critical]** Fix Sequential/document slot-shift: same root cause — `child_env` receives all `Key::String` entries from the materialized dict including computed ones. (`src/eval.rs:1440-1450`, `src/eval_pipeline.rs:447-459`, `src/resolve.rs:118-135`)
+- [x] Fix type-stage document named sections — resolver skips stage:type docs from named_sections to match runtime behavior (`src/resolve.rs:348-363`) [Major]
+- [x] debug_assert for slot count drift — replaced with explanatory comment (tautological assert; proper check needs resolver per-scope count) [Minor]
+- [x] Add corpus test: named-arg-fills-optional-slot [Minor]
+- [x] Add corpus test: computed_key_sequential_scope.llt-eval in `eval/regressions/` [Minor]
+- [x] Move slot-soundness corpus tests to `eval/regressions/`: computed_key_slot_correctness + named_arg_default_slot [Minor]
+- [x] Move flatten_overlay inside static_keys guard in eval_pipeline.rs + eval.rs [Minor]
+
+### key-string-rc: Change Key::String from owned String to Rc<str>
+
+**Sources:** performance-expert (review #311)
+**Scope:** 555 occurrences of `Key::String(` across 18 files — mechanical refactoring but massive scale, split from eval-hot-path-fixes.
+
+- [x] Change `Key::String(String)` to `Key::String(Rc<str>)` in `value.rs:104` [commit 00200c9]
+- [x] Update all 555 construction/match sites across 18 files [commit 00200c9]
+
+### test-coverage-cycle311: Unit tests for CEK machine, letrec scoping, and corpus edge cases
+
+**Sources:** test-crafter, performance-expert (review #311)
+
+**Unit tests (Major):**
+- [x] Add unit tests for `eval_materialize.rs` CEK machine — 4 tests: depth limit, restore state, error decoration, TypeAssert inline [Major]
+- [x] Add unit tests for `eval_dict.rs` letrec scoping — 4 tests: key in parent scope, value sees siblings, circular dep error, nested shadowing [Major]
+
+**Corpus tests (Minor):**
+- [x] Add `tests/corpus/eval/errors/key_scope_sibling_reference_fails.llt-eval` — completed [Minor]
+- BLOCKED: Write `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval` — needs parser support for capability type syntax in annotation position (parser treats `[Readable]` as subscript, not type parameter) [Minor]
+- [x] Fix TypeAssert `@Unknown` runtime behavior — gradual no-op for Unknown/Top in nominal fallback path (`eval_materialize.rs:2381-2383`) + `typeassert_unknown.llt-eval` corpus test [Minor]
+- [x] Add `tests/corpus/eval/errors/continuation_stack_depth_limit.llt-eval` — depth limit test with `[E040]` error code [Minor]
+
+### doc-health-cycle311: Fix documentation gaps from health review #311
+
+**Sources:** type-theorist, stdlib-author, eval-engine, grammar-architect, security-expert (review #311)
+
+- [x] Update `doc/05-type-annotations.md` §20 — Handle parameterized with capability row, `Handle[Readable Writable]` notation documented, 11 capability tags listed [Major]
+- [x] Update `doc/11a-builtins.md:3,1064` — builtin count 283→284 [Major]
+- [x] Add `SurfaceNode`/`SurfaceExpression`/`SurfaceProgram` section to `doc/15-ast.md` — surface AST types documented [Major]
+- [x] Add clarification to `doc/08-evaluation.md` §Recursive Dict Scoping — ALL non-literal keys force eagerly [Minor]
+- [x] Add TypeAssert default validation note to `doc/06-type-inference.md` — elaboration-time check documented [Minor]
+- [x] Fix `doc/15-ast.md:206` Pipe handling — updated from desugar.rs (deleted) to lower.rs [Major]
+- [x] Fix `doc/15-ast.md` parse2() references — already clean, no stale references found [Major]
+- [x] Update `doc/15-ast.md` ClassDecl/InstanceDecl/PatternDecl rows — verified correct, all fields match [Minor]

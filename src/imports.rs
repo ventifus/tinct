@@ -19,7 +19,7 @@ use crate::desugar; // TODO(parts-e): remove when desugar.rs is deleted (blocked
 use crate::expand;
 use crate::parser;
 use crate::resolve;
-use crate::typecheck::{typecheck_surface_program, typecheck_surface_program_with_env, TypeMap};
+use crate::typecheck::{typecheck_surface_program_with_env, TypeMap};
 use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeAlias, TypeEnv};
 
 /// Type alias for include bindings map: span → list of (name, type) pairs
@@ -864,11 +864,24 @@ fn resolve_includes(
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let _resolution_table = resolve::resolve_surface_program(&program);
 
-        // Type-check with the current accumulated environment.
-        // typecheck_surface_program bridges to the File-based path internally via
-        // surface_program_to_file, so no manual conversion is needed here.
-        let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics) =
-            typecheck_surface_program(&program, Rc::clone(&env));
+        // Type-check with the appropriate environment.
+        // For %libdir files (stdlib modules), use a builtins env so that raw builtin
+        // names (e.g. `url`, `http-request`) are visible — stdlib files use builtins
+        // directly and must not be checked against the restricted user env. This
+        // mirrors how `build_prelude_env_inner()` type-checks prelude.llt.
+        // For %cwd files (user includes), use the accumulated user env as normal.
+        let typecheck_env = if cap_name.as_deref() == Some("%libdir") {
+            let mut benv = TypeEnv::with_builtins();
+            benv.insert("%cwd".to_string(), crate::types::Type::DirCap);
+            benv.insert("%libdir".to_string(), crate::types::Type::DirCap);
+            benv.inject_builtin_aliases();
+            Rc::new(benv)
+        } else {
+            Rc::clone(&env)
+        };
+        let in_prelude_load = cap_name.as_deref() == Some("%libdir");
+        let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env, _ann) =
+            typecheck_surface_program_with_env(&program, typecheck_env, false, in_prelude_load);
 
         // Extract bindings from this program and track them
         let mut new_env = TypeEnv::with_parent(&env);
