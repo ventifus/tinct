@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use lsp_types::Uri;
 
-use crate::ast::{File, Spanned, SurfaceProgram};
+use crate::ast::SurfaceProgram;
 use crate::builtins::create_stdlib_env_with_arena;
 use crate::error::{EvalError, TypeDiagnostic};
 use crate::parser::{parse, ParseError};
@@ -18,12 +18,13 @@ use crate::value::Environment;
 pub struct DocumentState {
     /// The original source text.
     pub text: String,
-    /// Parsed AST (if parsing succeeded).
-    pub ast: Result<Spanned<File>, ParseError>,
+    /// Fatal parse error (lexer failure or unclosed brackets).
+    /// When present, no AST was produced and all other fields are empty/default.
+    pub fatal_parse_error: Option<ParseError>,
     /// Surface program (if parsing and macro expansion succeeded).
     /// Used by the imports API for include-path collection and type-env building.
     pub surface: Option<SurfaceProgram>,
-    /// Recovered parse errors from inside bracket forms (non-fatal; collected even when `ast` is Ok).
+    /// Recovered parse errors from inside bracket forms (non-fatal; collected even when parsing succeeded).
     /// These come from `ParseOutput.errors` and represent errors where the parser substituted
     /// an `Expr::Error` node and continued rather than stopping.
     pub parse_errors: Vec<ParseError>,
@@ -64,13 +65,17 @@ impl DocumentState {
         // Use parse() to capture both the AST and any recovered parse errors.
         let parse_result = parse(&text);
         let mut parse_errors = Vec::new();
+        let mut fatal_parse_error = None;
         let surface_parse_result: Result<crate::ast::SurfaceProgram, ParseError> =
             match parse_result {
                 Ok(output) => {
                     parse_errors = output.errors;
                     Ok(output.program)
                 }
-                Err(err) => Err(err),
+                Err(err) => {
+                    fatal_parse_error = Some(err.clone());
+                    Err(err)
+                }
             };
         let mut type_errors = Vec::new();
         let mut type_diagnostics: Vec<TypeDiagnostic> = Vec::new();
@@ -79,18 +84,19 @@ impl DocumentState {
         let mut doc_map = DocMap::new();
         let mut scheme_map = SchemeMap::new();
 
-        // PIPELINE INVARIANT: expand → desugar → surface_program_to_file → resolve → typecheck
+        // PIPELINE INVARIANT: expand → desugar → resolve → typecheck
         // This order is enforced across all entry points (main.rs, lib.rs, repl.rs).
         // Macros expand first (on SurfaceProgram), then $_ placeholders are desugared,
-        // then the SurfaceProgram is lowered to File, then variable resolution runs,
-        // then the type checker sees the fully elaborated AST.
+        // then variable resolution runs, then the type checker sees the fully elaborated AST.
         //
         // The expanded+desugared SurfaceProgram is captured in `surface` for use by the
-        // imports API (include-path collection, type-env building), which now operates
-        // directly on the Surface AST.
+        // imports API (include-path collection, type-env building) and the type checker,
+        // which both now operate directly on the Surface AST.
         let mut surface: Option<SurfaceProgram> = None;
-        let mut ast: Result<Spanned<File>, ParseError> = match surface_parse_result {
-            Err(e) => Err(e),
+        match surface_parse_result {
+            Err(_e) => {
+                // Fatal parse error already captured in fatal_parse_error above
+            }
             Ok(mut program) => {
                 // Expand macros on SurfaceProgram (Surface-based API, consistent with all other
                 // production entry points).
@@ -102,17 +108,15 @@ impl DocumentState {
                     Ok(_) => {}
                     Err(e) => {
                         // Macro expansion error — convert to parse error and return early
+                        let expansion_error = crate::parser::ParseError {
+                            message: format!("macro expansion error: {}", e),
+                            span: None,
+                        };
                         return Self {
                             text: text.clone(),
-                            ast: Err(crate::parser::ParseError {
-                                message: format!("macro expansion error: {}", e),
-                                span: None,
-                            }),
+                            fatal_parse_error: Some(expansion_error.clone()),
                             surface: None,
-                            parse_errors: vec![crate::parser::ParseError {
-                                message: format!("macro expansion error: {}", e),
-                                span: None,
-                            }],
+                            parse_errors: vec![expansion_error],
                             type_errors: vec![],
                             type_diagnostics: vec![],
                             eval_errors: vec![],
@@ -130,36 +134,29 @@ impl DocumentState {
                 // Variable resolution pass (Phase 1 of arena allocation strategy).
                 let _resolution_table = crate::resolve::resolve_surface_program(&program);
 
-                // Capture the expanded+desugared SurfaceProgram before lowering.
-                // The imports API now operates on SurfaceProgram directly.
+                // Capture the expanded+desugared SurfaceProgram.
+                // The imports API and type checker now operate on SurfaceProgram directly.
                 surface = Some(program.clone());
 
-                // Lower SurfaceProgram to File for the remaining passes.
-                Ok(crate::ast_convert::surface_program_to_file(&program))
-            }
-        };
-
-        if let Ok(file) = ast {
-            // Run type checker (advisory), collecting the span-to-type map for hover.
-            // Seed the type environment with prelude types and resolved includes via the
-            // shared imports module to suppress false "undefined variable" errors.
-            // When no_fs is set, skip include resolution in the type checker too — passing
-            // None suppresses all $include path traversal while still seeding prelude types.
-            let type_base_dir = if eval_ctx.config.no_fs {
-                None
-            } else {
-                base_dir
-            };
-            // Pass the eval context's cap_std Dir so that %pwd file reads use RESOLVE_BENEATH
-            // semantics (kernel-level path confinement) instead of plain std::fs calls.
-            let type_cap_dir = &eval_ctx.config.base_dir;
-            if let Some(ref prog) = surface {
+                // Run type checker (advisory), collecting the span-to-type map for hover.
+                // Seed the type environment with prelude types and resolved includes via the
+                // shared imports module to suppress false "undefined variable" errors.
+                // When no_fs is set, skip include resolution in the type checker too — passing
+                // None suppresses all $include path traversal while still seeding prelude types.
+                let type_base_dir = if eval_ctx.config.no_fs {
+                    None
+                } else {
+                    base_dir
+                };
+                // Pass the eval context's cap_std Dir so that %pwd file reads use RESOLVE_BENEATH
+                // semantics (kernel-level path confinement) instead of plain std::fs calls.
+                let type_cap_dir = &eval_ctx.config.base_dir;
                 let (seeded_env, include_bindings) =
-                    crate::imports::build_type_env_with_cap(prog, type_base_dir, type_cap_dir);
+                    crate::imports::build_type_env_with_cap(&program, type_base_dir, type_cap_dir);
                 let (errs, mut map, docs, smap, tc_diagnostics) =
-                    crate::typecheck::typecheck_surface_program(prog, seeded_env);
+                    crate::typecheck::typecheck_surface_program(&program, seeded_env);
                 // Post-pass: inject precise Record types for [include %cap "path"] expressions.
-                crate::imports::apply_include_type_post_pass(prog, &include_bindings, &mut map);
+                crate::imports::apply_include_type_post_pass(&program, &include_bindings, &mut map);
                 type_errors = errs;
                 type_map = map;
                 doc_map = docs;
@@ -167,34 +164,32 @@ impl DocumentState {
                 // Store type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …)
                 // so that diagnostics_for() can publish them as LSP diagnostics with correct severity.
                 type_diagnostics = tc_diagnostics;
+
+                // Build the LSP eval environment, mirroring what main.rs does at startup.
+                // The type checker gets runtime percent-vars via build_type_env(); we inject
+                // real DirCap values here so the evaluator can resolve [include %libdir ...]
+                // and [include %pwd ...] without spurious E002 errors.
+                // Evaluation intentionally skipped in LSP context.
+                //
+                // The type checker (above) provides everything LSP features need: type_map
+                // for hover, doc_map for docs, scheme_map for constraints, type_errors for
+                // diagnostics. Running the evaluator here causes false-positive diagnostics
+                // for any program that uses caps (%pwd, %nc, etc.) because the LSP cannot
+                // supply real capability values — file I/O, network, and env access all fail
+                // with misleading errors (E080 file-not-found, E002 undefined-var, etc.).
+                //
+                // If pure-eval diagnostics are added in future, gate them on the document
+                // declaring no caps and using no % variables.
+                //
+                // Historical note: Prior to security-sprint, this code constructed DirPerms::full()
+                // DirCaps for %pwd and %libdir, then immediately discarded them. That construction
+                // has been removed — the LSP does not evaluate code, so eval env setup is unnecessary.
             }
-
-            // Build the LSP eval environment, mirroring what main.rs does at startup.
-            // The type checker gets runtime percent-vars via build_type_env(); we inject
-            // real DirCap values here so the evaluator can resolve [include %libdir ...]
-            // and [include %pwd ...] without spurious E002 errors.
-            // Evaluation intentionally skipped in LSP context.
-            //
-            // The type checker (above) provides everything LSP features need: type_map
-            // for hover, doc_map for docs, scheme_map for constraints, type_errors for
-            // diagnostics. Running the evaluator here causes false-positive diagnostics
-            // for any program that uses caps (%pwd, %nc, etc.) because the LSP cannot
-            // supply real capability values — file I/O, network, and env access all fail
-            // with misleading errors (E080 file-not-found, E002 undefined-var, etc.).
-            //
-            // If pure-eval diagnostics are added in future, gate them on the document
-            // declaring no caps and using no % variables.
-            //
-            // Historical note: Prior to security-sprint, this code constructed DirPerms::full()
-            // DirCaps for %pwd and %libdir, then immediately discarded them. That construction
-            // has been removed — the LSP does not evaluate code, so eval env setup is unnecessary.
-
-            ast = Ok(file);
         }
 
         Self {
             text,
-            ast,
+            fatal_parse_error,
             surface,
             parse_errors,
             type_errors,
@@ -225,10 +220,7 @@ impl DocumentState {
         // LSP features (hover, diagnostics) will analyze blocks on-demand
         Self {
             text,
-            ast: Err(ParseError {
-                message: "markdown file (no single AST)".to_string(),
-                span: None,
-            }),
+            fatal_parse_error: None, // Markdown files don't have parse errors at the document level
             surface: None,
             parse_errors: vec![],
             type_errors: vec![],
@@ -460,9 +452,9 @@ pub struct DocumentStore {
     base_eval_ctx: Arc<crate::eval::EvalContext>,
     /// Include dependency graph for cross-file resolution.
     pub include_graph: IncludeGraph,
-    /// Parsed prelude AST (for go-to-definition in stdlib functions).
+    /// Parsed prelude Surface AST (for go-to-definition in stdlib functions).
     /// Created once on construction by parsing the embedded prelude source.
-    prelude_ast: Option<Spanned<File>>,
+    prelude_surface: Option<SurfaceProgram>,
 }
 
 impl DocumentStore {
@@ -506,9 +498,9 @@ impl DocumentStore {
         // Parse the embedded prelude source once for go-to-definition support.
         // If parsing fails, store None — prelude go-to-definition will be unavailable
         // but other LSP features (hover on user code, local definitions, etc.) still work.
-        let prelude_ast = {
+        let prelude_surface = {
             let prelude_source = include_str!("../../stdlib/prelude.llt");
-            crate::parser::parse(prelude_source).ok()
+            crate::parser::parse(prelude_source).ok().map(|o| o.program)
         };
 
         Ok(Self {
@@ -516,8 +508,7 @@ impl DocumentStore {
             stdlib_env,
             base_eval_ctx,
             include_graph: HashMap::new(),
-            prelude_ast: prelude_ast
-                .map(|o| crate::ast_convert::surface_program_to_file(&o.program)),
+            prelude_surface,
         })
     }
 
@@ -646,9 +637,9 @@ impl DocumentStore {
         self.docs.get(uri)
     }
 
-    /// Get the parsed prelude AST, if available.
-    pub fn prelude_ast(&self) -> Option<&Spanned<File>> {
-        self.prelude_ast.as_ref()
+    /// Get the parsed prelude Surface AST, if available.
+    pub fn prelude_surface(&self) -> Option<&SurfaceProgram> {
+        self.prelude_surface.as_ref()
     }
 
     /// Iterate over all open documents as `(uri, state)` pairs.
@@ -790,7 +781,7 @@ mod tests {
             &test_ctx(),
             None, // No base_dir for simple test
         );
-        assert!(state.ast.is_ok());
+        assert!(state.fatal_parse_error.is_none());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
     }
@@ -799,7 +790,7 @@ mod tests {
     fn test_document_state_parse_error() {
         let env = test_env();
         let state = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
-        assert!(state.ast.is_err());
+        assert!(state.fatal_parse_error.is_some());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
     }
@@ -808,7 +799,7 @@ mod tests {
     fn test_document_state_type_error() {
         let env = test_env();
         let state = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), None);
-        assert!(state.ast.is_ok());
+        assert!(state.fatal_parse_error.is_none());
         assert!(!state.type_errors.is_empty());
         // LSP skips eval — eval_errors always empty; type_errors covers the diagnostic.
         assert!(state.eval_errors.is_empty());
@@ -818,7 +809,7 @@ mod tests {
     fn test_document_state_eval_error() {
         let env = test_env();
         let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
-        assert!(state.ast.is_ok());
+        assert!(state.fatal_parse_error.is_none());
         assert!(!state.type_errors.is_empty()); // undefined variable caught by type checker
                                                 // LSP skips eval — eval_errors always empty.
         assert!(state.eval_errors.is_empty());
@@ -832,7 +823,7 @@ mod tests {
         store.update_document(url.clone(), "[x: 1]".to_string());
         let doc = store.get(&url).unwrap();
         assert_eq!(doc.text, "[x: 1]");
-        assert!(doc.ast.is_ok());
+        assert!(doc.fatal_parse_error.is_none());
     }
 
     #[test]
@@ -1022,7 +1013,7 @@ Some prose.
         let ctx = test_ctx();
         let markdown = "# Just prose, no code blocks";
         let state = DocumentState::new_markdown(markdown.to_string(), &env, &ctx, None);
-        assert!(state.ast.is_err());
+        assert!(state.fatal_parse_error.is_some());
         assert_eq!(state.literate_blocks.len(), 0);
     }
 }

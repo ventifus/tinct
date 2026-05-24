@@ -8,7 +8,7 @@ use lsp_types::{
 use std::sync::Arc;
 
 use crate::ast::{
-    File, Span, Spanned, SurfaceDeclaration, SurfaceExpression, SurfaceItem, SurfaceNode,
+    Span, SurfaceDeclaration, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
 };
 use crate::error::{render_span_snippet, DiagnosticLevel, TypeDiagnostic};
 use crate::lsp::convert::llt_span_to_lsp_range;
@@ -45,8 +45,8 @@ pub fn hover_at(
         // doc.type_map is empty for markdown documents (type-checking runs per-block,
         // not at document level). We must re-run here to populate hover type info.
         let block_parsed = crate::parser::parse(&block.code).ok()?;
-        // Expand macros on SurfaceProgram (before conversion to File), matching the
-        // pipeline invariant (expand → desugar → surface_program_to_file).
+        // Expand macros on SurfaceProgram, matching the
+        // pipeline invariant (expand → desugar → resolve → typecheck).
         let mut program = block_parsed.program.clone();
         crate::expand::expand_surface_program(
             &mut program,
@@ -54,7 +54,7 @@ pub fn hover_at(
             &eval_ctx.config.base_dir,
         )
         .ok()?;
-        // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+        // Desugar $_ implicit lambdas on SurfaceProgram
         crate::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let _resolution_table = crate::resolve::resolve_surface_program(&program);
@@ -1025,7 +1025,7 @@ pub fn definition_at(
     doc_url: &Uri,
     offset: usize,
     include_graph: &crate::lsp::document::IncludeGraph,
-    prelude_ast: Option<&Spanned<File>>,
+    prelude_surface: Option<&SurfaceProgram>,
 ) -> Option<(Uri, Span)> {
     let surface = match &doc.surface {
         Some(s) => s,
@@ -1083,14 +1083,18 @@ pub fn definition_at(
         }
     }
 
-    // Search prelude AST (if available)
-    if let Some(prelude_file) = prelude_ast {
-        if let Some(span) = prelude_file.node.documents.iter().find_map(|document| {
-            document.node.expressions.iter().find_map(|expr| {
-                // Convert old AST Expr to Surface for compatibility
-                let surface_node = crate::ast_convert::expr_to_surface_node(expr);
-                find_key_definition(&surface_node, &name)
-            })
+    // Search prelude Surface AST (if available)
+    if let Some(prelude_prog) = prelude_surface {
+        if let Some(span) = prelude_prog.documents.iter().find_map(|document| {
+            document
+                .node
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    SurfaceItem::Expr(node) => Some(node),
+                    SurfaceItem::Decl(_) => None,
+                })
+                .find_map(|node| find_key_definition(node, &name))
         }) {
             // Resolve the prelude URI via find_libdir_path().join("prelude.llt")
             if let Some(libdir_path) = crate::find_libdir_path() {
@@ -1358,8 +1362,8 @@ pub fn diagnostics_for(
                     }
 
                     // Type errors
-                    // Expand macros on SurfaceProgram (before conversion to File), matching the
-                    // pipeline invariant (expand → desugar → surface_program_to_file).
+                    // Expand macros on SurfaceProgram, matching the
+                    // pipeline invariant (expand → desugar → resolve → typecheck).
                     let mut program = output.program.clone();
                     if let Err(e) = crate::expand::expand_surface_program(
                         &mut program,
@@ -1389,7 +1393,7 @@ pub fn diagnostics_for(
                         diagnostics.push(diag);
                         continue;
                     }
-                    // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
+                    // Desugar $_ implicit lambdas on SurfaceProgram
                     crate::desugar::desugar_surface_program(&mut program);
                     // Variable resolution pass (Phase 1 of arena allocation strategy).
                     let _resolution_table = crate::resolve::resolve_surface_program(&program);
@@ -1434,7 +1438,7 @@ pub fn diagnostics_for(
 
     // Regular .llt file path
     // Fatal parse error (lexer failure or unclosed brackets) -> Error severity
-    if let Err(ref err) = doc.ast {
+    if let Some(ref err) = doc.fatal_parse_error {
         diagnostics.push(parse_error_to_diagnostic(err, source));
     }
 
@@ -2252,16 +2256,16 @@ mod tests {
         let doc = DocumentState::new(source.to_string(), &env, &ctx, None);
         let uri = test_uri();
 
-        // Parse the prelude AST
+        // Parse the prelude Surface AST
         let prelude_source = include_str!("../../stdlib/prelude.llt");
-        let prelude_ast = crate::parser::parse(prelude_source)
+        let prelude_surface = crate::parser::parse(prelude_source)
             .ok()
-            .map(|o| crate::ast_convert::surface_program_to_file(&o.program));
+            .map(|o| o.program);
 
         // Offset 6 is on '$map'
         // "[call $map [fn [let x] x] [1 2 3]]"
         //  0123456789...
-        let def_result = definition_at(&doc, &uri, 6, &test_include_graph(), prelude_ast.as_ref());
+        let def_result = definition_at(&doc, &uri, 6, &test_include_graph(), prelude_surface.as_ref());
 
         // Should find the definition in the prelude
         assert!(

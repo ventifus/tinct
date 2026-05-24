@@ -188,7 +188,7 @@ fn handle_request(
             let location = if let Some(doc) = store.get(&uri) {
                 // Document is open in editor: use cached state
                 lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                    definition_at(doc, &uri, offset, &store.include_graph, store.prelude_ast()).map(
+                    definition_at(doc, &uri, offset, &store.include_graph, store.prelude_surface()).map(
                         |(target_uri, span)| {
                             // Determine source text for converting span to range:
                             // - Document-local: use doc.text
@@ -220,7 +220,7 @@ fn handle_request(
                             &uri,
                             offset,
                             &store.include_graph,
-                            store.prelude_ast(),
+                            store.prelude_surface(),
                         )
                         .map(|(target_uri, span)| {
                             // For unopened documents, read target text from disk if needed
