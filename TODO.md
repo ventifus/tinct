@@ -127,8 +127,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Decomposed tasks (order matters — each step must compile):**
 
 **Phase 1 — Survey + map SurfaceExpression variants to Expr equivalents:**
-- [ ] Read `src/ast_dict.rs:70-1500` in full; catalog every `Expr::*` variant handled in `ast_to_dict_expr`; map each to its `SurfaceExpression::*` equivalent. Some variants don't exist in Surface (e.g., `Expr::Let` is desugared; `Expr::Desugar` is internal). Document gaps.
-- [ ] Identify which Surface variants exist in `src/ast.rs` vs. which need new handling. Some dict keys (like `rest`, `decl`) may need special casing.
+- [x] Read `src/ast_dict.rs:70-1500` in full; 24 direct 1:1 Expr→SurfaceExpression mappings found, 7 moved to SurfaceDeclaration, 4 dict_to_ast gaps, schema stable. Planning doc: `doc/whatif/plans/ast-dict-surface-migration-notes.md` [commit 7f1f721]
+- [x] Identify Surface variants: 9-step implementation order documented; `SurfaceItem::Decl` dispatch needed for declarations [commit 7f1f721]
 
 **Phase 2 — Rewrite ast_to_dict_expr → surface_node_to_dict_inner:**
 - [ ] In `ast_dict.rs`, add `fn surface_node_to_dict_inner(node: &Arc<SurfaceNode>, depth: u32) -> Value` that walks `SurfaceExpression` variants natively. Start with the most common: `Dict`, `Fn`, `Call`, `VarRef`, `Str`, `Int`, `Float`, `Bool`. Use `todo!()` for less-common variants initially.
