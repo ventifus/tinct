@@ -2207,7 +2207,6 @@ pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Arc<Mutex<crate::arena:
 /// cache is intentionally persistent across multiple evaluations to amortize the cost of
 /// stdlib loading. Only test harnesses that run hundreds of independent evaluations in
 /// the same process should call this.
-#[cfg(test)]
 pub fn clear_stdlib_cache() {
     STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = None);
 }

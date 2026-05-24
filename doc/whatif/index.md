@@ -13,6 +13,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Type::Variant for Transport Constants](type-variant.md) | **Superseded.** Use nominal variants: `[union Transport [Tcp] [Udp] [Quic] [Unix]]`. See `transport-typing` sprint in TODO.md. |
 | [Precise HKT Types for map/filter/reduce/each](hkt-map-filter-types.md) | **Superseded.** Implementation detail only; see `hkt-map-filter-types` sprint in TODO.md. |
+| [Unify Type-Checker and Runtime Type Judgments](typecheck-runtime-unification.md) | Eliminate divergence between static and runtime type checking via: single builtin registration source, variant-indexed overloading, unified `value_matches_type = is_subtype(ground(v), T)`, and universal `TypeAnnotationTable` population |
 | [Schema-Directed from-json](schema-directed-from-json.md) | `[from-json @[host: Str port: Int] input]` — typed JSON parse returning specific Record type; boundary guard at parse site; schema doubles as documentation |
 | [Guardedness](guardedness.md) | Static detection of non-productive circular data dependencies; separates legitimate corecursion (`[cons 1 ones]`) from diverging definitions (`[x: [+ x 1]]`); assigns `Never` via BAS to rejected bindings; enables infinite lazy structures as a first-class language feature |
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |

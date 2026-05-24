@@ -140,7 +140,7 @@ pub async fn eval_surface_document(
                     _ => ("--cap", format!("{}=VALUE", cap_name)),
                 };
 
-                let auto_injected_caps = ["pwd", "libdir", "stdin"];
+                let auto_injected_caps = ["cwd", "libdir", "stdin"];
                 let is_auto_injected = auto_injected_caps.contains(&cap_name.as_str());
 
                 let mut message = format!(
@@ -244,7 +244,10 @@ pub async fn eval_surface_document(
                         let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
                         let strict_thunk =
                             Arc::new(Thunk::new_materialized(forced_value, node_span));
-                        child_env.write().unwrap().insert(name.to_string(), strict_thunk);
+                        child_env
+                            .write()
+                            .unwrap()
+                            .insert(name.to_string(), strict_thunk);
                     }
                 }
             }

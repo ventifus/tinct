@@ -121,10 +121,9 @@ On re-entry (after build gate or sprint-reviewer failure), only implement fixes 
 
 Confirm the codebase is clean before review:
 1. Run `just fmt` — this auto-fixes formatting in place, no loop-back needed
-2. Run `just build` — if errors or warnings, go back to 2a to fix
-3. Run `just test` — if test failures, go back to 2a to fix
+2. Run `just ci` — runs `cargo check`, `just test`, and `just lint` in sequence; if any fail, go back to 2a to fix
 
-All three must pass with zero issues before proceeding.
+Both must pass with zero issues before proceeding.
 
 #### 2c: Sprint Review (Gate)
 
@@ -190,7 +189,7 @@ If ANY agent issued `REQUEST_CHANGES` (i.e., any fix-now findings exist):
 
 1. Dispatch a `fix-reviewer` agent — brief it to read `.tmp/sprint-{slug}.md` `## Review Findings` for the panel's findings. It evaluates each finding, implements valid fixes, and updates the sprint file's progress. Do NOT implement fixes yourself.
 2. Mark fixed findings as `FIXED` in `.tmp/sprint-{slug}.md`
-3. **Build gate**: run `just fmt`, then `just build`, then `just test` — fix any issues
+3. **Build gate**: run `just fmt`, then `just ci` — fix any issues
 4. Delete `.tmp/sprint-review-{slug}.md` so panel agents review fresh code, not stale findings
 5. Re-dispatch the same agent set from Step 3a (via `subagent_type`). Brief each to: run `git diff HEAD` for the current sprint diff, read `.tmp/sprint-{slug}.md` `## Review Findings` for remaining fix-now items, and use their Sprint Panel Review output format
 6. Repeat until all specialist agents issue `APPROVE` and no in-scope findings remain
@@ -237,7 +236,7 @@ Valid finding statuses: `TODO`, `FIXED`, `KNOWN ISSUE`
 ## Key Principles
 
 - **Inner loop gates panel**: sprint-reviewer must APPROVE before the specialist panel runs. No point dispatching all specialists if the generalist already sees fix-now problems.
-- **Build gate before every review**: `just fmt` + `just build` + `just test` must all pass before dispatching any reviewer. Don't waste agent time reviewing code that doesn't compile.
+- **Build gate before every review**: `just fmt` + `just ci` must both pass before dispatching any reviewer. Don't waste agent time reviewing code that doesn't compile or lint.
 - **Relevant specialists review every sprint**: once past the sprint-reviewer gate, matched specialists plus always-dispatched test-crafter, integration-verifier, and computer-scientist review the full sprint diff. Dispatch is file-based — agents whose domains weren't touched are skipped.
 - **Two-bucket triage**: findings either get fixed now (sprint-scope) or go to TODO.md (genuinely future work). Nit-level findings are always fix-now — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
 - **Never halt**: stuck detection records KNOWN ISSUE and continues. The sprint always completes.

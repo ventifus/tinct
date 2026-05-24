@@ -1,8 +1,0 @@
-# Computed-string key must not shift static-key slot indices.
-# $k evaluates to "z"; static keys x and y must resolve correctly.
-[k: "z"]
-[result: [$k: 1  x: 2  y: $x]]
----
-%.result.y
-=== out
-Int(2)

@@ -1343,7 +1343,7 @@ fn no_fs_flag_blocks_include() {
 }
 
 #[test]
-fn no_fs_suppresses_pwd_injection() {
+fn no_fs_suppresses_cwd_injection() {
     // --no-fs must suppress %cwd injection; code that references %cwd should
     // fail with "undefined variable: %cwd", not succeed.
     let (path, _dir) = write_temp_llt("no_fs_suppresses_pwd", "%cwd");

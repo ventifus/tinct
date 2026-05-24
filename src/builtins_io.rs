@@ -3892,27 +3892,26 @@ fn build_tls_config(
     }
 
     // Load mozilla-roots if requested
-    let mozilla_roots = if let Some(thunk_id) =
-        opts_dict.get(&crate::value::Key::String("mozilla-roots".into()))
-    {
-        let thunk = ctx.get_thunk(*thunk_id);
-        let val = materialize(&thunk, Some(&opts_span), ctx)?;
-        match val {
-            Value::Bool(b) => b,
-            Value::Dict(ref d) if d.is_empty() => false, // Null
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect opts.mozilla-roots".to_string(),
-                    "Bool",
-                    other.type_name(),
-                    opts_span,
-                )
-                .into())
+    let mozilla_roots =
+        if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("mozilla-roots".into())) {
+            let thunk = ctx.get_thunk(*thunk_id);
+            let val = materialize(&thunk, Some(&opts_span), ctx)?;
+            match val {
+                Value::Bool(b) => b,
+                Value::Dict(ref d) if d.is_empty() => false, // Null
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "tls-connect opts.mozilla-roots".to_string(),
+                        "Bool",
+                        other.type_name(),
+                        opts_span,
+                    )
+                    .into())
+                }
             }
-        }
-    } else {
-        false
-    };
+        } else {
+            false
+        };
 
     if mozilla_roots {
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -3945,10 +3944,8 @@ fn build_tls_config(
     }
 
     // Build config with client auth
-    let has_client_cert =
-        opts_dict.contains_key(&crate::value::Key::String("client-cert".into()));
-    let has_client_key =
-        opts_dict.contains_key(&crate::value::Key::String("client-key".into()));
+    let has_client_cert = opts_dict.contains_key(&crate::value::Key::String("client-cert".into()));
+    let has_client_key = opts_dict.contains_key(&crate::value::Key::String("client-key".into()));
 
     let mut config = if has_client_cert || has_client_key {
         if !has_client_cert || !has_client_key {
@@ -4538,9 +4535,7 @@ pub(crate) fn builtin_tls_layer(
 
         // Validate SPKI pins if provided
         if let Value::Dict(opts_map) = &opts_val {
-            if let Some(pins_thunk_id) =
-                opts_map.get(&crate::value::Key::String("pins".into()))
-            {
+            if let Some(pins_thunk_id) = opts_map.get(&crate::value::Key::String("pins".into())) {
                 let pins_thunk = ctx.get_thunk(*pins_thunk_id);
                 let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
                 validate_spki_pins(&shared_stream.borrow().conn, &pins_val, call_span, &ctx)?;
@@ -4653,13 +4648,12 @@ pub(crate) fn builtin_tls_peer_cert(
 
                 // Extract the _raw_der bytes from the dict
                 let raw_der_thunk_id =
-                    dict.get(&Key::String("_raw_der".into()))
-                        .ok_or_else(|| {
-                            EvalError::user_error(
-                                "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
-                                call_span,
-                            )
-                        })?;
+                    dict.get(&Key::String("_raw_der".into())).ok_or_else(|| {
+                        EvalError::user_error(
+                            "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
+                            call_span,
+                        )
+                    })?;
 
                 // Get the thunk and materialize it
                 let raw_der_thunk = ctx.get_thunk(*raw_der_thunk_id);

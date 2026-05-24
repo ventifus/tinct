@@ -1512,7 +1512,10 @@ fn eval_core_expr<'a>(
                             if let Key::String(name) = key {
                                 if static_key_set.contains(name.as_ref()) {
                                     let val_thunk = ctx.get_thunk(val_thunk_id);
-                                    child_env.write().unwrap().insert(name.to_string(), val_thunk);
+                                    child_env
+                                        .write()
+                                        .unwrap()
+                                        .insert(name.to_string(), val_thunk);
                                 }
                             }
                         }

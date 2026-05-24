@@ -4113,38 +4113,77 @@ mod deep_tests {
     #[test]
     fn test_max_continuation_stack_enforced() {
         // Test that MAX_CONTINUATION_STACK=2048 is enforced.
-        // Create a deeply nested expression that exceeds 2048 continuation frames
-        // and verify it produces a depth-exceeded error.
         //
-        // Strategy: Use eval_source to evaluate a deeply nested function call chain.
-        // Each nested call adds continuation frames (Memoize, PendingCallDispatch, etc.).
-        // Build a chain that exceeds 2048 depth.
+        // Build a chain of PendingBuiltin thunks: each forces the next as an arg,
+        // creating ~depth Memoize+BuiltinForceArg continuations. At 2100 levels
+        // the continuation stack exceeds the 2048 limit.
         //
-        // Pattern: [fn [x] [if [= x 0] 0 [call $recur [- x 1]]]]
-        // But for depth testing, we need to actually invoke the recursion.
-        // Use a simpler approach: nested dict access chains that force materialization.
+        // Direct source parsing can't build this depth (lexer limits to 256 brackets),
+        // so we construct thunks programmatically.
         //
-        // Actually, the simplest way is to use deeply nested function calls via
-        // a recursive function that doesn't tail-call optimize away.
+        // Uses the iterative CEK `run()` function (not the recursive `materialize()`)
+        // to exercise the continuation stack limit without Rust stack overflow.
+        //
+        // Runs in a large-stack thread because 2100-deep Arc<Thunk> drop chains
+        // overflow the default test thread stack.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                use crate::ast::Span;
+                use crate::value::{Thunk, Value};
+                use std::sync::Arc;
 
-        // Build: [fn [n] [if [= n 0] 0 [+ 1 [call $self [- n 1]]]]]
-        // Call with n=2100 (exceeds MAX_CONTINUATION_STACK=2048)
-        let input = r#"
-            [f: [fn [self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
-             result: [call f f 2100]]
-        "#;
+                let ctx = test_ctx();
+                let origin = Span::origin();
 
-        let result = crate::eval_source(input);
-        assert!(
-            result.is_err(),
-            "Expected depth-exceeded error for 2100-depth recursion"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("maximum evaluation depth exceeded") || err.contains("[E040]"),
-            "Error should be E040 (maximum evaluation depth exceeded), got: {}",
-            err
-        );
+                // Get the $+ builtin definition directly from the standard builtins list
+                // (not from stdlib_env, which wraps arithmetic ops with operator dispatch).
+                let builtin_def = crate::builtins::standard_builtins()
+                    .into_iter()
+                    .find(|b| b.name == "+")
+                    .expect("$+ must exist in standard_builtins()");
+
+                // Build chain: thunk_0 = Materialized(Int(0))
+                // thunk_i = PendingBuiltin($+, [thunk_{i-1}, 1])
+                let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin));
+
+                for _ in 0..2100 {
+                    let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin));
+                    let thunk = Arc::new(Thunk::new_pending_builtin(
+                        builtin_def.clone(),
+                        vec![Arc::clone(&prev), one],
+                        None,
+                        origin,
+                        None,
+                        Arc::clone(&ctx),
+                    ));
+                    prev = thunk;
+                }
+
+                // Force `prev` via the iterative CEK machine to exercise the continuation
+                // stack limit (check_stack_depth in force_step).
+                let result = crate::async_rt::block_on_anywhere(super::run(
+                    super::Action::Materialize {
+                        thunk: Arc::clone(&prev),
+                        mat_span: None,
+                    },
+                    &ctx,
+                ));
+
+                assert!(
+                    result.is_err(),
+                    "Expected depth-exceeded error for 2100-deep PendingBuiltin chain"
+                );
+                let err = format!("{}", result.unwrap_err());
+                assert!(
+                    err.contains("maximum evaluation depth exceeded") || err.contains("[E040]"),
+                    "Error should be E040 (maximum evaluation depth exceeded), got: {}",
+                    err
+                );
+            })
+            .expect("thread spawn failed")
+            .join()
+            .expect("test thread panicked");
     }
 
     #[test]
@@ -4154,46 +4193,94 @@ mod deep_tests {
         //
         // DepthExceeded is the canonical non-cacheable error: the CEK machine cannot
         // memoize it on the thunk because a retry at shallower depth might succeed.
-        // Both calls to eval_source here re-evaluate fresh source (no shared thunk
-        // state between runs), but the test verifies the error surface is stable:
-        // both calls report a depth/limit error, not a crash or silent success.
+        // Both calls to `run` here force a fresh thunk chain, verifying the error
+        // surface is stable: both calls report a depth/limit error, not a crash or
+        // silent success.
         //
         // The existing test_restore_state_pending_builtin (line 2569) covers the
         // RestoreState::PendingBuiltin internal restore mechanism directly.
+        //
+        // Uses a large-stack thread because 2100-deep Arc<Thunk> drop chains
+        // overflow the default test thread stack.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                use crate::ast::Span;
+                use crate::value::{Thunk, Value};
+                use std::sync::Arc;
 
-        let input = r#"
-            [f: [fn [self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
-             result: [call f f 2100]]
-        "#;
+                let ctx = test_ctx();
+                let origin = Span::origin();
 
-        // First call — should hit depth limit
-        let result1 = crate::eval_source(input);
-        assert!(
-            result1.is_err(),
-            "First call: expected depth-exceeded error, got: {:?}",
-            result1
-        );
-        let err1 = result1.unwrap_err();
-        assert!(
-            err1.contains("maximum evaluation depth exceeded") || err1.contains("[E040]"),
-            "First call: error should mention depth limit, got: {}",
-            err1
-        );
+                let builtin_def = crate::builtins::standard_builtins()
+                    .into_iter()
+                    .find(|b| b.name == "+")
+                    .expect("$+ must exist in standard_builtins()");
 
-        // Second call — same input should produce the same class of error (not a panic
-        // or a different error kind), confirming the non-cacheable error path is stable.
-        let result2 = crate::eval_source(input);
-        assert!(
-            result2.is_err(),
-            "Second call: expected depth-exceeded error, got: {:?}",
-            result2
-        );
-        let err2 = result2.unwrap_err();
-        assert!(
-            err2.contains("maximum evaluation depth exceeded") || err2.contains("[E040]"),
-            "Second call: error should mention depth limit, got: {}",
-            err2
-        );
+                // Helper: build a 2100-deep PendingBuiltin thunk chain.
+                let build_chain = |def: &crate::value::BuiltinDef,
+                                   ctx: &Arc<crate::eval::EvalContext>|
+                 -> Arc<Thunk> {
+                    let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin));
+                    for _ in 0..2100 {
+                        let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin));
+                        let thunk = Arc::new(Thunk::new_pending_builtin(
+                            def.clone(),
+                            vec![Arc::clone(&prev), one],
+                            None,
+                            origin,
+                            None,
+                            Arc::clone(ctx),
+                        ));
+                        prev = thunk;
+                    }
+                    prev
+                };
+
+                // First call — should hit depth limit
+                let chain1 = build_chain(&builtin_def, &ctx);
+                let result1 = crate::async_rt::block_on_anywhere(super::run(
+                    super::Action::Materialize {
+                        thunk: Arc::clone(&chain1),
+                        mat_span: None,
+                    },
+                    &ctx,
+                ));
+                assert!(
+                    result1.is_err(),
+                    "First call: expected depth-exceeded error"
+                );
+                let err1 = format!("{}", result1.unwrap_err());
+                assert!(
+                    err1.contains("maximum evaluation depth exceeded") || err1.contains("[E040]"),
+                    "First call: error should mention depth limit, got: {}",
+                    err1
+                );
+
+                // Second call — fresh chain, same pattern. Should produce the same class
+                // of error, confirming the non-cacheable error path is stable.
+                let chain2 = build_chain(&builtin_def, &ctx);
+                let result2 = crate::async_rt::block_on_anywhere(super::run(
+                    super::Action::Materialize {
+                        thunk: Arc::clone(&chain2),
+                        mat_span: None,
+                    },
+                    &ctx,
+                ));
+                assert!(
+                    result2.is_err(),
+                    "Second call: expected depth-exceeded error"
+                );
+                let err2 = format!("{}", result2.unwrap_err());
+                assert!(
+                    err2.contains("maximum evaluation depth exceeded") || err2.contains("[E040]"),
+                    "Second call: error should mention depth limit, got: {}",
+                    err2
+                );
+            })
+            .expect("thread spawn failed")
+            .join()
+            .expect("test thread panicked");
     }
 
     #[test]
@@ -4256,13 +4343,13 @@ mod deep_tests {
         assert!(result.is_ok(), "TypeAssert should succeed: {:?}", result);
         assert_eq!(result.unwrap(), r#"Dict({"x": Int(42)})"#);
 
-        // Case with type mismatch: `[x@Int: "hello"]` — dict key annotation says x is Int,
+        // Case with type mismatch: `[@Int "hello"]` — standalone TypeAssert says value is Int,
         // but the value is a String. At runtime this triggers a TypeAssert check (E011).
-        let input_mismatch = r#"[x@Int: "hello"]"#;
+        let input_mismatch = r#"[@Int "hello"]"#;
         let result_mismatch = crate::eval_source(input_mismatch);
         assert!(
             result_mismatch.is_err(),
-            "TypeAssert mismatch [x@Int: \"hello\"] should fail with E011: {:?}",
+            "TypeAssert [@Int \"hello\"] should fail with E011: {:?}",
             result_mismatch
         );
         let err_msg = result_mismatch.unwrap_err();
@@ -4273,7 +4360,7 @@ mod deep_tests {
         );
 
         // Case with structural type annotation (record)
-        let input_record = "[user@[name: String]: [name: Alice]]";
+        let input_record = r#"[@[name: String] [name: "Alice"]]"#;
         let result_record = crate::eval_source(input_record);
         assert!(
             result_record.is_ok(),

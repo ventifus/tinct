@@ -61,7 +61,7 @@ Only edit TODO.md — do not create other files. If no changes are needed, move 
 ### Phase 4: Commit
 
 1. Check if there are any changes to commit (`git status --short`). If no changes, skip the commit.
-2. Run `just test` one final time to confirm everything is green
+2. Run `just ci` to confirm everything is green (cargo check + tests + lint)
 3. Stage all changes: `git add -u` for tracked files, then `git add -A --ignore-errors` to pick up any new files (gitignore already excludes .tmp/, .training/, etc.)
 4. Create a single commit. The sprint reports its slug and description — use them for the message:
    - Analysis + sprint: `"[slug]: [description]"`

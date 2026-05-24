@@ -522,9 +522,7 @@ pub fn typecheck_surface_program(
 /// source (TypeAssert spans are the span of the entire `[@Type expr]` expression).
 /// The value is the `NodeId` of the `Arc<SurfaceNode>` — stable as long as the
 /// SurfaceProgram is live.
-fn collect_type_assert_node_ids(
-    program: &SurfaceProgram,
-) -> HashMap<(usize, usize), NodeId> {
+fn collect_type_assert_node_ids(program: &SurfaceProgram) -> HashMap<(usize, usize), NodeId> {
     let mut map = HashMap::new();
     for doc_spanned in &program.documents {
         for item in &doc_spanned.node.items {
@@ -557,7 +555,12 @@ fn collect_type_assert_node_ids_from_node(
                 collect_type_assert_node_ids_from_node(&entry.node.value, map);
             }
         }
-        SurfaceExpression::Call { func, args, named_args, .. } => {
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
             collect_type_assert_node_ids_from_node(func, map);
             for arg in args {
                 collect_type_assert_node_ids_from_node(arg, map);
@@ -637,12 +640,13 @@ fn extract_resolved_types_from_file(file: &File) -> HashMap<(usize, usize), Type
 }
 
 /// Recursively walk an `Expr` tree collecting resolved TypeAssert types by span.
-fn extract_resolved_types_from_expr(
-    expr: &Spanned<Expr>,
-    map: &mut HashMap<(usize, usize), Type>,
-) {
+fn extract_resolved_types_from_expr(expr: &Spanned<Expr>, map: &mut HashMap<(usize, usize), Type>) {
     match &expr.node {
-        Expr::TypeAssert { expr: inner, resolved_type, .. } => {
+        Expr::TypeAssert {
+            expr: inner,
+            resolved_type,
+            ..
+        } => {
             if let Some(ty) = resolved_type.borrow().clone() {
                 let span = expr.span;
                 map.insert((span.start.offset, span.end.offset), ty);
@@ -657,7 +661,12 @@ fn extract_resolved_types_from_expr(
                 extract_resolved_types_from_expr(&entry.node.value, map);
             }
         }
-        Expr::Call { func, args, named_args, .. } => {
+        Expr::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
             extract_resolved_types_from_expr(func, map);
             for arg in args {
                 extract_resolved_types_from_expr(arg, map);
@@ -693,9 +702,7 @@ fn extract_resolved_types_from_expr(
                 extract_resolved_types_from_expr(&arm.body, map);
             }
         }
-        Expr::Quote(inner)
-        | Expr::Unquote(inner)
-        | Expr::UnquoteSplice(inner) => {
+        Expr::Quote(inner) | Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
             extract_resolved_types_from_expr(inner, map);
         }
         Expr::PatternDecl { bindings } | Expr::LetDecl { bindings } => {
@@ -4492,13 +4499,15 @@ fn check_open(
         // `false` for bare `name`; both are semantically equivalent in value position.
         let flag_name = match &flag_arg.node {
             Expr::VarRef { name, .. } => {
-                KNOWN_FLAGS.iter().find_map(|(flag, canonical)| {
-                    if name == flag {
-                        Some(*canonical)
-                    } else {
-                        None
-                    }
-                })
+                KNOWN_FLAGS.iter().find_map(
+                    |(flag, canonical)| {
+                        if name == flag {
+                            Some(*canonical)
+                        } else {
+                            None
+                        }
+                    },
+                )
             }
             _ => None,
         };

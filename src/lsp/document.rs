@@ -1013,7 +1013,9 @@ Some prose.
         let ctx = test_ctx();
         let markdown = "# Just prose, no code blocks";
         let state = DocumentState::new_markdown(markdown.to_string(), &env, &ctx, None);
-        assert!(state.fatal_parse_error.is_some());
+        // Markdown files don't produce a fatal_parse_error — the format is valid,
+        // it simply has no code blocks (the old `ast` field was Err for markdown).
+        assert!(state.fatal_parse_error.is_none());
         assert_eq!(state.literate_blocks.len(), 0);
     }
 }

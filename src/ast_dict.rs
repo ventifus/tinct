@@ -232,7 +232,10 @@ fn surface_node_to_thunk_id(
             );
         }
 
-        SurfaceExpression::DotAccess { expr: target, field } => {
+        SurfaceExpression::DotAccess {
+            expr: target,
+            field,
+        } => {
             variant_tag = "DotAccess";
             dict.insert(
                 Key::String("target".into()),
@@ -364,7 +367,10 @@ fn surface_node_to_thunk_id(
             );
         }
 
-        SurfaceExpression::TypeAssert { annotation, expr: inner } => {
+        SurfaceExpression::TypeAssert {
+            annotation,
+            expr: inner,
+        } => {
             variant_tag = "TypeAssert";
             dict.insert(
                 Key::String("annotation".into()),
@@ -477,12 +483,7 @@ fn surface_node_to_thunk_id(
             let bindings_dict: IndexMap<Key, ThunkId> = bindings
                 .iter()
                 .enumerate()
-                .map(|(i, b)| {
-                    Ok((
-                        Key::Int(i as i64),
-                        surface_node_to_thunk_id(b, opts, ctx)?,
-                    ))
-                })
+                .map(|(i, b)| Ok((Key::Int(i as i64), surface_node_to_thunk_id(b, opts, ctx)?)))
                 .collect::<EvalResult<IndexMap<_, _>>>()?;
             dict.insert(
                 Key::String("bindings".into()),
@@ -498,12 +499,7 @@ fn surface_node_to_thunk_id(
             let bindings_dict: IndexMap<Key, ThunkId> = bindings
                 .iter()
                 .enumerate()
-                .map(|(i, b)| {
-                    Ok((
-                        Key::Int(i as i64),
-                        surface_node_to_thunk_id(b, opts, ctx)?,
-                    ))
-                })
+                .map(|(i, b)| Ok((Key::Int(i as i64), surface_node_to_thunk_id(b, opts, ctx)?)))
                 .collect::<EvalResult<IndexMap<_, _>>>()?;
             dict.insert(
                 Key::String("bindings".into()),
@@ -799,7 +795,11 @@ fn surface_decl_to_thunk_id(
             );
         }
 
-        SurfaceDeclaration::SyntaxClass { name, pattern, message } => {
+        SurfaceDeclaration::SyntaxClass {
+            name,
+            pattern,
+            message,
+        } => {
             variant_tag = "SyntaxClass";
             dict.insert(
                 Key::String("name".into()),
@@ -1234,7 +1234,10 @@ fn dict_to_surface_node_inner(
         // ---- VarRef ----
         "var" | "VarRef" => {
             let name = get_string_field(&dict, "name", &["type"], ctx)?;
-            SurfaceExpression::VarRef { name, escaped: false }
+            SurfaceExpression::VarRef {
+                name,
+                escaped: false,
+            }
         }
 
         // ---- DotAccess ----
@@ -1243,9 +1246,11 @@ fn dict_to_surface_node_inner(
             let target = dict_to_surface_node_inner(&target_val, ctx)?;
             let field_val = get_field(&dict, "field", &["type"], ctx)?;
             let field = match field_val {
-                Value::String { ref source, start, end } => {
-                    DotKey::Ident(source[start..end].to_string())
-                }
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => DotKey::Ident(source[start..end].to_string()),
                 Value::Int(n) => DotKey::Int(n),
                 _ => {
                     return Err(AstError {
@@ -1254,7 +1259,10 @@ fn dict_to_surface_node_inner(
                     })
                 }
             };
-            SurfaceExpression::DotAccess { expr: target, field }
+            SurfaceExpression::DotAccess {
+                expr: target,
+                field,
+            }
         }
 
         // ---- Pipe ----
@@ -1297,13 +1305,21 @@ fn dict_to_surface_node_inner(
             let mut named_args = Vec::new();
             for (i, na_val) in named_args_list.into_iter().enumerate() {
                 let i_str = i.to_string();
-                named_args
-                    .push(dict_to_surface_named_arg(&na_val, &["named-args", &i_str], ctx)?);
+                named_args.push(dict_to_surface_named_arg(
+                    &na_val,
+                    &["named-args", &i_str],
+                    ctx,
+                )?);
             }
 
             let implied = get_bool_field(&dict, "implied", &["type"], ctx)?;
 
-            SurfaceExpression::Call { func, args, named_args, implied }
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                implied,
+            }
         }
 
         // ---- Fn ----
@@ -1328,7 +1344,12 @@ fn dict_to_surface_node_inner(
 
             let desugared = get_bool_field(&dict, "desugared", &["type"], ctx)?;
 
-            SurfaceExpression::Fn { return_ann, params, body, desugared }
+            SurfaceExpression::Fn {
+                return_ann,
+                params,
+                body,
+                desugared,
+            }
         }
 
         // ---- Unknown variant: hard error (all variants must be handled natively) ----
@@ -1436,7 +1457,14 @@ fn dict_to_surface_param(
 
     let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
 
-    Ok(Spanned::new(SurfaceParam { name, annotation, variadic }, span))
+    Ok(Spanned::new(
+        SurfaceParam {
+            name,
+            annotation,
+            variadic,
+        },
+        span,
+    ))
 }
 
 /// Convert a dict representation back to a SurfaceProgram.
@@ -3156,7 +3184,6 @@ fn dict_to_ast_from_dict(
         }
 
         // ---- Gap fills: variants emitted by expr_to_thunk_id but previously missing here ----
-
         "match" | "Match" => {
             let scrutinee_val = get_dict_field(dict, "scrutinee", &["type"], ctx)?;
             let scrutinee = Box::new(dict_to_ast(&scrutinee_val, ctx)?);
@@ -3221,9 +3248,11 @@ fn dict_to_ast_from_dict(
                             field_path: vec!["params".to_string(), i.to_string()],
                         })?;
                         match val {
-                            Value::String { ref source, start, end } => {
-                                param_names.push(source[start..end].to_string())
-                            }
+                            Value::String {
+                                ref source,
+                                start,
+                                end,
+                            } => param_names.push(source[start..end].to_string()),
                             _ => {
                                 return Err(AstError {
                                     message: format!("ClassDecl param {} must be String", i),
@@ -3286,10 +3315,8 @@ fn dict_to_ast_from_dict(
                 None => None,
             };
             // injective: optional bool (absent = false)
-            let resolver_injective =
-                get_optional_dict_field(dict, "injective", ctx)?.map_or(false, |v| {
-                    matches!(v, Value::Bool(true))
-                });
+            let resolver_injective = get_optional_dict_field(dict, "injective", ctx)?
+                .map_or(false, |v| matches!(v, Value::Bool(true)));
             Expr::ClassDecl {
                 name,
                 params,
@@ -3776,9 +3803,11 @@ fn dict_to_pattern(
                 Value::Int(n) => LiteralPattern::Int(n),
                 Value::Float(f) => LiteralPattern::Float(f),
                 Value::Bool(b) => LiteralPattern::Bool(b),
-                Value::String { ref source, start, end } => {
-                    LiteralPattern::Str(source[start..end].to_string())
-                }
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => LiteralPattern::Str(source[start..end].to_string()),
                 _ => {
                     return Err(AstError {
                         message: "literal pattern value must be Int, Float, Bool, or String".into(),
@@ -3803,7 +3832,9 @@ fn dict_to_pattern(
             // Iterate integer-keyed fields in order
             let mut fields = Vec::new();
             let mut i = 0i64;
-            while let Some(field_thunk_id) = fields_dict.get(&Key::String(Rc::from(i.to_string().as_str()))) {
+            while let Some(field_thunk_id) =
+                fields_dict.get(&Key::String(Rc::from(i.to_string().as_str())))
+            {
                 let field_thunk = ctx.get_thunk(*field_thunk_id);
                 let field_val = field_thunk.try_get_materialized().ok_or_else(|| AstError {
                     message: format!("dict pattern field {} is not materialized", i),
@@ -3829,8 +3860,7 @@ fn dict_to_pattern(
                         })
                     }
                 };
-                let inner_span =
-                    extract_span(&inner_dict, ctx).unwrap_or_else(Span::origin);
+                let inner_span = extract_span(&inner_dict, ctx).unwrap_or_else(Span::origin);
                 let inner_pat = dict_to_pattern(&inner_dict, path, ctx)?;
                 fields.push((key, Spanned::new(inner_pat, inner_span)));
                 i += 1;

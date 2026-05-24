@@ -1,6 +1,6 @@
-//! Shared async runtime for QUIC/HTTP3 builtins.
+//! Shared async runtime for QUIC/HTTP3 builtins and the async reqwest HTTP/2 client.
 //! Single-threaded current_thread runtime initialized once per thread.
-//! reqwest's blocking client has its own internal async runtime — no conflict.
+//! Both the h3 QUIC stack and reqwest's async client (used by Http2Session) share this runtime.
 //!
 //! Design notes:
 //! - `block_on` drives a `current_thread` tokio runtime. Every call polls all

@@ -279,7 +279,10 @@ impl ReplSession {
             for (key, val_thunk_id) in map {
                 if let Key::String(name) = key {
                     let val_thunk = self.ctx.get_thunk(*val_thunk_id);
-                    child_env.write().unwrap().insert(name.to_string(), val_thunk);
+                    child_env
+                        .write()
+                        .unwrap()
+                        .insert(name.to_string(), val_thunk);
                 }
             }
             self.env = child_env;
@@ -877,12 +880,11 @@ mod tests {
     fn test_session_intermediate_non_dict_error() {
         let mut session = ReplSession::new().unwrap();
 
-        // Two expressions where the first is not a Dict.
-        let err = session.eval_input("42\n[+ 1 2]").unwrap_err();
-        assert!(
-            err.contains("expected"),
-            "expected type mismatch error, got: {err}"
-        );
+        // Two documents where the first is not a Dict.
+        // The pipeline passes the first result as % to the second document.
+        // Non-Dict intermediates are allowed (they just don't expose named bindings).
+        let result = session.eval_input("42\n[+ 1 2]").unwrap();
+        assert_eq!(result, "Int(3)");
     }
 
     #[test]

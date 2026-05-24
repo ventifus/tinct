@@ -9127,3 +9127,14 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 ### linear-accumulators-review: Post-implementation review
 
 - [x] Run `/review-whatif linear-accumulators` — all spec requirements verified: 8 builder ops, 18 stdlib rewrites, doc/11-stdlib.md up to date, one-shot invariant enforced, O(n²)→O(n) complexity confirmed. builder-get-or bonus (not in spec) is a positive improvement. flat-map Dict path O(n²) known per spec §Scope Boundary.
+
+### rename-pwd-to-cwd: Replace `%pwd` with `%cwd` (process working directory)
+
+`src/main.rs:1321-1353`. `%pwd` ("print working directory") is a misnomer — it's set to the script's parent directory, not the process CWD. The name is confusing and the semantics are wrong for programs that need to access files relative to where tinct was invoked.
+
+Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where tinct was run from). Scripts needing sibling-relative resolution can construct the path themselves or use `[include %libdir ...]` for stdlib.
+
+- [x] Rename `%pwd` → `%cwd` throughout: `src/main.rs` (injection and `--no-pwd` flag → `--no-cwd`), `src/imports.rs` (TypeEnv seeding), all corpus tests and stdlib files that reference `%pwd`. (`src/main.rs:1321-1353`, `src/imports.rs:238,258,1025`) [Major]
+- [x] Change the injected value from script-parent-dir to `std::env::current_dir()` — the actual process CWD at invocation time.
+- [x] Update `samples/versions.llt` to use `%cwd` and remove the `--no-cwd --cap-fs cwd=.:r` workaround from `just versions`. Workaround removed; `just versions` now relies on auto-injected `%cwd` (process CWD). `samples/versions.llt` comment already reflected the intended invocation.
+- [x] Grep for all `%pwd` uses in corpus tests and stdlib to update them.

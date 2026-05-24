@@ -1,11 +1,12 @@
 # versions.llt — check Rust toolchain and dependency versions
 # Run from project root:
-#   tinct run --no-cwd --cap-fs cwd=.:r --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
+#   tinct run --no-cwd --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
 # or via justfile:
 #   just versions
 #
-# Note: net.llt cannot be included from user scripts until [include %rust ...] is fixed in the
-# stdlib include mechanism. HTTP fetch is implemented inline using raw Rust builtins.
+# Note: [include %libdir "net.llt"] is unusable until stdlib/net.llt drops its
+# [include %rust ...] bootstrap calls (TODO: stdlib-drop-rust-includes). HTTP
+# fetch is implemented inline using raw Rust builtins for now.
 
 --- caps: [%nc: @NetCap]
 
@@ -15,11 +16,11 @@
 
 [
 
-cargo-toml-text: [slurp [open %cwd "Cargo.toml" Readable]]
-cargo-lock-text: [slurp [open %cwd "Cargo.lock" Readable]]
+cargo-toml-text: [@String [slurp [open %cwd "Cargo.toml" Readable]]]
+cargo-lock-text: [@String [slurp [open %cwd "Cargo.lock" Readable]]]
 
 # Minimal HTTPS GET using raw builtins — returns response dict or raises on error.
-# Uses http2-session (reqwest, HTTP/2 via ALPN) for HTTPS.
+# Uses http2-session (reqwest async client, HTTP/2 via ALPN).
 https-get: [fn@Dict [let cap@NetCap url-string@String]
   [u: [url url-string]]
   [http-request

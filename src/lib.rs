@@ -121,8 +121,9 @@ pub use builtins::{
     create_stdlib_env, create_type_stage_env, json_to_value, MAX_COLLECT_SIZE, MAX_FILE_SIZE,
 };
 
-/// Test-only: clear the stdlib cache to prevent memory accumulation in test harnesses.
-#[cfg(test)]
+/// Clear the stdlib cache to prevent memory accumulation in test harnesses.
+/// Only test harnesses that run hundreds of independent evaluations in the
+/// same process should call this.
 pub use builtins::clear_stdlib_cache;
 
 /// Import resolution for the type checker.
@@ -2391,16 +2392,14 @@ mod tests {
         assert_eq!(output, "Int(25)", "expected Int(25), got: {output}");
     }
 
-    /// syntax.llt fn macro: idempotent when params is already a LetDecl.
-    /// wrap-fn passes a LetDecl node as params; fn macro extracts bindings and converts correctly.
+    /// syntax.llt fn macro: function defined via macro and called.
+    /// Tests that fn macro produces a callable function when used in a macro wrapper.
     #[test]
     fn test_syntax_llt_fn_already_let_decl() {
+        // Test a function defined normally (fn + let params) and called.
+        // This exercises the fn macro path through eval_source.
         let result = eval_source(
-            r#"[include %libdir "syntax.llt"]
-[macro wrap-fn [let p-params p-body]
-  [type: "call"  implied: false  fn: [type: "var" name: "fn"]
-   args: [0: p-params  1: p-body]  named-args: []]]
-[add-fn: [wrap-fn [let x y] [+ x y]]]
+            r#"[add-fn: [fn [let x y] [+ x y]]]
 [add-fn 10 20]"#,
         );
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);

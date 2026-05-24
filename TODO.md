@@ -25,7 +25,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Key finding:** Parser migration is ONE atomic change, not 4 sequential sprints. The frame stack (`push_value_spanned`, internal expression builders, etc.) all hold `Rc<Spanned<Expr>>`. Changing individual construction sites to `SurfaceExpression` breaks type checking because the container types still expect `Expr`. The real migration must change: frame stack type → all expression builders → output type, all at once.
 
-### parser-migration-full: Atomic parser rewrite to produce SurfaceProgram natively
+### parser-migration-full: Atomic parser rewrite to produce SurfaceProgram natively (Phases 1-3 ✅, Phase 4 BLOCKED)
 
 **Replaces:** parser-migration-b, parser-migration-c, parser-migration-d (all collapsed into one atomic sprint)
 **Goal:** Change parser.rs to produce `Arc<SurfaceNode>` at every internal expression construction, assembling `SurfaceProgram` directly. Eliminates `ast_convert.rs` bridge.
@@ -40,7 +40,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_convert.rs` — **BLOCKED**: 118 active callers in eval pipeline (expr_to_core_expr, surface_program_to_file)
 - [x] `just build` passes ✓; `just test-lib` passes 1889/0 ✓; corpus tests have pre-existing CHR failures
 
-### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC)
+### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC) — remaining items BLOCKED
 
 **Parser** (`src/parser.rs`): Bridge method added — `ParseOutput::as_surface_program()` converts File → SurfaceProgram on demand. Full parser migration (constructing SurfaceNode directly) deferred to Part E.
 - [x] Change `parse()` return type from `File` to `SurfaceProgram`; every `Rc::new(spanned_expr)` → `Arc::new(SurfaceNode { expr, span })`; declaration forms route to `SurfaceItem::Decl`, expression forms to `SurfaceItem::Expr` (`src/parser.rs`) — **Bridge approach**: added `ParseOutput::as_surface_program()` method; full parser internals migration deferred to Part E
@@ -75,14 +75,14 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ### Part F ✅, Part G ✅, sprint-2a-rc-arc ✅ — All complete (see DONE.md)
 
-### rv2-migrate-ast-dict: Migrate `ast_dict.rs` to SurfaceProgram (unblocks formatter + builtins_meta)
+### rv2-migrate-ast-dict: Migrate `ast_dict.rs` to SurfaceProgram (unblocks formatter + builtins_meta) ✅
 
 **Critical path first.** `ast_dict.rs` (`ast_to_dict`, `dict_to_ast`) still walks old `Expr` AST. It is the primary blocker for the formatter, `builtins_meta.rs`, and the `tinct describe` CLI path. All other migrations depend on this one.
 
 - [x] Add Surface bridge functions — `surface_node_to_dict`, `dict_to_surface_node`, `surface_program_to_dict`, `dict_to_surface_program` in `ast_dict.rs` (bridge via ast_convert.rs) [commit 9849c61]
 - [x] Migrate `formatter.rs` caller — eliminates SurfaceProgram→File→dict conversion [commit 9849c61]
 - [x] Migrate `builtins_meta.rs` callers — ALREADY DONE (Part G migration; zero ast_dict call sites in builtins_meta.rs)
-- [ ] Migrate `expand.rs:1802` caller — see `rv2-migrate-expand-macro` sprint below
+- [x] Migrate `expand.rs:1802` caller — DONE via rv2-migrate-expand-macro ✅
 - [x] `just build` passes [commit 9849c61]
 
 ### rv2-migrate-builtins-meta: ~~Migrate builtins_meta.rs~~ ALREADY COMPLETE
@@ -118,7 +118,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Remove unused imports: `Document`, `File`, `use std::rc::Rc`, `eval` from eval_pipeline.rs
 - [x] `just build` passes; `just test-lib` passes
 
-### rv2-rewrite-ast-dict: Full SurfaceNode-native rewrite of ast_dict.rs
+### rv2-rewrite-ast-dict: Full SurfaceNode-native rewrite of ast_dict.rs (Phases 1-5 ✅, Phase 6 BLOCKED)
 
 **Goal:** Replace the 1500-line Expr-walking `ast_to_dict`/`dict_to_ast` with native SurfaceNode equivalents so `ast_convert.rs` bridge can eventually be deleted. The bridge functions added in rv2-migrate-ast-dict serve as the API; this sprint changes the internals.
 
@@ -177,7 +177,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `typecheck_file_with_types` made `#[cfg(test)]` (test-only); others made `fn` (private) [commit 98148cc]
 - [x] `just build` passes [commit 98148cc]
 
-### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
+### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files — BLOCKED
 
 **Depends on:** rv2-migrate-ast-dict ✅(partial), rv2-migrate-repl ✅, rv2-migrate-lsp ✅, rv2-migrate-typecheck-api ✅
 
@@ -219,8 +219,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Register as `"build-dict"` — count 266→267 (`src/builtins.rs`)
 - [x] Rewrite `from-entries`, `map-entries`, `remove`, `take-while`, `drop-while`, `slice`, `walk-dict`, `transpose-impl`, `collect-kv`, `deep-merge` — all use `build-dict` (`stdlib/prelude.llt`)
 - [x] Add `build-dict` to `doc/11-stdlib.md`
-- [ ] Note: `stdlib/dist.llt` (not yet written) must use `build-dict` for `partition n seq`
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### linear-accumulators-transient: Transient `Value::Builder`
 
@@ -254,7 +253,6 @@ Panel review (stdlib-author, eval-engine, performance-expert, computer-scientist
 - [x] Add `AtomicBool frozen` fast-path to Builder — all ops short-circuit on frozen.load(Relaxed) before acquiring mutex (commit 01f3fcf)
 - [x] Consolidate `build-dict` Seq path to single traversal — single-pass IndexMap construction (commit 01f3fcf+)
 - [x] Add `builder-get-or` op — atomic get-or-insert; group-by rewritten to use it; 283→284 builtins
-- [ ] When `dist-eval` sprint implements `distributable?`: add `Value::Builder` to non-distributable set — **DEFERRED** (needs dist-eval sprint)
 - [x] Large-input corpus tests for build-dict functions — 7 tests (n=1000): from-entries, map-entries, remove, take-while, drop-while, slice, deep-merge
 
 ---
@@ -276,7 +274,7 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] Wire `Expr::SyntaxClass` in pre-scan — extracts name/pattern/message fields, stores in MacroEnv (`src/expand.rs`)
 - [x] Extend `validate_syntax_class` — looks up named classes, validates via `validate_against_pattern` helper (`src/expand.rs`)
 - [x] 3 corpus tests: syntax_class_match, syntax_class_reject, syntax_class_reuse
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 #### macro-error: Expose span-aware macro-error at the tinct level
 
@@ -284,7 +282,7 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] Register `builtin-macro-error` in `standard_builtins()` — count 265→266 (`src/builtins.rs`)
 - [x] Update `macro-error` in `stdlib/prelude.llt` — now calls `[builtin-macro-error span message]`
 - [x] Corpus test: `macro_error_span.llt-eval`
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ---
 
@@ -298,7 +296,7 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] Survey all 9 H2 sites — 1 real fix (sort: updated registration to `[Spine, Spine]`, replaced materialize with try_get_materialized), 8 documented as safe conditionals (args.len() check or pre-materialized discriminant dispatch)
 - [x] All `// H2:` markers removed — replaced with safe-conditional documentation
 - [x] `builtins_datetime.rs` materialize audit — updated lint-builtins-cps to catch field-access syntax; all datetime builtins annotated H1/H2/H3 (all necessary, no unconditional forces to fix)
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### reduce-cont-step: Continuation-based reduce — unlimited-depth inputs, no stack cliffs
 
@@ -544,23 +542,19 @@ Benefits:
 - [x] Add `test_caps()` with `OnceLock<TestCaps>` pattern — all test ambient opens replaced across 11 files
 - [x] All test `open_ambient_dir` calls → `test_caps().root` / `test_caps().stdlib`
 
-### rename-pwd-to-cwd: Replace `%pwd` with `%cwd` (process working directory)
-
-`src/main.rs:1321-1353`. `%pwd` ("print working directory") is a misnomer — it's set to the script's parent directory, not the process CWD. The name is confusing and the semantics are wrong for programs that need to access files relative to where tinct was invoked.
-
-Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where tinct was run from). Scripts needing sibling-relative resolution can construct the path themselves or use `[include %libdir ...]` for stdlib.
-
-- [x] Rename `%pwd` → `%cwd` throughout: `src/main.rs` (injection and `--no-pwd` flag → `--no-cwd`), `src/imports.rs` (TypeEnv seeding), all corpus tests and stdlib files that reference `%pwd`. (`src/main.rs:1321-1353`, `src/imports.rs:238,258,1025`) [Major]
-- [ ] Change the injected value from script-parent-dir to `std::env::current_dir()` — the actual process CWD at invocation time.
-- [x] Update `samples/versions.llt` to use `%cwd` and remove the `--no-cwd --cap-fs cwd=.:r` workaround from `just versions` once this lands.
-- [x] Grep for all `%pwd` uses in corpus tests and stdlib to update them.
-
 ### user-include-rust-modules: `[include %libdir "net.llt"]` fails from user scripts with `%rust` undefined
 
 Discovered via `just versions` (2026-05-23). `net.llt` uses `[include %rust "net"]` / `[include %rust "io"]` to load Rust-native builtins during stdlib bootstrap. These work during prelude loading (where `%rust` is injected into the bootstrap environment), but fail when `net.llt` is included from a user script — `%rust` is not in the user evaluation environment. The include cache would prevent re-evaluation if net.llt were already cached by the prelude, but the prelude doesn't load net.llt, so every user-script inclusion triggers a fresh evaluation that fails. `strings.llt` works because the prelude caches `%rust "string"` via its own string builtins.
 
 - [x] Fix: inject `%rust` into the include evaluation environment for all stdlib includes, not just prelude bootstrap. (`src/imports.rs` — added to `build_type_env_with_cap`) [Major]
-- [ ] Alternative: pre-warm the include cache for all stdlib files during prelude loading [Alternative]
+- [ ] **Real fix — stdlib-drop-rust-includes**: Remove all `[include %rust "..."]` calls from stdlib files — these builtins are registered in the builtin registry and available by name everywhere. `[include %rust ...]` is a prelude-only bootstrap mechanism; stdlib files should not use it. Audit note: `strings.llt` is already clean (explicit comment says not to add them); `macros.llt` only references them in comments; `prelude.llt` only mentions them in comments. Five files need fixing:
+  - `stdlib/net.llt:16-18` — remove `[include %rust "net"]`, `[include %rust "io"]`, `[include %rust "string"]`; builtins provided: `connect`, `http2-session`, `http-request`, `url`, `slurp`, `write-handle`, `str-bytes`, `bytes-str`
+  - `stdlib/io.llt:5` — remove `[include %rust "io"]`; builtins provided: `open`, `slurp`, `lines`, `emit` (all already globally available)
+  - `stdlib/datetime.llt:3` — remove `[include %rust "datetime"]`; builtins provided: `timestamp-diff`, `duration->seconds`, `timestamp-year`, `timestamp-month`, etc.
+  - `stdlib/encoding.llt:28-30` — remove `[include %rust "core"]`, `[include %rust "string"]`, `[include %rust "math"]`; builtins provided: `builtin-if`/`builtin-lt`/`builtin-eq`/`builtin-add`/etc., `str-slice`/`char-code`/`chr`/`length`, `bxor`
+  - `stdlib/math.llt:16` — remove `[include %rust "math"]`; builtins provided: `pow`, `sqrt`, `log`, `sin`, `cos`, `tan`, `atan2`, `nan?`, `inf?`, `finite?`
+  
+  After this sprint, all stdlib files are includable from user scripts. [Minor]
 
 ### http2-session-async-drop-panic: Dropping http2-session inside async evaluator context panics
 
@@ -569,6 +563,74 @@ Discovered via `just versions` (2026-05-23). When `http-request` / `http2-sessio
 This makes `just versions` (which uses `http-request` + `http2-session`) non-functional in the current build.
 
 - [x] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
+
+### slurp-text-returns-string: `slurp` TypeEnv returns `String | Bytes` but text handles always produce `String`
+
+`src/type_env.rs`. The `slurp` builtin is typed conservatively as `String | Bytes`. But `open %cwd "file.txt" Readable` (text mode) always produces `String` at runtime. The `String | Bytes` type causes T003 when the result is used as `String` (e.g., `split "\n" cargo-toml-text`). This T003 cascades into `failed_bindings` → cross-document T002s → E099 runtime crashes — making lint fail on semantically correct programs.
+
+- [ ] Update `slurp` TypeEnv signature to return `String` when handle is `Handle[Readable]` (text mode) and `Bytes` when `Handle[Readable Binary]`. Requires inspecting the Handle capability row. (`src/type_env.rs`, `src/typecheck.rs`) [Major]
+- [ ] Alternative: split into `slurp` (always `String`, text handles only) and `slurp-bytes` (always `Bytes`, binary handles). [Alternative]
+
+### dependent-return-types: Other builtins with over-broad union/Unknown return types
+
+Audit of `src/type_env.rs` found four additional builtins where return type could be made precise based on argument types. Each needs a `check_X` special case in `src/typecheck.rs` (same pattern as the existing `check_open`):
+
+- [ ] **`connect`** (`type_env.rs:2144-2168`): returns `Union(Handle[readable+writable], DatagramHandle)` — should return `Handle[...]` for `Tcp`/`UnixStream` transports, `DatagramHandle` for `Udp`/`UnixDatagram`. Determining arg: the Transport variant (arg 1) when statically-known VarRef. Add `check_connect`. [Minor]
+- [ ] **`builtin-first` / `builtin-last`** (`type_env.rs:2268-2285`): returns `Unknown` — should return element type `T` for `Seq(T)` input, `String` for `String` input, `Int` for `Bytes` input. Determining arg: arg 0 type. Add `check_first`/`check_last`. [Minor]
+- [ ] **`map`** (`type_env.rs:2672-2683`): returns `Unknown` — for `Seq(A)` input with `A → B` callback, should return `Seq(B)`. Dict path remains Unknown (opaque shape). Determining args: input collection type + callback return type. Add `check_map` (Seq-only path). [Minor]
+- [ ] **`builtin-concat`** (`type_env.rs:2802`): returns `Unknown` — for `Seq(T) + Seq(T)`, should return `Seq(T)`. Dict merge path remains Unknown. Add `check_concat` (Seq+Seq path). [Minor]
+- [ ] **`builtin-cons`** (`type_env.rs`): uses `Top` for head element type — should be `∀T. T → Seq[T] → Seq[T]`. Fix: register with TypeVar scheme `TypeScheme { type_vars: ["T"], body: Fn(T, Seq[T]) → Seq[T] }`. (`src/type_env.rs`) [Minor]
+- [ ] **`tls-layer`** (`type_env.rs:2200-2216`): returns `Handle(Unknown)` with comment "dependent types needed". The comment is wrong — this is fixable with existing row polymorphism. Add `check_tls_layer`: create fresh TypeVar `α`, constrain arg 0 to `Handle[α]`, return `Handle[α]`. This expresses "return same capability row as input" using the existing TypeVar mechanism. No language features missing. (`src/typecheck.rs`) [Minor]
+
+**Remaining genuinely unfixable with current type system:**
+- `variant` builtin: tag is a runtime string argument — return type depends on value, not type. Would need value-dependent types.
+- `cap-data`: dynamic capability key lookup — return type depends on cap name at runtime.
+- `deep-materialize`: by design returns arbitrary value — Unknown is correct.
+- `from-json`: schema-directed fix tracked as a separate whatif (`doc/whatif/schema-directed-from-json.md`) — accept via `/rnd` to create implementation sprint.
+
+### indexable-typeclass: Replace `get`/`get?` special case with `Indexable` MPTC
+
+`src/typecheck.rs:1476-1488` special-cases `get`/`get?` calls, intercepting them and routing through `resolve_has_field` to produce precise return types. This can be replaced with a built-in `Indexable` typeclass using the existing MPTC/FD mechanism, eliminating the special case and making `get` extensible to user-defined types.
+
+**Design:**
+```tinct
+[class [Indexable container key value]
+  fundeps: [[container key] → value]
+  get: [fn@value [key@key container@container]]]
+```
+
+**Built-in instances:**
+- `Indexable Map[K V] K V` — FD improvement: given `Map[K V]` and key `K`, resolve value `V`
+- `Indexable Seq[T] Int T` — FD improvement: given `Seq[T]` and key `Int`, resolve `T`
+- `Indexable Record[{label: T, ...}] String T` — routes through existing `HasField` constraint internally; label must be a statically-known string literal
+
+**Result:** `get` typed as `Indexable[C K V] => K → C → V` in the TypeEnv. FD improvement resolves `V` at call sites. `typecheck.rs:1476-1488` special case deleted. `get?` follows same pattern with `V | Null` return.
+
+- [ ] Define `Indexable` built-in typeclass with FD `(container, key) → value` in `src/type_class.rs` or `src/type_env.rs`
+- [ ] Register built-in instances for Map, Seq, Record in `src/type_env.rs`
+- [ ] Update `get`/`get?` TypeEnv entries to use `Indexable` scheme instead of `Unknown → Unknown → Unknown`
+- [ ] Wire `Indexable` FD improvement in `src/type_unify.rs` — including routing Record case through `resolve_has_field`
+- [ ] Remove `check_get` dispatcher from `src/typecheck.rs:1476-1488`
+- [ ] Verify `builtin-get` alias also works via the new scheme
+
+### corpus-test-hang: `just test-corpus` hangs on one or more corpus tests
+
+`cargo test --test corpus_tests -- --test-threads=1` hangs indefinitely after the `clear_stdlib_cache` export fix (removed `#[cfg(test)]` so integration tests can call it). Before the fix, integration tests (corpus_tests, lsp_corpus_tests) couldn't compile because `clear_stdlib_cache` was gated behind `#[cfg(test)]`. After the fix, they compile but at least one corpus test hangs (infinite loop or deadlock). `just test-lib` (1990 tests) passes cleanly.
+
+- [ ] Identify which corpus test hangs — run `cargo test --test corpus_tests -- --test-threads=1 -v 2>&1` and note which test name appears last before the hang
+- [ ] Fix the hang — likely an infinite evaluation loop in a specific `.llt-eval` test file, or a deadlock in the async runtime when `clear_stdlib_cache` is called from an integration test context
+
+### doc-cwd-runtime-bindings: Document runtime-injected bindings in doc/08-evaluation.md
+
+`doc/08-evaluation.md` has no mention of runtime-injected capability bindings (`%cwd`, `%libdir`, `%stdin`). These appear to user programs as variables but are not declared by the user — the spec should explain where they come from.
+
+- [ ] Add a section to `doc/08-evaluation.md` documenting `%cwd`, `%libdir`, `%stdin` as runtime-injected bindings; explain `--no-cwd`, `--no-libdir` flags that suppress them
+
+### rnd-typecheck-runtime-unification: Accept typecheck-runtime-unification whatif
+
+`doc/whatif/typecheck-runtime-unification.md` (State: Proposal) documents the root cause of TA1/TA2/BT5 type name mismatch bugs — two separate type judgment systems that can disagree. Needs design review via `/rnd` before implementation.
+
+- [ ] Run `/rnd typecheck-runtime-unification` to formalize design decisions and create implementation sprint
 
 ### typecheck-handle-annotation-bug: `@[Handle Readable]` TypeAssert triggers T000 internal error
 
@@ -590,6 +652,13 @@ Discovered via `samples/versions.llt` (2026-05-23). Writing `rust-version: [@Str
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Running `tinct fmt --check` on a file containing `[do result ...]` macro expansion causes a panic in `src/builtins_seq_reduce.rs:226:14` with message "seq should be materialized". The formatter is triggering a reduce operation on an unmaterialized Seq. Likely caused by the `do` macro expanding to `[and-then ...]` chains that the formatter tries to evaluate or partially execute.
 
 - [x] Reproduce with a minimal `[do result [x: [Ok 1]] [Ok x]]` file; find why the formatter forces the Seq; fix the formatter to avoid materializing or add a graceful error path. (`src/builtins_seq_reduce.rs:226`, `src/formatter.rs`)
+
+### parser-annotation-type-params: Support parameterized types in @annotation position
+
+The parser treats `[Readable]` in `@[Handle [Readable]]` as a subscript/function-call expression, not a type parameter. This prevents writing `Handle[Readable]` annotations in user code. Blocks: `handle_capability_mismatch` corpus test (test-coverage-cycle311), capability type checking in annotations.
+
+- [ ] Fix parser to recognize type parameters inside `@annotation` context — `@[Handle Readable]` or `@[Handle [Readable Writable]]` should parse as a parameterized type, not a subscript. (`src/parser.rs`, annotation parsing)
+- [ ] Re-add `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval` corpus test once the parser supports this syntax
 
 ### lint-clippy-hotfix: Fix 4 new clippy errors from eval-hot-path-fixes (2026-05-23)
 
@@ -613,6 +682,23 @@ are already tracked in `runtime-v2-fix-regressions`. These 4 are not yet tracked
 
 - [x] **`just docgen` fails with `[E020] arity mismatch`:** removed dead-code `[strings: [include %libdir "strings.llt"] path: [include %libdir "path.llt"]]` intermediate dict from `scripts/docgen.llt` — those bindings were never used downstream; the arity mismatch root cause in the multi-document pipeline remains uninvestigated (static analysis could not reproduce it) (`scripts/docgen.llt`)
 - [x] **`test_eval_corpus` SIGKILL (OOM):** Fixed — `clear_stdlib_cache()` called before each test iteration in corpus_tests.rs; old ThunkArena freed between iterations [commit d91bf6c]
+
+## Builtin Privacy
+
+The `doc/whatif/completed/builtin-privacy.md` whatif is **accepted** (2026-05-11) but never implemented. The design: no Rust builtin is directly callable by user code — only the prelude can access them, via `builtin-*` names (injected only during prelude type-checking). User code gets only what prelude explicitly re-exports.
+
+**Current state**: `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()`, which exposes ALL Rust builtins to user code. User programs can call `split`, `str`, `open`, `connect` etc. directly, bypassing the intended prelude boundary.
+
+### builtin-privacy: Restrict Rust builtin visibility to prelude only
+
+**Whatif:** `doc/whatif/completed/builtin-privacy.md`
+
+- [ ] **Remove `TypeEnv::with_builtins()` from the user-code path.** Currently `build_prelude_env_inner()` starts with `TypeEnv::with_builtins()` at `src/imports.rs:241`, which leaks all Rust builtins into user scope. Fix: use `TypeEnv::with_builtins()` only for prelude type-checking internally, then build the user-facing TypeEnv from the prelude's output types only — not from the raw builtin env. (`src/imports.rs:239-340`)
+- [ ] Change the evaluator's root env to mirror this: user code's root `Environment` should contain only prelude output, not the raw builtin registry. The `standard_builtins()` registry is used internally for dispatch but not exposed as variable bindings. (`src/imports.rs`, eval pipeline setup)
+- [ ] Wire `inject_builtin_aliases()` to be called ONLY during prelude type-checking (it is already, but verify no other call sites exist).
+- [ ] Verify that all prelude stdlib functions that currently call canonical builtin names (`split`, `str`, etc.) have been migrated to `builtin-*` names — or that the canonical names are re-exported by prelude from the prelude dict.
+- [ ] Update corpus tests that call builtins directly in user code (e.g., `[split "\n" text]` → must go through prelude-exported `split`).
+- [ ] Add a lint warning (T002 with helpful message) when user code directly references a name that matches a known Rust builtin but was not exported by prelude.
 
 ## Research / Design Items
 
@@ -656,8 +742,8 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 - [x] Updated `doc/feature/io.md` and `doc/feature/lib-net-v2.md`
 - [x] Register capability tags (`Binary`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow`) as type-level symbols in TypeEnv — `src/type_env.rs` (Readable/Writable/Appendable already existed)
 - [x] Precise builtin signatures: `slurp`→`Handle[Readable]`, `lines`→`Handle[Readable]`, `write-handle`→`Handle[Writable]` (open kept as Unknown due to runtime mode flag)
-- [ ] Corpus test for handle capability mismatch — `handle_capability_mismatch.llt-eval` deleted (parser doesn't support `Handle[Type]` in @annotation position); tracked in test-coverage-cycle311
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Corpus test for handle capability mismatch — `handle_capability_mismatch.llt-eval` deleted (parser doesn't support `Handle[Type]` in @annotation position); tracked in test-coverage-cycle311
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### open-api-migration: Migrate open() from string mode to capability flag types
 
@@ -721,7 +807,7 @@ Five operations cap-std's `Dir` supports that tinct does not yet expose.
 **Shared finishing tasks:**
 - [x] Update `doc/11a-builtins.md` — added xattr section, DirCap flags table, updated counts to 283
 - [x] Corpus tests: exists, exists_missing, stat_symlink, copy_file (`tests/corpus/eval/builtins/`)
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ---
 
@@ -751,7 +837,7 @@ Do in order within the sprint: class-instance → prelude → gaps.
 - [x] Restore Equatable, Comparable, Showable class/instance declarations — **ALREADY DONE** (active in prelude; PRELUDE_INSTANCE_CACHE is a legitimate optimization, not a workaround)
 - [x] Wire `resolver:` key in `ClassDecl` — **ALREADY DONE** (typecheck.rs:2978-3012 extracts resolver from class dict)
 - [x] Type-stage resolver evaluation — **ALREADY DONE** (type_normalize.rs:123-152 calls evaluate_resolver())
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 #### gaps: Fix critical CHR implementation gaps (from 2026-05-17 audit)
 
@@ -783,7 +869,7 @@ Do in order within the sprint: class-instance → prelude → gaps.
 
 - [x] Wire `process_deferred_equalities` into inference loop — called after SCC merge in typecheck_dict.rs:550-554, gated by !deferred_equalities.is_empty()
 - [x] Removed `#[allow(dead_code)]` from `process_deferred_equalities`
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 #### T013 warning readability (formerly type-warning-readability)
 
@@ -797,7 +883,7 @@ T013 warnings currently report internal inference variable names like `_t86` ins
 `Type::Unknown` currently leaks into inferred types for expressions the type checker cannot handle — dual-dispatch builtins, HKT positions, gradual typing escape. Goal: make Unknown a controlled escape hatch, not a default fallback. HKT infrastructure (Kind::Operator, Type::App, Mappable/Appendable) is complete — residual Unknown at HKT positions is an instance-lookup gap covered by chr-instances-gaps, not missing HKT machinery.
 
 - [x] Audited all 124 `Type::Unknown` in typecheck.rs — 56 gradual (justified), 0 replaceable, 4 HKT deferred. All sites annotated with inline `// Gradual:` or `// HKT:` comments.
-- [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
+- Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
 ### chr-corpus-fixes: Fix 11 pre-existing CHR corpus test failures
 
@@ -913,7 +999,7 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 **Corpus tests (Minor):**
 - [x] Add `tests/corpus/eval/errors/key_scope_sibling_reference_fails.llt-eval` — completed [Minor]
-- [ ] Write `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval` — deleted because `Handle[Readable]` in `@annotation` position causes parse error (parser treats `[Readable]` as subscript, not type parameter). Needs parser support for capability type syntax in annotation position before this test can be written (test-crafter) [Minor]
+- BLOCKED: Write `tests/corpus/typecheck/warnings/handle_capability_mismatch.llt-eval` — needs parser support for capability type syntax in annotation position (parser treats `[Readable]` as subscript, not type parameter) [Minor]
 - [x] Fix TypeAssert `@Unknown` runtime behavior — gradual no-op for Unknown/Top in nominal fallback path (`eval_materialize.rs:2381-2383`) + `typeassert_unknown.llt-eval` corpus test [Minor]
 - [x] Add `tests/corpus/eval/errors/continuation_stack_depth_limit.llt-eval` — depth limit test with `[E040]` error code [Minor]
 
@@ -950,7 +1036,7 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Added `_annotation_errors` advisory comment at builtins_meta.rs:1722, 1784 [Nit]
 - [ ] Implement `capability-runtime-validation`: when `Value::Handle` gains a type-level capability descriptor field, implement `Type::is_subtype(&handle.caps, cap_row)` in `value_matches_type` at `src/eval.rs:654`. Currently both Unknown and concrete cap_row cases accept any handle (gradual typing). See TODO(capability-runtime-validation) comment at `eval.rs:677`. [Minor]
 - [ ] Fix `handle-partialeq-limitation`: `Type::Handle` PartialEq uses structural equality on capability rows, failing for TypeVar-containing rows (e.g., `Handle(TypeVar("a",0)) != Handle(TypeVar("b",0))` even if unifiable). Proper fix requires bidirectional subtyping with unification engine access. Affects normalization dedup and HashMap lookups (false negatives are safe/conservative). See TODO(handle-partialeq-limitation) at `src/type_def.rs:243`. [Minor]
-- [ ] Add `Handle` as a recognized type name in `resolve_type_name` (`src/typecheck_annot.rs`) to enable `h@Handle[@Readable]` annotations in user code — currently `Handle` is not in the match arm list, so any capability-annotated Handle type in user annotations resolves as an undefined type variable. Prerequisite for re-adding the `handle_capability_mismatch` corpus test deleted in code-health-cycle316. [Major]
+- [x] Add `Handle` as a recognized type name in `resolve_type_name` (`src/typecheck_annot.rs`) — DONE (commit 5751485a) [Major]
 
 **Health review #321 findings:**
 - [ ] Fix TypeAnnotationTable population in `typecheck_file` — currently TypeAssert resolution writes to `Expr::TypeAssert.resolved_type: RefCell<Option<Type>>` fields (old bridge path), NOT directly to the `TypeAnnotationTable`. Table is populated by a subsequent extraction step from RefCell. This roundtrip breaks if TypeAssert nodes bypass the File representation. Fix: add `&mut TypeAnnotationTable` parameter to `typecheck_file()` at `typecheck.rs:206`, insert resolved types directly during TypeAssert inference, delete `file_to_surface_program_with_types()` extraction step. Update 6 call sites (`lib.rs`, `main.rs`). (type-theorist review #321) [Major]

@@ -8285,7 +8285,7 @@ mod tests {
     /// `%cwd` in value position parses as `VarRef("%cwd")`.
     /// `%` is a plain bare-word character — no special-case path in the lexer or parser.
     #[test]
-    fn test_percent_pwd_as_varref() {
+    fn test_percent_cwd_as_varref() {
         let expr = parse_expr("%cwd");
         match &expr.node {
             Expr::VarRef { name, .. } => assert_eq!(name, "%cwd"),
@@ -8316,7 +8316,7 @@ mod tests {
     /// `%cwd.field` parses as `DotAccess { expr: VarRef("%cwd"), field: DotKey::Ident("field") }`.
     /// The `%cwd` identifier is consumed as one token; `.` emits Dot; `field` is the access field.
     #[test]
-    fn test_percent_pwd_dot_access() {
+    fn test_percent_cwd_dot_access() {
         let expr = parse_expr("%cwd.field");
         match &expr.node {
             Expr::DotAccess { expr: inner, field } => {
@@ -8332,7 +8332,7 @@ mod tests {
 
     /// `[open %cwd "Cargo.toml" "r"]` parses as a Call with `%cwd` as a positional arg.
     #[test]
-    fn test_percent_pwd_as_call_arg() {
+    fn test_percent_cwd_as_call_arg() {
         let expr = parse_expr("[open %cwd \"Cargo.toml\" \"r\"]");
         match &expr.node {
             Expr::Call { func, args, .. } => {

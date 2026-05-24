@@ -353,9 +353,9 @@ fn test_lsp_unopened_document_with_caps() {
 
     // The document should parse and eval without errors (caps are stubbed)
     assert!(
-        doc.ast.is_ok(),
+        doc.fatal_parse_error.is_none(),
         "parse should succeed; got error: {:?}",
-        doc.ast.as_ref().err()
+        doc.fatal_parse_error
     );
     assert!(
         doc.eval_errors.is_empty(),
