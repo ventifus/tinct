@@ -1221,7 +1221,7 @@ pub(crate) async fn force_step(
     } else {
         unreachable!(
             "force_step: all ThunkState variants are handled. \
-             Materialized/Failed/InProgress are early-returned at lines 354-399, \
+             Materialized/Failed/InProgress are early-returned at lines 474-519, \
              PendingBuiltin/PendingCall/Guarded/Surface/AstNodeField/CoreExpr are processed above. \
              If this fires, a new UnevaluatedState variant was added without updating force_step."
         )

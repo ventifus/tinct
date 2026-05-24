@@ -9165,3 +9165,8 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 - [x] Move 13 misclassified test files from eval/errors/ to eval/typecheck/warnings/ (constraint_*, fn_annotation_*, doc_not_string, help_suggestion_*, proxy_named_arg, unknown_fn_annotation_key, closed_record_rejects_extra). [Major]
 - [x] Add eval/builtins/errors/ to required_dirs — ALREADY DONE (already in the array). [Major]
 - [x] Update corpus-test-hang sprint — reframed from "hangs indefinitely" to "runs slowly" (likely CHR test failures + container memory pressure). [Minor]
+
+### fix-core-expr-coverage: Compile-time CoreExpr variant exhaustiveness
+
+- [x] Verify CoreExpr match exhaustiveness — ALREADY CORRECT: `eval_core_expr` in `eval.rs` has explicit exhaustive match on all 25 CoreExpr variants with no `_` catch-all. Integration-verifier finding was a false alarm. [Major]
+- [x] Add `test_all_standard_builtins_registered` unit test in `src/builtins.rs:2601`. [Major]

@@ -1313,13 +1313,6 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 
 ## Codebase Health Audit Findings (Cycle #216, 2026-05-23)
 
-### fix-core-expr-coverage: Compile-time CoreExpr variant exhaustiveness
-
-**Sources:** integration-verifier (Cycle #216)
-
-- [ ] Replace `_ => unreachable!("...")` catch-all in `force_step` CoreExpr match with explicit exhaustive arms — ensures new `CoreExpr` variants added to `src/ast.rs` trigger compile errors, not silent runtime panics. (`src/eval_materialize.rs`) [Major]
-- [ ] Add unit test verifying all builtins in `standard_builtins()` are registered in `create_root_env()`. (`src/builtins.rs` test module) [Major]
-
 ### fix-type-system-comments: Type system doc/comment accuracy
 
 **Sources:** type-theorist, computer-scientist (Cycle #216)

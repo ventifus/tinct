@@ -2599,6 +2599,29 @@ mod tests {
     }
 
     #[test]
+    fn test_all_standard_builtins_registered() {
+        // Verify all builtins from standard_builtins() are properly registered in create_root_env().
+        // This catches registration gaps when someone adds a builtin to standard_builtins()
+        // but forgets to register it in create_root_env().
+        let builtins = standard_builtins();
+        let env = create_root_env();
+        let env_ref = env.read().unwrap();
+
+        let mut missing = Vec::new();
+        for def in &builtins {
+            if env_ref.get(def.name).is_none() {
+                missing.push(def.name);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "root env missing builtins: {}",
+            missing.join(", ")
+        );
+    }
+
+    #[test]
     fn floor_int_passthrough() {
         let result = mat(builtin_floor(BuiltinArgs {
             args: vec![thunk(Value::Int(42))],
