@@ -5033,7 +5033,13 @@ mod tests {
         // [@[type: Int  default: $fallback] hello] with fallback=99 -> 99
         let entries = vec![
             surf_ann_entry("type", SurfaceExpression::Str("Int".into())),
-            surf_ann_entry("default", SurfaceExpression::VarRef { name: "fallback".into(), escaped: true }),
+            surf_ann_entry(
+                "default",
+                SurfaceExpression::VarRef {
+                    name: "fallback".into(),
+                    escaped: true,
+                },
+            ),
         ];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
@@ -6788,9 +6794,10 @@ mod tests {
                 },
                 Param {
                     name: "b".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![
-                        surf_ann_entry("default", SurfaceExpression::Int(10)),
-                    ]))),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![surf_ann_entry(
+                        "default",
+                        SurfaceExpression::Int(10),
+                    )]))),
                     variadic: false,
                 },
             ]),
@@ -6889,9 +6896,10 @@ mod tests {
                 },
                 Param {
                     name: "y".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![
-                        surf_ann_entry("default", SurfaceExpression::Int(10)),
-                    ]))),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![surf_ann_entry(
+                        "default",
+                        SurfaceExpression::Int(10),
+                    )]))),
                     variadic: false,
                 },
             ]),
@@ -7737,10 +7745,7 @@ mod tests {
     #[ignore = "pre-existing: TypeAssert lazy in new CEK model, default evaluation not yet correct"]
     fn test_typeassert_primitive_eager_with_default() {
         // Primitive TypeAssert with default: MUST eagerly validate to decide whether to use default
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("default".into()))),
-            value: rsp(Expr::Int(999)),
-        })];
+        let entries = vec![surf_ann_entry("default", SurfaceExpression::Int(999))];
 
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
@@ -7782,10 +7787,7 @@ mod tests {
     #[test]
     fn test_annotation_has_structural_fields_default_only() {
         // [@[default: 0] $x] — default-only, no structural fields
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("default".into()))),
-            value: rsp(Expr::Int(0)),
-        })];
+        let entries = vec![surf_ann_entry("default", SurfaceExpression::Int(0))];
         assert!(!annotation_has_structural_fields(
             &Annotation::PropertyDict(entries)
         ));
@@ -7794,10 +7796,13 @@ mod tests {
     #[test]
     fn test_annotation_has_structural_fields_type_only() {
         // [@[type: Int] $x] — type-only, no structural fields
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("type".into()))),
-            value: rsp(Expr::Str("Int".into())),
-        })];
+        let entries = vec![surf_ann_entry(
+            "type",
+            SurfaceExpression::VarRef {
+                name: "Int".into(),
+                escaped: false,
+            },
+        )];
         assert!(!annotation_has_structural_fields(
             &Annotation::PropertyDict(entries)
         ));
@@ -7807,14 +7812,20 @@ mod tests {
     fn test_annotation_has_structural_fields_record_annotation() {
         // [@[name: String age: Int] $x] — has structural fields
         let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("name".into()))),
-                value: rsp(Expr::Str("String".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("age".into()))),
-                value: rsp(Expr::Str("Int".into())),
-            }),
+            surf_ann_entry(
+                "name",
+                SurfaceExpression::VarRef {
+                    name: "String".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry(
+                "age",
+                SurfaceExpression::VarRef {
+                    name: "Int".into(),
+                    escaped: false,
+                },
+            ),
         ];
         assert!(annotation_has_structural_fields(&Annotation::PropertyDict(
             entries
@@ -7825,14 +7836,14 @@ mod tests {
     fn test_annotation_has_structural_fields_mixed_meta_and_record() {
         // [@[name: String default: []] $x] — has structural field "name"
         let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("name".into()))),
-                value: rsp(Expr::Str("String".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::Dict(vec![])),
-            }),
+            surf_ann_entry(
+                "name",
+                SurfaceExpression::VarRef {
+                    name: "String".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
         ];
         assert!(annotation_has_structural_fields(&Annotation::PropertyDict(
             entries
@@ -7847,10 +7858,13 @@ mod tests {
     fn test_elaboration_gap_structural_annotation_dict_passes() {
         // [@[name: String] [name: hello]] with resolved_type=None (no typecheck)
         // Should pass: value is a Dict (tag check succeeds)
-        let ann_entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("name".into()))),
-            value: rsp(Expr::Str("String".into())),
-        })];
+        let ann_entries = vec![surf_ann_entry(
+            "name",
+            SurfaceExpression::VarRef {
+                name: "String".into(),
+                escaped: false,
+            },
+        )];
         let dict_entries = vec![sp(Entry {
             key: Some(sp(Expr::Str("name".into()))),
             value: rsp(Expr::Str("hello".into())),
@@ -7873,10 +7887,13 @@ mod tests {
     fn test_elaboration_gap_structural_annotation_non_dict_fails() {
         // [@[name: String] 42] with resolved_type=None (no typecheck)
         // Should fail: value is Int, not Dict
-        let ann_entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("name".into()))),
-            value: rsp(Expr::Str("String".into())),
-        })];
+        let ann_entries = vec![surf_ann_entry(
+            "name",
+            SurfaceExpression::VarRef {
+                name: "String".into(),
+                escaped: false,
+            },
+        )];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(ann_entries)),
             expr: Box::new(sp(Expr::Int(42))),
@@ -7896,14 +7913,14 @@ mod tests {
         // [@[name: String default: []] 42] with resolved_type=None (no typecheck)
         // Should use default: value is Int (not Dict), default is available
         let ann_entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("name".into()))),
-                value: rsp(Expr::Str("String".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::Dict(vec![])),
-            }),
+            surf_ann_entry(
+                "name",
+                SurfaceExpression::VarRef {
+                    name: "String".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
         ];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(ann_entries)),
@@ -7922,10 +7939,7 @@ mod tests {
     fn test_elaboration_gap_default_only_no_structural_check() {
         // [@[default: 0] "hello"] with resolved_type=None
         // Should pass through without validation (no type, no structural fields)
-        let ann_entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("default".into()))),
-            value: rsp(Expr::Int(0)),
-        })];
+        let ann_entries = vec![surf_ann_entry("default", SurfaceExpression::Int(0))];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(ann_entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),

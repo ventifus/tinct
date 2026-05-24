@@ -6406,10 +6406,22 @@ fn infer_fn(
         Some(ann) => {
             // Check if this is a metadata dict annotation: @[return: Type doc: "..." constraint: ...]
             let actual_ann = match &ann.node {
-                Annotation::PropertyDict(_entries) => {
-                    // TODO(rv2-migrate-annotation Phase 3): restore fn return-annotation PropertyDict
-                    // logic with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
-                    todo!("rv2-migrate-annotation Phase 3: typecheck.rs fn PropertyDict return ann not yet migrated")
+                Annotation::PropertyDict(surface_entries) => {
+                    // Function metadata dict: @[return: Type doc: "..." constraint: ...]
+                    // Convert surface entries to Entry form and delegate to resolve_fn_metadata
+                    // which knows how to extract the return: key and process constraint:, doc:,
+                    // bind:, kinds: keys. Ignore the doc string (not used at typecheck time).
+                    let entries = surface_entries_to_entries(surface_entries);
+                    let (ret, _doc) = resolve_fn_metadata(
+                        &entries,
+                        env,
+                        ann.span,
+                        state,
+                        &mut ann_mapping_opt,
+                        &mut row_ann_mapping_opt,
+                    )
+                    .map_err(|e| vec![e])?;
+                    ret
                 }
                 _ => {
                     // Simple annotation - resolve normally
@@ -6514,7 +6526,9 @@ pub fn scan_type_quality(
                         if let SurfaceExpression::Str(key_name) = &key_node.expr {
                             if key_name == "return" {
                                 // Check if the value is a VarRef to "Unknown"
-                                if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
+                                if let SurfaceExpression::VarRef { name, .. } =
+                                    &entry.node.value.expr
+                                {
                                     return name == "Unknown";
                                 }
                             }
@@ -6902,9 +6916,8 @@ fn check_overbroad_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Entry, SurfaceEntry, SurfaceExpression, SurfaceNode};
+    use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
     use crate::types::{Constraint, Kind};
-    use std::cell::RefCell;
     use std::sync::Arc;
 
     /// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
@@ -8436,9 +8449,10 @@ mod tests {
     fn test_property_dict_non_str_key_falls_back_to_any() {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 10);
-        let ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(Some(SurfaceExpression::Int(42)), SurfaceExpression::Str("Int".into())),
-        ]);
+        let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
+            Some(SurfaceExpression::Int(42)),
+            SurfaceExpression::Str("Int".into()),
+        )]);
         assert_eq!(
             resolve_annotation(
                 &ann,
@@ -8459,9 +8473,13 @@ mod tests {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 10);
         // Use VarRef (unquoted identifier) — SurfaceExpression::Str is for string literal types
-        let ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "Int".into(), escaped: false }),
-        ]);
+        let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
+            None,
+            SurfaceExpression::VarRef {
+                name: "Int".into(),
+                escaped: false,
+            },
+        )]);
         assert_eq!(
             resolve_annotation(
                 &ann,
@@ -8511,12 +8529,13 @@ mod tests {
         // (Uppercase names like "NoSuchType" are treated as nominal variant constructors
         // and succeed with NominalVariant; lowercase names that are not type variables
         // produce an error since they don't match any known primitive or alias.)
-        let ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(
-                Some(SurfaceExpression::Str("x".into())),
-                SurfaceExpression::VarRef { name: "noSuchType".into(), escaped: false },
-            ),
-        ]);
+        let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
+            Some(SurfaceExpression::Str("x".into())),
+            SurfaceExpression::VarRef {
+                name: "noSuchType".into(),
+                escaped: false,
+            },
+        )]);
         let result = resolve_annotation(
             &ann,
             &env,
@@ -8544,9 +8563,10 @@ mod tests {
     fn test_property_dict_literal_value_falls_back_to_any() {
         let env = Rc::new(TypeEnv::new());
         let span = crate::test_util::test_span(1, 1, 1, 10);
-        let ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(Some(SurfaceExpression::Str("default".into())), SurfaceExpression::Int(30)),
-        ]);
+        let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
+            Some(SurfaceExpression::Str("default".into())),
+            SurfaceExpression::Int(30),
+        )]);
         assert_eq!(
             resolve_annotation(
                 &ann,
@@ -8567,15 +8587,13 @@ mod tests {
         let span = crate::test_util::test_span(1, 1, 1, 10);
         // [Fn@Int] -- function type pattern detected (Fn@ prefix) but wrong
         // number of entries: should propagate, not fall back to Any.
-        let ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(
-                None,
-                SurfaceExpression::Annotated {
-                    name: "Fn".into(),
-                    annotation: Spanned::new(Annotation::Simple("Int".into()), span),
-                },
-            ),
-        ]);
+        let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
+            None,
+            SurfaceExpression::Annotated {
+                name: "Fn".into(),
+                annotation: Spanned::new(Annotation::Simple("Int".into()), span),
+            },
+        )]);
         let result = resolve_annotation(
             &ann,
             &env,
@@ -12566,9 +12584,24 @@ mod tests {
         let span = crate::test_util::test_span(1, 1, 1, 20);
         // Use VarRef for type names (unquoted identifiers) — Str is for string literal types
         let ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "Int".into(), escaped: false }),
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "String".into(), escaped: false }),
-            surf_ann_entry_tc(Some(SurfaceExpression::Str("default".into())), SurfaceExpression::Int(0)),
+            surf_ann_entry_tc(
+                None,
+                SurfaceExpression::VarRef {
+                    name: "Int".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry_tc(
+                None,
+                SurfaceExpression::VarRef {
+                    name: "String".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry_tc(
+                Some(SurfaceExpression::Str("default".into())),
+                SurfaceExpression::Int(0),
+            ),
         ]);
         let env = Rc::new(TypeEnv::new());
         let ty = resolve_annotation(
@@ -12596,12 +12629,29 @@ mod tests {
         // `or` is the type-stage keyword for union; `Null` is the empty record type.
         // Use resolve_annotation directly (same pattern as test_union_annotation_basic).
         let span = crate::test_util::test_span(1, 1, 1, 20);
-        let sp = |node: Expr| Spanned::new(node, span);
         // Build [or Int Null] as positional entries: [or, Int, Null]
         let ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "or".into(), escaped: false }),
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "Int".into(), escaped: false }),
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "Null".into(), escaped: false }),
+            surf_ann_entry_tc(
+                None,
+                SurfaceExpression::VarRef {
+                    name: "or".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry_tc(
+                None,
+                SurfaceExpression::VarRef {
+                    name: "Int".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry_tc(
+                None,
+                SurfaceExpression::VarRef {
+                    name: "Null".into(),
+                    escaped: false,
+                },
+            ),
         ]);
         let env = Rc::new(TypeEnv::new());
         let ty = resolve_annotation(
@@ -12636,7 +12686,10 @@ mod tests {
                 .map(|name| {
                     surf_ann_entry_tc(
                         None,
-                        SurfaceExpression::VarRef { name: (*name).into(), escaped: false },
+                        SurfaceExpression::VarRef {
+                            name: (*name).into(),
+                            escaped: false,
+                        },
                     )
                 })
                 .collect(),
@@ -12726,8 +12779,20 @@ mod tests {
         // This simulates [Fn@[Int String]]
         // Use VarRef for type names — SurfaceExpression::Str is for string literal types
         let fn_ann = Annotation::PropertyDict(vec![
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "Int".into(), escaped: false }),
-            surf_ann_entry_tc(None, SurfaceExpression::VarRef { name: "String".into(), escaped: false }),
+            surf_ann_entry_tc(
+                None,
+                SurfaceExpression::VarRef {
+                    name: "Int".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry_tc(
+                None,
+                SurfaceExpression::VarRef {
+                    name: "String".into(),
+                    escaped: false,
+                },
+            ),
         ]);
         let env = Rc::new(TypeEnv::new());
         let ret_ty = resolve_annotation(

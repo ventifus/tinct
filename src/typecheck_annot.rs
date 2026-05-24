@@ -6,7 +6,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
-use crate::ast::{Annotation, Entry, Expr, Span, Spanned, SurfaceExpression, SurfaceNode};
+use crate::ast::{
+    Annotation, Entry, Expr, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode,
+};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 /// Find the closest match to `target` in `candidates` using Levenshtein distance.
@@ -63,6 +65,34 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     }
 
     matrix[len1][len2]
+}
+
+/// Convert a slice of Surface dict entries into the old `Entry`-based representation
+/// used by the Expr-level type annotation resolvers (`resolve_type_dict`,
+/// `resolve_fn_metadata`, etc.).
+///
+/// This is the standard bridge: `SurfaceEntry { key: Option<Arc<SurfaceNode>>, value:
+/// Arc<SurfaceNode> }` → `Entry { key: Option<Spanned<Expr>>, value: Rc<Spanned<Expr>> }`.
+/// It mirrors what `ast_convert::surface_expr_to_expr` does for `SurfaceExpression::Dict`.
+pub(crate) fn surface_entries_to_entries(
+    surface_entries: &[Spanned<SurfaceEntry>],
+) -> Vec<Spanned<Entry>> {
+    surface_entries
+        .iter()
+        .map(|se| {
+            Spanned::new(
+                Entry {
+                    key: se
+                        .node
+                        .key
+                        .as_ref()
+                        .map(crate::ast_convert::surface_node_to_expr),
+                    value: Rc::new(crate::ast_convert::surface_node_to_expr(&se.node.value)),
+                },
+                se.span,
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn expand_type_alias(
@@ -995,10 +1025,35 @@ fn resolve_fn_type(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match ann {
-        Annotation::PropertyDict(_entries) => {
-            // TODO(rv2-migrate-annotation Phase 3): restore full resolve_fn_type PropertyDict logic
-            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
-            todo!("rv2-migrate-annotation Phase 3: resolve_fn_type PropertyDict not yet migrated")
+        Annotation::PropertyDict(surface_entries) => {
+            let entries = surface_entries_to_entries(surface_entries);
+            // Dispatch: if any entry has a named key matching function metadata keys
+            // (return:, constraint:, doc:, bind:, kinds:), treat as fn metadata dict.
+            // If all entries are positional, delegate to resolve_type_dict (handles
+            // [Fn@Return [Params]] and union-style type expressions).
+            let has_fn_key = entries.iter().any(|e| {
+                if let Some(ref key) = e.node.key {
+                    matches!(&key.node, Expr::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
+                } else {
+                    false
+                }
+            });
+            if has_fn_key {
+                let (ret, _doc) =
+                    resolve_fn_metadata(&entries, env, span, state, ann_mapping, row_ann_mapping)?;
+                let ty = Type::Function {
+                    params: vec![],
+                    ret: Box::new(ret),
+                    variadic: false,
+                };
+                crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+                Ok(ty)
+            } else {
+                // All-positional or record-field style — delegate to resolve_type_dict.
+                // Handles [Fn@Return [Params]] (detected by try_resolve_fn_type_expr),
+                // record types, and type constructors.
+                resolve_type_dict(&entries, env, span, state, ann_mapping, row_ann_mapping)
+            }
         }
         _ => {
             // Simple(name) path: fn@Int, fn@a, etc.
@@ -1031,10 +1086,13 @@ fn resolve_annotation_as_type(
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(name, env, span, state, ann_mapping, &row_ref)
         }
-        Annotation::PropertyDict(_entries) => {
-            // TODO(rv2-migrate-annotation Phase 3): restore resolve_annotation_as_type PropertyDict
-            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
-            todo!("rv2-migrate-annotation Phase 3: resolve_annotation_as_type PropertyDict not yet migrated")
+        Annotation::PropertyDict(surface_entries) => {
+            // In a type-expression context, a PropertyDict is always a structural type:
+            // a record type [field: Type ...], a function type [Fn@Return [Params]],
+            // or a type constructor application [Seq Int], [or A B], etc.
+            // Delegate to resolve_type_dict which handles all these forms.
+            let entries = surface_entries_to_entries(surface_entries);
+            resolve_type_dict(&entries, env, span, state, ann_mapping, row_ann_mapping)
         }
         Annotation::Annotated(name, inner) => {
             // For fn annotations, forward to full resolver
@@ -1088,10 +1146,56 @@ pub(crate) fn resolve_annotation(
                             )?;
                             Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
                         }
-                        Annotation::PropertyDict(_entries) => {
-                            // TODO(rv2-migrate-annotation Phase 3): restore Map PropertyDict logic
-                            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
-                            todo!("rv2-migrate-annotation Phase 3: Map@[...] PropertyDict not yet migrated")
+                        Annotation::PropertyDict(surface_entries) => {
+                            // @Map@[key: K value: V] → Map(K, V)
+                            // Look for keyed entries named "key" and "value". If both are
+                            // present, resolve them and build Map(K, V). If only "value" (or
+                            // any single positional entry), treat as Map(Unknown, V).
+                            // Fall back to resolving as a positional type list for other forms.
+                            let entries = surface_entries_to_entries(surface_entries);
+                            let key_entry = entries.iter().find(|e| {
+                                e.node
+                                    .key
+                                    .as_ref()
+                                    .is_some_and(|k| matches!(&k.node, Expr::Str(s) if s == "key"))
+                            });
+                            let value_entry = entries.iter().find(|e| {
+                                e.node.key.as_ref().is_some_and(
+                                    |k| matches!(&k.node, Expr::Str(s) if s == "value"),
+                                )
+                            });
+                            if let Some(v_entry) = value_entry {
+                                let key_ty = if let Some(k_entry) = key_entry {
+                                    resolve_type_expr(
+                                        &k_entry.node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )?
+                                } else {
+                                    Type::Unknown
+                                };
+                                let value_ty = resolve_type_expr(
+                                    &v_entry.node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)))
+                            } else {
+                                // No "value:" key — delegate to resolve_type_dict which handles
+                                // positional forms like [Map K V] (though nested inside @Map@).
+                                resolve_type_dict(
+                                    &entries,
+                                    env,
+                                    span,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )
+                            }
                         }
                         _ => {
                             // Other forms like @Map@Annotated — treat as single value type
@@ -1110,10 +1214,19 @@ pub(crate) fn resolve_annotation(
                 "Record" => {
                     // @Record@[field: Type ...]
                     match inner.as_ref() {
-                        Annotation::PropertyDict(_entries) => {
-                            // TODO(rv2-migrate-annotation Phase 3): restore Record PropertyDict logic
-                            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
-                            todo!("rv2-migrate-annotation Phase 3: Record@[...] PropertyDict not yet migrated")
+                        Annotation::PropertyDict(surface_entries) => {
+                            // @Record@[field: Type ...] → structural record type.
+                            // Delegate to resolve_type_dict which handles record fields,
+                            // row variables (...r), and type constructor applications.
+                            let entries = surface_entries_to_entries(surface_entries);
+                            resolve_type_dict(
+                                &entries,
+                                env,
+                                span,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )
                         }
                         _ => Err(TypeError::new(
                             "Record parameterization requires a dict: @Record@[field: Type ...]",
@@ -1125,10 +1238,25 @@ pub(crate) fn resolve_annotation(
                     // @Tuple@[T0 T1 T2] → closed record {0: T0, 1: T1, 2: T2}
                     // Parameterized form: takes positional entries as element types.
                     match inner.as_ref() {
-                        Annotation::PropertyDict(_entries) => {
-                            // TODO(rv2-migrate-annotation Phase 3): restore Tuple PropertyDict logic
-                            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
-                            todo!("rv2-migrate-annotation Phase 3: Tuple@[...] PropertyDict not yet migrated")
+                        Annotation::PropertyDict(surface_entries) => {
+                            // @Tuple@[T0 T1 T2] → closed record {0: T0, 1: T1, 2: T2}.
+                            // All entries must be positional (auto-indexed); each resolves
+                            // as an element type in declaration order.
+                            let entries = surface_entries_to_entries(surface_entries);
+                            let mut fields = HashMap::new();
+                            for (idx, entry) in entries.iter().enumerate() {
+                                let elem_ty = resolve_type_expr(
+                                    &entry.node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                fields.insert(idx.to_string(), elem_ty);
+                            }
+                            let ty = Type::Record(Row { fields });
+                            crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+                            Ok(ty)
                         }
                         _ => {
                             // Single-type form: @Tuple@Int → {0: Int}
@@ -1171,12 +1299,44 @@ pub(crate) fn resolve_annotation(
                 }
             }
         }
-        Annotation::PropertyDict(_entries) => {
-            // TODO(rv2-migrate-annotation Phase 3): restore full resolve_annotation PropertyDict logic
-            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
-            // This arm handles: @[label: name], @[or A B], @[Seq Int], @[Map K V],
-            // @[Handle Readable], record types, type shorthand (@[type: T default: V]).
-            todo!("rv2-migrate-annotation Phase 3: resolve_annotation PropertyDict not yet migrated")
+        Annotation::PropertyDict(surface_entries) => {
+            // PropertyDict can mean different things depending on its keys:
+            //
+            // 1. Type shorthand: @[type: T  default: V  repr: R]
+            //    If a "type:" key is present, resolve its value as the annotation type.
+            //    The "default:" and "repr:" keys are handled separately by resolve_type_assert.
+            //
+            // 2. Structural type: @[field: Type ...], @[or A B], @[Seq Int], etc.
+            //    No "type:" key → delegate to resolve_property_dict_as_record which calls
+            //    resolve_type_dict (handles union/intersection/record types, type constructors,
+            //    Fn type expressions) and falls back to Unknown for metadata-only annotations.
+            //
+            // Check for the "type:" key using SurfaceEntry directly (avoids allocation when
+            // the key is present and we only need the value node).
+            let type_value_node = surface_entries.iter().find_map(|se| {
+                let key_node = se.node.key.as_ref()?;
+                match &key_node.expr {
+                    SurfaceExpression::Str(s) if s == "type" => Some(&se.node.value),
+                    _ => None,
+                }
+            });
+
+            if let Some(type_node) = type_value_node {
+                // @[type: T ...] shorthand — resolve the type: value as a type expression.
+                let expr = crate::ast_convert::surface_node_to_expr(type_node);
+                resolve_type_expr(&expr, env, state, ann_mapping, row_ann_mapping)
+            } else {
+                // No "type:" key — treat as a structural type expression or metadata annotation.
+                let entries = surface_entries_to_entries(surface_entries);
+                resolve_property_dict_as_record(
+                    &entries,
+                    env,
+                    span,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )
+            }
         }
     }
 }
