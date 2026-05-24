@@ -89,7 +89,7 @@ fn ast_to_dict_expr(
 // Phase 4: `surface_program_to_dict` rewritten to use native SurfaceDocument iteration.
 // Phase 5: `dict_to_surface_node` rewrites the reverse (dict→Surface) direction natively
 //          for all variants. Unknown tags return a hard AstError; there is no fallback.
-//          `dict_to_surface_program` still bridges through the old File-based `dict_to_file`.
+//          `dict_to_surface_program` bridges through `dict_to_file` (old File bridge).
 // Phase 6: `ast_to_dict` and `document_to_dict` (old File/Document-based emitters) deleted.
 //          `ast_to_dict_expr` retained — still used by `annotation_to_thunk_id` for
 //          compound annotation values (non-Str/Int `Expr` nodes in PropertyDict).
@@ -2737,13 +2737,13 @@ fn list_to_thunk_id(
 ///
 /// **Variant payload constraint**: Variant payloads must be materialized before passing
 /// to `dict_to_ast`. Lazy Variant payloads (from `[variant ...]`) will fail here.
-/// AST nodes produced by `ast_to_dict` use `Thunk::new_materialized` so the round-trip
-/// is safe. User code constructing Variant-form AST nodes must call `deep_materialize`
-/// on the variant before passing it to this function.
+/// AST nodes produced by `surface_program_to_dict` use `Thunk::new_materialized` so the
+/// round-trip is safe. User code constructing Variant-form AST nodes must call
+/// `deep_materialize` on the variant before passing it to this function.
 ///
 /// # Visibility
 /// Not part of the public API — callers should use `dict_to_surface_node` instead.
-/// Retained for `#[cfg(test)]` usage only; no longer used as a fallback path.
+/// Retained as the implementation of `dict_to_file` (backing `dict_to_surface_program`).
 #[doc(hidden)]
 fn dict_to_ast(
     val: &Value,

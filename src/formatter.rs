@@ -31,7 +31,7 @@ pub fn format_source_tinct_with_dir(
     script_path: &std::path::Path,
     base_dir: Option<cap_std::fs::Dir>,
 ) -> Result<String, String> {
-    use crate::ast_dict::{surface_program_to_dict, AstToDictOpts}; // TODO(parts-e): remove when ast_dict is rewritten on SurfaceProgram or formatter no longer uses ast_to_dict
+    use crate::ast_dict::{surface_program_to_dict, AstToDictOpts};
     use crate::desugar; // TODO(parts-e): remove when desugar.rs is deleted (blocked on evaluator CoreExpr migration)
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;

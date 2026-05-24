@@ -1616,12 +1616,12 @@ pub(crate) fn builtin_cap_identity(
     })
 }
 
-/// `load`: parse a source String into a file AST dict (same format as `ast-of`/`ast_to_dict`).
+/// `load`: parse a source String into a file AST dict (same format as `ast-of`).
 ///
 /// Takes 1 positional arg (String source text) and an optional `name:` named arg (String,
 /// used as the provenance hint for error messages).
 ///
-/// Pipeline: parse → macro-expand → desugar → ast_to_dict.
+/// Pipeline: parse → macro-expand → desugar → surface_program_to_dict.
 /// Returns `Value::Program(Arc<SurfaceProgram>)` — the runtime-v2 native AST type.
 ///
 /// This is the primitive underlying the `include` pipeline in the include-decomposition design.
