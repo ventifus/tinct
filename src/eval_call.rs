@@ -375,12 +375,14 @@ pub(crate) fn split_variadic(params: &[Param]) -> (&[Param], Option<&Param>) {
 
 /// Extract the default value expression from a param's annotation, if present.
 /// default: is specified via PropertyDict annotation with a "default" key.
+/// Returns old Spanned<Expr> form via bridge for compatibility with eval_call evaluation sites.
+/// TODO(rv2-migrate-annotation Phase 6): change return type to Option<Arc<SurfaceNode>>.
 pub(crate) fn get_default(param: &Param) -> Option<Spanned<Expr>> {
     param
         .annotation
         .as_ref()
         .and_then(|ann| ann.node.get_property(DEFAULT_ANNOTATION_KEY))
-        .cloned()
+        .map(|node| crate::ast_convert::surface_node_to_expr(node))
 }
 
 #[cfg(test)]

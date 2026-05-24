@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
-use crate::ast::{Annotation, Entry, Expr, Span, Spanned, SurfaceNode};
+use crate::ast::{Annotation, Entry, Expr, Span, Spanned, SurfaceExpression, SurfaceNode};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 /// Find the closest match to `target` in `candidates` using Levenshtein distance.
@@ -15,6 +15,7 @@ use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, 
 /// Only considers `target` strings of length ≥ 3 to avoid false positives for
 /// short field names like "x", "id", "y" that happen to be close to short
 /// annotation keywords like "is".
+#[allow(dead_code)]
 fn find_closest_match<'a>(target: &str, candidates: &[&'a str]) -> Option<&'a str> {
     if target.chars().count() < 3 {
         return None;
@@ -36,6 +37,7 @@ fn find_closest_match<'a>(target: &str, candidates: &[&'a str]) -> Option<&'a st
 }
 
 /// Compute Levenshtein distance between two strings.
+#[allow(dead_code)]
 fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     let len1 = s1.chars().count();
     let len2 = s2.chars().count();
@@ -119,7 +121,9 @@ pub(crate) fn resolve_type_assert(
     }
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
-    if let Some(default_expr) = annotation.node.get_property("default") {
+    if let Some(default_node) = annotation.node.get_property("default") {
+        let default_expr_bridged = crate::ast_convert::surface_node_to_expr(default_node);
+        let default_expr = &default_expr_bridged;
         match infer_expr(default_expr, env, state, type_map) {
             Ok(default_ty) => {
                 // Apply state.subst to both types before comparison — access-chain constraints
@@ -155,8 +159,8 @@ pub(crate) fn resolve_type_assert(
     // Validate repr: storage hint if present.
     // Valid values: "u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64".
     // Must be consistent with the declared type (must be numeric).
-    if let Some(repr_expr) = annotation.node.get_property("repr") {
-        if let Expr::Str(ref repr_val) = repr_expr.node {
+    if let Some(repr_node) = annotation.node.get_property("repr") {
+        if let SurfaceExpression::Str(ref repr_val) = repr_node.expr {
             const VALID_REPRS: &[&str] = &["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"];
             if !VALID_REPRS.contains(&repr_val.as_str()) {
                 return Err(vec![TypeError::new(
@@ -164,7 +168,7 @@ pub(crate) fn resolve_type_assert(
                         "invalid repr: \"{repr_val}\" — must be one of: {}",
                         VALID_REPRS.join(", ")
                     ),
-                    repr_expr.span,
+                    repr_node.span,
                 )]);
             }
             // Check consistency: repr requires a numeric type (Int or Number)
@@ -175,7 +179,7 @@ pub(crate) fn resolve_type_assert(
                         "repr: \"{repr_val}\" requires a numeric type, but annotation declares {}",
                         expected
                     ),
-                    repr_expr.span,
+                    repr_node.span,
                 )]);
             }
         }
@@ -308,6 +312,7 @@ pub(crate) fn resolve_annotated(
 /// 5. `doc:` — extracts string literal, returned as Option<String>
 ///
 /// Returns (return_type, doc_string).
+#[allow(dead_code)]
 pub(crate) fn resolve_fn_metadata(
     entries: &[Spanned<Entry>],
     env: &TypeEnv,
@@ -990,47 +995,10 @@ fn resolve_fn_type(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     match ann {
-        Annotation::PropertyDict(entries) => {
-            // Check for metadata dict vs union return type
-            let has_metadata_key = entries.iter().any(|e| {
-                e.node.key.as_ref().is_some_and(|k| {
-                    matches!(
-                        &k.node,
-                        Expr::Str(s) if s == "return" || s == "constraint" || s == "doc" || s == "bind" || s == "kinds"
-                    )
-                })
-            });
-
-            let _all_positional = entries.iter().all(|e| e.node.key.is_none());
-
-            if has_metadata_key {
-                // Check for mixed named+positional
-                if !entries.iter().all(|e| e.node.key.is_some()) {
-                    return Err(TypeError::new(
-                        "fn annotation must use named keys (return:, constraint:, doc:, bind:, kinds:)",
-                        span,
-                    ));
-                }
-
-                // Metadata dict path — NOTE: doc string is discarded here
-                // (it's only stored on TypeScheme during function binding inference)
-                let (ret, _doc) =
-                    resolve_fn_metadata(entries, env, span, state, ann_mapping, row_ann_mapping)?;
-                let ty = Type::Function {
-                    params: vec![],
-                    ret: Box::new(ret),
-                    variadic: false,
-                };
-                crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
-                Ok(ty)
-            } else {
-                // No metadata keys found — all positional entries are no longer supported
-                // (positional-union syntax was removed in type-ann-v2-resolver sprint)
-                Err(TypeError::new(
-                    "fn@[...] annotations must use named keys (return:, bind:, constraint:, doc:, kinds:). Use fn@[return: T] for return type.",
-                    span,
-                ))
-            }
+        Annotation::PropertyDict(_entries) => {
+            // TODO(rv2-migrate-annotation Phase 3): restore full resolve_fn_type PropertyDict logic
+            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
+            todo!("rv2-migrate-annotation Phase 3: resolve_fn_type PropertyDict not yet migrated")
         }
         _ => {
             // Simple(name) path: fn@Int, fn@a, etc.
@@ -1063,8 +1031,10 @@ fn resolve_annotation_as_type(
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
             resolve_type_name(name, env, span, state, ann_mapping, &row_ref)
         }
-        Annotation::PropertyDict(entries) => {
-            resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping)
+        Annotation::PropertyDict(_entries) => {
+            // TODO(rv2-migrate-annotation Phase 3): restore resolve_annotation_as_type PropertyDict
+            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
+            todo!("rv2-migrate-annotation Phase 3: resolve_annotation_as_type PropertyDict not yet migrated")
         }
         Annotation::Annotated(name, inner) => {
             // For fn annotations, forward to full resolver
@@ -1118,61 +1088,10 @@ pub(crate) fn resolve_annotation(
                             )?;
                             Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
                         }
-                        Annotation::PropertyDict(entries) => {
-                            // @Map@[K: V] or @Map@[key: K value: V]
-                            // Check for compact form: single entry with key and value
-                            if entries.len() == 1 && entries[0].node.key.is_some() {
-                                // Compact form: @Map@[String: Int]
-                                let key_expr = entries[0].node.key.as_ref().unwrap();
-                                let value_expr = &entries[0].node.value;
-                                let key_type = resolve_type_expr(
-                                    key_expr,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                let value_type = resolve_type_expr(
-                                    value_expr,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                            } else {
-                                // Named form: @Map@[key: K value: V]
-                                let mut key_type = Type::Unknown;
-                                let mut value_type = Type::Unknown;
-                                for entry in entries {
-                                    if let Some(key_expr) = &entry.node.key {
-                                        if let Expr::Str(key_name) = &key_expr.node {
-                                            match key_name.as_str() {
-                                                "key" => {
-                                                    key_type = resolve_type_expr(
-                                                        &entry.node.value,
-                                                        env,
-                                                        state,
-                                                        ann_mapping,
-                                                        row_ann_mapping,
-                                                    )?;
-                                                }
-                                                "value" => {
-                                                    value_type = resolve_type_expr(
-                                                        &entry.node.value,
-                                                        env,
-                                                        state,
-                                                        ann_mapping,
-                                                        row_ann_mapping,
-                                                    )?;
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                }
-                                Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                            }
+                        Annotation::PropertyDict(_entries) => {
+                            // TODO(rv2-migrate-annotation Phase 3): restore Map PropertyDict logic
+                            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
+                            todo!("rv2-migrate-annotation Phase 3: Map@[...] PropertyDict not yet migrated")
                         }
                         _ => {
                             // Other forms like @Map@Annotated — treat as single value type
@@ -1191,16 +1110,10 @@ pub(crate) fn resolve_annotation(
                 "Record" => {
                     // @Record@[field: Type ...]
                     match inner.as_ref() {
-                        Annotation::PropertyDict(entries) => {
-                            // Resolve entries as Record fields
-                            resolve_property_dict_as_record(
-                                entries,
-                                env,
-                                span,
-                                state,
-                                ann_mapping,
-                                row_ann_mapping,
-                            )
+                        Annotation::PropertyDict(_entries) => {
+                            // TODO(rv2-migrate-annotation Phase 3): restore Record PropertyDict logic
+                            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
+                            todo!("rv2-migrate-annotation Phase 3: Record@[...] PropertyDict not yet migrated")
                         }
                         _ => Err(TypeError::new(
                             "Record parameterization requires a dict: @Record@[field: Type ...]",
@@ -1212,19 +1125,10 @@ pub(crate) fn resolve_annotation(
                     // @Tuple@[T0 T1 T2] → closed record {0: T0, 1: T1, 2: T2}
                     // Parameterized form: takes positional entries as element types.
                     match inner.as_ref() {
-                        Annotation::PropertyDict(entries) => {
-                            let mut fields = HashMap::new();
-                            for (idx, entry) in entries.iter().enumerate() {
-                                let elem_ty = resolve_type_expr(
-                                    &entry.node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                fields.insert(idx.to_string(), elem_ty);
-                            }
-                            Ok(Type::Record(Row { fields }))
+                        Annotation::PropertyDict(_entries) => {
+                            // TODO(rv2-migrate-annotation Phase 3): restore Tuple PropertyDict logic
+                            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
+                            todo!("rv2-migrate-annotation Phase 3: Tuple@[...] PropertyDict not yet migrated")
                         }
                         _ => {
                             // Single-type form: @Tuple@Int → {0: Int}
@@ -1267,412 +1171,17 @@ pub(crate) fn resolve_annotation(
                 }
             }
         }
-        Annotation::PropertyDict(entries) => {
-            // Check for @[label: name] named Label-kinded TypeVar form.
-            // When the dict has exactly one entry with key "label" and a bare-name value,
-            // create a named Label-kinded TypeVar and register it in kind_env and ann_mapping.
-            if entries.len() == 1 {
-                if let Some(key_expr) = &entries[0].node.key {
-                    if let Expr::Str(key_name) = &key_expr.node {
-                        if key_name == "label" {
-                            // Extract the label TypeVar name from the value
-                            if let Expr::VarRef { name, .. } = &entries[0].node.value.node {
-                                // Check if this is a lowercase name (TypeVar convention)
-                                if name.starts_with(|c: char| c.is_lowercase()) {
-                                    // Create or get the TypeVar for this label name
-                                    let type_var = if let Some(ref mut mapping) = ann_mapping {
-                                        if let Some(existing_var) = mapping.get(name) {
-                                            existing_var.clone()
-                                        } else {
-                                            let fresh = format!("_t{}", state.name_counter);
-                                            state.name_counter =
-                                                state.name_counter.saturating_add(1);
-                                            state.levels.insert(fresh.clone(), state.level);
-                                            state
-                                                .kind_env
-                                                .insert(fresh.clone(), crate::types::Kind::Label);
-                                            // Register source name for better T013 diagnostics
-                                            state
-                                                .type_var_source_names
-                                                .insert(fresh.clone(), name.clone());
-                                            mapping.insert(name.clone(), fresh.clone());
-                                            fresh
-                                        }
-                                    } else {
-                                        return Err(TypeError::new(
-                                            "label annotation requires an annotation mapping context",
-                                            span,
-                                        ));
-                                    };
-                                    let level =
-                                        *state.levels.get(&type_var).unwrap_or(&state.level);
-                                    return Ok(Type::TypeVar(type_var, level));
-                                } else {
-                                    return Err(TypeError::new(
-                                        "label: value must be a lowercase type variable name",
-                                        entries[0].node.value.span,
-                                    ));
-                                }
-                            } else {
-                                return Err(TypeError::new(
-                                    "label: value must be a bare name (type variable)",
-                                    entries[0].node.value.span,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Collect positional entries (key=None) for union type construction.
-            // Guard: if entries look like a type dict (e.g. [Fn@Return [Params]]
-            // function type pattern, or a record type with all keyed entries), delegate
-            // to the existing resolve_property_dict_as_record path instead. Union syntax
-            // is only for pure type-name positional entries like @[Int String Bool].
-            let positional_entries: Vec<_> =
-                entries.iter().filter(|e| e.node.key.is_none()).collect();
-
-            if !positional_entries.is_empty() && !entries_look_like_type_dict(entries) {
-                // Type-stage keywords in the wrapped position: @[[or A B]] / @[[all A B]] / @[[without A]].
-                //
-                // The parser always produces Expr::Call { implied: true, func: VarRef("or"), args: [A, B] }
-                // for these forms. We dispatch to resolve_type_expr which handles the keyword.
-                if positional_entries.len() == 1 {
-                    let inner_expr = &positional_entries[0].node.value;
-                    if let Expr::Call {
-                        implied: true,
-                        func,
-                        ..
-                    } = &inner_expr.node
-                    {
-                        if let Expr::VarRef { name: kw, .. } = &func.node {
-                            if kw == "or" || kw == "all" || kw == "without" {
-                                return resolve_type_expr(
-                                    inner_expr,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Built-in type constructor application: @[or Int Null], @[Seq Int], @[Map String Int]
-                // @[all A B] and @[without A] are handled in the single-positional-entry arm above.
-                // Check BEFORE parameterized alias lookup so built-in constructors have priority.
-                if !positional_entries.is_empty() {
-                    if let Expr::VarRef { name, .. } = &positional_entries[0].node.value.node {
-                        match name.as_str() {
-                            "or" => {
-                                // @[or T1 T2 ...] → Union([T1, T2, ...])
-                                // `or` is a type-stage function name that maps directly to Union.
-                                if positional_entries.len() < 2 {
-                                    return Err(TypeError::new(
-                                        "@[or ...] requires at least one type argument",
-                                        span,
-                                    ));
-                                }
-                                let mut members = Vec::new();
-                                for entry in &positional_entries[1..] {
-                                    let ty = resolve_type_expr(
-                                        &entry.node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?;
-                                    members.push(ty);
-                                }
-                                return Ok(Type::normalize_union(members));
-                            }
-                            "all" => {
-                                // @[all T1 T2 ...] → Intersection([T1, T2, ...])
-                                if positional_entries.len() < 2 {
-                                    return Err(TypeError::new(
-                                        "@[all ...] requires at least one type argument",
-                                        span,
-                                    ));
-                                }
-                                let mut members = Vec::new();
-                                for entry in &positional_entries[1..] {
-                                    let ty = resolve_type_expr(
-                                        &entry.node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?;
-                                    members.push(ty);
-                                }
-                                return Ok(Type::normalize_intersection(members));
-                            }
-                            "without" => {
-                                // @[without T] → Negation(T)
-                                if positional_entries.len() != 2 {
-                                    return Err(TypeError::new(
-                                        "@[without T] requires exactly one type argument",
-                                        span,
-                                    ));
-                                }
-                                let inner = resolve_type_expr(
-                                    &positional_entries[1].node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                return Ok(Type::Negation(Box::new(inner)));
-                            }
-                            "Seq" => {
-                                if positional_entries.len() == 2 {
-                                    let elem_ty = resolve_type_expr(
-                                        &positional_entries[1].node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?;
-                                    return Ok(Type::Seq(Box::new(elem_ty)));
-                                } else {
-                                    return Err(TypeError::new(
-                                        "Seq requires 1 type argument",
-                                        span,
-                                    ));
-                                }
-                            }
-                            "Map" => {
-                                if positional_entries.len() == 3 {
-                                    let key_ty = resolve_type_expr(
-                                        &positional_entries[1].node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?;
-                                    let value_ty = resolve_type_expr(
-                                        &positional_entries[2].node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?;
-                                    return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
-                                } else if positional_entries.len() == 2 {
-                                    // Single-arg form: @[Map Int] → Map(Unknown, Int)
-                                    let value_ty = resolve_type_expr(
-                                        &positional_entries[1].node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?;
-                                    return Ok(Type::Map(
-                                        Box::new(Type::Unknown),
-                                        Box::new(value_ty),
-                                    ));
-                                } else {
-                                    return Err(TypeError::new(
-                                        "Map requires 1 or 2 type arguments",
-                                        span,
-                                    ));
-                                }
-                            }
-                            "Handle" => {
-                                // @[Handle Readable Writable] → Handle(Record({ __cap_flag_readable, __cap_flag_writable }))
-                                // Each capability flag becomes a field in the capability row.
-                                // This matches the internal representation used by check_open.
-                                if positional_entries.len() < 2 {
-                                    return Err(TypeError::new(
-                                        "Handle requires at least one capability flag argument",
-                                        span,
-                                    ));
-                                }
-                                let mut cap_fields = HashMap::new();
-                                for entry in &positional_entries[1..] {
-                                    // Extract capability flag name from VarRef
-                                    if let Expr::VarRef {
-                                        name: flag_name, ..
-                                    } = &entry.node.value.node
-                                    {
-                                        // Known capability flags: Readable, Writable, Appendable, Binary, Text, Seekable
-                                        // Normalize to lowercase for field name
-                                        let canonical_flag = match flag_name.as_str() {
-                                            "Readable" => "readable",
-                                            "Writable" => "writable",
-                                            "Appendable" => "appendable",
-                                            "Binary" => "binary",
-                                            "Text" => "text",
-                                            "Seekable" => "seekable",
-                                            _ => {
-                                                return Err(TypeError::new(
-                                                    format!(
-                                                        "Unknown capability flag: {}. Expected Readable, Writable, Appendable, Binary, Text, or Seekable",
-                                                        flag_name
-                                                    ),
-                                                    span,
-                                                ));
-                                            }
-                                        };
-                                        cap_fields.insert(
-                                            format!("__cap_flag_{}", canonical_flag),
-                                            Type::Record(Row {
-                                                fields: HashMap::new(),
-                                            }),
-                                        );
-                                    } else {
-                                        return Err(TypeError::new(
-                                            "Handle capability flags must be simple names (e.g., Readable, Writable)",
-                                            span,
-                                        ));
-                                    }
-                                }
-                                let cap_row = Type::Record(Row { fields: cap_fields });
-                                return Ok(Type::Handle(Box::new(cap_row)));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // Check for parameterized type alias application: @[AliasName Arg1 Arg2]
-                // When the first positional entry is a VarRef referring to a parameterized
-                // type alias, treat remaining entries as type arguments rather than union members.
-                if positional_entries.len() >= 2 {
-                    if let Expr::VarRef { name, .. } = &positional_entries[0].node.value.node {
-                        if let Some(alias) = env.get_type_alias(name) {
-                            if !alias.params.is_empty() {
-                                let mut type_args = Vec::new();
-                                for entry in &positional_entries[1..] {
-                                    type_args.push(resolve_type_expr(
-                                        &entry.node.value,
-                                        env,
-                                        state,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                    )?);
-                                }
-                                if type_args.len() != alias.params.len() {
-                                    return Err(TypeError::new(
-                                        format!(
-                                            "type alias '{}' expects {} type parameter(s), got {}",
-                                            name,
-                                            alias.params.len(),
-                                            type_args.len()
-                                        ),
-                                        span,
-                                    ));
-                                }
-                                return instantiate_type_alias(alias, &type_args, state);
-                            }
-                        }
-                    }
-                }
-
-                // Positional entries create a union type
-                let mut member_types = Vec::new();
-                for entry in &positional_entries {
-                    let member_ty = resolve_type_expr(
-                        &entry.node.value,
-                        env,
-                        state,
-                        ann_mapping,
-                        row_ann_mapping,
-                    )?;
-                    member_types.push(member_ty);
-                }
-                // Use normalize_union to flatten, deduplicate, and sort
-                Ok(Type::normalize_union(member_types))
-            } else if let Some(type_val) = ann.get_property("type") {
-                // Check if this is a type expression shorthand (@[type: T default: V])
-                // or a record with a field named "type" (@[type: String id: Int]).
-                // Type expression shorthand only has keys: type, default, repr, is, doc.
-                // If there are other keys, it's a record type.
-                const ANNOTATION_PROPERTIES: &[&str] = &["type", "default", "repr", "is", "doc"];
-                let has_other_keys = entries.iter().any(|entry| {
-                    if let Some(key_expr) = &entry.node.key {
-                        if let Expr::Str(key_name) = &key_expr.node {
-                            return !ANNOTATION_PROPERTIES.contains(&key_name.as_str());
-                        }
-                    }
-                    false
-                });
-
-                if has_other_keys {
-                    // Has non-annotation keys → treat as record type
-                    // But warn if any key looks like a typo of an annotation property
-                    for entry in entries.iter() {
-                        if let Some(key_expr) = &entry.node.key {
-                            if let Expr::Str(key_name) = &key_expr.node {
-                                if !ANNOTATION_PROPERTIES.contains(&key_name.as_str()) {
-                                    if let Some(closest) =
-                                        find_closest_match(key_name, ANNOTATION_PROPERTIES)
-                                    {
-                                        state.diagnostics.push(crate::error::TypeDiagnostic {
-                                            message: format!(
-                                                "unrecognized TypeAssert annotation key '{}' — did you mean '{}'? \
-                                                 (valid annotation keys: {})",
-                                                key_name, closest, ANNOTATION_PROPERTIES.join(", ")
-                                            ),
-                                            span: key_expr.span,
-                                            code: "W043",
-                                            level: crate::error::DiagnosticLevel::Warn,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    resolve_property_dict_as_record(
-                        entries,
-                        env,
-                        span,
-                        state,
-                        ann_mapping,
-                        row_ann_mapping,
-                    )
-                } else {
-                    // Only annotation properties → treat as type expression shorthand
-                    resolve_type_expr(type_val, env, state, ann_mapping, row_ann_mapping)
-                }
-            } else {
-                // No "type" property → treat as record type
-                // But warn if any key looks like a typo of an annotation property
-                const ANNOTATION_PROPERTIES: &[&str] = &["type", "default", "repr", "is", "doc"];
-                for entry in entries.iter() {
-                    if let Some(key_expr) = &entry.node.key {
-                        if let Expr::Str(key_name) = &key_expr.node {
-                            if let Some(closest) =
-                                find_closest_match(key_name, ANNOTATION_PROPERTIES)
-                            {
-                                state.diagnostics.push(crate::error::TypeDiagnostic {
-                                    message: format!(
-                                        "unrecognized TypeAssert annotation key '{}' — did you mean '{}'? \
-                                         (valid annotation keys: {})",
-                                        key_name, closest, ANNOTATION_PROPERTIES.join(", ")
-                                    ),
-                                    span: key_expr.span,
-                                    code: "W043",
-                                    level: crate::error::DiagnosticLevel::Warn,
-                                });
-                            }
-                        }
-                    }
-                }
-                resolve_property_dict_as_record(
-                    entries,
-                    env,
-                    span,
-                    state,
-                    ann_mapping,
-                    row_ann_mapping,
-                )
-            }
+        Annotation::PropertyDict(_entries) => {
+            // TODO(rv2-migrate-annotation Phase 3): restore full resolve_annotation PropertyDict logic
+            // with SurfaceEntry/SurfaceExpression. Stubbed for Phase 1 compilation.
+            // This arm handles: @[label: name], @[or A B], @[Seq Int], @[Map K V],
+            // @[Handle Readable], record types, type shorthand (@[type: T default: V]).
+            todo!("rv2-migrate-annotation Phase 3: resolve_annotation PropertyDict not yet migrated")
         }
     }
 }
 
+#[allow(dead_code)]
 fn resolve_property_dict_as_record(
     entries: &[Spanned<Entry>],
     env: &TypeEnv,
@@ -1702,6 +1211,7 @@ fn resolve_property_dict_as_record(
 /// pattern. When entries contain literal values (Int, Float, Bool) or
 /// auto-indexed non-function entries, they are annotation metadata rather than
 /// type definitions, and type resolution errors should be swallowed.
+#[allow(dead_code)]
 fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
     // Detect `[Fn@Return [Params]]` function type pattern: first entry is
     // auto-indexed with an Annotated node whose name is "Fn".

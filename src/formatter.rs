@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    Annotation, Entry, Spanned, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceNamedArg,
+    Annotation, Spanned, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceNamedArg,
     SurfaceNode, SurfaceParam,
 };
 use crate::parser::{parse, ParseError, ParseOutput};
@@ -935,25 +935,25 @@ impl<'a> Formatter<'a> {
     }
 
     /// Measure the formatted width of a `PropertyDict` annotation entry list.
-    /// Uses `Expr::Display` to render keys and values since annotations use the old `Entry` type.
-    fn measure_annotation_dict_width(&self, entries: &[Spanned<Entry>]) -> usize {
+    /// Uses `SurfaceNode::Display` to render keys and values.
+    fn measure_annotation_dict_width(&self, entries: &[Spanned<SurfaceEntry>]) -> usize {
         let mut width = 2; // [ and ]
         for (i, entry) in entries.iter().enumerate() {
             if i > 0 {
                 width += 1; // space
             }
             if let Some(key) = &entry.node.key {
-                width += format!("{}", key.node).len();
+                width += format!("{key}").len();
                 width += 2; // ": "
             }
-            width += format!("{}", entry.node.value.node).len();
+            width += format!("{}", entry.node.value).len();
         }
         width
     }
 
     /// Format a `PropertyDict` annotation entry list as a bracketed dict.
-    /// Uses `Expr::Display` to render keys and values since annotations use the old `Entry` type.
-    fn format_annotation_dict(&mut self, entries: &[Spanned<Entry>]) {
+    /// Uses `SurfaceNode::Display` to render keys and values.
+    fn format_annotation_dict(&mut self, entries: &[Spanned<SurfaceEntry>]) {
         if entries.is_empty() {
             self.output.push_str("[]");
             return;
@@ -967,10 +967,10 @@ impl<'a> Formatter<'a> {
                     self.output.push(' ');
                 }
                 if let Some(key) = &entry.node.key {
-                    self.output.push_str(&format!("{}", key.node));
+                    self.output.push_str(&format!("{key}"));
                     self.output.push_str(": ");
                 }
-                self.output.push_str(&format!("{}", entry.node.value.node));
+                self.output.push_str(&format!("{}", entry.node.value));
             }
         } else {
             self.indent_level += 1;
@@ -978,10 +978,10 @@ impl<'a> Formatter<'a> {
                 self.push_newline();
                 self.write_indent();
                 if let Some(key) = &entry.node.key {
-                    self.output.push_str(&format!("{}", key.node));
+                    self.output.push_str(&format!("{key}"));
                     self.output.push_str(": ");
                 }
-                self.output.push_str(&format!("{}", entry.node.value.node));
+                self.output.push_str(&format!("{}", entry.node.value));
             }
             self.indent_level -= 1;
             self.push_newline();

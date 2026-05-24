@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{infer_expr, resolve_annotation, resolve_type_expr, TypeMap};
-use crate::ast::{Entry, Expr, Span, Spanned, SurfaceEntry};
+use crate::ast::{Entry, Expr, Span, Spanned, SurfaceEntry, SurfaceExpression};
 use crate::types::{
     generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
@@ -666,8 +666,8 @@ pub(crate) fn infer_dict(
                     let key_doc = if let Some(ref key_expr) = entry.node.key {
                         match &key_expr.node {
                             Expr::Annotated { annotation, .. } => {
-                                annotation.node.get_property("doc").and_then(|doc_value| {
-                                    if let Expr::Str(doc_string) = &doc_value.node {
+                                annotation.node.get_property("doc").and_then(|doc_node| {
+                                    if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
                                         Some(doc_string.clone())
                                     } else {
                                         None
@@ -683,8 +683,8 @@ pub(crate) fn infer_dict(
                     // Extract doc string from value annotation (e.g., [fn@[doc: "..."] ...])
                     let value_doc = match &entry.node.value.node {
                         Expr::Fn { return_ann, .. } => return_ann.as_ref().and_then(|ann| {
-                            ann.node.get_property("doc").and_then(|doc_value| {
-                                if let Expr::Str(doc_string) = &doc_value.node {
+                            ann.node.get_property("doc").and_then(|doc_node| {
+                                if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
                                     Some(doc_string.clone())
                                 } else {
                                     None

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::{Annotation, CoreExpr, Expr, Span, Spanned};
+use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::builtins::{flatten_overlay, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
@@ -2307,9 +2307,11 @@ pub(crate) async fn apply_cont(
                                 let default_opt = annotation
                                     .node
                                     .get_property(DEFAULT_ANNOTATION_KEY)
-                                    .map(|expr| {
+                                    .map(|node| {
                                         (
-                                            Arc::new(crate::ast_convert::expr_to_core_expr(expr)),
+                                            Arc::new(crate::ast_convert::expr_to_core_expr(
+                                                &crate::ast_convert::surface_node_to_expr(node),
+                                            )),
                                             Arc::clone(&env),
                                         )
                                     });
@@ -2347,14 +2349,14 @@ pub(crate) async fn apply_cont(
                                     }
                                 }
                             } else {
-                                if let Some(default_expr) =
+                                if let Some(default_node) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                                 {
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     Action::EvalCore {
                                         expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            default_expr,
+                                            &crate::ast_convert::surface_node_to_expr(default_node),
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2412,13 +2414,15 @@ pub(crate) async fn apply_cont(
                             // The type checker does NOT validate `is:` predicates statically (they are
                             // runtime-only contracts), so this gap means predicates have no effect.
                             Action::Continue(Ok(value))
-                        } else if let Some(default_expr) =
+                        } else if let Some(default_node) =
                             annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                         {
                             // Evaluate default expression iteratively.
                             // The result will flow to the next continuation on the stack.
                             Action::EvalCore {
-                                expr: Arc::new(crate::ast_convert::expr_to_core_expr(default_expr)),
+                                expr: Arc::new(crate::ast_convert::expr_to_core_expr(
+                                    &crate::ast_convert::surface_node_to_expr(default_node),
+                                )),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
@@ -2445,11 +2449,11 @@ pub(crate) async fn apply_cont(
                             Annotation::PropertyDict(_) => annotation
                                 .node
                                 .get_property("type")
-                                .and_then(|type_expr| match &type_expr.node {
-                                    Expr::Str(s) => Some(s.clone()),
+                                .and_then(|type_node| match &type_node.expr {
+                                    SurfaceExpression::Str(s) => Some(s.clone()),
                                     // Type names written as bare identifiers (e.g., `type: Number`)
                                     // are parsed as VarRef, not Str. Extract the name directly.
-                                    Expr::VarRef { name, .. } => Some(name.clone()),
+                                    SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
                                     _ => None,
                                 }),
                             Annotation::Annotated(name, _) => Some(name.clone()),
@@ -2481,14 +2485,14 @@ pub(crate) async fn apply_cont(
                                 actual == expected.as_str()
                             };
                             if !matches {
-                                if let Some(default_expr) =
+                                if let Some(default_node) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                                 {
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
                                         expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            default_expr,
+                                            &crate::ast_convert::surface_node_to_expr(default_node),
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2511,14 +2515,14 @@ pub(crate) async fn apply_cont(
                             // gap for eval-only mode (doc/07 §--no-typecheck mode).
                             if !matches!(value, Value::Dict(_) | Value::Overlay(..)) {
                                 let actual = value.type_name();
-                                if let Some(default_expr) =
+                                if let Some(default_node) =
                                     annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                                 {
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
                                         expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            default_expr,
+                                            &crate::ast_convert::surface_node_to_expr(default_node),
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),

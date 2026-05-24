@@ -637,7 +637,7 @@ fn expr_inner_to_core_expr(expr: &Expr, span: crate::ast::Span) -> crate::ast::C
                 let default = annotation
                     .node
                     .get_property("default")
-                    .map(|e| Arc::new(expr_to_core_expr(e)));
+                    .map(|node| Arc::new(expr_to_core_expr(&surface_node_to_expr(node))));
                 CoreExpr::RuntimeTypeCheck {
                     annotation: annotation.clone(),
                     expr: Arc::new(expr_to_core_expr(inner)),
@@ -902,7 +902,7 @@ fn expr_to_surface_expr(expr: &Expr) -> SurfaceExpression {
     }
 }
 
-fn entry_to_surface(entry: &Entry) -> SurfaceEntry {
+pub fn entry_to_surface(entry: &Entry) -> SurfaceEntry {
     SurfaceEntry {
         key: entry.key.as_ref().map(|k| expr_to_surface_node(k)),
         value: expr_to_surface_node(&entry.value),

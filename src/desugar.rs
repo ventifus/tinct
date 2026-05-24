@@ -84,6 +84,12 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
             let syn_span = Span::origin();
             let mut new_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
             let mut has_injection = false;
+            // Track already-injected constructor names to prevent duplicates when two
+            // types in the same dict share a variant name (e.g., `Annotated` in both
+            // `Annotation` and `Expression`). Without deduplication, the second injection
+            // would cause E030 "duplicate key: Annotated" at runtime.
+            let mut injected_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
 
             for se in entries {
                 // Check if this entry's value is a TypeAlias Decl
@@ -94,6 +100,10 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                             has_injection = true;
                             // Inject synthetic entries: CtorName: [variant "CtorName"]
                             for ctor_name in ctor_names {
+                                if !injected_names.insert(ctor_name.clone()) {
+                                    // Already injected by a prior type in this same dict — skip.
+                                    continue;
+                                }
                                 let key_node = Arc::new(SurfaceNode {
                                     expr: SurfaceExpression::Str(ctor_name.clone()),
                                     span: syn_span,

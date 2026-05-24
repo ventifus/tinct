@@ -105,7 +105,10 @@ use std::sync::Arc;
 /// AST node types produced by the parser.
 pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
-pub use ast::{ResolutionTable, SurfaceProgram, TypeAnnotationTable};
+pub use ast::{
+    ResolutionTable, SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram,
+    TypeAnnotationTable,
+};
 /// Parser entry points and error type.
 pub use parser::{format_parse_error, parse, parse_expression, ParseError, ParseOutput};
 

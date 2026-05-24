@@ -71,6 +71,7 @@ pub struct CommentMaps<'a> {
 /// Not part of the public API — callers should use `surface_node_to_dict` instead.
 /// Retained for the `annotation_to_thunk_id` fallback path and `#[cfg(test)]` usage.
 #[doc(hidden)]
+#[allow(dead_code)]
 fn ast_to_dict_expr(
     expr: &Spanned<Expr>,
     opts: &AstToDictOpts,
@@ -1488,6 +1489,7 @@ pub fn dict_to_surface_program(
 // `dict_to_surface_program` and `#[cfg(test)]` usage).
 // ============================================================================
 
+#[allow(dead_code)]
 fn expr_to_thunk(
     expr: &Expr,
     span: Span,
@@ -1498,6 +1500,7 @@ fn expr_to_thunk(
     Ok(ctx.thunk_arena.lock().unwrap().get(id).clone())
 }
 
+#[allow(dead_code)]
 fn expr_to_thunk_id(
     expr: &Expr,
     span: Span,
@@ -2416,6 +2419,7 @@ fn pattern_to_thunk_id(
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
+#[allow(dead_code)]
 fn entry_to_thunk_id(
     entry: &Entry,
     entry_span: Span,
@@ -2494,6 +2498,7 @@ fn entry_to_thunk_id(
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
+#[allow(dead_code)]
 fn named_arg_to_thunk_id(
     named_arg: &NamedArg,
     span: Span,
@@ -2515,6 +2520,7 @@ fn named_arg_to_thunk_id(
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
+#[allow(dead_code)]
 fn param_to_thunk_id(
     param: &Param,
     span: Span,
@@ -2618,13 +2624,16 @@ fn annotation_to_thunk_id(
                         ))),
                     );
 
-                    // For annotation dicts, keys are always string literals (bare words)
+                    // For annotation dicts, keys are always string literals (bare words).
+                    // SurfaceEntry.key is Arc<SurfaceNode>; SurfaceEntry.value is Arc<SurfaceNode>.
                     let key_id = match &e.node.key {
-                        Some(k) => match &k.node {
-                            Expr::Str(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(s),
-                                k.span,
-                            ))),
+                        Some(k) => match &k.expr {
+                            crate::ast::SurfaceExpression::Str(s) => {
+                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                    string_val(s),
+                                    k.span,
+                                )))
+                            }
                             _ => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 Value::Dict(IndexMap::new()),
                                 k.span,
@@ -2640,16 +2649,21 @@ fn annotation_to_thunk_id(
 
                     // Annotation entry values are strings/ints for simple cases,
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
-                    let value_id = match &e.node.value.node {
-                        Expr::Str(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val(s),
-                            e.node.value.span,
-                        ))),
-                        Expr::Int(n) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Int(*n),
-                            e.node.value.span,
-                        ))),
-                        _ => ctx.alloc_thunk(ast_to_dict_expr(
+                    // TODO(rv2-migrate-annotation Phase 7): use surface_node_to_thunk_id natively.
+                    let value_id = match &e.node.value.expr {
+                        crate::ast::SurfaceExpression::Str(s) => {
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(s),
+                                e.node.value.span,
+                            )))
+                        }
+                        crate::ast::SurfaceExpression::Int(n) => {
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                Value::Int(*n),
+                                e.node.value.span,
+                            )))
+                        }
+                        _ => ctx.alloc_thunk(surface_node_to_dict(
                             &e.node.value,
                             &AstToDictOpts::default(),
                             ctx,
@@ -3752,8 +3766,11 @@ fn dict_to_annotation(
                 let i_str = i.to_string();
                 entry_path.push(i_str.clone());
                 let entry_path_refs: Vec<&str> = entry_path.iter().map(|s| s.as_str()).collect();
-                let entry = dict_to_entry(&entry_val, &entry_path_refs, ctx)?;
-                entries.push(entry);
+                // dict_to_entry returns Spanned<Entry>; bridge to Spanned<SurfaceEntry> for Phase 1.
+                // TODO(rv2-migrate-annotation Phase 7): rewrite dict_to_entry to return Spanned<SurfaceEntry>.
+                let old_entry = dict_to_entry(&entry_val, &entry_path_refs, ctx)?;
+                let surf_entry = crate::ast_convert::entry_to_surface(&old_entry.node);
+                entries.push(Spanned::new(surf_entry, old_entry.span));
             }
             Annotation::PropertyDict(entries)
         }

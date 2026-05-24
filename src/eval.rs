@@ -28,7 +28,7 @@ use indexmap::IndexMap;
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
     Annotation, CoreExpr, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span,
-    Spanned,
+    Spanned, SurfaceExpression,
 };
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
@@ -111,6 +111,7 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 /// **Parser guarantee:** PropertyDict entries always have `Expr::Str` keys; non-`Expr::Str`
 /// keys are treated as non-structural (the `_ => None` arm will never match in well-formed ASTs).
 pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool {
+    // TODO(rv2-migrate-annotation Phase 5): rewrite to use SurfaceExpression::Str on SurfaceEntry keys.
     match annotation {
         Annotation::Simple(_) => false,
         Annotation::PropertyDict(entries) => entries.iter().any(|entry| {
@@ -118,8 +119,8 @@ pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool 
                 .node
                 .key
                 .as_ref()
-                .and_then(|k| match &k.node {
-                    Expr::Str(name) => Some(name.as_str()),
+                .and_then(|k| match &k.expr {
+                    SurfaceExpression::Str(name) => Some(name.as_str()),
                     _ => None,
                 })
                 .is_some_and(|name| !ANNOTATION_META_KEYS.contains(&name))
@@ -1635,19 +1636,14 @@ fn eval_core_expr<'a>(
                     .collect();
 
                 // Extract doc string from annotation if present
+                // TODO(rv2-migrate-annotation Phase 5): restore PropertyDict doc extraction with SurfaceEntry
+                #[allow(unused_variables)]
                 let annotation = return_ann.as_ref().and_then(|ann_spanned| {
-                    let doc = match &ann_spanned.node {
-                        Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
-                            let key = entry.node.key.as_ref()?;
-                            if let Expr::Str(key_str) = &key.node {
-                                if key_str == "doc" {
-                                    if let Expr::Str(doc_str) = &entry.node.value.node {
-                                        return Some(doc_str.clone());
-                                    }
-                                }
-                            }
-                            None
-                        }),
+                    // Stub: PropertyDict doc extraction deferred to Phase 5 of rv2-migrate-annotation.
+                    // Previously extracted "doc" string key from Expr::Str entries;
+                    // will be rewritten to use SurfaceExpression::Str on SurfaceEntry entries.
+                    let doc: Option<String> = match &ann_spanned.node {
+                        Annotation::PropertyDict(_entries) => None, // STUB: Phase 5
                         _ => None,
                     };
 
@@ -3484,6 +3480,18 @@ mod tests {
         ctx.get_thunk(*id)
     }
 
+    /// Build a `Spanned<SurfaceEntry>` with a string key and a simple expression value.
+    /// Helper for constructing `Annotation::PropertyDict` entries in tests during
+    /// rv2-migrate-annotation migration (Phase 1 stub support).
+    fn surf_ann_entry(key: &str, value_expr: SurfaceExpression) -> Spanned<SurfaceEntry> {
+        let z = test_span(0, 0, 0, 0);
+        let mk = |expr| Arc::new(SurfaceNode { expr, span: z });
+        sp(SurfaceEntry {
+            key: Some(mk(SurfaceExpression::Str(key.into()))),
+            value: mk(value_expr),
+        })
+    }
+
     #[test]
     fn test_eval_int() {
         let expr = sp(Expr::Int(42));
@@ -4136,10 +4144,7 @@ mod tests {
         // f: [fn [x  y@[default: 99]] [result: $y]]
         // [call $f 1] → y defaults to 99
         let env = empty_env();
-        let default_entry = sp(Entry {
-            key: Some(sp(Expr::Str("default".into()))),
-            value: rsp(Expr::Int(99)),
-        });
+        let default_entry = surf_ann_entry("default", SurfaceExpression::Int(99));
         let fn_val = Value::Function {
             params: Rc::new(vec![
                 Param {
@@ -4178,10 +4183,7 @@ mod tests {
         // f: [fn [x  y@[default: 99]] $y]
         // [call $f 1 y: 42] → y = 42
         let env = empty_env();
-        let default_entry = sp(Entry {
-            key: Some(sp(Expr::Str("default".into()))),
-            value: rsp(Expr::Int(99)),
-        });
+        let default_entry = surf_ann_entry("default", SurfaceExpression::Int(99));
         let fn_val = Value::Function {
             params: Rc::new(vec![
                 Param {
@@ -4260,10 +4262,7 @@ mod tests {
         // f: [fn [x y@[default: 99]] $y]
         // [call $f 1 2 y: 42] → error: y received both positional and named argument
         let env = empty_env();
-        let default_entry = sp(Entry {
-            key: Some(sp(Expr::Str("default".into()))),
-            value: rsp(Expr::Int(99)),
-        });
+        let default_entry = surf_ann_entry("default", SurfaceExpression::Int(99));
         let fn_val = Value::Function {
             params: Rc::new(vec![
                 Param {
@@ -4901,10 +4900,7 @@ mod tests {
     #[test]
     fn test_type_assert_property_dict_with_type() {
         // [@[type: Int] 42] -> 42
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("type".into()))),
-            value: rsp(Expr::Str("Int".into())),
-        })];
+        let entries = vec![surf_ann_entry("type", SurfaceExpression::Str("Int".into()))];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Int(42))),
@@ -4918,10 +4914,7 @@ mod tests {
     #[test]
     fn test_type_assert_property_dict_type_mismatch() {
         // [@[type: Int] hello] -> error
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("type".into()))),
-            value: rsp(Expr::Str("Int".into())),
-        })];
+        let entries = vec![surf_ann_entry("type", SurfaceExpression::Str("Int".into()))];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
@@ -4940,10 +4933,7 @@ mod tests {
     #[test]
     fn test_type_assert_property_dict_without_type_passes() {
         // [@[default: 0] hello] -> "hello" (no type key, no check performed)
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("default".into()))),
-            value: rsp(Expr::Int(0)),
-        })];
+        let entries = vec![surf_ann_entry("default", SurfaceExpression::Int(0))];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
@@ -4958,14 +4948,8 @@ mod tests {
     fn test_type_assert_default_not_used_on_match() {
         // [@[type: Int  default: 0] 42] -> 42 (type matches, default not used)
         let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("type".into()))),
-                value: rsp(Expr::Str("Int".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::Int(0)),
-            }),
+            surf_ann_entry("type", SurfaceExpression::Str("Int".into())),
+            surf_ann_entry("default", SurfaceExpression::Int(0)),
         ];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
@@ -4981,14 +4965,8 @@ mod tests {
     fn test_type_assert_default_used_on_mismatch() {
         // [@[type: Int  default: 0] hello] -> 0 (type mismatch, returns default)
         let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("type".into()))),
-                value: rsp(Expr::Str("Int".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::Int(0)),
-            }),
+            surf_ann_entry("type", SurfaceExpression::Str("Int".into())),
+            surf_ann_entry("default", SurfaceExpression::Int(0)),
         ];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
@@ -5003,10 +4981,7 @@ mod tests {
     #[test]
     fn test_type_assert_property_dict_no_default_errors_on_mismatch() {
         // [@[type: Int] hello] -> error (no default, mismatch is an error)
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::Str("type".into()))),
-            value: rsp(Expr::Str("Int".into())),
-        })];
+        let entries = vec![surf_ann_entry("type", SurfaceExpression::Str("Int".into()))];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
             expr: Box::new(sp(Expr::Str("hello".into()))),
@@ -5026,14 +5001,8 @@ mod tests {
     fn test_type_assert_number_default_int_passes_string_triggers() {
         // [@[type: Number  default: -1] 42] -> 42 (Int passes Number check)
         let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("type".into()))),
-                value: rsp(Expr::Str("Number".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::Int(-1)),
-            }),
+            surf_ann_entry("type", SurfaceExpression::Str("Number".into())),
+            surf_ann_entry("default", SurfaceExpression::Int(-1)),
         ];
         let expr_pass = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
@@ -5046,14 +5015,8 @@ mod tests {
 
         // [@[type: Number  default: -1] "nope"] -> -1 (String fails Number, returns default)
         let entries2 = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("type".into()))),
-                value: rsp(Expr::Str("Number".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::Int(-1)),
-            }),
+            surf_ann_entry("type", SurfaceExpression::Str("Number".into())),
+            surf_ann_entry("default", SurfaceExpression::Int(-1)),
         ];
         let expr_fail = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries2)),
@@ -5069,14 +5032,8 @@ mod tests {
     fn test_type_assert_default_accesses_outer_scope() {
         // [@[type: Int  default: $fallback] hello] with fallback=99 -> 99
         let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("type".into()))),
-                value: rsp(Expr::Str("Int".into())),
-            }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: rsp(Expr::var_ref("fallback".into())),
-            }),
+            surf_ann_entry("type", SurfaceExpression::Str("Int".into())),
+            surf_ann_entry("default", SurfaceExpression::VarRef { name: "fallback".into(), escaped: true }),
         ];
         let expr = sp(Expr::TypeAssert {
             annotation: sp(Annotation::PropertyDict(entries)),
@@ -6831,10 +6788,9 @@ mod tests {
                 },
                 Param {
                     name: "b".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![sp(Entry {
-                        key: Some(sp(Expr::Str("default".into()))),
-                        value: rsp(Expr::Int(10)),
-                    })]))),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![
+                        surf_ann_entry("default", SurfaceExpression::Int(10)),
+                    ]))),
                     variadic: false,
                 },
             ]),
@@ -6933,10 +6889,9 @@ mod tests {
                 },
                 Param {
                     name: "y".into(),
-                    annotation: Some(sp(Annotation::PropertyDict(vec![sp(Entry {
-                        key: Some(sp(Expr::Str("default".into()))),
-                        value: rsp(Expr::Int(10)),
-                    })]))),
+                    annotation: Some(sp(Annotation::PropertyDict(vec![
+                        surf_ann_entry("default", SurfaceExpression::Int(10)),
+                    ]))),
                     variadic: false,
                 },
             ]),

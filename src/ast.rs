@@ -441,19 +441,21 @@ pub enum LiteralPattern {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Annotation {
     Simple(String),
-    PropertyDict(Vec<Spanned<Entry>>),
+    PropertyDict(Vec<Spanned<SurfaceEntry>>),
     Annotated(String, Box<Annotation>), // e.g., Seq@Int = Annotated("Seq", Simple("Int"))
 }
 
 impl Annotation {
     /// Look up a property by string key in a PropertyDict annotation.
-    /// Returns a reference to the value expression if found, None for Simple annotations.
-    pub fn get_property(&self, key: &str) -> Option<&Spanned<Expr>> {
+    /// Returns a reference to the value node if found, None for Simple annotations.
+    pub fn get_property(&self, key: &str) -> Option<&Arc<SurfaceNode>> {
         match self {
             Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
-                let key_expr = entry.node.key.as_ref()?;
-                match &key_expr.node {
-                    Expr::Str(name) if name == key => Some(entry.node.value.as_ref()),
+                let key_node = entry.node.key.as_ref()?;
+                match &key_node.expr {
+                    SurfaceExpression::Str(name) if name == key => {
+                        Some(&entry.node.value)
+                    }
                     _ => None,
                 }
             }),
@@ -694,14 +696,47 @@ impl fmt::Display for Annotation {
                         write!(f, "  ")?;
                     }
                     if let Some(key) = &entry.node.key {
-                        write!(f, "{}: {}", key.node, entry.node.value.node)?;
+                        write!(f, "{}: {}", key, entry.node.value)?;
                     } else {
-                        write!(f, "{}", entry.node.value.node)?;
+                        write!(f, "{}", entry.node.value)?;
                     }
                 }
                 write!(f, "]")
             }
             Annotation::Annotated(name, inner) => write!(f, "{name}@{inner}"),
+        }
+    }
+}
+
+impl fmt::Display for SurfaceNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.expr)
+    }
+}
+
+impl fmt::Display for SurfaceExpression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SurfaceExpression::Int(n) => write!(f, "{n}"),
+            SurfaceExpression::Float(x) => write!(f, "{x}"),
+            SurfaceExpression::Bool(b) => write!(f, "{b}"),
+            SurfaceExpression::Str(s) => write!(f, "\"{s}\""),
+            SurfaceExpression::VarRef { name, escaped } => {
+                if *escaped {
+                    write!(f, "${name}")
+                } else {
+                    write!(f, "{name}")
+                }
+            }
+            SurfaceExpression::Placeholder => write!(f, "..."),
+            SurfaceExpression::Rest(None) => write!(f, "..."),
+            SurfaceExpression::Rest(Some(name)) => write!(f, "...{name}"),
+            SurfaceExpression::Error(span) => write!(f, "<error at {span}>"),
+            SurfaceExpression::Annotated { name, annotation } => {
+                write!(f, "{name}@{}", annotation.node)
+            }
+            // For complex forms, use debug formatting as a fallback.
+            other => write!(f, "{other:?}"),
         }
     }
 }
@@ -1240,16 +1275,22 @@ mod tests {
 
     #[test]
     fn test_display_type_assert_with_property_dict() {
-        // Annotation keys from the parser are always Expr::Str (bare words);
-        // Expr::VarRef keys are structurally valid but never produced by the parser.
+        // Annotation keys from the parser are always SurfaceExpression::Str (bare words).
+        let zero_span = Span {
+            start: Position { offset: 0, line: 0, column: 0 },
+            end: Position { offset: 0, line: 0, column: 0 },
+        };
+        let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
+            Arc::new(SurfaceNode { expr, span: zero_span })
+        };
         let entries = vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("type".into()))),
-                value: Rc::new(sp(Expr::Str("Number".into()))),
+            sp(SurfaceEntry {
+                key: Some(mk_node(SurfaceExpression::Str("type".into()))),
+                value: mk_node(SurfaceExpression::Str("Number".into())),
             }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("min".into()))),
-                value: Rc::new(sp(Expr::Int(0))),
+            sp(SurfaceEntry {
+                key: Some(mk_node(SurfaceExpression::Str("min".into()))),
+                value: mk_node(SurfaceExpression::Int(0)),
             }),
         ];
         let expr = Expr::TypeAssert {
@@ -1271,9 +1312,19 @@ mod tests {
 
     #[test]
     fn test_display_annotated_with_property_dict() {
-        let entries = vec![sp(Entry {
-            key: Some(sp(Expr::var_ref("required".into()))),
-            value: Rc::new(sp(Expr::Bool(true))),
+        let zero_span = Span {
+            start: Position { offset: 0, line: 0, column: 0 },
+            end: Position { offset: 0, line: 0, column: 0 },
+        };
+        let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
+            Arc::new(SurfaceNode { expr, span: zero_span })
+        };
+        let entries = vec![sp(SurfaceEntry {
+            key: Some(mk_node(SurfaceExpression::VarRef {
+                name: "required".into(),
+                escaped: false,
+            })),
+            value: mk_node(SurfaceExpression::Bool(true)),
         })];
         let expr = Expr::Annotated {
             name: "port".into(),
@@ -1456,16 +1507,22 @@ mod tests {
 
     #[test]
     fn test_display_annotation_property_dict_with_entries() {
-        // Annotation keys from the parser are always Expr::Str (bare words);
-        // Expr::VarRef keys are structurally valid but never produced by the parser.
+        // Annotation keys from the parser are always SurfaceExpression::Str (bare words).
+        let zero_span = Span {
+            start: Position { offset: 0, line: 0, column: 0 },
+            end: Position { offset: 0, line: 0, column: 0 },
+        };
+        let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
+            Arc::new(SurfaceNode { expr, span: zero_span })
+        };
         let ann = Annotation::PropertyDict(vec![
-            sp(Entry {
-                key: Some(sp(Expr::Str("type".into()))),
-                value: Rc::new(sp(Expr::Str("Number".into()))),
+            sp(SurfaceEntry {
+                key: Some(mk_node(SurfaceExpression::Str("type".into()))),
+                value: mk_node(SurfaceExpression::Str("Number".into())),
             }),
-            sp(Entry {
-                key: Some(sp(Expr::Str("default".into()))),
-                value: Rc::new(sp(Expr::Int(42))),
+            sp(SurfaceEntry {
+                key: Some(mk_node(SurfaceExpression::Str("default".into()))),
+                value: mk_node(SurfaceExpression::Int(42)),
             }),
         ]);
         assert_eq!(format!("{ann}"), "[\"type\": \"Number\"  \"default\": 42]");

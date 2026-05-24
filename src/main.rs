@@ -3412,13 +3412,16 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                     doc_contract.insert("type".into(), serde_json::json!(type_name));
                 }
                 tinct::Annotation::PropertyDict(entries) => {
+                    // TODO(rv2-migrate-annotation Phase 6): restore PropertyDict JSON serialization
+                    // using SurfaceExpression. Stubbed for Phase 1 compilation.
                     let mut fields = serde_json::Map::new();
                     for entry in entries {
-                        if let Some(ref key_expr) = entry.node.key {
-                            if let tinct::Expr::Str(ref key_name) = key_expr.node {
+                        if let Some(ref key_node) = entry.node.key {
+                            if let tinct::SurfaceExpression::Str(ref key_name) = key_node.expr {
+                                let value_expr = tinct::ast_convert::surface_node_to_expr(&entry.node.value);
                                 fields.insert(
                                     key_name.clone(),
-                                    describe_annotation_value(&entry.node.value.node),
+                                    describe_annotation_value(&value_expr.node),
                                 );
                             }
                         }

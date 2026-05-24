@@ -515,7 +515,7 @@ fn adjust_annotation(ann: Annotation, base: Position) -> Annotation {
     match ann {
         Annotation::Simple(_) => ann,
         Annotation::PropertyDict(entries) => {
-            Annotation::PropertyDict(adjust_entries(entries, base))
+            Annotation::PropertyDict(adjust_surface_entries(entries, base))
         }
         Annotation::Annotated(name, inner) => {
             Annotation::Annotated(name, Box::new(adjust_annotation(*inner, base)))
@@ -540,6 +540,33 @@ fn adjust_entries(
                     Rc::try_unwrap(se.node.value).unwrap_or_else(|rc| (*rc).clone()),
                     base,
                 )),
+            },
+        })
+        .collect()
+}
+
+/// Adjust all spans in a list of `Spanned<SurfaceEntry>` from sub-source to absolute coordinates.
+/// Used by `adjust_annotation` for `Annotation::PropertyDict` after migration to `SurfaceEntry`.
+fn adjust_surface_entries(
+    entries: Vec<Spanned<crate::ast::SurfaceEntry>>,
+    base: Position,
+) -> Vec<Spanned<crate::ast::SurfaceEntry>> {
+    use crate::ast::{SurfaceEntry, SurfaceNode};
+    entries
+        .into_iter()
+        .map(|se| Spanned {
+            span: adjust_span(se.span, base),
+            node: SurfaceEntry {
+                key: se.node.key.map(|k| {
+                    std::sync::Arc::new(SurfaceNode {
+                        span: adjust_span(k.span, base),
+                        expr: k.expr.clone(),
+                    })
+                }),
+                value: std::sync::Arc::new(SurfaceNode {
+                    span: adjust_span(se.node.value.span, base),
+                    expr: se.node.value.expr.clone(),
+                }),
             },
         })
         .collect()
@@ -736,7 +763,14 @@ fn parse_annotation(
                         // The sub-parse produced spans relative to sub_source (offset 0 = `[`).
                         // Adjust all entry spans back to the original file's coordinate space.
                         let base = bracket_start_span.start;
-                        let adjusted = adjust_entries(entries.clone(), base);
+                        let adjusted_old = adjust_entries(entries.clone(), base);
+                        // Bridge to SurfaceEntry for Annotation::PropertyDict (Phase 1 stub).
+                        // TODO(rv2-migrate-annotation Phase 2): extract SurfaceEntry directly from
+                        // sub_output.program without going through surface_program_to_file.
+                        let adjusted: Vec<Spanned<SurfaceEntry>> = adjusted_old
+                            .into_iter()
+                            .map(|e| Spanned::new(crate::ast_convert::entry_to_surface(&e.node), e.span))
+                            .collect();
                         Ok((
                             Spanned::new(Annotation::PropertyDict(adjusted), ann_span),
                             end_i + 1,
@@ -756,7 +790,7 @@ fn parse_annotation(
                         ..
                     } if matches!(&func.node, Expr::VarRef { .. }) => {
                         let base = bracket_start_span.start;
-                        let mut entries = Vec::new();
+                        let mut old_entries: Vec<Spanned<Entry>> = Vec::new();
                         // func as first auto-indexed entry
                         let adjusted_func = adjust_spanned_expr((**func).clone(), base);
                         let func_span = adjusted_func.span;
@@ -767,7 +801,7 @@ fn parse_annotation(
                             },
                             func_span,
                         );
-                        entries.push(func_entry);
+                        old_entries.push(func_entry);
                         // args as subsequent auto-indexed entries
                         for arg in args {
                             let adjusted_arg = adjust_spanned_expr(arg.as_ref().clone(), base);
@@ -779,8 +813,14 @@ fn parse_annotation(
                                 },
                                 arg_span,
                             );
-                            entries.push(arg_entry);
+                            old_entries.push(arg_entry);
                         }
+                        // Bridge to SurfaceEntry for Annotation::PropertyDict (Phase 1 stub).
+                        // TODO(rv2-migrate-annotation Phase 2): build SurfaceEntry directly.
+                        let entries: Vec<Spanned<SurfaceEntry>> = old_entries
+                            .into_iter()
+                            .map(|e| Spanned::new(crate::ast_convert::entry_to_surface(&e.node), e.span))
+                            .collect();
                         Ok((
                             Spanned::new(Annotation::PropertyDict(entries), ann_span),
                             end_i + 1,
@@ -4884,22 +4924,18 @@ fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::Has
 }
 
 /// Extract guard expression from annotation if present
-#[allow(clippy::explicit_auto_deref)] // &entry.node.value: &Rc<T> auto-derefs to &T; clippy suggests omitting & but it's clearer explicit
 fn extract_guard(annotation: &Spanned<Annotation>) -> Option<Arc<SurfaceNode>> {
     match &annotation.node {
         Annotation::PropertyDict(props) => {
+            // SurfaceEntry: key is Option<Arc<SurfaceNode>>, value is Arc<SurfaceNode>.
             for entry in props {
-                if let Some(ref key_expr) = entry.node.key {
-                    match &key_expr.node {
-                        Expr::VarRef { name, .. } if name == "is" => {
-                            return Some(crate::ast_convert::expr_to_surface_node(
-                                &entry.node.value,
-                            ));
+                if let Some(ref key_node) = entry.node.key {
+                    match &key_node.expr {
+                        SurfaceExpression::VarRef { name, .. } if name == "is" => {
+                            return Some(Arc::clone(&entry.node.value));
                         }
-                        Expr::Str(s) if s == "is" => {
-                            return Some(crate::ast_convert::expr_to_surface_node(
-                                &entry.node.value, // deref coercion: &Rc<T> → &T
-                            ));
+                        SurfaceExpression::Str(s) if s == "is" => {
+                            return Some(Arc::clone(&entry.node.value));
                         }
                         _ => {}
                     }
@@ -5764,17 +5800,20 @@ fn push_expr_to_parent(
                 if let Some((key_name, key_span)) = pending_key.take() {
                     // This node is the default value for a named param `key_name: node`
                     // Represent as Annotated { name: key_name, annotation: PropertyDict([default: node]) }
-                    // Convert the SurfaceNode default value to old Expr for the annotation.
-                    let default_expr = crate::ast_convert::surface_node_to_expr(&node);
                     let combined_span = Span {
                         start: key_span.start,
                         end: node.span.end,
                     };
+                    // Build SurfaceEntry directly (Phase 1: rv2-migrate-annotation).
+                    let surf_key = Arc::new(SurfaceNode {
+                        expr: SurfaceExpression::Str("default".to_string()),
+                        span: key_span,
+                    });
                     let ann = Spanned::new(
                         Annotation::PropertyDict(vec![Spanned::new(
-                            Entry {
-                                key: Some(Spanned::new(Expr::Str("default".to_string()), key_span)),
-                                value: std::rc::Rc::new(default_expr),
+                            SurfaceEntry {
+                                key: Some(surf_key),
+                                value: Arc::clone(&node),
                             },
                             node.span,
                         )]),
