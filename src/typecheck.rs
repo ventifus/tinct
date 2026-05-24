@@ -6990,6 +6990,124 @@ fn stq_resolve_simple_annotation(ann: &Annotation) -> Option<Type> {
 
 /// Scan inferred types for quality issues (Unknown types, over-broad annotations).
 ///
+/// Walk a SurfaceNode recursively, collecting `(start_offset, end_offset) → Span` for every node.
+///
+/// This is used by `scan_type_quality` to look up real line/column positions when emitting
+/// T010/T011 diagnostics — the TypeMap only stores offset pairs as keys, so we need to recover
+/// the full Span (with line/column) from the Surface AST.
+fn stq_collect_node_spans(node: &SurfaceNode, map: &mut HashMap<(usize, usize), Span>) {
+    let key = (node.span.start.offset, node.span.end.offset);
+    map.entry(key).or_insert(node.span);
+
+    match &node.expr {
+        SurfaceExpression::TypeAssert { expr: inner, .. } => {
+            stq_collect_node_spans(inner, map);
+        }
+        SurfaceExpression::Fn { body, .. } => {
+            stq_collect_node_spans(body, map);
+        }
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            stq_collect_node_spans(func, map);
+            for arg in args {
+                stq_collect_node_spans(arg, map);
+            }
+            for na in named_args {
+                stq_collect_node_spans(&na.node.value, map);
+            }
+        }
+        SurfaceExpression::Sequential(exprs) => {
+            for e in exprs {
+                stq_collect_node_spans(e, map);
+            }
+        }
+        SurfaceExpression::DotAccess { expr, .. } => stq_collect_node_spans(expr, map),
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            stq_collect_node_spans(lhs, map);
+            stq_collect_node_spans(rhs, map);
+        }
+        SurfaceExpression::Match { scrutinee, arms } => {
+            stq_collect_node_spans(scrutinee, map);
+            for arm in arms {
+                stq_collect_node_spans(&arm.body, map);
+                if let Some(guard) = &arm.guard {
+                    stq_collect_node_spans(guard, map);
+                }
+            }
+        }
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                if let Some(key_node) = &entry.node.key {
+                    stq_collect_node_spans(key_node, map);
+                }
+                stq_collect_node_spans(&entry.node.value, map);
+            }
+        }
+        SurfaceExpression::Quote(e)
+        | SurfaceExpression::Unquote(e)
+        | SurfaceExpression::UnquoteSplice(e) => stq_collect_node_spans(e, map),
+        SurfaceExpression::TypeApp { func, arg } => {
+            stq_collect_node_spans(func, map);
+            stq_collect_node_spans(arg, map);
+        }
+        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            for b in bindings {
+                stq_collect_node_spans(b, map);
+            }
+        }
+        SurfaceExpression::CaseArm { pattern, body } => {
+            stq_collect_node_spans(pattern, map);
+            stq_collect_node_spans(body, map);
+        }
+        SurfaceExpression::Decl(decl) => stq_collect_decl_spans(decl, map),
+        _ => {}
+    }
+}
+
+/// Walk a SurfaceDeclaration recursively, collecting `(start_offset, end_offset) → Span`.
+fn stq_collect_decl_spans(decl: &SurfaceDeclaration, map: &mut HashMap<(usize, usize), Span>) {
+    match decl {
+        SurfaceDeclaration::TypeAlias { body, .. } => stq_collect_node_spans(body, map),
+        SurfaceDeclaration::ClassDecl { methods, .. } => {
+            for entry in methods {
+                if let Some(key_node) = &entry.node.key {
+                    stq_collect_node_spans(key_node, map);
+                }
+                stq_collect_node_spans(&entry.node.value, map);
+            }
+        }
+        SurfaceDeclaration::InstanceDecl { arms, .. } => {
+            for (pattern, methods) in arms {
+                stq_collect_node_spans(pattern, map);
+                for entry in methods {
+                    if let Some(key_node) = &entry.node.key {
+                        stq_collect_node_spans(key_node, map);
+                    }
+                    stq_collect_node_spans(&entry.node.value, map);
+                }
+            }
+        }
+        SurfaceDeclaration::DefMacro { params, body, .. } => {
+            stq_collect_node_spans(params, map);
+            stq_collect_node_spans(body, map);
+        }
+        SurfaceDeclaration::MacroDecl { params, body, .. } => {
+            stq_collect_node_spans(params, map);
+            stq_collect_node_spans(body, map);
+        }
+        SurfaceDeclaration::SyntaxClass { pattern, .. } => stq_collect_node_spans(pattern, map),
+        SurfaceDeclaration::Splice(forms) => {
+            for form in forms {
+                stq_collect_node_spans(form, map);
+            }
+        }
+    }
+}
+
 /// Emits diagnostics at base level (Info/Warn). The CLI/LSP layer WILL apply a `--strict` bump
 /// once the type-warning channel is wired (TODO — escalation is not yet implemented).
 /// This is called at the end of type checking to produce advisory notifications.
@@ -7000,8 +7118,21 @@ pub fn scan_type_quality(
     ast: &SurfaceProgram,
     diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
 ) {
-    use crate::ast::Position;
     use crate::error::{DiagnosticLevel, TypeDiagnostic};
+
+    // Build a map from (start_offset, end_offset) → full Span (with real line/column).
+    // The TypeMap uses offset pairs as keys; this allows us to recover line/column for display.
+    let mut span_map: HashMap<(usize, usize), Span> = HashMap::new();
+    for doc_spanned in &ast.documents {
+        for item in &doc_spanned.node.items {
+            match item {
+                SurfaceItem::Expr(node) => stq_collect_node_spans(node, &mut span_map),
+                SurfaceItem::Decl(decl_spanned) => {
+                    stq_collect_decl_spans(&decl_spanned.node, &mut span_map)
+                }
+            }
+        }
+    }
 
     // Collect all explicit @Unknown annotation spans from the Surface AST.
     let mut explicit_unknown_spans: HashSet<(usize, usize)> = HashSet::new();
@@ -7035,22 +7166,27 @@ pub fn scan_type_quality(
                 )
             };
 
+            // Use the real Span (with line/column) from the span map when available.
+            // Fall back to an offset-only span if the node was not found in the walk
+            // (e.g., synthetic nodes introduced during type inference).
+            let span = span_map.get(&(*start, *end)).copied().unwrap_or(Span {
+                start: crate::ast::Position {
+                    offset: *start,
+                    line: 0,
+                    column: 0,
+                },
+                end: crate::ast::Position {
+                    offset: *end,
+                    line: 0,
+                    column: 0,
+                },
+            });
+
             diagnostics.push(TypeDiagnostic {
                 level,
                 code,
                 message,
-                span: Span {
-                    start: Position {
-                        offset: *start,
-                        line: 0,
-                        column: 0,
-                    },
-                    end: Position {
-                        offset: *end,
-                        line: 0,
-                        column: 0,
-                    },
-                },
+                span,
             });
         }
     }

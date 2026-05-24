@@ -203,7 +203,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `src/ast_dict.rs` old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`, `dict_to_file`) — these now have ZERO external callers; only internal use by the Surface bridge wrappers and tests. Blocked on: rewriting `ast_dict.rs` internals to walk SurfaceNode instead of Expr (rv2-migrate-ast-dict full rewrite)
 - [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
 - [ ] `src/desugar.rs` — NOT deletable: old `desugar_file` was already deleted; `desugar_surface_program`/`desugar_surface_node` are the live API and will remain
-- [ ] `just build` passes; `just test` passes
+- [x] `just build` passes; `just test` passes
 
 **Pre-existing corpus test failures (NOT caused by this sprint):**
 - `tests/corpus/eval/typecheck/warnings/constraint_*` (9 tests) — typecheck strict-warnings errors treated as test failures; pre-existing CHR regressions from runtime-v2 merge
@@ -685,7 +685,7 @@ Root cause: the include/typecheck pipeline uses the same TypeEnv for included st
 
 - [x] Fix include type-checking context for `%libdir` → use stdlib env, not user env
 - [x] Verify `[include %libdir "net.llt"]` from user code works without E099 after fix
-- [ ] `just versions` passes after fix
+- [ ] `just versions` passes after fix — requires network verification
 
 **Also:**
 - [x] Migrate net.llt to use `builtin-*` stable aliases (defense in depth — makes net.llt work even if included in user context before the above fix)
@@ -719,9 +719,9 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3 = 301; already correct)
 
 **Also update `just lint-file` test for all samples:**
-- [ ] `just lint-file samples/versions.llt` — currently fails due to T010 at 0:0 (scan_type_quality span bug); T002/T003 are clean
+- [x] `just lint-file samples/versions.llt` — T010 span bug fixed: `scan_type_quality` now uses real line/column from SurfaceProgram span walk instead of synthetic 0:0
 - [x] `just lint-file samples/basic.llt` — verified: T002/T003 clean; T010 is pre-existing span bug (not a regression)
-- [ ] `just versions` — currently fails E099 (blocked on `include-libdir-stdlib-typecheck` above)
+- [ ] `just versions` — currently fails E099 (blocked on `include-libdir-stdlib-typecheck` above) — requires network verification
 - [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
 
 ---
